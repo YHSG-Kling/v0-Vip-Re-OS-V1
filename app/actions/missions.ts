@@ -15,7 +15,7 @@ import {
   activeMissionsFor, blockMission, createMission, transitionMission, unblockMission,
   type MissionPriority, type MissionRow, type MissionType, type SuccessCriterion,
 } from "@/lib/kernel/missions"
-import type { MissionVerdictLine } from "@/lib/kernel/mission-controller"
+import type { ApprovalCascadeReport, MissionVerdictLine } from "@/lib/kernel/mission-controller"
 import {
   acceptDelegation, cancelDelegation, dissentDelegation, escalateDelegation, pendingDelegationsFor, rejectDelegation,
   type DelegationRow,
@@ -139,7 +139,7 @@ export async function submitBrokerObjectiveAction(input: { text: string }): Prom
 
 /** A human decides: approve / resume (→ ACTIVE), plan (→ PLANNING), cancel, or fail. Admins decide
  *  any mission of the tenant; an agent only the missions they created. */
-export async function decideMissionAction(input: { missionId: string; decision: "approve" | "plan" | "cancel" | "fail"; reason: string }): Promise<Door<MissionRow>> {
+export async function decideMissionAction(input: { missionId: string; decision: "approve" | "plan" | "cancel" | "fail"; reason: string }): Promise<Door<MissionRow & { cascade?: ApprovalCascadeReport }>> {
   const g = await gate()
   if (!g.ok) return g
   const to = input?.decision === "approve" ? "ACTIVE" : input?.decision === "plan" ? "PLANNING" : input?.decision === "cancel" ? "CANCELLED" : input?.decision === "fail" ? "FAILED" : null
@@ -150,8 +150,20 @@ export async function decideMissionAction(input: { missionId: string; decision: 
     if (error) return { ok: false, error: `Mission could not be read: ${error.message}` }
     if (!own) return { ok: false, error: "Only the mission's creator or a brokerage admin can decide it." }
   }
-  const r = await transitionMission({ brokerageId: g.brokerageId, missionId: input.missionId, to, reason: String(input.reason ?? "").trim() || `${input.decision} by a human`, actor: { type: "user", id: g.userId } }, svc)
-  return r.ok ? { ok: true, data: r.mission } : { ok: false, error: r.reason }
+  const reason = String(input.reason ?? "").trim() || `${input.decision} by a human`
+  const r = await transitionMission({ brokerageId: g.brokerageId, missionId: input.missionId, to, reason, actor: { type: "user", id: g.userId } }, svc)
+  if (!r.ok) return { ok: false, error: r.reason }
+  // WAVE 137 (owner "approve all"): approving a delegation PARENT cascades to its PROPOSED children —
+  // each child still passes its OWN gate (authority, ownership, budget envelope, dependencies) in
+  // lib/kernel/mission-controller.ts cascadeParentApproval; a refused child is reported, never forced.
+  // Admin roster only: an objective delegation commits the brokerage (submitBrokerObjectiveAction's rule).
+  if (input?.decision === "approve" && g.admin && r.mission.state === "ACTIVE") {
+    const { cascadeParentApproval } = await import("@/lib/kernel/mission-controller")
+    const cascade = await cascadeParentApproval({ brokerageId: g.brokerageId, parentMissionId: r.mission.id, actor: { type: "user", id: g.userId }, reason }, svc)
+    if (cascade.readRefused && !/only an APPROVED/.test(cascade.readRefused)) console.error(`[missions] approval cascade for ${r.mission.id} not run: ${cascade.readRefused}`)
+    return { ok: true, data: { ...r.mission, cascade } }
+  }
+  return { ok: true, data: r.mission }
 }
 
 /**

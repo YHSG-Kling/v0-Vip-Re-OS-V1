@@ -162,7 +162,11 @@ export function MissionsCard({ active, attention, readRefused, managers, mission
     startTransition(async () => {
       const reason = window.prompt(decision === "approve" ? "Why approve / resume this mission?" : "Why reject this mission?") ?? ""
       const r = await decideMissionAction({ missionId, decision, reason })
-      setNote(r.ok ? `Mission is now ${r.data.state.toLowerCase().replace("_", " ")}.` : r.error)
+      const cascade = r.ok ? r.data.cascade : undefined
+      const cascadeNote = cascade && (cascade.approved.length || cascade.refused.length)
+        ? ` ${cascade.approved.length} child mission(s) approved with it${cascade.refused.length ? `; ${cascade.refused.length} refused by their own gate — ${cascade.refused.map((c) => `${c.owner}: ${c.reason}`).join("; ")}` : ""}.`
+        : ""
+      setNote(r.ok ? `Mission is now ${r.data.state.toLowerCase().replace("_", " ")}.${cascadeNote}` : r.error)
       if (r.ok) router.refresh()
     })
   }

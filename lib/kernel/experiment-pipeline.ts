@@ -14,9 +14,8 @@
  *                           roi-ledger rolls up as byExperimentArm).
  *   · the class grant ..... the `experiments` policy key (settings.experiments.autonomous_classes; DEFAULT NONE).
  *   · the budget .......... lib/kernel/autonomy-budgets.ts consumeAutonomyEnvelope("experiment_budget").
- *   · measurement ......... lib/intelligence/roi-ledger.ts loadLedgerAttribution (the ONE outcome reader) +,
- *                           for the appointment metric, listings.appointment_at (a seller's listing appointment
- *                           is not an outcome kind there — published blind spot, read here beside it).
+ *   · measurement ......... lib/intelligence/roi-ledger.ts loadLedgerAttribution (the ONE outcome reader; since
+ *                           wave 137 its `appointment` kind includes seller listing appointments).
  *   · statistics .......... lib/intelligence/strategy-learning.ts strategySignificance (pooled two-proportion
  *                           z-test, 95 %, sample floor) — deterministic; a model never scores.
  *   · evaluator replay .... historical replay of the COHORT over the control's own enrollment history (the
@@ -203,20 +202,16 @@ export async function evaluateExperimentProposal(svc: Svc, row: Pick<Improvement
   }
 }
 
-/** The metric's outcomes for a tenant since a date, through the ONE outcome reader (+ listing appointments). */
+/** The metric's outcomes for a tenant since a date, through the ONE outcome reader. */
 async function metricOutcomes(svc: Svc, brokerageId: string, metric: LedgerOutcomeKind, sinceIso: string): Promise<{ ok: true; rows: Array<{ kind: string; subjectIds: string[]; at: string }> } | { ok: false; error: string }> {
   const { loadLedgerAttribution } = await import("@/lib/intelligence/roi-ledger")
   const attr = await loadLedgerAttribution(svc, brokerageId, { sinceIso })
   if (!attr.ok) return { ok: false, error: attr.error }
   const rows: Array<{ kind: string; subjectIds: string[]; at: string }> = attr.result.outcomes.filter((o) => o.kind === metric).map((o) => ({ kind: o.kind, subjectIds: o.subjectIds, at: o.at }))
-  if (metric === "appointment") {
-    const { data, error } = await svc.from("listings").select("id, seller_contact_id, contact_id, appointment_at").eq("brokerage_id", brokerageId).gte("appointment_at", sinceIso).limit(5000)
-    if (error) return { ok: false, error: `listings (appointments): ${error.message}` }
-    for (const l of (data ?? []) as Array<{ seller_contact_id: string | null; contact_id: string | null; appointment_at: string }>) {
-      const ids = [l.seller_contact_id, l.contact_id].filter(Boolean) as string[]
-      if (ids.length) rows.push({ kind: "appointment", subjectIds: ids, at: l.appointment_at })
-    }
-  }
+  // TOMBSTONE (wave 137, CLAUDE.md §1.1): a side read of listings.appointment_at stood here because the
+  // roi-ledger `appointment` kind was showings only. MERGED onto the survivor —
+  // lib/intelligence/roi-ledger.ts loadLedgerAttribution (listing_presentations + listings appointments,
+  // LISTING_APPOINTMENT_REF / LISTING_ROW_APPOINTMENT_REF) — so the appointment metric has ONE reader.
   return { ok: true, rows }
 }
 

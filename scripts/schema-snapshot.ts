@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-07
  * source: public.live_schema_json()
- * body-sha256: c82616a4b119a4867f203875683bd1e99f1cf9770df87e547745f6504d2b6e99
+ * body-sha256: 83afa909f488cd71b0b80b33df6b02eda5864acf3fd99895c9a0902679ec5b46
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -606,7 +606,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   signal_reactivations: ["brokerage_id", "contact_id", "id", "isa_reactivated", "isa_reactivated_at", "lead_id", "signal_data", "signal_strength", "signal_type", "triggered_at"],
   signature_requests: ["all_parties", "brokerage_id", "completed_at", "contact_id", "created_at", "document_id", "expires_at", "id", "provider_envelope_id", "request_status", "sent_at", "signing_order", "signing_url", "transaction_id"],
   site_activity: ["action_taken", "behavioral_signal_id", "brokerage_id", "contact_id", "id", "occurred_at", "page_visited", "search_terms", "time_on_page_seconds", "timestamp"],
-  skill_marketplace_listings: ["approved_at", "approved_by", "brokerage_id", "created_at", "declaration", "declaration_digest", "evaluated_at", "evaluation_evidence", "id", "published_at", "publisher", "publisher_name", "revoked_at", "revoked_reason", "skill_id", "status", "submitted_by", "updated_at", "version"],
+  skill_marketplace_listings: ["approved_at", "approved_by", "brokerage_id", "created_at", "declaration", "declaration_digest", "deprecated_at", "disabled_at", "disabled_reason", "enabled_at", "evaluated_at", "evaluation_evidence", "extension_kind", "id", "publisher", "publisher_name", "skill_id", "status", "submitted_by", "suspended_at", "suspended_reason", "updated_at", "version"],
   smart_assistant_suggestions: ["action_payload_json", "action_type", "action_url", "agent_id", "brokerage_id", "context_type", "created_at", "description", "feedback_text", "id", "metadata", "priority", "rating", "rating_at", "source_system", "status", "suggestion_type", "title"],
   smart_checklists: ["auto_generated", "brokerage_id", "checklist_type", "completed_items", "created_at", "id", "percent_complete", "total_items", "transaction_id", "updated_at"],
   smart_landing_sessions: ["brokerage_id", "contact_id", "created_at", "cta_clicked", "id", "ip_address", "listing_id", "pages_viewed", "qr_source", "session_token", "showing_requested", "time_on_page_seconds", "utm_campaign", "utm_medium", "utm_source", "visitor_fingerprint"],
@@ -660,8 +660,8 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   tenant_safety_findings: ["affected_rows", "created_at", "details", "finding_type", "id", "resolution_note", "resolved", "resolved_at", "resolved_by", "scan_run_id", "severity", "table_name"],
   tenant_sso_connections: ["activated_at", "brokerage_id", "created_at", "created_by", "email_domain", "error_detail", "id", "metadata_url", "provider_type", "status", "supabase_sso_provider_id", "updated_at"],
   tenant_transition_log: ["action", "actor_user_id", "at", "entity_id", "entity_type", "from_brokerage_id", "id", "metadata", "row_count_moved", "to_brokerage_id"],
-  tenant_webhook_deliveries: ["attempts", "brokerage_id", "created_at", "delivered_at", "error_detail", "event_type", "id", "next_attempt_at", "payload", "response_status", "status", "subscription_id"],
-  tenant_webhook_subscriptions: ["active", "brokerage_id", "created_at", "created_by", "description", "events", "failure_count", "id", "last_failure_at", "last_success_at", "secret", "updated_at", "url"],
+  tenant_webhook_deliveries: ["attempt_log", "attempts", "brokerage_id", "created_at", "delivered_at", "error_detail", "event_type", "id", "next_attempt_at", "payload", "response_status", "status", "subscription_id"],
+  tenant_webhook_subscriptions: ["active", "brokerage_id", "consecutive_failures", "created_at", "created_by", "description", "disabled_at", "disabled_reason", "events", "failure_count", "id", "last_failure_at", "last_success_at", "previous_secret", "previous_secret_expires_at", "secret", "secret_rotated_at", "updated_at", "url"],
   territory_metrics: ["agent_saturation", "assigned_count", "avg_score", "brokerage_id", "consented_count", "conversion_count", "conversion_rate", "cost_per_lead", "created_at", "id", "lead_count", "leads_by_provider", "metric_date", "qualified_lead_count", "roi", "sla_compliance_rate", "total_cost", "zip_code"],
   thank_you_note_templates: ["agent_id", "body", "brokerage_id", "channel", "created_at", "id", "is_active", "is_global", "name", "occasion", "subject", "updated_at", "use_count"],
   thank_you_notes: ["agent_id", "ai_generated", "body", "brokerage_id", "channel", "contact_id", "created_at", "delivered_at", "email_queue_id", "id", "occasion", "sent_at", "source", "status", "subject", "template_id", "transaction_id", "updated_at"],
@@ -705,7 +705,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   user_invitations: ["accepted_at", "accepted_user_id", "brokerage_id", "created_at", "email", "expires_at", "first_name", "id", "invited_by", "last_name", "status", "team_id", "updated_at", "user_type"],
   user_profiles: ["avatar_url", "bio", "brokerage_id", "created_at", "email_verified", "id", "phone_verified", "updated_at", "user_id"],
   user_role_assignments: ["agent_id", "brokerage_id", "created_at", "id", "role", "team_id", "updated_at", "user_id", "vendor_id"],
-  users: ["assistant_wake_name", "brokerage", "brokerage_id", "communication_preferences", "contact_persona", "contact_type", "created_at", "created_by", "deleted_at", "email", "email_signature", "first_name", "id", "is_contact", "last_name", "location_id", "password_hash", "personal_website_url", "phone", "platform_role", "predictive_auto_send_opt_out", "presentation_take", "role", "status", "team_id", "updated_at", "user_type", "username"],
+  users: ["assistant_wake_name", "brokerage", "brokerage_id", "communication_preferences", "contact_persona", "contact_type", "created_at", "created_by", "deleted_at", "email", "email_signature", "first_name", "id", "is_contact", "last_dashboard_visit_at", "last_name", "location_id", "password_hash", "personal_website_url", "phone", "platform_role", "predictive_auto_send_opt_out", "presentation_take", "role", "status", "team_id", "updated_at", "user_type", "username"],
   v_brokerage_ai_quota: ["brokerage_id", "brokerage_name", "percent_used", "period_end", "period_start", "plan_tier", "quota_status", "soft_threshold", "token_limit", "tokens_used"],
   v_brokerage_onboarding_progress: ["accepted_invites", "brokerage_id", "brokerage_name", "days_since_signup", "onboarding_status", "pending_invites", "plan_tier", "signed_up_at", "signup_source", "team_member_count", "trial_ends_at"],
   v_platform_margin: ["ai_cost_cents", "ai_tokens", "brokerage_created_at", "brokerage_id", "brokerage_name", "margin_cents", "margin_percent", "mrr_cents", "plan_tier", "quota_percent_used", "quota_status", "tier_display_name"],

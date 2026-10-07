@@ -18,6 +18,7 @@ import { ReplyStylePanel } from "./reply-style-panel"
 import { AutoResponsePanel, type AutoResponseSettings } from "./auto-response-panel"
 import { AiAgentCapabilitiesPanel } from "./capabilities-panel"
 import { SkillMarketplacePanel } from "@/components/skills/skill-marketplace-panel"
+import { TenantExtensionsPanel } from "@/components/skills/tenant-extensions-panel"
 import { getAgentContext } from "@/lib/identity"
 import { getAgentChatPreferences } from "@/app/actions/ai-chat"
 import { getAutoResponseSettings } from "@/app/actions/ai-auto-response"
@@ -113,6 +114,11 @@ async function AssistantContent() {
           app/actions/skill-marketplace.ts (tenant admin for authoring / deciding / running). */}
       <div className="mt-6">
         <SkillMarketplacePanel mode="tenant" />
+      </div>
+      {/* Wave 137 (lane 137D) — TENANT EXTENSION CONTROL: which approved extensions run for this brokerage
+          (enable / disable where allowed; platform-only kinds stay platform-controlled). */}
+      <div className="mt-6">
+        <TenantExtensionsPanel />
       </div>
     </div>
   )

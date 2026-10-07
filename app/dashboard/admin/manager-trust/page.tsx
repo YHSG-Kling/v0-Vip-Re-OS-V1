@@ -14,6 +14,7 @@ import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 import { TenantConstitutionPanel } from "./tenant-constitution-panel"
 import { ImprovementProposalsPanel } from "./improvement-proposals-panel"
 import { WorkforceThresholdsEditor } from "./workforce-thresholds-editor"
+import { AutonomyEnvelopesEditor } from "./autonomy-envelopes-editor"
 import { StrategyLibraryPanel } from "./strategy-library-panel"
 import { SelfOptimizationPanel } from "./self-optimization-panel"
 
@@ -116,6 +117,9 @@ export default async function ManagerTrustPage({ searchParams }: { searchParams?
     {/* WORKFORCE THRESHOLDS (wave 107G): the dedicated editor for policy key workforce_thresholds — submits a
         `policy` proposal (or applies it now through the same promotion) into the panel below. */}
     <WorkforceThresholdsEditor />
+    {/* AUTONOMY ENVELOPES (wave 137): the tenant-admin envelope screen for policy key autonomy_budgets — caps and
+        consumption, edits as a `policy` proposal on the one versioned path (money envelopes: commerce admins). */}
+    <AutonomyEnvelopesEditor />
     {/* CONTROLLED LEARNING (wave 104, lane 104C, m709): what the OS proposes to change about itself, with
         the evidence, the deterministic evaluation and the human approve / reject / promote / roll back. */}
     <ImprovementProposalsPanel />

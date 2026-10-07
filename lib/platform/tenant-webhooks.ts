@@ -16,6 +16,16 @@
 //     Failure → attempts++ / next_attempt_at per the backoff ladder; the 5th
 //     failure marks the row dead and bumps the subscription's failure_count.
 //
+// WAVE 137B (extended on this survivor — no second rail): every attempt carries the
+// deterministic X-Webhook-Idempotency-Key and lands on the row's attempt_log; the
+// backoff rungs are jittered; during a secret-rotation overlap the signature header
+// carries BOTH secrets' v1; a subscription whose deliveries keep going dead with no
+// success in the quiet window is AUTO-DISABLED (withActionLedger evidence row +
+// emitKernelEvent WEBHOOK_SUBSCRIPTION_AUTO_DISABLED + notifyBrokerageAdmins). The
+// m736 columns (consecutive_failures, previous_secret*, disabled_*, attempt_log) are
+// read and written in SEPARATE, error-read queries, so the rail keeps delivering
+// (degraded: single-secret, no attempt log, no auto-disable) before m736 is applied.
+//
 // Cursor design: a subscription's cursor is the occurred_at of its most
 // recently ENQUEUED delivery (deliveries are inserted in ledger order, so the
 // latest row's payload.occurred_at is the high-water mark), falling back to
@@ -28,14 +38,21 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   MAX_DELIVERY_ATTEMPTS,
+  WEBHOOK_AUTO_DISABLE_CONSECUTIVE_DEAD,
   WebhookLedgerRow,
   WebhookPayload,
+  activeWebhookSecrets,
+  appendWebhookAttempt,
   buildWebhookPayload,
   externalEventsForLedgerRow,
   internalTypesForEvents,
+  ledgerRowDeliverableTo,
   nextAttemptDelayMs,
+  planWebhookEnqueue,
+  shouldAutoDisableWebhook,
   signWebhookPayload,
   subscriptionMatchesEvent,
+  webhookIdempotencyKey,
 } from "@/lib/platform/tenant-webhooks-core"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -54,13 +71,18 @@ export interface WebhookPostResult {
   durationMs: number
 }
 
-/** POST a signed webhook payload. Real fetch, 5s timeout, honest error capture. */
+/**
+ * POST a signed webhook payload. Real fetch, 5s timeout, honest error capture. `secret` may be
+ * the rotation-overlap pair (new first); `idempotencyKey` rides X-Webhook-Idempotency-Key and is
+ * the same on every attempt of one delivery.
+ */
 export async function postSignedWebhook(params: {
   url: string
-  secret: string
+  secret: string | readonly string[]
   event: string
   deliveryId: string
   payload: WebhookPayload
+  idempotencyKey?: string
 }): Promise<WebhookPostResult> {
   const rawBody = JSON.stringify(params.payload)
   const signature = signWebhookPayload(params.secret, rawBody, Math.floor(Date.now() / 1000))
@@ -76,6 +98,7 @@ export async function postSignedWebhook(params: {
         "X-Webhook-Signature": signature,
         "X-Webhook-Event": params.event,
         "X-Webhook-Delivery": params.deliveryId,
+        "X-Webhook-Idempotency-Key": params.idempotencyKey ?? params.deliveryId,
       },
       body: rawBody,
       signal: controller.signal,
@@ -115,13 +138,15 @@ export interface EnqueueResult {
   subscriptions: number
   scanned: number
   enqueued: number
+  /** Candidates refused as duplicates of an already-enqueued (subscription, event, event id). */
+  refusedDuplicates: number
   errors: string[]
 }
 
 /** Scan the lifecycle_events ledger per active subscription and stage pending deliveries. */
 export async function enqueueTenantWebhookDeliveries(client?: Svc): Promise<EnqueueResult> {
   const svc = client ?? createServiceClient()
-  const result: EnqueueResult = { subscriptions: 0, scanned: 0, enqueued: 0, errors: [] }
+  const result: EnqueueResult = { subscriptions: 0, scanned: 0, enqueued: 0, refusedDuplicates: 0, errors: [] }
 
   const { data: subs, error: subsError } = await svc
     .from("tenant_webhook_subscriptions")
@@ -171,6 +196,8 @@ export async function enqueueTenantWebhookDeliveries(client?: Svc): Promise<Enqu
       // Ledger row → external catalog events → this subscription's filter.
       const candidates: Array<{ event: string; payload: WebhookPayload }> = []
       for (const row of ledger) {
+        // Defense in depth: the query is brokerage-pinned; a row of another tenant never stages.
+        if (!ledgerRowDeliverableTo(sub, row)) continue
         for (const event of externalEventsForLedgerRow(row)) {
           if (subscriptionMatchesEvent(sub.events, event)) {
             candidates.push({ event, payload: buildWebhookPayload(event, row) })
@@ -190,26 +217,38 @@ export async function enqueueTenantWebhookDeliveries(client?: Svc): Promise<Enqu
         result.errors.push(`${sub.id} dedupe: ${dupError.message}`)
         continue
       }
-      const seen = new Set(
+      // One idempotency key per (subscription, event, event id) — a duplicate enqueue is REFUSED.
+      const existingKeys = new Set(
         ((existing ?? []) as Array<{ event_type: string; payload: WebhookPayload | null }>).map(
-          (d) => `${d.event_type}:${d.payload?.id ?? ""}`,
+          (d) => webhookIdempotencyKey(sub.id, d.event_type, d.payload?.id ?? ""),
         ),
       )
+      const plan = planWebhookEnqueue(sub.id, candidates, existingKeys)
+      result.refusedDuplicates += plan.refused
       const nowIso = new Date().toISOString()
-      const inserts = candidates
-        .filter((c) => !seen.has(`${c.event}:${c.payload.id}`))
-        .map((c) => ({
-          subscription_id: sub.id,
-          brokerage_id: sub.brokerage_id,
-          event_type: c.event,
-          payload: c.payload,
-          status: "pending",
-          attempts: 0,
-          next_attempt_at: nowIso,
-        }))
+      const inserts = plan.accept.map((c) => ({
+        subscription_id: sub.id,
+        brokerage_id: sub.brokerage_id,
+        event_type: c.event,
+        payload: c.payload,
+        status: "pending",
+        attempts: 0,
+        next_attempt_at: nowIso,
+      }))
       if (inserts.length === 0) continue
 
       const { error: insertError } = await svc.from("tenant_webhook_deliveries").insert(inserts)
+      if (insertError?.code === "23505") {
+        // A concurrent enqueue won the race on m736's unique (subscription, event, payload id)
+        // index — the batch was refused whole, so stage row by row and count each refusal.
+        for (const row of inserts) {
+          const { error: oneErr } = await svc.from("tenant_webhook_deliveries").insert(row)
+          if (!oneErr) result.enqueued += 1
+          else if (oneErr.code === "23505") result.refusedDuplicates += 1
+          else result.errors.push(`${sub.id} insert: ${oneErr.message}`)
+        }
+        continue
+      }
       if (insertError) {
         result.errors.push(`${sub.id} insert: ${insertError.message}`)
         continue
@@ -326,14 +365,161 @@ export interface DrainResult {
   delivered: number
   retried: number
   dead: number
+  autoDisabled: number
   errors: string[]
 }
 
+// ─── m736 sidecar state (read/written apart from the hot path) ───────────────
+
+interface SubscriptionSidecar {
+  previous_secret: string | null
+  previous_secret_expires_at: string | null
+  consecutive_failures: number
+  last_success_at: string | null
+  created_at: string | null
+}
+
+/**
+ * The m736 columns for the subscriptions + deliveries one drain cycle touches. Read in their OWN
+ * queries and error-read: before m736 is applied the select is refused, `available` is false and
+ * the drain still delivers — single-secret, no attempt log, no auto-disable — never stops.
+ */
+async function loadWebhookSidecar(svc: Svc, subIds: string[], deliveryIds: string[]): Promise<{
+  available: boolean
+  subs: Map<string, SubscriptionSidecar>
+  attemptLogs: Map<string, unknown>
+  error: string | null
+}> {
+  const subs = new Map<string, SubscriptionSidecar>()
+  const attemptLogs = new Map<string, unknown>()
+  if (subIds.length === 0) return { available: true, subs, attemptLogs, error: null }
+  const { data: subRows, error: subErr } = await svc
+    .from("tenant_webhook_subscriptions")
+    .select("id, previous_secret, previous_secret_expires_at, consecutive_failures, last_success_at, created_at")
+    .in("id", subIds)
+  if (subErr) return { available: false, subs, attemptLogs, error: `sidecar (m736 applied?): ${subErr.message}` }
+  for (const r of (subRows ?? []) as Array<Record<string, unknown>>) {
+    subs.set(String(r.id), {
+      previous_secret: (r.previous_secret as string | null) ?? null,
+      previous_secret_expires_at: (r.previous_secret_expires_at as string | null) ?? null,
+      consecutive_failures: Number(r.consecutive_failures ?? 0),
+      last_success_at: (r.last_success_at as string | null) ?? null,
+      created_at: (r.created_at as string | null) ?? null,
+    })
+  }
+  if (deliveryIds.length > 0) {
+    const { data: logRows, error: logErr } = await svc
+      .from("tenant_webhook_deliveries")
+      .select("id, attempt_log")
+      .in("id", deliveryIds)
+    if (logErr) return { available: false, subs, attemptLogs, error: `attempt_log (m736 applied?): ${logErr.message}` }
+    for (const r of (logRows ?? []) as Array<{ id: string; attempt_log: unknown }>) attemptLogs.set(r.id, r.attempt_log)
+  }
+  return { available: true, subs, attemptLogs, error: null }
+}
+
+/**
+ * AUTO-DISABLE (wave 137B). Switch the subscription off — only while it is still active in THIS
+ * tenant — under withActionLedger (the evidence row: actor data_steward, reason OS_HEALTH_RECOVERY
+ * + the streak, keyed per tripping delivery so a re-drain never double-acts), then the audit event
+ * on the canonical emitter and the tenant admins' in-app notification. Returns whether it disabled.
+ */
+async function autoDisableWebhookSubscription(svc: Svc, p: {
+  brokerageId: string
+  subscriptionId: string
+  deliveryId: string
+  url: string
+  consecutiveDead: number
+  lastSuccessAt: string | null
+}): Promise<boolean> {
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const atIso = new Date().toISOString()
+  const reason = `${p.consecutiveDead} consecutive dead deliveries (threshold ${WEBHOOK_AUTO_DISABLE_CONSECUTIVE_DEAD}), last success ${p.lastSuccessAt ?? "never"}`
+  const outcome = await withActionLedger(
+    {
+      brokerageId: p.brokerageId,
+      action: "webhook.subscription.auto_disable",
+      actor: { type: "manager", managerKey: "data_steward" },
+      subject: { type: "tenant_webhook_subscription", id: p.subscriptionId },
+      reasonCode: "OS_HEALTH_RECOVERY",
+      reasonDetail: reason,
+      idempotencyKey: `webhook_auto_disable:${p.deliveryId}`,
+      riskClass: "LOW_RISK_WRITE",
+      systemSource: "tenant-webhooks",
+      detail: { url: p.url, consecutive_dead: p.consecutiveDead, last_success_at: p.lastSuccessAt, tripped_by_delivery: p.deliveryId },
+    },
+    async () => {
+      const { data, error } = await svc
+        .from("tenant_webhook_subscriptions")
+        .update({ active: false, updated_at: atIso })
+        .eq("id", p.subscriptionId)
+        .eq("brokerage_id", p.brokerageId)
+        .eq("active", true)
+        .select("id")
+      return { disabled: !error && (data ?? []).length > 0, error: error?.message ?? null }
+    },
+    {
+      settle: (r) => ({ status: r.disabled ? "executed" : "failed", outcome: r.disabled ? "auto_disabled" : "not_disabled", error: r.error }),
+      replay: () => ({ disabled: false, error: "replay" }),
+    },
+    { client: svc },
+  )
+  if (!outcome.disabled) return false
+
+  // m736 stamp — its own error-read write, so a missing column never undoes the disable above.
+  const { error: stampErr } = await svc
+    .from("tenant_webhook_subscriptions")
+    .update({ disabled_at: atIso, disabled_reason: `auto: ${reason}`.slice(0, 500) })
+    .eq("id", p.subscriptionId)
+    .eq("brokerage_id", p.brokerageId)
+  if (stampErr) console.error(`[tenant-webhooks] auto-disable stamp NOT saved (m736 applied?): ${stampErr.message}`)
+
+  try {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    const ev = await emitKernelEvent({
+      event: KernelEvent.WEBHOOK_SUBSCRIPTION_AUTO_DISABLED,
+      brokerageId: p.brokerageId,
+      entityType: "tenant_webhook_subscription",
+      entityId: p.subscriptionId,
+      metadata: { consecutive_dead: p.consecutiveDead, last_success_at: p.lastSuccessAt, tripped_by_delivery: p.deliveryId },
+      source: "cron",
+      auditOnly: true,
+      client: svc,
+    })
+    if (ev.error) console.error(`[tenant-webhooks] auto-disable event NOT recorded: ${ev.error}`)
+  } catch (e) { console.error("[tenant-webhooks] auto-disable event threw:", e instanceof Error ? e.message : e) }
+
+  try {
+    const { notifyBrokerageAdmins } = await import("@/lib/notifications/brokerage-admins")
+    const notified = await notifyBrokerageAdmins(svc as never, p.brokerageId, {
+      type: "webhook_subscription_auto_disabled",
+      title: "Webhook endpoint switched off",
+      body: `Outbound webhook ${p.url} was switched off after ${reason}. Fix the endpoint, send a test ping from Settings → Developers, then Resume it.`,
+      entityType: "tenant_webhook_subscription",
+      entityId: p.subscriptionId,
+      priority: "high",
+    })
+    if (notified === 0) console.error(`[tenant-webhooks] auto-disable reached NO tenant admin for ${p.brokerageId}`)
+  } catch (e) { console.error("[tenant-webhooks] auto-disable notification threw:", e instanceof Error ? e.message : e) }
+  return true
+}
+
+/** Seams the in-memory proof injects; production runs the defaults (real POST, real clock, Math.random). */
+interface DrainDeps {
+  post?: typeof postSignedWebhook
+  random?: () => number
+  nowMs?: () => number
+}
+
 /** POST due pending/failed deliveries; record honest outcomes + schedule retries. */
-export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainResult> {
+export async function drainTenantWebhookDeliveries(client?: Svc, deps: DrainDeps = {}): Promise<DrainResult> {
   const svc = client ?? createServiceClient()
-  const result: DrainResult = { due: 0, delivered: 0, retried: 0, dead: 0, errors: [] }
-  const nowIso = new Date().toISOString()
+  const postFn = deps.post ?? postSignedWebhook
+  const random = deps.random ?? Math.random
+  const nowMs = deps.nowMs ?? (() => Date.now())
+  const result: DrainResult = { due: 0, delivered: 0, retried: 0, dead: 0, autoDisabled: 0, errors: [] }
+  const nowIso = new Date(nowMs()).toISOString()
 
   const { data: dueRows, error: dueError } = await svc
     .from("tenant_webhook_deliveries")
@@ -350,18 +536,50 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
     return result
   }
 
-  for (const raw of (dueRows ?? []) as unknown as DueDeliveryRow[]) {
+  const due = (dueRows ?? []) as unknown as DueDeliveryRow[]
+  const sidecar = await loadWebhookSidecar(svc, Array.from(new Set(due.map((d) => d.subscription_id))), due.map((d) => d.id))
+  if (sidecar.error) result.errors.push(sidecar.error)
+  const disabledThisCycle = new Set<string>()
+
+  /** Append this attempt to the row's attempt_log (m736) — its own error-read write. */
+  const logAttempt = async (deliveryId: string, entry: Parameters<typeof appendWebhookAttempt>[1]) => {
+    if (!sidecar.available) return
+    const next = appendWebhookAttempt(sidecar.attemptLogs.get(deliveryId), entry)
+    sidecar.attemptLogs.set(deliveryId, next)
+    const { error } = await svc.from("tenant_webhook_deliveries").update({ attempt_log: next }).eq("id", deliveryId)
+    if (error) console.error(`[tenant-webhooks] attempt_log NOT saved: ${error.message}`)
+  }
+  /** Move the subscription's consecutive-dead streak (m736) — its own error-read write. */
+  const setStreak = async (subId: string, value: number) => {
+    const side = sidecar.subs.get(subId)
+    if (!sidecar.available || !side || side.consecutive_failures === value) return
+    side.consecutive_failures = value
+    const { error } = await svc.from("tenant_webhook_subscriptions").update({ consecutive_failures: value }).eq("id", subId)
+    if (error) console.error(`[tenant-webhooks] consecutive_failures NOT saved: ${error.message}`)
+  }
+
+  for (const raw of due) {
     result.due += 1
     const sub = raw.tenant_webhook_subscriptions
+    if (disabledThisCycle.has(sub.id)) continue // switched off earlier this cycle — stop POSTing to it
+    const side = sidecar.subs.get(sub.id)
+    const idempotencyKey = webhookIdempotencyKey(sub.id, raw.event_type, raw.payload?.id ?? raw.id)
     try {
-      const post = await postSignedWebhook({
+      const post = await postFn({
         url: sub.url,
-        secret: sub.secret,
+        // Rotation overlap: the new secret first, the previous one while its window is still open.
+        secret: activeWebhookSecrets({ secret: sub.secret, ...(side ?? {}) }, nowMs()),
         event: raw.event_type,
         deliveryId: raw.id,
         payload: raw.payload,
+        idempotencyKey,
       })
-      const attemptedAt = new Date().toISOString()
+      const attemptedAt = new Date(nowMs()).toISOString()
+      const attempts = (raw.attempts ?? 0) + 1
+      const attemptEntry = {
+        attempt: attempts, at: attemptedAt, http_status: post.status, duration_ms: post.durationMs,
+        error: post.error, idempotency_key: idempotencyKey,
+      }
 
       if (post.ok) {
         const { error: deliveredErr } = await svc
@@ -373,12 +591,14 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
           .from("tenant_webhook_subscriptions")
           .update({ last_success_at: attemptedAt, updated_at: attemptedAt })
           .eq("id", sub.id), { table: "tenant_webhook_subscriptions", flow: "tenant_webhook_subscriptions_write", reason: "subscription health stamp" })
+        await logAttempt(raw.id, { ...attemptEntry, outcome: "delivered" })
+        if (side) side.last_success_at = attemptedAt
+        await setStreak(sub.id, 0) // a 2xx ends the streak
         result.delivered += 1
         continue
       }
 
-      const attempts = (raw.attempts ?? 0) + 1
-      const delayMs = nextAttemptDelayMs(attempts)
+      const delayMs = nextAttemptDelayMs(attempts, random)
       if (delayMs === null) {
         // MAX_DELIVERY_ATTEMPTS reached — the row is dead; the subscription wears it.
         const { error: deadErr } = await svc
@@ -395,6 +615,8 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
           .from("tenant_webhook_subscriptions")
           .update({ failure_count: (sub.failure_count ?? 0) + 1, last_failure_at: attemptedAt, updated_at: attemptedAt })
           .eq("id", sub.id), { table: "tenant_webhook_subscriptions", flow: "tenant_webhook_subscriptions_write", reason: "subscription failure counter" })
+        sub.failure_count = (sub.failure_count ?? 0) + 1
+        await logAttempt(raw.id, { ...attemptEntry, outcome: "dead" })
         result.dead += 1
         // Rail outcome onto the governed bus + ledger — the managers (and the human
         // on the Command Center feed) see the endpoint death, not just a status column.
@@ -405,9 +627,22 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
         if (raw.brokerage_id) {
           await announceDeadWebhookEndpoint(svc, {
             brokerageId: raw.brokerage_id, subscriptionId: sub.id, url: sub.url,
-            event: raw.event_type, failureCount: (sub.failure_count ?? 0) + 1,
+            event: raw.event_type, failureCount: sub.failure_count,
             responseStatus: post.status, error: post.error,
           })
+        }
+        // Consecutive-dead streak → AUTO-DISABLE when it crosses the threshold with no success
+        // in the quiet window (m736; skipped — never guessed — when the sidecar is unavailable).
+        if (side && raw.brokerage_id) {
+          const streak = side.consecutive_failures + 1
+          await setStreak(sub.id, streak)
+          if (shouldAutoDisableWebhook({ consecutiveDead: streak, lastSuccessAt: side.last_success_at, createdAt: side.created_at, nowMs: nowMs() })) {
+            const disabled = await autoDisableWebhookSubscription(svc, {
+              brokerageId: raw.brokerage_id, subscriptionId: sub.id, deliveryId: raw.id,
+              url: sub.url, consecutiveDead: streak, lastSuccessAt: side.last_success_at,
+            })
+            if (disabled) { disabledThisCycle.add(sub.id); result.autoDisabled += 1 }
+          }
         }
       } else {
         const { error: retryErr } = await svc
@@ -415,7 +650,7 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
           .update({
             status: "failed",
             attempts,
-            next_attempt_at: new Date(Date.now() + delayMs).toISOString(),
+            next_attempt_at: new Date(nowMs() + delayMs).toISOString(),
             response_status: post.status,
             error_detail: (post.error ?? "unknown error").slice(0, 2000),
           })
@@ -425,6 +660,7 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
           .from("tenant_webhook_subscriptions")
           .update({ last_failure_at: attemptedAt, updated_at: attemptedAt })
           .eq("id", sub.id), { table: "tenant_webhook_subscriptions", flow: "tenant_webhook_subscriptions_write", reason: "subscription health stamp" })
+        await logAttempt(raw.id, { ...attemptEntry, outcome: "failed" })
         result.retried += 1
         // Per-delivery failure onto the self-heal ledger (flow 'webhook_delivery') —
         // the repair digest ranks endpoints that fail weekly as root causes.

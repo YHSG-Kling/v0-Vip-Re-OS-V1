@@ -37,6 +37,7 @@
  *
  * No `import "server-only"`: scripts/broker-objectives-guard.ts drives it through an in-memory client.
  */
+import { SELLER_SIDE_CONTACT_TYPES } from "@/lib/contact-types"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import type { AppCapability } from "@/lib/agentic-os/app-capability-registry"
 import {
@@ -57,6 +58,8 @@ export type ObjectiveKind = "investigation" | "directive" | "delegation"
 export type ObjectiveMetric =
   | "listing_appointments" | "seller_conversion" | "listing_gci" | "gci" | "seller_business"
   | "seller_leads" | "closings" | "listings" | "leads"
+  // wave 137E BREADTH — the goal measures the twin already carries beyond the seller funnel
+  | "buyer_clients" | "pipeline_conversion" | "contacts"
 
 /** Metric phrases, FIRST MATCH WINS (the more specific phrase sits above the general one).
  *  @proofSeam the proof asserts the table's order and every example against it */
@@ -67,6 +70,10 @@ export const OBJECTIVE_METRIC_PATTERNS: ReadonlyArray<{ metric: ObjectiveMetric;
   { metric: "gci", re: /\b(?:gci|gross commission)\b/i },
   { metric: "seller_business", re: /\bseller (?:business|side|demand)\b/i },
   { metric: "seller_leads", re: /\bseller leads?\b/i },
+  // wave 137E: buyer representation, lead → contact conversion, the contact book (sphere / database)
+  { metric: "buyer_clients", re: /\bbuyer (?:clients?|representations?|agreements?)\b|\bbuyers? under (?:representation|agreement)\b/i },
+  { metric: "pipeline_conversion", re: /\b(?:lead )?conversion(?: rate)?s?\b|\bconvert(?:ing)? (?:more )?leads?\b/i },
+  { metric: "contacts", re: /\b(?:contacts|sphere|database)\b/i },
   { metric: "closings", re: /\b(?:closings|closed deals|deals closed|sides)\b/i },
   { metric: "listings", re: /\blistings?\b/i },
   { metric: "leads", re: /\bleads?\b/i },
@@ -80,6 +87,7 @@ const CAP_RE = /\$\s?(\d[\d,]*(?:\.\d+)?)\s*(k)?\s*(?:\/|per|a|each)\s*(?:month|
 /** An objective with a % target on a GOAL measure is DELEGATED (decomposed into child missions). */
 export const GOAL_OF_METRIC: Readonly<Partial<Record<ObjectiveMetric, AgentGoalType>>> = {
   listing_gci: "gross_commission", gci: "gross_commission", closings: "transactions_closed", listings: "listings_taken",
+  buyer_clients: "buyer_clients", pipeline_conversion: "conversion_rate", contacts: "new_contacts",
 }
 const DIRECTIVE_METRICS: ReadonlySet<ObjectiveMetric> = new Set(["seller_business", "seller_leads", "listings", "listing_appointments", "leads"])
 /** Words that end a "in <place>" phrase. */
@@ -149,7 +157,7 @@ export function parseBrokerObjective(text: string, territories: readonly Territo
   const examples = [...OBJECTIVE_EXAMPLES]
   if (!t) return { ok: false, reason: "An objective is required.", examples }
   const metricHit = OBJECTIVE_METRIC_PATTERNS.find((p) => p.re.test(t))
-  if (!metricHit) return { ok: false, reason: "No measure the OS can read was named (listing appointments, seller conversion, seller business, leads, listings, closings, GCI).", examples }
+  if (!metricHit) return { ok: false, reason: "No measure the OS can read was named (listing appointments, seller conversion, seller business, leads, listings, closings, GCI, buyer clients, lead conversion, contacts).", examples }
   const matched = [`metric:${metricHit.metric}`]
   const pct = PCT_RE.exec(t); const cap = CAP_RE.exec(t)
   const capUsd = cap ? Number(cap[1].replace(/,/g, "")) * (cap[2] ? 1000 : 1) : null
@@ -195,6 +203,11 @@ export interface ObjectiveEvidenceFacts {
   leads: Window2
   sellerLeads: Window2
   sellerLeadsConverted: Window2
+  /** WAVE 137 — seller-side CONTACTS (contact_type seller | both) created per window: the listing
+   *  appointment rate's denominator (one vocabulary with the twin; inbound sellers arrive as contacts). */
+  sellerContacts: Window2
+  /** Wave 137E: every lead linked to a contact (the lead → contact conversion), any lead type. */
+  leadsConverted: Window2
   sourceMix: { current: SourceConversion[]; previous: SourceConversion[] }
   intake: { current: FunnelCounts; previous: FunnelCounts }
   ads: { spendCents: Window2; leads: Window2; conversions: Window2 }
@@ -230,7 +243,7 @@ async function loadObjectiveEvidenceFacts(svc: Client, brokerageId: string, opts
   const n2 = <T,>(s: { cur: T[]; prev: T[] }, f: (r: T) => boolean = () => true): Window2 => ({ current: s.cur.filter(f).length, previous: s.prev.filter(f).length })
   const sum2 = <T,>(s: { cur: T[]; prev: T[] }, v: (r: T) => number): Window2 => ({ current: s.cur.reduce((a, r) => a + v(r), 0), previous: s.prev.reduce((a, r) => a + v(r), 0) })
 
-  const [appts, leads, raw, ads, touches, execs, conv, closed] = await Promise.all([
+  const [appts, leads, raw, ads, touches, execs, conv, closed, sellerContactRows] = await Promise.all([
     rows<{ appointment_at: string | null }>("listing_presentations", span(svc.from("listing_presentations").select("appointment_at"), "appointment_at")),
     rows<{ source: string | null; contact_id: string | null; lead_type: string | null; created_at: string }>("leads", span(svc.from("leads").select("source, contact_id, lead_type, created_at"), "created_at")),
     rows<{ source: string | null; processing_status: string | null; lead_id: string | null; created_at: string }>("raw_scraped_leads", span(svc.from("raw_scraped_leads").select("source, processing_status, lead_id, created_at"), "created_at")),
@@ -239,6 +252,7 @@ async function loadObjectiveEvidenceFacts(svc: Client, brokerageId: string, opts
     rows<{ created_at: string; replied_at: string | null }>("sequence_step_executions", span(svc.from("sequence_step_executions").select("created_at, replied_at"), "created_at")),
     rows<{ converted_at: string | null }>("sequence_enrollments", span(svc.from("sequence_enrollments").select("converted_at"), "converted_at")),
     rows<{ close_date: string | null; commission_amount: number | null }>("transactions(closed)", svc.from("transactions").select("close_date, commission_amount").eq("brokerage_id", brokerageId).is("deleted_at", null).in("status", ["closed", "funded"]).gte("close_date", start.slice(0, 10)).lt("close_date", atIso.slice(0, 10)).limit(ROW_CAP)),
+    rows<{ created_at: string }>("contacts(seller)", span(svc.from("contacts").select("created_at").eq("brokerage_id", brokerageId).is("deleted_at", null).in("contact_type", [...SELLER_SIDE_CONTACT_TYPES]), "created_at")),
   ])
   const a = split(appts, (r) => r.appointment_at), l = split(leads, (r) => r.created_at), rw = split(raw, (r) => r.created_at)
   const ad = split(ads, (r) => r.captured_at), tp = split(touches, (r) => r.created_at), ex = split(execs, (r) => r.created_at)
@@ -258,7 +272,8 @@ async function loadObjectiveEvidenceFacts(svc: Client, brokerageId: string, opts
   const rawLite = (r: { source: string | null; processing_status: string | null; lead_id: string | null }) => ({ source: r.source, processing_status: r.processing_status, lead_id: r.lead_id })
   return {
     brokerageId, at: atIso, windowDays: opts.windowDays,
-    listingAppointments: n2(a), leads: n2(l), sellerLeads: n2(l, isSeller), sellerLeadsConverted: n2(l, (r) => isSeller(r) && !!r.contact_id),
+    listingAppointments: n2(a), leads: n2(l), sellerLeads: n2(l, isSeller), sellerLeadsConverted: n2(l, (r) => isSeller(r) && !!r.contact_id), leadsConverted: n2(l, (r) => !!r.contact_id),
+    sellerContacts: n2(split(sellerContactRows, (r) => r.created_at)),
     sourceMix: { current: groupBySource(rw.cur.map(rawLite), l.cur.map(lite)), previous: groupBySource(rw.prev.map(rawLite), l.prev.map(lite)) },
     intake: { current: computeFunnel(rw.cur.map(rawLite)), previous: computeFunnel(rw.prev.map(rawLite)) },
     ads: { spendCents: sum2(ad, (r) => cents(r.spend)), leads: sum2(ad, (r) => Number(r.leads) || 0), conversions: sum2(ad, (r) => Number(r.conversions) || 0) },
@@ -320,6 +335,9 @@ export const EVIDENCE_CHECKS: Readonly<Record<Investigator, { capability: AppCap
       finding("ai_isa", "leads", "new leads", f.leads, { badWhen: "down", reader: "leads.created_at (lead intake)" }),
       finding("ai_isa", "seller_leads", "new seller leads", f.sellerLeads, { badWhen: "down", reader: "leads.lead_type ∈ {seller, both}" }),
       finding("ai_isa", "seller_conversion_rate", "seller lead → contact conversion", { current: rate(f.sellerLeadsConverted.current, f.sellerLeads.current), previous: rate(f.sellerLeadsConverted.previous, f.sellerLeads.previous) }, { badWhen: "down", unit: "rate", reader: "leads.contact_id on seller leads (the conversion link)", sample: Math.min(f.sellerLeads.current, f.sellerLeads.previous) }),
+      // wave 137E: the whole funnel, not only sellers (a floor — ads / forms / widgets convert DIRECTLY to contacts)
+      finding("ai_isa", "lead_conversions", "leads converted to contacts", f.leadsConverted, { badWhen: "down", reader: "leads.contact_id (the conversion link; direct-to-contact captures are not leads)" }),
+      finding("ai_isa", "lead_conversion_rate", "lead → contact conversion", { current: rate(f.leadsConverted.current, f.leads.current), previous: rate(f.leadsConverted.previous, f.leads.previous) }, { badWhen: "down", unit: "rate", reader: "leads.contact_id ÷ leads", sample: Math.min(f.leads.current, f.leads.previous) }),
     ],
   },
   campaign_orchestrator: {
@@ -343,7 +361,9 @@ export const EVIDENCE_CHECKS: Readonly<Record<Investigator, { capability: AppCap
     check: (f) => {
       const out = [
         finding("listing_concierge", "listing_appointments", "listing appointments", f.listingAppointments, { badWhen: "down", reader: "listing_presentations.appointment_at (the listing-appointment prep chain)" }),
-        finding("listing_concierge", "appointment_rate", "listing appointments per seller lead", { current: rate(f.listingAppointments.current, f.sellerLeads.current), previous: rate(f.listingAppointments.previous, f.sellerLeads.previous) }, { badWhen: "down", unit: "rate", reader: "listing_presentations ÷ seller leads", sample: Math.min(f.sellerLeads.current, f.sellerLeads.previous) }),
+        // WAVE 137 owner ruling: the rate is per seller CONTACT (contact_type seller | both) — inbound sellers
+        // arrive as contacts and only a contact is presented to; seller LEADS stay the AI ISA's funnel finding.
+        finding("listing_concierge", "appointment_rate", "listing appointments per seller contact", { current: rate(f.listingAppointments.current, f.sellerContacts.current), previous: rate(f.listingAppointments.previous, f.sellerContacts.previous) }, { badWhen: "down", unit: "rate", reader: "listing_presentations ÷ seller contacts (contacts.contact_type ∈ {seller, both})", sample: Math.min(f.sellerContacts.current, f.sellerContacts.previous) }),
       ]
       if (f.capacity && f.capacity.headroomDelta !== null) out.push(finding("listing_concierge", "agent_headroom", "agent headroom (capacityFor)", { current: f.capacity.headroom, previous: f.capacity.headroom - f.capacity.headroomDelta }, { badWhen: "down", reader: `brokerage twin capacity (capacityFor) vs snapshot ${f.capacity.previousAt ?? "?"}` }))
       return out
@@ -363,6 +383,8 @@ export const EVIDENCE_CHECKS: Readonly<Record<Investigator, { capability: AppCap
 export const OBSERVED_KEY: Readonly<Record<ObjectiveMetric, string>> = {
   listing_appointments: "listing_appointments", seller_conversion: "seller_conversion_rate", seller_leads: "seller_leads",
   seller_business: "seller_leads", leads: "leads", listing_gci: "closed_gci", gci: "closed_gci", closings: "closed_count", listings: "listing_appointments",
+  // wave 137E: buyer representation has no period-over-period evidence reader yet → the premise reads "unmeasured"
+  buyer_clients: "buyer_clients", pipeline_conversion: "lead_conversion_rate", contacts: "lead_conversions",
 }
 /** How strongly a finding can explain the objective's measure (0..1). Unlisted = 0.5. Source-mix keys
  *  match on their prefix. @proofSeam the proof asserts ranking against it */
@@ -602,19 +624,29 @@ export function planObjectiveDelegation(twin: BrokerageTwin, facts: ScenarioFact
   const current = measure ? readTwinMeasure(twin, measure) : null
   const target = current !== null ? Math.ceil(current * (1 + o.targetPct / 100)) : null
   // the twin's goal measures are 90-day windows (GCI / closes) or present state (listings).
-  const per30 = (n: number) => (o.goalType === "listings_taken" ? n : n / 3)
+  // wave 137E: contacts and buyer representation are present-state measures too (now.*), conversions a 90d window.
+  const presentState = o.goalType === "listings_taken" || o.goalType === "new_contacts" || o.goalType === "buyer_clients"
+  const per30 = (n: number) => (presentState ? n : n / 3)
   const neededPer30d = current !== null && target !== null ? per30(target - current) : null
   const workforceTerritories = twin.workforce?.territories ?? []
   const territories = o.territory ? [o.territory] : [...workforceTerritories].filter((t) => t.territory !== "unassigned")
     .sort((a, b) => (a.trend === "up" ? 0 : 1) - (b.trend === "up" ? 0 : 1) || b.sellerContacts30d - a.sellerContacts30d || b.agentsWithHeadroom - a.agentsWithHeadroom || a.territory.localeCompare(b.territory)).slice(0, 3).map((t) => t.territory)
   const capCents = o.capUsd === null ? null : Math.round(o.capUsd * 100)
-  const gainOf = (p: ScenarioProjection) => (o.goalType === "gross_commission" ? p.opportunityGain.addedRevenueCents : o.goalType === "transactions_closed" ? p.opportunityGain.addedCloses30d : p.opportunityGain.addedListings30d)
-  let chosen: ScenarioProjection | null = null, best: ScenarioProjection | null = null, shortfall: string | null = null
-  for (let p = SATURATION_SWEEP_STEP; p <= SATURATION_SWEEP_MAX && neededPer30d !== null; p += SATURATION_SWEEP_STEP) {
+  // The scenario's only lever is seller acquisition: a goal it cannot move (buyer representation) is planned
+  // WITHOUT a sweep — no spend is proposed for a lever that does not reach the measure (wave 137E).
+  const gainOf = (p: ScenarioProjection): number | null =>
+    o.goalType === "gross_commission" ? p.opportunityGain.addedRevenueCents
+    : o.goalType === "transactions_closed" ? p.opportunityGain.addedCloses30d
+    : o.goalType === "conversion_rate" || o.goalType === "new_contacts" ? p.opportunityGain.addedConversions30d
+    : o.goalType === "buyer_clients" ? null
+    : p.opportunityGain.addedListings30d
+  const leverless = o.goalType === "buyer_clients"
+  let chosen: ScenarioProjection | null = null, best: ScenarioProjection | null = null, shortfall: string | null = leverless ? "no scenario lever moves buyer representation yet — the target is delegated to the Shopping Agent with no planned spend" : null
+  for (let p = SATURATION_SWEEP_STEP; p <= SATURATION_SWEEP_MAX && neededPer30d !== null && !leverless; p += SATURATION_SWEEP_STEP) {
     const pr = simulateScenario({ brokerageId: twin.brokerageId, levers: { seller_lead_acquisition_pct: p, ...(territories.length ? { territory_activation: territories } : {}) } }, twin, facts)
     if (capCents !== null && pr.marketingCost.totalCents > capCents) { shortfall = `the cap ($${o.capUsd}/month) is reached at +${p}% before the goal`; break }
     best = pr
-    if (gainOf(pr) >= neededPer30d) { chosen = pr; break }
+    if ((gainOf(pr) ?? 0) >= neededPer30d) { chosen = pr; break }
   }
   const pr = chosen ?? best
   if (!chosen && !shortfall) shortfall = neededPer30d === null ? "the twin carries no measure for this goal" : `the sweep (to +${SATURATION_SWEEP_MAX}%) does not reach the goal — the best projected lift is planned`
@@ -628,11 +660,16 @@ export function planObjectiveDelegation(twin: BrokerageTwin, facts: ScenarioFact
   const agentStage = stage("agent_capacity")
   const headroomGap = agentStage && agentStage.capacity !== null && agentStage.demand !== null ? Math.max(0, Math.ceil(agentStage.demand - agentStage.capacity)) : 0
   const inDev = twin.workforce?.totals?.in_development ?? 0
+  if (leverless) {
+    const add = current !== null && target !== null ? target - current : 0
+    const only: DelegationChild[] = [{ manager: "shopping_agent", steps: ["isa"], subTarget: `+${add} buyer client(s) under representation (no scenario lever — qualified buyer contacts, tours, the lender handoff)`, criteria: measure ? crit(measure, add) : [], budgetUsd: 0, evidence: { measure, current, target } }]
+    return { goalType: o.goalType, current, target, neededPer30d, levers: null, projection: null, totalBudgetUsd: 0, territories, shortfall, children: only }
+  }
   const children: DelegationChild[] = [
     { manager: "listing_concierge", steps: ["territory_opportunities"], subTarget: `+${gain.addedListings30d} listings / 30d from ${territories.length ? territories.join(", ") : "brokerage-wide seller demand"}`, criteria: crit("now.listings.active", gain.addedListings30d), budgetUsd: 0, evidence: { territories: workforceTerritories.filter((t) => territories.includes(t.territory)).map((t) => ({ territory: t.territory, sellerContacts30d: t.sellerContacts30d, trend: t.trend, agentsWithHeadroom: t.agentsWithHeadroom })) } },
     { manager: "campaign_orchestrator", steps: ["marketing"], subTarget: `nurture the added seller leads into +${gain.addedConversions30d} conversions / 30d`, criteria: crit("slices.campaign_orchestrator.measures.converted30d", gain.addedConversions30d), budgetUsd: usd(cost.campaignCents), evidence: { campaignCents: cost.campaignCents } },
     { manager: "ads_manager", steps: ["marketing"], subTarget: `+${gain.addedLeads30d} seller leads / 30d from paid acquisition`, criteria: crit("slices.ads_manager.measures.leads30d", gain.addedLeads30d), budgetUsd: usd(cost.acquisitionCents + cost.adSpendCents), evidence: { acquisitionCents: cost.acquisitionCents, adSpendCents: cost.adSpendCents } },
-    { manager: "ai_isa", steps: ["isa"], subTarget: `qualify the added leads: +${gain.addedConversions30d} conversions / 30d (ISA stage utilization ${stage("ai_isa_capacity")?.utilization ?? "unbounded"})`, criteria: crit("now.pipeline.converted90d", gain.addedConversions30d * 3), budgetUsd: usd(cost.aiCents), evidence: { stage: stage("ai_isa_capacity") } },
+    { manager: "ai_isa", steps: ["isa"], subTarget: `qualify the added contacts: +${gain.addedConversions30d} qualified contacts / 30d (ISA stage utilization ${stage("ai_isa_capacity")?.utilization ?? "unbounded"})`, criteria: crit("now.pipeline.converted90d", gain.addedConversions30d * 3), budgetUsd: usd(cost.aiCents), evidence: { stage: stage("ai_isa_capacity") } },
     { manager: "recruiting_manager", steps: ["capacity", "recruiting", "education"], subTarget: `close a ${headroomGap}-item agent headroom gap; ${needs.length} recruiting need(s); develop ${inDev} in-development agent(s) for listing presentations`, criteria: crit("capacity.headroom", headroomGap), budgetUsd: 0, evidence: { agentStage, recruitingNeeds: needs.map((n) => ({ territory: n.territory, specialization: n.specialization, count: n.count })), inDevelopment: inDev } },
     { manager: "asset_manager", steps: ["media"], subTarget: `listing launch creative for +${gain.addedListings30d} listings / 30d`, criteria: crit("slices.asset_manager.measures.approved30d", gain.addedListings30d), budgetUsd: usd(cost.mediaCents), evidence: { mediaCents: cost.mediaCents } },
     { manager: "finance_manager", steps: ["budget"], subTarget: `hold the plan to $${usd(cost.totalCents)} / 30d${o.capUsd !== null ? ` (cap $${o.capUsd})` : ""} and report the margin (${usd(pr?.expectedMarginCents ?? 0)})`, criteria: [], budgetUsd: 0, evidence: { totalCents: cost.totalCents, capUsd: o.capUsd } },

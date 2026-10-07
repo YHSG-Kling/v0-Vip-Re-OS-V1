@@ -90,7 +90,7 @@ export async function generateRoiLedger(svc: any, brokerageId: string, periodDay
 //
 // THE DETERMINISTIC RULE (no model decides money):
 //   · an outcome is a reply (communications inbound / isa_outreach_log.replied_at), an appointment
-//     (showings booked), a contract (transactions.contract_date) or a closed deal (status
+//     (showings booked + seller listing appointments — listing_presentations.appointment_at, wave 137), a contract (transactions.contract_date) or a closed deal (status
 //     closed / funded, revenue = GCI);
 //   · a ledger row is ELIGIBLE for an outcome when it is the SAME TENANT, it happened STRICTLY
 //     BEFORE the outcome and inside that outcome kind's window (ATTRIBUTION_WINDOW_DAYS), and it is
@@ -104,6 +104,11 @@ export async function generateRoiLedger(svc: any, brokerageId: string, periodDay
 //     cents, the remainder to the latest row so the split sums exactly to the revenue.
 
 export type LedgerOutcomeKind = "reply" | "appointment" | "contract" | "closed"
+/** Wave 137: a seller LISTING appointment rides the one `appointment` kind under this ref prefix
+ *  (listing_presentations.appointment_at); a buyer showing is `appointment:<showings.id>`. */
+const LISTING_APPOINTMENT_REF = "appointment:listing:"
+/** …and a booking on the listing row itself (listings.appointment_at). */
+const LISTING_ROW_APPOINTMENT_REF = "appointment:listing-row:"
 
 /** Days before an outcome in which a ledger row may earn credit for it. contract / closed match the
  *  marketing engine's LOOKBACK_DAYS (lib/marketing/attribution.ts) so the two never disagree. */
@@ -344,16 +349,34 @@ export async function loadLedgerAttribution(
     const none = { data: [], error: null }
     const pin = (q: any, col: string, dateCol: string) => !personMode ? q.gte(dateCol, since).limit(ATTR_LIMIT)
       : contactIds.size > 0 ? q.in(col, [...contactIds].slice(0, 200)).limit(ATTR_LIMIT) : Promise.resolve(none)
-    const [sh, comm, isa] = await Promise.all([
+    // WAVE 137 (owner "approve all"): the `appointment` kind is ONE vocabulary for buyer showings AND
+    // seller LISTING appointments — listing_presentations.appointment_at (the listing-appointment prep
+    // chain, the owner-named source) and listings.appointment_at (scheduleListingAppointmentService's
+    // booking on the listing row; merged here from lib/kernel/experiment-pipeline.ts's side read). One
+    // outcome per seller contact per appointment day (a booking that has a presentation counts once).
+    const [sh, comm, isa, lp, la] = await Promise.all([
       pin(svc.from("showings").select("id, contact_id, created_at, status").eq("brokerage_id", brokerageId).not("contact_id", "is", null), "contact_id", "created_at"),
       pin(svc.from("communications").select("id, contact_id, created_at").eq("brokerage_id", brokerageId).eq("direction", "inbound").not("contact_id", "is", null), "contact_id", "created_at"),
       pin(svc.from("isa_outreach_log").select("id, contact_id, lead_id, replied_at").eq("brokerage_id", brokerageId).not("replied_at", "is", null), "contact_id", "replied_at"),
+      pin(svc.from("listing_presentations").select("id, contact_id, appointment_at, status").eq("brokerage_id", brokerageId).not("contact_id", "is", null).not("appointment_at", "is", null), "contact_id", "appointment_at"),
+      pin(svc.from("listings").select("id, seller_contact_id, contact_id, appointment_at").eq("brokerage_id", brokerageId).not("appointment_at", "is", null), "seller_contact_id", "appointment_at"),
     ])
-    for (const [label, r] of [["showings", sh], ["communications", comm], ["isa_outreach_log", isa]] as const) {
+    for (const [label, r] of [["showings", sh], ["communications", comm], ["isa_outreach_log", isa], ["listing_presentations", lp], ["listings", la]] as const) {
       if (r.error) return { ok: false, error: `${label}: ${r.error.message}` }
     }
     const showings = ((sh.data ?? []) as Array<Record<string, any>>).filter((s) => !/cancel/i.test(String(s.status ?? "")))
     for (const s of showings) contactIds.add(s.contact_id)
+    const listingAppts: Array<{ ref: string; contactId: string; at: string }> = []
+    const apptSeen = new Set<string>()
+    const pushAppt = (ref: string, contactId: string | null | undefined, at: unknown) => {
+      if (!contactId || !at) return
+      const k = `${contactId}|${String(at).slice(0, 10)}`
+      if (apptSeen.has(k)) return
+      apptSeen.add(k); listingAppts.push({ ref, contactId, at: String(at) })
+    }
+    for (const p of (lp.data ?? []) as Array<Record<string, any>>) if (!/cancel/i.test(String(p.status ?? ""))) pushAppt(`${LISTING_APPOINTMENT_REF}${p.id}`, p.contact_id, p.appointment_at)
+    for (const l of (la.data ?? []) as Array<Record<string, any>>) pushAppt(`${LISTING_ROW_APPOINTMENT_REF}${l.id}`, l.seller_contact_id ?? l.contact_id, l.appointment_at)
+    for (const p of listingAppts) contactIds.add(p.contactId)
     for (const c of (comm.data ?? []) as Array<Record<string, any>>) contactIds.add(c.contact_id)
     for (const i of (isa.data ?? []) as Array<Record<string, any>>) if (i.contact_id) contactIds.add(i.contact_id)
 
@@ -379,6 +402,7 @@ export async function loadLedgerAttribution(
       }
     }
     for (const s of showings) outcomes.push({ ref: `appointment:${s.id}`, kind: "appointment", brokerageId, subjectIds: personIds(s.contact_id), at: String(s.created_at), revenueCents: 0 })
+    for (const p of listingAppts) outcomes.push({ ref: p.ref, kind: "appointment", brokerageId, subjectIds: personIds(p.contactId), at: p.at, revenueCents: 0 })
     for (const c of (comm.data ?? []) as Array<Record<string, any>>) outcomes.push({ ref: `reply:${c.id}`, kind: "reply", brokerageId, subjectIds: personIds(c.contact_id), at: String(c.created_at), revenueCents: 0 })
     for (const i of (isa.data ?? []) as Array<Record<string, any>>) outcomes.push({ ref: `reply:isa:${i.id}`, kind: "reply", brokerageId, subjectIds: personIds(i.contact_id, i.lead_id), at: String(i.replied_at), revenueCents: 0 })
     if (outcomes.length === 0) return { ok: true, result: attributeOutcomesToLedger([], []), ledgerAvailable: true }
@@ -513,6 +537,8 @@ export interface MissionOutcomeCredit {
 /** The survivor entity an outcome ref points at (`<kind>:<source row id>` / `reply:isa:<id>`). */
 function outcomeEntity(ref: string, kind: LedgerOutcomeKind): { entityType: string; entityId: string } {
   if (ref.startsWith("reply:isa:")) return { entityType: "isa_outreach_log", entityId: ref.slice("reply:isa:".length) }
+  if (ref.startsWith(LISTING_APPOINTMENT_REF)) return { entityType: "listing_presentation", entityId: ref.slice(LISTING_APPOINTMENT_REF.length) }
+  if (ref.startsWith(LISTING_ROW_APPOINTMENT_REF)) return { entityType: "listing", entityId: ref.slice(LISTING_ROW_APPOINTMENT_REF.length) }
   const id = ref.slice(ref.indexOf(":") + 1)
   return { entityType: kind === "closed" || kind === "contract" ? "transaction" : kind === "appointment" ? "showing" : "communication", entityId: id }
 }

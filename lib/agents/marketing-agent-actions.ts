@@ -348,12 +348,18 @@ async function runHandler(
       }
 
       const { verifyAddressViaLob } = await import("@/lib/external/lob-address-verify")
-      const { data: result } = await verifyAddressViaLob({
+      const { data: result, cost: verifyCost } = await verifyAddressViaLob({
         primary_line: l.mailing_address,
         city:         l.mailing_city ?? undefined,
         state:        l.mailing_state ?? undefined,
         zip_code:     l.mailing_zip,
       })
+      // Wave 137 (lane 137C): this PAID Lob call was unbooked (the provider-adapter census exception) —
+      // booked the way lib/providers/dispatch.ts books the same verification (meterVendorSpend, no-op at $0).
+      if (result) {
+        const { meterVendorSpend } = await import("@/lib/vendor-governance/meter-vendor")
+        await meterVendorSpend({ vendorName: "lob", usageType: "address_verify", cost: verifyCost, brokerageId, systemSource: "marketing_agent", metadata: { leadId } })
+      }
       if (!result) {
         return { status: "failed", result: { error: "Lob verification call failed (transient or unconfigured)" } }
       }

@@ -386,8 +386,8 @@ export function composeAutonomyBudgetReport(input: { policy: AutonomyBudgetsPoli
   return { day, period, lines, ai, anomalies, blindSpots: ["per-campaign render caps report lifetime totals, not a utilisation ratio", "AI spend is the ai_tool_usage ledger (platform-paid rows included) — vendor spend is checkVendorBudget's"] }
 }
 
-/** Read the rows (tenant-pinned) and compose the report. */
-async function buildAutonomyBudgetReport(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<{ ok: true; report: AutonomyBudgetReport; policy: AutonomyBudgetsPolicy } | { ok: false; error: string }> {
+/** Read the rows (tenant-pinned) and compose the report — also the envelope admin screen's caps / consumption read (wave 137). */
+export async function buildAutonomyBudgetReport(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<{ ok: true; report: AutonomyBudgetReport; policy: AutonomyBudgetsPolicy } | { ok: false; error: string }> {
   if (!brokerageId) return { ok: false, error: "tenant scope required" }
   const policy = await loadAutonomyBudgets(svc, brokerageId)
   const monthStart = `${now.toISOString().slice(0, 7)}-01T00:00:00.000Z`
@@ -425,4 +425,59 @@ export async function deliverAutonomyBudgetReport(svc: Svc, brokerageId: string,
     escalated = esc.ok
   }
   return { reported: rep.ok, escalated, anomalies: report.anomalies, ...(rep.ok ? {} : { error: rep.reason }) }
+}
+
+// ── THE ENVELOPE ADMIN SCREEN'S FIELD TABLE + VALIDATOR (wave 137, owner "approve all": "an envelope admin
+// screen is approved"). The screen (app/dashboard/admin/manager-trust/autonomy-envelopes-editor.tsx) reads
+// and edits THIS key through the ONE versioned policy path (a human `policy` proposal → promoteProposal →
+// mergeBrokerageSettings → appendTenantPolicyVersion); nothing on it writes the setting directly.
+// `money: true` fields OBLIGATE THE BROKERAGE TO PAY — only TENANT_COMMERCE_ADMIN_USER_TYPES may change them
+// (lib/auth/resolve-user-role.ts); the render cap and the Finance anomaly thresholds are tenant-admin edits.
+
+interface AutonomyEnvelopeField { path: string; label: string; unit: "pct" | "usd" | "renders" | "share" | "multiple" | "count"; money: boolean; min: number; max: number; envelope: AutonomyEnvelope | null }
+
+/** @proofSeam scripts/autonomous-budgeting-guard.ts asserts every resolver path is editable here and the money split. */
+export const AUTONOMY_ENVELOPE_FIELDS: readonly AutonomyEnvelopeField[] = Object.freeze([
+  { path: "ads_manager.max_shift_pct_of_monthly_budget", label: "Ads Manager — max shift between proven campaigns (% of the live monthly budget)", unit: "pct", money: true, min: 0, max: 100, envelope: "ads_budget_shift" },
+  { path: "provider_router.per_decision_max_usd.standard", label: "Provider router — per decision, standard opportunity", unit: "usd", money: true, min: 0, max: 1000, envelope: "provider_high_value" },
+  { path: "provider_router.per_decision_max_usd.high", label: "Provider router — per decision, high-value opportunity", unit: "usd", money: true, min: 0, max: 1000, envelope: "provider_high_value" },
+  { path: "provider_router.per_decision_max_usd.top", label: "Provider router — per decision, top-value opportunity", unit: "usd", money: true, min: 0, max: 1000, envelope: "provider_high_value" },
+  { path: "provider_router.monthly_max_usd", label: "Provider router — monthly total", unit: "usd", money: true, min: 0, max: 100000, envelope: "provider_high_value" },
+  { path: "asset_manager.max_renders_per_campaign", label: "Asset Manager — renders per campaign", unit: "renders", money: false, min: 0, max: 1000, envelope: "asset_renders" },
+  { path: "recruiting_manager.max_prospect_data_usd_per_month", label: "Recruiting — prospect data per month", unit: "usd", money: true, min: 0, max: 100000, envelope: "recruiting_prospect_data" },
+  { path: "experiments.max_usd_per_month", label: "Experiments — autonomous budget per month", unit: "usd", money: true, min: 0, max: 100000, envelope: "experiment_budget" },
+  { path: "listing_concierge.max_auto_book_usd_per_month", label: "Procurement — auto-booked vendor spend per month", unit: "usd", money: true, min: 0, max: 100000, envelope: "procurement_auto_book" },
+  { path: "finance.burst_share_of_cap", label: "Finance — one-day burst alarm (share of the cap)", unit: "share", money: false, min: 0.05, max: 1, envelope: null },
+  { path: "finance.ai_spike_multiple", label: "Finance — AI spend spike alarm (× trailing daily average)", unit: "multiple", money: false, min: 1, max: 100, envelope: null },
+  { path: "finance.refusal_pressure", label: "Finance — refusals per day that flag a binding envelope", unit: "count", money: false, min: 1, max: 1000, envelope: null },
+])
+
+const getPath = (o: unknown, path: string): unknown => path.split(".").reduce<unknown>((a, k) => (a && typeof a === "object" ? (a as Record<string, unknown>)[k] : undefined), o)
+
+/**
+ * PURE — the screen's edit → the stored policy value. Every field is bounded (a value out of bounds is an
+ * error, never clamped silently); the result is resolved through resolveAutonomyBudgets so what is stored
+ * is exactly what the enforcement reads. `moneyChanged` names the money fields that moved — the caller
+ * refuses them unless the seat is a commerce admin.
+ * @proofSeam scripts/autonomous-budgeting-guard.ts drives it directly (bounds, money split, round trip).
+ */
+export function validateAutonomyBudgetsEdit(input: Record<string, unknown>, current: AutonomyBudgetsPolicy): { ok: true; value: Record<string, unknown>; changedKeys: string[]; moneyChanged: string[] } | { ok: false; errors: string[] } {
+  const errors: string[] = []
+  const value: Record<string, any> = {}
+  const changedKeys: string[] = [], moneyChanged: string[] = []
+  for (const f of AUTONOMY_ENVELOPE_FIELDS) {
+    const raw = input[f.path]
+    const n = raw === undefined || raw === null || String(raw).trim() === "" ? Number(getPath(current, f.path)) : Number(raw)
+    if (!Number.isFinite(n) || n < f.min || n > f.max) { errors.push(`${f.label}: must be between ${f.min} and ${f.max}`); continue }
+    const v = f.unit === "renders" || f.unit === "count" ? Math.floor(n) : Math.round(n * 100) / 100
+    const keys = f.path.split(".")
+    let cur = value
+    for (const k of keys.slice(0, -1)) cur = (cur[k] ??= {})
+    cur[keys[keys.length - 1]] = v
+    if (v !== Number(getPath(current, f.path))) { changedKeys.push(f.path); if (f.money) moneyChanged.push(f.path) }
+  }
+  if (errors.length) return { ok: false, errors }
+  const resolved = resolveAutonomyBudgets({ [AUTONOMY_BUDGETS_POLICY_KEY]: value })
+  const { readable: _r, note: _n, ...stored } = resolved
+  return { ok: true, value: stored, changedKeys, moneyChanged }
 }

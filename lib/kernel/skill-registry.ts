@@ -26,16 +26,22 @@
  * registered capabilities only; there is no code field and the validator refuses one. Their evaluation suite is
  * a runtime evaluator below (SKILL_EVALUATORS), never a script the submitter supplies.
  *
- * PURE — no I/O — so the proof asserts every rule directly. The runtime (submit / evaluate / approve / publish /
- * revoke / runSkill) is lib/kernel/skill-marketplace.ts.
+ * PURE — no I/O — so the proof asserts every rule directly. The runtime (submit / evaluate / approve / enable /
+ * suspend / deprecate / disable, tenant opt-in, runSkill, runCustomManagerCapability) is lib/kernel/skill-marketplace.ts.
+ *
+ * WAVE 137 (lane 137D): the FULL skill contract (publisher, max_cost, external_write — optional with derivation,
+ * skillContractOf), the RUNTIME capability bound (capabilityCallRefusal), the CUSTOM MANAGER contract
+ * (CustomManagerDeclaration → registerCustomManager) and ONE EXTENSION LIFECYCLE (EXTENSION_STATUSES, m738).
  */
-import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
+import { MANAGERS, PLATFORM_MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { APP_CAPABILITY_REGISTRY, type AppCapability } from "@/lib/agentic-os/app-capability-registry"
 import { CAPABILITY_MANAGER } from "@/lib/agentic-os/capability-ownership"
 import { parseInputSpec } from "@/lib/agentic-os/invoke-planner"
 import { MIN_AUTHORITY_FOR_RISK, isAuthorityLevel, type AuthorityLevel, type ToolRiskClass } from "@/lib/ai-isa/persona-tool-policy"
 import { capabilityRiskClass } from "@/lib/kernel/mission-controller"
 import { paidCapabilitiesFor } from "@/lib/kernel/manager-delegation"
+import { MISSION_TYPES, type MissionType } from "@/lib/kernel/missions"
+import { TENANT_POLICY_SETTINGS_KEYS } from "@/lib/kernel/tenant-policy"
 
 // ─── the declaration ──────────────────────────────────────────────────────────────────────────
 export const SKILL_FIELD_TYPES = ["string", "number", "boolean", "uuid", "iso_datetime", "object", "array"] as const
@@ -71,7 +77,26 @@ export interface SkillDeclaration {
   evaluation_suite: string
   /** Marketplace only — sample inputs the evaluation suite runs the contract against. */
   evaluation_fixtures?: readonly Record<string, unknown>[]
+  // ── wave 137 (lane 137D) — the full minimum contract. OPTIONAL WITH DERIVATION so every declaration written
+  //    against the wave-108 shape stays valid: skillContractOf fills each from the survivors that answer it.
+  //    (manager_owner is the RESPONSIBLE manager — always an existing MANAGERS key owning every capability.) ──
+  /** Owner / publisher. A marketplace listing's ROW publisher is authoritative — a declaration claiming another
+   *  publisher is refused at submission (publisher_mismatch). Default: the listing's publisher (built-ins: platform). */
+  publisher?: SkillPublisher
+  publisher_name?: string
+  /** The hard ceiling on ONE run (≥ cost_estimate). The run is metered against THIS, settled at the estimate.
+   *  Default: the estimate is the ceiling. */
+  max_cost?: { usd: number; tokens: number }
+  /** What the skill does outside the tenant's own rows — DERIVED from its capabilities (externalWriteOf);
+   *  a declaration may overstate, never understate (external_write_understated). */
+  external_write?: SkillExternalWrite
 }
+
+/** External-write behaviour in escalating order: reads only → writes the tenant's own rows → sends a message
+ *  outside the OS → spends money / moves funds. Derived per capability (APP_CAPABILITY_REGISTRY.mutates +
+ *  capabilityRiskClass), never chosen. */
+export const SKILL_EXTERNAL_WRITES = ["none", "internal_write", "external_message", "external_spend"] as const
+export type SkillExternalWrite = (typeof SKILL_EXTERNAL_WRITES)[number]
 
 /** The base plan entitlement (mayUseAndAfford "app.access"). */
 export const BASE_PLAN_ENTITLEMENT = "app.access"
@@ -148,7 +173,66 @@ function deriveCapabilitySkill(cap: AppCapability): SkillDeclaration {
     cost_estimate: { usd: 0, tokens: 0, budget: budgetLaneFor(cap), basis: "unmeasured" },
     tenant_entitlement: CAPABILITY_ENTITLEMENT[cap]?.feature ?? BASE_PLAN_ENTITLEMENT,
     evaluation_suite: CAPABILITY_PROOF[cap] ?? DEFAULT_SKILL_PROOF,
+    publisher: "platform",
+    max_cost: { usd: 0, tokens: 0 },
+    external_write: externalWriteOf([cap]),
   }
+}
+
+/** PURE — the external-write class a capability set implies (the max over its capabilities). */
+function externalWriteOf(caps: readonly AppCapability[]): SkillExternalWrite {
+  let idx = 0
+  for (const c of caps) {
+    if (!APP_CAPABILITY_REGISTRY[c]?.mutates) continue
+    const risk = capabilityRiskClass(c)
+    const w: SkillExternalWrite = risk === "FINANCIAL" ? "external_spend" : risk === "COMMUNICATION" ? "external_message" : "internal_write"
+    idx = Math.max(idx, SKILL_EXTERNAL_WRITES.indexOf(w))
+  }
+  return SKILL_EXTERNAL_WRITES[idx]
+}
+
+/** PURE — the ceilings a capability set imposes, DERIVED from the registry. A declaration may meet or exceed the
+ *  risk / external-write class and must carry the plan feature its capabilities' own actions gate on; it can
+ *  never lower them (no self-granted scope, authority or entitlement). */
+function derivedSkillCeilings(caps: readonly AppCapability[]): { risk: ToolRiskClass; externalWrite: SkillExternalWrite; features: string[] } {
+  const known = caps.filter((c) => c in APP_CAPABILITY_REGISTRY)
+  let r = 0
+  const features = new Set<string>()
+  for (const c of known) {
+    r = Math.max(r, SKILL_RISK_ORDER.indexOf(capabilityRiskClass(c)))
+    const f = CAPABILITY_ENTITLEMENT[c]?.feature
+    if (f) features.add(f)
+  }
+  return { risk: SKILL_RISK_ORDER[r], externalWrite: externalWriteOf(known), features: [...features].sort() }
+}
+
+/** The full contract: every wave-137 field present (derived where the declaration left it out). */
+export type SkillContract = SkillDeclaration & Required<Pick<SkillDeclaration, "publisher" | "max_cost" | "external_write">>
+
+/** PURE — fill every optional wave-137 field from its derivation. The runtime reads this, never the raw optional
+ *  fields. `listingPublisher` (the row's publisher) wins over anything the declaration says. */
+export function skillContractOf(d: SkillDeclaration, listingPublisher?: SkillPublisher): SkillContract {
+  return {
+    ...d,
+    publisher: listingPublisher ?? d.publisher ?? "platform",
+    max_cost: d.max_cost ?? { usd: d.cost_estimate.usd, tokens: d.cost_estimate.tokens },
+    external_write: d.external_write ?? externalWriteOf(d.required_capabilities),
+  }
+}
+
+/**
+ * PURE — THE RUNTIME CAPABILITY BOUND (call time, not only validation). Every capability call an extension makes
+ * passes this first: a capability absent from its declaration, unknown to the registry, LEGAL / IRREVERSIBLE, or
+ * (for a skill) no longer owned by its manager is refused before anything is asked. `owner` null = a custom
+ * manager — it never owns a capability, it requests it from CAPABILITY_MANAGER[c].
+ */
+export function capabilityCallRefusal(declared: readonly string[], owner: ManagerKey | null, capability: string): string | null {
+  if (!declared.includes(capability)) return `undeclared_capability:${capability}`
+  if (!(capability in APP_CAPABILITY_REGISTRY)) return `unknown_capability:${capability}`
+  const cap = capability as AppCapability
+  if (MIN_AUTHORITY_FOR_RISK[capabilityRiskClass(cap)] === null) return `risk_never_ai:${cap}`
+  if (owner && CAPABILITY_MANAGER[cap] !== owner) return `capability_owner_moved:${cap}:${CAPABILITY_MANAGER[cap]}`
+  return null
 }
 
 /** THE BUILT-IN MANAGER SKILLS — one per catalogue capability, derived (never restated). */
@@ -167,6 +251,7 @@ export interface SkillValidation { ok: boolean; errors: string[] }
 const DECLARATION_KEYS: ReadonlySet<string> = new Set([
   "name", "version", "manager_owner", "purpose", "inputs", "outputs", "required_capabilities", "risk_class",
   "authority_requirement", "cost_estimate", "tenant_entitlement", "evaluation_suite", "evaluation_fixtures",
+  "publisher", "publisher_name", "max_cost", "external_write",
 ])
 
 /** The rung band a risk class occupies: [its minimum, the next class's minimum − 1]. Above = the skill claims
@@ -237,6 +322,22 @@ export function validateSkillDeclaration(d: SkillDeclaration, opts: { knownEvalu
   else if (cost.budget === "ai_tokens" && cost.tokens <= 0) errors.push("cost_tokens_missing_for_ai_lane")
 
   if (typeof d.tenant_entitlement !== "string" || !(d.tenant_entitlement === BASE_PLAN_ENTITLEMENT || /^[a-z][a-z0-9_]*$/.test(d.tenant_entitlement))) errors.push("tenant_entitlement_invalid")
+
+  // wave 137 — the full contract; ceilings DERIVED from the registry (never raised or lowered by the declaration).
+  const ceil = derivedSkillCeilings(caps)
+  if (ceil.features.length > 1) errors.push(`entitlement_multiple_features:${ceil.features.join("+")}`)
+  else if (ceil.features.length === 1 && d.tenant_entitlement !== ceil.features[0]) errors.push(`entitlement_understated:${ceil.features[0]}`)
+  if (d.publisher !== undefined && !(SKILL_PUBLISHERS as readonly string[]).includes(d.publisher)) errors.push(`publisher_invalid:${String(d.publisher)}`)
+  if (d.max_cost !== undefined) {
+    const m = d.max_cost
+    if (!m || !Number.isFinite(m.usd) || !Number.isFinite(m.tokens) || m.usd < 0 || m.tokens < 0) errors.push("max_cost_invalid")
+    else if (cost && (m.usd < cost.usd || m.tokens < cost.tokens)) errors.push("max_cost_below_estimate")
+  }
+  if (d.external_write !== undefined) {
+    const w = SKILL_EXTERNAL_WRITES.indexOf(d.external_write)
+    if (w < 0) errors.push(`external_write_invalid:${String(d.external_write)}`)
+    else if (w < SKILL_EXTERNAL_WRITES.indexOf(ceil.externalWrite)) errors.push(`external_write_understated:${d.external_write}<${ceil.externalWrite}`)
+  }
 
   if (typeof d.evaluation_suite !== "string" || !d.evaluation_suite.trim()) errors.push("no_evaluation_suite")
   else if (!opts.knownEvaluationSuites.has(d.evaluation_suite)) errors.push(`unknown_evaluation_suite:${d.evaluation_suite}`)
@@ -311,39 +412,283 @@ export function knownEvaluationSuites(): ReadonlySet<string> {
   return new Set<string>([DEFAULT_SKILL_PROOF, ...Object.values(CAPABILITY_PROOF).filter((x): x is string => !!x), ...Object.keys(SKILL_EVALUATORS)])
 }
 
-// ─── the marketplace lifecycle ────────────────────────────────────────────────────────────────
-export const SKILL_PUBLISHERS = ["platform", "tenant", "third_party"] as const
-export type SkillPublisher = (typeof SKILL_PUBLISHERS)[number]
-export const SKILL_LISTING_STATUSES = ["submitted", "evaluated", "approved", "published", "revoked", "rejected"] as const
-export type SkillListingStatus = (typeof SKILL_LISTING_STATUSES)[number]
+// ─── THE CUSTOM MANAGER CONTRACT (wave 137, lane 137D) ────────────────────────────────────────
+// A tenant / third-party "manager" is a CONTRACT, never a new seat: it never becomes a ManagerKey, never owns a
+// capability, never changes MANAGERS / CAPABILITY_MANAGER / another manager's authority. It REQUESTS capabilities
+// from their owning managers (requestDelegation) under a ceiling no higher than its escalation owner's, and every
+// registration goes through registerCustomManager below, which validates against the EXISTING manager registry
+// (lib/kernel/manager-registry.ts MANAGERS + PLATFORM_MANAGERS — that module is import-free by design so the UI can
+// share it, so the validated door lives here beside the skill contract) and returns a FROZEN registry entry.
 
-export const SKILL_LISTING_TRANSITIONS: Readonly<Record<SkillListingStatus, readonly SkillListingStatus[]>> = Object.freeze({
-  submitted: ["evaluated", "rejected"],
-  evaluated: ["approved", "rejected"],
-  approved: ["published", "revoked"],
-  published: ["revoked"],
-  revoked: [],
-  rejected: [],
+/** Context a custom manager may read — each one an existing reader (no raw DB access):
+ *  mission_context = lib/kernel/mission-context.ts compileManagerContext; contact_memory = lib/kernel/
+ *  conversation-memory.ts loadContactMemoryForPrompt (via the compiler's memory slice). */
+export const CUSTOM_MANAGER_MEMORY_ACCESS = ["none", "mission_context", "contact_memory"] as const
+export type CustomManagerMemoryAccess = (typeof CUSTOM_MANAGER_MEMORY_ACCESS)[number]
+
+export interface CustomManagerDeclaration {
+  name: string
+  version: number
+  /** Responsibility (one sentence) + the domain it works in. */
+  responsibility: string
+  domain: string
+  /** The capabilities it may REQUEST (each still executed by CAPABILITY_MANAGER[c] through delegation). */
+  allowed_capabilities: readonly AppCapability[]
+  /** Built-in manager skills it may run (each skill's capability must be allowed). */
+  tools: readonly string[]
+  /** Its authority ceiling — ≤ its escalation owner's ceiling (managerAuthorityCeiling). */
+  authority_ceiling: AuthorityLevel
+  /** Tenant operating-policy keys it is governed by (lib/kernel/tenant-policy.ts TENANT_POLICY_SETTINGS_KEYS). */
+  policy_requirements: readonly string[]
+  /** Per-run spend ceiling, metered through mayUseAndAfford (comms.send USD / ai.generate tokens). */
+  budget: { max_usd_per_run: number; max_tokens_per_run: number }
+  memory_access: CustomManagerMemoryAccess
+  /** lib/kernel/missions.ts MISSION_TYPES it may serve. */
+  mission_types: readonly MissionType[]
+  /** The EXISTING manager it escalates to and requests as (a MANAGERS key). */
+  escalation_owner: ManagerKey
+  /** A CUSTOM_MANAGER_EVALUATORS id (platform-owned). */
+  evaluation_suite: string
+}
+
+const CUSTOM_MANAGER_KEYS: ReadonlySet<string> = new Set([
+  "name", "version", "responsibility", "domain", "allowed_capabilities", "tools", "authority_ceiling", "policy_requirements",
+  "budget", "memory_access", "mission_types", "escalation_owner", "evaluation_suite",
+])
+
+/** PURE — a manager's authority CEILING, derived from what it owns: the highest rung any of its capabilities'
+ *  risk bands reaches (CAPABILITY_MANAGER × capabilityRiskClass × authorityBandFor). 0 = owns nothing AI-runnable.
+ *  @proofSeam the proof asserts a custom manager's ceiling is refused one rung above its escalation owner's */
+export function managerAuthorityCeiling(m: ManagerKey): number {
+  let ceiling = 0
+  for (const c of Object.keys(APP_CAPABILITY_REGISTRY) as AppCapability[]) {
+    if (CAPABILITY_MANAGER[c] !== m) continue
+    const band = authorityBandFor(capabilityRiskClass(c))
+    if (band) ceiling = Math.max(ceiling, band.max)
+  }
+  return ceiling
+}
+
+/** PURE — the custom-manager contract validator (the ONE gate before registration, evaluation and every run).
+ *  @proofSeam the proof asserts each refusal code directly (production reaches it through registerCustomManager) */
+export function validateCustomManagerDeclaration(d: CustomManagerDeclaration): SkillValidation {
+  const errors: string[] = []
+  if (!d || typeof d !== "object") return { ok: false, errors: ["declaration_missing"] }
+  for (const k of Object.keys(d)) if (!CUSTOM_MANAGER_KEYS.has(k)) errors.push(`not_data:${k}`)
+  if (typeof d.name !== "string" || !/^[a-z][a-z0-9_]{2,63}$/.test(d.name)) errors.push("name_invalid")
+  else if (d.name in MANAGERS || d.name in PLATFORM_MANAGERS) errors.push(`name_shadows_manager:${d.name}`)
+  if (!Number.isInteger(d.version) || d.version < 1) errors.push("version_invalid")
+  if (typeof d.responsibility !== "string" || !d.responsibility.trim()) errors.push("responsibility_missing")
+  if (typeof d.domain !== "string" || !d.domain.trim()) errors.push("domain_missing")
+  const ownerKnown = typeof d.escalation_owner === "string" && d.escalation_owner in MANAGERS
+  if (!ownerKnown) errors.push(`unknown_escalation_owner:${String(d.escalation_owner)}`)
+  const ownerCeiling = ownerKnown ? managerAuthorityCeiling(d.escalation_owner) : 0
+  if (!isAuthorityLevel(d.authority_ceiling)) errors.push("authority_ceiling_invalid")
+  else if (d.authority_ceiling > ownerCeiling) errors.push(`authority_ceiling_exceeds_escalation_owner:${d.authority_ceiling}>${ownerCeiling}`)
+  const caps: readonly string[] = Array.isArray(d.allowed_capabilities) ? d.allowed_capabilities : []
+  if (!caps.length) errors.push("no_capabilities")
+  for (const c of caps) {
+    if (!(c in APP_CAPABILITY_REGISTRY)) { errors.push(`unknown_capability:${c}`); continue }
+    const min = MIN_AUTHORITY_FOR_RISK[capabilityRiskClass(c as AppCapability)]
+    if (min === null) errors.push(`risk_never_ai:${c}`)
+    else if (isAuthorityLevel(d.authority_ceiling) && min > d.authority_ceiling) errors.push(`capability_above_ceiling:${c}:${min}>${d.authority_ceiling}`)
+  }
+  for (const t of Array.isArray(d.tools) ? d.tools : ["<not an array>"]) {
+    const sk = builtinSkill(t)
+    if (!sk) errors.push(`unknown_tool:${t}`)
+    else if (!sk.required_capabilities.every((c) => caps.includes(c))) errors.push(`tool_outside_allowed_capabilities:${t}`)
+  }
+  for (const p of Array.isArray(d.policy_requirements) ? d.policy_requirements : ["<not an array>"]) {
+    if (!(p in TENANT_POLICY_SETTINGS_KEYS)) errors.push(`unknown_policy_key:${p}`)
+  }
+  const b = d.budget
+  if (!b || !Number.isFinite(b.max_usd_per_run) || !Number.isFinite(b.max_tokens_per_run) || b.max_usd_per_run < 0 || b.max_tokens_per_run < 0) errors.push("budget_invalid")
+  if (!(CUSTOM_MANAGER_MEMORY_ACCESS as readonly string[]).includes(d.memory_access)) errors.push(`memory_access_invalid:${String(d.memory_access)}`)
+  const types: readonly string[] = Array.isArray(d.mission_types) ? d.mission_types : []
+  if (!types.length) errors.push("no_mission_types")
+  for (const t of types) if (!(MISSION_TYPES as readonly string[]).includes(t)) errors.push(`unknown_mission_type:${t}`)
+  if (typeof d.evaluation_suite !== "string" || !d.evaluation_suite.trim()) errors.push("no_evaluation_suite")
+  else if (!(d.evaluation_suite in CUSTOM_MANAGER_EVALUATORS)) errors.push(`unknown_evaluation_suite:${d.evaluation_suite}`)
+  return { ok: errors.length === 0, errors }
+}
+
+/** A REGISTERED custom manager — frozen; a key in its own `custom:` namespace, never a ManagerKey. */
+export interface CustomManagerEntry {
+  readonly key: string
+  readonly name: string
+  readonly version: number
+  readonly responsibility: string
+  readonly domain: string
+  readonly escalation_owner: ManagerKey
+  readonly escalation_label: string
+  readonly authority_ceiling: AuthorityLevel
+  readonly allowed_capabilities: readonly AppCapability[]
+  /** Who EXECUTES each allowed capability — read from CAPABILITY_MANAGER, never written. */
+  readonly capability_owners: Readonly<Record<string, ManagerKey>>
+  readonly tools: readonly string[]
+  readonly policy_requirements: readonly string[]
+  readonly budget: Readonly<{ max_usd_per_run: number; max_tokens_per_run: number }>
+  readonly memory_access: CustomManagerMemoryAccess
+  readonly mission_types: readonly MissionType[]
+  readonly evaluation_suite: string
+}
+
+/**
+ * THE ONE REGISTRATION DOOR for a custom manager: validates against the existing registry and returns a frozen
+ * entry. It writes NOTHING into MANAGERS, PLATFORM_MANAGERS or CAPABILITY_MANAGER (the proof snapshots them) — a
+ * custom manager exists only as this entry, materialised from an ENABLED extension row at run time.
+ */
+export function registerCustomManager(d: CustomManagerDeclaration): { ok: true; entry: CustomManagerEntry } | { ok: false; errors: string[] } {
+  const v = validateCustomManagerDeclaration(d)
+  if (!v.ok) return { ok: false, errors: v.errors }
+  const caps = Object.freeze([...d.allowed_capabilities])
+  return {
+    ok: true,
+    entry: Object.freeze({
+      key: `custom:${d.name}`, name: d.name, version: d.version, responsibility: d.responsibility, domain: d.domain,
+      escalation_owner: d.escalation_owner, escalation_label: MANAGERS[d.escalation_owner].label, authority_ceiling: d.authority_ceiling,
+      allowed_capabilities: caps,
+      capability_owners: Object.freeze(Object.fromEntries(caps.map((c) => [c, CAPABILITY_MANAGER[c]]))),
+      tools: Object.freeze([...d.tools]), policy_requirements: Object.freeze([...d.policy_requirements]),
+      budget: Object.freeze({ ...d.budget }), memory_access: d.memory_access,
+      mission_types: Object.freeze([...d.mission_types]), evaluation_suite: d.evaluation_suite,
+    }),
+  }
+}
+
+/** Platform-owned evaluators a custom manager may name (deterministic; the submitter never supplies one). */
+export const CUSTOM_MANAGER_EVALUATORS: Readonly<Record<string, (d: CustomManagerDeclaration) => SkillEvaluationEvidence>> = Object.freeze({
+  "extension_eval:custom_manager_contract_v1": (d: CustomManagerDeclaration): SkillEvaluationEvidence => {
+    const before = stableSkillJson({ m: Object.keys(MANAGERS), p: Object.keys(PLATFORM_MANAGERS), c: CAPABILITY_MANAGER })
+    const reg = registerCustomManager(d)
+    const after = stableSkillJson({ m: Object.keys(MANAGERS), p: Object.keys(PLATFORM_MANAGERS), c: CAPABILITY_MANAGER })
+    const checks: SkillEvaluationEvidence["checks"] = [
+      { name: "contract_valid", ok: reg.ok, detail: reg.ok ? undefined : reg.errors.join(", ") },
+      { name: "registry_unaltered", ok: before === after },
+      { name: "entry_frozen_outside_manager_keys", ok: reg.ok && Object.isFrozen(reg.entry) && !(reg.entry.key in MANAGERS) },
+      { name: "ceiling_within_escalation_owner", ok: reg.ok && reg.entry.authority_ceiling <= managerAuthorityCeiling(reg.entry.escalation_owner) },
+    ]
+    return { suite: "extension_eval:custom_manager_contract_v1", passed: checks.every((c) => c.ok), checks }
+  },
 })
 
-export function canSkillListingTransition(from: SkillListingStatus, to: SkillListingStatus): boolean {
-  return SKILL_LISTING_TRANSITIONS[from]?.includes(to) ?? false
+// ─── ONE EXTENSION LIFECYCLE (wave 137, lane 137D — m738 generalises m727 skill_marketplace_listings) ────────
+export const SKILL_PUBLISHERS = ["platform", "tenant", "third_party"] as const
+export type SkillPublisher = (typeof SKILL_PUBLISHERS)[number]
+
+export const EXTENSION_KINDS = ["skill", "strategy", "provider_adapter", "custom_manager", "webhook_app"] as const
+export type ExtensionKind = (typeof EXTENSION_KINDS)[number]
+
+// TOMBSTONE (m738): the m727 statuses submitted / evaluated / published / revoked / rejected and the names
+// SKILL_LISTING_STATUSES / SKILL_LISTING_TRANSITIONS / canSkillListingTransition / isSkillListingRunnableBy are
+// RETIRED — submitted → draft, evaluated → validated, published → enabled, revoked → disabled, rejected → disabled
+// (validation failed). SURVIVORS: EXTENSION_STATUSES / EXTENSION_TRANSITIONS / canExtensionTransition /
+// isExtensionExecutableBy, directly below.
+export const EXTENSION_STATUSES = ["draft", "validated", "approved", "enabled", "suspended", "deprecated", "disabled"] as const
+export type ExtensionStatus = (typeof EXTENSION_STATUSES)[number]
+
+export const EXTENSION_TRANSITIONS: Readonly<Record<ExtensionStatus, readonly ExtensionStatus[]>> = Object.freeze({
+  draft: ["validated", "disabled"],
+  validated: ["approved", "disabled"],
+  approved: ["enabled", "disabled"],
+  enabled: ["suspended", "deprecated", "disabled"],
+  suspended: ["enabled", "disabled"],
+  deprecated: ["disabled"],
+  disabled: [],
+})
+
+export function canExtensionTransition(from: ExtensionStatus, to: ExtensionStatus): boolean {
+  return EXTENSION_TRANSITIONS[from]?.includes(to) ?? false
+}
+
+/** Statuses that may EXECUTE. Deprecated keeps running where already enabled; it can never be newly enabled.
+ *  SUSPENDED and DISABLED never execute — the kill switch. */
+export const EXTENSION_EXECUTABLE_STATUSES: ReadonlySet<ExtensionStatus> = new Set<ExtensionStatus>(["enabled", "deprecated"])
+
+/** Kinds a tenant can never toggle: provider routing stays platform-controlled (CONTACT_PROVIDER_ROUTES /
+ *  routeCapability own the route table). */
+export const PLATFORM_ONLY_EXTENSION_KINDS: ReadonlySet<ExtensionKind> = new Set<ExtensionKind>(["provider_adapter"])
+
+/** PURE — one validator per kind. Kinds whose contract lives in another survivor (strategy → strategy-library,
+ *  provider_adapter → providers / property-lookup-rail, webhook_app → tenant-webhooks) have NO validator registered
+ *  here, so they FAIL CLOSED: they can be drafted, never validated or enabled, until their contract is plugged in. */
+export function validateExtensionDeclaration(kind: ExtensionKind, d: unknown): SkillValidation {
+  if (kind === "skill") return validateSkillDeclaration(d as SkillDeclaration, { knownEvaluationSuites: new Set(Object.keys(SKILL_EVALUATORS)) })
+  if (kind === "custom_manager") return validateCustomManagerDeclaration(d as CustomManagerDeclaration)
+  return { ok: false, errors: [`contract_validator_not_registered:${kind}`] }
+}
+
+/** PURE — run the kind's platform-owned evaluator (null = none exists for that suite / kind). */
+export function evaluateExtension(kind: ExtensionKind, d: unknown): SkillEvaluationEvidence | null {
+  const suite = (d as { evaluation_suite?: unknown } | null)?.evaluation_suite
+  if (typeof suite !== "string") return null
+  if (kind === "skill") return SKILL_EVALUATORS[suite]?.(d as SkillDeclaration) ?? null
+  if (kind === "custom_manager") return CUSTOM_MANAGER_EVALUATORS[suite]?.(d as CustomManagerDeclaration) ?? null
+  return null
+}
+
+export interface EnablementCheck { name: string; ok: boolean; detail?: string }
+
+/**
+ * PURE — what ENABLEMENT requires (approved → enabled, suspended → enabled): contract validation, evaluation
+ * pass, security / risk classification, dependency availability, an intact digest. Tenant compatibility +
+ * entitlement are per-tenant and asked by the kernel at enablement (mayUseAndAfford) — they are not pure.
+ */
+export function extensionEnablementChecks(row: { extension_kind: ExtensionKind; declaration: unknown; evaluation_evidence: SkillEvaluationEvidence | null }, digestOk: boolean): EnablementCheck[] {
+  const v = validateExtensionDeclaration(row.extension_kind, row.declaration)
+  const checks: EnablementCheck[] = [
+    { name: "contract_valid", ok: v.ok, detail: v.errors.join(", ") || undefined },
+    { name: "evaluation_passed", ok: row.evaluation_evidence?.passed === true },
+    { name: "digest_intact", ok: digestOk },
+  ]
+  if (row.extension_kind === "skill") {
+    const d = row.declaration as SkillDeclaration
+    const caps: readonly AppCapability[] = Array.isArray(d?.required_capabilities) ? d.required_capabilities : []
+    checks.push({ name: "risk_classified", ok: !!authorityBandFor(d?.risk_class) && caps.every((c) => c in APP_CAPABILITY_REGISTRY && MIN_AUTHORITY_FOR_RISK[capabilityRiskClass(c)] !== null) })
+    const missing = caps.filter((c) => !(c in APP_CAPABILITY_REGISTRY) || CAPABILITY_MANAGER[c] !== d.manager_owner)
+    checks.push({ name: "dependencies_available", ok: !!d && d.manager_owner in MANAGERS && missing.length === 0 && !!SKILL_EVALUATORS[d.evaluation_suite], detail: missing.join(", ") || undefined })
+  } else if (row.extension_kind === "custom_manager") {
+    const d = row.declaration as CustomManagerDeclaration
+    const caps = Array.isArray(d?.allowed_capabilities) ? d.allowed_capabilities : []
+    checks.push({ name: "risk_classified", ok: caps.length > 0 && caps.every((c) => c in APP_CAPABILITY_REGISTRY && MIN_AUTHORITY_FOR_RISK[capabilityRiskClass(c)] !== null) })
+    checks.push({ name: "dependencies_available", ok: !!d && d.escalation_owner in MANAGERS && (d.tools ?? []).every((t) => !!builtinSkill(t)) && (d.policy_requirements ?? []).every((p) => p in TENANT_POLICY_SETTINGS_KEYS) })
+  } else {
+    checks.push({ name: "risk_classified", ok: false, detail: `no contract registered for ${row.extension_kind}` })
+    checks.push({ name: "dependencies_available", ok: false, detail: `no contract registered for ${row.extension_kind}` })
+  }
+  return checks
 }
 
 export interface SkillApprover { isPlatformStaff: boolean; isTenantAdmin: boolean; brokerageId: string | null }
 
-/** PURE — who may approve / publish / revoke: platform staff for third-party and platform skills; a tenant
- *  admin of the SAME brokerage for a tenant-authored skill (never another tenant's, never platform staff
- *  acting as the tenant). */
-export function canDecideSkillListing(listing: { publisher: SkillPublisher; brokerage_id: string | null }, actor: SkillApprover): boolean {
-  if (listing.publisher === "tenant") return actor.isTenantAdmin && !!actor.brokerageId && actor.brokerageId === listing.brokerage_id
+/** PURE — who may move an extension through its lifecycle: platform staff for third-party and platform listings; a
+ *  tenant admin of the SAME brokerage for a tenant-authored one (never another tenant's). Platform staff never
+ *  approve / enable a tenant's own extension — but they hold the platform KILL SWITCH (suspend / disable) on
+ *  every listing. */
+export function canDecideSkillListing(listing: { publisher: SkillPublisher; brokerage_id: string | null }, actor: SkillApprover, decision?: string): boolean {
+  if (listing.publisher === "tenant") {
+    if (actor.isPlatformStaff && (decision === "suspend" || decision === "disable")) return true
+    return actor.isTenantAdmin && !!actor.brokerageId && actor.brokerageId === listing.brokerage_id
+  }
   return actor.isPlatformStaff
 }
 
-/** PURE — may this tenant RUN this listing? Published only; a tenant-authored skill only inside its tenant. */
-export function isSkillListingRunnableBy(listing: { publisher: SkillPublisher; brokerage_id: string | null; status: SkillListingStatus }, brokerageId: string): boolean {
-  if (listing.status !== "published") return false
-  return listing.publisher !== "tenant" || listing.brokerage_id === brokerageId
+/** PURE — may this tenant EXECUTE this extension? An executable status only. A tenant-authored extension runs
+ *  only inside its own tenant (its own lifecycle IS its enablement); a global one only where THIS tenant enabled
+ *  it (tenant policy `extensions` — tenantEnabled). */
+export function isExtensionExecutableBy(listing: { publisher: SkillPublisher; brokerage_id: string | null; status: ExtensionStatus }, brokerageId: string, tenantEnabled: boolean): boolean {
+  if (!EXTENSION_EXECUTABLE_STATUSES.has(listing.status)) return false
+  if (listing.publisher === "tenant") return listing.brokerage_id === brokerageId
+  return tenantEnabled
+}
+
+/** PURE — may a tenant admin OPT IN to (or out of) this extension for their tenant? Global listings only; a
+ *  platform-only kind never; opting IN needs `enabled` (a deprecated extension takes no new tenants). */
+export function tenantEnablementRefusal(listing: { publisher: SkillPublisher; status: ExtensionStatus; extension_kind: ExtensionKind }, enable: boolean): string | null {
+  if (listing.publisher === "tenant") return "tenant_listing_uses_its_own_lifecycle"
+  if (PLATFORM_ONLY_EXTENSION_KINDS.has(listing.extension_kind)) return `platform_controlled:${listing.extension_kind}`
+  if (enable && listing.status !== "enabled") return `not_enableable:${listing.status}`
+  return null
 }
 
 /** PURE — a stable serialisation for the declaration digest (key order independent). */

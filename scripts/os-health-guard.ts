@@ -316,6 +316,46 @@ async function main() {
   check("POSITIVE CONTROL: the scanner flags a planted unscoped read", scanUnscoped(`svc.from("missions").select("id").limit(5)`).includes("missions"))
   check("static: every detector is registered and every registered detector exists", HEALTH_DETECTORS.every((d) => typeof DETECTORS[d] === "function") && Object.keys(DETECTORS).length === HEALTH_DETECTORS.length)
 
+  // ── C2. BREADTH DETECTORS (wave 137E) — the non-listing domains, each mapped to a recovery class ─────
+  console.log("\n[C2 · breadth detectors: portal invites, e-sign, direct mail, sequences, transaction deadlines, payments sync]")
+  {
+    const U = (n: number) => `77777777-7777-4777-8777-${String(n).padStart(12, "0")}`
+    const bSeed: Record<string, Row[]> = {
+      portal_contact_invites: [{ id: U(1), brokerage_id: A, contact_id: U(2), status: "sent", expires_at: hAgo(48), portal_view: "buyer" }, { id: U(3), brokerage_id: B, contact_id: U(4), status: "sent", expires_at: hAgo(48), portal_view: "buyer" }, { id: U(5), brokerage_id: A, contact_id: U(6), status: "accepted", expires_at: hAgo(48), portal_view: "seller" }],
+      signature_requests: [{ id: U(10), brokerage_id: A, transaction_id: U(11), request_status: "partially_signed", expires_at: hAgo(5), sent_at: hAgo(200) }, { id: U(12), brokerage_id: A, transaction_id: U(13), request_status: "completed", expires_at: hAgo(5), sent_at: hAgo(200) }],
+      direct_mail_recipients: [{ id: U(20), brokerage_id: A, campaign_id: U(21), contact_id: U(22), delivery_status: "returned", created_at: hAgo(30) }, { id: U(23), brokerage_id: A, campaign_id: U(21), contact_id: U(24), delivery_status: "delivered", created_at: hAgo(30) }],
+      sequence_step_executions: [{ id: U(30), brokerage_id: A, provider_key: "sendgrid", channel: "email", status: "failed", error_message: "429 Too Many Requests", created_at: hAgo(2) }, { id: U(31), brokerage_id: A, provider_key: "twilio", channel: "sms", status: "failed", error_message: "invalid number", created_at: hAgo(2) }, { id: U(32), brokerage_id: B, provider_key: "twilio", channel: "sms", status: "failed", error_message: "x", created_at: hAgo(2) }],
+      transaction_deadlines: [{ id: U(40), brokerage_id: A, transaction_id: U(41), deadline_type: "inspection", deadline_date: hAgo(72).slice(0, 10), status: "pending" }, { id: U(42), brokerage_id: A, transaction_id: U(43), deadline_type: "appraisal", deadline_date: hAgo(72).slice(0, 10), status: "completed" }],
+      accounting_sync_log: [{ id: U(50), brokerage_id: A, provider: "quickbooks", sync_type: "commission", status: "failed", started_at: hAgo(3), error_summary: "token expired", records_failed: 2 }, { id: U(51), brokerage_id: A, provider: "quickbooks", sync_type: "journal", status: "running", started_at: hAgo(1), error_summary: null, records_failed: 0 }],
+      brokerage_settings: [{ id: "bs-a", brokerage_id: A, settings: {}, updated_at: hAgo(100) }], self_heal_events: [],
+    }
+    const bDet = ["portal_invites", "esign_requests", "direct_mail_returns", "sequence_send_failures", "transaction_deadlines", "payments_sync"] as const
+    const svcX = fakeClient(bSeed)
+    const sig: any[] = [], hal: any[] = [], bell: string[] = []
+    const xDeps = { ...executorDeps, publishSignal: async (_s: any, x: any) => { sig.push(x); return { ok: true } }, halt: async (_s: any, h: any) => { hal.push(h); return { ok: true } as any }, notifyHuman: async (_s: any, i: HealthIncident) => { bell.push(i.subjectKey) } }
+    const repX = await runOsHealthSupervisor(A, svcX, { now: NOW, detectors: bDet, detectorDeps, executorDeps: xDeps })
+    const byDet = (d: string) => repX.outcomes.filter((o) => o.incident.detector === d)
+    check("C2.1 every breadth detector is REGISTERED and ran cleanly", bDet.every((d) => (HEALTH_DETECTORS as readonly string[]).includes(d)) && repX.detectorsRun === bDet.length && repX.unreadable.length === 0, JSON.stringify(repX.unreadable))
+    const expect: Record<(typeof bDet)[number], { cls: string[]; action: string }> = {
+      portal_invites:         { cls: ["data_conflict"], action: "route_data_steward" },
+      esign_requests:         { cls: ["stuck_workflow"], action: "escalate_human" },
+      direct_mail_returns:    { cls: ["data_conflict"], action: "route_data_steward" },
+      sequence_send_failures: { cls: ["rate_limit", "provider_failure"], action: "escalate_human" },
+      transaction_deadlines:  { cls: ["compliance"], action: "route_compliance" },
+      payments_sync:          { cls: ["financial_discrepancy"], action: "halt_and_route_finance" },
+    }
+    const wrong = bDet.flatMap((d) => byDet(d).filter((o) => !expect[d].cls.includes(o.incident.class) || o.decision.action !== expect[d].action).map((o) => `${d}:${o.incident.class}->${o.decision.action}`))
+    check("C2.2 every breadth detector fires on its failure signal AND maps to its recovery class (data conflict → Data Steward, stuck e-sign → human, send failure → human never re-sent, missed contract deadline → Compliance, accounting sync → Finance)", bDet.every((d) => byDet(d).length > 0) && wrong.length === 0, `${wrong.join(", ")} | ${bDet.map((d) => `${d}=${byDet(d).length}`).join(" ")}`)
+    check("C2.3 the classes are SAFE: no breadth incident is idempotent (a re-invite, re-send, re-sign or re-sync could act twice) — nothing is retried", repX.outcomes.every((o) => !o.incident.idempotent) && !repX.outcomes.some((o) => o.decision.action === "retry" || o.decision.action === "failover"))
+    check("C2.4 the accounting sync routes to Finance WITHOUT halting a writer (no attributable money writer) and NEVER re-runs the sync", byDet("payments_sync").every((o) => o.decision.halt === null) && hal.length === 0 && sig.some((x) => x.toManager === "finance_manager"))
+    check("C2.5 only the failure rows count: an accepted invite, a completed envelope, a delivered piece, a completed deadline and a fresh running sync raise nothing", byDet("payments_sync").length === 1 && byDet("esign_requests").length === 1 && byDet("transaction_deadlines").length === 1 && byDet("direct_mail_returns").length === 1)
+    const pinned = svcX.log.filter((q) => (bDet as readonly string[]).length && ["portal_contact_invites", "signature_requests", "direct_mail_recipients", "sequence_step_executions", "transaction_deadlines", "accounting_sync_log"].includes(q.table))
+    check("C2.6 every breadth read is tenant-pinned (.eq brokerage_id A) — B's invite and B's failed send never reach A's incidents", pinned.length === 6 && pinned.every((q) => q.filters.some(([op, c, v]) => op === "eq" && c === "brokerage_id" && v === A)) && !repX.outcomes.some((o) => JSON.stringify(o.incident.evidence).includes(U(3))), JSON.stringify(pinned.map((q) => q.table)))
+    const repClean = await runOsHealthSupervisor(B, fakeClient({ brokerage_settings: [{ id: "bs-b", brokerage_id: B, settings: {}, updated_at: hAgo(100) }], self_heal_events: [] }), { now: NOW, detectors: bDet, detectorDeps, executorDeps: xDeps })
+    check("C2.7 (POSITIVE CONTROL) a clean tenant raises NO breadth incident, and a refused read marks the detector UNREADABLE (never all-clear)", repClean.outcomes.length === 0
+      && (await runOsHealthSupervisor(A, fakeClient(bSeed, { refuse: { signature_requests: "denied" } }), { now: NOW, detectors: ["esign_requests"], detectorDeps, executorDeps: xDeps })).unreadable.some((u) => u.detector === "esign_requests"))
+  }
+
   // ── D. THE KILL SWITCH ─────────────────────────────────────────────────────────────────────
   console.log("\n[D · kill switch: halt, fail closed, release, honored by every writer]")
   const ks = fakeClient({ brokerage_settings: [{ id: "x", brokerage_id: A, settings: { other_key: 1 }, updated_at: hAgo(1) }], tenant_policy_versions: [] })
@@ -338,6 +378,26 @@ async function main() {
   const releaseSrc = stripped("app/actions/os-health.ts")
   check("release is finance-admin gated + session tenant (resolveBrokerageFinanceAdmin, requireCallerTenant, no tenant argument)",
     /resolveBrokerageFinanceAdmin\(/.test(releaseSrc) && /requireCallerTenant\(\)/.test(releaseSrc) && !/brokerageId\s*:\s*input/.test(releaseSrc))
+
+  // ── D2. WAVE 137 — platform staff may release a financial halt, WITH EVIDENCE ─────────────────
+  console.log("\n[D2 · platform door: release with evidence, only a halted writer, through the one writer]")
+  {
+    const ps = fakeClient({ brokerage_settings: [{ id: "y", brokerage_id: A, settings: { keep: 1 }, updated_at: hAgo(1) }], tenant_policy_versions: [] })
+    await haltFinancialWriter(ps, { brokerageId: A, writer: "usage_metering", reason: "meter doubled", incident: "os_health:usage:financial_writer:usage_metering" })
+    const noEv = await releaseFinancialWriterHalt(ps, { brokerageId: A, writer: "usage_metering", userId: "staff-1", reason: "reconciled", releasedAs: "platform_staff", evidence: "ok" })
+    check("a platform release WITHOUT evidence is refused and the writer stays halted", !noEv.ok && /evidence/.test((noEv as any).error) && (await loadFinancialWriterHalt(ps, A, "usage_metering")).halted)
+    const notHalted = await releaseFinancialWriterHalt(ps, { brokerageId: A, writer: "brokerage_earnings", userId: "staff-1", reason: "reconciled", releasedAs: "platform_staff", evidence: "reconciliation run 42 matched the ledger" })
+    check("a platform release of a writer that is NOT halted is refused (nothing to release)", !notHalted.ok && /not halted/.test((notHalted as any).error))
+    const blind = await releaseFinancialWriterHalt(fakeClient({}, { refuse: { brokerage_settings: "denied" } }), { brokerageId: A, writer: "usage_metering", userId: "staff-1", reason: "reconciled", releasedAs: "platform_staff", evidence: "reconciliation run 42 matched the ledger" })
+    check("FAIL CLOSED: an unreadable halt state refuses the platform release", !blind.ok && /unreadable/.test((blind as any).error))
+    const okRel = await releaseFinancialWriterHalt(ps, { brokerageId: A, writer: "usage_metering", userId: "staff-1", reason: "meter rebuilt", releasedAs: "platform_staff", evidence: "reconciliation run 42 matched the ledger" })
+    const entry = ps.tables().brokerage_settings[0].settings[FINANCIAL_WRITER_HALTS_POLICY_KEY]?.usage_metering
+    check("POSITIVE CONTROL: with evidence on a halted writer the platform release clears it — versioned as a user change naming released_as platform_staff + the evidence, other keys kept", okRel.ok && !(await loadFinancialWriterHalt(ps, A, "usage_metering")).halted && entry?.released_as === "platform_staff" && /run 42/.test(entry?.release_evidence ?? "") && ps.tables().brokerage_settings[0].settings.keep === 1 && ps.tables().tenant_policy_versions.some((r: Row) => r.actor_type === "user" && /platform staff/.test(String(r.reason ?? r.change_reason ?? JSON.stringify(r)))))
+    const door = stripped("app/actions/superadmin/financial-halts.ts")
+    check("the platform door is \"use server\", gated by requirePlatformCapability(\"billing\", { requireWrite: true }) BEFORE the service client, re-checks the target brokerage, and releases through the one writer as platform_staff", door.startsWith("\"use server\"") && /requirePlatformCapability\("billing", \{ requireWrite: true \}\)/.test(door) && door.indexOf("requirePlatformCapability(\"billing\", { requireWrite") < door.indexOf("createServiceClient()", door.indexOf("releaseFinancialWriterHaltAsPlatformAction")) && /from\("brokerages"\)\.select\("id"\)\.eq\("id", target\)/.test(door) && /releasedAs: "platform_staff"/.test(door))
+    check("the platform board is mounted on the superadmin sentinel page", /<FinancialHaltsBoard \/>/.test(stripped("app/dashboard/superadmin/sentinel/page.tsx")) && /releaseFinancialWriterHaltAsPlatformAction\(/.test(stripped("app/dashboard/superadmin/sentinel/financial-halt-release.tsx")))
+    check("the tenant door is unchanged (finance-admin, session tenant) — the platform door is a second door, not a replacement", /resolveBrokerageFinanceAdmin\(/.test(releaseSrc) && !/platform_staff/.test(releaseSrc))
+  }
 
   // ── E. WIRING ──────────────────────────────────────────────────────────────────────────────
   console.log("\n[E · wiring]")

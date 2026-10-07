@@ -27,7 +27,7 @@ async function requireStrategyAdmin(): Promise<Gate> {
   return { ok: true, brokerageId: caller.brokerageId, userId: caller.userId }
 }
 
-export async function listStrategyLibraryAction(): Promise<{ ok: true; entries: StrategyLibraryEntry[]; learning: string; learningReason: string | null; readRefused: string | null } | { ok: false; error: string }> {
+export async function listStrategyLibraryAction(): Promise<{ ok: true; entries: StrategyLibraryEntry[]; edition: number; learning: string; learningReason: string | null; readRefused: string | null } | { ok: false; error: string }> {
   const gate = await requireStrategyAdmin()
   if (!gate.ok) return { ok: false, error: gate.error }
   const { listStrategyLibrary } = await import("@/lib/kernel/strategy-engine")

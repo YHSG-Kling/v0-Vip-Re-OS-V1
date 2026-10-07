@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { OsSentinelBoard } from "./os-sentinel-board"
 import { SentinelActionQueue } from "./sentinel-action-queue"
 import { SaasOperationsBoard } from "./saas-operations-board"
+import { FinancialHaltsBoard } from "./financial-halts-board"
 
 export const dynamic = "force-dynamic"
 
@@ -92,6 +93,8 @@ export default async function OsSentinelPage() {
       <SentinelActionQueue />
       {/* Wave 108B: platform self-operation — per-tenant SaaS signals + support missions */}
       <SaasOperationsBoard />
+      {/* Wave 137: halted financial writers across tenants — platform release with evidence */}
+      <FinancialHaltsBoard />
       {/* Platform-rail bus signals — feed-only manager_signals staff must see */}
       <section className="rounded-lg border p-4 space-y-3">
         <div>

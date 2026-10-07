@@ -26,10 +26,11 @@ import { stripComments } from "./strip-comments"
 import {
   parseBrokerObjective, matchTerritory, submitBrokerObjective, rankContributingCauses, fitLiftToCap, planObjectiveDelegation,
   EVIDENCE_CHECKS, INVESTIGATORS, DELEGATION_CHAIN, OBJECTIVE_METRIC_PATTERNS, type BrokerObjectiveDeps, type TerritoryCandidate, type EvidenceFinding,
+  GOAL_OF_METRIC, OBSERVED_KEY, type ObjectiveEvidenceFacts,
 } from "../lib/kernel/broker-objectives"
 import { getMission, transitionMission, type MissionDeps } from "../lib/kernel/missions"
 import type { DelegationDeps } from "../lib/kernel/manager-delegation"
-import { composeBrokerageTwin, DEFAULT_WORKFORCE_THRESHOLDS, type TwinFacts, type TwinAgentCapacity } from "../lib/kernel/brokerage-twin"
+import { composeBrokerageTwin, OBJECTIVE_MEASURES, DEFAULT_WORKFORCE_THRESHOLDS, type TwinFacts, type TwinAgentCapacity } from "../lib/kernel/brokerage-twin"
 import { simulateScenario, SATURATION_SWEEP_STEP, SATURATION_SWEEP_MAX, type ScenarioFacts } from "../lib/kernel/twin-scenario"
 import { CAPABILITY_MANAGER } from "../lib/agentic-os/capability-ownership"
 import { APP_CAPABILITY_REGISTRY } from "../lib/agentic-os/app-capability-registry"
@@ -124,7 +125,7 @@ const twinB = composeBrokerageTwin(twinFacts(B, [{ name: TERR_B, zip: "20001" }]
 const market: ScenarioFacts = { marketing: { leads30d: 50, spendUsd30d: 2500, rows: 30 }, txDeskStaff: 1, mediaCostUsd: { image: 0.04, graphic: 0.04, ad_creative: 0.04, social_post: 0.02, video: 2.5 }, mediaVariants: 4, refused: [] }
 
 /** Seed one tenant's period rows: `prev` in the window before, `cur` in the latest window. */
-function seed(tables: Record<string, Row[]>, b: string, o: { apptsPrev: number; apptsCur: number; sellerPrev: number; sellerCur: number; adLeadsPrev: number; adLeadsCur: number }) {
+function seed(tables: Record<string, Row[]>, b: string, o: { apptsPrev: number; apptsCur: number; sellerPrev: number; sellerCur: number; adLeadsPrev: number; adLeadsCur: number; sellerContacts?: number }) {
   const push = (tb: string, r: Row) => (tables[tb] ??= []).push({ id: randomUUID(), brokerage_id: b, ...r })
   for (let i = 0; i < o.apptsPrev; i++) push("listing_presentations", { appointment_at: ago(45) })
   for (let i = 0; i < o.apptsCur; i++) push("listing_presentations", { appointment_at: ago(10) })
@@ -138,6 +139,12 @@ function seed(tables: Record<string, Row[]>, b: string, o: { apptsPrev: number; 
   for (let i = 0; i < 10; i++) push("sequence_step_executions", { created_at: ago(9), replied_at: i < 3 ? ago(8) : null })
   push("transactions", { status: "closed", deleted_at: null, close_date: ago(40).slice(0, 10), commission_amount: 9000 })
   push("transactions", { status: "closed", deleted_at: null, close_date: ago(12).slice(0, 10), commission_amount: 9000 })
+  // WAVE 137: seller-side CONTACTS (seller | both) — the listing appointment rate's denominator. 25 per window
+  // for A (B differs so a leak moves the rate); a buyer contact is outside the population.
+  const sc = o.sellerContacts ?? 25
+  for (let i = 0; i < sc; i++) push("contacts", { contact_type: i % 3 ? "seller" : "both", deleted_at: null, created_at: ago(40) })
+  for (let i = 0; i < sc; i++) push("contacts", { contact_type: i % 3 ? "seller" : "both", deleted_at: null, created_at: ago(8) })
+  for (let i = 0; i < 30; i++) push("contacts", { contact_type: "buyer", deleted_at: null, created_at: ago(8) })
 }
 function world(o: { refuseNewCaps?: boolean } = {}) {
   const tables: Record<string, Row[]> = {
@@ -149,7 +156,7 @@ function world(o: { refuseNewCaps?: boolean } = {}) {
   }
   seed(tables, A, { apptsPrev: 20, apptsCur: 10, sellerPrev: 40, sellerCur: 20, adLeadsPrev: 30, adLeadsCur: 10 })
   // Tenant B's rows sit in the same tables — a leak would change every count A reports.
-  seed(tables, B, { apptsPrev: 3, apptsCur: 90, sellerPrev: 5, sellerCur: 80, adLeadsPrev: 1, adLeadsCur: 99 })
+  seed(tables, B, { apptsPrev: 3, apptsCur: 90, sellerPrev: 5, sellerCur: 80, adLeadsPrev: 1, adLeadsCur: 99, sellerContacts: 7 })
   const NEW_CAPS = ["campaign_performance_report", "ads_performance_report", "listing_demand_report"]
   return memClient(tables, { refuseInsert: o.refuseNewCaps ? (tb, r) => (tb === "manager_delegations" && NEW_CAPS.includes(r.requested_capability) ? "new row violates check constraint \"manager_delegations_requested_capability_check\"" : null) : undefined })
 }
@@ -210,6 +217,12 @@ async function main() {
       check("B8 the mission is the controller's, a brokerage_objective, COMPLETED, with the evidence_report attached", m?.owner_manager === "cron_manager" && m?.mission_type === "brokerage_objective" && m?.state === "COMPLETED" && (m?.evidence ?? []).some((e: any) => e.kind === "evidence_report" && e.report?.headline === report.headline), m?.state)
       check("B9 the headline is deterministic and names the move and the top causes", /listing appointments: 20 → 10/.test(report.headline) && /Likely causes/.test(report.headline), report.headline)
       check("B10 blind spots are published beside the numbers (capacity is present-state)", report.blindSpots.some((b) => /PRESENT state/.test(b)))
+      // WAVE 137 owner ruling: "listing appointments per seller lead" → per seller CONTACT (reader string too).
+      const lc = rows.find((x) => x.assigned_manager === "listing_concierge")?.result?.findings as EvidenceFinding[] | undefined
+      const ar = lc?.find((x) => x.key === "appointment_rate")
+      check("B11 the listing-appointment rate is per seller CONTACT: 20/25 = 0.8 → 10/25 = 0.4 (tenant A's seller | both contacts; buyers and tenant B excluded)", !!ar && ar.previous === 0.8 && ar.current === 0.4 && /seller contact/.test(ar.label) && /seller contacts/.test(ar.reader) && !/seller lead/.test(ar.label + ar.reader), ar)
+      check("B12 POSITIVE CONTROL: the seller-LEAD ratio over the same windows would read 20/40 = 0.5 → 10/20 = 0.5 — the finding is NOT it", !!ar && !(ar.previous === 0.5 && ar.current === 0.5))
+
     }
     // CONTROL: the measure did not move → the readers do not confirm the premise.
     const c2 = memClient({}); seed(c2.tables, A, { apptsPrev: 10, apptsCur: 12, sellerPrev: 20, sellerCur: 20, adLeadsPrev: 10, adLeadsCur: 10 }); c2.tables.farm_territories = []
@@ -278,6 +291,26 @@ async function main() {
     }
     const pure = planObjectiveDelegation(twinA, market, { goalType: "gross_commission", targetPct: 15, capUsd: 1, territory: null })
     check("D11 (control) a cap below the first step is reported as the shortfall, never exceeded", pure.totalBudgetUsd <= 1 && /cap/.test(pure.shortfall ?? ""), pure.shortfall)
+  }
+
+  console.log("H — BREADTH objective verbs (wave 137E): buyer clients, lead conversion, contacts — only where a twin measure exists")
+  {
+    const bc = parseBrokerObjective("Increase buyer clients 20%", candA), lc = parseBrokerObjective("Increase lead conversion 10%", candA), ct = parseBrokerObjective("Grow our sphere contacts 15%", candA)
+    check("H1 each new verb routes to an OBJECTIVE DELEGATION on its agent_goals measure (buyer_clients / conversion_rate / new_contacts)",
+      bc.ok && bc.objective.kind === "delegation" && bc.objective.goalType === "buyer_clients" && lc.ok && lc.objective.goalType === "conversion_rate" && ct.ok && ct.objective.goalType === "new_contacts", JSON.stringify([bc, lc, ct]))
+    check("H2 every new goal measure is one the TWIN carries (OBJECTIVE_MEASURES non-null) — no verb was added without a twin measure", ["buyer_clients", "pipeline_conversion", "contacts"].every((m) => { const g = GOAL_OF_METRIC[m as keyof typeof GOAL_OF_METRIC]; return !!g && OBJECTIVE_MEASURES[g] !== null }))
+    check("H3 (control) the specific phrase still wins: 'seller conversion' stays seller_conversion, 'seller leads' stays seller_leads, the seed examples route as before", (() => { const a = parseBrokerObjective("why seller conversion dropped last week", candA), b = parseBrokerObjective("Increase listing GCI 15%", candA); return a.ok && a.objective.metric === "seller_conversion" && b.ok && b.objective.goalType === "gross_commission" })())
+    const inv = parseBrokerObjective("Find out why lead conversion dropped last month", candA)
+    check("H4 an investigation on the new verb reads a REAL finding (lead → contact conversion, the ai_isa check)", inv.ok && inv.objective.kind === "investigation" && OBSERVED_KEY[inv.objective.metric] === "lead_conversion_rate" && (() => {
+      const w = (current: number, previous: number) => ({ current, previous })
+      const f = { leads: w(40, 50), sellerLeads: w(10, 10), sellerLeadsConverted: w(4, 5), leadsConverted: w(8, 20) } as unknown as ObjectiveEvidenceFacts
+      const hit = EVIDENCE_CHECKS.ai_isa.check(f).find((x) => x.key === "lead_conversion_rate")
+      return !!hit && hit.current === 0.2 && hit.previous === 0.4 && hit.adverse
+    })())
+    const pb = planObjectiveDelegation(twinA, market, { goalType: "buyer_clients", targetPct: 20, capUsd: null, territory: null })
+    check("H5 buyer representation has NO scenario lever: no sweep, no spend, one Shopping Agent child, the shortfall says why (never a seller-acquisition budget for a buyer goal)", pb.totalBudgetUsd === 0 && pb.levers === null && pb.children.length === 1 && pb.children[0].manager === "shopping_agent" && /no scenario lever/.test(pb.shortfall ?? ""), JSON.stringify({ s: pb.shortfall, c: pb.children.map((c) => c.manager) }))
+    const pc = planObjectiveDelegation(twinA, market, { goalType: "conversion_rate", targetPct: 10, capUsd: null, territory: null })
+    check("H6 a conversion goal is planned on the scenario's conversions (not listings) with the full manager chain", pc.children.length === 7 && (pc.projection === null || typeof pc.projection === "object") && pc.current !== null, JSON.stringify({ cur: pc.current, tgt: pc.target, s: pc.shortfall }))
   }
 
   console.log("E — no hard-coded location")

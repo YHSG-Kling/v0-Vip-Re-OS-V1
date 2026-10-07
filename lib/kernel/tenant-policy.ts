@@ -99,7 +99,7 @@ export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition>
   // classes promote — { experience_bias: { education?, properties? } (±15, read by lib/ai-isa/lead-action-plan.ts
   // planNextBestExperience), provider_skip: { property_valuation?: [backup providers] } (read by lib/avm/provider-chain.ts
   // requestPropertyValuation; the owner-ruled primary is never skipped) }. Written ONLY by the proposal promotion path.
-  optimization_tuning:     { label: "Self-optimization tuning (experience bias, valuation provider skip)", store: "brokerage_settings.settings", defaultNote: "nothing tuned — the planners' own scores and the platform route" },
+  optimization_tuning:     { label: "Self-optimization tuning (experience bias, valuation provider skip, transaction deadline reminder lead)", store: "brokerage_settings.settings", defaultNote: "nothing tuned — the planners' own scores and the platform route" },
   // Wave 108 (108G): { autonomous_classes: OptimizationClass[] } — which optimization classes may promote WITHOUT a human
   // (each still under its owner manager's autonomy gate + authority rung). AUTHORITY POLICY: the optimizer can never
   // propose it (FORBIDDEN surface); a tenant admin sets it on the Manager Trust page through a human policy proposal.
@@ -118,6 +118,11 @@ export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition>
   // (app/actions/os-health.ts releaseFinancialWriterHaltAction). Read by each writer at its entry through
   // loadFinancialWriterHalt — FAILS CLOSED (an unreadable halt state does not write money).
   financial_writer_halts:  { label: "Financial writer halts (OS health kill switch, Finance releases)", store: "brokerage_settings.settings", defaultNote: "no writer halted" },
+  // Wave 137 (137D, TENANT EXTENSION CONTROL): { enabled: { [listing_id]: { kind, name, version, set_by, set_at } } } —
+  // which ENABLED global extensions (skill_marketplace_listings, m738) this tenant opted in to. Read by
+  // lib/kernel/skill-marketplace.ts loadTenantExtensionEnablement (FAILS CLOSED: unreadable = nothing enabled);
+  // written ONLY by setTenantExtensionEnabled (tenant admin, session actor) through mergeBrokerageSettings.
+  extensions:              { label: "Extensions enabled for this brokerage (approved skills / custom managers)", store: "brokerage_settings.settings", defaultNote: "none — no global extension runs here until a tenant admin enables it" },
 }
 
 /** Real columns that are tenant operating policy. */

@@ -33,7 +33,7 @@
     "lib/agentic-os/agent-credentials.ts": 1,
     "lib/agentic-os/app-capability-registry.ts": 1,
     "lib/agentic-os/connection-nudge.ts": 1,
-    "lib/agentic-os/connector-gateway.ts": 1,
+    "lib/agentic-os/connector-gateway.ts": 2,
     "lib/agentic-os/connector-probe.ts": 2,
     "lib/agentic-os/connector-registry.ts": 1,
     "lib/agentic-os/connector-shape.ts": 3,
@@ -295,6 +295,7 @@
     "lib/kernel/portal.ts": 4,
     "lib/kernel/postclose-concierge.ts": 3,
     "lib/kernel/procurement.ts": 4,
+    "lib/kernel/provider-adapters.ts": 4,
     "lib/kernel/providers.ts": 1,
     "lib/kernel/referral-appreciation.ts": 6,
     "lib/kernel/referral-radar.ts": 4,
@@ -314,8 +315,8 @@
     "lib/kernel/signal-routing.ts": 2,
     "lib/kernel/signature-chase.ts": 3,
     "lib/kernel/site-traffic-insights.ts": 1,
-    "lib/kernel/skill-marketplace.ts": 2,
-    "lib/kernel/skill-registry.ts": 1,
+    "lib/kernel/skill-marketplace.ts": 3,
+    "lib/kernel/skill-registry.ts": 3,
     "lib/kernel/standup-action.ts": 1,
     "lib/kernel/strategy-engine.ts": 1,
     "lib/kernel/strategy-library.ts": 1,
@@ -450,6 +451,7 @@
     "lib/platform/self-audit-rollup.ts": 1,
     "lib/platform/subscriber-door.ts": 3,
     "lib/platform/subscription-oversight.ts": 2,
+    "lib/platform/tenant-webhooks-core.ts": 1,
     "lib/platform/territory-marketplace.ts": 1,
     "lib/platform/trial-funnel.ts": 1,
     "lib/portal/climate.ts": 1,
@@ -555,7 +557,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 11086,
+  "census": 11143,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -586,7 +588,7 @@
     "app/actions/admin/create-subscriber.ts": 2,
     "app/actions/admin/domain-coherence.ts": 8,
     "app/actions/admin/get-admin-stats.ts": 1,
-    "app/actions/admin/improvement-proposals.ts": 9,
+    "app/actions/admin/improvement-proposals.ts": 11,
     "app/actions/admin/invitations.ts": 4,
     "app/actions/admin/invite-user.ts": 1,
     "app/actions/admin/lead-routing-settings.ts": 4,
@@ -944,6 +946,7 @@
     "app/actions/phone-test-call.ts": 2,
     "app/actions/photo-management.ts": 13,
     "app/actions/pl-truth-engine.ts": 3,
+    "app/actions/platform-skill-examples.ts": 1,
     "app/actions/podcast-generation.ts": 25,
     "app/actions/portal-buyer-financial.ts": 4,
     "app/actions/portal-document-requests.ts": 1,
@@ -1024,7 +1027,7 @@
     "app/actions/settings/update-notification-rules.ts": 1,
     "app/actions/setup-readiness.ts": 1,
     "app/actions/showings.ts": 6,
-    "app/actions/skill-marketplace.ts": 7,
+    "app/actions/skill-marketplace.ts": 10,
     "app/actions/smart-insights.ts": 12,
     "app/actions/smart-queue.ts": 1,
     "app/actions/smarter-this-week.ts": 1,
@@ -1050,6 +1053,7 @@
     "app/actions/superadmin/deal-room-demo.ts": 3,
     "app/actions/superadmin/demo-tenant.ts": 2,
     "app/actions/superadmin/feature-sunset.ts": 1,
+    "app/actions/superadmin/financial-halts.ts": 2,
     "app/actions/superadmin/go-live-readiness.ts": 2,
     "app/actions/superadmin/impersonation.ts": 3,
     "app/actions/superadmin/manual-subscriber.ts": 1,
@@ -1094,7 +1098,7 @@
     "app/actions/tenant-connections.ts": 2,
     "app/actions/tenant-safety-actions.ts": 3,
     "app/actions/tenant-sso.ts": 5,
-    "app/actions/tenant-webhooks.ts": 11,
+    "app/actions/tenant-webhooks.ts": 13,
     "app/actions/time-to-value.ts": 1,
     "app/actions/title-portal.ts": 9,
     "app/actions/tour-planner.ts": 12,
@@ -1528,6 +1532,7 @@
     "app/api/twiml/whisper-bridge/route.ts": 2,
     "app/api/unsubscribe/route.ts": 1,
     "app/api/unsubscribe/token/route.ts": 2,
+    "app/api/v1/[resource]/route.ts": 2,
     "app/api/video/engagement/route.ts": 1,
     "app/api/video-scripts/route.ts": 1,
     "app/api/videos/listing-voiceover/route.ts": 1,
@@ -1834,6 +1839,7 @@
     "app/components/shared/staged-draft-banner.tsx": 1,
     "app/components/shell/todays-focus-card.tsx": 1,
     "app/components/skills/skill-marketplace-panel.tsx": 1,
+    "app/components/skills/tenant-extensions-panel.tsx": 1,
     "app/components/title/transaction-list.tsx": 1,
     "app/components/transactions/DealShakyToggle.tsx": 1,
     "app/components/transactions/VendorBookingSection.tsx": 1,
@@ -1978,6 +1984,8 @@
     "app/dashboard/admin/learning-modules/approvals/approvals-client.tsx": 1,
     "app/dashboard/admin/learning-modules/learning-modules-client.tsx": 1,
     "app/dashboard/admin/locations/locations-client.tsx": 1,
+    "app/dashboard/admin/manager-trust/autonomy-envelopes-editor.tsx": 1,
+    "app/dashboard/admin/manager-trust/autonomy-envelopes-form.tsx": 1,
     "app/dashboard/admin/manager-trust/improvement-proposals-panel.tsx": 1,
     "app/dashboard/admin/manager-trust/manager-trust-client.tsx": 1,
     "app/dashboard/admin/manager-trust/revert-policy-button.tsx": 1,
@@ -2482,6 +2490,8 @@
     "app/dashboard/superadmin/platform/territory-coverage-board.tsx": 1,
     "app/dashboard/superadmin/rollout/cohort-drill.tsx": 1,
     "app/dashboard/superadmin/rollout/sunset-control.tsx": 1,
+    "app/dashboard/superadmin/sentinel/financial-halt-release.tsx": 1,
+    "app/dashboard/superadmin/sentinel/financial-halts-board.tsx": 1,
     "app/dashboard/superadmin/sentinel/os-sentinel-board.tsx": 1,
     "app/dashboard/superadmin/sentinel/saas-operations-board.tsx": 1,
     "app/dashboard/superadmin/sentinel/sentinel-action-queue.tsx": 1,
@@ -2794,11 +2804,11 @@
     "lib/agentic-os/connection-impact.ts": 2,
     "lib/agentic-os/connection-nudge.ts": 2,
     "lib/agentic-os/connectivity-agent.ts": 4,
-    "lib/agentic-os/connector-auto-applier.ts": 1,
-    "lib/agentic-os/connector-gateway.ts": 4,
-    "lib/agentic-os/connector-healer.ts": 1,
+    "lib/agentic-os/connector-auto-applier.ts": 2,
+    "lib/agentic-os/connector-gateway.ts": 6,
+    "lib/agentic-os/connector-healer.ts": 2,
     "lib/agentic-os/connector-probe.ts": 3,
-    "lib/agentic-os/connector-registry.ts": 2,
+    "lib/agentic-os/connector-registry.ts": 3,
     "lib/agentic-os/connector-shape.ts": 4,
     "lib/agentic-os/deal-investigator.ts": 1,
     "lib/agentic-os/escalate-dark-capabilities.ts": 1,
@@ -3589,7 +3599,7 @@
     "lib/kernel/approval-sources.ts": 4,
     "lib/kernel/area-query.ts": 3,
     "lib/kernel/assistant-starter.ts": 1,
-    "lib/kernel/autonomy-budgets.ts": 8,
+    "lib/kernel/autonomy-budgets.ts": 10,
     "lib/kernel/bidding-war-concierge.ts": 5,
     "lib/kernel/billing.ts": 9,
     "lib/kernel/board-packet-pdf.ts": 1,
@@ -3657,6 +3667,7 @@
     "lib/kernel/document-autofile.ts": 8,
     "lib/kernel/document-compliance-audit.ts": 6,
     "lib/kernel/document-custody.ts": 5,
+    "lib/kernel/domain-api.ts": 1,
     "lib/kernel/draft-quality.ts": 3,
     "lib/kernel/dual-intent-linker.ts": 4,
     "lib/kernel/economic-graph.ts": 6,
@@ -3668,7 +3679,7 @@
     "lib/kernel/event-fanout.ts": 2,
     "lib/kernel/event-reactor.ts": 1,
     "lib/kernel/exception-center.ts": 2,
-    "lib/kernel/exceptions-first.ts": 8,
+    "lib/kernel/exceptions-first.ts": 9,
     "lib/kernel/experiment-pipeline.ts": 10,
     "lib/kernel/experiments.ts": 3,
     "lib/kernel/farm-play.ts": 3,
@@ -3714,7 +3725,7 @@
     "lib/kernel/media-intelligence.ts": 18,
     "lib/kernel/milestone-calendar-bridge.ts": 1,
     "lib/kernel/mission-context.ts": 5,
-    "lib/kernel/mission-controller.ts": 8,
+    "lib/kernel/mission-controller.ts": 9,
     "lib/kernel/missions.ts": 31,
     "lib/kernel/morning-standup.ts": 3,
     "lib/kernel/neighbor-farm.ts": 3,
@@ -3737,7 +3748,7 @@
     "lib/kernel/onboarding.ts": 4,
     "lib/kernel/open-house.ts": 6,
     "lib/kernel/org-recipients.ts": 1,
-    "lib/kernel/os-health.ts": 9,
+    "lib/kernel/os-health.ts": 10,
     "lib/kernel/os-self-audit.ts": 4,
     "lib/kernel/outcome-learning.ts": 5,
     "lib/kernel/outreach-reasons.ts": 2,
@@ -3753,6 +3764,7 @@
     "lib/kernel/preview.ts": 2,
     "lib/kernel/priority-rank.ts": 2,
     "lib/kernel/procurement.ts": 9,
+    "lib/kernel/provider-adapters.ts": 8,
     "lib/kernel/providers.ts": 2,
     "lib/kernel/referral-appreciation.ts": 8,
     "lib/kernel/referral-radar.ts": 6,
@@ -3779,7 +3791,7 @@
     "lib/kernel/second-opinion.ts": 1,
     "lib/kernel/self-book.ts": 7,
     "lib/kernel/self-heal-ledger.ts": 5,
-    "lib/kernel/self-optimization.ts": 12,
+    "lib/kernel/self-optimization.ts": 13,
     "lib/kernel/seller-decision-room.ts": 1,
     "lib/kernel/seller-listing-timeline.ts": 2,
     "lib/kernel/service-recovery.ts": 2,
@@ -3790,8 +3802,8 @@
     "lib/kernel/signal-routing.ts": 3,
     "lib/kernel/signature-chase.ts": 4,
     "lib/kernel/site-traffic-insights.ts": 2,
-    "lib/kernel/skill-marketplace.ts": 8,
-    "lib/kernel/skill-registry.ts": 10,
+    "lib/kernel/skill-marketplace.ts": 12,
+    "lib/kernel/skill-registry.ts": 19,
     "lib/kernel/social-proof.ts": 2,
     "lib/kernel/stalled-deferrals-runner.ts": 1,
     "lib/kernel/stalled-deferrals.ts": 1,
@@ -4172,7 +4184,7 @@
     "lib/platform/tenant-import-parser.ts": 3,
     "lib/platform/tenant-import.ts": 3,
     "lib/platform/tenant-sso.ts": 9,
-    "lib/platform/tenant-webhooks-core.ts": 11,
+    "lib/platform/tenant-webhooks-core.ts": 18,
     "lib/platform/tenant-webhooks.ts": 3,
     "lib/platform/territory-marketplace.ts": 5,
     "lib/platform/trial-funnel.ts": 4,
@@ -4833,7 +4845,9 @@
       "getWorkforceThresholdsEditor",
       "submitWorkforceThresholdsAction",
       "getSelfOptimizationAutonomy",
-      "setSelfOptimizationAutonomyFormAction"
+      "setSelfOptimizationAutonomyFormAction",
+      "getAutonomyEnvelopeEditor",
+      "submitAutonomyEnvelopesAction"
     ],
     "app/actions/admin/invitations.ts": [
       "listPendingInvitationsAction",
@@ -7212,6 +7226,9 @@
       "getAgentAICostRanking",
       "getCronHealth"
     ],
+    "app/actions/platform-skill-examples.ts": [
+      "getPlatformSkillExamples"
+    ],
     "app/actions/podcast-generation.ts": [
       "createPodcastEpisode",
       "generatePodcastScriptDraft",
@@ -7733,7 +7750,10 @@
       "submitThirdPartySkill",
       "getPlatformSkillQueue",
       "decidePlatformSkill",
-      "runSkillForTenant"
+      "runSkillForTenant",
+      "getTenantExtensions",
+      "setTenantExtension",
+      "runCustomManagerForTenant"
     ],
     "app/actions/smart-insights.ts": [
       "generateSmartInsights",
@@ -7894,6 +7914,10 @@
     ],
     "app/actions/superadmin/feature-sunset.ts": [
       "setFeatureSunsetDateAction"
+    ],
+    "app/actions/superadmin/financial-halts.ts": [
+      "listHaltedFinancialWritersAction",
+      "releaseFinancialWriterHaltAsPlatformAction"
     ],
     "app/actions/superadmin/go-live-readiness.ts": [
       "getGoLiveReadinessAction",
@@ -8169,6 +8193,7 @@
       "listWebhookSubscriptions",
       "createWebhookSubscription",
       "updateWebhookSubscription",
+      "rotateWebhookSecret",
       "deleteWebhookSubscription",
       "sendWebhookTestPing",
       "listWebhookDeliveries",
@@ -8176,6 +8201,7 @@
       "getDeveloperTokenState",
       "mintTenantApiToken",
       "revokeTenantApiToken",
+      "rotateTenantApiToken",
       "getDevelopersDocsData"
     ],
     "app/actions/time-to-value.ts": [
@@ -9796,6 +9822,10 @@
       "GET",
       "POST"
     ],
+    "app/api/v1/[resource]/route.ts": [
+      "GET",
+      "POST"
+    ],
     "app/api/video/engagement/route.ts": [
       "POST"
     ],
@@ -10734,6 +10764,9 @@
     "app/components/skills/skill-marketplace-panel.tsx": [
       "SkillMarketplacePanel"
     ],
+    "app/components/skills/tenant-extensions-panel.tsx": [
+      "TenantExtensionsPanel"
+    ],
     "app/components/title/transaction-list.tsx": [
       "TitleTransactionList"
     ],
@@ -11170,6 +11203,12 @@
     ],
     "app/dashboard/admin/locations/locations-client.tsx": [
       "LocationsClient"
+    ],
+    "app/dashboard/admin/manager-trust/autonomy-envelopes-editor.tsx": [
+      "AutonomyEnvelopesEditor"
+    ],
+    "app/dashboard/admin/manager-trust/autonomy-envelopes-form.tsx": [
+      "AutonomyEnvelopesForm"
     ],
     "app/dashboard/admin/manager-trust/improvement-proposals-panel.tsx": [
       "ImprovementProposalsPanel"
@@ -12733,6 +12772,12 @@
     "app/dashboard/superadmin/rollout/sunset-control.tsx": [
       "SunsetControl"
     ],
+    "app/dashboard/superadmin/sentinel/financial-halt-release.tsx": [
+      "FinancialHaltRelease"
+    ],
+    "app/dashboard/superadmin/sentinel/financial-halts-board.tsx": [
+      "FinancialHaltsBoard"
+    ],
     "app/dashboard/superadmin/sentinel/os-sentinel-board.tsx": [
       "OsSentinelBoard"
     ],
@@ -13776,16 +13821,20 @@
       "summarizeConnectivity"
     ],
     "lib/agentic-os/connector-auto-applier.ts": [
+      "applyDeclaredAlternate",
       "autoApplyPendingProposals"
     ],
     "lib/agentic-os/connector-gateway.ts": [
       "buildAuthedRequest",
+      "loadAppliedAlternate",
+      "applyAlternateToRequest",
       "callConnector",
       "deriveProviderHealth",
       "loadProviderHealth"
     ],
     "lib/agentic-os/connector-healer.ts": [
-      "proposeConnectorHealing"
+      "proposeConnectorHealing",
+      "healProviderFailure"
     ],
     "lib/agentic-os/connector-probe.ts": [
       "resolveProbeUrl",
@@ -13793,6 +13842,7 @@
       "probeConnector"
     ],
     "lib/agentic-os/connector-registry.ts": [
+      "declaredConnectorAlternate",
       "getConnectorSpec",
       "listConnectorsByCategory"
     ],
@@ -17942,7 +17992,9 @@
       "consumeAutonomyEnvelope",
       "releaseAutonomyEnvelope",
       "composeAutonomyBudgetReport",
-      "deliverAutonomyBudgetReport"
+      "buildAutonomyBudgetReport",
+      "deliverAutonomyBudgetReport",
+      "validateAutonomyBudgetsEdit"
     ],
     "lib/kernel/bidding-war-concierge.ts": [
       "inferMarketHeat",
@@ -18356,6 +18408,9 @@
       "issueGovernedDocumentUrl",
       "runRetentionScan"
     ],
+    "lib/kernel/domain-api.ts": [
+      "serveDomainApi"
+    ],
     "lib/kernel/draft-quality.ts": [
       "rollupDraftQuality",
       "composeDraftQualityBrief",
@@ -18425,6 +18480,7 @@
     ],
     "lib/kernel/exceptions-first.ts": [
       "resolveActivityWindow",
+      "recordDashboardVisit",
       "bucketActivity",
       "rankExceptions",
       "exceptionsHeadline",
@@ -18792,6 +18848,7 @@
       "controlMission",
       "controlMissions",
       "missionVerdictLines",
+      "cascadeParentApproval",
       "NO_DELEGATIONS"
     ],
     "lib/kernel/missions.ts": [
@@ -18937,6 +18994,7 @@
       "loadFinancialWriterHalt",
       "haltFinancialWriter",
       "releaseFinancialWriterHalt",
+      "listHaltedFinancialWriters",
       "foldIncidentHistory",
       "runOsHealthSupervisor",
       "composeOsHealthLine",
@@ -19045,6 +19103,16 @@
       "declineProcurementRequest",
       "submitProcurementQuote",
       "vendorProcurementView"
+    ],
+    "lib/kernel/provider-adapters.ts": [
+      "routedProviders",
+      "deriveProviderAdapters",
+      "adapterFor",
+      "declaredConfigAlternate",
+      "validateProviderAdapter",
+      "validateAdapterSet",
+      "bookAdapterUsage",
+      "decideProviderHeal"
     ],
     "lib/kernel/providers.ts": [
       "resolveProviderCore",
@@ -19267,6 +19335,7 @@
       "classifyProposalSurface",
       "resolveSelfOptimizationPolicy",
       "resolveOptimizationTuning",
+      "loadDeadlineReminderHours",
       "readTenantSettings",
       "loadSelfOptimizationPolicy",
       "loadTenantProviderSkips",
@@ -19323,20 +19392,33 @@
       "submitSkillListing",
       "evaluateSkillListing",
       "decideSkillListing",
+      "setTenantExtensionEnabled",
       "listVisibleSkillListings",
+      "listTenantExtensions",
       "listPlatformSkillListings",
       "resolveRunnableSkill",
-      "runSkill"
+      "requestExtensionCapability",
+      "runSkill",
+      "runCustomManagerCapability"
     ],
     "lib/kernel/skill-registry.ts": [
+      "skillContractOf",
+      "capabilityCallRefusal",
       "builtinSkill",
       "authorityBandFor",
       "validateSkillDeclaration",
       "validateSkillInputs",
       "knownEvaluationSuites",
-      "canSkillListingTransition",
+      "managerAuthorityCeiling",
+      "validateCustomManagerDeclaration",
+      "registerCustomManager",
+      "canExtensionTransition",
+      "validateExtensionDeclaration",
+      "evaluateExtension",
+      "extensionEnablementChecks",
       "canDecideSkillListing",
-      "isSkillListingRunnableBy",
+      "isExtensionExecutableBy",
+      "tenantEnablementRefusal",
       "stableSkillJson",
       "skillRef"
     ],
@@ -21489,15 +21571,22 @@
     ],
     "lib/platform/tenant-webhooks-core.ts": [
       "isKnownWebhookEvent",
+      "validateWebhookEventFilter",
       "subscriptionMatchesEvent",
       "internalTypesForEvents",
       "externalEventsForLedgerRow",
       "buildWebhookPayload",
+      "ledgerRowDeliverableTo",
+      "webhookIdempotencyKey",
+      "planWebhookEnqueue",
       "generateWebhookSecret",
       "maskWebhookSecret",
       "signWebhookPayload",
+      "activeWebhookSecrets",
       "verifyWebhookSignature",
       "nextAttemptDelayMs",
+      "appendWebhookAttempt",
+      "shouldAutoDisableWebhook",
       "validateTenantScopes"
     ],
     "lib/platform/tenant-webhooks.ts": [

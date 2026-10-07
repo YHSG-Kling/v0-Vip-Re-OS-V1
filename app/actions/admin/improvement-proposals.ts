@@ -18,7 +18,7 @@
 
 import { revalidatePath } from "next/cache"
 import { requireCallerTenant } from "@/lib/auth/require-caller"
-import { isTenantAdminGrantRole } from "@/lib/auth/resolve-user-role"
+import { isTenantAdminGrantRole, isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   decideProposal, listImprovementProposals, promoteProposal, rollbackProposal, proposeEvaluatePromote, OPEN_STATUSES,
@@ -244,4 +244,100 @@ export async function setSelfOptimizationAutonomyFormAction(formData: FormData):
   })
   if (!r.promoted) console.warn(`[improvement-proposals] self-optimization autonomy NOT applied: ${r.held ?? `proposal ${r.status}`}`)
   revalidatePath("/dashboard/admin/manager-trust")
+}
+
+
+// ── WAVE 137 — THE AUTONOMY ENVELOPE ADMIN SCREEN (owner "approve all": "an envelope admin screen is approved") ──
+// Read + edit policy key `autonomy_budgets` (lib/kernel/autonomy-budgets.ts) on the Manager Trust page
+// (app/dashboard/admin/manager-trust/autonomy-envelopes-editor.tsx). Caps / consumption come from
+// autonomy_budget_consumptions through buildAutonomyBudgetReport (the Finance report's own read). An edit is a
+// `policy` proposal (proposer human) on the ONE versioned path; "apply now" approves + promotes it in the same
+// action. MONEY envelopes obligate the brokerage to pay: only TENANT_COMMERCE_ADMIN_USER_TYPES
+// (isTenantCommerceAdmin) may change them; the render cap and Finance's anomaly thresholds are tenant-admin edits.
+
+interface AutonomyEnvelopeEditorData {
+  fields: Array<{ path: string; label: string; unit: string; money: boolean; min: number; max: number; envelope: string | null; current: number; default: number }>
+  lines: Array<{ envelope: string; manager: string; unit: string; consumedPeriod: number; consumedToday: number; cap: number | null; refusalsToday: number; utilisation: number | null }>
+  anomalies: string[]
+  blindSpots: string[]
+  period: string
+  version: number | null
+  changedAt: string | null
+  source: "policy" | "default"
+  mayEditMoney: boolean
+  openProposal: { status: string; createdAt: string } | null
+}
+
+async function requireEnvelopeAdmin(): Promise<{ ok: true; brokerageId: string; userId: string; commerce: boolean } | { ok: false; error: string }> {
+  const caller = await requireCallerTenant()
+  if (!caller.ok) return { ok: false, error: caller.error }
+  if (!isTenantAdminGrantRole(caller.userType)) return { ok: false, error: "Only the brokerage's admin roster can read or change the autonomy envelopes." }
+  return { ok: true, brokerageId: caller.brokerageId, userId: caller.userId, commerce: isTenantCommerceAdmin({ user_type: caller.userType }) }
+}
+
+export async function getAutonomyEnvelopeEditor(): Promise<{ ok: true; data: AutonomyEnvelopeEditorData } | { ok: false; error: string }> {
+  const gate = await requireEnvelopeAdmin()
+  if (!gate.ok) return { ok: false, error: gate.error }
+  const svc = createServiceClient()
+  const { AUTONOMY_BUDGETS_POLICY_KEY, AUTONOMY_ENVELOPE_FIELDS, DEFAULT_AUTONOMY_BUDGETS, buildAutonomyBudgetReport } = await import("@/lib/kernel/autonomy-budgets")
+  const built = await buildAutonomyBudgetReport(svc, gate.brokerageId)
+  if (!built.ok) return { ok: false, error: built.error }
+  if (!built.policy.readable) return { ok: false, error: `The envelopes could not be read (${built.policy.note ?? "refused"}) — every envelope is refusing (fail closed).` }
+  const con = await buildTenantOperatingConstitution(svc, gate.brokerageId)
+  if (!con.ok) return { ok: false, error: con.error }
+  const entry = con.entries.find((e) => e.policyKey === AUTONOMY_BUDGETS_POLICY_KEY)
+  const list = await listImprovementProposals(svc, gate.brokerageId, { limit: 100 })
+  if (!list.ok) return { ok: false, error: list.error }
+  const open = list.rows.find((r) => r.subject_kind === "policy" && r.subject_key === AUTONOMY_BUDGETS_POLICY_KEY && OPEN_STATUSES.includes(r.status))
+  const at = (o: unknown, p: string) => Number(p.split(".").reduce<unknown>((a, k) => (a && typeof a === "object" ? (a as Record<string, unknown>)[k] : undefined), o))
+  return {
+    ok: true,
+    data: {
+      fields: AUTONOMY_ENVELOPE_FIELDS.map((f) => ({ ...f, current: at(built.policy, f.path), default: at(DEFAULT_AUTONOMY_BUDGETS, f.path) })),
+      lines: built.report.lines.map((l) => ({ envelope: l.envelope, manager: l.manager, unit: l.unit, consumedPeriod: l.consumedPeriod, consumedToday: l.consumedToday, cap: l.cap, refusalsToday: l.refusalsToday, utilisation: l.utilisation })),
+      anomalies: built.report.anomalies, blindSpots: built.report.blindSpots, period: built.report.period,
+      version: entry?.version ?? null, changedAt: entry?.changedAt ?? null, source: entry && !entry.isDefault ? "policy" : "default",
+      mayEditMoney: gate.commerce,
+      openProposal: open ? { status: open.status, createdAt: open.created_at } : null,
+    },
+  }
+}
+
+export type AutonomyEnvelopesSubmitState = { ok: boolean; message: string; errors?: string[] } | null
+
+export async function submitAutonomyEnvelopesAction(_prev: AutonomyEnvelopesSubmitState, formData: FormData): Promise<AutonomyEnvelopesSubmitState> {
+  const mode = formData.get("mode") === "apply" ? "apply" : "propose"
+  const gate = await requireEnvelopeAdmin()
+  if (!gate.ok) return { ok: false, message: gate.error }
+  const svc = createServiceClient()
+  const { AUTONOMY_BUDGETS_POLICY_KEY, AUTONOMY_ENVELOPE_FIELDS, loadAutonomyBudgets, validateAutonomyBudgetsEdit } = await import("@/lib/kernel/autonomy-budgets")
+  const current = await loadAutonomyBudgets(svc, gate.brokerageId)
+  if (!current.readable) return { ok: false, message: `The envelopes could not be read (${current.note ?? "refused"}) — nothing was proposed.` }
+  const input: Record<string, unknown> = {}
+  for (const f of AUTONOMY_ENVELOPE_FIELDS) input[f.path] = formData.get(f.path)
+  const edit = validateAutonomyBudgetsEdit(input, current)
+  if (!edit.ok) return { ok: false, message: "Nothing was proposed — fix the highlighted values.", errors: edit.errors }
+  if (edit.changedKeys.length === 0) return { ok: false, message: "Nothing changed." }
+  if (edit.moneyChanged.length && !gate.commerce) return { ok: false, message: `Only a seat that may obligate the brokerage to pay (broker, owner, admin, team lead — not compliance) can change a money envelope: ${edit.moneyChanged.join(", ")}.` }
+  const list = await listImprovementProposals(svc, gate.brokerageId, { limit: 100 })
+  if (!list.ok) return { ok: false, message: list.error }
+  const open = list.rows.find((r) => r.subject_kind === "policy" && r.subject_key === AUTONOMY_BUDGETS_POLICY_KEY && OPEN_STATUSES.includes(r.status))
+  if (open && JSON.stringify((open.proposed_change ?? {}).value ?? null) !== JSON.stringify(edit.value)) {
+    return { ok: false, message: `A different autonomy-envelope proposal is already ${open.status} — approve, promote or reject it in Improvement proposals first.` }
+  }
+  const actor: ProposalActor = { type: "user", userId: gate.userId, isTenantAdmin: true, reason: `autonomy envelopes ${mode === "apply" ? "applied" : "proposed"} from the envelope admin screen` }
+  const r = await proposeEvaluatePromote(svc, {
+    brokerageId: gate.brokerageId, subjectKind: "policy", subjectKey: AUTONOMY_BUDGETS_POLICY_KEY, proposer: "human",
+    proposedChange: { value: edit.value, changed_keys: edit.changedKeys },
+    evidenceRefs: [{ kind: "human_edit", surface: "manager_trust.autonomy_envelopes", user_id: gate.userId, mode, changed_keys: edit.changedKeys, money_changed: edit.moneyChanged, commerce_admin: gate.commerce }],
+    actor: mode === "apply" ? actor : null,
+  })
+  revalidatePath("/dashboard/admin/manager-trust")
+  if (!r.proposal.ok) return { ok: false, message: `Not proposed: ${r.proposal.error}` }
+  if (mode === "apply") {
+    return r.promoted
+      ? { ok: true, message: `Applied — ${r.policyVersionRef ?? "new policy version"}. Every envelope enforces the new caps on its next draw.` }
+      : { ok: false, message: `Proposed but NOT applied: ${r.held ?? `proposal ${r.status}`}` }
+  }
+  return { ok: true, message: `Proposed (${r.status ?? "PROPOSED"}) — approve and promote it in Improvement proposals below.` }
 }

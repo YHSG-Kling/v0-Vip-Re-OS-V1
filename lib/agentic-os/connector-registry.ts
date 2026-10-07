@@ -42,6 +42,27 @@ export interface ConnectorSpec {
   mcpServer?: { url?: string; githubUrl?: string }
   /** Free-form tags for downstream filtering / scoring (`buyer-intent`, `seller-intent`, `mls`, …). */
   tags?:      string[]
+  /** Wave 137 (lane 137C): the declared API version is past its vendor deprecation from this date. */
+  deprecatedAfter?: string
+  /** Wave 137 (lane 137C): KNOWN alternates (a newer version, an endpoint, an MCP route) — CONFIG level
+   *  (adoptable by a query/header/base-URL change; the self-healer may apply it) or CODE level (a
+   *  different client; only ever a connector_healing_proposal). Read by lib/kernel/provider-adapters.ts
+   *  (the adapter declaration) and by connector-gateway.ts loadAppliedAlternate (egress). */
+  alternates?: ConnectorAlternate[]
+}
+
+export interface ConnectorAlternate {
+  id: string
+  level: "config" | "code"
+  version?: string
+  baseUrl?: string
+  query?: Record<string, string>
+  headers?: Record<string, string>
+  /** For a code-level route: the module that would carry it. */
+  route?: string
+  /** The current declaration is superseded (a deprecation / a newer recommended version). */
+  supersedesCurrent?: boolean
+  reason: string
 }
 
 export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Object.freeze({
@@ -57,6 +78,29 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     npmSdk:    "peopledatalabs",
     tags:      ["person-enrich", "email-validate", "skip-trace"],
   },
+  // Wave 137 (lane 137C): the two ROUTED platform providers the registry did not list — every
+  // provider lib/kernel/provider-adapters.ts declares as platform-funded must be healable, and
+  // proposeConnectorHealing refuses a connector with no spec here ("not in the registry").
+  versium: {
+    connector: "versium",
+    category:  "enrichment",
+    baseUrl:   "https://api.versium.com/v2",   // lib/external/versium-client.ts
+    auth:      "header",
+    envKey:    "VERSIUM_API_KEY",
+    docsUrl:   "https://api-documentation.versium.com/",
+    tags:      ["person-enrich", "owner-contact", "household-financials"],
+  },
+  twilio: {
+    connector: "twilio",
+    category:  "comms",
+    baseUrl:   "https://api.twilio.com/2010-04-01",
+    auth:      "basic",
+    envKey:    "TWILIO_AUTH_TOKEN",
+    docsUrl:   "https://www.twilio.com/docs/usage/api",
+    githubUrl: "https://github.com/twilio/twilio-node",
+    npmSdk:    "twilio",
+    tags:      ["sms", "voice", "subaccounts"],
+  },
   // ── Real-estate listings (MLS-grade default) ───────────────────────────
   rentcast: {
     connector: "rentcast",
@@ -70,6 +114,7 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     // codegen swap (e.g. openapi-typescript) when we want compile-time guarantees.
     openapiSpec: "https://raw.githubusercontent.com/RentCast/api-resources/main/openapi-spec/rentcast_api_openapi_spec_v1.json",
     tags:      ["mls", "listings", "sales", "rentals"],
+    alternates: [{ id: "rentcast_mcp", level: "code", route: "lib/external/rentcast-mcp.ts", reason: "RentCast MCP tools — a different client shape; adopting it for a capability is a code change" }],
   },
   // ── Property data / motivated-seller ───────────────────────────────────
   batchdata: {
@@ -86,6 +131,7 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     // configuration via the BATCHDATA_MCP_URL env var (with optional BATCHDATA_MCP_AUTH bearer).
     mcpServer: { githubUrl: "https://github.com/batchdataco/batchdata-mcp-server" },
     tags:      ["property", "motivated-seller", "off-market", "skip-trace", "has-mcp"],
+    alternates: [{ id: "batchdata_mcp", level: "code", route: "lib/external/batchdata-mcp.ts", reason: "BatchData MCP server (mcpServer above) — a different client; a code change" }],
   },
   // ── Web scrapers + AI search ───────────────────────────────────────────
   zenrows: {
@@ -202,6 +248,19 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     githubUrl: "https://github.com/google",
     tags:      ["llm", "gemini"],
   },
+  // ── Accounting (tenant OAuth) — registered wave 137 (lane 137C) for its DECLARED version alternate ──
+  quickbooks: {
+    connector: "quickbooks",
+    category:  "other",
+    baseUrl:   "https://quickbooks.api.intuit.com/v3/company",
+    auth:      "bearer",
+    envKey:    "QUICKBOOKS_CLIENT_ID",
+    docsUrl:   "https://developer.intuit.com/app/developer/qbo/docs/develop",
+    tags:      ["accounting", "tenant-oauth"],
+    deprecatedAfter: "2025-08-01",
+    alternates: [{ id: "qbo_minorversion_75", level: "config", version: "v3 minorversion=75", query: { minorversion: "75" }, supersedesCurrent: true,
+      reason: "Intuit retired QBO Accounting API minor versions 1–74 (effective 2025-08-01; requests are served as 75). The code pins 73 in its paths (lib/providers/accounting/quickbooks.ts) — a query override is config-level" }],
+  },
   // ── Public city / county open data (Socrata) — permits, code violations, probate filings ──
   socrata: {
     connector: "socrata",
@@ -234,6 +293,13 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     tags:      ["public-records", "permits", "code-violations", "open-data", "gis"],
   },
 })
+
+/** PURE — the CONFIG-level alternate a connector declares under this id (never a code-level one). */
+export function declaredConnectorAlternate(connector: string, alternateId: string): { spec: ConnectorSpec; alternate: ConnectorAlternate } | null {
+  const spec = getConnectorSpec(connector)
+  const alternate = spec?.alternates?.find((a) => a.id === alternateId && a.level === "config") ?? null
+  return spec && alternate ? { spec, alternate } : null
+}
 
 export function getConnectorSpec(name: string): ConnectorSpec | null {
   return (CONNECTOR_REGISTRY as Record<string, ConnectorSpec>)[name] ?? null

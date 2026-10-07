@@ -15,6 +15,8 @@ export type InvocationOutcome = "executed" | "planned" | "denied" | "error"
 export function outcomeForDecision(decision: string): InvocationOutcome {
   switch (decision) {
     case "executed":
+    case "read":         // wave 137A: a domain-API read served (app/api/v1/*)
+    case "requested":    // wave 137A: a capability request the delegation service accepted
       return "executed"
     case "execute":
     case "requires_confirmation":
@@ -24,6 +26,9 @@ export function outcomeForDecision(decision: string): InvocationOutcome {
     case "invalid_input":
     case "blocked":
     case "not_connected":
+    case "rate_limited": // wave 137A: the per-credential limiter refused (429)
+    case "refused":      // wave 137A: the domain service's own policy refused the write
+    case "not_found":    // wave 137A: no row in the CREDENTIAL's tenant (a foreign id lands here)
       return "denied"
     case "error":
       return "error"
@@ -34,7 +39,7 @@ export function outcomeForDecision(decision: string): InvocationOutcome {
 
 export interface InvocationLogInput {
   capability: string
-  kind: "vendor" | "app" | "connected"
+  kind: "vendor" | "app" | "connected" | "domain"
   verb?: string | null
   decision: string
   brokerageId?: string | null
@@ -49,9 +54,10 @@ export interface InvocationLogInput {
  * Record one invocation. Never throws — a logging failure is swallowed so it can't break
  * the caller. Returns true when the row was written.
  */
-export async function recordInvocation(input: InvocationLogInput): Promise<boolean> {
+export async function recordInvocation(input: InvocationLogInput, client?: { from: (t: string) => any }): Promise<boolean> {
   try {
-    const svc = createServiceClient()
+    // Wave 137A: an injected client is the in-memory proof's seam (scripts/domain-api-guard.ts).
+    const svc = client ?? createServiceClient()
     const { error } = await svc.from("agentic_invocation_log").insert({
       capability: input.capability,
       kind: input.kind,

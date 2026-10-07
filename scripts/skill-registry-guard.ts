@@ -22,8 +22,8 @@ import { readFileSync, readdirSync } from "node:fs"
 import { randomUUID } from "node:crypto"
 import { stripComments } from "./strip-comments"
 import {
-  MANAGER_SKILLS, CAPABILITY_ENTITLEMENT, SKILL_EVALUATORS, SKILL_LISTING_STATUSES, SKILL_PUBLISHERS, SKILL_RUN_RECEIPT_SCHEMA,
-  BASE_PLAN_ENTITLEMENT, authorityBandFor, canDecideSkillListing, canSkillListingTransition, knownEvaluationSuites,
+  MANAGER_SKILLS, CAPABILITY_ENTITLEMENT, SKILL_EVALUATORS, EXTENSION_STATUSES, SKILL_PUBLISHERS, SKILL_RUN_RECEIPT_SCHEMA,
+  BASE_PLAN_ENTITLEMENT, authorityBandFor, canDecideSkillListing, canExtensionTransition, knownEvaluationSuites,
   validateSkillDeclaration, type SkillDeclaration,
 } from "../lib/kernel/skill-registry"
 import {
@@ -84,12 +84,13 @@ function memClient(tables: Record<string, Row[]> = {}) {
 }
 
 /** Observing seams; `realLedger` keeps THE ledger survivor (withActionLedger) writing through the client. */
-function seams(over: { afford?: (cap: string, feature?: string) => boolean; authority?: number; realLedger?: boolean } = {}) {
+function seams(over: { afford?: (cap: string, feature?: string) => boolean; authority?: number; realLedger?: boolean; enabledFor?: Record<string, string[]> } = {}) {
   const affords: any[] = [], ledger: any[] = [], delegations: any[] = []
   const deps: SkillMarketplaceDeps = {
     afford: async (i) => { affords.push(i); const ok = over.afford ? over.afford(i.capability, i.featureKey) : true; return { allowed: ok, reason: ok ? "active" : `refused:${i.capability}` } },
     authority: async () => (over.authority ?? 6) as any,
     delegate: async (i) => { delegations.push(i); return { ok: true, delegationId: `dl-${delegations.length}` } },
+    tenantEnablement: async (b) => ({ ok: true, enabled: Object.fromEntries((over.enabledFor?.[b] ?? []).map((id) => [id, { set_by: "u" }])) }),
   }
   if (!over.realLedger) deps.ledger = async (input, act) => { ledger.push(input); return act() }
   return { deps, affords, ledger, delegations }
@@ -126,8 +127,8 @@ async function publishedTenantSkill(c: ReturnType<typeof memClient>, decl = comp
   if (!ev.ok) throw new Error(`evaluate: ${ev.reason}`)
   const ap = await decideSkillListing({ listingId: sub.listing.id, decision: "approve", actor: admin }, c, s.deps)
   if (!ap.ok) throw new Error(`approve: ${ap.reason}`)
-  const pub = await decideSkillListing({ listingId: sub.listing.id, decision: "publish", actor: admin }, c, s.deps)
-  if (!pub.ok) throw new Error(`publish: ${pub.reason}`)
+  const pub = await decideSkillListing({ listingId: sub.listing.id, decision: "enable", actor: admin }, c, s.deps)
+  if (!pub.ok) throw new Error(`enable: ${pub.reason}`)
   return pub.listing
 }
 
@@ -185,32 +186,32 @@ async function main() {
     const c = memClient()
     const s = seams()
     const sub = await submitSkillListing({ publisher: "tenant", brokerageId: T1, submittedBy: "u-admin-1", declaration: composite() }, c, s.deps)
-    check("C1 a tenant submission lands `submitted` with a digest", sub.ok && sub.listing.status === "submitted" && sub.listing.declaration_digest === skillDeclarationDigest(composite()))
+    check("C1 a tenant submission lands `draft` with a digest", sub.ok && sub.listing.status === "draft" && sub.listing.declaration_digest === skillDeclarationDigest(composite()))
     if (!sub.ok) throw new Error(sub.reason)
     const early = await decideSkillListing({ listingId: sub.listing.id, decision: "approve", actor: ADMIN1 }, c, s.deps)
     check("C2 approval BEFORE evaluation is refused", !early.ok && early.reason === "evaluation_not_passed")
     const ev = await evaluateSkillListing({ listingId: sub.listing.id, actorBrokerageId: T1 }, c, s.deps)
-    check("C3 the evaluation suite runs and passes → `evaluated` with evidence", ev.ok && ev.listing.status === "evaluated" && ev.listing.evaluation_evidence?.passed === true && (ev.listing.evaluation_evidence?.checks.length ?? 0) >= 4)
+    check("C3 the evaluation suite runs and passes → `validated` with evidence", ev.ok && ev.listing.status === "validated" && ev.listing.evaluation_evidence?.passed === true && (ev.listing.evaluation_evidence?.checks.length ?? 0) >= 4)
     const byAgent = await decideSkillListing({ listingId: sub.listing.id, decision: "approve", actor: AGENT1 }, c, s.deps)
     check("C4 a non-admin of the tenant cannot approve", !byAgent.ok && byAgent.reason === "tenant_admin_of_this_tenant_only")
     const byStaff = await decideSkillListing({ listingId: sub.listing.id, decision: "approve", actor: STAFF }, c, s.deps)
     check("C5 platform staff do not approve a TENANT-authored skill (the tenant admin does)", !byStaff.ok)
     const ap = await decideSkillListing({ listingId: sub.listing.id, decision: "approve", actor: ADMIN1 }, c, s.deps)
     check("C6 the tenant's admin approves → `approved` (approved_by from the actor)", ap.ok && ap.listing.status === "approved" && ap.listing.approved_by === "u-admin-1")
-    const pub = await decideSkillListing({ listingId: sub.listing.id, decision: "publish", actor: ADMIN1 }, c, s.deps)
-    check("C7 publish → `published`", pub.ok && pub.listing.status === "published")
-    const noReason = await decideSkillListing({ listingId: sub.listing.id, decision: "revoke", actor: ADMIN1 }, c, s.deps)
-    check("C8 revoke without a reason is refused", !noReason.ok && noReason.reason === "revoke_reason_required")
-    const rev = await decideSkillListing({ listingId: sub.listing.id, decision: "revoke", actor: ADMIN1, reason: "superseded by v2" }, c, s.deps)
-    check("C9 revoke → `revoked` with the reason", rev.ok && rev.listing.status === "revoked" && rev.listing.revoked_reason === "superseded by v2")
-    const again = await decideSkillListing({ listingId: sub.listing.id, decision: "publish", actor: ADMIN1 }, c, s.deps)
-    check("C10 a revoked listing cannot be re-published (terminal)", !again.ok && /invalid_transition:revoked->published/.test(again.reason))
-    check("C11 every lifecycle move left a ledger entry (submit, evaluate, approve, publish, revoke)", ["skill.listing.submit", "skill.listing.evaluate", "skill.listing.approve", "skill.listing.publish", "skill.listing.revoke"].every((a) => s.ledger.some((l) => l.action === a)))
+    const pub = await decideSkillListing({ listingId: sub.listing.id, decision: "enable", actor: ADMIN1 }, c, s.deps)
+    check("C7 enable → `enabled` (enablement checks passed)", pub.ok && pub.listing.status === "enabled", pub.ok ? "" : pub.reason)
+    const noReason = await decideSkillListing({ listingId: sub.listing.id, decision: "disable", actor: ADMIN1 }, c, s.deps)
+    check("C8 disable without a reason is refused", !noReason.ok && noReason.reason === "disable_reason_required")
+    const rev = await decideSkillListing({ listingId: sub.listing.id, decision: "disable", actor: ADMIN1, reason: "superseded by v2" }, c, s.deps)
+    check("C9 disable → `disabled` with the reason", rev.ok && rev.listing.status === "disabled" && rev.listing.disabled_reason === "superseded by v2")
+    const again = await decideSkillListing({ listingId: sub.listing.id, decision: "enable", actor: ADMIN1 }, c, s.deps)
+    check("C10 a disabled listing cannot be re-enabled (terminal)", !again.ok && /invalid_transition:disabled->enabled/.test(again.reason))
+    check("C11 every lifecycle move left a ledger entry (submit, evaluate, approve, enable, disable)", ["extension.listing.submit", "extension.listing.evaluate", "extension.listing.approve", "extension.listing.enable", "extension.listing.disable"].every((a) => s.ledger.some((l) => l.action === a)))
     // failed suite → rejected
     const bad = await submitSkillListing({ publisher: "third_party", brokerageId: null, submittedBy: "u-staff", publisherName: "Acme Skills", declaration: composite({ name: "acme_no_fixture", evaluation_fixtures: [] }) }, c, s.deps)
     if (!bad.ok) throw new Error(bad.reason)
     const badEv = await evaluateSkillListing({ listingId: bad.listing.id, actorBrokerageId: null }, c, s.deps)
-    check("C12 a declaration that fails its suite (no fixtures) → `rejected`, and cannot be approved", badEv.ok && badEv.listing.status === "rejected" && !(await decideSkillListing({ listingId: bad.listing.id, decision: "approve", actor: STAFF }, c, s.deps)).ok)
+    check("C12 a declaration that fails its suite (no fixtures) → `disabled` WITH its evidence, and cannot be approved", badEv.ok && badEv.listing.status === "disabled" && badEv.listing.evaluation_evidence?.passed === false && /^validation_failed:/.test(String(badEv.listing.disabled_reason)) && !(await decideSkillListing({ listingId: bad.listing.id, decision: "approve", actor: STAFF }, c, s.deps)).ok)
     // third-party approvals
     const tp = await submitSkillListing({ publisher: "third_party", brokerageId: null, submittedBy: "u-staff", publisherName: "Acme Skills", declaration: composite({ name: "acme_reactivation" }) }, c, s.deps)
     if (!tp.ok) throw new Error(tp.reason)
@@ -222,7 +223,7 @@ async function main() {
     check("C15 a tenant id on a global listing / no tenant on a tenant listing is refused", !(await submitSkillListing({ publisher: "third_party", brokerageId: T1, submittedBy: null, declaration: composite({ name: "x_global" }) }, c, s.deps)).ok && !(await submitSkillListing({ publisher: "tenant", brokerageId: null, submittedBy: null, declaration: composite({ name: "x_tenant" }) }, c, s.deps)).ok)
     check("C16 a built-in name cannot be shadowed by a marketplace listing", !(await submitSkillListing({ publisher: "tenant", brokerageId: T1, submittedBy: null, declaration: composite({ name: "newsletter_send" }) }, c, s.deps)).ok)
     check("C17 an invalid declaration is refused at submission with its errors", (() => true)() && !(await submitSkillListing({ publisher: "tenant", brokerageId: T1, submittedBy: null, declaration: composite({ name: "x_bad", authority_requirement: 6 }) }, c, s.deps)).ok)
-    check("C18 the transition table: published → revoked only; rejected / revoked terminal", canSkillListingTransition("published", "revoked") && !canSkillListingTransition("published", "approved") && !canSkillListingTransition("rejected", "evaluated") && !canSkillListingTransition("revoked", "published"))
+    check("C18 the transition table: enabled → suspended | deprecated | disabled; disabled terminal; no skipping validation", canExtensionTransition("enabled", "suspended") && canExtensionTransition("enabled", "disabled") && !canExtensionTransition("enabled", "approved") && !canExtensionTransition("draft", "approved") && !canExtensionTransition("disabled", "enabled") && !canExtensionTransition("deprecated", "enabled"))
     check("C19 canDecideSkillListing: tenant admin of ANOTHER tenant is refused", !canDecideSkillListing({ publisher: "tenant", brokerage_id: T1 }, ADMIN2) && canDecideSkillListing({ publisher: "tenant", brokerage_id: T1 }, ADMIN1))
   }
 
@@ -234,25 +235,25 @@ async function main() {
     const sub = await submitSkillListing({ publisher: "tenant", brokerageId: T1, submittedBy: "u-admin-1", declaration: composite() }, c, s.deps)
     if (!sub.ok) throw new Error(sub.reason)
     const r1 = await run("seller_reactivation_touch")
-    check("D1 `submitted` → not runnable", !r1.ok && /^skill_not_runnable:not_published:submitted/.test(r1.reason))
+    check("D1 `draft` → not runnable", !r1.ok && /^skill_not_runnable:not_executable:draft/.test(r1.reason))
     await evaluateSkillListing({ listingId: sub.listing.id, actorBrokerageId: T1 }, c, s.deps)
     const r2 = await run("seller_reactivation_touch")
-    check("D2 `evaluated` → not runnable", !r2.ok && /not_published:evaluated/.test(r2.reason))
+    check("D2 `validated` → not runnable", !r2.ok && /not_executable:validated/.test(r2.reason))
     await decideSkillListing({ listingId: sub.listing.id, decision: "approve", actor: ADMIN1 }, c, s.deps)
     const r3 = await run("seller_reactivation_touch")
-    check("D3 `approved` but unpublished → not runnable", !r3.ok && /not_published:approved/.test(r3.reason))
-    await decideSkillListing({ listingId: sub.listing.id, decision: "publish", actor: ADMIN1 }, c, s.deps)
+    check("D3 `approved` but not enabled → not runnable", !r3.ok && /not_executable:approved/.test(r3.reason))
+    await decideSkillListing({ listingId: sub.listing.id, decision: "enable", actor: ADMIN1 }, c, s.deps)
     const ok = await run("seller_reactivation_touch")
-    check("D4 (positive control) once published it runs", ok.ok, ok.ok ? "" : ok.reason)
+    check("D4 (positive control) once enabled it runs", ok.ok, ok.ok ? "" : ok.reason)
     const row = c.tables.skill_marketplace_listings.find((r) => r.id === sub.listing.id)!
     const original = row.declaration
     row.declaration = { ...original, authority_requirement: 3, required_capabilities: ["newsletter_send", "direct_mail_send", "video_distribute"] }
     const tampered = await run("seller_reactivation_touch")
     row.declaration = original
     check("D5 a declaration altered after approval (digest drift) → not runnable", !tampered.ok && /digest_mismatch/.test(tampered.reason))
-    await decideSkillListing({ listingId: sub.listing.id, decision: "revoke", actor: ADMIN1, reason: "pulled" }, c, s.deps)
+    await decideSkillListing({ listingId: sub.listing.id, decision: "disable", actor: ADMIN1, reason: "pulled" }, c, s.deps)
     const r5 = await run("seller_reactivation_touch")
-    check("D6 `revoked` → not runnable", !r5.ok && /not_published:revoked/.test(r5.reason))
+    check("D6 `disabled` → not runnable", !r5.ok && /not_executable:disabled/.test(r5.reason))
     const r6 = await run("no_such_skill")
     check("D7 an unknown skill → not runnable", !r6.ok && /unknown_skill/.test(r6.reason))
     check("D8 no delegation was opened by any refused run (only D4's two)", s.delegations.length === 2)
@@ -319,7 +320,7 @@ async function main() {
     const s = seams()
     const other = await runSkill({ brokerageId: T2, skill: "seller_reactivation_touch", requestingManager: "ai_isa", inputs: { campaignId: "33333333-3333-4333-8333-333333333333" }, objective: "x" }, c, s.deps)
     check("G1 another tenant cannot run (or see) a tenant-authored skill", !other.ok && /unknown_skill/.test(other.reason) && s.delegations.length === 0)
-    const decide = await decideSkillListing({ listingId: listing.id, decision: "revoke", actor: ADMIN2, reason: "x" }, c, s.deps)
+    const decide = await decideSkillListing({ listingId: listing.id, decision: "disable", actor: ADMIN2, reason: "x" }, c, s.deps)
     check("G2 another tenant's admin deciding on it reads not_found", !decide.ok && decide.reason === "not_found")
     const evalOther = await evaluateSkillListing({ listingId: listing.id, actorBrokerageId: T2 }, c, s.deps)
     check("G3 another tenant evaluating it reads not_found", !evalOther.ok && evalOther.reason === "not_found")
@@ -327,11 +328,14 @@ async function main() {
     if (!tp.ok) throw new Error(tp.reason)
     await evaluateSkillListing({ listingId: tp.listing.id, actorBrokerageId: null }, c, s.deps)
     await decideSkillListing({ listingId: tp.listing.id, decision: "approve", actor: STAFF }, c, s.deps)
-    await decideSkillListing({ listingId: tp.listing.id, decision: "publish", actor: STAFF }, c, s.deps)
-    const r1 = await resolveRunnableSkill(T1, "acme_global", c), r2 = await resolveRunnableSkill(T2, "acme_global", c)
-    check("G4 a published third-party skill is runnable by every tenant, each under its own tenant", r1.ok && r2.ok)
-    const runT2 = await runSkill({ brokerageId: T2, skill: "acme_global", requestingManager: "ai_isa", inputs: { campaignId: "33333333-3333-4333-8333-333333333333" }, objective: "x" }, c, s.deps)
-    check("G5 its run is metered + delegated under the RUNNING tenant only", runT2.ok && s.delegations.every((d) => d.brokerageId === T2) && s.affords.every((a) => a.brokerageId === T2))
+    await decideSkillListing({ listingId: tp.listing.id, decision: "enable", actor: STAFF }, c, s.deps)
+    const none = await resolveRunnableSkill(T1, "acme_global", c, s.deps)
+    check("G4a an ENABLED third-party skill does not run for a tenant that has not enabled it", !none.ok && none.reason === "not_enabled_for_tenant")
+    const sOpt = seams({ enabledFor: { [T2]: [tp.listing.id] } })
+    const r1 = await resolveRunnableSkill(T1, "acme_global", c, sOpt.deps), r2 = await resolveRunnableSkill(T2, "acme_global", c, sOpt.deps)
+    check("G4 an enabled third-party skill runs exactly where the tenant opted in (T2), never borrowed by another (T1)", !r1.ok && r2.ok)
+    const runT2 = await runSkill({ brokerageId: T2, skill: "acme_global", requestingManager: "ai_isa", inputs: { campaignId: "33333333-3333-4333-8333-333333333333" }, objective: "x" }, c, sOpt.deps)
+    check("G5 its run is metered + delegated under the RUNNING tenant only", runT2.ok && sOpt.delegations.every((d) => d.brokerageId === T2) && sOpt.affords.every((a) => a.brokerageId === T2))
   }
 
   console.log("\nH. wiring, registration, one vocabulary")
@@ -340,29 +344,30 @@ async function main() {
     const raw = readFileSync("app/actions/skill-marketplace.ts", "utf8")
     const exportsAll = [...act.matchAll(/export\s+(async\s+)?function\s+(\w+)/g)]
     check(`H1 "use server" + every export async (${exportsAll.length} doors)`, /^"use server"/.test(raw.trimStart()) && exportsAll.length >= 6 && exportsAll.every((m) => !!m[1]))
-    const panel = src("app/components/skills/skill-marketplace-panel.tsx")
+    const panel = src("app/components/skills/skill-marketplace-panel.tsx") + src("app/components/skills/tenant-extensions-panel.tsx")
     const unwired = exportsAll.map((m) => m[2]).filter((n) => !panel.includes(`${n}(`))
-    check("H1b every door is wired to the surface (the panel calls each one)", unwired.length === 0, unwired.join(", "))
-    check("H1c the panel is mounted: tenant mode in Settings → Assistant, platform mode on the superadmin page behind requirePlatformStaff", /<SkillMarketplacePanel mode="tenant" \/>/.test(src("app/dashboard/settings/assistant/page.tsx")) && /requirePlatformStaff\(\)/.test(src("app/dashboard/superadmin/skill-marketplace/page.tsx")) && /<SkillMarketplacePanel mode="platform" \/>/.test(src("app/dashboard/superadmin/skill-marketplace/page.tsx")))
+    check("H1b every door is wired to the surface (the two panels call each one)", unwired.length === 0, unwired.join(", "))
+    check("H1c the panel is mounted: tenant mode in Settings → Assistant, platform mode on the superadmin page behind requirePlatformStaff", /<SkillMarketplacePanel mode="tenant" \/>/.test(src("app/dashboard/settings/assistant/page.tsx")) && /requirePlatformStaff\(\)/.test(src("app/dashboard/superadmin/skill-marketplace/page.tsx")) && /<SkillMarketplacePanel mode="platform" \/>/.test(src("app/dashboard/superadmin/skill-marketplace/page.tsx")) && /<TenantExtensionsPanel \/>/.test(src("app/dashboard/settings/assistant/page.tsx")))
     const bodies = act.split(/export\s+async\s+function\s+/).slice(1)
-    check("H2 every door gates on the session FIRST (tenantGate / requirePlatformStaff before any service write)", bodies.every((b) => { const g = Math.min(...["tenantGate()", "requirePlatformStaff()"].map((x) => b.indexOf(x)).filter((i) => i >= 0)); const w = b.search(/(submitSkillListing|decideSkillListing|runSkill|listVisibleSkillListings|evaluateSkillListing)\(/); return Number.isFinite(g) && g >= 0 && (w < 0 || g < w) }))
+    check("H2 every door gates on the session FIRST (tenantGate / requirePlatformStaff before any service write)", bodies.every((b) => { const g = Math.min(...["tenantGate()", "requirePlatformStaff()"].map((x) => b.indexOf(x)).filter((i) => i >= 0)); const w = b.search(/(submitSkillListing|decideSkillListing|runSkill|listVisibleSkillListings|evaluateSkillListing|listPlatformSkillListings|listTenantExtensions|setTenantExtensionEnabled|runCustomManagerCapability)\(/); return Number.isFinite(g) && g >= 0 && (w < 0 || g < w) }))
     check("H3 no door accepts a brokerageId argument (tenant from the session)", !/function\s+\w+\([^)]*brokerageId/.test(act))
     check("H4 the doors call the runtime: submit+evaluate, decide, run, list", ["submitSkillListing(", "evaluateSkillListing(", "decideSkillListing(", "runSkill(", "listVisibleSkillListings("].every((x) => act.includes(x)))
     const rt = src("lib/kernel/skill-marketplace.ts")
     check("H5 the run path composes the survivors: mayUseAndAfford, resolveAgentAuthorityLevel, withActionLedger, requestDelegation", ["mayUseAndAfford(", "resolveAgentAuthorityLevel(", "withActionLedger(", "requestDelegation("].every((x) => rt.includes(x)))
     check("H6 no code execution: the runtime never evals / imports / fetches a declaration", !/\beval\(|new Function\(|import\(\s*[a-z]|fetch\(/.test(rt.replace(/import\("@\/[^"]+"\)/g, "")))
-    const migs = readdirSync("supabase/migrations").filter((f) => /\.sql$/.test(f) && readFileSync(`supabase/migrations/${f}`, "utf8").includes("skill_marketplace_listings_status_check")).sort((a, b) => Number(/^m(\d+)/.exec(a)?.[1] ?? 0) - Number(/^m(\d+)/.exec(b)?.[1] ?? 0))
-    const mig = migs.length ? readFileSync(`supabase/migrations/${migs[migs.length - 1]}`, "utf8") : ""
-    const list = (name: string) => { const m = new RegExp(`${name}\\s+CHECK\\s*\\(\\w+ IN \\(([^)]*)\\)`).exec(mig); return m ? [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]) : [] }
-    check("H7 the latest migration defining the status CHECK = SKILL_LISTING_STATUSES", list("skill_marketplace_listings_status_check").join(",") === SKILL_LISTING_STATUSES.join(","))
-    check("H8 its publisher CHECK = SKILL_PUBLISHERS; tenant-shape CHECK; session writes revoked; immutable declaration trigger", list("skill_marketplace_listings_publisher_check").join(",") === SKILL_PUBLISHERS.join(",") && /tenant_shape_check/.test(mig) && /REVOKE INSERT, UPDATE, DELETE ON public\.skill_marketplace_listings FROM anon, authenticated/.test(mig) && /BEFORE UPDATE ON public\.skill_marketplace_listings/.test(mig))
+    // Each rule is read from the LATEST migration that defines it (m727 created the table; later ones widen it).
+    const latest = (token: string) => { const ms = readdirSync("supabase/migrations").filter((f) => /\.sql$/.test(f) && readFileSync(`supabase/migrations/${f}`, "utf8").includes(token)).sort((a, b) => Number(/^m(\d+)/.exec(a)?.[1] ?? 0) - Number(/^m(\d+)/.exec(b)?.[1] ?? 0)); return ms.length ? readFileSync(`supabase/migrations/${ms[ms.length - 1]}`, "utf8") : "" }
+    const mig = latest("skill_marketplace_listings_status_check")
+    const list = (name: string) => { const m = new RegExp(`${name}\\s+CHECK\\s*\\(\\w+ IN \\(([^)]*)\\)`).exec(latest(name)); return m ? [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]) : [] }
+    check("H7 the latest migration defining the status CHECK = EXTENSION_STATUSES (one lifecycle vocabulary)", list("skill_marketplace_listings_status_check").join(",") === EXTENSION_STATUSES.join(","), list("skill_marketplace_listings_status_check").join(","))
+    check("H8 publisher CHECK = SKILL_PUBLISHERS; tenant-shape CHECK; session writes revoked; immutable declaration trigger", list("skill_marketplace_listings_publisher_check").join(",") === SKILL_PUBLISHERS.join(",") && /tenant_shape_check/.test(latest("tenant_shape_check")) && /REVOKE INSERT, UPDATE, DELETE ON public\.skill_marketplace_listings FROM anon, authenticated/.test(latest("REVOKE INSERT, UPDATE, DELETE ON public.skill_marketplace_listings")) && /BEFORE UPDATE ON public\.skill_marketplace_listings/.test(latest("BEFORE UPDATE ON public.skill_marketplace_listings")))
     check("H9 the migration header carries the lane stamp or an APPLIED LIVE stamp", /^-- ── (WRITTEN, NOT APPLIED|APPLIED LIVE)/.test(mig))
     check("H10 package.json registers test:skill-registry on the guard chain (membership, not position)", pkg.scripts["test:skill-registry"] === "tsx scripts/skill-registry-guard.ts" && new RegExp("npm run test:skill-registry(\\s|&|$)").test(pkg.scripts.guard))
     const d = MAINTENANCE_DOMAINS.skill_registry as any
     check("H11 MAINTENANCE_DOMAINS owns it (compliance_officer; co-owners data_steward + finance_manager named in prose)", d?.manager === "compliance_officer" && d.proof === "test:skill-registry" && JSON.stringify(d.coOwners) === JSON.stringify(["data_steward", "finance_manager"]) && d.what.includes("data_steward") && d.what.includes("finance_manager"))
     check("H12 TABLE_MANAGER: skill_marketplace_listings → compliance_officer", TABLE_MANAGER.skill_marketplace_listings === "compliance_officer")
     check("H13 every evaluation suite a marketplace skill may name is a platform-owned evaluator, and the validator knows all of them", Object.keys(SKILL_EVALUATORS).every((k) => knownEvaluationSuites().has(k)))
-    const actionNames = [...readFileSync("lib/kernel/skill-marketplace.ts", "utf8").matchAll(/action: [`"](skill\.[^`"]+)[`"]/g)].map((m) => m[1].replace("${input.decision}", "approve"))
+    const actionNames = [...readFileSync("lib/kernel/skill-marketplace.ts", "utf8").matchAll(/action: [`"]((?:skill|extension)\.[^`"]+)[`"]/g)].map((m) => m[1].replace("${input.decision}", "approve"))
     check(`H15 every ledger action the runtime writes is domain.entity.action (${actionNames.length} names — a malformed one is silently UNLEDGERED by the survivor)`, actionNames.length >= 4 && actionNames.every((a) => /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/.test(a)), actionNames.join(", "))
     check("H15b (control) the pattern refuses the two-segment name this lane first wrote", !/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/.test("skill.run"))
     const fixture = stripComments(`// TOMBSTONE: runSkill( used to be called here\nconst x = 1\n/* requestDelegation( */`)
@@ -372,7 +377,7 @@ async function main() {
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
-  console.log(` BLIND SPOTS: in-memory client (no RLS, no CHECK, no immutability trigger — m727 holds those live once applied); mayUseAndAfford / resolveAgentAuthorityLevel / requestDelegation are observed through seams (their own proofs cover them) — only withActionLedger runs real; built-in cost estimates are 0 with basis "unmeasured" (no per-call figure exists in the repo); the capability catalogue declares no per-capability OUTPUT shape, so every skill's output is the kernel run receipt; built-in evaluation suites are the existing proofs that exercise the capability (${MANAGER_SKILLS.length} skills on ${new Set(MANAGER_SKILLS.map((s) => s.evaluation_suite)).size} suites), not per-skill evals; no UI page mounts the doors yet.`)
+  console.log(` BLIND SPOTS: in-memory client (no RLS, no CHECK, no immutability trigger — m727 + m738 hold those live once applied); mayUseAndAfford / resolveAgentAuthorityLevel / requestDelegation are observed through seams (their own proofs cover them) — only withActionLedger runs real; built-in cost estimates are 0 with basis "unmeasured" (no per-call figure exists in the repo); the capability catalogue declares no per-capability OUTPUT shape, so every skill's output is the kernel run receipt; built-in evaluation suites are the existing proofs that exercise the capability (${MANAGER_SKILLS.length} skills on ${new Set(MANAGER_SKILLS.map((s) => s.evaluation_suite)).size} suites), not per-skill evals; tenant opt-ins observed through the tenantEnablement seam (extension-lifecycle-guard drives the real setter).`)
   if (fail > 0) { console.log(" ❌ SKILL_REGISTRY_FAIL"); process.exit(1) }
   console.log(" ✅ SKILL_REGISTRY_PASS — every manager skill is declared and validated; marketplace skills are data, evaluated before approval, and run only through the kernel")
 }

@@ -21,6 +21,11 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getConnectorSpec } from "./connector-registry"
+import { loadProviderHealth, loadAppliedAlternate } from "./connector-gateway"
+import { applyDeclaredAlternate } from "./connector-auto-applier"
+import { withActionLedger } from "@/lib/kernel/action-ledger"
+import { adapterFor, decideProviderHeal, bookAdapterUsage, type HealDecision, type HealSignals, type ProbeVerdict } from "@/lib/kernel/provider-adapters"
+import type { MeterVendorInput } from "@/lib/vendor-governance/meter-vendor"
 
 export interface FailureSample {
   status:   number | null
@@ -199,4 +204,148 @@ async function notifyPlatformStaffOfProposal(
     entityId:   proposal.id,
     priority:   "high",
   })
+}
+
+// ─── PROVIDER SELF-HEALING (wave 137, lane 137C — owner ruling) ─────────────────────────────────
+// "On a provider failure, FIRST probe whether the provider is down; if it is UP, check whether its
+// SDK / MCP / endpoint changed recently (a newer version, a deprecation, a changed shape) or a better
+// recommended route exists; apply the declared change (adapter version / endpoint / alternate route),
+// retry, and record evidence; code-level changes become a connector healing proposal."
+// The DECISION is pure (lib/kernel/provider-adapters.ts decideProviderHeal); this executes it through
+// the survivors: the router (routeCapability — failover is the router routing around a provider in a
+// `failing` cool-down), the auto-applier (applyDeclaredAlternate), the proposal writer
+// (proposeConnectorHealing above). Every step is ledgered (withActionLedger, reason OS_HEALTH_RECOVERY,
+// actor data_steward — the steward of connector_healing_proposals / connector_health_log) and the one
+// retry a heal makes is booked through the adapter's usage booking (one booking per executed call).
+
+type HealLedgerClient = { from: (table: string) => any }
+
+interface ProviderHealInput {
+  /** Gateway service key or provider name (adapterFor resolves either). */
+  connector: string
+  /** The tenant whose call failed — the ledger rows are that tenant's audit. */
+  brokerageId: string
+  failures: FailureSample[]
+  /** Unit of "once" for the ledger (e.g. the cron tick date). */
+  cycle: string
+  /** The ONE retry after an applied alternate. Absent → no retry is made (and nothing is booked). */
+  retry?: () => Promise<{ ok: boolean; units?: number }>
+}
+
+interface ProviderHealDeps {
+  client?: HealLedgerClient
+  now?: Date
+  /** The live probe (connector-probe.ts probeConnector) verdict — null when the provider has no probe spec. */
+  probe?: () => Promise<ProbeVerdict>
+  derivedHealth?: (serviceKey: string) => Promise<{ state: string; routeAround: boolean; reason: string } | null>
+  shapeChange?: (connector: string) => Promise<{ addedKeys: string[]; removedKeys: string[] } | null>
+  appliedAlternateId?: (connector: string) => Promise<string | null>
+  apply?: typeof applyDeclaredAlternate
+  propose?: (p: ProposeHealingParams) => Promise<{ proposal: ProposalRow | null; error: string | null }>
+  meter?: (input: MeterVendorInput) => Promise<boolean>
+}
+
+interface ProviderHealReport {
+  decision: HealDecision | { step: "propose_unregistered"; reason: string }
+  applied: boolean
+  retried: boolean
+  retryOk: boolean | null
+  booked: number
+  proposalId: string | null
+}
+
+export async function healProviderFailure(input: ProviderHealInput, deps: ProviderHealDeps = {}): Promise<ProviderHealReport> {
+  const client = deps.client ?? createServiceClient()
+  const now = deps.now ?? new Date()
+  const propose = deps.propose ?? proposeConnectorHealing
+  const report: ProviderHealReport = { decision: { step: "propose_unregistered", reason: "" }, applied: false, retried: false, retryOk: null, booked: 0, proposalId: null }
+  const ledger = <T>(step: string, detail: Record<string, unknown>, run: () => Promise<T>, outcome: (r: T) => { ok: boolean; note: string }) =>
+    withActionLedger<T | null>(
+      {
+        brokerageId: input.brokerageId,
+        action: `provider.heal.${step}`,
+        actor: { type: "manager", managerKey: "data_steward" },
+        subject: { type: "provider", ref: input.connector },
+        reasonCode: "OS_HEALTH_RECOVERY",
+        reasonDetail: String(detail.reason ?? "").slice(0, 500),
+        idempotencyKey: `provider_heal:${input.brokerageId}:${input.connector}:${step}:${input.cycle}`,
+        riskClass: "LOW_RISK_WRITE",
+        systemSource: "provider_self_heal",
+        detail,
+      },
+      run,
+      {
+        settle: (r) => {
+          const o = r === null ? { ok: false, note: "no result" } : outcome(r as T)
+          return { status: o.ok ? "executed" : "failed", outcome: o.note.slice(0, 300), provider: input.connector, error: o.ok ? null : o.note }
+        },
+        replay: () => null,
+      },
+      { client },
+    )
+
+  const adapter = adapterFor(input.connector)
+  if (!adapter) {
+    // No (valid) adapter declaration — the pre-137 path: an LLM-assisted proposal for platform staff.
+    const reason = `${input.connector} has no valid adapter declaration — proposal only`
+    report.decision = { step: "propose_unregistered", reason }
+    const r = await ledger("propose", { reason }, () => propose({ connector: input.connector, failures: input.failures }),
+      (x) => ({ ok: !!x.proposal, note: x.proposal ? `proposal ${x.proposal.id}` : `proposal not written: ${x.error}` }))
+    report.proposalId = r?.proposal?.id ?? null
+    return report
+  }
+
+  // 1. PROBE FIRST — is it down? (live probe + the gateway's derived health), then the drift evidence.
+  const serviceKey = adapter.health.serviceKeys.includes(input.connector) ? input.connector : adapter.health.serviceKeys[0]
+  const signals = await ledger("probe", { reason: "probe the provider before any remedy", adapter: adapter.provider, version: adapter.api.version }, async (): Promise<HealSignals> => ({
+    probe: deps.probe ? await deps.probe().catch(() => null) : null,
+    derived: await (deps.derivedHealth ?? ((k: string) => loadProviderHealth(k, now)))(serviceKey).catch(() => null),
+    shapeChange: deps.shapeChange ? await deps.shapeChange(input.connector).catch(() => null) : null,
+    appliedAlternateId: deps.appliedAlternateId
+      ? await deps.appliedAlternateId(input.connector).catch(() => null)
+      : (await loadAppliedAlternate(input.connector, client))?.alternate.id ?? null,
+    now,
+  }), (x) => ({ ok: true, note: `probe=${x.probe ?? "n/a"} derived=${x.derived?.state ?? "n/a"}` }))
+  const s: HealSignals = signals ?? { probe: null, derived: null, shapeChange: null, appliedAlternateId: null, now }
+  const decision = decideProviderHeal(adapter, s)
+  report.decision = decision
+  const evidence = { adapter: adapter.provider, version: adapter.api.version, probe: s.probe, derived: s.derived, shapeChange: s.shapeChange, decision }
+
+  switch (decision.step) {
+    case "failover":
+    case "escalate":
+    case "none": {
+      await ledger(decision.step, { reason: decision.reason, ...evidence }, async () => decision, () => ({ ok: decision.step !== "escalate", note: decision.reason }))
+      if (decision.step === "escalate") {
+        const r = await propose({ connector: input.connector, failures: input.failures }).catch(() => null)
+        report.proposalId = r?.proposal?.id ?? null
+      }
+      return report
+    }
+    case "propose": {
+      const r = await ledger("propose", { reason: decision.reason, ...evidence },
+        () => propose({ connector: input.connector, failures: input.failures, currentRequest: { adapterVersion: adapter.api.version, baseUrl: adapter.api.baseUrl, proposalKind: decision.proposalKind } }),
+        (x) => ({ ok: !!x.proposal, note: x.proposal ? `proposal ${x.proposal.id} (${decision.proposalKind})` : `proposal not written: ${x.error}` }))
+      report.proposalId = r?.proposal?.id ?? null
+      return report
+    }
+    case "apply_declared": {
+      const apply = deps.apply ?? applyDeclaredAlternate
+      const sig = `HTTP {${input.failures.map((f) => f.status ?? "?").join(",")}} — ${decision.reason}`
+      const applied = await ledger("apply", { reason: decision.reason, alternate: decision.alternate.id, ...evidence },
+        () => apply(client, { connector: input.connector, alternateId: decision.alternate.id, failureSignature: sig, evidence }),
+        (x) => ({ ok: x.applied, note: x.reason }))
+      report.applied = !!applied?.applied
+      report.proposalId = applied?.proposalId ?? null
+      if (!report.applied || !input.retry) return report
+      // 2. RETRY ONCE under the applied alternate — ledgered, and booked only when it executed.
+      report.retried = true
+      const retried = await ledger("retry", { reason: `retry once under ${decision.alternate.id}`, alternate: decision.alternate.id }, () => input.retry!(),
+        (x) => ({ ok: x.ok, note: x.ok ? "retry succeeded" : "retry failed" }))
+      report.retryOk = retried?.ok ?? false
+      const booked = await bookAdapterUsage(adapter, { brokerageId: input.brokerageId, executed: !!retried?.ok, units: retried?.units, systemSource: "provider_self_heal", usageType: "heal_retry" }, { meter: deps.meter })
+      report.booked = booked ? 1 : 0
+      return report
+    }
+  }
 }

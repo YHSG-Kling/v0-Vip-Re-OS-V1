@@ -32,6 +32,13 @@
 //   media_render_failures    remotion_composition_renders → lib/remotion/render-decision.ts
 //                            shouldAutoRequeueFailedRender + video_render_log failures
 //   compliance_flags         reaper_runs (compliance_flags_stuck escalated — the compliance reaper)
+// Wave 137E (BREADTH — the non-listing domains, each with a readable failure signal on its survivor):
+//   portal_invites           portal_contact_invites (status pending|sent past expires_at — the row contradicts its clock)
+//   esign_requests           signature_requests (sent|partially_signed past expires_at — a stuck signature, deal step)
+//   direct_mail_returns      direct_mail_recipients (delivery_status failed|returned — a bad address is a data conflict)
+//   sequence_send_failures   sequence_step_executions (status failed, 24h, per provider — a send never re-sent blind)
+//   transaction_deadlines    transaction_deadlines (status pending past deadline_date — contract exposure → Compliance)
+//   payments_sync            accounting_sync_log (failed, or running > 2h — books; Finance reviews, nothing halted)
 //
 // NEVER: auto-correct money (a financial discrepancy HALTS the affected writer and hands Finance the
 // evidence); retry a non-idempotent action (an in-flight step, a handler, a send — those escalate);
@@ -55,6 +62,8 @@ export const HEALTH_DETECTORS = [
   "provider_failures", "stale_missions", "stuck_workflows", "failed_webhooks",
   "missing_reconciliations", "usage_inconsistencies", "billing_drift", "event_backlog",
   "ai_anomalies", "media_render_failures", "compliance_flags",
+  // wave 137E breadth
+  "portal_invites", "esign_requests", "direct_mail_returns", "sequence_send_failures", "transaction_deadlines", "payments_sync",
 ] as const
 export type HealthDetector = (typeof HEALTH_DETECTORS)[number]
 
@@ -238,17 +247,50 @@ export async function haltFinancialWriter(
   return { ok: true, alreadyHalted: false }
 }
 
-/** Release a halt — called ONLY by the finance-admin action (app/actions/os-health.ts), session actor. */
+/** Who may release a halt (wave 137 owner ruling: "platform staff may release a financial halt (with evidence)"). */
+const HALT_RELEASERS = ["tenant_finance", "platform_staff"] as const
+type HaltReleaser = (typeof HALT_RELEASERS)[number]
+
+/**
+ * Release a halt — called ONLY by the two gated doors: the tenant finance-admin action
+ * (app/actions/os-health.ts, session tenant) and, since wave 137, the PLATFORM door
+ * (app/actions/superadmin/financial-halts.ts, platform 'billing' write capability). A platform release
+ * REQUIRES evidence (what reconciled the discrepancy) and refuses a writer that is not halted (or whose
+ * halt state cannot be read — fail closed). Both are versioned tenant-policy changes attributed to the
+ * session user (LAW 5); the entry names who released it and as what.
+ */
 export async function releaseFinancialWriterHalt(
   svc: Svc,
-  input: { brokerageId: string; writer: FinancialWriterKey; userId: string; reason: string },
+  input: { brokerageId: string; writer: FinancialWriterKey; userId: string; reason: string; releasedAs?: HaltReleaser; evidence?: string | null },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  const as: HaltReleaser = input.releasedAs ?? "tenant_finance"
+  const evidence = String(input.evidence ?? "").trim()
+  if (as === "platform_staff") {
+    if (evidence.length < 10) return { ok: false, error: "A platform release needs evidence — name what reconciled the discrepancy (a reconciliation id, ledger rows, a ticket)." }
+    const cur = await loadFinancialWriterHalt(svc, input.brokerageId, input.writer)
+    if (!cur.readable) return { ok: false, error: `halt state unreadable — nothing released (${cur.reason})` }
+    if (!cur.halted) return { ok: false, error: `${input.writer} is not halted for this brokerage — nothing to release` }
+  }
   const { mergeBrokerageSettings } = await import("@/lib/settings/brokerage-settings-merge")
   const write = await mergeBrokerageSettings(svc, input.brokerageId, (settings) => {
     const prev = (settings[FINANCIAL_WRITER_HALTS_POLICY_KEY] && typeof settings[FINANCIAL_WRITER_HALTS_POLICY_KEY] === "object" ? settings[FINANCIAL_WRITER_HALTS_POLICY_KEY] : {}) as Record<string, unknown>
-    return { [FINANCIAL_WRITER_HALTS_POLICY_KEY]: { ...prev, [input.writer]: { halted: false, released_by: input.userId, released_at: new Date().toISOString(), release_reason: input.reason.slice(0, 500) } } }
-  }, { policy: { type: "user", userId: input.userId, reason: `release ${input.writer} halt — ${input.reason}`.slice(0, 500) } })
+    return { [FINANCIAL_WRITER_HALTS_POLICY_KEY]: { ...prev, [input.writer]: { halted: false, released_by: input.userId, released_at: new Date().toISOString(), release_reason: input.reason.slice(0, 500), released_as: as, ...(evidence ? { release_evidence: evidence.slice(0, 1000) } : {}) } } }
+  }, { policy: { type: "user", userId: input.userId, reason: `${as === "platform_staff" ? "platform staff " : ""}release ${input.writer} halt — ${input.reason}${evidence ? ` (evidence: ${evidence})` : ""}`.slice(0, 500) } })
   return write.ok ? { ok: true } : { ok: false, error: write.error }
+}
+
+/** Platform read: every tenant whose settings carry a HALTED financial writer (platform door only). */
+export async function listHaltedFinancialWriters(svc: Svc, limit = 200): Promise<{ ok: true; rows: Array<{ brokerageId: string; writer: FinancialWriterKey; reason: string | null; incident: string | null; setAt: string | null }> } | { ok: false; error: string }> {
+  const { data, error } = await svc.from("brokerage_settings").select("brokerage_id, settings").not(`settings->${FINANCIAL_WRITER_HALTS_POLICY_KEY}`, "is", null).limit(limit)
+  if (error) return { ok: false, error: error.message ?? "refused" }
+  const rows: Array<{ brokerageId: string; writer: FinancialWriterKey; reason: string | null; incident: string | null; setAt: string | null }> = []
+  for (const r of (data ?? []) as Array<{ brokerage_id: string; settings: Record<string, unknown> | null }>) {
+    for (const w of Object.keys(FINANCIAL_WRITERS) as FinancialWriterKey[]) {
+      const h = readFinancialWriterHalt(r.settings ?? null, w)
+      if (h.halted) rows.push({ brokerageId: r.brokerage_id, writer: w, reason: h.reason, incident: h.incident, setAt: h.setAt })
+    }
+  }
+  return { ok: true, rows }
 }
 
 // ── Detectors (each reads its survivor, every read pinned to the tenant) ────────────────────
@@ -552,6 +594,92 @@ export const DETECTORS: Record<HealthDetector, Detector> = {
       summary: `${runs[0].escalated} Fair-Housing / consent flag(s) sat unreviewed past SLA (compliance reaper, ${runs[0].ran_at})`,
       idempotent: false, evidence: { escalated: runs[0].escalated, ran_at: runs[0].ran_at },
     })]
+  },
+
+  // ── wave 137E breadth: the non-listing domains ────────────────────────────────────────────
+  // An invite whose row still says open while its own expiry has passed: the record contradicts itself
+  // (Data Steward reconciles it; re-inviting is a SEND — never automatic).
+  portal_invites: async (svc, b, deps) => {
+    const rows = must(await svc.from("portal_contact_invites").select("id, contact_id, status, expires_at, portal_view")
+      .eq("brokerage_id", b).in("status", ["pending", "sent"]).lt("expires_at", iso(deps.now)).limit(200), "portal_contact_invites") as Array<{ id: string; contact_id: string | null; status: string; expires_at: string | null; portal_view: string | null }>
+    if (rows.length === 0) return []
+    return [incident(b, "portal_invites", "data_conflict", {
+      subjectKey: "portal_invites:open_past_expiry", subjectId: null, subjectType: "portal_contact_invites",
+      summary: `${rows.length} client-portal invite(s) still ${[...new Set(rows.map((r) => r.status))].join("/")} after their expiry — the client cannot get in`,
+      idempotent: false, evidence: { count: rows.length, sample: rows.slice(0, 5).map((r) => ({ id: r.id, contact_id: r.contact_id, expires_at: r.expires_at, portal_view: r.portal_view })) },
+    })]
+  },
+
+  // A signature request past its expiry with signatures still outstanding: a stuck deal step. Re-sending an
+  // envelope is a provider SEND — never re-run blind, so it is a non-resumable stuck workflow (a human).
+  esign_requests: async (svc, b, deps) => {
+    const rows = must(await svc.from("signature_requests").select("id, transaction_id, request_status, expires_at, sent_at")
+      .eq("brokerage_id", b).in("request_status", ["sent", "partially_signed"]).lt("expires_at", iso(deps.now)).limit(200), "signature_requests") as Array<{ id: string; transaction_id: string | null; request_status: string; expires_at: string | null; sent_at: string | null }>
+    return rows.map((r) => incident(b, "esign_requests", "stuck_workflow", {
+      subjectKey: `signature_request:${r.id}`, subjectId: uuidOr(r.id), subjectType: "signature_request",
+      summary: `e-sign request ${r.request_status} past its expiry ${r.expires_at}${r.transaction_id ? ` (transaction ${r.transaction_id})` : ""}`,
+      idempotent: false, resumable: false,
+      evidence: { transaction_id: r.transaction_id, request_status: r.request_status, expires_at: r.expires_at, sent_at: r.sent_at },
+    }))
+  },
+
+  // Returned / failed mail is an ADDRESS problem — the Data Steward verifies the record (never a re-mail).
+  direct_mail_returns: async (svc, b, deps) => {
+    const rows = must(await svc.from("direct_mail_recipients").select("id, campaign_id, contact_id, delivery_status")
+      .eq("brokerage_id", b).in("delivery_status", ["failed", "returned"]).gte("created_at", iso(hoursAgo(deps.now, 24 * 14))).limit(1000), "direct_mail_recipients") as Array<{ id: string; campaign_id: string | null; contact_id: string | null; delivery_status: string }>
+    const byCampaign = new Map<string, typeof rows>()
+    for (const r of rows) byCampaign.set(r.campaign_id ?? "unknown", [...(byCampaign.get(r.campaign_id ?? "unknown") ?? []), r])
+    return [...byCampaign.entries()].map(([campaign, list]) => incident(b, "direct_mail_returns", "data_conflict", {
+      subjectKey: `direct_mail_campaign:${campaign}`, subjectId: uuidOr(campaign), subjectType: "direct_mail_campaign",
+      summary: `${list.length} mail piece(s) ${[...new Set(list.map((r) => r.delivery_status))].join("/")} in 14 days — the addresses need verifying before the next drop`,
+      idempotent: false, evidence: { failed_or_returned: list.length, contacts: list.map((r) => r.contact_id).filter(Boolean).slice(0, 20) },
+    }))
+  },
+
+  // Failed sequence sends, per provider. A send is NEVER re-sent through the supervisor (it could deliver
+  // twice): a throttled provider is a non-idempotent rate_limit, any other failure a non-idempotent provider
+  // failure — both reach a human with the evidence.
+  sequence_send_failures: async (svc, b, deps) => {
+    const rows = must(await svc.from("sequence_step_executions").select("id, provider_key, channel, error_message")
+      .eq("brokerage_id", b).eq("status", "failed").gte("created_at", iso(hoursAgo(deps.now, 24))).limit(2000), "sequence_step_executions") as Array<{ id: string; provider_key: string | null; channel: string | null; error_message: string | null }>
+    const byProvider = new Map<string, typeof rows>()
+    for (const r of rows) byProvider.set(r.provider_key ?? r.channel ?? "unknown", [...(byProvider.get(r.provider_key ?? r.channel ?? "unknown") ?? []), r])
+    return [...byProvider.entries()].map(([provider, list]) => {
+      const throttled = list.some((r) => /\b429\b|rate.?limit|throttl|too many requests/i.test(r.error_message ?? ""))
+      return incident(b, "sequence_send_failures", throttled ? "rate_limit" : "provider_failure", {
+        subjectKey: `sequence_provider:${provider}`, subjectId: null, subjectType: "sequence_send_provider",
+        summary: `${list.length} sequence send(s) failed through ${provider} in 24h${throttled ? " (rate limited)" : ""} — ${String(list[0].error_message ?? "").slice(0, 120)}`,
+        idempotent: false, failoverAvailable: false,
+        evidence: { provider, failed: list.length, sample: list[0].error_message },
+      })
+    })
+  },
+
+  // A pending contract deadline whose date has passed was neither completed, waived nor extended: contract
+  // exposure, routed to the Compliance Manager (the OS never marks a deadline met or missed itself).
+  transaction_deadlines: async (svc, b, deps) => {
+    const rows = must(await svc.from("transaction_deadlines").select("id, transaction_id, deadline_type, deadline_date")
+      .eq("brokerage_id", b).eq("status", "pending").lt("deadline_date", iso(deps.now).slice(0, 10)).limit(500), "transaction_deadlines") as Array<{ id: string; transaction_id: string | null; deadline_type: string | null; deadline_date: string | null }>
+    const byTxn = new Map<string, typeof rows>()
+    for (const r of rows) byTxn.set(r.transaction_id ?? "unknown", [...(byTxn.get(r.transaction_id ?? "unknown") ?? []), r])
+    return [...byTxn.entries()].map(([txn, list]) => incident(b, "transaction_deadlines", "compliance", {
+      subjectKey: `transaction:${txn}`, subjectId: uuidOr(txn), subjectType: "transaction",
+      summary: `${list.length} contract deadline(s) passed while still pending (${list.map((r) => r.deadline_type ?? "?").join(", ")})`,
+      idempotent: false, evidence: { deadlines: list.map((r) => ({ id: r.id, type: r.deadline_type, date: r.deadline_date })) },
+    }))
+  },
+
+  // The accounting sync is FINANCIAL (owner, wave 137): a failed or hung sync is never re-run here (a re-run
+  // could double a journal entry) — Finance reviews the evidence; no money writer is attributable, none halted.
+  payments_sync: async (svc, b, deps) => {
+    const rows = must(await svc.from("accounting_sync_log").select("id, provider, sync_type, status, started_at, error_summary, records_failed")
+      .eq("brokerage_id", b).in("status", ["failed", "running"]).gte("started_at", iso(hoursAgo(deps.now, 72))).limit(200), "accounting_sync_log") as Array<{ id: string; provider: string | null; sync_type: string | null; status: string; started_at: string | null; error_summary: string | null; records_failed: number | null }>
+    const bad = rows.filter((r) => r.status === "failed" || (!!r.started_at && Date.parse(r.started_at) < hoursAgo(deps.now, 2).getTime()))
+    return bad.map((r) => incident(b, "payments_sync", "financial_discrepancy", {
+      subjectKey: `accounting_sync:${r.id}`, subjectId: uuidOr(r.id), subjectType: "accounting_sync_log",
+      summary: `${r.provider ?? "accounting"} ${r.sync_type ?? "sync"} ${r.status === "failed" ? "failed" : "hung > 2h"}${r.records_failed ? ` (${r.records_failed} record(s) failed)` : ""}${r.error_summary ? ` — ${r.error_summary.slice(0, 120)}` : ""}`,
+      idempotent: false, evidence: { provider: r.provider, sync_type: r.sync_type, status: r.status, started_at: r.started_at, records_failed: r.records_failed },
+    }))
   },
 }
 

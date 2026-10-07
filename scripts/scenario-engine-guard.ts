@@ -93,6 +93,15 @@ console.log("A — the propagation chain")
   check("A8 margin = revenue − total cost", p30.expectedMarginCents === p30.opportunityGain.addedRevenueCents - p30.marketingCost.totalCents)
   check("A9 (control) no lever → no gain, no cost", p0.opportunityGain.addedLeads30d === 0 && p0.marketingCost.totalCents === 0)
   check("A10 the 104B scenario() output rides the agent stage (one capacity model)", p30.staffingConstraint.capacityScenario?.predictor.includes("computeCapacity") === true)
+  // WAVE 137 owner ruling: the AI ISA's capacity counts CONTACTS; its raw-lead work queue stays LEADS.
+  const isa = st(p30, "ai_isa_capacity")
+  check("A11 the AI ISA stage is counted in CONTACTS: unit contacts/30d, demand = seller + buyer CONTACT demand, inputs isa_capacity_contacts_30d + contact_qualification_rate", isa.unit === "contacts/30d" && Math.abs(isa.demand! - (st(p30, "seller_demand").demand! + st(p30, "buyer_demand").demand!)) < 1e-6 && isa.inputs.includes("isa_capacity_contacts_30d") && isa.inputs.includes("contact_qualification_rate"), isa)
+  const withFlow = (leads: number) => { const f = facts(A, { leads }); f.flow = { contact: 90 }; return composeBrokerageTwin(f) }
+  const q60 = simulateScenario({ brokerageId: A, levers: { seller_lead_acquisition_pct: 30 } }, withFlow(60), marketFacts)
+  const q600 = simulateScenario({ brokerageId: A, levers: { seller_lead_acquisition_pct: 30 } }, withFlow(600), marketFacts)
+  check("A12 the raw-lead work queue is NOT contact demand: 60 vs 600 active leads → the same ISA demand and capacity (contact inflow measured)", st(q60, "ai_isa_capacity").demand === st(q600, "ai_isa_capacity").demand && st(q60, "ai_isa_capacity").capacity === st(q600, "ai_isa_capacity").capacity, [st(q60, "ai_isa_capacity"), st(q600, "ai_isa_capacity")])
+  check("A13 POSITIVE CONTROL: the split is reported, not lost — the lead queue (60 → 600 leads) moves isa_lead_queue_30d and the stage note", q60.coefficients.find((c) => c.key === "isa_lead_queue_30d")?.value === 20 && q600.coefficients.find((c) => c.key === "isa_lead_queue_30d")?.value === 200 && /stays LEADS/.test(st(q600, "ai_isa_capacity").note ?? "") && st(q600, "ai_isa_capacity").note !== st(q60, "ai_isa_capacity").note)
+  check("A14 no retired lead-denominated ISA key remains (isa_capacity_leads_30d / lead_conversion_rate)", !q60.coefficients.some((c) => c.key === "isa_capacity_leads_30d" || c.key === "lead_conversion_rate"))
   check("A11 headline names gain, cost and constraint", /closes/.test(scenarioHeadline(p30)) && /cost/.test(scenarioHeadline(p30)))
 }
 

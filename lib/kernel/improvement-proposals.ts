@@ -93,7 +93,7 @@ export const PROPOSAL_AUTHORITY: Readonly<Record<ProposalSubjectKind, AuthorityL
 })
 
 export type EvaluationVerdict = "pass" | "fail" | "inconclusive"
-export type Evaluator = "decision_replay" | "experiment_arms" | "predictor_record" | "reasoning_spend_replay" | "experience_attribution" | "provider_reliability" | "experiment_replay" | "none"
+export type Evaluator = "decision_replay" | "experiment_arms" | "predictor_record" | "reasoning_spend_replay" | "experience_attribution" | "provider_reliability" | "deadline_outcomes" | "experiment_replay" | "none"
 
 export interface ProposalEvaluation {
   evaluator: Evaluator
@@ -217,7 +217,7 @@ export async function evaluateImprovement(
   // self-optimization.ts is re-measured there; the rest fall through to the survivor evaluators below.
   const surf = classifyProposalSurface({ ...row, proposer: (row as { proposer?: string | null }).proposer ?? null })
   if (surf.scope === "forbidden") return { evaluator: "none", verdict: "fail", score: null, why: `forbidden surface ${surf.surface}: ${surf.reason}`, detail: { paths: surf.paths } }
-  if (surf.scope === "optimizable" && (surf.class === "model_routing" || surf.class === "education_intervention" || surf.class === "property_recommendation" || surf.class === "provider_selection")) {
+  if (surf.scope === "optimizable" && (surf.class === "model_routing" || surf.class === "education_intervention" || surf.class === "property_recommendation" || surf.class === "provider_selection" || surf.class === "transaction_reminder_timing")) {
     const { evaluateOptimizationClass } = await import("@/lib/kernel/self-optimization")
     return evaluateOptimizationClass(svc, row, surf.class, { now: opts.now, experienceStats: opts.experienceStats })
   }

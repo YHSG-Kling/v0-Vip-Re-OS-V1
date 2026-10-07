@@ -194,6 +194,14 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     )
   }
 
+  // THE LAST-VISIT WRITER (wave 137, m741): AFTER the loader read the previous visit for "since your last
+  // visit", stamp this one — the SESSION user only, tenant-pinned. A refused write is logged, never fatal.
+  if (brokerageId && !isSuperadmin) {
+    const { recordDashboardVisit } = await import("@/lib/kernel/exceptions-first")
+    const visit = await recordDashboardVisit(createServiceClient(), { userId: user.id, brokerageId })
+    if (!visit.ok) console.error(`[command-center] last-visit not recorded: ${visit.error}`)
+  }
+
   // THE TRUST METER — per-manager human-approval rates + the broker's own rejection
   // reasons (outcome learning made visible; brokerage scope only).
   const trust = brokerageId && !isSuperadmin

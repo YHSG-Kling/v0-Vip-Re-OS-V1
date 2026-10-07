@@ -164,13 +164,24 @@ export const SCENARIO_CONTRIBUTORS: Readonly<Partial<Record<ManagerKey, Scenario
   ai_isa: {
     manager: "ai_isa", stages: ["ai_isa_capacity"],
     coefficients: (t) => {
-      const leads = t.now.pipeline.leads, conv = t.now.pipeline.converted90d
+      // WAVE 137 owner ruling — the ISA's CAPACITY is counted in CONTACTS, one vocabulary with the twin:
+      // ads / forms / widgets / website / external lead sites / chat arrive as CONTACTS (source_family
+      // contact_direct) and are qualified as contacts; scraped / behavior leads stay LEADS until converted.
+      // THE SPLIT: the ISA's RAW-LEAD work queue (now.pipeline.leads — leads it works toward conversion)
+      // stays in leads (isa_lead_queue_30d, reported beside the stage, never added to contact demand);
+      // the stage's demand and capacity are contacts/30d.
+      const leads = t.now.pipeline.leads
+      const inflow = contactInflow30d(t)
+      const toAppt = t.system?.transitions.find((x) => x.from === "contact" && x.to === "appointment")
       return [
-        leads > 0 && conv > 0
-          ? coef("ai_isa", "lead_conversion_rate", conv / (conv + leads), "conversions per lead", "twin.now.pipeline.converted90d ÷ (converted90d + active leads)", confidenceOf(conv))
-          : assumed("ai_isa", "lead_conversion_rate", 0.08, "conversions per lead", "no converted leads in the trailing 90 days"),
-        assumed("ai_isa", "isa_capacity_leads_30d", Math.max(30, Math.round((leads / 3) * 1.5)), "leads/30d", "the AI ISA qualifies 1.5× the current monthly lead flow before its human-escalation queue saturates (no ISA throughput meter yet)"),
-        assumed("ai_isa", "overflow_conversion_factor", 0.3, "× conversion", "leads beyond ISA capacity convert at 30% of the qualified rate (no speed-to-lead decay curve in the twin)"),
+        toAppt && toAppt.status === "measured" && toAppt.rate !== null && toAppt.rate > 0
+          ? coef("ai_isa", "contact_qualification_rate", Math.min(1, toAppt.rate), "appointments per contact", "twin.system.transitions contact → appointment (listing presentations + tours over the contact stage)", confidenceOf(t.system.stages.find((x) => x.stage === "contact")?.count ?? 0))
+          : assumed("ai_isa", "contact_qualification_rate", 0.08, "appointments per contact", "no measured contact → appointment transition in the twin"),
+        inflow !== null
+          ? assumed("ai_isa", "isa_capacity_contacts_30d", Math.max(30, Math.round(inflow * 1.5)), "contacts/30d", "the AI ISA qualifies 1.5× the twin's monthly CONTACT inflow (system contact stage) before its human-escalation queue saturates (no ISA throughput meter yet)")
+          : assumed("ai_isa", "isa_capacity_contacts_30d", Math.max(30, Math.round((leads / 3) * 1.5)), "contacts/30d", "no contact-stage reading — 1.5× the active lead base turning over quarterly (every lead converts to a contact before it is qualified)"),
+        coef("ai_isa", "isa_lead_queue_30d", Math.round(leads / 3), "leads/30d", "twin.now.pipeline.leads ÷ 3 — the ISA's RAW-LEAD work queue; stays LEADS until converted (wave 137 split), never counted as contact demand", confidenceOf(leads)),
+        assumed("ai_isa", "overflow_conversion_factor", 0.3, "× conversion", "contacts beyond ISA capacity qualify at 30% of the qualified rate (no speed-to-lead decay curve in the twin)"),
       ]
     },
   },
@@ -242,7 +253,13 @@ export const SCENARIO_CONTRIBUTORS: Readonly<Partial<Record<ManagerKey, Scenario
     coefficients: (t) => {
       const e = t.economic, n = t.now
       const out: ScenarioCoefficient[] = []
-      out.push(e.closedCount90d > 0 && n.pipeline.converted90d > 0
+      // WAVE 137: a "conversion" upstream is a QUALIFIED CONTACT (contact → appointment, the ISA stage) —
+      // closes per conversion divides by the twin's appointment stage when it is measured; the lead
+      // conversion count is the fallback for a twin without the system view.
+      const appts = t.system?.stages.find((x) => x.stage === "appointment")?.count ?? null
+      out.push(e.closedCount90d > 0 && appts !== null && appts > 0 && t.system.windowDays > 0
+        ? coef("finance_manager", "close_rate_per_conversion", Math.min(1, (e.closedCount90d * t.system.windowDays) / (90 * appts)), "closes per conversion", "twin.economic.closedCount90d ÷ twin.system appointment stage (window-normalised to 90d)", confidenceOf(e.closedCount90d))
+        : e.closedCount90d > 0 && n.pipeline.converted90d > 0
         ? coef("finance_manager", "close_rate_per_conversion", Math.min(1, e.closedCount90d / n.pipeline.converted90d), "closes per conversion", "twin.economic.closedCount90d ÷ twin.now.pipeline.converted90d", confidenceOf(e.closedCount90d))
         : assumed("finance_manager", "close_rate_per_conversion", 0.2, "closes per conversion", "no closed deals and conversions in the trailing 90 days to divide"))
       out.push(e.closedCount90d > 0
@@ -412,13 +429,14 @@ function propagate(twin: BrokerageTwin, levers: ScenarioLevers, c: Record<string
   stage({ stage: "seller_demand", manager: "listing_concierge", demand: sellerBase + addedSeller, capacity: null, unit: "seller contacts/30d", inputs: ["base_seller_contacts_30d", "avg_territory_seller_contacts_30d"], note: "demand stage — no capacity bound" })
   stage({ stage: "buyer_demand", manager: "shopping_agent", demand: buyerBase + addedBuyer, capacity: null, unit: "buyer contacts/30d", inputs: ["base_buyer_contacts_30d"], note: "demand stage — no capacity bound" })
 
-  // 2 AI ISA CAPACITY — qualified throughput; overflow converts at a reduced rate.
-  const baseLeads = sellerBase + buyerBase, totalLeads = Math.max(0, baseLeads + addedSeller + addedBuyer)
-  const isaCap = v("isa_capacity_leads_30d") * Math.max(0, 1 + pct(levers.isa_capacity_pct))
-  stage({ stage: "ai_isa_capacity", manager: "ai_isa", demand: totalLeads, capacity: isaCap, unit: "leads/30d", inputs: ["isa_capacity_leads_30d"] })
-  const conv = v("lead_conversion_rate"), overflow = v("overflow_conversion_factor")
-  const converted = (leads: number) => Math.min(leads, isaCap) * conv + Math.max(0, leads - isaCap) * conv * overflow
-  const addedConversions = converted(totalLeads) - converted(baseLeads)
+  // 2 AI ISA CAPACITY — qualified CONTACT throughput (wave 137: counted in contacts); overflow qualifies
+  // at a reduced rate. The raw-lead work queue stays leads and rides as a named note, not demand.
+  const baseContacts = sellerBase + buyerBase, totalContacts = Math.max(0, baseContacts + addedSeller + addedBuyer)
+  const isaCap = v("isa_capacity_contacts_30d") * Math.max(0, 1 + pct(levers.isa_capacity_pct))
+  stage({ stage: "ai_isa_capacity", manager: "ai_isa", demand: totalContacts, capacity: isaCap, unit: "contacts/30d", inputs: ["isa_capacity_contacts_30d", "contact_qualification_rate"], note: `contacts the ISA qualifies (inbound sources arrive as contacts); its raw-lead work queue (≈${Math.round(v("isa_lead_queue_30d"))} leads/30d) stays LEADS until converted and is not counted here` })
+  const conv = v("contact_qualification_rate"), overflow = v("overflow_conversion_factor")
+  const converted = (contacts: number) => Math.min(contacts, isaCap) * conv + Math.max(0, contacts - isaCap) * conv * overflow
+  const addedConversions = converted(totalContacts) - converted(baseContacts)
 
   // 3 AGENT CAPACITY — the survivor's scenario() (computeCapacity over the roster) for the bands;
   // the stage compares new book items against the roster's headroom + added agents' ceilings.

@@ -275,24 +275,42 @@ export async function GET(req: Request) {
         .maybeSingle()
       if (existing) { healingSkippedExisting++; continue }
       try {
-        const { proposeConnectorHealing } = await import('@/lib/agentic-os/connector-healer')
-        await proposeConnectorHealing({
+        // WAVE 137 (lane 137C) — PROVIDER SELF-HEALING: probe first (this tick's probe verdict + the
+        // gateway's derived health), then failover / apply a DECLARED config alternate + retry once /
+        // propose. A connector with no adapter declaration falls through to the same proposal as before.
+        const { healProviderFailure } = await import('@/lib/agentic-os/connector-healer')
+        const first = failures[0]
+        const brokerageId = (first.brokerage_id as string | null) ?? null
+        if (!brokerageId) { healingSkippedExisting++; continue } // no tenant → no ledger owner; never healed unattributed
+        const samples = failures.slice(0, 10).map((r): { status: number | null; path: string | null; error: string | null; at: string } => {
+          // For shape_drift the actual diff lives in detail.drift; without forwarding it the
+          // healer's LLM has no payload to reason on and produces generic guesses.
+          const driftDetail = (r.detail as any)?.drift
+          const errorText =
+            (r.error as string | null)
+            ?? (r.status === 'shape_drift' && driftDetail ? `shape_drift: ${JSON.stringify(driftDetail).slice(0, 500)}` : null)
+            ?? (r.status as string)
+          return {
+            status: (r.http_status as number | null) ?? null,
+            path:   null,
+            error:  errorText,
+            at:     (r.checked_at as string) ?? now.toISOString(),
+          }
+        })
+        await healProviderFailure({
           connector: provider,
-          failures: failures.slice(0, 10).map((r): { status: number | null; path: string | null; error: string | null; at: string } => {
-            // For shape_drift the actual diff lives in detail.drift; without forwarding it the
-            // healer's LLM has no payload to reason on and produces generic guesses.
-            const driftDetail = (r.detail as any)?.drift
-            const errorText =
-              (r.error as string | null)
-              ?? (r.status === 'shape_drift' && driftDetail ? `shape_drift: ${JSON.stringify(driftDetail).slice(0, 500)}` : null)
-              ?? (r.status as string)
-            return {
-              status: (r.http_status as number | null) ?? null,
-              path:   null,
-              error:  errorText,
-              at:     (r.checked_at as string) ?? now.toISOString(),
-            }
-          }),
+          brokerageId,
+          failures: samples,
+          cycle: now.toISOString().slice(0, 13),
+          // The one retry: the same live probe again, now that the applied alternate rides egress.
+          retry: async () => {
+            const conn = await resolveConnection({ brokerageId, provider })
+            const again = conn ? await probeConnector(provider, { apiKey: conn.apiKey, apiSecret: conn.apiSecret, accessToken: conn.accessToken, config: conn.config }) : null
+            return { ok: again?.status === 'ok' }
+          },
+        }, {
+          // This tick's live probe verdict IS the first probe (only auth_failed / shape_drift rows reach here).
+          probe: async () => (first.status === 'auth_failed' || first.status === 'shape_drift' ? first.status : null),
         })
         healingProposed++
       } catch (err) {

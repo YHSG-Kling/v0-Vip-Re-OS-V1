@@ -42,6 +42,7 @@ import { requestDelegation, DELEGATION_WORKERS, type DelegationDeps } from "@/li
 import {
   adaptStrategy, participatingManagers, platformStrategy, rankStrategies, strategyCapabilities, strategyDigest,
   strategyGaps, strategyOwnershipOf, strategyRef, STRATEGY_EVIDENCE_KIND, PLATFORM_STRATEGY_LIBRARY,
+  PLATFORM_STRATEGY_LIBRARY_EDITION, STRATEGY_DOMAINS, type OsDomain,
   type RankedStrategy, type StrategyAdaptation, type StrategyCandidate, type StrategyDefinition, type StrategyFacts,
   type StrategyHistory, type StrategyPerformance, type StrategyPolicyOverride, type StrategySubjectType,
 } from "@/lib/kernel/strategy-library"
@@ -315,10 +316,12 @@ export interface StrategyLibraryEntry {
   key: string; version: number; title: string; label: string; objective: string; audience: string; marketSuitability: readonly string[]
   averageCostUsd: number; recommendedAuthority: AuthorityLevel; approval: "per_authority" | "always"; managers: ManagerKey[]; capabilities: AppCapability[]
   gaps: Array<{ manager: ManagerKey; gap: string }>; latest: boolean
+  /** Wave 137E: the OS domains the strategy serves (tagged beside the definition — never part of its digest). */
+  domains: readonly OsDomain[]
   benchmark: { conversionRate: number | null; sample: number } | null
   activation: { id: string; version: number; changes: StrategyAdaptation["changes"]; since: string } | null
 }
-export async function listStrategyLibrary(brokerageId: string, client?: Client): Promise<{ entries: StrategyLibraryEntry[]; learning: "learned" | "unlearned" | "refused"; learningReason: string | null; readRefused: string | null }> {
+export async function listStrategyLibrary(brokerageId: string, client?: Client): Promise<{ entries: StrategyLibraryEntry[]; edition: number; learning: "learned" | "unlearned" | "refused"; learningReason: string | null; readRefused: string | null }> {
   const svc = await svcOf(client)
   const { data, error } = await svc.from("strategy_activations").select(ACTIVATION_COLS).eq("brokerage_id", brokerageId).eq("status", "active")
   const acts = error ? [] : ((data ?? []) as StrategyActivationRow[])
@@ -330,10 +333,10 @@ export async function listStrategyLibrary(brokerageId: string, client?: Client):
       key: s.key, version: s.version, title: s.title, label: `${s.title} v${s.version}`, objective: s.objective, audience: s.audience, marketSuitability: s.marketSuitability,
       averageCostUsd: s.averageCostUsd, recommendedAuthority: s.authority.recommended, approval: s.authority.approval,
       managers: participatingManagers(s), capabilities: strategyCapabilities(s), gaps: strategyGaps(s),
-      latest: platformStrategy(s.key)?.version === s.version,
+      latest: platformStrategy(s.key)?.version === s.version, domains: STRATEGY_DOMAINS[s.key] ?? [],
       benchmark: learn.data?.benchmarks?.[s.key] ?? null,
       activation: a ? { id: a.id, version: a.version, changes: a.adaptation?.changes ?? [], since: a.created_at } : null,
     }
   })
-  return { entries, learning: learn.status, learningReason: learn.reason, readRefused: error ? error.message : null }
+  return { entries, edition: PLATFORM_STRATEGY_LIBRARY_EDITION, learning: learn.status, learningReason: learn.reason, readRefused: error ? error.message : null }
 }

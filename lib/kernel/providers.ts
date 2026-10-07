@@ -45,7 +45,9 @@ export interface ResolvedProvider {
 // platform-primary vendor (superadmin can override it); for PER-TENANT types
 // it is the fallback when a tenant has not connected their own.
 
-const SYSTEM_DEFAULTS: Record<string, string> = {
+// Exported (wave 137, lane 137C) for ONE reader: lib/kernel/provider-adapters.ts derives the routed
+// channel providers from this table — the adapter declarations are DERIVED from it, never restated.
+export const SYSTEM_DEFAULTS: Readonly<Record<string, string>> = {
   // Per-tenant (BYO via cascade)
   email:        "sendgrid",
   sms:          "twilio",
@@ -80,7 +82,7 @@ const SYSTEM_DEFAULTS: Record<string, string> = {
 // ai-model.ts) legitimately routes/caps the model TIER per brokerage/team/user
 // for cost governance — that operates within this single platform vendor and is
 // not a vendor override, so it does not conflict with `ai` being system-only.
-const SYSTEM_ONLY_TYPES = new Set([
+export const SYSTEM_ONLY_TYPES: ReadonlySet<string> = new Set([
   "ai",
   "video",
   "avatar",

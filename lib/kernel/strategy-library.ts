@@ -61,6 +61,10 @@ export interface StrategyFacts {
   fatigue_risk?: FatigueRiskLevel
   territory_seller_demand_up?: boolean
   recruiting_need?: boolean
+  /** Wave 137E (breadth): contacts.buyer_stage (CHECK vocabulary, e.g. BUYER_TOURING / BUYER_UNDER_CONTRACT). */
+  buyer_stage?: string
+  /** Wave 137E: contacts.lender_status (cash | needs_pre_approval | pre_approved | unknown). */
+  lender_status?: string
 }
 export type StrategyFact = keyof StrategyFacts
 
@@ -290,7 +294,219 @@ export const PLATFORM_STRATEGY_LIBRARY: readonly StrategyDefinition[] = Object.f
     outcomeMetrics: ["attributedDeals", "attributedGciCents", "optOutsHonored"],
     audience: "Past clients a few months after closing", marketSuitability: ["any"], averageCostUsd: 25, priority: 55,
   }),
+
+  // ─── wave 137E BREADTH (owner: "skills/examples were only for listings; the possibilities are endless") ──
+  // Library v3: the full OS beyond listings. Each is a NEW key at v1 (no published version is edited — the
+  // immutability rule holds); every step names catalogue keys its manager OWNS or names its gap. Domain sources
+  // (the repo's installed skills): real-estate-expert, realestate-analyze/-comps/-invest/-rental/-market/
+  // -neighborhood, real-estate:cma-narrative / offer-comparison / market-update / client-email, mortgage-broker-
+  // mortgage-lending, recruiter-talent-acquisition, ads-strategy / ads-budget, market-*, geo-content,
+  // social-media-manager-*, remotion-best-practices, real-estate-real-estate-marketing (Fair Housing),
+  // bookkeeper-financial-reporting, ecc agentic-os / agentic-engineering / autonomous-loops (the bounded loop shape).
+  def({
+    key: "buyer_search_to_offer", version: 1, title: "VIPAgents Buyer Search to Offer",
+    objective: "Carry a searching buyer contact from criteria and pre-approval through tours to an offer decision",
+    missionType: "campaign", ownerManager: "shopping_agent",
+    // Owner (wave 108): only CONTACTS tour — a lead converts to a contact first, so the subject is a contact.
+    eligibility: { subjectTypes: ["contact"], all: [NOT_DNC, NOT_EXHAUSTED, { fact: "intent", op: "in", value: ["buyer", "both"], whenKnown: true }],
+      any: [{ fact: "buyer_stage", op: "in", value: ["BUYER_SEARCHING", "BUYER_SEARCH_CONFIGURED", "BUYER_TOUR_ELIGIBLE", "BUYER_TOURING", "BUYER_FINANCIALLY_VERIFIED", "BUYER_OFFER_ELIGIBLE"] }, { fact: "lender_status", op: "eq", value: "needs_pre_approval" }] },
+    steps: [
+      { manager: "ai_isa", capabilities: ["isa_qualify"], purpose: "confirm criteria, financing and timeline", playbooks: [{ kind: "qualification_goal", key: "buyer_criteria" }, { kind: "qualification_goal", key: "financing_status" }, { kind: "qualification_goal", key: "timeline" }] },
+      { manager: "shopping_agent", capabilities: ["lender_preapproval_handoff", "appointment_schedule", "portal_milestones_get"], purpose: "the bench-lender pre-approval handoff, the tours, the portal timeline and the offer decision", playbooks: [{ kind: "strategy_session", key: "buyer_kickoff" }, { kind: "strategy_session", key: "offer_decision" }, { kind: "experience", key: "properties" }] },
+      { manager: "campaign_orchestrator", capabilities: ["education_assign"], purpose: "the buyer education between tours (process, offers, inspections)", playbooks: [{ kind: "sequence_type", key: "nurture" }, { kind: "experience", key: "education" }] },
+    ],
+    budget: { usd: 25, tokens: 60_000 }, authority: { recommended: 3, approval: "per_authority" },
+    timing: { horizonDays: 90, cadenceDays: 5, timelineBuckets: ["immediate", "1-3_months", "3-6_months"] }, fatigue: CONTACT_FATIGUE,
+    exitCriteria: [{ metric: "appointmentsBooked", op: ">=", target: 2 }],
+    outcomeMetrics: ["appointmentsBooked", "attributedDeals", "attributedGciCents", "optOutsHonored"],
+    audience: "Buyer contacts searching or touring", marketSuitability: ["any"], averageCostUsd: 20, priority: 68,
+  }),
+  def({
+    key: "seller_valuation_to_listing", version: 1, title: "VIPAgents Seller Valuation to Listing",
+    objective: "Turn a seller's valuation question into a priced listing appointment with an honest net picture",
+    missionType: "campaign", ownerManager: "listing_concierge",
+    eligibility: { subjectTypes: ["contact"], all: [NOT_DNC, NOT_EXHAUSTED, { fact: "intent", op: "in", value: ["seller", "both"], whenKnown: true }, { fact: "homeowner", op: "is_true", whenKnown: true }] },
+    steps: [
+      { manager: "data_steward", capabilities: ["contact_get"], purpose: "verify the owner, the property and the valuation on the AVM provider chain", playbooks: [{ kind: "kernel_play", key: "intent_campaign" }] },
+      { manager: "listing_concierge", capabilities: ["cma_generate", "listing_appointment_prep"], purpose: "the CMA, the pricing conversation and the listing appointment", playbooks: [{ kind: "creative_playbook", key: "zestimate_challenge" }, { kind: "strategy_session", key: "price_change" }, { kind: "experience", key: "appointment" }] },
+      { manager: "finance_manager", capabilities: ["report_generate"], purpose: "the seller net picture from the brokerage's own closed economics (never a model-made number)", playbooks: [] },
+    ],
+    budget: { usd: 30, tokens: 60_000 }, authority: { recommended: 3, approval: "per_authority" },
+    timing: { horizonDays: 45, cadenceDays: 7, timelineBuckets: ["immediate", "1-3_months", "3-6_months"] }, fatigue: CONTACT_FATIGUE,
+    exitCriteria: [{ metric: "appointmentsBooked", op: ">=", target: 1 }],
+    outcomeMetrics: ["appointmentsBooked", "attributedDeals", "attributedGciCents", "optOutsHonored"],
+    audience: "Seller contacts asking what their home is worth", marketSuitability: ["any"], averageCostUsd: 25, priority: 72,
+  }),
+  def({
+    key: "investor_property_match", version: 1, title: "VIPAgents Investor Property Match",
+    objective: "Keep an investor contact supplied with property-only opportunities and tour the ones that pencil",
+    missionType: "campaign", ownerManager: "shopping_agent",
+    eligibility: { subjectTypes: ["contact"], all: [NOT_DNC, NOT_EXHAUSTED], any: [{ fact: "persona", op: "eq", value: "investor" }, { fact: "intent", op: "eq", value: "investor" }] },
+    steps: [
+      { manager: "data_steward", capabilities: ["contact_get"], purpose: "the investor's buy box from the contact record", playbooks: [] },
+      { manager: "shopping_agent", capabilities: ["appointment_schedule", "portal_milestones_get"], purpose: "property-only matches and the tours that pencil", playbooks: [{ kind: "experience", key: "properties" }, { kind: "strategy_session", key: "offer_decision" }] },
+      { manager: "campaign_orchestrator", capabilities: ["newsletter_send"], purpose: "the investor market update", playbooks: [{ kind: "sequence_persona", key: "investor" }, { kind: "experience", key: "market_update" }] },
+    ],
+    budget: { usd: 20, tokens: 40_000 }, authority: { recommended: 3, approval: "per_authority" },
+    timing: { horizonDays: 120, cadenceDays: 14 }, fatigue: CONTACT_FATIGUE,
+    exitCriteria: [{ metric: "appointmentsBooked", op: ">=", target: 1 }],
+    outcomeMetrics: ["appointmentsBooked", "attributedDeals", "optOutsHonored"],
+    audience: "Investor contacts (property-only)", marketSuitability: ["any"], averageCostUsd: 15, priority: 58,
+  }),
+  def({
+    key: "home_value_review", version: 1, title: "VIPAgents Annual Home Value Review",
+    objective: "Give a lifetime client a yearly home value review on their anniversary and keep the relationship warm",
+    missionType: "campaign", ownerManager: "sphere_of_influence",
+    eligibility: { subjectTypes: ["contact"], all: [NOT_DNC, NOT_EXHAUSTED, { fact: "is_past_client", op: "is_true" }, { fact: "homeowner", op: "is_true", whenKnown: true }, { fact: "months_since_close", op: "gte", value: 11, whenKnown: true, adaptable: { id: "review_months", min: 6, max: 24, step: 1 } }] },
+    steps: [
+      { manager: "data_steward", capabilities: ["contact_get"], purpose: "refresh the owner record before the review", playbooks: [] },
+      { manager: "listing_concierge", capabilities: ["cma_generate"], purpose: "the home value review (CMA on the AVM provider chain)", playbooks: [{ kind: "creative_playbook", key: "anniversary_equity" }] },
+      { manager: "sphere_of_influence", capabilities: ["handwritten_note_send"], purpose: "the anniversary note that carries the review", playbooks: [{ kind: "creative_playbook", key: "anniversary_equity" }] },
+      { manager: "campaign_orchestrator", capabilities: ["newsletter_send"], purpose: "the post-close market update", playbooks: [{ kind: "sequence_type", key: "post_close" }, { kind: "experience", key: "market_update" }] },
+    ],
+    budget: { usd: 15, tokens: 30_000 }, authority: { recommended: 3, approval: "per_authority" },
+    timing: { horizonDays: 30, cadenceDays: 14 }, fatigue: CONTACT_FATIGUE,
+    exitCriteria: [{ metric: "draftsSent", op: ">=", target: 1 }],
+    outcomeMetrics: ["draftsSent", "appointmentsBooked", "attributedDeals", "optOutsHonored"],
+    audience: "Lifetime clients on their home anniversary", marketSuitability: ["any"], averageCostUsd: 12, priority: 62,
+  }),
+  def({
+    key: "transaction_to_close", version: 1, title: "VIPAgents Contract to Close",
+    objective: "Carry an under-contract client to a clean close: deadlines, documents, portal and the closing touch",
+    missionType: "transaction", ownerManager: "deal_coordinator",
+    eligibility: { subjectTypes: ["contact", "listing"], all: [], any: [{ fact: "buyer_stage", op: "eq", value: "BUYER_UNDER_CONTRACT" }, { fact: "listing_status", op: "in", value: ["pending", "under_contract"] }] },
+    steps: [
+      { manager: "deal_coordinator", capabilities: ["transaction_advance"], purpose: "advance the transaction through its lifecycle as deadlines clear", playbooks: [{ kind: "sequence_type", key: "transaction" }] },
+      { manager: "shopping_agent", capabilities: ["portal_milestones_get"], purpose: "the client-portal timeline and the document explanations", playbooks: [{ kind: "experience", key: "portal_task" }, { kind: "experience", key: "document_explanation" }] },
+      { manager: "sphere_of_influence", capabilities: ["gift_send"], purpose: "the closing gift (the lifetime relationship starts here)", playbooks: [] },
+      { manager: "finance_manager", capabilities: ["report_generate"], purpose: "the commission and closing economics (deterministic ledger, Finance reviews)", playbooks: [] },
+    ],
+    budget: { usd: 60, tokens: 40_000 }, authority: { recommended: 3, approval: "per_authority" },
+    timing: { horizonDays: 60, cadenceDays: 3 }, fatigue: { scopes: ["contact", "agent"], maxContactRisk: "moderate", deconflict: true },
+    exitCriteria: [{ metric: "attributedDeals", op: ">=", target: 1 }],
+    outcomeMetrics: ["attributedDeals", "attributedGciCents"],
+    audience: "Clients under contract", marketSuitability: ["any"], averageCostUsd: 55, priority: 85,
+  }),
+  def({
+    key: "territory_acquisition", version: 1, title: "VIPAgents Territory Acquisition",
+    objective: "Win more seller business in a territory whose demand is rising — farm, content, paid and a measured return",
+    missionType: "campaign", ownerManager: "campaign_orchestrator",
+    // The territory is the tenant's own farm_territories row (the subject) — never a hard-coded market.
+    eligibility: { subjectTypes: ["territory"], all: [{ fact: "territory_seller_demand_up", op: "is_true" }] },
+    steps: [
+      { manager: "listing_concierge", capabilities: ["listing_demand_report"], purpose: "read seller demand in the territory against the window before", playbooks: [] },
+      { manager: "campaign_orchestrator", capabilities: ["direct_mail_send", "social_post_publish"], purpose: "the farm mail drop and the neighborhood social cadence", playbooks: [{ kind: "kernel_play", key: "farm_play" }, { kind: "creative_playbook", key: "neighbor_brag" }, { kind: "creative_playbook", key: "zestimate_challenge" }] },
+      { manager: "asset_manager", capabilities: ["content_repurpose"], purpose: "neighborhood video and social cuts (reuse before regenerate)", playbooks: [{ kind: "experience", key: "video" }] },
+      { manager: "ads_manager", capabilities: ["ads_performance_report", "ad_campaign_launch"], purpose: "the budgeted territory ad draft against measured paid performance", playbooks: [] },
+      { manager: "finance_manager", capabilities: ["report_generate"], purpose: "the acquisition return (attributed revenue vs spend)", playbooks: [] },
+    ],
+    budget: { usd: 300, tokens: 100_000 }, authority: { recommended: 3, approval: "always" },
+    timing: { horizonDays: 90, cadenceDays: 14 }, fatigue: { scopes: ["contact", "agent"], maxContactRisk: "moderate", deconflict: true },
+    exitCriteria: [{ metric: "appointmentsBooked", op: ">=", target: 2 }],
+    outcomeMetrics: ["appointmentsBooked", "attributedDeals", "attributedGciCents", "optOutsHonored"],
+    audience: "A farm territory with rising seller demand", marketSuitability: ["any", "growth"], averageCostUsd: 280, priority: 45,
+  }),
+  def({
+    key: "client_portal_activation", version: 1, title: "VIPAgents Client Portal Activation",
+    objective: "Get an active client into their portal — timeline, tasks and document explanations in one place",
+    missionType: "campaign", ownerManager: "shopping_agent",
+    eligibility: { subjectTypes: ["contact"], all: [NOT_DNC, NOT_EXHAUSTED, { fact: "intent", op: "in", value: ["buyer", "seller", "both"], whenKnown: true }] },
+    steps: [
+      { manager: "shopping_agent", capabilities: ["portal_milestones_get"], purpose: "the client's portal timeline and next task", playbooks: [{ kind: "experience", key: "portal_task" }] },
+      { manager: "campaign_orchestrator", capabilities: ["education_path_get", "education_assign"], purpose: "the document explanations the portal surfaces", playbooks: [{ kind: "experience", key: "document_explanation" }, { kind: "experience", key: "education" }] },
+      { manager: "ai_isa", capabilities: ["inbox_reply_send"], purpose: "answer the client's portal questions (compliance-gated)", playbooks: [] },
+    ],
+    budget: { usd: 10, tokens: 30_000 }, authority: { recommended: 3, approval: "per_authority" },
+    timing: { horizonDays: 30, cadenceDays: 7 }, fatigue: CONTACT_FATIGUE,
+    exitCriteria: [{ metric: "draftsSent", op: ">=", target: 1 }],
+    outcomeMetrics: ["draftsSent", "appointmentsBooked", "optOutsHonored"],
+    audience: "Active buyer and seller clients", marketSuitability: ["any"], averageCostUsd: 8, priority: 52,
+  }),
+  def({
+    key: "agent_development_retention", version: 1, title: "VIPAgents Agent Development & Retention",
+    objective: "Keep and grow the agents the brokerage has — competency coaching where the twin sees a weakness, economics they can see",
+    missionType: "recruiting", ownerManager: "recruiting_manager",
+    eligibility: { subjectTypes: ["brokerage", "territory"], all: [] },
+    steps: [
+      { manager: "recruiting_manager", capabilities: [], purpose: "the competency coaching plan for in-development agents", playbooks: [],
+        gap: "agent coaching / competency intervention has no catalogue capability — the learning router (lib/learning-router) and the coaching engine (lib/intelligence/coaching-engine.ts) are survivors without a capability key" },
+      { manager: "finance_manager", capabilities: ["report_generate"], purpose: "the agent's own production and cap progress (agents see their own economics, never brokerage margin)", playbooks: [] },
+    ],
+    budget: { usd: 0, tokens: 40_000 }, authority: { recommended: 2, approval: "always" },
+    timing: { horizonDays: 90, cadenceDays: 30 }, fatigue: { scopes: ["agent"], maxContactRisk: "moderate", deconflict: true },
+    exitCriteria: [{ metric: "attributedDeals", op: ">=", target: 1 }],
+    outcomeMetrics: ["attributedDeals"],
+    audience: "In-development and at-risk agents", marketSuitability: ["any"], averageCostUsd: 5, priority: 40,
+  }),
+  def({
+    key: "compliance_first_marketing", version: 1, title: "VIPAgents Compliance-First Marketing",
+    objective: "Write and review marketing fair-housing-first, and read back opt-outs and complaints before scaling a campaign",
+    missionType: "compliance", ownerManager: "compliance_officer",
+    eligibility: { subjectTypes: ["brokerage"], all: [] },
+    steps: [
+      { manager: "compliance_officer", capabilities: [], purpose: "the fair-housing review of the campaign's copy and audience basis", playbooks: [],
+        gap: "the compliance_officer owns no catalogue capability — fair-housing review runs on the compliance scan survivors (lib/compliance) outside the capability catalogue" },
+      { manager: "asset_manager", capabilities: ["content_repurpose"], purpose: "compliance-first scripts (fair housing in the writing prompt, not only the post-hoc scan)", playbooks: [{ kind: "experience", key: "video" }] },
+      { manager: "campaign_orchestrator", capabilities: ["campaign_performance_report"], purpose: "the opt-out / reply read-back before the campaign scales", playbooks: [] },
+    ],
+    budget: { usd: 0, tokens: 30_000 }, authority: { recommended: 1, approval: "always" },
+    timing: { horizonDays: 30, cadenceDays: 7 }, fatigue: { scopes: ["contact"], maxContactRisk: "moderate", deconflict: true },
+    exitCriteria: [{ metric: "draftsSent", op: ">=", target: 1 }],
+    outcomeMetrics: ["optOutsHonored", "draftsSent"],
+    audience: "Any brokerage running outbound marketing", marketSuitability: ["any"], averageCostUsd: 2, priority: 35,
+  }),
+  def({
+    key: "commission_residual_review", version: 1, title: "VIPAgents Commission & Residual Review",
+    objective: "Give Finance a monthly ledger-true view of commissions, residuals and the accounting connector's health",
+    missionType: "brokerage_objective", ownerManager: "finance_manager",
+    eligibility: { subjectTypes: ["brokerage"], all: [] },
+    steps: [
+      { manager: "data_steward", capabilities: ["connectivity_scan"], purpose: "is the accounting connector live before the books are read", playbooks: [] },
+      { manager: "finance_manager", capabilities: ["report_generate", "report_export"], purpose: "the commission + residual report from the ledger (no LLM calculates money) and its export", playbooks: [] },
+    ],
+    budget: { usd: 0, tokens: 10_000 }, authority: { recommended: 1, approval: "per_authority" },
+    timing: { horizonDays: 30, cadenceDays: 30 }, fatigue: { scopes: ["agent"], maxContactRisk: "moderate", deconflict: true },
+    exitCriteria: [{ metric: "attributedGciCents", op: ">=", target: 1 }],
+    outcomeMetrics: ["attributedGciCents", "attributedDeals"],
+    audience: "The brokerage's finance desk", marketSuitability: ["any"], averageCostUsd: 0, priority: 30,
+  }),
 ])
+
+/** The library's published edition — v1 the owner's eight (107E), v2 the three owner-approved gaps built
+ *  (108H), v3 the full-OS breadth (137E). A bump appends; it never edits a published strategy version. */
+export const PLATFORM_STRATEGY_LIBRARY_EDITION = 3
+
+/** The OS domains the platform must cover (owner, wave 137 BREADTH) — the census the proof asserts:
+ *  every domain carries ≥ 1 platform strategy and ≥ 1 platform skill example. */
+export const OS_DOMAINS = [
+  "buyers", "sellers", "investors", "sphere_lifetime", "recruiting_retention", "transactions_closing",
+  "lenders_vendors", "marketing_content", "education_coaching", "finance_commission", "compliance", "portals",
+  "property_intelligence", "territory_acquisition",
+] as const
+export type OsDomain = (typeof OS_DOMAINS)[number]
+
+/** Which domains each platform strategy serves — kept BESIDE the definitions so tagging never changes a
+ *  published version's digest (strategyDigest covers the definition only). */
+export const STRATEGY_DOMAINS: Readonly<Record<string, readonly OsDomain[]>> = Object.freeze({
+  expired_listing: ["sellers", "marketing_content"],
+  fsbo: ["sellers"],
+  seller_equity: ["sellers", "property_intelligence"],
+  sphere_reactivation: ["sphere_lifetime"],
+  first_time_buyer: ["buyers", "lenders_vendors", "education_coaching"],
+  listing_launch: ["sellers", "marketing_content"],
+  recruiting: ["recruiting_retention", "finance_commission"],
+  past_client_referral: ["sphere_lifetime"],
+  buyer_search_to_offer: ["buyers", "lenders_vendors", "portals"],
+  seller_valuation_to_listing: ["sellers", "property_intelligence"],
+  investor_property_match: ["investors", "property_intelligence"],
+  home_value_review: ["sphere_lifetime", "property_intelligence"],
+  transaction_to_close: ["transactions_closing", "portals", "finance_commission"],
+  territory_acquisition: ["territory_acquisition", "marketing_content"],
+  client_portal_activation: ["portals", "education_coaching"],
+  agent_development_retention: ["recruiting_retention", "education_coaching"],
+  compliance_first_marketing: ["compliance", "marketing_content"],
+  commission_residual_review: ["finance_commission"],
+})
 
 /** The owner's eight, by key (the seed set the proof checks). */
 export const OWNER_SEED_STRATEGY_KEYS = ["expired_listing", "fsbo", "seller_equity", "sphere_reactivation", "first_time_buyer", "listing_launch", "recruiting", "past_client_referral"] as const
@@ -473,6 +689,8 @@ export function factsFromContactRow(row: Record<string, unknown>, now: Date = ne
     timeline: typeof row.timeline === "string" && TIMELINES.includes(row.timeline) ? (row.timeline as StandardTimeline) : undefined,
     first_time_buyer: persona === "first_time" ? true : undefined,
     dnc: row.dnc_status === true ? true : row.dnc_status === false ? false : undefined,
+    buyer_stage: typeof row.buyer_stage === "string" ? row.buyer_stage : undefined,
+    lender_status: typeof row.lender_status === "string" ? row.lender_status : undefined,
   }
 }
 

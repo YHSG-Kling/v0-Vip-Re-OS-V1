@@ -417,7 +417,7 @@ console.log("\n[A6 · the wave-98 exceptions stay closed — one booking per cal
   const am = keepStr("lib/ads/ad-monitor.ts")
   const prov = keepStr("lib/kernel/providers.ts")
   check("A6c premise checked: `ai` is a SYSTEM_ONLY provider type (no tenant-paid AI provider exists)",
-    /SYSTEM_ONLY_TYPES\s*=\s*new Set\(\[\s*["']ai["']/.test(prov))
+    /SYSTEM_ONLY_TYPES(?:\s*:[^=]+)?\s*=\s*new Set\(\[\s*["']ai["']/.test(prov))
   check("A6c ad-monitor routes competitive_monitoring (a MODEL_CONFIG feature) with a tenant",
     /generateTextRouted\s*\(\s*\{\s*feature:\s*["']competitive_monitoring["'],\s*brokerageId/.test(am) && featureRouted("competitive_monitoring"))
   const insightsBody = am.slice(am.search(/export async function generateInsights\(/), am.search(/export async function generateInsights\(/) + 1400)

@@ -26,6 +26,7 @@ import {
   OPTIMIZATION_CLASSES, OPTIMIZATION_CLASS_DEFS, FORBIDDEN_SURFACES, classifyProposalSurface, replayReasoningSpend, providerSkipVerdict,
   experienceDirection, loadTenantProviderSkips, resolveOptimizationTuning, runTeamOptimizationCycle, OPTIMIZATION_CLASS_AUTHORITY, TEAM_OPTIMIZATION_PROPOSER,
   type OptimizationClass,
+  loadDeadlineReminderHours, DEADLINE_REMINDER_MAX_HOURS, evaluateOptimizationClass,
 } from "../lib/kernel/self-optimization"
 import {
   PROPOSERS, promotionDecision, proposeImprovement, evaluateProposal, decideProposal, promoteProposal, rollbackProposal, loadProposal,
@@ -110,6 +111,7 @@ async function main() {
     education_intervention: () => s6c,
     property_recommendation: () => C("property_recommendation", "policy", "optimization_tuning", { patch: { experience_bias: { properties: 5 } } }),
     provider_selection: () => C("provider_selection", "policy", "optimization_tuning", { patch: { provider_skip: { property_valuation: ["batchdata"] } } }),
+    transaction_reminder_timing: () => C("transaction_reminder_timing", "policy", "optimization_tuning", { patch: { deadline_reminder_hours: 48 } }),
   }
   check("S9 every class's own surface classifies OPTIMIZABLE as that class (positive control per class)", OPTIMIZATION_CLASSES.every((c) => { const v = example[c](); return v.scope === "optimizable" && v.class === c }))
   check("S10 FORBIDDEN_SURFACES names the owner's three boundaries + the allowed-list rule", ["authority_policy", "financial_rule", "compliance_boundary", "policy_outside_allowed_list"].every((s) => (FORBIDDEN_SURFACES as readonly string[]).includes(s)))
@@ -141,11 +143,11 @@ async function main() {
   // ── E: every class has an evaluator and a rollback ──────────────────────────────────────────────────────────
   console.log("E — evaluator + rollback per class (registry and live)")
   check("E0 the class registry IS the vocabulary (keys = OPTIMIZATION_CLASSES, no extra, no missing)", Object.keys(OPTIMIZATION_CLASS_DEFS).sort().join(",") === [...OPTIMIZATION_CLASSES].sort().join(","))
-  const EVALUATORS = new Set(["experiment_arms", "decision_replay", "reasoning_spend_replay", "experience_attribution", "provider_reliability"])
+  const EVALUATORS = new Set(["experiment_arms", "decision_replay", "reasoning_spend_replay", "experience_attribution", "provider_reliability", "deadline_outcomes"])
   check("E1 every class names an evaluator the kernel implements and a rollback writer", OPTIMIZATION_CLASSES.every((c) => EVALUATORS.has(OPTIMIZATION_CLASS_DEFS[c].evaluator) && OPTIMIZATION_CLASS_DEFS[c].rollback.length > 0))
   const kernelSrc = src("lib/kernel/improvement-proposals.ts"), soSrc = src("lib/kernel/self-optimization.ts")
   check("E2 each evaluator has an implementation (survivor branch in the kernel or a case in evaluateOptimizationClass)",
-    /evaluator: "experiment_arms"/.test(kernelSrc) && /evaluator: "decision_replay"/.test(kernelSrc) && ["reasoning_spend_replay", "experience_attribution", "provider_reliability"].every((e) => soSrc.includes(`case "${e}"`)))
+    /evaluator: "experiment_arms"/.test(kernelSrc) && /evaluator: "decision_replay"/.test(kernelSrc) && ["reasoning_spend_replay", "experience_attribution", "provider_reliability", "deadline_outcomes"].every((e) => soSrc.includes(`case "${e}"`)))
   check("E3 each rollback writer is wired in applyChange (restoreRetiredVariants, writeIsaSettings, mergeBrokerageSettings)", ["restoreRetiredVariants", "writeIsaSettings", "mergeBrokerageSettings"].every((w) => kernelSrc.includes(w)) && OPTIMIZATION_CLASSES.every((c) => ["restoreRetiredVariants", "writeIsaSettings", "mergeBrokerageSettings"].some((w) => OPTIMIZATION_CLASS_DEFS[c].rollback.includes(w))))
   check("E4 each class's READER exists in the named file (a promotion is never a write nobody reads)", OPTIMIZATION_CLASSES.every((c) => {
     const r = OPTIMIZATION_CLASS_DEFS[c].reader
@@ -298,6 +300,45 @@ async function main() {
   check("N4 the valuation route skips the tenant's promoted backup (batchdata never tried) — control: with no skip it is tried",
     !v1.providersTried.includes("batchdata") && v1.skipped.some((s) => s.provider === "batchdata" && /optimization_tuning/.test(s.reason)) && v0.providersTried.includes("batchdata"), JSON.stringify([v1, v0]))
   check("N5 the owner-ruled primary is never skipped even if a stored skip names it", !vP.skipped.some((s) => s.provider === "rentcast" && /optimization_tuning/.test(s.reason)))
+
+  // ── R: wave 137E BREADTH — transaction_reminder_timing (evaluator + rollback + reader, all real) ─────────────
+  console.log("R — breadth class: transaction reminder timing")
+  const dl = (b: string, status: string) => ({ id: uuid(), brokerage_id: b, status, deadline_date: "2026-09-01", transaction_id: uuid(), deadline_type: "inspection" })
+  // The rule, driven through the class's real evaluator (evaluateOptimizationClass) over in-memory deadline rows.
+  const verdict = async (current: number, proposed: number, resolved: number, missed: number) => (await evaluateOptimizationClass(
+    memSupabase({ transaction_deadlines: [...Array.from({ length: resolved - missed }, () => dl(B, "completed")), ...Array.from({ length: missed }, () => dl(B, "missed"))] }),
+    { brokerage_id: B, subject_kind: "policy", subject_key: "optimization_tuning", proposed_change: { patch: { deadline_reminder_hours: proposed }, previous: { deadline_reminder_hours: current } } } as any, "transaction_reminder_timing", { now: NOW })).verdict
+  check("R1 the deadline rule: earlier reminders pass at a ≥ 5% missed rate and fail at 0 missed; later passes ONLY with none missed; a thin sample is a human's call; out-of-bounds / no-change fail",
+    (await verdict(24, 48, 40, 4)) === "pass" && (await verdict(24, 48, 40, 0)) === "fail"
+    && (await verdict(48, 24, 40, 0)) === "pass" && (await verdict(48, 24, 40, 1)) === "fail"
+    && (await verdict(24, 48, 5, 5)) === "inconclusive" && (await verdict(24, DEADLINE_REMINDER_MAX_HOURS + 24, 40, 10)) === "fail" && (await verdict(24, 24, 40, 10)) === "fail")
+  const s11 = C("transaction_reminder_timing", "policy", "optimization_tuning", { patch: { deadline_reminder_hours: 48, experience_bias: { education: 5 } } })
+  const s11b = C("transaction_reminder_timing", "policy", "transaction_deadlines_policy", { patch: { deadline_reminder_hours: 48 } })
+  check("R2 the class may touch ONLY deadline_reminder_hours on optimization_tuning (another field / another key = forbidden; the deadline itself is never a surface)", s11.scope === "forbidden" && s11.surface === "policy_outside_allowed_list" && s11b.scope === "forbidden", JSON.stringify([s11, s11b]))
+  const memR = memSupabase({
+    improvement_proposals: [], tenant_policy_versions: [], agent_action_ledger: [],
+    brokerage_settings: [settingsRow(B, {}), settingsRow(OTHER, {})],
+    transaction_deadlines: [...Array.from({ length: 36 }, () => dl(B, "completed")), ...Array.from({ length: 4 }, () => dl(B, "missed")), ...Array.from({ length: 40 }, () => dl(OTHER, "completed"))],
+  }, { stampCreatedAt: true })
+  const tr = await proposeImprovement(memR, { brokerageId: B, subjectKind: "policy", subjectKey: "optimization_tuning", proposer: TEAM_OPTIMIZATION_PROPOSER, proposedChange: { patch: { deadline_reminder_hours: 48 }, previous: { deadline_reminder_hours: 24 }, ...opt("transaction_reminder_timing") } })
+  const trId = tr.ok ? tr.id : ""
+  const tre = await evaluateProposal(memR, { brokerageId: B, id: trId }, { now: NOW })
+  check("R3 evaluator deadline_outcomes re-measures B's OWN deadlines (4/40 missed → earlier passes); OTHER's clean record is not read", tre.ok && tre.evaluation.evaluator === "deadline_outcomes" && tre.evaluation.verdict === "pass" && (tre.evaluation.detail as any).resolved === 40, JSON.stringify(tre))
+  await decideProposal(memR, { brokerageId: B, id: trId, decision: "approve", actor: admin })
+  const trp = await promoteProposal(memR, { brokerageId: B, id: trId, actor: admin })
+  const leadMap = await loadDeadlineReminderHours(memR, [B, OTHER])
+  check("R4 promoted through mergeBrokerageSettings and READ by the watcher's loader TENANT-SCOPED (B 48h, OTHER default)", trp.ok && leadMap.get(B) === 48 && !leadMap.has(OTHER) && resolveOptimizationTuning(memR.tables.brokerage_settings[0].settings).deadlineReminderHours === 48, JSON.stringify([trp, [...leadMap]]))
+  const trr = await rollbackProposal(memR, { brokerageId: B, id: trId, actor: admin })
+  const after = await loadDeadlineReminderHours(memR, [B])
+  check("R5 rollback re-applies the recorded previous value through the same writer (B back to 24h — a new version, history kept)", trr.ok && (after.get(B) ?? 24) === 24 && memR.tables.tenant_policy_versions.length >= 2, JSON.stringify([trr, [...after]]))
+  check("R6 (control) an unreadable settings batch keeps every tenant on the default (never a widened window)", (await loadDeadlineReminderHours(memSupabase({ brokerage_settings: [] }, { refuse: { brokerage_settings: "denied" } }), [B])).size === 0)
+  const memRC = memSupabase({ improvement_proposals: [], tenant_policy_versions: [], agent_action_ledger: [], brokerage_settings: [settingsRow(B, {})], transaction_deadlines: [...Array.from({ length: 30 }, () => dl(B, "completed")), ...Array.from({ length: 6 }, () => dl(B, "missed"))] }, { stampCreatedAt: true })
+  const cycR = await runTeamOptimizationCycle(memRC, B, { now: NOW, gateFor: async () => allowGate, replay: okReplay, isaTiming: async () => ({ touch_interval_days: 3, max_touches_lead: 6 }), experienceStats: goodEdu })
+  const trRow = memRC.tables.improvement_proposals.find((r) => r.proposed_change?.optimization?.class === "transaction_reminder_timing")
+  check("R7 the weekly cycle co-proposes it (deal_coordinator + compliance_officer, 24h → 48h) and HOLDS it for a human (not on the autonomous list)",
+    !!trRow && trRow.proposed_change.patch.deadline_reminder_hours === 48 && JSON.stringify(trRow.proposed_change.optimization.managers) === JSON.stringify(["deal_coordinator", "compliance_officer"]) && cycR.classes.find((c) => c.class === "transaction_reminder_timing")?.outcome === "held", JSON.stringify(cycR.classes.find((c) => c.class === "transaction_reminder_timing")))
+  const watcher = src("lib/kernel/calendar-deadline-watcher.ts")
+  check("R8 the READER is wired: the deadline watcher loads the tenant lead (loadDeadlineReminderHours) and applies it ONLY to transaction deadline types", /loadDeadlineReminderHours\(supabase,/.test(watcher) && /TRANSACTION_DEADLINE_TYPES\.has\(e\.event_type\)\s*\?\s*tenantLead\.get/.test(watcher) && /leadHoursFor\(calEvent\)/.test(watcher))
 
   // ── W: wiring + registration (stripped source; vocabularies derived) ───────────────────────────────────────
   console.log("W — wiring")

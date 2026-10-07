@@ -18,6 +18,7 @@ import { memSupabase } from "./in-memory-supabase"
 import {
   MEASURE_CAPABILITIES, MISSION_TYPE_DOMAIN, MISSION_CONTROL_BATCH, MISSION_CONTROLLER_ACTOR, NO_DELEGATIONS,
   capabilityRiskClass, measureOfMetric, resolveOwnership, planMissionControl, controlMissions, controlMission, missionVerdictLines,
+  cascadeParentApproval,
   type DelegationSummary, type ControllerDeps,
 } from "../lib/kernel/mission-controller"
 import {
@@ -282,6 +283,45 @@ async function main() {
     check("F10 the controller actor is the operations seat (cron_manager), a MANAGERS key", MISSION_CONTROLLER_ACTOR.type === "manager" && MISSION_CONTROLLER_ACTOR.id! in MANAGERS)
     const fixture = stripComments(`// TOMBSTONE: controlMissions( used to be called here\nconst x = 1\n/* transitionMission( */`)
     check("F11 (control) a tombstone naming a door is NOT read as a call site", !fixture.includes("controlMissions(") && !fixture.includes("transitionMission(") && fixture.includes("const x = 1"))
+  }
+
+  // ─── G. WAVE 137 — approving a delegation PARENT cascades to its children, each through its OWN gate ──
+  console.log("\nG. approval cascade — parent → children, every child still passes its own authority / policy gate")
+  {
+    const c = mem(); const s = seams(); const low = seams({ authority: 0 })
+    const crit = [{ metric: "now.listings.active", op: ">=" as const, target: 14 }]
+    const mk = async (o: { owner: any; usd: number; parent?: string; deps?: ControllerDeps; tenant?: string; state?: any }) => {
+      const r = await createMission({ brokerageId: o.tenant ?? T1, objective: `child ${o.owner} ${o.usd}`, missionType: "brokerage_objective", ownerManager: o.owner, successCriteria: crit, budget: { usd: o.usd, on_exhausted: "APPROVAL_REQUIRED" }, parentMission: o.parent ?? null, initialState: o.state ?? "PROPOSED", createdBy: null, actor: { type: "user", id: "u-1" } }, c as any, o.deps ?? s.deps)
+      if (!r.ok) throw new Error(r.reason); return r.mission
+    }
+    const parent = await mk({ owner: "listing_concierge", usd: 300 })
+    const ok = await mk({ owner: "listing_concierge", usd: 100, parent: parent.id })
+    const lowAuth = await mk({ owner: "listing_concierge", usd: 50, parent: parent.id, deps: low.deps })
+    const wrongOwner = await mk({ owner: "ai_isa", usd: 50, parent: parent.id })
+    const overBudget = await mk({ owner: "listing_concierge", usd: 400, parent: parent.id })
+    const foreign = await mk({ owner: "listing_concierge", usd: 10, parent: parent.id, tenant: T2 })
+    // POSITIVE CONTROL first: an UNAPPROVED parent cascades nothing.
+    const early = await cascadeParentApproval({ brokerageId: T1, parentMissionId: parent.id, actor: { type: "user", id: "u-1" }, reason: "too early" }, c as any, s.deps)
+    check("G1 (control) a parent that is not yet APPROVED (still PROPOSED) cascades nothing — every child stays PROPOSED", !!early.readRefused && /only an APPROVED/.test(early.readRefused) && [ok, lowAuth, wrongOwner, overBudget].every((m) => row(c, m.id).state === "PROPOSED"), early.readRefused ?? "")
+    const t = await transitionMission({ brokerageId: T1, missionId: parent.id, to: "ACTIVE", reason: "approved by a human", actor: { type: "user", id: "u-1" } }, c as any, s.deps)
+    const before = s.ledger.length
+    const rep = await cascadeParentApproval({ brokerageId: T1, parentMissionId: parent.id, actor: { type: "user", id: "u-1" }, reason: "approved by a human" }, c as any, s.deps)
+    check("G2 the parent approval CASCADES: the child that passes its own gate moves PROPOSED → ACTIVE through transitionMission (ledgered)", t.ok && row(c, ok.id).state === "ACTIVE" && rep.approved.map((x) => x.id).join() === ok.id && s.ledger.slice(before).some((l) => l.missionId === ok.id && l.to === "ACTIVE"), JSON.stringify(rep))
+    const why = (id: string) => rep.refused.find((x) => x.id === id)?.reason ?? ""
+    check("G3 a child whose owner's authority ceiling is below its capabilities' rung is REFUSED by its own gate, never forced (stays PROPOSED)", /^authority:/.test(why(lowAuth.id)) && row(c, lowAuth.id).state === "PROPOSED", why(lowAuth.id))
+    check("G4 a child whose owner is not the registry's owner is REFUSED (ownership policy), stays PROPOSED", /^ownership:/.test(why(wrongOwner.id)) && row(c, wrongOwner.id).state === "PROPOSED", why(wrongOwner.id))
+    check("G5 a child that would take the approved children past the parent's USD envelope is REFUSED (budget), stays PROPOSED", /^budget:/.test(why(overBudget.id)) && row(c, overBudget.id).state === "PROPOSED", why(overBudget.id))
+    const refusalEvents = c.tables.mission_events.filter((e: any) => e.evidence?.approval_cascade?.approved === false)
+    check("G6 every refused child carries an evidence row naming the gate (LAW 5); the parent carries the cascade summary", [lowAuth.id, wrongOwner.id, overBudget.id].every((id) => refusalEvents.some((e: any) => e.mission_id === id)) && c.tables.mission_events.some((e: any) => e.mission_id === parent.id && Array.isArray(e.evidence?.approval_cascade?.refused) && e.evidence.approval_cascade.refused.length === 3))
+    check("G7 tenant isolation: another tenant's row naming the same parent is never read or moved", row(c, foreign.id).state === "PROPOSED" && ![...rep.approved, ...rep.refused].some((x) => x.id === foreign.id))
+    // POSITIVE CONTROL — the gate is the RULE, not the fixture: raise the refused child's ceiling and re-run.
+    ;(row(c, lowAuth.id) as any).authority_ceiling = 6
+    const again = await cascadeParentApproval({ brokerageId: T1, parentMissionId: parent.id, actor: { type: "user", id: "u-1" }, reason: "re-run" }, c as any, s.deps)
+    check("G8 (control) the same child with a sufficient ceiling PASSES its gate on a re-run (150 of 300 USD); the ownership / budget refusals stand; the approved child is skipped", again.approved.map((x) => x.id).join() === lowAuth.id && row(c, lowAuth.id).state === "ACTIVE" && again.refused.length === 2 && again.skipped === 1, JSON.stringify(again))
+    const door = src("app/actions/missions.ts")
+    const di = door.indexOf("export async function decideMissionAction")
+    const body = door.slice(di, door.indexOf("export async function", di + 10))
+    check("G9 the human door wires it: decideMissionAction runs cascadeParentApproval( only on approve, admin roster, after the parent moved", /decision === "approve" && g\.admin/.test(body) && body.indexOf("transitionMission(") < body.indexOf("cascadeParentApproval(") && src("app/dashboard/admin/command-center/missions-card.tsx").includes("cascade.refused"))
   }
 
   console.log("\n──────────────────────────────────────────────────")

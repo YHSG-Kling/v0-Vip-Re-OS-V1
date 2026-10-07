@@ -301,7 +301,11 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // in the agent_action_ledger reason-code CHECK. Deliberate bump, named per this guard's own instruction;
 // drops back to 0 once the integrator applies it and flips the header. Sibling wave-104 lanes (104A m707,
 // 104B m708, 104D m710, 104E m711) bump this line for their own files — the integrator sums them.
-const NOT_APPLIED_BASELINE = 0
+// 0 → 1 (wave 137, integrator): m739-drop-retired-skill-listing-indexes.sql, WRITTEN NOT APPLIED — the
+// three DROP INDEX statements retiring m727's skill-listing indexes (m738's re-keyed replacements are live).
+// The Supabase MCP holds destructive statements for the OWNER's confirmation; the integrator's session
+// could not give it. Deliberate bump, named per this guard's instruction; drops back to 0 once applied.
+const NOT_APPLIED_BASELINE = 1
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)
 check(`files claiming NOT APPLIED at or below ${NOT_APPLIED_BASELINE} (found ${notApplied.length})`,

@@ -613,3 +613,78 @@ export async function missionVerdictLines(brokerageId: string, missions: Mission
   }
   return out
 }
+
+// ─── WAVE 137 (owner "approve all"): approving a delegation PARENT cascades to its children ────────
+// The objective-delegation PARENT (lib/kernel/broker-objectives.ts delegateObjective) is created with its
+// child missions PROPOSED under `parent_mission`. A human approving the parent (app/actions/missions.ts
+// decideMissionAction → PROPOSED/PLANNING/APPROVAL_REQUIRED → ACTIVE) now carries that approval to each
+// child — but EVERY child still passes its OWN gate first, the controller's own rules over that child:
+//   · authority  — the highest rung its capabilities need ≤ the child owner's ceiling (MIN_AUTHORITY_FOR_RISK);
+//   · ownership  — the registry's expected owner IS the recorded owner (no unresolved / mismatched owner);
+//   · budget     — not exhausted, and the approved children's USD never exceed the parent's USD envelope;
+//   · dependency — no failed / missing dependency;
+//   · the state machine itself (transitionMission refuses a non-edge).
+// A child that fails its gate is NOT forced: it stays where it was, the refusal is recorded on the child as
+// an evidence row (LAW 5) and reported back to the human. Approved children move through transitionMission
+// (the ONE writer — ledgered, evented). The parent gets one evidence row summarising the cascade.
+
+/** The states a cascade may move to ACTIVE (a human approving the parent is the approval these wait on). */
+const CASCADE_FROM: ReadonlySet<MissionState> = new Set(["PROPOSED", "PLANNING", "APPROVAL_REQUIRED"])
+
+interface ApprovalCascadeChild { id: string; owner: string; state: MissionState; reason: string }
+export interface ApprovalCascadeReport { parentId: string; approved: ApprovalCascadeChild[]; refused: ApprovalCascadeChild[]; skipped: number; readRefused: string | null }
+
+/** PURE — the child's own gate (the controller's rules over THIS child). null = passes.
+ * Driven by scripts/mission-controller-guard.ts G through cascadeParentApproval (refusals + a positive control). */
+function childApprovalGate(child: MissionRow, now: Date, ctx: { dependencyRows: Array<Pick<MissionRow, "id" | "state">>; parentUsd: number | null; approvedUsd: number }): string | null {
+  const plan = planMissionControl({ mission: child, now, delegations: NO_DELEGATIONS(null), dependencyRows: ctx.dependencyRows, children: [], lastVerdict: null })
+  if (plan.authority.insufficient) return `authority: ${plan.authority.requiredBy} needs rung ${plan.authority.required}, ${child.owner_manager}'s ceiling is ${plan.authority.ceiling}`
+  if (!plan.owner.expected) return `ownership: no registry owner resolves for this child (${plan.owner.basis})`
+  if (plan.owner.mismatch) return `ownership: the registry's owner is ${plan.owner.expected}, the child names ${plan.owner.recorded}`
+  if (plan.budget.exhausted) return `budget: exhausted (${plan.budget.spentUsd} of ${plan.budget.usd ?? "∞"} USD)`
+  const childUsd = typeof child.budget?.usd === "number" ? child.budget.usd : 0
+  if (ctx.parentUsd !== null && ctx.approvedUsd + childUsd > ctx.parentUsd + 1e-9) return `budget: ${childUsd} USD would take the approved children to ${ctx.approvedUsd + childUsd} USD, over the parent's ${ctx.parentUsd} USD envelope`
+  if (plan.dependencies.failed.length) return `dependency failed: ${plan.dependencies.failed.join(", ")}`
+  if (plan.dependencies.missing.length) return `dependency missing: ${plan.dependencies.missing.join(", ")}`
+  return null
+}
+
+export async function cascadeParentApproval(input: { brokerageId: string; parentMissionId: string; actor: MissionActor; reason: string; now?: Date }, client?: Client, deps: MissionDeps = {}): Promise<ApprovalCascadeReport> {
+  const report: ApprovalCascadeReport = { parentId: input.parentMissionId, approved: [], refused: [], skipped: 0, readRefused: null }
+  if (!input.brokerageId || !input.parentMissionId) { report.readRefused = "tenant and parent required"; return report }
+  const svc = await svcOf(client)
+  const now = input.now ?? new Date()
+  const { data: parent, error: pErr } = await svc.from("missions").select("id, state, budget").eq("brokerage_id", input.brokerageId).eq("id", input.parentMissionId).maybeSingle()
+  if (pErr || !parent) { report.readRefused = pErr ? `parent read refused: ${pErr.message}` : "parent not found in this tenant"; return report }
+  if ((parent as MissionRow).state !== "ACTIVE") { report.readRefused = `the parent is ${(parent as MissionRow).state} — only an APPROVED (ACTIVE) parent cascades`; return report }
+  const { data, error } = await svc.from("missions").select("*").eq("brokerage_id", input.brokerageId).eq("parent_mission", input.parentMissionId).order("created_at", { ascending: true }).limit(100)
+  if (error) { report.readRefused = `children read refused: ${error.message}`; return report }
+  const children = (data ?? []) as MissionRow[]
+  const parentUsd = typeof (parent as MissionRow).budget?.usd === "number" ? (parent as MissionRow).budget.usd as number : null
+  const depIds = [...new Set(children.flatMap((c) => c.dependencies ?? []))]
+  let depRows: Array<Pick<MissionRow, "id" | "state">> = []
+  if (depIds.length) {
+    const r = await svc.from("missions").select("id, state").eq("brokerage_id", input.brokerageId).in("id", depIds).limit(500)
+    if (r.error) { report.readRefused = `dependency read refused: ${r.error.message}`; return report }
+    depRows = (r.data ?? []) as Array<Pick<MissionRow, "id" | "state">>
+  }
+  // Budget already committed by children that are running (approved earlier, by a human on the card).
+  let approvedUsd = children.filter((c) => !CASCADE_FROM.has(c.state) && !MISSION_TERMINAL_STATES.has(c.state)).reduce((s, c) => s + (typeof c.budget?.usd === "number" ? c.budget.usd : 0), 0)
+  for (const c of children) {
+    if (!CASCADE_FROM.has(c.state)) { report.skipped++; continue }
+    const why = childApprovalGate(c, now, { dependencyRows: depRows.filter((r) => (c.dependencies ?? []).includes(r.id)), parentUsd, approvedUsd })
+    if (why) {
+      report.refused.push({ id: c.id, owner: c.owner_manager, state: c.state, reason: why })
+      await recordMissionEvidence({ brokerageId: input.brokerageId, missionId: c.id, kind: "evidence", reason: `approval cascade from parent ${input.parentMissionId} REFUSED — ${why}; the child stays ${c.state} for its own decision`, reasonCode: MISSION_LIFECYCLE_REASON, actor: input.actor, evidence: { approval_cascade: { parent: input.parentMissionId, approved: false, gate: why } } }, svc)
+      continue
+    }
+    const r = await transitionMission({ brokerageId: input.brokerageId, missionId: c.id, to: "ACTIVE", reason: `approved by cascade from parent ${input.parentMissionId}: ${input.reason}`, actor: input.actor, evidence: { approval_cascade: { parent: input.parentMissionId, approved: true, gate: "passed: authority, ownership, budget, dependencies" } } }, svc, deps)
+    if (!r.ok) { report.refused.push({ id: c.id, owner: c.owner_manager, state: c.state, reason: `transition refused: ${r.reason}` }); continue }
+    approvedUsd += typeof c.budget?.usd === "number" ? c.budget.usd : 0
+    report.approved.push({ id: c.id, owner: c.owner_manager, state: "ACTIVE", reason: "passed its own gate" })
+  }
+  if (children.length) {
+    await recordMissionEvidence({ brokerageId: input.brokerageId, missionId: input.parentMissionId, kind: "evidence", reason: `approval cascade: ${report.approved.length} child(ren) approved, ${report.refused.length} refused by their own gate, ${report.skipped} already decided`, reasonCode: MISSION_LIFECYCLE_REASON, actor: input.actor, evidence: { approval_cascade: { approved: report.approved.map((x) => x.id), refused: report.refused.map((x) => ({ id: x.id, reason: x.reason })), skipped: report.skipped } } }, svc)
+  }
+  return report
+}

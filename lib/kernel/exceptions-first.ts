@@ -118,7 +118,7 @@ export type ActivityCount =
     }
   | { status: "refused"; reason: string; windowStart: string; windowEnd: string; windowSource: WindowSource; denominator: string }
 
-export type WindowSource = "last_action" | "default_24h" | "clamped_min" | "clamped_max"
+export type WindowSource = "last_visit" | "last_action" | "default_24h" | "clamped_min" | "clamped_max"
 
 export interface ExceptionsFirstView {
   headline: string
@@ -137,16 +137,37 @@ export const WINDOW_MIN_HOURS = 12
 export const WINDOW_MAX_DAYS = 7
 export const DEFAULT_WINDOW_HOURS = 24
 
-/** Pure: the activity window — since the viewer's last recorded action, clamped to [12h, 7d];
- *  no recorded action → the last 24 hours. The source is published with the number.
+/** Pure: the activity window — since the viewer's last DASHBOARD VISIT (users.last_dashboard_visit_at,
+ *  wave 137 — basis "last_visit") or, before the first recorded visit / an unapplied m741, their last
+ *  recorded ledger action (the 108D proxy — basis "last_action"); clamped to [12h, 7d]; nothing recorded →
+ *  the last 24 hours. The source is published with the number.
  * @proofSeam exported so scripts/exceptions-first-guard.ts asserts it directly. */
-export function resolveActivityWindow(now: Date, lastActionAt: string | null): { start: string; source: WindowSource } {
+export function resolveActivityWindow(now: Date, lastActionAt: string | null, basis: "last_visit" | "last_action" = "last_action"): { start: string; source: WindowSource } {
   const t = now.getTime()
   if (!lastActionAt || Number.isNaN(Date.parse(lastActionAt))) return { start: new Date(t - DEFAULT_WINDOW_HOURS * 3_600_000).toISOString(), source: "default_24h" }
   const last = Date.parse(lastActionAt)
   if (last > t - WINDOW_MIN_HOURS * 3_600_000) return { start: new Date(t - WINDOW_MIN_HOURS * 3_600_000).toISOString(), source: "clamped_min" }
   if (last < t - WINDOW_MAX_DAYS * 86_400_000) return { start: new Date(t - WINDOW_MAX_DAYS * 86_400_000).toISOString(), source: "clamped_max" }
-  return { start: new Date(last).toISOString(), source: "last_action" }
+  return { start: new Date(last).toISOString(), source: basis }
+}
+
+/**
+ * THE WRITER of users.last_dashboard_visit_at (wave 137, owner-approved "a real last-visit timestamp column
+ * + writer"). Called by the Command Center page AFTER loadCommandCenter has read the previous visit, with the
+ * SESSION user's id (never a body value). Tenant-pinned when the viewer has a brokerage. A refused write
+ * (e.g. m741 not applied) is returned, never thrown — the page still renders; the window then keeps reading
+ * the ledger proxy, which is the published source. `.select()` counts the row (a write that matched
+ * nothing is reported as such, CLAUDE.md §3).
+ */
+export async function recordDashboardVisit(svc: any, input: { userId: string; brokerageId: string; now?: Date }): Promise<{ ok: true; updated: number } | { ok: false; error: string }> {
+  if (!input.userId) return { ok: false, error: "no session user" }
+  // The SESSION user's own row, pinned to the session tenant UNCONDITIONALLY — a missing tenant refuses
+  // (fail closed) rather than decaying to "any tenant" (CLAUDE.md §4).
+  if (!input.brokerageId) return { ok: false, error: "no session tenant" }
+  const { data, error } = await svc.from("users").update({ last_dashboard_visit_at: (input.now ?? new Date()).toISOString() }).eq("id", input.userId).eq("brokerage_id", input.brokerageId).select("id")
+  if (error) return { ok: false, error: error.message ?? "refused" }
+  const updated = Array.isArray(data) ? data.length : 0
+  return updated === 1 ? { ok: true, updated } : { ok: false, error: `last-visit write matched ${updated} row(s)` }
 }
 
 export interface LedgerActivityRow { actor_type: string | null; actor_manager_key: string | null; status: string | null }
@@ -453,7 +474,8 @@ export interface ExceptionsFirstInput {
   brokerageId: string
   scope: ScopeKind
   teamId: string | null
-  /** The viewer's users.id — "since your last visit" is their last recorded ledger action. */
+  /** The viewer's users.id — "since your last visit" reads users.last_dashboard_visit_at (wave 137);
+   *  before the first recorded visit it falls back to their last recorded ledger action. */
   viewerUserId: string | null
   /** Team scope: the entity ids the team owns (contacts + listings) — ledger rows are narrowed by subject. */
   scopedEntityIds: string[] | null
@@ -478,14 +500,22 @@ export async function loadExceptionsFirst(svc: any, input: ExceptionsFirstInput)
 
   // 1) THE ACTIVITY COUNT — window, then one exact-count read that also returns the bucketing rows.
   let lastActionAt: string | null = null
+  let basis: "last_visit" | "last_action" = "last_action"
   if (input.viewerUserId) {
-    const { data, error } = await svc.from("agent_action_ledger").select("created_at")
-      .eq("brokerage_id", brokerageId).eq("actor_type", "user").eq("actor_user_id", input.viewerUserId)
-      .order("created_at", { ascending: false }).limit(1)
-    if (error) console.error(`[exceptions-first] last-visit read refused: ${error.message}`)
-    else lastActionAt = (data?.[0] as { created_at?: string } | undefined)?.created_at ?? null
+    // THE REAL LAST VISIT (wave 137): the column the Command Center page writes on every visit.
+    const visit = await svc.from("users").select("last_dashboard_visit_at").eq("id", input.viewerUserId).eq("brokerage_id", brokerageId).limit(1)
+    const visitAt = visit.error ? null : ((visit.data?.[0] as { last_dashboard_visit_at?: string | null } | undefined)?.last_dashboard_visit_at ?? null)
+    if (visit.error) console.error(`[exceptions-first] last-visit column read refused (falls back to the ledger proxy): ${visit.error.message}`)
+    if (visitAt) { lastActionAt = visitAt; basis = "last_visit" }
+    else {
+      const { data, error } = await svc.from("agent_action_ledger").select("created_at")
+        .eq("brokerage_id", brokerageId).eq("actor_type", "user").eq("actor_user_id", input.viewerUserId)
+        .order("created_at", { ascending: false }).limit(1)
+      if (error) console.error(`[exceptions-first] last-action read refused: ${error.message}`)
+      else lastActionAt = (data?.[0] as { created_at?: string } | undefined)?.created_at ?? null
+    }
   }
-  const win = resolveActivityWindow(now, lastActionAt)
+  const win = resolveActivityWindow(now, lastActionAt, basis)
   const windowEnd = now.toISOString()
   const denominator = `agent_action_ledger rows (every governed action — withActionLedger) for this ${scope === "team" ? "team (subject in the team's contacts + listings)" : "brokerage"} created ${win.start.slice(0, 16).replace("T", " ")} → ${windowEnd.slice(0, 16).replace("T", " ")} UTC`
   let activity: ActivityCount

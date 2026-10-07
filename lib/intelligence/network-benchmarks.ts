@@ -19,13 +19,16 @@
 //     like a uuid / long digit run — anything else is dropped (counted, never published).
 //   · READ by every tenant beside its OWN numbers (benchmarksBeside); nothing names another brokerage.
 //
-// SURVIVORS READ (per tenant, all pinned to brokerage_id): leads (conversion; seller-campaign conversion by
-// market band), agent_action_ledger.provider/status/settled_at (provider fabric reliability + latency),
+// SURVIVORS READ (per tenant, all pinned to brokerage_id): contacts × transactions (conversion; seller-
+// campaign conversion by market band — WAVE 137 owner ruling: the conversion cells count CONTACTS by
+// contact type, one vocabulary with the twin; inbound sources create contacts directly, so a leads-only
+// count undercounted them), agent_action_ledger.provider/status/settled_at (provider fabric reliability + latency),
 // isa_outreach_log (channel response), marketing_assets.performance (106C content performance),
 // learning_assignments × learning_modules.gap_tags ∩ COMPETENCY_SKILLS (106D education effectiveness),
 // lib/intelligence/strategy-learning.ts tenantStrategyStats (strategy conversion).
 
 import { COMPETENCY_SKILLS } from "@/lib/education/skill-freshness"
+import { BUYER_SIDE_CONTACT_TYPES, SELLER_SIDE_CONTACT_TYPES } from "@/lib/contact-types"
 
 type Svc = { from: (t: string) => any }
 
@@ -218,14 +221,27 @@ async function collectTenantContributions(svc: Svc, brokerageId: string, opts: {
   }
   const band = opts.marketBand
 
-  // 1 + 2. Brokerage conversion and seller-campaign conversion by market band.
-  const leads = await svc.from("leads").select("id, lead_type, converted_at, campaign_attribution_id, utm_campaign").eq("brokerage_id", brokerageId).gte("created_at", opts.sinceIso).limit(ROW_LIMIT)
-  if (leads.error) errors.push(`leads: ${leads.error.message}`)
+  // 1 + 2. Brokerage conversion and seller-campaign conversion by market band — over CONTACTS (wave 137
+  // owner ruling; one vocabulary with the twin: ads / forms / widgets / website / external lead sites / chat
+  // create contacts DIRECTLY, scraped leads join only once converted). The population is the transacting
+  // contact types (buyer | seller | both — sphere / vendor / referral partners are not conversion candidates);
+  // a contact CONVERTS when a transaction names it (contact_id / buyer_contact_id / seller_contact_id —
+  // contacts.id, never contacts.contact_id). The seller cell is seller-side contacts carrying a campaign
+  // attribution (contacts.campaign_attribution_id).
+  const TRANSACTING = [...new Set<string>([...BUYER_SIDE_CONTACT_TYPES, ...SELLER_SIDE_CONTACT_TYPES])]
+  const contacts = await svc.from("contacts").select("id, contact_type, campaign_attribution_id").eq("brokerage_id", brokerageId).is("deleted_at", null).in("contact_type", TRANSACTING).gte("created_at", opts.sinceIso).limit(ROW_LIMIT)
+  const deals = await svc.from("transactions").select("contact_id, buyer_contact_id, seller_contact_id").eq("brokerage_id", brokerageId).is("deleted_at", null).gte("created_at", opts.sinceIso).limit(ROW_LIMIT)
+  if (contacts.error) errors.push(`contacts: ${contacts.error.message}`)
+  else if (deals.error) errors.push(`transactions: ${deals.error.message}`)
   else {
-    const rows = (leads.data ?? []) as Array<{ lead_type: string | null; converted_at: string | null; campaign_attribution_id: string | null; utm_campaign: string | null }>
-    add("brokerage_conversion", { market_band: band }, rows.filter((r) => r.converted_at).length, rows.length, rows.length)
-    const seller = rows.filter((r) => r.lead_type === "seller" && (r.campaign_attribution_id || r.utm_campaign))
-    add("seller_campaign_conversion", { market_band: band }, seller.filter((r) => r.converted_at).length, seller.length, seller.length)
+    const rows = (contacts.data ?? []) as Array<{ id: string; contact_type: string | null; campaign_attribution_id: string | null }>
+    const transacted = new Set<string>()
+    for (const d of (deals.data ?? []) as Array<{ contact_id: string | null; buyer_contact_id: string | null; seller_contact_id: string | null }>) {
+      for (const c of [d.contact_id, d.buyer_contact_id, d.seller_contact_id]) if (c) transacted.add(c)
+    }
+    add("brokerage_conversion", { market_band: band }, rows.filter((r) => transacted.has(r.id)).length, rows.length, rows.length)
+    const seller = rows.filter((r) => (SELLER_SIDE_CONTACT_TYPES as readonly string[]).includes(String(r.contact_type)) && !!r.campaign_attribution_id)
+    add("seller_campaign_conversion", { market_band: band }, seller.filter((r) => transacted.has(r.id)).length, seller.length, seller.length)
   }
 
   // 3. Provider fabric reliability (success rate) + latency (mean ms to settle).

@@ -33,7 +33,8 @@
  *   scripts/schema-snapshot.ts:145) — and nothing in the tree ever minted a
  *   per-brokerage inbound secret, so that path was documentation for a gate that
  *   did not run. tenant_webhook_subscriptions.secret is the survivor: it has a
- *   writer, a rotation path (delete + re-create the subscription) and a UI.
+ *   writer, a rotation path (rotateWebhookSecret — wave 137B; the previous secret
+ *   still authorises here until its overlap window closes) and a UI.
  *   Trade-off, stated: the same value signs our deliveries TO the tenant, so the
  *   host that receives them can also fire triggers INTO that tenant — and only
  *   that tenant.
@@ -56,6 +57,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isZapierInbound, ZAPIER_INBOUND_REFUSAL } from "@/lib/integrations/zapier-direction"
+import { activeWebhookSecrets } from "@/lib/platform/tenant-webhooks-core"
 
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -133,6 +135,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     let matched = false
     for (const row of subscriptions ?? []) {
       if (typeof row.secret === "string" && secretsMatch(token, row.secret)) matched = true
+    }
+    // ROTATION OVERLAP (wave 137B): a secret rotated on /settings/developers keeps authorising
+    // until its previous_secret_expires_at, so the tenant can swap their sender without a dropped
+    // trigger. m736 columns, read only when the current secrets did not match — an unreadable
+    // read (m736 not applied) leaves `matched` false: refuse, never pass.
+    if (!matched) {
+      const { data: overlap, error: overlapErr } = await supabase
+        .from("tenant_webhook_subscriptions")
+        .select("secret, previous_secret, previous_secret_expires_at")
+        .eq("brokerage_id", brokerageId)
+        .eq("active", true)
+      if (overlapErr) console.error("[workflow/trigger] rotation-overlap lookup refused (m736 applied?):", overlapErr.message)
+      for (const row of (overlap ?? []) as Array<{ secret: string; previous_secret: string | null; previous_secret_expires_at: string | null }>) {
+        for (const s of activeWebhookSecrets(row)) if (secretsMatch(token, s)) matched = true
+      }
     }
     if (matched) authorisedVia = "tenant"
   }

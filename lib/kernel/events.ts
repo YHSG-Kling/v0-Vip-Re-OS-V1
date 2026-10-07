@@ -723,4 +723,11 @@ export enum KernelEvent {
   // (metadata.experience ∈ EXPERIENCE_KINDS, the executing manager, the NBA reason
   // code). The reactor has no rule; the flight recorder and the outcome engine read it.
   NEXT_BEST_EXPERIENCE_CHOSEN        = 'next_best_experience_chosen',
+  // ── Layer 9 — tenant outbound webhooks (wave 137B) ──────────────────────────
+  // Audit row (auditOnly) written by lib/platform/tenant-webhooks.ts when the drain switches a
+  // subscription OFF after WEBHOOK_AUTO_DISABLE_CONSECUTIVE_DEAD consecutive dead deliveries with no
+  // success in the quiet window. entity_type 'tenant_webhook_subscription', metadata carries the
+  // streak, last success and the ledger id. The reactor has no rule; the tenant admins are told by
+  // notifyBrokerageAdmins and the decision is ledgered (withActionLedger).
+  WEBHOOK_SUBSCRIPTION_AUTO_DISABLED = 'webhook_subscription_auto_disabled',
 }

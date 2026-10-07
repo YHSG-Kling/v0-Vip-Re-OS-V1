@@ -18,7 +18,7 @@ import { join } from "node:path"
 import { stripComments } from "./strip-comments"
 import {
   EXCEPTION_CATEGORIES, EXCEPTION_CATEGORY_ORDER, SEVERITY_RANK, rankExceptions, bucketActivity, composeExceptionsFirst,
-  exceptionsHeadline, resolveActivityWindow, loadExceptionsFirst, humanInterventionItems, capacityItems,
+  exceptionsHeadline, resolveActivityWindow, loadExceptionsFirst, recordDashboardVisit, humanInterventionItems, capacityItems,
   type ExceptionItem, type ActivityCount, type ExceptionCategoryKey,
 } from "../lib/kernel/exceptions-first"
 import { detectBudgetOverrun, OVERSPEND_TOLERANCE, SPEND_WINDOW_DAYS } from "../lib/ads/ad-manager"
@@ -179,6 +179,29 @@ async function main() {
   check("F10 positive control — an overdue client decision is high, a fresh one medium", humanInterventionItems([{ id: "d", source: "vendor_request", title: "t", description: null, contactId: null, transactionId: null, dueDate: "2026-10-01", createdAt: null }], [], now)[0]?.severity === "high")
 
   // ── G. wiring ──
+  // ── H. WAVE 137 — a REAL last-visit column + writer replaces the last-ledger-action proxy ──
+  console.log("\nH. last visit: users.last_dashboard_visit_at (m741) read first, written by the page after the read")
+  {
+    check("H1 window: a recorded visit 14h ago → source last_visit (not the proxy)", resolveActivityWindow(now, "2026-10-06T18:00:00.000Z", "last_visit").source === "last_visit" && resolveActivityWindow(now, "2026-10-06T18:00:00.000Z", "last_visit").start === "2026-10-06T18:00:00.000Z")
+    const visitSvc = fakeSvc({ users: { data: [{ last_dashboard_visit_at: "2026-10-06T20:00:00.000Z" }], error: null }, agent_action_ledger: { data: [{ created_at: "2026-10-01T00:00:00.000Z" }], error: null, count: 0 } })
+    const hv = await loadExceptionsFirst(visitSvc, { brokerageId: "b1", scope: "brokerage", teamId: null, viewerUserId: "u1", scopedEntityIds: null, now, twin: null, pendingActions: [], clientDecisions: [], economicGraph: null, cronOwners: [] })
+    check("H2 the loader reads the viewer's OWN users row (id = viewer, tenant-pinned) and the window starts at the recorded visit", hv.activity.windowSource === "last_visit" && hv.activity.windowStart === "2026-10-06T20:00:00.000Z" && visitSvc.calls.some((c) => c.table === "users" && c.op === "eq" && c.args[0] === "id" && c.args[1] === "u1") && visitSvc.calls.some((c) => c.table === "users" && c.op === "eq" && c.args[0] === "brokerage_id" && c.args[1] === "b1"))
+    check("H3 with a recorded visit the ledger proxy is NOT read", !visitSvc.calls.some((c) => c.table === "agent_action_ledger" && c.op === "eq" && c.args[0] === "actor_user_id"))
+    const noCol = fakeSvc({ users: { data: null, error: { message: "column users.last_dashboard_visit_at does not exist" } }, agent_action_ledger: { data: [{ created_at: "2026-10-06T18:00:00.000Z" }], error: null, count: 0 } })
+    const hp = await loadExceptionsFirst(noCol, { brokerageId: "b1", scope: "brokerage", teamId: null, viewerUserId: "u1", scopedEntityIds: null, now, twin: null, pendingActions: [], clientDecisions: [], economicGraph: null, cronOwners: [] })
+    check("H4 POSITIVE CONTROL: an unapplied column (read refused) falls back to the ledger proxy, published as last_action — never a fabricated visit", hp.activity.windowSource === "last_action" && noCol.calls.some((c) => c.table === "agent_action_ledger" && c.args[0] === "actor_user_id"))
+    // the writer: session user, tenant-pinned, counted
+    const writes: any[] = []
+    const wsvc = { from: (t: string) => { const q: any = { _t: t, _eq: [] as any[] }; q.update = (v: any) => { q._v = v; return q }; q.eq = (c: string, x: any) => { q._eq.push([c, x]); return q }; q.select = async () => { writes.push(q); return { data: q._eq.some(([c, x]: any) => c === "id" && x === "u1") ? [{ id: "u1" }] : [], error: null } }; return q } }
+    const ok = await recordDashboardVisit(wsvc, { userId: "u1", brokerageId: "b1", now })
+    const miss = await recordDashboardVisit(wsvc, { userId: "u9", brokerageId: "b1", now })
+    check("H5 recordDashboardVisit writes users.last_dashboard_visit_at for the session user, pinned to the tenant, and COUNTS the row (a no-match write is reported, not success)", ok.ok && writes[0]._t === "users" && writes[0]._v?.last_dashboard_visit_at === now.toISOString() && writes[0]._eq.some(([c, x]: any) => c === "brokerage_id" && x === "b1") && !miss.ok)
+    const pg = src("app/dashboard/admin/command-center/page.tsx")
+    check("H6 the page writes the visit with the SESSION user AFTER loadCommandCenter read the previous one", /recordDashboardVisit\(createServiceClient\(\), \{ userId: user\.id/.test(pg) && pg.indexOf("loadCommandCenter({") < pg.indexOf("recordDashboardVisit(") && pg.indexOf("loadCommandCenter({") > 0)
+    const mig = readFileSync("supabase/migrations/m741-users-last-dashboard-visit.sql", "utf8")
+    check("H7 the migration adds the column (additive, idempotent) and carries the lane stamp or the applied mark", /ALTER TABLE public\.users ADD COLUMN IF NOT EXISTS last_dashboard_visit_at timestamptz/.test(mig) && /(WRITTEN, NOT APPLIED|APPLIED LIVE)/.test(mig.split("\n")[0]))
+  }
+
   console.log("\nG. wiring (stripped source, each with a positive control)")
   const cc = src("lib/kernel/command-center.ts")
   const callRe = /import\("@\/lib\/kernel\/exceptions-first"\)[\s\S]{0,200}loadExceptionsFirst\(supabase,/

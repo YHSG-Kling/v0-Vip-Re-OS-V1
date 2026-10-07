@@ -445,7 +445,10 @@ export interface TwinSliceSpec {
 /** THE slice table — one entry per MANAGERS key (the proof holds it to Object.keys(MANAGERS)).
  *  @proofSeam the proof asserts ownership, re-homing and the reader census against it */
 export const TWIN_SLICE_SPECS: Readonly<Record<ManagerKey, TwinSliceSpec>> = {
-  ai_isa: { answers: "lead / opportunity state", reader: "leads.lifecycle_state + converted_at (lib/lead-pipeline)", sections: ["now.pipeline", "system.stages"], teamNarrowable: true },
+  // WAVE 137 owner ruling — the ISA's capacity is counted in CONTACTS (system contact stage: inbound sources
+  // arrive as contacts); its RAW-LEAD work queue stays leads until converted (lib/kernel/twin-scenario.ts
+  // ai_isa contributor carries the split: isa_capacity_contacts_30d vs isa_lead_queue_30d).
+  ai_isa: { answers: "contact qualification capacity + the raw-lead work queue", reader: "contacts (system contact stage — inbound sources convert straight to contacts) + the raw-lead work queue leads.lifecycle_state + converted_at (lib/lead-pipeline; stays leads until converted)", sections: ["now.pipeline", "system.stages"], teamNarrowable: true },
   shopping_agent: { answers: "buyer demand", reader: "contacts(contact_type buyer|both) + tours by contacts + offers (the tour planner / offer rail) · buyer_stall_predicted", sections: [], teamNarrowable: true },
   listing_concierge: { answers: "seller / listing demand", reader: "listings.status + listing_health_scores (calculateListingHealth) + seller contacts (contact_type seller|both — workforce territory demand)", sections: ["now.listings", "atRisk", "workforce.territories"], teamNarrowable: true },
   deal_coordinator: { answers: "transaction state", reader: "transactions.status (lib/transactions/transaction-status.ts) + deal_health_scores (calculateDealHealth)", sections: ["now.transactions", "atRisk"], teamNarrowable: true },

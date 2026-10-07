@@ -10,6 +10,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { adaptResponse, type ConnectorShapeSpec, type ShapeDrift } from "./connector-shape"
 import { retryAsync } from "@/lib/errors"
+import { declaredConnectorAlternate, getConnectorSpec, type ConnectorAlternate } from "./connector-registry"
 
 export type GatewayAuth =
   | { style: "bearer"; token: string }                       // Authorization: Bearer <token>
@@ -152,7 +153,70 @@ function isTransient(result: GatewayResponse<any>): boolean {
   return result.status === null || result.status === 429 || result.status >= 500
 }
 
-export async function callConnector<T = any>(req: GatewayRequest): Promise<GatewayResponse<T>> {
+// ─── APPLIED DECLARED ALTERNATE (wave 137, lane 137C — provider self-healing) ─────────────────────
+// When the healer applied a CONFIG-level alternate the connector DECLARES (CONNECTOR_REGISTRY[*].alternates
+// — a newer API version query/header or a declared endpoint; the provider adapter declaration in
+// lib/kernel/provider-adapters.ts reads the same list), every call to that connector carries it from
+// then on. The config comes from the CODE declaration, never from the row. One bounded read per
+// connector per minute; an unreadable answer is "none applied" — the request goes out as written.
+// The registry is a leaf module: this edge adds nothing to any bundle that already reaches the gateway.
+
+type AlternateReadClient = { from: (table: string) => any }
+type AppliedAlternate = { alternate: ConnectorAlternate; currentBaseUrl: string }
+
+/**
+ * The alternate currently APPLIED for a connector (newest applied `declared_alternate` row in
+ * connector_healing_proposals), resolved back through the registry declaration — an alternate the
+ * declaration no longer lists is ignored. Read here at egress and by connector-healer.ts (already
+ * applied → never re-applied). Never throws; an unreadable table is "none applied", logged (§3).
+ */
+export async function loadAppliedAlternate(connector: string, client?: AlternateReadClient): Promise<AppliedAlternate | null> {
+  try {
+    const svc = client ?? (await import("@/lib/supabase/service")).createServiceClient()
+    const { data, error } = await svc.from("connector_healing_proposals")
+      .select("proposal_payload, applied_at")
+      .eq("connector", connector).eq("proposal_kind", "declared_alternate").eq("status", "applied")
+      .order("applied_at", { ascending: false }).limit(1).maybeSingle()
+    if (error) { console.error(`[connector-gateway] applied-alternate read refused for ${connector}: ${error.message}`); return null }
+    const id = (data?.proposal_payload as { alternate_id?: string } | null)?.alternate_id
+    if (!id) return null
+    const declared = declaredConnectorAlternate(connector, id)
+    return declared ? { alternate: declared.alternate, currentBaseUrl: declared.spec.baseUrl } : null
+  } catch {
+    return null
+  }
+}
+
+/** PURE — a gateway request with an applied DECLARED alternate merged in: query + headers override,
+ *  the base URL swaps only when the request targets the declared current endpoint.
+ *  @proofSeam scripts/provider-adapter-guard.ts builds the egress URL through it; production reader:
+ *  withAppliedAlternate below. */
+export function applyAlternateToRequest(req: GatewayRequest, alt: ConnectorAlternate, currentBaseUrl: string): GatewayRequest {
+  const next: GatewayRequest = { ...req }
+  if (alt.query) next.query = { ...(req.query ?? {}), ...alt.query }
+  if (alt.headers) next.headers = { ...(req.headers ?? {}), ...alt.headers }
+  if (alt.baseUrl && req.baseUrl && currentBaseUrl && req.baseUrl.startsWith(currentBaseUrl)) next.baseUrl = alt.baseUrl + req.baseUrl.slice(currentBaseUrl.length)
+  return next
+}
+
+const appliedAlternateCache = new Map<string, { value: AppliedAlternate | null; expiresAt: number }>()
+async function withAppliedAlternate(req: GatewayRequest): Promise<GatewayRequest> {
+  // Only a connector that DECLARES a config alternate can have one applied — no read for any other.
+  if (!getConnectorSpec(req.connector)?.alternates?.some((a) => a.level === "config")) return req
+  try {
+    let hit = appliedAlternateCache.get(req.connector)
+    if (!hit || hit.expiresAt <= Date.now()) {
+      hit = { value: await loadAppliedAlternate(req.connector), expiresAt: Date.now() + 60_000 }
+      appliedAlternateCache.set(req.connector, hit)
+    }
+    return hit.value ? applyAlternateToRequest(req, hit.value.alternate, hit.value.currentBaseUrl) : req
+  } catch {
+    return req
+  }
+}
+
+export async function callConnector<T = any>(original: GatewayRequest): Promise<GatewayResponse<T>> {
+  const req = await withAppliedAlternate(original)
   const attempt = async (): Promise<GatewayResponse<T>> => {
     const startedAt = Date.now()
     const result = await executeConnector<T>(req)

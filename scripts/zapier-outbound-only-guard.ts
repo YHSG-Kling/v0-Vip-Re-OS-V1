@@ -162,7 +162,7 @@ const creds = blankStrings(stripComments(read("lib/agentic-os/agent-credentials.
 const callerAt = creds.indexOf("export async function resolveAgenticCaller(")
 const callerFn = creds.slice(callerAt)
 check("Agentic API: a token call identifying as a Zap authenticates as nobody, BEFORE the token lookup",
-  callerFn.indexOf("isZapierInbound(") > -1 && callerFn.indexOf("isZapierInbound(") < callerFn.indexOf("resolveAgentToken(raw)")
+  callerFn.indexOf("isZapierInbound(") > -1 && callerFn.indexOf("isZapierInbound(") < callerFn.indexOf("resolveAgentToken(raw") && callerFn.indexOf("resolveAgentToken(raw") > -1
     && /isZapierInbound\(\{ userAgent: req\.headers\.get\(/.test(callerFn))
 
 // ── Z6 ────────────────────────────────────────────────────────────────────────

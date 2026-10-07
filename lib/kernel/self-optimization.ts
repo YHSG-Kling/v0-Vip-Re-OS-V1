@@ -40,7 +40,10 @@ type Svc = { from: (t: string) => any }
 
 // ── THE VOCABULARIES (one const each; the optimization class is CHECKed in m732 where it is stored) ─────────
 
-export const OPTIMIZATION_CLASSES = ["campaign_sequencing", "model_routing", "creative_choice", "education_intervention", "followup_timing", "provider_selection", "property_recommendation"] as const
+// Wave 137E (BREADTH): + transaction_reminder_timing — the first class beyond the listing/lead funnel whose
+// evaluator (deadline_outcomes over transaction_deadlines), rollback (mergeBrokerageSettings) and reader
+// (lib/kernel/calendar-deadline-watcher.ts) are all real. m740 widens m732's CHECK to this list.
+export const OPTIMIZATION_CLASSES = ["campaign_sequencing", "model_routing", "creative_choice", "education_intervention", "followup_timing", "provider_selection", "property_recommendation", "transaction_reminder_timing"] as const
 export type OptimizationClass = (typeof OPTIMIZATION_CLASSES)[number]
 export function isOptimizationClass(v: unknown): v is OptimizationClass {
   return typeof v === "string" && (OPTIMIZATION_CLASSES as readonly string[]).includes(v)
@@ -62,7 +65,16 @@ export const OPTIMIZATION_CLASS_AUTHORITY: AuthorityLevel = 4
 export const EXPERIENCE_BIAS_LIMIT = 15
 const EXPERIENCE_BIAS_STEP = 5
 
-export type OptimizationEvaluator = "experiment_arms" | "decision_replay" | "reasoning_spend_replay" | "experience_attribution" | "provider_reliability"
+export type OptimizationEvaluator = "experiment_arms" | "decision_replay" | "reasoning_spend_replay" | "experience_attribution" | "provider_reliability" | "deadline_outcomes"
+
+/** Transaction-deadline reminder lead time (hours before the deadline the watcher notifies). The platform
+ *  default is the watcher's historic 24h; an optimization moves it one STEP at a time inside [MIN, MAX]. */
+export const DEADLINE_REMINDER_DEFAULT_HOURS = 24
+const DEADLINE_REMINDER_MIN_HOURS = 24
+export const DEADLINE_REMINDER_MAX_HOURS = 96
+const DEADLINE_REMINDER_STEP_HOURS = 24
+/** A missed-deadline rate at or above this argues for EARLIER reminders. */
+const DEADLINE_MISSED_RATE_EARLIER = 0.05
 
 type ClassSurface =
   | { subjectKind: "variant"; subjectPrefix: string }
@@ -134,6 +146,14 @@ export const OPTIMIZATION_CLASS_DEFS: Readonly<Record<OptimizationClass, Optimiz
     surface: { subjectKind: "policy", policyKey: /^optimization_tuning$/, fields: ["provider_skip.property_valuation"], shape: "settings_patch" },
     evaluator: "provider_reliability", rollback: "mergeBrokerageSettings:optimization_tuning (previous value)",
     reader: "lib/avm/provider-chain.ts requestPropertyValuation (tenant provider skip; the owner-ruled primary is never skipped)",
+  },
+  // Wave 137E: transactions / closing. Co-proposer on the DECLARED closing_money_and_risk edge (registry).
+  transaction_reminder_timing: {
+    key: "transaction_reminder_timing", label: "Transaction reminder timing (deadline reminder lead hours)", owner: "deal_coordinator",
+    coProposers: [{ manager: "compliance_officer", domain: "closing_money_and_risk" }],
+    surface: { subjectKind: "policy", policyKey: /^optimization_tuning$/, fields: ["deadline_reminder_hours"], shape: "settings_patch" },
+    evaluator: "deadline_outcomes", rollback: "mergeBrokerageSettings:optimization_tuning (previous value)",
+    reader: "lib/kernel/calendar-deadline-watcher.ts checkUpcomingDeadlines (tenant transaction-deadline horizon)",
   },
 })
 
@@ -265,6 +285,8 @@ export function resolveSelfOptimizationPolicy(settings: unknown): SelfOptimizati
 export interface OptimizationTuning {
   experienceBias: { education?: number; properties?: number }
   providerSkip: { property_valuation?: string[] }
+  /** Wave 137E: transaction-deadline reminder lead hours (absent = the watcher's default). */
+  deadlineReminderHours?: number
 }
 
 const clampBias = (n: unknown): number | undefined => (typeof n === "number" && Number.isFinite(n) ? Math.max(-EXPERIENCE_BIAS_LIMIT, Math.min(EXPERIENCE_BIAS_LIMIT, Math.round(n))) : undefined)
@@ -280,7 +302,30 @@ export function resolveOptimizationTuning(settings: unknown): OptimizationTuning
   const p = clampBias(eb.properties); if (p !== undefined && p !== 0) experienceBias.properties = p
   const providerSkip: OptimizationTuning["providerSkip"] = {}
   if (Array.isArray(ps.property_valuation)) providerSkip.property_valuation = ps.property_valuation.map(String).filter((x) => /^[a-z0-9_]{1,40}$/.test(x))
-  return { experienceBias, providerSkip }
+  const out: OptimizationTuning = { experienceBias, providerSkip }
+  const dh = clampReminderHours(t.deadline_reminder_hours)
+  if (dh !== undefined) out.deadlineReminderHours = dh
+  return out
+}
+
+/** PURE — a stored reminder lead time, clamped to [MIN, MAX] whole hours (malformed → undefined = default). */
+function clampReminderHours(n: unknown): number | undefined {
+  return typeof n === "number" && Number.isFinite(n) ? Math.max(DEADLINE_REMINDER_MIN_HOURS, Math.min(DEADLINE_REMINDER_MAX_HOURS, Math.round(n))) : undefined
+}
+
+/** The deadline watcher's one read — each tenant's reminder lead hours (one query for the batch). A refused
+ *  read keeps EVERY tenant on the default (the historic behaviour), never a widened window. */
+export async function loadDeadlineReminderHours(svc: Svc, brokerageIds: readonly string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  const ids = [...new Set(brokerageIds.filter(Boolean))]
+  if (ids.length === 0) return out
+  const { data, error } = await svc.from("brokerage_settings").select("brokerage_id, settings").in("brokerage_id", ids)
+  if (error) { console.error(`[self-optimization] deadline reminder tuning unreadable — default ${DEADLINE_REMINDER_DEFAULT_HOURS}h for all: ${error.message}`); return out }
+  for (const r of (data ?? []) as Array<{ brokerage_id: string; settings: unknown }>) {
+    const h = resolveOptimizationTuning(r.settings).deadlineReminderHours
+    if (h !== undefined) out.set(r.brokerage_id, h)
+  }
+  return out
 }
 
 /** The tenant's settings object (one read; tenant-scoped). A refused read is reported, never "nothing set". */
@@ -354,6 +399,28 @@ export function experienceDirection(kind: "education" | "properties", s: Experie
   return { direction, rate: Math.round(rate * 1000) / 1000, restRate: Math.round(restRate * 1000) / 1000 }
 }
 
+interface DeadlineOutcomeStats { resolved: number; missed: number }
+
+/** PURE — does the deadline record support moving the reminder lead time from `current` to `proposed` hours? */
+function deadlineReminderVerdict(current: number, proposed: number, s: DeadlineOutcomeStats): { verdict: "pass" | "fail" | "inconclusive"; why: string } {
+  if (!Number.isFinite(proposed) || proposed < DEADLINE_REMINDER_MIN_HOURS || proposed > DEADLINE_REMINDER_MAX_HOURS || proposed % 1 !== 0) return { verdict: "fail", why: `the reminder lead must be whole hours in [${DEADLINE_REMINDER_MIN_HOURS}, ${DEADLINE_REMINDER_MAX_HOURS}]` }
+  if (proposed === current) return { verdict: "fail", why: "the proposed reminder lead changes nothing" }
+  if (s.resolved < OPTIMIZATION_MIN_SAMPLE) return { verdict: "inconclusive", why: `${s.resolved} resolved transaction deadlines in the window (< ${OPTIMIZATION_MIN_SAMPLE}) — a human decides` }
+  const rate = s.missed / s.resolved
+  const pctTxt = `${Math.round(rate * 1000) / 10}% of ${s.resolved} resolved deadlines were missed`
+  if (proposed > current) return rate >= DEADLINE_MISSED_RATE_EARLIER ? { verdict: "pass", why: `${pctTxt} — remind earlier (${current}h → ${proposed}h)` } : { verdict: "fail", why: `${pctTxt} — the record does not argue for earlier reminders` }
+  return s.missed === 0 ? { verdict: "pass", why: `${pctTxt} — none missed, the reminder can come later (${current}h → ${proposed}h)` } : { verdict: "fail", why: `${pctTxt} — never remind later while deadlines are being missed` }
+}
+
+/** PURE — the candidate lead time the record argues for (null = no change). */
+function deadlineReminderCandidate(current: number, s: DeadlineOutcomeStats): number | null {
+  if (s.resolved < OPTIMIZATION_MIN_SAMPLE) return null
+  const rate = s.missed / s.resolved
+  if (rate >= DEADLINE_MISSED_RATE_EARLIER && current < DEADLINE_REMINDER_MAX_HOURS) return Math.min(DEADLINE_REMINDER_MAX_HOURS, current + DEADLINE_REMINDER_STEP_HOURS)
+  if (s.missed === 0 && current > DEADLINE_REMINDER_MIN_HOURS) return Math.max(DEADLINE_REMINDER_MIN_HOURS, current - DEADLINE_REMINDER_STEP_HOURS)
+  return null
+}
+
 export interface ProviderStat { calls: number; errors: number }
 
 /** PURE — may this tenant skip `provider` on the valuation route? Never the primary (the route order is an owner ruling: RentCast first). */
@@ -407,6 +474,14 @@ async function readExperienceStats(svc: Svc, brokerageId: string, sinceIso: stri
   const outcomes: Record<string, number> = {}
   for (const row of att.result.byExperience) outcomes[row.key] = Object.values(row.lastTouchOutcomes ?? {}).reduce((t, n) => t + Number(n ?? 0), 0)
   return { ok: true, stats: { actions, outcomes } }
+}
+
+/** Resolved transaction deadlines (missed vs completed / waived / extended) in the window — tenant-pinned. */
+async function readDeadlineOutcomes(svc: Svc, brokerageId: string, sinceIso: string): Promise<{ ok: true; stats: DeadlineOutcomeStats } | { ok: false; error: string }> {
+  const { data: deadlineData, error } = await svc.from("transaction_deadlines").select("status, deadline_date").eq("brokerage_id", brokerageId).gte("deadline_date", sinceIso.slice(0, 10)).in("status", ["missed", "completed", "waived", "extended"]).limit(5000)
+  if (error) return { ok: false, error: `transaction_deadlines read refused: ${error.message}` }
+  const deadlineRows = (deadlineData ?? []) as Array<{ status: string | null }>
+  return { ok: true, stats: { resolved: deadlineRows.length, missed: deadlineRows.filter((deadlineRow) => deadlineRow.status === "missed").length } }
 }
 
 const WINDOW_DAYS = 90
@@ -482,6 +557,14 @@ export async function evaluateOptimizationClass(
       }
       const worst = verdicts.find((v) => v.verdict === "fail") ?? verdicts.find((v) => v.verdict === "inconclusive")
       return { evaluator: "provider_reliability", verdict: (worst?.verdict ?? "pass") as "pass" | "fail" | "inconclusive", score: null, why: verdicts.map((v) => v.why).join("; "), detail: { route, verdicts } }
+    }
+    case "deadline_outcomes": {
+      const proposed = Number(patch.deadline_reminder_hours)
+      const current = Number(previous.deadline_reminder_hours ?? DEADLINE_REMINDER_DEFAULT_HOURS)
+      const d = await readDeadlineOutcomes(svc, row.brokerage_id, sinceOf(now, 180))
+      if (!d.ok) return { evaluator: "deadline_outcomes", verdict: "inconclusive", score: null, why: d.error, detail: {} }
+      const v = deadlineReminderVerdict(current, proposed, d.stats)
+      return { evaluator: "deadline_outcomes", verdict: v.verdict, score: d.stats.resolved ? Math.round((d.stats.missed / d.stats.resolved) * 1000) / 1000 : null, why: `re-measured: ${v.why}`, detail: { ...d.stats, current, proposed } }
     }
     default:
       return { evaluator: "none", verdict: "inconclusive", score: null, why: `${cls} is evaluated by ${def.evaluator} in improvement-proposals.ts`, detail: {} }
@@ -668,6 +751,16 @@ export async function runTeamOptimizationCycle(svc: Svc, brokerageId: string, de
         if (!d || d.direction === 0 || nextBias === cur) { out.classes.push({ class: cls, outcome: "no_candidate", proposalId: null, managers, detail: d ? `${kind} converts ${d.rate} vs ${d.restRate} — no bias change argued` : `short sample for ${kind}` }); continue }
         const evidence = ev(cls, `${kind}: ${stats.actions[kind] ?? 0} experiences, ${stats.outcomes[kind] ?? 0} attributed outcomes (rate ${d.rate} vs ${d.restRate})`, [{ kind: "roi_ledger.byExperience", experience: kind }])
         out.classes.push(await propose(cls, OPTIMIZATION_TUNING_POLICY_KEY, { patch: { experience_bias: { [kind]: nextBias } }, previous: { experience_bias: { [kind]: cur } } }, evidence, `${kind} experience bias ${cur} → ${nextBias}`))
+        continue
+      }
+      if (cls === "transaction_reminder_timing") {
+        const cur = clampReminderHours(tuning.deadline_reminder_hours) ?? DEADLINE_REMINDER_DEFAULT_HOURS
+        const d = await readDeadlineOutcomes(svc, brokerageId, sinceOf(now, 180))
+        if (!d.ok) { out.classes.push({ class: cls, outcome: "error", proposalId: null, managers, detail: d.error }); continue }
+        const next = deadlineReminderCandidate(cur, d.stats)
+        if (next === null) { out.classes.push({ class: cls, outcome: "no_candidate", proposalId: null, managers, detail: `${d.stats.missed} of ${d.stats.resolved} resolved transaction deadlines missed (180d) at a ${cur}h reminder — no timing change argued` }); continue }
+        const evidence = ev(cls, `${d.stats.missed} of ${d.stats.resolved} resolved transaction deadlines missed in 180 days at a ${cur}h reminder lead`, [{ kind: "transaction_deadlines", ...d.stats }], { compliance_officer: "a missed contract deadline is closing risk (closing_money_and_risk) — reminder timing only, never the deadline itself" })
+        out.classes.push(await propose(cls, OPTIMIZATION_TUNING_POLICY_KEY, { patch: { deadline_reminder_hours: next }, previous: { deadline_reminder_hours: cur } }, evidence, `transaction deadline reminders ${cur}h → ${next}h before the deadline`))
         continue
       }
       if (cls === "provider_selection") {

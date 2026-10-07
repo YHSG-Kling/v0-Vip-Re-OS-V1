@@ -24,8 +24,17 @@ import {
   PLATFORM_STRATEGY_LIBRARY, OWNER_SEED_STRATEGY_KEYS, KERNEL_PLAY_REFS, STRATEGY_EVIDENCE_KIND,
   participatingManagers, strategyCapabilities, strategyGaps, platformStrategy, strategyDigest, evaluateEligibility,
   adaptStrategy, rankStrategies, factsFromContactRow, strategyOwnershipOf, HISTORY_MIN_SAMPLE,
-  type StrategyDefinition, type StrategyCandidate, type StrategyHistory,
+  OS_DOMAINS, STRATEGY_DOMAINS, PLATFORM_STRATEGY_LIBRARY_EDITION,
+  type StrategyDefinition, type StrategyCandidate, type StrategyHistory, type OsDomain,
 } from "../lib/kernel/strategy-library"
+import { PLATFORM_SKILL_EXAMPLES, PLATFORM_SKILL_EXAMPLE_REJECTS } from "../lib/kernel/platform-skill-examples"
+type PlatformSkillExample = (typeof PLATFORM_SKILL_EXAMPLES)[number]
+import { SKILL_RUN_RECEIPT_SCHEMA, SKILL_EVALUATORS, builtinSkill, validateSkillDeclaration } from "../lib/kernel/skill-registry"
+/** The SAME gate the examples module applies at load (its stripped source is asserted to compose exactly these). */
+const examineExample = (e: { declaration: Parameters<typeof validateSkillDeclaration>[0] }): string[] => [
+  ...(builtinSkill(e.declaration.name) ? [`name_reserved_by_builtin:${e.declaration.name}`] : []),
+  ...validateSkillDeclaration(e.declaration, { knownEvaluationSuites: new Set(Object.keys(SKILL_EVALUATORS)) }).errors,
+]
 import {
   selectStrategies, activateStrategy, activateLibraryStrategy, listStrategyLibrary, registerStrategyLearningSeam,
   type StrategyEngineDeps,
@@ -295,6 +304,7 @@ async function main() {
     lib[0].definition_digest = d0
     const listed = await listStrategyLibrary(T1, c as any)
     const card = listed.entries.find((e) => e.key === "seller_equity")
+    check("D9b the library card carries each strategy's OS domains and the library edition (137E breadth)", listed.edition >= 3 && listed.entries.every((e) => e.domains.length > 0))
     check("D9 the library card reads version, benchmark (seam), recommended authority and the recorded adaptation", !!card && card.label === "VIPAgents Seller Equity v1" && card.benchmark?.conversionRate === 0.1 && card.recommendedAuthority === 3 && (card.activation?.changes.length ?? 0) > 0 && listed.learning === "learned")
     const mig = readFileSync("supabase/migrations/m725-strategy-library-and-activations.sql", "utf8")
     check("D10 m725: platform rows readable by all tenants, tenant rows own only, writes revoked, one active activation per key, published version immutable by trigger",
@@ -320,6 +330,57 @@ async function main() {
     check("E4 the facts reader takes nothing tenant-shaped from the row (no brokerage_id in StrategyFacts)", !("brokerage_id" in factsFromContactRow({ brokerage_id: T2, contact_type: "buyer" })))
   }
 
+  console.log("\nG. BREADTH (wave 137E) — every OS domain has ≥ 1 platform strategy and ≥ 1 platform skill example")
+  {
+    const keys = [...new Set(PLATFORM_STRATEGY_LIBRARY.map((s) => s.key))]
+    const bad = keys.map((k) => ({ k, errs: compositionErrors(platformStrategy(k)!) })).filter((x) => x.errs.length)
+    check(`G1 EVERY library strategy (${keys.length}, not only the seeds) composes only existing managers / owned capabilities / resolving playbooks / RoiLedger metrics`, bad.length === 0, JSON.stringify(bad))
+    check("G2 every library strategy is domain-tagged BESIDE its definition (STRATEGY_DOMAINS ⊆ OS_DOMAINS), and every tag names a real strategy",
+      keys.every((k) => (STRATEGY_DOMAINS[k] ?? []).length > 0 && STRATEGY_DOMAINS[k].every((d) => (OS_DOMAINS as readonly string[]).includes(d))) && Object.keys(STRATEGY_DOMAINS).every((k) => keys.includes(k)), keys.filter((k) => !(STRATEGY_DOMAINS[k] ?? []).length).join(","))
+    const census = (stratTags: Record<string, readonly string[]>, examples: readonly { domains: readonly string[] }[]) =>
+      Object.fromEntries(OS_DOMAINS.map((d) => [d, { strategies: Object.entries(stratTags).filter(([, ds]) => ds.includes(d)).map(([k]) => k), skills: examples.filter((e) => e.domains.includes(d)).length }]))
+    const c = census(STRATEGY_DOMAINS, PLATFORM_SKILL_EXAMPLES)
+    const uncovered = OS_DOMAINS.filter((d) => c[d].strategies.length === 0 || c[d].skills === 0)
+    console.log(`     census (domain: strategies / skill examples) — ${OS_DOMAINS.map((d) => `${d}: ${c[d].strategies.length}/${c[d].skills}`).join(" · ")}`)
+    check(`G3 domain census: all ${OS_DOMAINS.length} OS domains carry ≥ 1 platform strategy AND ≥ 1 platform skill example`, uncovered.length === 0, uncovered.join(", "))
+    const seedOnly = Object.fromEntries(Object.entries(STRATEGY_DOMAINS).filter(([k]) => (OWNER_SEED_STRATEGY_KEYS as readonly string[]).includes(k)))
+    const seedHoles = OS_DOMAINS.filter((d) => census(seedOnly, []).hasOwnProperty(d) && census(seedOnly, [])[d].strategies.length === 0)
+    check("G4 (POSITIVE CONTROL) the census recognises the defect it was written for: the owner's eight seeds alone, with no skill examples, leave domains uncovered", seedHoles.length > 0 && OS_DOMAINS.every((d) => census(seedOnly, [])[d].skills === 0), seedHoles.join(", "))
+    check("G5 the library edition is bumped for the breadth release (≥ 3) and no published key changed version under it (the eight seeds keep their versions)", PLATFORM_STRATEGY_LIBRARY_EDITION >= 3 && ["expired_listing", "fsbo", "seller_equity", "sphere_reactivation", "past_client_referral"].every((k) => platformStrategy(k)!.version === 1) && ["first_time_buyer", "listing_launch", "recruiting"].every((k) => platformStrategy(k)!.version === 2))
+    check("G6 every published (key, version) is unique — a change is a NEW version, never an edited one", new Set(PLATFORM_STRATEGY_LIBRARY.map((s) => `${s.key}@${s.version}`)).size === PLATFORM_STRATEGY_LIBRARY.length)
+    check("G7 no strategy hard-codes a market (marketSuitability is a vocabulary, never a city / state / territory name)", PLATFORM_STRATEGY_LIBRARY.every((s) => s.marketSuitability.every((m) => /^(any|balanced|buyer_market|sellers_market|appreciating|affordable|growth)$/.test(m))))
+    const ta = platformStrategy("transaction_to_close")!, bso = platformStrategy("buyer_search_to_offer")!
+    check("G8 owner rulings hold in the breadth strategies: a buyer tours only as a CONTACT (buyer_search_to_offer serves contacts only); the transaction strategy is owned by the deal_coordinator", JSON.stringify(bso.eligibility.subjectTypes) === JSON.stringify(["contact"]) && ta.ownerManager === "deal_coordinator" && ta.missionType === "transaction")
+    const cand = candidate(bso)
+    check("G9 a breadth strategy selects deterministically on contact facts (a touring buyer contact is eligible; a seller is not)", rankStrategies([cand], factsFromContactRow({ contact_type: "buyer", buyer_stage: "BUYER_TOURING", dnc_status: false })).length === 1 && rankStrategies([cand], factsFromContactRow({ contact_type: "seller", buyer_stage: "BUYER_TOURING", dnc_status: false })).length === 0)
+    const ca = memClient(), sa = seams()
+    const ttc = await activateStrategy({ brokerageId: T1, candidate: candidate(ta), subject: { type: "contact", id: "c-ttc" } }, ca as any, sa.deps)
+    check("G10 activation of a breadth strategy → a mission owned by deal_coordinator + one delegation per capability another manager owns (portal, gift, finance)",
+      ttc.ok && ttc.mission.owner_manager === "deal_coordinator" && (ca.tables.manager_delegations ?? []).length === 3 && (ca.tables.manager_delegations ?? []).every((d: Row) => CAPABILITY_MANAGER[d.requested_capability as keyof typeof CAPABILITY_MANAGER] === d.assigned_manager), JSON.stringify(ttc.ok ? ttc.delegations : ttc))
+
+    // skill examples — validated at load by the CURRENT validateSkillDeclaration + the platform evaluator
+    check(`G11 every platform skill example passed the load-time gate (${PLATFORM_SKILL_EXAMPLES.length} offered, 0 rejected)`, PLATFORM_SKILL_EXAMPLES.length >= OS_DOMAINS.length && PLATFORM_SKILL_EXAMPLE_REJECTS.length === 0, JSON.stringify(PLATFORM_SKILL_EXAMPLE_REJECTS))
+    check("G12 each example names its manager, capabilities it owns, risk, authority, cost, entitlement and the marketplace evaluation suite; outputs are the kernel receipt; ≥ 1 domain source skill",
+      PLATFORM_SKILL_EXAMPLES.every((e) => e.declaration.manager_owner in MANAGERS && e.declaration.required_capabilities.every((c) => CAPABILITY_MANAGER[c] === e.declaration.manager_owner) && !!e.declaration.risk_class && Number.isInteger(e.declaration.authority_requirement) && !!e.declaration.cost_estimate && !!e.declaration.tenant_entitlement && e.declaration.evaluation_suite === "skill_eval:contract_v1" && JSON.stringify(e.declaration.outputs) === JSON.stringify(SKILL_RUN_RECEIPT_SCHEMA) && e.domainSources.length > 0))
+    const base = PLATFORM_SKILL_EXAMPLES[0]
+    const mut = (patch: Partial<PlatformSkillExample["declaration"]>): PlatformSkillExample => ({ ...base, declaration: { ...base.declaration, ...patch } as PlatformSkillExample["declaration"] })
+    check("G13 (POSITIVE CONTROLS) the load-time gate refuses: a capability another manager owns, an authority above the risk band, an understated risk, a builtin's reserved name, a non-marketplace evaluation suite",
+      examineExample(mut({ required_capabilities: ["cma_generate"] })).some((e) => e.startsWith("capability_not_owned"))
+      && examineExample(mut({ authority_requirement: 5 })).some((e) => e.startsWith("authority_exceeds_risk_class"))
+      && examineExample(mut({ risk_class: "READ", authority_requirement: 0 })).some((e) => e.startsWith("risk_understated"))
+      && examineExample(mut({ name: "appointment_schedule" })).some((e) => e.startsWith("name_reserved_by_builtin"))
+      && examineExample(mut({ evaluation_suite: "test:capability-contract" })).some((e) => e.startsWith("unknown_evaluation_suite")))
+    const exSrc = src("lib/kernel/platform-skill-examples.ts")
+    check("G13b the examples module's load-time gate composes exactly that gate (builtin name refusal + validateSkillDeclaration over the marketplace suites + the platform evaluator) and EXCLUDES a failing candidate", /builtinSkill\(e\.declaration\.name\)/.test(exSrc) && /validateSkillDeclaration\(e\.declaration, \{ knownEvaluationSuites: new Set\(Object\.keys\(SKILL_EVALUATORS\)\) \}\)/.test(exSrc) && /SKILL_EVALUATORS\[e\.declaration\.evaluation_suite\]/.test(exSrc) && /examined\.filter\(\(x\) => x\.errors\.length === 0\)/.test(exSrc))
+    check("G14 the examples are names unique and never auto-published: the module writes no row (no .from( in its stripped source)", new Set(PLATFORM_SKILL_EXAMPLES.map((e) => e.declaration.name)).size === PLATFORM_SKILL_EXAMPLES.length && !/\.from\(/.test(src("lib/kernel/platform-skill-examples.ts")))
+    const door = src("app/actions/platform-skill-examples.ts"), panel = src("app/components/skills/skill-marketplace-panel.tsx")
+    check("G15 WIRED: a staff-gated 'use server' door returns the examples (+ rejects); the platform panel loads them and submits one as a PLATFORM listing through the gated intake (submitThirdPartySkill … publisherKind)",
+      /^"use server"/.test(door.trim()) && /requirePlatformStaff\(\)[\s\S]{0,120}if \(!staff\.ok\) return/.test(door) && /PLATFORM_SKILL_EXAMPLES\.map\(/.test(door) && !/export async function \w+\([^)]+\)/.test(door)
+      && /await getPlatformSkillExamples\(\)/.test(panel) && /submitThirdPartySkill\(decl, publisherName, publisherKind[,)]/.test(panel) && /setPublisherKind\("platform"\)/.test(panel))
+    const domainsOf = (d: OsDomain) => PLATFORM_SKILL_EXAMPLES.filter((e) => e.domains.includes(d)).map((e) => e.declaration.name)
+    check("G16 the listing-centric gap is closed for the owner's named domains (buyers, investors, sphere, recruiting, transactions, lenders, portals each have their own example)", (["buyers", "investors", "sphere_lifetime", "recruiting_retention", "transactions_closing", "lenders_vendors", "portals"] as OsDomain[]).every((d) => domainsOf(d).length > 0))
+  }
+
   console.log("\nF. wiring + registration")
   {
     const isa = src("app/actions/ai-isa/engage-contact.ts")
@@ -342,6 +403,7 @@ async function main() {
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
+  console.log(" BLIND SPOTS (137E breadth): domain tags are declared beside each strategy / example, not inferred; compliance and education strategies carry NAMED gaps (compliance_officer owns no catalogue capability; agent coaching has none) — the census counts a strategy with a named gap as coverage; skill examples are offered as templates, their marketplace submission / approval runs only on the live page.")
   console.log(" BLIND SPOTS: in-memory client (no RLS, no CHECK, no immutability trigger — m725 holds those live once applied; the migration text is asserted); the real ledger / emit / signal / authority / entitlement seams are injected (their survivors have their own proofs); the ISA / orchestrator / controller wires are asserted by stripped source; the 107F learning seam is a test double here; tenant-tier strategies have a reader and a table but no authoring surface.")
   if (fail > 0) { console.log(" ❌ STRATEGY_ENGINE_FAIL"); process.exit(1) }
   console.log(" ✅ STRATEGY_ENGINE_PASS — managers select reusable strategies composed only of existing capabilities; a selection becomes a mission + delegations; the platform version stays immutable and the tenant's adaptation is recorded")

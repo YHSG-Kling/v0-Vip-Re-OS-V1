@@ -306,6 +306,63 @@ async function main() {
     check("X19 conclusions: running before the end; a_better adopt; b_better control held; no_difference no lift; insufficient", experimentConclusion({ verdict: "a_better" }, false) === "running" && experimentConclusion({ verdict: "a_better" }, true) === "adopt_treatment" && experimentConclusion({ verdict: "b_better" }, true) === "reject_control_held" && experimentConclusion({ verdict: "no_difference" }, true) === "reject_no_lift" && experimentConclusion({ verdict: "insufficient_sample" }, true) === "reject_insufficient")
   }
 
+  // ── R: WAVE 137 — the roi-ledger appointment kind includes LISTING appointments (one vocabulary) ──
+  console.log("R — roi-ledger appointment kind includes listing appointments")
+  {
+    const { loadLedgerAttribution } = await import("../lib/intelligence/roi-ledger")
+    const day = (d: number) => new Date(NOW.getTime() - d * 86_400_000).toISOString()
+    const c1 = uuid(501), c2 = uuid(502), c3 = uuid(503), cx = uuid(504)
+    const mem = seed({
+      showings: [{ id: uuid(601), brokerage_id: B, contact_id: c1, created_at: day(4), status: "scheduled" }],
+      listing_presentations: [
+        { id: uuid(611), brokerage_id: B, contact_id: c2, appointment_at: day(3), status: "scheduled" },
+        { id: uuid(612), brokerage_id: B, contact_id: c3, appointment_at: day(2), status: "cancelled" },
+        { id: uuid(613), brokerage_id: OTHER, contact_id: cx, appointment_at: day(2), status: "scheduled" },
+      ],
+      listings: [
+        { id: uuid(621), brokerage_id: B, seller_contact_id: c2, contact_id: null, appointment_at: day(3) },
+        { id: uuid(622), brokerage_id: B, seller_contact_id: c3, contact_id: null, appointment_at: day(1) },
+      ],
+    })
+    const r = await loadLedgerAttribution(mem as any, B, { sinceIso: day(30) })
+    const appts = r.ok ? r.result.outcomes.filter((o) => o.kind === "appointment") : []
+    const refs = appts.map((o) => o.ref).sort()
+    check("R1 a seller LISTING appointment (listing_presentations.appointment_at) is an `appointment` outcome beside the buyer showing", r.ok && refs.includes(`appointment:listing:${uuid(611)}`) && refs.includes(`appointment:${uuid(601)}`), JSON.stringify(refs))
+    check("R2 the booking on the listing row (listings.appointment_at) is the same kind; the presentation + booking of one contact on one day count ONCE; a cancelled presentation never counts", refs.includes(`appointment:listing-row:${uuid(622)}`) && !refs.includes(`appointment:listing-row:${uuid(621)}`) && !refs.includes(`appointment:listing:${uuid(612)}`) && appts.length === 3, JSON.stringify(refs))
+    check("R3 tenant isolation: another tenant's presentation never becomes this tenant's outcome", !appts.some((o) => o.subjectIds.includes(cx)))
+    const none = await loadLedgerAttribution(seed({ showings: [{ id: uuid(601), brokerage_id: B, contact_id: c1, created_at: day(4), status: "scheduled" }] }) as any, B, { sinceIso: day(30) })
+    check("R4 POSITIVE CONTROL: without listing rows only the showing counts (the finder is not counting everything)", none.ok && none.result.outcomes.filter((o) => o.kind === "appointment").length === 1)
+    const pipe = stripComments(readFileSync("lib/kernel/experiment-pipeline.ts", "utf8"))
+    check("R5 ONE reader: experiment-pipeline's side read of listings.appointment_at is gone (merged onto loadLedgerAttribution); control — the scan sees a planted read", !/from\("listings"\)/.test(pipe) && /loadLedgerAttribution\(/.test(pipe) && /from\("listings"\)/.test(pipe + `svc.from("listings")`))
+  }
+
+  // ── V: WAVE 137 — the envelope ADMIN SCREEN (read + edit through the one versioned policy path) ──
+  console.log("V — envelope admin screen")
+  {
+    const { AUTONOMY_ENVELOPE_FIELDS, validateAutonomyBudgetsEdit, DEFAULT_AUTONOMY_BUDGETS } = await import("../lib/kernel/autonomy-budgets")
+    const leaves = (o: any, pre = ""): string[] => Object.entries(o).flatMap(([k, v]) => (v && typeof v === "object" ? leaves(v, `${pre}${k}.`) : [`${pre}${k}`]))
+    const resolverPaths = leaves(DEFAULT_AUTONOMY_BUDGETS).filter((p) => p !== "readable" && p !== "note").sort()
+    const fieldPaths = AUTONOMY_ENVELOPE_FIELDS.map((f) => f.path).sort()
+    check("V1 every value the enforcement reads is editable on the screen (field paths = the resolver's leaves, derived)", JSON.stringify(resolverPaths) === JSON.stringify(fieldPaths), JSON.stringify({ resolverPaths, fieldPaths }))
+    check("V2 every USD / percent-of-budget envelope is a MONEY field; the render cap and Finance alarms are not", AUTONOMY_ENVELOPE_FIELDS.every((f) => f.money === (f.unit === "usd" || f.unit === "pct")) && AUTONOMY_ENVELOPE_FIELDS.some((f) => f.money) && AUTONOMY_ENVELOPE_FIELDS.some((f) => !f.money))
+    const base = resolveAutonomyBudgets({})
+    const renders = validateAutonomyBudgetsEdit({ "asset_manager.max_renders_per_campaign": 6 }, base)
+    check("V3 a render-cap edit changes ONE non-money key and round-trips through resolveAutonomyBudgets", renders.ok && renders.changedKeys.join() === "asset_manager.max_renders_per_campaign" && renders.moneyChanged.length === 0 && resolveAutonomyBudgets({ [AUTONOMY_BUDGETS_POLICY_KEY]: renders.value }).asset_manager.max_renders_per_campaign === 6, JSON.stringify(renders))
+    const money = validateAutonomyBudgetsEdit({ "recruiting_manager.max_prospect_data_usd_per_month": 250 }, base)
+    check("V4 a USD envelope edit is reported as MONEY (the door refuses it for a non-commerce seat)", money.ok && money.moneyChanged.join() === "recruiting_manager.max_prospect_data_usd_per_month")
+    const bad = validateAutonomyBudgetsEdit({ "ads_manager.max_shift_pct_of_monthly_budget": 150, "provider_router.monthly_max_usd": -1 }, base)
+    check("V5 out-of-bounds values are ERRORS (never silently clamped, never unlimited)", !bad.ok && bad.errors.length === 2)
+    check("V6 POSITIVE CONTROL: unchanged input → no changed keys (the diff is not reporting everything)", (() => { const r = validateAutonomyBudgetsEdit({}, base); return r.ok && r.changedKeys.length === 0 })())
+    const door = stripComments(readFileSync("app/actions/admin/improvement-proposals.ts", "utf8"))
+    const body = door.slice(door.indexOf("export async function submitAutonomyEnvelopesAction"))
+    check("V7 the edit door: tenant-admin roster + SESSION tenant, money envelopes need isTenantCommerceAdmin, the write is a human `policy` proposal on autonomy_budgets (proposeEvaluatePromote) — never a direct settings write", /requireCallerTenant\(\)/.test(door) && /isTenantCommerceAdmin\(/.test(door) && /moneyChanged\.length && !gate\.commerce/.test(body) && /proposeEvaluatePromote\(svc, \{[\s\S]{0,200}subjectKey: AUTONOMY_BUDGETS_POLICY_KEY, proposer: "human"/.test(body) && !/mergeBrokerageSettings\(/.test(body))
+    check("V8 POSITIVE CONTROL: the direct-write scan sees a planted mergeBrokerageSettings(", /mergeBrokerageSettings\(/.test(body + "mergeBrokerageSettings("))
+    const read = door.slice(door.indexOf("export async function getAutonomyEnvelopeEditor"), door.indexOf("export async function submitAutonomyEnvelopesAction"))
+    check("V9 the read shows caps + consumption from autonomy_budget_consumptions through the Finance report's own read (buildAutonomyBudgetReport) and fails closed on an unreadable policy", /buildAutonomyBudgetReport\(svc, gate\.brokerageId\)/.test(read) && /readable/.test(read) && /from\("autonomy_budget_consumptions"\)/.test(stripComments(readFileSync("lib/kernel/autonomy-budgets.ts", "utf8"))))
+    const page = stripComments(readFileSync("app/dashboard/admin/manager-trust/page.tsx", "utf8"))
+    check("V10 the screen is wired from the existing Manager Trust page", /<AutonomyEnvelopesEditor \/>/.test(page) && /submitAutonomyEnvelopesAction/.test(readFileSync("app/dashboard/admin/manager-trust/autonomy-envelopes-form.tsx", "utf8")))
+  }
+
   // ── W: wiring + migration + registration ─────────────────────────────────────────────────────
   console.log("W — wiring, migration, registration")
   {

@@ -17,7 +17,7 @@ export async function StrategyLibraryPanel() {
   }
   return (
     <section id="strategy-library" className="mx-6 mb-8 rounded-lg border p-4">
-      <h2 className="text-lg font-semibold">Strategy library</h2>
+      <h2 className="text-lg font-semibold">Strategy library{"edition" in res ? ` · edition ${res.edition}` : ""}</h2>
       <p className="mb-3 text-sm text-muted-foreground">
         Reusable plans your managers select instead of inventing one. Benchmarks: {res.learning === "learned" ? "learned (network, privacy-safe)" : `${res.learning}${res.learningReason ? ` — ${res.learningReason}` : ""}`}.
         {res.readRefused ? ` Activations unreadable: ${res.readRefused}.` : ""}
@@ -32,6 +32,7 @@ export async function StrategyLibraryPanel() {
             <p className="text-muted-foreground">{e.objective}</p>
             <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
               <dt>Audience</dt><dd>{e.audience}</dd>
+              <dt>Domains</dt><dd>{e.domains.length ? e.domains.map((d) => d.replace(/_/g, " ")).join(", ") : "untagged"}</dd>
               <dt>Markets</dt><dd>{e.marketSuitability.join(", ")}</dd>
               <dt>Average cost</dt><dd>${e.averageCostUsd}</dd>
               <dt>Benchmark</dt><dd>{e.benchmark && e.benchmark.conversionRate !== null ? `${(e.benchmark.conversionRate * 100).toFixed(1)}% (n=${e.benchmark.sample})` : "no benchmark yet"}</dd>

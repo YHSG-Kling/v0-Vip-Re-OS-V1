@@ -1,7 +1,8 @@
 // lib/kernel/calendar-deadline-watcher.ts
 //
-// Polls calendar_events for upcoming deadlines (within 24h) and emits
-// a KernelEvent notification for each unnotified event.
+// Polls calendar_events for upcoming deadlines (within 24h — or, for transaction
+// deadlines, the tenant's optimized reminder lead, wave 137E) and emits a
+// KernelEvent notification for each unnotified event.
 //
 // Constraints:
 // - No any
@@ -46,6 +47,12 @@ const CALENDAR_TYPE_TO_KERNEL_EVENT: Record<TenantCalendarEventType, KernelEvent
   [CalendarEventType.OPEN_HOUSE]:          KernelEvent.OPEN_HOUSE_SCHEDULED,
 }
 
+/** The contract deadlines whose reminder lead a tenant's optimization may move (wave 137E). */
+const TRANSACTION_DEADLINE_TYPES: ReadonlySet<CalendarEventType> = new Set([
+  CalendarEventType.INSPECTION, CalendarEventType.APPRAISAL, CalendarEventType.FINANCING_DEADLINE,
+  CalendarEventType.WALKTHROUGH, CalendarEventType.CLOSING, CalendarEventType.CLOSING_DISCLOSURE,
+])
+
 // ─── SHAPE OF A CALENDAR_EVENTS ROW ──────────────────────────────────────────
 interface CalendarEventRow {
   id:                  string
@@ -76,7 +83,12 @@ export async function checkUpcomingDeadlines(
   const supabase = client ?? createServiceClient()
 
   const now   = new Date()
-  const in24h = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+  // Wave 137E: TRANSACTION deadlines notify on the tenant's reminder lead (optimization_tuning
+  // .deadline_reminder_hours — the transaction_reminder_timing optimization class, promoted only through
+  // the improvement-proposal kernel); every other event type keeps the historic 24h. The query reaches the
+  // widest allowed lead; each row is then judged against ITS tenant's horizon.
+  const { DEADLINE_REMINDER_DEFAULT_HOURS, DEADLINE_REMINDER_MAX_HOURS, loadDeadlineReminderHours } = await import('./self-optimization')
+  const horizonEnd = new Date(now.getTime() + DEADLINE_REMINDER_MAX_HOURS * 60 * 60 * 1000)
 
   // ── Step 1: Query upcoming, unnotified calendar events ────────────────────
   // Lower bound at NOW: a deadline that already passed is not worth a "due soon"
@@ -86,7 +98,7 @@ export async function checkUpcomingDeadlines(
     .from('calendar_events')
     .select('id, brokerage_id, entity_type, entity_id, event_type, start_at, deadline_notified')
     .gte('start_at', now.toISOString())
-    .lte('start_at', in24h.toISOString())
+    .lte('start_at', horizonEnd.toISOString())
     .eq('deadline_notified', false)
 
   if (fetchError) {
@@ -97,10 +109,17 @@ export async function checkUpcomingDeadlines(
     return
   }
 
+  const rows = events as CalendarEventRow[]
+  const tenantLead = await loadDeadlineReminderHours(supabase, rows.filter((e) => TRANSACTION_DEADLINE_TYPES.has(e.event_type)).map((e) => e.brokerage_id))
+  const leadHoursFor = (e: CalendarEventRow): number =>
+    TRANSACTION_DEADLINE_TYPES.has(e.event_type) ? tenantLead.get(e.brokerage_id) ?? DEADLINE_REMINDER_DEFAULT_HOURS : DEADLINE_REMINDER_DEFAULT_HOURS
+
   const notifiedIds: string[] = []
 
   // ── Step 2: Emit one KernelEvent notification per calendar event ──────────
-  for (const calEvent of events as CalendarEventRow[]) {
+  for (const calEvent of rows) {
+    // Not yet inside this row's reminder lead — leave it unnotified for a later run.
+    if (Date.parse(calEvent.start_at) > now.getTime() + leadHoursFor(calEvent) * 60 * 60 * 1000) continue
     // A platform demo is not a tenant deadline (see the map's header) — mark
     // it seen so it stops matching, and emit nothing.
     if (calEvent.event_type === CalendarEventType.DEMO_APPOINTMENT) {

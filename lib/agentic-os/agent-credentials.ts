@@ -40,10 +40,11 @@ interface ResolvedAgentToken {
  * unknown, inactive, or expired. Touches last_used_at (fire-and-forget). Never throws.
  */
 // Module-private since 2026-09-08 — no importer outside this file (category B tranche).
-async function resolveAgentToken(rawToken: string): Promise<ResolvedAgentToken | null> {
+// Wave 137A: `client` is an injected service client (the in-memory proof's seam,
+// scripts/domain-api-guard.ts); production passes nothing and gets the service role.
+async function resolveAgentToken(rawToken: string, client?: { from: (t: string) => any }): Promise<ResolvedAgentToken | null> {
   try {
-    const { createServiceClient } = await import("@/lib/supabase/service")
-    const svc = createServiceClient()
+    const svc = client ?? (await import("@/lib/supabase/service")).createServiceClient()
     const tokenHash = hashAgentToken(rawToken)
     const { data, error } = await svc
       .from("agent_credentials")
@@ -64,6 +65,11 @@ export interface AgenticCaller {
   brokerageId: string | null
   scopes: string[]
   via: "token" | "session" | "none"
+  /**
+   * agent_credentials.id when via === "token" (wave 137A) — the key the domain API's
+   * per-credential rate limit and evidence rows hang on. Absent for a session / none.
+   */
+  credentialId?: string | null
 }
 
 /**
@@ -71,7 +77,12 @@ export interface AgenticCaller {
  * agent token (scopes from the credential) OR the logged-in session (platform staff
  * implicitly hold all scopes "*"). Returns via:"none" when neither authenticates.
  */
-export async function resolveAgenticCaller(req: Request): Promise<AgenticCaller> {
+export async function resolveAgenticCaller(
+  req: Request,
+  // Wave 137A: `tokenOnly` — a credential API (app/api/v1/*) never falls through to a
+  // cookie session; `client` — an injected service client for the token lookup.
+  opts: { tokenOnly?: boolean; client?: { from: (t: string) => any } } = {},
+): Promise<AgenticCaller> {
   const raw = extractBearerToken(req.headers.get("authorization"))
   if (raw) {
     // Zapier is OUTBOUND-ONLY (wave 87, lane 87A — owner: "zapier zaps are only
@@ -79,10 +90,11 @@ export async function resolveAgenticCaller(req: Request): Promise<AgenticCaller>
     // identifies itself as a Zap authenticates as nobody, before the token lookup.
     const { isZapierInbound } = await import("@/lib/integrations/zapier-direction")
     if (isZapierInbound({ userAgent: req.headers.get("user-agent") })) return { brokerageId: null, scopes: [], via: "none" }
-    const resolved = await resolveAgentToken(raw)
-    if (resolved) return { brokerageId: resolved.brokerageId, scopes: resolved.scopes, via: "token" }
+    const resolved = await resolveAgentToken(raw, opts.client)
+    if (resolved) return { brokerageId: resolved.brokerageId, scopes: resolved.scopes, via: "token", credentialId: resolved.credentialId }
     return { brokerageId: null, scopes: [], via: "none" } // token present but invalid
   }
+  if (opts.tokenOnly) return { brokerageId: null, scopes: [], via: "none" }
   const { createClient } = await import("@/lib/supabase/server")
   const { requireAuth } = await import("@/lib/kernel/api-auth")
   const { isPlatformStaffIdentity } = await import("@/lib/auth/resolve-user-role")

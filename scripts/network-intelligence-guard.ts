@@ -104,15 +104,21 @@ const uuid = (p: string, n: number) => `${p}${String(n).padStart(4, "0")}-0000-4
   const T = Array.from({ length: 6 }, (_, i) => uuid("a", i + 1))
   const personIds: string[] = []
   const build = (optInSix: boolean) => {
-    const tables: Record<string, Row[]> = { brokerages: [], brokerage_settings: [], leads: [], agent_action_ledger: [], isa_outreach_log: [], marketing_assets: [], learning_assignments: [], learning_modules: [], network_benchmarks: [] }
+    const tables: Record<string, Row[]> = { brokerages: [], brokerage_settings: [], leads: [], contacts: [], transactions: [], agent_action_ledger: [], isa_outreach_log: [], marketing_assets: [], learning_assignments: [], learning_modules: [], network_benchmarks: [] }
     T.forEach((b, i) => {
       tables.brokerages.push({ id: b, state: "TX", deleted_at: null })
       tables.brokerage_settings.push({ brokerage_id: b, settings: { network_benchmarks_opt_in: { opted_in: i < 5 || optInSix } } })
       const convertedOf10 = i === 5 ? 10 : 3
       for (let n = 0; n < 10; n++) {
         const id = uuid(`${i}e`, n); personIds.push(id)
-        tables.leads.push({ id, brokerage_id: b, lead_type: "buyer", converted_at: n < convertedOf10 ? daysAgo(5) : null, created_at: daysAgo(20) })
+        // WAVE 137: the conversion cells count CONTACTS (by contact type) that a transaction names.
+        tables.contacts.push({ id, brokerage_id: b, contact_type: "buyer", campaign_attribution_id: null, deleted_at: null, created_at: daysAgo(20) })
+        if (n < convertedOf10) tables.transactions.push({ id: uuid(`${i}t`, n), brokerage_id: b, buyer_contact_id: id, contact_id: null, seller_contact_id: null, deleted_at: null, created_at: daysAgo(5) })
+        // A LEAD converted on every row must NOT move the cell any more (leads are not the population).
+        tables.leads.push({ id: uuid(`${i}l`, n), brokerage_id: b, lead_type: "buyer", converted_at: daysAgo(5), created_at: daysAgo(20) })
       }
+      // Non-transacting contact types (sphere) are outside the population.
+      tables.contacts.push({ id: uuid(`${i}s`, 1), brokerage_id: b, contact_type: "sphere", campaign_attribution_id: null, deleted_at: null, created_at: daysAgo(20) })
       for (let n = 0; n < 8; n++) tables.agent_action_ledger.push({ id: uuid(`${i}f`, n), brokerage_id: b, provider: i === 5 ? "secret_provider" : "twilio", status: n < 7 ? "executed" : "failed", created_at: daysAgo(10), settled_at: daysAgo(10), detail: {} })
       for (let n = 0; n < 8; n++) tables.isa_outreach_log.push({ id: uuid(`${i}d`, n), brokerage_id: b, channel: "sms", sent_at: daysAgo(9), replied_at: n < 2 ? daysAgo(8) : null })
     })
@@ -135,6 +141,39 @@ const uuid = (p: string, n: number) => `${p}${String(n).padStart(4, "0")}-0000-4
   await runNetworkBenchmarkAggregation(both, { now: NOW })
   const conv6 = both.tables.network_benchmarks.find((c) => c.metric === "brokerage_conversion")
   check("POSITIVE CONTROL: opting the sixth tenant IN changes the pooled rate (25 of 60 = 0.417, published ROUNDED to the 0.05 step → 0.40; the tenant count banded → 5)", !!conv6 && conv6.rate === 0.4 && conv6.tenant_count === 5 && conv6.sample_size === 60, JSON.stringify(conv6))
+
+  // ── 2a. WAVE 137 — conversion cells count CONTACTS by contact type (one vocabulary with the twin) ─────
+  console.log("\n[2a — conversion cells count CONTACTS (by contact type), not leads by type]")
+  {
+    const bands = Array.from({ length: 5 }, (_, i) => uuid("s", i + 1))
+    const mk = (withSellerCampaign: boolean) => {
+      const tables: Record<string, Row[]> = { brokerages: [], brokerage_settings: [], leads: [], contacts: [], transactions: [], agent_action_ledger: [], isa_outreach_log: [], marketing_assets: [], learning_assignments: [], learning_modules: [], network_benchmarks: [] }
+      bands.forEach((b, i) => {
+        tables.brokerages.push({ id: b, state: "TX", deleted_at: null })
+        tables.brokerage_settings.push({ brokerage_id: b, settings: { network_benchmarks_opt_in: { opted_in: true } } })
+        for (let n = 0; n < 10; n++) {
+          const id = uuid(`${i}k`, n)
+          tables.contacts.push({ id, brokerage_id: b, contact_type: n % 2 ? "seller" : "both", campaign_attribution_id: withSellerCampaign ? `camp-${n}` : null, deleted_at: null, created_at: daysAgo(15) })
+          if (n < 4) tables.transactions.push({ id: uuid(`${i}x`, n), brokerage_id: b, seller_contact_id: id, contact_id: null, buyer_contact_id: null, deleted_at: null, created_at: daysAgo(3) })
+          // seller LEADS with campaigns, all converted — the retired population; must not count.
+          tables.leads.push({ id: uuid(`${i}m`, n), brokerage_id: b, lead_type: "seller", converted_at: daysAgo(4), campaign_attribution_id: "c", utm_campaign: "u", created_at: daysAgo(15) })
+        }
+      })
+      return fakeSvc(tables)
+    }
+    const on = mk(true)
+    await runNetworkBenchmarkAggregation(on, { now: NOW })
+    const sc = on.tables.network_benchmarks.find((c) => c.metric === "seller_campaign_conversion")
+    check("the seller-campaign cell pools SELLER-SIDE CONTACTS (seller | both) with a campaign attribution that a transaction names (20 of 50 = 0.4)", !!sc && sc.rate === 0.4 && sc.sample_size === 50, JSON.stringify(sc))
+    const off = mk(false)
+    await runNetworkBenchmarkAggregation(off, { now: NOW })
+    check("POSITIVE CONTROL: with NO contact carrying a campaign attribution the seller cell is not published — the 50 converted seller LEADS with campaigns contribute nothing", !off.tables.network_benchmarks.some((c) => c.metric === "seller_campaign_conversion"), JSON.stringify(off.tables.network_benchmarks.map((c) => c.metric)))
+    const nb = src("lib/intelligence/network-benchmarks.ts")
+    const start = nb.indexOf("async function collectTenantContributions")
+    const body = nb.slice(start, nb.indexOf('from("agent_action_ledger")', start))
+    check("the conversion block reads contacts + transactions and NEVER leads.lead_type (stripped source)", /from\("contacts"\)/.test(body) && /from\("transactions"\)/.test(body) && !/from\("leads"\)/.test(body) && !/lead_type/.test(body))
+    check("POSITIVE CONTROL: the scan recognises a leads.lead_type read when one is planted", /from\("leads"\)/.test(body + `svc.from("leads").select("lead_type")`) && /lead_type/.test(body + "lead_type"))
+  }
 
   // ── 2b. ROUNDING closes the join / leave leak (wave 108 owner ruling) ─────────────────────
   console.log("\n[2b — rounding: a joining tenant's own rate cannot be recovered by differencing]")

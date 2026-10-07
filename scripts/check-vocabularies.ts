@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 455 tables, 816 columns.
+ * MEASURED AT GENERATION: 455 tables, 817 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-07
  * source: public.live_check_constraints_json()
- * body-sha256: a77d2f1d346df94c99dd807d8dc7f46172688532bf3e72806fc7438b750b5ed2
+ * body-sha256: 35a9774e81eb4852fca51ee76291a1cd4b579ddaebcbee05df8422de00d0b8cf
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1439,8 +1439,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     request_status: ["cancelled", "completed", "expired", "partially_signed", "pending", "sent"],
   },
   skill_marketplace_listings: {
+    extension_kind: ["custom_manager", "provider_adapter", "skill", "strategy", "webhook_app"],
     publisher: ["platform", "tenant", "third_party"],
-    status: ["approved", "evaluated", "published", "rejected", "revoked", "submitted"],
+    status: ["approved", "deprecated", "disabled", "draft", "enabled", "suspended", "validated"],
   },
   smart_assistant_suggestions: {
     priority: ["high", "low", "medium"],
