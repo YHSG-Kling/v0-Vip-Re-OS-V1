@@ -17,7 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Target, Loader2 } from "lucide-react"
-import { blockMissionAction, controlMissionAction, createMissionAction, decideDelegationAction, decideMissionAction } from "@/app/actions/missions"
+import { blockMissionAction, controlMissionAction, createMissionAction, decideDelegationAction, decideMissionAction, submitBrokerObjectiveAction } from "@/app/actions/missions"
 import type { MissionRow, MissionType } from "@/lib/kernel/missions"
 import type { MissionVerdictLine } from "@/lib/kernel/mission-controller"
 import type { DelegationRow } from "@/lib/kernel/manager-delegation"
@@ -185,6 +185,18 @@ export function MissionsCard({ active, attention, readRefused, managers, mission
       if (r.ok) router.refresh()
     })
   }
+  // WAVE 108E — the broker's plain-words objective (investigation / proposal / delegation).
+  const [ask, setAsk] = useState("")
+  const [answer, setAnswer] = useState<{ headline: string; lines: string[]; kind: string; state: string } | null>(null)
+  const submitObjective = () => {
+    setNote(null); setAnswer(null)
+    startTransition(async () => {
+      const r = await submitBrokerObjectiveAction({ text: ask })
+      if (!r.ok) { setNote(r.error); return }
+      setAnswer({ headline: r.data.headline, lines: r.data.lines, kind: r.data.kind, state: r.data.state })
+      setAsk(""); router.refresh()
+    })
+  }
   const create = () => {
     setNote(null)
     startTransition(async () => {
@@ -220,6 +232,19 @@ export function MissionsCard({ active, attention, readRefused, managers, mission
           </details>
         )}
         {!readRefused && active.length === 0 && <p className="text-xs text-muted-foreground">No missions yet — give the OS an objective below.</p>}
+        <div className="space-y-1 border-t pt-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <input value={ask} onChange={(e) => setAsk(e.target.value)} placeholder="Ask the OS — e.g. Find out why listing appointments dropped last month · Increase listing GCI 15%" className="h-8 min-w-[260px] flex-1 rounded-md border bg-background px-2 text-xs" />
+            <Button size="sm" className="h-8 text-xs" disabled={pending || !ask.trim()} onClick={submitObjective}>Give objective</Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">An investigation returns ranked evidence; an increase with a territory or spend cap returns a proposal that waits for your approval; a % goal is delegated to the managers as proposed child missions. Nothing runs without approval.</p>
+          {answer && (
+            <div className="rounded border border-dashed p-1.5 text-xs">
+              <div className="font-medium">{answer.kind} · {answer.state.toLowerCase().replace("_", " ")} — {answer.headline}</div>
+              {answer.lines.length > 0 && <ul className="mt-1 space-y-0.5 text-muted-foreground">{answer.lines.map((l, i) => <li key={i}>{l}</li>)}</ul>}
+            </div>
+          )}
+        </div>
         <div className="flex flex-wrap items-center gap-2 border-t pt-2">
           <input value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Objective — e.g. Close 24 sides this year" className="h-8 min-w-[220px] flex-1 rounded-md border bg-background px-2 text-xs" />
           <select value={type} onChange={(e) => setType(e.target.value)} className="h-8 rounded-md border bg-background px-2 text-xs">

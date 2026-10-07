@@ -507,6 +507,8 @@ export async function runVersiumContactLeg(
     checkBudget?: (p: { brokerageId: string; addCost: number }) => Promise<{ allowed: boolean }>
     /** Wave 98 (98C) test seam — defaults to connector-gateway.ts::loadProviderHealth. */
     providerHealth?: ProviderHealthFn
+    /** Wave 108F test seam — defaults to highValueEnrichmentEnvelope (lib/kernel/autonomy-budgets.ts). */
+    highValueEnvelope?: (a: { brokerageId: string; leadId: string | null; contactId: string | null; costUsd: number; decision: string }) => Promise<{ allowed: boolean; reason: string }>
   } = {},
 ): Promise<{ answered: boolean; emails: string[]; phones: string[]; cost: number; skipped: string | null; demographicsProfile: Record<string, any> | null; demographicCategories: string[]; fieldProvenance: Record<string, VersiumProvenance> }> {
   const missing: Array<"email" | "phone"> = []
@@ -523,7 +525,15 @@ export async function runVersiumContactLeg(
         ? deps.allocationPolicy(req.brokerageId)
         : (async () => { try { return await loadResourceAllocationPolicy((await import("@/lib/supabase/service")).createServiceClient(), req.brokerageId as string) } catch { return null } })())
     : null
-  const purchase = shouldPurchaseEnrichment({ decision, missingFields: missing, providerCostUsd: Math.round(VERSIUM_MATCH_CREDIT_USD * missing.length * 100) / 100, policy })
+  let purchase = shouldPurchaseEnrichment({ decision, missingFields: missing, providerCostUsd: Math.round(VERSIUM_MATCH_CREDIT_USD * missing.length * 100) / 100, policy })
+  // Wave 108F — CONTROLLED AUTONOMOUS BUDGETING: OVER the base per-decision cap, a HIGH-VALUE opportunity (value tier
+  // from its lead score) may still buy the decisive fields from the provider router's envelope — consumed atomically
+  // through the ONE enforcement function. Default all zero: the base cap stands exactly as before.
+  if (!purchase.purchase && purchase.decisiveFields.length > 0 && req.brokerageId) {
+    const costUsd = Math.round(VERSIUM_MATCH_CREDIT_USD * purchase.decisiveFields.length * 100) / 100
+    const uplift = await (deps.highValueEnvelope ?? highValueEnrichmentEnvelope)({ brokerageId: req.brokerageId, leadId: req.attribution?.leadId ?? null, contactId: req.attribution?.contactId ?? null, costUsd, decision }).catch((e) => ({ allowed: false, reason: `envelope threw: ${(e as Error).message}` }))
+    if (uplift.allowed) purchase = { purchase: true, decisiveFields: purchase.decisiveFields, reason: `${purchase.reason} — bought under the high-value envelope (${uplift.reason})` }
+  }
   if (!purchase.purchase) return { answered: false, emails: [], phones: [], cost: 0, skipped: `no_decision_impact: ${purchase.reason}`, ...none }
   const outputs = missing.filter((f) => purchase.decisiveFields.includes(f))
   // Wave 97 (lane 97C): THE SAME vendor budget gate the Versium financial rung runs
@@ -1292,4 +1302,28 @@ export async function lookupPublicPropertyFacts(
     deps,
   )
   return { found: r.found, facts: r.facts ? toPublicPropertyFacts(r.facts) : null, rungsTried: r.rungsTried, skipped: r.skipped }
+}
+
+
+/**
+ * Wave 108F — the provider router's HIGH-VALUE envelope for one over-cap enrichment decision: the opportunity's value
+ * tier from its lead score (leads / contacts lead_score, tenant-pinned) → consumeAutonomyEnvelope("provider_high_value"),
+ * scoped to the decision so one opportunity can never draw past its per-decision max. A standard opportunity is refused
+ * (and ledgered as refused) — the base cap stands.
+ */
+async function highValueEnrichmentEnvelope(a: { brokerageId: string; leadId: string | null; contactId: string | null; costUsd: number; decision: string }): Promise<{ allowed: boolean; reason: string }> {
+  const svc = (await import("@/lib/supabase/service")).createServiceClient()
+  const subjectId = a.contactId ?? a.leadId
+  if (!subjectId) return { allowed: false, reason: "no opportunity to value — base cap stands" }
+  const table = a.contactId ? "contacts" : "leads"
+  const { data, error } = await svc.from(table).select(a.contactId ? "lead_score" : "lead_score, estimated_value").eq("brokerage_id", a.brokerageId).eq("id", subjectId).maybeSingle()
+  if (error) return { allowed: false, reason: `${table} read refused: ${error.message} — base cap stands` }
+  const { opportunityValueTier, consumeAutonomyEnvelope } = await import("@/lib/kernel/autonomy-budgets")
+  const tier = opportunityValueTier({ leadScore: (data as { lead_score?: number | null } | null)?.lead_score ?? null })
+  const v = await consumeAutonomyEnvelope(svc, {
+    brokerageId: a.brokerageId, envelope: "provider_high_value", amount: a.costUsd, scopeKey: `${a.decision}:${subjectId}`, valueTier: tier.tier,
+    reasonCode: a.contactId ? "NURTURE_TOUCH" : "LEAD_FIRST_RESPONSE", reasonDetail: `enrichment above the per-decision cap for a ${tier.tier} opportunity (${tier.why}) — ${a.decision}`,
+    subject: { type: a.contactId ? "contact" : "lead", id: subjectId },
+  })
+  return { allowed: v.allowed, reason: v.reason }
 }

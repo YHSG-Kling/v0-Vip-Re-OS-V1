@@ -210,3 +210,16 @@ export function isLifetimeRelationshipType(contactType: string | null | undefine
   const c = canonicalContactType(contactType)
   return c !== null && LIFETIME_TYPE_SET.has(c)
 }
+
+/**
+ * THE TWO SIDES of a represented contact (wave 108 owner ruling: the Shopping Agent reads BUYER
+ * contacts, the Listing Concierge reads SELLER contacts; a dual-sided move — 'both' — is on both).
+ * DB filter lists (survivor spellings only); readers holding a row use the predicates below.
+ */
+export const BUYER_SIDE_CONTACT_TYPES = ["buyer", "both"] as const satisfies readonly ContactType[]
+export const SELLER_SIDE_CONTACT_TYPES = ["seller", "both"] as const satisfies readonly ContactType[]
+/** PURE — may this contact tour / shop (buyer | both)? Only a CONTACT tours; a lead converts first. */
+export function isBuyerSideContactType(contactType: string | null | undefined): boolean {
+  const c = canonicalContactType(contactType)
+  return c !== null && (BUYER_SIDE_CONTACT_TYPES as readonly string[]).includes(c)
+}

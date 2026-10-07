@@ -65,8 +65,16 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
   const monthLabel = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
 
   const { data: brokerages } = await svc.from("brokerages").select("id").limit(2000)
+  const { loadFinancialWriterHalt } = await import("@/lib/kernel/os-health")
   for (const b of ((brokerages ?? []) as Array<{ id: string }>)) {
     try {
+      // WAVE 108C — THE FINANCIAL-WRITER KILL SWITCH: a tenant whose earnings summary disagrees with the
+      // ledger is HALTED until Finance releases it (never re-projected over the discrepancy). Fails closed.
+      const halt = await loadFinancialWriterHalt(svc, b.id, "brokerage_earnings")
+      if (halt.halted) {
+        console.warn(`[brokerage-earnings] ${b.id} skipped — brokerage_earnings halted: ${halt.reason ?? "no reason recorded"}`)
+        continue
+      }
       const { data: ytdRows } = await svc
         .from("agent_commissions")
         .select("gross_commission, agent_commission, brokerage_commission, net_to_agent, net_to_brokerage, transaction_id, agent_id, close_date")

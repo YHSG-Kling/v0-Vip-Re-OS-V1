@@ -354,6 +354,8 @@ export type RequestProcurementResult =
 export async function requestProcurement(svc: Svc, input: RequestProcurementInput, opts: {
   /** Entitlement seam — default mayUseAndAfford('app.access'). Fail closed. */
   access?: (i: { brokerageId: string; client: Svc }) => Promise<{ allowed: boolean; reason: string }>
+  /** Wave 108F seam — default lib/kernel/autonomy-budgets.ts consumeAutonomyEnvelope("procurement_auto_book"). */
+  envelope?: (i: { brokerageId: string; amountUsd: number; serviceType: string; listingId: string | null; client: Svc }) => Promise<{ allowed: boolean; reason: string }>
 } = {}): Promise<RequestProcurementResult> {
   if (!input.brokerageId) return { ok: false, error: "tenant scope required" }
   const access = opts.access ?? (async (i) => {
@@ -378,7 +380,21 @@ export async function requestProcurement(svc: Svc, input: RequestProcurementInpu
   if (!top) return { ok: false, error: ranking.blindSpots.join("; ") || "no eligible vendor", ranking }
 
   const policy = await loadProcurementAutonomy(svc, input.brokerageId)
-  const decision = procurementAutonomyDecision(policy, { category: facts.serviceCategory, amountUsd: top.price })
+  let decision = procurementAutonomyDecision(policy, { category: facts.serviceCategory, amountUsd: top.price })
+  // Wave 108F — CONTROLLED AUTONOMOUS BUDGETING: an autonomous booking also consumes the Listing Concierge's MONTHLY
+  // envelope (procurement_autonomy caps each purchase; the envelope caps the month). Default $0 = agent approval.
+  if (decision.auto && top.price != null) {
+    const envelope = opts.envelope ?? (async (i) => {
+      const { consumeAutonomyEnvelope } = await import("@/lib/kernel/autonomy-budgets")
+      const v = await consumeAutonomyEnvelope(i.client, {
+        brokerageId: i.brokerageId, envelope: "procurement_auto_book", amount: i.amountUsd, reasonCode: "SERVICE_NOTICE",
+        reasonDetail: `auto-book ${i.serviceType} at $${i.amountUsd}`, subject: { type: i.listingId ? "listing" : "vendor_booking", id: i.listingId },
+      })
+      return { allowed: v.allowed, reason: v.reason }
+    })
+    const env = await envelope({ brokerageId: input.brokerageId, amountUsd: top.price, serviceType: input.serviceType, listingId: input.listingId ?? null, client: svc }).catch((e) => ({ allowed: false, reason: `envelope threw: ${(e as Error).message}` }))
+    if (!env.allowed) decision = { auto: false, reason: `${decision.reason}, but the monthly auto-book envelope refused (${env.reason}) — agent approval required` }
+  }
   let policyRef: string | null = null
   if (decision.auto) {
     const { resolvePolicyRef } = await import("@/lib/kernel/tenant-policy")

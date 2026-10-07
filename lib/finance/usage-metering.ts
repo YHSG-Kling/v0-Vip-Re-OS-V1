@@ -22,8 +22,17 @@ export async function runUsageMeteringRollup(svc: Svc, now: Date = new Date()): 
   const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59).toISOString()
 
   const { data: brokerages } = await svc.from("brokerages").select("id").limit(2000)
+  const { loadFinancialWriterHalt } = await import("@/lib/kernel/os-health")
   for (const b of ((brokerages ?? []) as Array<{ id: string }>)) {
     try {
+      // WAVE 108C — THE FINANCIAL-WRITER KILL SWITCH. A tenant whose meters the OS health supervisor
+      // found doubled / drifting is HALTED until Finance releases it (tenant policy
+      // financial_writer_halts). Fails closed: an unreadable halt state skips the tenant, loudly.
+      const halt = await loadFinancialWriterHalt(svc, b.id, "usage_metering")
+      if (halt.halted) {
+        console.warn(`[usage-metering] ${b.id} skipped — usage_metering halted: ${halt.reason ?? "no reason recorded"}`)
+        continue
+      }
       // ── RAW STREAMS (the written sources) ────────────────────────────────
       const [{ data: events }, { data: logs }, { data: ai }] = await Promise.all([
         svc.from("usage_events")

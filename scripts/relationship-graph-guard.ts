@@ -556,7 +556,7 @@ async function main() {
       ["lib/offers/outside-agent-record.ts", /type: "represented_by"/],
       ["lib/referrals/referral-record.ts", /type: "referred_by"/],
       ["lib/referrals/agent-referral.ts", /type: "referred_by"/],
-      ["app/actions/buyer-financial.ts", /type: "lender_for"/],
+      ["lib/kernel/lender-linkage.ts", /type: "lender_for"/], // wave 108: moved with recordLenderReferral (buyer-financial connectBuyerToLender + the lender_preapproval_handoff capability share it)
       ["app/actions/contact-vendor-booking.ts", /type: "vendor_for"/],
       ["app/api/recruiting/provision-agent/route.ts", /type: "sponsor_of"/],
       ["lib/enrichment/household-financials.ts", /deriveHouseholdEdges\(/],
@@ -567,7 +567,7 @@ async function main() {
       ["lib/lead-pipeline/enrichment-orchestrator.ts", /deriveCoOwnerEdges\(/],
       ["lib/enrichment/contact-enrichment-core.ts", /deriveOccupancyEdges\(/],
       ["lib/lead-pipeline/rental-graduation-sourcer.ts", /deriveOccupancyEdges\(/],
-      ["app/actions/buyer-financial.ts", /type: "referral_partner"/],
+      ["lib/kernel/lender-linkage.ts", /type: "referral_partner"/],
       ["app/api/cron/source-conversion-learning/route.ts", /backfillTransactionCloseEdges\(/],
       // wave 105 (105D) — every NEW relationship type has a deriving writer at its survivor
       ["lib/kernel/users.ts", /deriveTeamMembershipEdge\(/],
@@ -614,7 +614,7 @@ async function main() {
       /ownerNames:\s*batchDataOwnerNames\(owner\)/.test(stripped("lib/external/batchdata-client.ts")) && /owner_names: e\.ownerNames/.test(stripped("lib/lead-pipeline/enrichment-column-map.ts")))
     check("the weekly cron ledgers the backfill summary (relationship_backfill in the cron success metadata)", /relationship_backfill: relationshipBackfill/.test(stripped("app/api/cron/source-conversion-learning/route.ts")) && /recordCronSuccessAction\(\{[^}]*metadata: summary/.test(stripped("app/api/cron/source-conversion-learning/route.ts")))
     check("the cron that carries the backfill is dispatched weekly (lib/kernel/cron-dispatch.ts)", /\/api\/cron\/source-conversion-learning",\s*schedule: "\d+ \d+ \* \* \d"/.test(stripped("lib/kernel/cron-dispatch.ts")))
-    check("the partner rail prefers the vendor endpoint and falls back to the referral_partner (never both, never none when a partner row exists)", /lenderVendorId\s*\?\s*\{ type: "vendor" as const[\s\S]{0,120}referral_partner/.test(stripped("app/actions/buyer-financial.ts")))
+    check("the partner rail prefers the vendor endpoint and falls back to the referral_partner (never both, never none when a partner row exists)", /lenderVendorId\s*\?\s*\{ type: "vendor" as const[\s\S]{0,120}referral_partner/.test(stripped("lib/kernel/lender-linkage.ts")) && /recordLenderReferral\(/.test(stripped("app/actions/buyer-financial.ts")))
     // R9 — contacts.vendor_id: the orphan-doctrine census. 102F published 0 writers (UNRESOLVED); the
     // owner ruled (wave 103, answer 2) and lane 103D built THE writer on the seat survivor. The RULE:
     // every contacts writer naming vendor_id is the one kernel seat-link service — never a second

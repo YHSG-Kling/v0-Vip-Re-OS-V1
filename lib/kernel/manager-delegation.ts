@@ -295,6 +295,9 @@ export interface RequestDelegationInput {
   budget?: DelegationBudget
   deadline?: string | null
   actor?: DelegationActor
+  /** Wave 108: the mission OWNER's own step, as a work order to itself — admitted only for a capability
+   *  with a worker (DELEGATION_WORKERS) on a mission that manager owns. Anything else stays self_delegation. */
+  ownerWorkOrder?: boolean
 }
 
 export async function requestDelegation(input: RequestDelegationInput, client?: Client, deps: DelegationDeps = {}): Promise<DelegationResult> {
@@ -304,7 +307,11 @@ export async function requestDelegation(input: RequestDelegationInput, client?: 
   if (!input.objective?.trim()) return { ok: false, reason: "objective_required" }
   if (!isManagerKey(input.requestingManager)) return { ok: false, reason: `unknown_requesting_manager:${String(input.requestingManager)}` }
   if (!isManagerKey(input.assignedManager)) return { ok: false, reason: `unknown_assigned_manager:${String(input.assignedManager)}` }
-  if (input.requestingManager === input.assignedManager) return { ok: false, reason: "self_delegation" }
+  // A manager never asks ITSELF — except a MISSION OWNER's WORK ORDER (wave 108): the mission owner's own
+  // strategy step whose capability has a worker on its survivor (DELEGATION_WORKERS) rides the same
+  // machine so it is accepted by a human and leaves the same evidence. Checked against the mission below.
+  const workOrder = input.requestingManager === input.assignedManager && input.ownerWorkOrder === true && !!input.missionId && isAppCapability(input.capability) && !!DELEGATION_WORKERS[input.capability]
+  if (input.requestingManager === input.assignedManager && !workOrder) return { ok: false, reason: "self_delegation" }
   // ONE capability vocabulary: a catalogue key, owned by the assignee per the registry (LAW 3).
   if (!isAppCapability(input.capability)) return { ok: false, reason: `unknown_capability:${String(input.capability)}` }
   const owner = CAPABILITY_MANAGER[input.capability]
@@ -326,6 +333,7 @@ export async function requestDelegation(input: RequestDelegationInput, client?: 
     if (!mission) return { ok: false, reason: "mission_not_found" }
     if (MISSION_TERMINAL_STATES.has(mission.state)) return { ok: false, reason: `mission_terminal:${mission.state}` }
   }
+  if (workOrder && mission?.owner_manager !== input.assignedManager) return { ok: false, reason: "self_delegation" }
 
   // AUTHORITY ≤ ceiling (mission + ladder) and BUDGET ≤ remaining — the ONE evaluator (manager-dissent).
   const authority = (input.authority ?? 0) as AuthorityLevel
@@ -501,6 +509,61 @@ export async function cancelDelegation(p: Door & { reason: string }, client?: Cl
   const r = await transitionDelegation({ brokerageId: p.brokerageId, delegationId: p.delegationId, to: "CANCELLED", reason: p.reason, actor: p.actor }, svc, d)
   if (r.ok) await noteOnMission(svc, r.delegation, "delegation_cancelled", p.actor ?? { type: "system" }, { reason: p.reason }, d.mission)
   return r
+}
+
+// ─── WAVE 108 — capability WORKERS on their survivors ─────────────────────────────────────────
+// The three catalogue capabilities the owner approved (the 107E strategy library's named gaps) are
+// WORKED here once an ACCEPTED delegation reaches them: ACCEPTED → WORKING → the survivor → RETURNED
+// (or ESCALATED with the survivor's own reason). Each worker is a lazy import of the survivor that
+// already owns the write — this module adds no second recruiting / ads / lender path. The human who
+// accepted on the Missions card is the acting user (entitlement + created_by for the ads draft).
+type WorkerOutcome = { ok: true; result: Record<string, unknown>; costUsd?: number | null } | { ok: false; reason: string }
+type DelegationWorker = (svc: Client, row: DelegationRow, actor: { userId: string | null }) => Promise<WorkerOutcome>
+
+export const DELEGATION_WORKERS: Readonly<Partial<Record<AppCapability, DelegationWorker>>> = Object.freeze({
+  recruit_outreach: async (svc, row) => {
+    const { recruitOutreachCapability } = await import("@/lib/agents/recruit-outreach-producer")
+    const r = await recruitOutreachCapability(row.brokerage_id, { recruitIds: row.input_entities?.recruitIds, staleDays: row.input_entities?.staleDays }, svc as any)
+    return r.ok ? { ok: true, result: { proposed: r.proposed, scanned: r.scanned, skipped: r.skipped, via: "lib/agents/recruit-outreach-producer.ts" } } : { ok: false, reason: r.reason }
+  },
+  ad_campaign_launch: async (_svc, row, actor) => {
+    if (!actor.userId) return { ok: false, reason: "an ad campaign draft needs the accepting human as its creator — accept it on the Missions card" }
+    const { adCampaignLaunchCapability } = await import("@/lib/kernel/ads")
+    const r = await adCampaignLaunchCapability({ brokerageId: row.brokerage_id, userId: actor.userId, delegationInput: row.input_entities ?? {}, budgetUsd: row.budget?.usd ?? null, objective: row.objective })
+    return r.ok ? { ok: true, result: { campaignId: r.campaignId, status: "draft", locations: r.locations, lifetimeBudget: r.lifetimeBudget, via: "lib/kernel/ads.ts createAdCampaign" } } : { ok: false, reason: r.reason }
+  },
+  lender_preapproval_handoff: async (svc, row, actor) => {
+    const contactId = typeof row.input_entities?.contactId === "string" ? row.input_entities.contactId : null
+    if (!contactId) return { ok: false, reason: "no buyer contact on the delegation (input_entities.contactId)" }
+    const { lenderPreapprovalHandoff } = await import("@/lib/kernel/lender-linkage")
+    const lenderVendorId = typeof row.input_entities?.lenderVendorId === "string" ? row.input_entities.lenderVendorId : null
+    const r = await lenderPreapprovalHandoff(svc, { brokerageId: row.brokerage_id, contactId, lenderVendorId, actorUserId: actor.userId })
+    if (r.ok) return { ok: true, result: { contactId: r.contactId, lenderVendorId: r.lenderVendorId, lenderName: r.lenderName, via: "lib/kernel/lender-linkage.ts recordLenderReferral" } }
+    return { ok: false, reason: r.needsChoice ? `${r.reason}: ${r.needsChoice.map((v) => v.name ?? v.id).join(", ")}` : r.reason }
+  },
+})
+
+/**
+ * Work an ACCEPTED delegation whose capability has a worker. Not ACCEPTED, or no worker → nothing
+ * happens (`worked: false`, said why). A survivor refusal ESCALATES the delegation with that reason —
+ * never a silent stall, never a RETURNED that did nothing.
+ */
+export async function workDelegation(p: Door & { userId: string | null }, client?: Client, deps: DelegationDeps = {}): Promise<{ worked: boolean; reason?: string; result?: DelegationResult }> {
+  const svc = await svcOf(client)
+  const row = await getDelegation(p.brokerageId, p.delegationId, svc)
+  if (!row) return { worked: false, reason: "not_found" }
+  const worker = DELEGATION_WORKERS[row.requested_capability]
+  if (!worker) return { worked: false, reason: `no worker for ${row.requested_capability} — the assigned manager works it on its own rail` }
+  if (row.status !== "ACCEPTED") return { worked: false, reason: `status ${row.status} — only an ACCEPTED delegation is worked` }
+  const actor = p.actor ?? { type: "manager" as const, id: row.assigned_manager }
+  const started = await startDelegationWork({ brokerageId: p.brokerageId, delegationId: row.id, reason: `worker ${row.requested_capability} started`, actor }, svc, deps)
+  if (!started.ok) return { worked: false, reason: started.reason, result: started }
+  let out: WorkerOutcome
+  try { out = await worker(svc, row, { userId: p.userId }) } catch (e) { out = { ok: false, reason: `worker threw: ${e instanceof Error ? e.message : String(e)}` } }
+  const result = out.ok
+    ? await returnDelegationResult({ brokerageId: p.brokerageId, delegationId: row.id, result: out.result, costUsd: out.costUsd ?? null, reason: `${row.requested_capability} done`, actor }, svc, deps)
+    : await escalateDelegation({ brokerageId: p.brokerageId, delegationId: row.id, reason: `${row.requested_capability}: ${out.reason}`, actor }, svc, deps)
+  return { worked: out.ok, reason: out.ok ? undefined : out.reason, result }
 }
 
 // ─── the reaper pass (called from the ONE stale-run reaper) ───────────────────────────────────

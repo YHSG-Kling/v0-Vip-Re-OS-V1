@@ -17,7 +17,7 @@
 import { readFileSync, readdirSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments } from "./strip-comments"
-import { publishBenchmarkCells, runNetworkBenchmarkAggregation, type TenantContribution } from "../lib/intelligence/network-benchmarks"
+import { publishBenchmarkCells, runNetworkBenchmarkAggregation, benchmarkRateStep, marketBandForState, MIN_RECOVERY_HALF_WIDTH, type TenantContribution } from "../lib/intelligence/network-benchmarks"
 import { strategySignificance, strategyFinding, compareStrategies, runStrategyLearning } from "../lib/intelligence/strategy-learning"
 import { attributeOutcomesToLedger, strategyRefOf } from "../lib/intelligence/roi-ledger"
 import { PROPOSAL_SUBJECT_KINDS, PROPOSERS, PROPOSAL_AUTHORITY, OWNER_AUTHORITY_LEVEL } from "../lib/kernel/improvement-proposals"
@@ -129,11 +129,33 @@ const uuid = (p: string, n: number) => `${p}${String(n).padStart(4, "0")}-0000-4
   check("no published cell has a tenant or person column", pub.every((c) => !("brokerage_id" in c) && !("contact_id" in c) && !("lead_id" in c) && !("tenant" in c)))
   check("the opted-out tenant's provider never appears in any cell", !blob.includes("secret_provider"))
   const conv = pub.find((c) => c.metric === "brokerage_conversion")
-  check("the brokerage-conversion cell pools ONLY the opted-in tenants (15 of 50 = 0.3, 5 tenants)", !!conv && conv.rate === 0.3 && conv.tenant_count === 5 && conv.market_band === "gulf_coast", JSON.stringify(conv))
+  check("the brokerage-conversion cell pools ONLY the opted-in tenants (15 of 50 = 0.3, 5 tenants)", !!conv && conv.rate === 0.3 && conv.tenant_count === 5, JSON.stringify(conv))
+  check("the market band is DERIVED from the tenants' stored brokerages.state (fixture 'TX' → 'tx'), never a hard-coded region", !!conv && conv.market_band === marketBandForState("TX") && conv.market_band === "tx" && marketBandForState(null) === "unknown_market" && marketBandForState("Gulf Coast") === "unknown_market", JSON.stringify(conv?.market_band))
   const both = build(true)
   await runNetworkBenchmarkAggregation(both, { now: NOW })
   const conv6 = both.tables.network_benchmarks.find((c) => c.metric === "brokerage_conversion")
-  check("POSITIVE CONTROL: opting the sixth tenant IN changes the pooled rate (25 of 60) and the tenant count", !!conv6 && conv6.tenant_count === 6 && Math.abs(conv6.rate - 25 / 60) < 1e-3, JSON.stringify(conv6))
+  check("POSITIVE CONTROL: opting the sixth tenant IN changes the pooled rate (25 of 60 = 0.417, published ROUNDED to the 0.05 step → 0.40; the tenant count banded → 5)", !!conv6 && conv6.rate === 0.4 && conv6.tenant_count === 5 && conv6.sample_size === 60, JSON.stringify(conv6))
+
+  // ── 2b. ROUNDING closes the join / leave leak (wave 108 owner ruling) ─────────────────────
+  console.log("\n[2b — rounding: a joining tenant's own rate cannot be recovered by differencing]")
+  {
+    const base = Array.from({ length: 5 }, (_, i): TenantContribution => ({ tenant: uuid("j", i + 1), metric: "brokerage_conversion", segment: { market_band: "tx" }, numerator: 30, denominator: 100, events: 100 }))
+    const joiner = (num: number): TenantContribution => ({ tenant: uuid("j", 9), metric: "brokerage_conversion", segment: { market_band: "tx" }, numerator: num, denominator: 100, events: 100 })
+    const before = publishBenchmarkCells(base, period).cells[0]
+    const afterLow = publishBenchmarkCells([...base, joiner(25)], period).cells[0]
+    const afterHigh = publishBenchmarkCells([...base, joiner(35)], period).cells[0]
+    // POSITIVE CONTROL — the attack is real on EXACT numbers: (num₁ − num₀) / (den₁ − den₀) recovers the joiner exactly.
+    const exact = (num: number) => ((150 + num) - 150) / ((500 + 100) - 500)
+    check("POSITIVE CONTROL: on exact pooled numbers, differencing recovers the joiner's own rate exactly (0.25 and 0.35 are told apart)", exact(25) === 0.25 && exact(35) === 0.35)
+    const strip = (c: typeof before) => JSON.stringify({ rate: c.rate, sample_size: c.sample_size, tenant_count: c.tenant_count, event_count: c.event_count, mean: c.mean })
+    check("ROUNDED: a joiner converting 25% and one converting 35% publish IDENTICAL cells — the subtraction cannot tell them apart", !!afterLow && !!afterHigh && strip(afterLow) === strip(afterHigh), `${strip(afterLow)} vs ${strip(afterHigh)}`)
+    check("ROUNDED: the join itself is hidden — tenant_count is banded (5 tenants and 6 tenants both publish 5)", before.tenant_count === 5 && afterLow.tenant_count === 5)
+    check("every published rate is a multiple of the derived step; counts are multiples of 10", [before, afterLow, afterHigh].every((c) => c.rate !== null && Math.abs(c.rate / 0.05 - Math.round(c.rate / 0.05)) < 1e-9 && c.sample_size % 10 === 0 && c.event_count % 10 === 0))
+    const s = 0.6, g = benchmarkRateStep(s)
+    check(`the step is DERIVED from the dominance cap: s = 0.6 → g = ${g}; worst-case blur (g/2)(2−s)/s = ${((g / 2) * (2 - s) / s).toFixed(3)} ≥ ${MIN_RECOVERY_HALF_WIDTH}; the policy floor s = 0.8 → 0.1`, g === 0.05 && (g / 2) * (2 - s) / s >= MIN_RECOVERY_HALF_WIDTH && benchmarkRateStep(0.8) === 0.1)
+    check("(control) one step finer would NOT meet the blur at s = 0.6 — the step is the smallest that does", (0.02 / 2) * (2 - s) / s < MIN_RECOVERY_HALF_WIDTH)
+    check("opt-in stays OFF: absent / non-true opt-in never contributes", !!run && run.optedOut === 1)
+  }
   check("a single-tenant provider stays suppressed even when that tenant opts in (k)", !JSON.stringify(both.tables.network_benchmarks).includes("secret_provider"))
 
   // ── 4. significance controls ──────────────────────────────────────────────────────────────

@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1839 of 1902 pairs) — storing them would be
+ * overwhelming majority (1841 of 1905 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,18 +75,18 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1984 edges across 728 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1902 unordered
- * table pairs carry at least one FK; 63
+ * MEASURED AT GENERATION: 1988 edges across 730 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1905 unordered
+ * table pairs carry at least one FK; 64
  * carry more than one and are listed below. 15 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
  * however many columns it spans, so counting its unnested rows separately would flag an
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-06
+ * generated: 2026-10-07
  * source: public.live_foreign_keys_json()
- * body-sha256: e4bfbaac38146124647f8e73189f4a6d378c1ad750c8510d9787ea85fc1abf9f
+ * body-sha256: e9de7bee41d754a2604cf33a83982621dbe1d2c4206a8b50ee54e83e2794bd6d
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -201,6 +201,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "auto_response_settings": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "automation_errors": { "assigned_by": "users", "assigned_to": "users", "brokerage_id": "brokerages", "dismissed_by": "users", "lead_id": "leads", "resolved_by": "users" },
   "automation_logs": { "brokerage_id": "brokerages" },
+  "autonomy_budget_consumptions": { "brokerage_id": "brokerages" },
   "batchdata_incremental_search_state": { "market_id": "lead_scraping_markets" },
   "batchdata_motivated_sellers_raw": { "brokerage_id": "brokerages", "lead_id": "leads" },
   "batchdata_smart_search_subscriptions": { "market_id": "lead_scraping_markets" },
@@ -677,6 +678,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "signal_reactivations": { "brokerage_id": "brokerages", "contact_id": "contacts", "lead_id": "leads" },
   "signature_requests": { "brokerage_id": "brokerages", "contact_id": "contacts", "document_id": "client_documents", "transaction_id": "transactions" },
   "site_activity": { "brokerage_id": "brokerages", "contact_id": "contacts" },
+  "skill_marketplace_listings": { "approved_by": "users", "brokerage_id": "brokerages", "submitted_by": "users" },
   "smart_assistant_suggestions": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "smart_checklists": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "smart_landing_sessions": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings" },
@@ -900,6 +902,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "remotion_composition_renders|video_assets": 3,
   "repurpose_pipelines|users": 2,
   "seo_keywords|users": 2,
+  "skill_marketplace_listings|users": 2,
   "social_posts|users": 2,
   "teams|users": 2,
   "teams|vendors": 2,

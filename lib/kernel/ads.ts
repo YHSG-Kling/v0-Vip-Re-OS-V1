@@ -1696,3 +1696,50 @@ export async function createAudienceSegment(input: CreateAudienceSegmentInput): 
 //     where this one passed messageType "email" and a FABRICATED contact literal
 //     with `tcpa_consent: true` and an empty id — inventing consent to get past
 //     the gate is the one thing the compliance layer must never be handed.
+
+// ─── WAVE 108 — the `ad_campaign_launch` CAPABILITY (ads_manager) ─────────────────────────────────
+// The owner-approved gap of the 107E Listing Launch strategy ("ads_manager owns no APP_CAPABILITY key").
+// Worked from a manager delegation (lib/kernel/manager-delegation.ts DELEGATION_WORKERS) once a HUMAN
+// accepts it on the Missions card — that human is the acting user (entitlement + created_by). It rides
+// createAdCampaign above and nothing else: the campaign is written as a DRAFT with its budget (going live
+// is the ads workspace's own approval). Targeting locations are DERIVED from the tenant's own
+// farm_territories (zip / city / state as stored) — never a literal place (wave 108 ruling: tenants are
+// nationwide). The budget is the delegation's — no budget, no campaign (no unlimited spend).
+const AD_PLATFORMS_FOR_LAUNCH: readonly AdPlatform[] = ["facebook", "instagram", "google", "linkedin", "tiktok", "chatgpt"]
+const AD_OBJECTIVES_FOR_LAUNCH: readonly AdObjective[] = ["awareness", "traffic", "leads", "conversions"]
+
+export async function adCampaignLaunchCapability(input: {
+  brokerageId: string
+  userId: string
+  delegationInput: Record<string, unknown>
+  budgetUsd: number | null
+  objective: string
+}): Promise<{ ok: true; campaignId: string; locations: number; lifetimeBudget: number } | { ok: false; reason: string }> {
+  const svc = createServiceClient() as any
+  const di = input.delegationInput ?? {}
+  const lifetimeBudget = Number(di.lifetimeBudget ?? input.budgetUsd ?? 0)
+  if (!(lifetimeBudget > 0)) return { ok: false, reason: "no budget on the delegation — an ad campaign needs an explicit envelope" }
+  const { data: agent, error: aErr } = await svc.from("agents").select("id").eq("user_id", input.userId).eq("brokerage_id", input.brokerageId).maybeSingle()
+  if (aErr) return { ok: false, reason: `agents read refused: ${aErr.message}` }
+  if (!agent?.id) return { ok: false, reason: "the accepting user has no agent seat in this brokerage" }
+  let fq = svc.from("farm_territories").select("name, zip_codes, city, state").eq("brokerage_id", input.brokerageId).eq("is_active", true)
+  const names = Array.isArray(di.territories) ? di.territories.map(String).filter(Boolean) : []
+  if (names.length) fq = fq.in("name", names)
+  const { data: farms, error: fErr } = await fq.limit(200)
+  if (fErr) return { ok: false, reason: `farm_territories read refused: ${fErr.message}` }
+  const locations: TargetingConfig["locations"] = []
+  for (const f of (farms ?? []) as Array<{ zip_codes: string[] | null; city: string | null; state: string | null }>) {
+    for (const z of f.zip_codes ?? []) if (String(z).trim()) locations.push({ zip: String(z).trim() })
+    if (!(f.zip_codes ?? []).length && f.city) locations.push({ city: f.city, state: f.state ?? undefined })
+  }
+  if (!locations.length) return { ok: false, reason: "no active farm territory on file — targeting comes from the tenant's own territories, never a guessed place" }
+  const platform = AD_PLATFORMS_FOR_LAUNCH.includes(di.platform as AdPlatform) ? (di.platform as AdPlatform) : "facebook"
+  const objective = AD_OBJECTIVES_FOR_LAUNCH.includes(di.objective as AdObjective) ? (di.objective as AdObjective) : "leads"
+  const r = await createAdCampaign({
+    ctx: { brokerageId: input.brokerageId, agentId: agent.id as string, userId: input.userId },
+    campaignName: String(di.campaignName ?? input.objective).slice(0, 120),
+    platform, objective, lifetimeBudget, targetingConfig: { locations },
+    marketingCampaignId: typeof di.marketingCampaignId === "string" ? di.marketingCampaignId : undefined,
+  })
+  return r.success && r.campaignId ? { ok: true, campaignId: r.campaignId, locations: locations.length, lifetimeBudget } : { ok: false, reason: r.error ?? "createAdCampaign refused" }
+}

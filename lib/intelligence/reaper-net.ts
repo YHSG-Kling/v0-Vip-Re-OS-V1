@@ -19,8 +19,10 @@ import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-/** Which cron drives a reaper (its cadence) — keeps disjoint runs, no double-firing. */
-export type ReaperLane = "proactive" | "signals"
+/** Which cron drives a reaper (its cadence) — keeps disjoint runs, no double-firing.
+ *  "health" (wave 108C): the OS health supervisor, run by the manager-signals cron over EVERY tenant
+ *  (the signals lane only visits tenants with open bus traffic). */
+export type ReaperLane = "proactive" | "signals" | "health"
 
 export interface ReaperResult {
   domain: string
@@ -222,6 +224,23 @@ export const REAPER_NET: ReaperEntry[] = [
       const r = await settleUnknownActions(b, svc)
       if (r.errors.length > 0) console.error(`[reaper-net] unknown_action_outcomes ${b}:`, r.errors.join("; "))
       return norm(r)
+    },
+  },
+  {
+    // Wave 108 (lane 108C, owner: "Cron Manager = operational-health coordinator"). The ONE health
+    // supervisor rides the net as its own lane: detectors read the survivors (provider health, missions,
+    // workflow runs, webhook deliveries, reconcilers, meters, the bus, AI SLO, renders, compliance
+    // reaper), a pure recovery policy decides, and the recovery runs THROUGH the survivor that owns it
+    // (lib/kernel/os-health.ts). scanned = detectors run, reaped = recovered automatically, escalated =
+    // routed to a manager / Finance (+ writer HALT) / a human.
+    domain: "os_health",
+    manager: "cron_manager",
+    lane: "health",
+    protects: "the OS itself — provider failures, stale missions, stuck workflows, failed webhooks, missing reconciliations, usage / billing drift, event backlog, AI anomalies, media render failures",
+    run: async (b, svc) => {
+      const { runOsHealthSupervisor } = await import("@/lib/kernel/os-health")
+      const r = await runOsHealthSupervisor(b, svc)
+      return { scanned: r.detectorsRun, escalated: r.escalated, reaped: r.recovered }
     },
   },
 ]

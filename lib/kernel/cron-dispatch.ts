@@ -355,6 +355,9 @@ export const CRON_REGISTRY: CronEntry[] = [
   // Network intelligence (wave 107F) — weekly: k-anonymous platform benchmarks from OPTED-IN tenants
   // (the only writer of network_benchmarks), then per-tenant strategy learning against them.
   { path: "/api/cron/network-intelligence"                , schedule: "47 5 * * 1" },
+  // Team optimization (wave 108G) — weekly, after network intelligence: each tenant's manager team co-proposes bounded
+  // optimizations (lib/kernel/self-optimization.ts), promoted only within class + authority + the autonomous list.
+  { path: "/api/cron/team-optimization"                   , schedule: "13 6 * * 1" },
 ]
 
 /** Pure: one cron field against a value. Supports "*", "*\/n", "a,b,c". */

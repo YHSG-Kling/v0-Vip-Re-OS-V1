@@ -890,7 +890,7 @@ export default async function BrokerageDashboard({
           <BrokerRiskRadar signals={riskSignals} />
           <ConnectionHealthCard scope="brokerage" />
           <BrokerSelfHealPanel />
-          <BrokerExceptionCenter />
+          <div id="exception-center"><BrokerExceptionCenter /></div>
           <BrokerPortfolioPanel read={portfolioRead} />
           <BrokerFinancialPulse
             ytdRevenue={totalGCI || 0}

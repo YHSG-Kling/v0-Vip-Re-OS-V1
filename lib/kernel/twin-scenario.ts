@@ -120,7 +120,12 @@ const coef = (manager: ManagerKey, key: string, value: number, unit: string, sou
 const assumed = (manager: ManagerKey, key: string, value: number, unit: string, why: string): ScenarioCoefficient =>
   coef(manager, key, value, unit, `assumption: ${why}`, "assumed")
 
-const sellerLeadsFromTerritories = (t: BrokerageTwin) => (t.workforce?.territories ?? []).reduce((a, d) => a + d.sellerLeads30d, 0)
+const sellerContactsFromTerritories = (t: BrokerageTwin) => (t.workforce?.territories ?? []).reduce((a, d) => a + d.sellerContacts30d, 0)
+/** The twin's monthly CONTACT inflow (system contact stage over its window), null when unmeasured. */
+const contactInflow30d = (t: BrokerageTwin): number | null => {
+  const s = t.system?.stages.find((x) => x.stage === "contact")
+  return s && s.count !== null && t.system.windowDays > 0 ? (s.count * 30) / t.system.windowDays : null
+}
 
 /**
  * THE REGISTRY — one pure contributor per manager domain (keyed by MANAGERS). Every coefficient a
@@ -131,24 +136,29 @@ export const SCENARIO_CONTRIBUTORS: Readonly<Partial<Record<ManagerKey, Scenario
     manager: "listing_concierge", stages: ["seller_demand", "territories"],
     coefficients: (t) => {
       const terr = t.workforce?.territories ?? []
-      const seller = sellerLeadsFromTerritories(t)
+      const seller = sellerContactsFromTerritories(t)
       const out: ScenarioCoefficient[] = []
       out.push(terr.length && seller > 0
-        ? coef("listing_concierge", "base_seller_leads_30d", seller, "leads/30d", "twin.workforce.territories[].sellerLeads30d (leads lead_type∈{seller,both})", confidenceOf(seller))
-        : assumed("listing_concierge", "base_seller_leads_30d", Math.round((t.now.pipeline.leads * 0.4) / 3), "leads/30d", "no territory seller-lead reading — 40% of the active lead base is seller-side, turning over quarterly"))
-      out.push(assumed("listing_concierge", "listing_take_rate", 0.5, "listings per converted seller", "half of converted seller leads list within the horizon (no seller-lead→listing join in the twin)"))
-      const active = terr.filter((d) => d.sellerLeads30d > 0)
+        ? coef("listing_concierge", "base_seller_contacts_30d", seller, "contacts/30d", "twin.workforce.territories[].sellerContacts30d (contacts contact_type∈{seller,both} — wave 108: the Listing Concierge reads contacts)", confidenceOf(seller))
+        : assumed("listing_concierge", "base_seller_contacts_30d", Math.round((contactInflow30d(t) ?? t.now.pipeline.leads / 3) * 0.4), "contacts/30d", "no territory seller-contact reading — 40% of the monthly contact inflow (twin.system contact stage ÷ 3) is seller-side"))
+      out.push(assumed("listing_concierge", "listing_take_rate", 0.5, "listings per converted seller", "half of seller contacts list within the horizon (no seller-contact→listing join in the twin)"))
+      const active = terr.filter((d) => d.sellerContacts30d > 0)
       out.push(active.length
-        ? coef("listing_concierge", "avg_territory_seller_leads_30d", seller / active.length, "leads/30d", "twin.workforce.territories (mean over territories with demand)", confidenceOf(active.length))
-        : assumed("listing_concierge", "avg_territory_seller_leads_30d", 5, "leads/30d", "a newly activated territory yields the policy minimum demand (demand_min_leads_30d default)"))
+        ? coef("listing_concierge", "avg_territory_seller_contacts_30d", seller / active.length, "contacts/30d", "twin.workforce.territories (mean over territories with demand)", confidenceOf(active.length))
+        : assumed("listing_concierge", "avg_territory_seller_contacts_30d", 5, "contacts/30d", "a newly activated territory yields the policy minimum demand (demand_min_leads_30d default)"))
       return out
     },
   },
   shopping_agent: {
     manager: "shopping_agent", stages: ["buyer_demand"],
     coefficients: (t) => {
-      const seller = sellerLeadsFromTerritories(t)
-      return [assumed("shopping_agent", "base_buyer_leads_30d", Math.max(0, Math.round(t.now.pipeline.leads / 3) - seller), "leads/30d", "the twin carries no buyer-lead count — the active lead base turning over quarterly, less the seller reading")]
+      // WAVE 108: buyer demand is CONTACTS of buyer type (the Shopping Agent reads contacts). The flow is
+      // the twin's contact-stage inflow (inbound-direct + converted leads), less the seller reading.
+      const seller = sellerContactsFromTerritories(t)
+      const inflow = contactInflow30d(t)
+      return [inflow !== null
+        ? coef("shopping_agent", "base_buyer_contacts_30d", Math.max(0, Math.round(inflow - seller)), "contacts/30d", "twin.system contact stage (90d ÷ 3) less the seller-contact reading", confidenceOf(inflow))
+        : assumed("shopping_agent", "base_buyer_contacts_30d", Math.max(0, Math.round(t.now.pipeline.leads / 3) - seller), "contacts/30d", "no contact-stage reading — the active lead base turning over quarterly (every lead converts to a contact before it shops), less the seller reading")]
     },
   },
   ai_isa: {
@@ -172,9 +182,9 @@ export const SCENARIO_CONTRIBUTORS: Readonly<Partial<Record<ManagerKey, Scenario
       return [
         coef("recruiting_manager", "agent_headroom_items", t.capacity.headroom, "items", "twin.capacity.headroom (capacityFor per agent)", confidenceOf(t.capacity.perAgent.length)),
         coef("recruiting_manager", "max_load_per_agent", t.capacity.maxLoad, "items/agent", "twin.capacity.maxLoad (tierMaxLoadForAgentCount)", "high"),
-        per ? coef("recruiting_manager", "seller_leads_per_listing_agent_30d", per, "leads/agent/30d", `tenant policy ${w?.thresholdsSource === "policy" ? "brokerage_settings.workforce_thresholds" : "DEFAULT_WORKFORCE_THRESHOLDS"}.seller_leads_per_agent_30d`, w?.thresholdsSource === "policy" ? "high" : "medium")
-          : assumed("recruiting_manager", "seller_leads_per_listing_agent_30d", 8, "leads/agent/30d", "no workforce thresholds in the twin"),
-        assumed("recruiting_manager", "buyer_leads_per_buyer_agent_30d", Math.round((per ?? 8) * 1.5), "leads/agent/30d", "a buyer agent carries 1.5× the listing-agent seller-lead policy"),
+        per ? coef("recruiting_manager", "seller_contacts_per_listing_agent_30d", per, "leads/agent/30d", `tenant policy ${w?.thresholdsSource === "policy" ? "brokerage_settings.workforce_thresholds" : "DEFAULT_WORKFORCE_THRESHOLDS"}.seller_leads_per_agent_30d`, w?.thresholdsSource === "policy" ? "high" : "medium")
+          : assumed("recruiting_manager", "seller_contacts_per_listing_agent_30d", 8, "leads/agent/30d", "no workforce thresholds in the twin"),
+        assumed("recruiting_manager", "buyer_contacts_per_buyer_agent_30d", Math.round((per ?? 8) * 1.5), "leads/agent/30d", "a buyer agent carries 1.5× the listing-agent seller-lead policy"),
         coef("recruiting_manager", "strong_listing_agents", w?.totals.strong_listing ?? 0, "agents", "twin.workforce.totals.strong_listing", w ? "high" : "low"),
         coef("recruiting_manager", "strong_buyer_agents", w?.totals.strong_buyer ?? 0, "agents", "twin.workforce.totals.strong_buyer", w ? "high" : "low"),
         assumed("recruiting_manager", "generalist_coverage_factor", 0.5, "× specialist", "an agent with headroom but no specialist classification carries half a specialist's demand"),
@@ -188,7 +198,7 @@ export const SCENARIO_CONTRIBUTORS: Readonly<Partial<Record<ManagerKey, Scenario
       const ok = m && m.leads30d > 0 && m.spendUsd30d > 0
       return [
         ok ? coef("ads_manager", "marginal_cost_per_lead_usd", m!.spendUsd30d / m!.leads30d, "usd/lead", "territory_metrics.total_cost ÷ lead_count, trailing 30d (lib/territory/metrics-aggregator.ts)", confidenceOf(m!.leads30d))
-          : assumed("ads_manager", "marginal_cost_per_lead_usd", 45, "usd/lead", f.refused.some((r) => r.startsWith("territory_metrics")) ? "territory_metrics read refused — a Gulf-Coast paid-lead CPL" : "no attributed spend in territory_metrics — a Gulf-Coast paid-lead CPL"),
+          : assumed("ads_manager", "marginal_cost_per_lead_usd", 45, "usd/lead", f.refused.some((r) => r.startsWith("territory_metrics")) ? "territory_metrics read refused — a location-neutral default paid-lead CPL (no tenant measurement; territories are nationwide)" : "no attributed spend in territory_metrics — a location-neutral default paid-lead CPL (territories are nationwide)"),
         m ? coef("ads_manager", "ad_spend_usd_30d", m.spendUsd30d, "usd/30d", "territory_metrics.total_cost, trailing 30d", confidenceOf(m.rows))
           : assumed("ads_manager", "ad_spend_usd_30d", 0, "usd/30d", "no territory_metrics rows — no measured paid spend to scale"),
         assumed("ads_manager", "spend_elasticity", 0.8, "lead response per spend", "diminishing returns: each added dollar buys 80% of the average lead"),
@@ -223,7 +233,7 @@ export const SCENARIO_CONTRIBUTORS: Readonly<Partial<Record<ManagerKey, Scenario
         staff && staff > 0
           ? coef("deal_coordinator", "deal_desk_capacity_files", staff * 25, "open files", `users user_type='tc' (${staff}) × 25 files each (assumed load per coordinator)`, "medium")
           : assumed("deal_coordinator", "deal_desk_capacity_files", Math.max(4, t.capacity.activeAgents * 4), "open files", "no transaction-coordinator seat — agents carry their own files at 4 each"),
-        assumed("deal_coordinator", "escrow_days", 38, "days", "contract-to-close in the Gulf Coast market"),
+        assumed("deal_coordinator", "escrow_days", 38, "days", "a location-neutral contract-to-close default — the twin measures no closed-file timing for this tenant (territories are nationwide)"),
       ]
     },
   },
@@ -375,7 +385,7 @@ function propagate(twin: BrokerageTwin, levers: ScenarioLevers, c: Record<string
 
   // 1 SELLER DEMAND — brokerage-wide lift, or aimed at the activated territories.
   const territories = twin.workforce?.territories ?? []
-  const sellerBase = v("base_seller_leads_30d")
+  const sellerBase = v("base_seller_contacts_30d")
   let sellerLift = sellerBase * pct(levers.seller_lead_acquisition_pct)
   const liftByTerritory = new Map<string, number>()
   if (levers.territory_activation?.length) {
@@ -384,13 +394,13 @@ function propagate(twin: BrokerageTwin, levers: ScenarioLevers, c: Record<string
       const d = territories.find((x) => x.territory === name)
       if (!d) { unsupported.push(`territory_activation:${name}`); continue }
       // An activated territory with no demand yet opens at the average territory's demand.
-      const lift = d.sellerLeads30d > 0 ? d.sellerLeads30d * pct(levers.seller_lead_acquisition_pct) : v("avg_territory_seller_leads_30d") * Math.max(1, 1 + pct(levers.seller_lead_acquisition_pct))
+      const lift = d.sellerContacts30d > 0 ? d.sellerContacts30d * pct(levers.seller_lead_acquisition_pct) : v("avg_territory_seller_contacts_30d") * Math.max(1, 1 + pct(levers.seller_lead_acquisition_pct))
       liftByTerritory.set(name, lift); sellerLift += lift
     }
   } else if (sellerBase > 0) {
-    for (const d of territories) liftByTerritory.set(d.territory, d.sellerLeads30d * pct(levers.seller_lead_acquisition_pct))
+    for (const d of territories) liftByTerritory.set(d.territory, d.sellerContacts30d * pct(levers.seller_lead_acquisition_pct))
   }
-  const buyerBase = v("base_buyer_leads_30d")
+  const buyerBase = v("base_buyer_contacts_30d")
   const buyerLift = buyerBase * pct(levers.buyer_lead_acquisition_pct)
   // Paid leads from a spend change, split by the base seller/buyer mix.
   const spend = v("ad_spend_usd_30d"), cpl = v("marginal_cost_per_lead_usd")
@@ -399,8 +409,8 @@ function propagate(twin: BrokerageTwin, levers: ScenarioLevers, c: Record<string
   const sellerShare = sellerBase + buyerBase > 0 ? sellerBase / (sellerBase + buyerBase) : 0.5
   const addedSeller = sellerLift + adLeads * sellerShare
   const addedBuyer = buyerLift + adLeads * (1 - sellerShare)
-  stage({ stage: "seller_demand", manager: "listing_concierge", demand: sellerBase + addedSeller, capacity: null, unit: "seller leads/30d", inputs: ["base_seller_leads_30d", "avg_territory_seller_leads_30d"], note: "demand stage — no capacity bound" })
-  stage({ stage: "buyer_demand", manager: "shopping_agent", demand: buyerBase + addedBuyer, capacity: null, unit: "buyer leads/30d", inputs: ["base_buyer_leads_30d"], note: "demand stage — no capacity bound" })
+  stage({ stage: "seller_demand", manager: "listing_concierge", demand: sellerBase + addedSeller, capacity: null, unit: "seller contacts/30d", inputs: ["base_seller_contacts_30d", "avg_territory_seller_contacts_30d"], note: "demand stage — no capacity bound" })
+  stage({ stage: "buyer_demand", manager: "shopping_agent", demand: buyerBase + addedBuyer, capacity: null, unit: "buyer contacts/30d", inputs: ["base_buyer_contacts_30d"], note: "demand stage — no capacity bound" })
 
   // 2 AI ISA CAPACITY — qualified throughput; overflow converts at a reduced rate.
   const baseLeads = sellerBase + buyerBase, totalLeads = Math.max(0, baseLeads + addedSeller + addedBuyer)
@@ -429,18 +439,18 @@ function propagate(twin: BrokerageTwin, levers: ScenarioLevers, c: Record<string
   const buyerSpec = v("strong_buyer_agents") + (hc.buyer ?? 0) + (hc.investor ?? 0)
   const generalists = Math.max(0, headroomAgents - v("strong_listing_agents") - v("strong_buyer_agents")) + (hc.general ?? 0)
   const g = v("generalist_coverage_factor") * generalists
-  const listingCap = Math.max(0, listingSpec + g / 2) * v("seller_leads_per_listing_agent_30d")
-  const buyerCap = Math.max(0, buyerSpec + g / 2) * v("buyer_leads_per_buyer_agent_30d")
+  const listingCap = Math.max(0, listingSpec + g / 2) * v("seller_contacts_per_listing_agent_30d")
+  const buyerCap = Math.max(0, buyerSpec + g / 2) * v("buyer_contacts_per_buyer_agent_30d")
   const sellerDemand = sellerBase + addedSeller, buyerDemand = buyerBase + addedBuyer
   const listingUtil = listingCap > 0 ? sellerDemand / listingCap : sellerDemand > 0 ? Infinity : 0
   const buyerUtil = buyerCap > 0 ? buyerDemand / buyerCap : buyerDemand > 0 ? Infinity : 0
   const tight = listingUtil >= buyerUtil
-  stage({ stage: "competency_coverage", manager: "recruiting_manager", demand: tight ? sellerDemand : buyerDemand, capacity: tight ? listingCap : buyerCap, unit: tight ? "seller leads/30d (listing coverage)" : "buyer leads/30d (buyer coverage)", inputs: ["strong_listing_agents", "strong_buyer_agents", "generalist_coverage_factor", "seller_leads_per_listing_agent_30d", "buyer_leads_per_buyer_agent_30d"] })
+  stage({ stage: "competency_coverage", manager: "recruiting_manager", demand: tight ? sellerDemand : buyerDemand, capacity: tight ? listingCap : buyerCap, unit: tight ? "seller contacts/30d (listing coverage)" : "buyer contacts/30d (buyer coverage)", inputs: ["strong_listing_agents", "strong_buyer_agents", "generalist_coverage_factor", "seller_contacts_per_listing_agent_30d", "buyer_contacts_per_buyer_agent_30d"] })
 
   // 5 TERRITORIES — each territory's seller demand vs its serving agents with headroom; listing /
   // luxury hires are placed greedily on the worst territory (deterministic: name order breaks ties).
-  const per = v("seller_leads_per_listing_agent_30d")
-  const rows = territories.map((d) => ({ name: d.territory, demand: d.sellerLeads30d + (liftByTerritory.get(d.territory) ?? 0), agents: d.agentsWithHeadroom }))
+  const per = v("seller_contacts_per_listing_agent_30d")
+  const rows = territories.map((d) => ({ name: d.territory, demand: d.sellerContacts30d + (liftByTerritory.get(d.territory) ?? 0), agents: d.agentsWithHeadroom }))
   let hires = Math.max(0, (hc.listing ?? 0) + (hc.luxury ?? 0))
   const util = (r: { demand: number; agents: number }) => (r.agents * per > 0 ? r.demand / (r.agents * per) : r.demand > 0 ? Infinity : 0)
   while (hires > 0 && rows.length) {
@@ -449,8 +459,8 @@ function propagate(twin: BrokerageTwin, levers: ScenarioLevers, c: Record<string
   }
   const worst = [...rows].sort((a, b) => util(b) - util(a) || a.name.localeCompare(b.name))[0]
   stage(worst
-    ? { stage: "territories", manager: "listing_concierge", demand: worst.demand, capacity: worst.agents * per, unit: `seller leads/30d in ${worst.name}`, inputs: ["seller_leads_per_listing_agent_30d"], note: `tightest of ${rows.length} territor${rows.length === 1 ? "y" : "ies"}: ${worst.name} (${worst.agents} serving agent(s) with headroom)` }
-    : { stage: "territories", manager: "listing_concierge", demand: null, capacity: null, unit: "seller leads/30d", inputs: [], note: "no farm territories in the twin — territory saturation not assessable" })
+    ? { stage: "territories", manager: "listing_concierge", demand: worst.demand, capacity: worst.agents * per, unit: `seller contacts/30d in ${worst.name}`, inputs: ["seller_contacts_per_listing_agent_30d"], note: `tightest of ${rows.length} territor${rows.length === 1 ? "y" : "ies"}: ${worst.name} (${worst.agents} serving agent(s) with headroom)` }
+    : { stage: "territories", manager: "listing_concierge", demand: null, capacity: null, unit: "seller contacts/30d", inputs: [], note: "no farm territories in the twin — territory saturation not assessable" })
 
   // 6 CAMPAIGN + ADS — marginal cost per lead for acquisition, the spend delta, nurture touches.
   const acquisitionCents = Math.round((sellerLift + buyerLift) * cpl * 100)

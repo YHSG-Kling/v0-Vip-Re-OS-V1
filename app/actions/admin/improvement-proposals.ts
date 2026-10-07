@@ -188,3 +188,60 @@ export async function submitWorkforceThresholdsAction(_prev: WorkforceThresholds
   }
   return { ok: true, message: `Proposed (${r.status ?? "PROPOSED"}) — approve and promote it in Improvement proposals below.` }
 }
+
+
+// ── WAVE 108G — SELF-OPTIMIZING MANAGER TEAMS: the tenant's AUTONOMOUS CLASS LIST ─────────────────────────────
+// Policy key `self_optimization` { autonomous_classes } (lib/kernel/tenant-policy.ts) decides which optimization
+// classes the weekly team cycle (lib/kernel/self-optimization.ts runTeamOptimizationCycle) may promote without a
+// human. It is AUTHORITY POLICY — a forbidden surface for the optimizer — so it changes only here, by a tenant
+// admin, through the ONE policy path (a `policy` proposal, proposer human → approve → promoteProposal →
+// mergeBrokerageSettings → appendTenantPolicyVersion, inside withActionLedger). Rendered on the Manager Trust page
+// (app/dashboard/admin/manager-trust/self-optimization-panel.tsx).
+
+export interface SelfOptimizationAutonomyData {
+  classes: Array<{ key: string; label: string; owner: string; coProposers: string[]; evaluator: string; reader: string; autonomous: boolean }>
+  openTeamProposals: number
+}
+
+export async function getSelfOptimizationAutonomy(): Promise<{ ok: true; data: SelfOptimizationAutonomyData } | { ok: false; error: string }> {
+  const gate = await requireLearningAdmin()
+  if (!gate.ok) return { ok: false, error: gate.error }
+  const svc = createServiceClient()
+  const { OPTIMIZATION_CLASSES, OPTIMIZATION_CLASS_DEFS, readTenantSettings, resolveSelfOptimizationPolicy, TEAM_OPTIMIZATION_PROPOSER } = await import("@/lib/kernel/self-optimization")
+  const st = await readTenantSettings(svc, gate.brokerageId)
+  if (!st.ok) return { ok: false, error: st.error }
+  const auto = resolveSelfOptimizationPolicy(st.settings).autonomousClasses
+  const list = await listImprovementProposals(svc, gate.brokerageId, { limit: 200 })
+  if (!list.ok) return { ok: false, error: list.error }
+  return {
+    ok: true,
+    data: {
+      classes: OPTIMIZATION_CLASSES.map((k) => {
+        const d = OPTIMIZATION_CLASS_DEFS[k]
+        return { key: k, label: d.label, owner: d.owner, coProposers: d.coProposers.map((c) => c.manager), evaluator: d.evaluator, reader: d.reader, autonomous: auto.includes(k) }
+      }),
+      openTeamProposals: list.rows.filter((r) => (r.proposer === TEAM_OPTIMIZATION_PROPOSER || !!(r.proposed_change ?? {}).optimization) && OPEN_STATUSES.includes(r.status)).length,
+    },
+  }
+}
+
+/** Form action: the checked classes become the tenant's autonomous list (applied now — a human's own policy edit). */
+export async function setSelfOptimizationAutonomyFormAction(formData: FormData): Promise<void> {
+  const gate = await requireLearningAdmin("self-optimization autonomous classes set on the Manager Trust page")
+  if (!gate.ok) { console.warn(`[improvement-proposals] self-optimization autonomy refused: ${gate.error}`); return }
+  const { isOptimizationClass, SELF_OPTIMIZATION_POLICY_KEY } = await import("@/lib/kernel/self-optimization")
+  const classes = [...new Set(formData.getAll("autonomous_classes").map(String).filter(isOptimizationClass))]
+  const svc = createServiceClient()
+  const list = await listImprovementProposals(svc, gate.brokerageId, { limit: 100 })
+  if (!list.ok) { console.warn(`[improvement-proposals] self-optimization autonomy not proposed: ${list.error}`); return }
+  const open = list.rows.find((r) => r.subject_kind === "policy" && r.subject_key === SELF_OPTIMIZATION_POLICY_KEY && OPEN_STATUSES.includes(r.status))
+  if (open) { console.warn(`[improvement-proposals] a self_optimization proposal is already ${open.status} — decide it in Improvement proposals first`); return }
+  const r = await proposeEvaluatePromote(svc, {
+    brokerageId: gate.brokerageId, subjectKind: "policy", subjectKey: SELF_OPTIMIZATION_POLICY_KEY, proposer: "human",
+    proposedChange: { value: { autonomous_classes: classes } },
+    evidenceRefs: [{ kind: "human_edit", surface: "manager_trust.self_optimization", user_id: gate.actor.userId ?? null, classes }],
+    actor: gate.actor,
+  })
+  if (!r.promoted) console.warn(`[improvement-proposals] self-optimization autonomy NOT applied: ${r.held ?? `proposal ${r.status}`}`)
+  revalidatePath("/dashboard/admin/manager-trust")
+}

@@ -69,7 +69,20 @@ export async function decideDelegationAction(input: { delegationId: string; deci
     : input?.decision === "cancel" ? await cancelDelegation({ ...p, reason: reason || "cancelled by a human" }, svc)
     : null
   if (!r) return { ok: false, error: "Unknown decision" }
-  return r.ok ? { ok: true, data: r.delegation } : { ok: false, error: r.reason }
+  if (!r.ok) return { ok: false, error: r.reason }
+  // WAVE 108: an accepted delegation whose capability has a WORKER on its survivor (recruit outreach,
+  // ad-campaign draft, buyer → lender handoff) is worked now, with THIS human as the acting user. A
+  // capability with no worker stays ACCEPTED for its manager's own rail (unchanged behaviour).
+  if (input?.decision === "accept") {
+    const { DELEGATION_WORKERS, workDelegation, getDelegation } = await import("@/lib/kernel/manager-delegation")
+    if (DELEGATION_WORKERS[r.delegation.requested_capability]) {
+      const w = await workDelegation({ ...p, userId: g.userId, reason: "worked on acceptance" }, svc)
+      const after = await getDelegation(g.brokerageId, r.delegation.id, svc)
+      if (!w.worked) console.error(`[missions] delegation ${r.delegation.id} (${r.delegation.requested_capability}) not worked: ${w.reason}`)
+      return { ok: true, data: after ?? r.delegation }
+    }
+  }
+  return { ok: true, data: r.delegation }
 }
 
 export async function createMissionAction(input: {
@@ -88,6 +101,40 @@ export async function createMissionAction(input: {
     actor: { type: "user", id: g.userId }, initialState: input.start ? "ACTIVE" : "PROPOSED",
   }, createServiceClient() as any)
   return r.ok ? { ok: true, data: r.mission } : { ok: false, error: r.reason }
+}
+
+/**
+ * WAVE 108E — BROKER OBJECTIVES: the broker types an objective in plain words on the Missions card
+ * ("Find out why listing appointments dropped last month", "Increase seller business in <territory>
+ * but don't increase spend more than $3,000/month", "Increase listing GCI 15%"). The kernel
+ * (lib/kernel/broker-objectives.ts submitBrokerObjective) routes it through a DETERMINISTIC pattern
+ * table and returns an evidence report, an APPROVAL_REQUIRED proposal, or a parent + child missions.
+ * Tenant-admin roster only (an objective commits the brokerage); the tenant is the session's; the
+ * territory is matched against THIS tenant's farm_territories inside the kernel.
+ */
+export async function submitBrokerObjectiveAction(input: { text: string }): Promise<Door<{ kind: string; missionId: string; state: string; headline: string; lines: string[] }>> {
+  const g = await gate()
+  if (!g.ok) return g
+  if (!g.admin) return { ok: false, error: "Only a brokerage admin can give the OS a brokerage objective." }
+  const text = String(input?.text ?? "").trim()
+  if (!text) return { ok: false, error: "An objective is required." }
+  const { submitBrokerObjective } = await import("@/lib/kernel/broker-objectives")
+  const r = await submitBrokerObjective({ brokerageId: g.brokerageId, text, actorUserId: g.userId }, createServiceClient() as any)
+  if (!r.ok) return { ok: false, error: r.examples?.length ? `${r.reason} Try: ${r.examples.join(" · ")}` : r.reason }
+  const o = r.outcome
+  if (o.kind === "investigation") {
+    return { ok: true, data: { kind: o.kind, missionId: o.mission.id, state: o.mission.state, headline: o.report.headline,
+      lines: [...o.report.causes.slice(0, 5).map((c) => `#${c.rank} ${c.label}: ${c.previous} → ${c.current} (${c.deltaPct}%) — ${c.reader}`), ...o.report.blindSpots.slice(0, 3).map((b) => `blind spot: ${b}`)] } }
+  }
+  if (o.kind === "directive") {
+    const p = o.proposal
+    const head = p.projection ? `Proposal (awaiting your approval): seller lift +${p.levers?.seller_lead_acquisition_pct}%${p.territory ? ` in ${p.territory}` : ""} → +${p.projection.addedListings30d} listings / 30d at $${p.budgetUsdMonthly}/month${p.spendCapUsdMonthly !== null ? ` (cap $${p.spendCapUsdMonthly})` : ""}` : `No proposal fits: ${p.reason}`
+    return { ok: true, data: { kind: o.kind, missionId: o.mission.id, state: o.mission.state, headline: head,
+      lines: [p.strategy ? `strategy: ${p.strategy.title} (${p.strategy.source}${p.strategy.activationNeeded ? " — activation is its own approval" : ""})` : "strategy: none active or fitting in the library", ...p.assumptions.slice(0, 3).map((a) => `assumption: ${a}`)] } }
+  }
+  return { ok: true, data: { kind: o.kind, missionId: o.mission.id, state: o.mission.state,
+    headline: `Delegated into ${o.children.length} proposed child mission(s), budget $${o.plan.totalBudgetUsd} / 30d${o.plan.shortfall ? ` — ${o.plan.shortfall}` : ""}`,
+    lines: [...o.plan.children.map((c) => `${c.manager} (${c.steps.join(" + ")}): ${c.subTarget} · $${c.budgetUsd}`), ...o.refused.map((x) => `refused: ${x}`)] } }
 }
 
 /** A human decides: approve / resume (→ ACTIVE), plan (→ PLANNING), cancel, or fail. Admins decide

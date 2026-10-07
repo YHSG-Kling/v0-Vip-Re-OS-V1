@@ -101,6 +101,7 @@ import type { DecayedIntent } from "@/lib/lead-intelligence/behavioral-summary"
 import type { recordNonAction as recordNonActionType } from "@/lib/kernel/action-ledger"
 // Wave 106 (106B) — type-only (erased): the experience executors are manager keys + catalogue capabilities.
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
+import { isLifetimeRelationshipType } from "@/lib/contact-types"
 import type { AppCapability } from "@/lib/agentic-os/app-capability-registry"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1894,6 +1895,10 @@ export interface NextBestExperienceInput {
   }
   /** Slices that could not be read (published, never silent). */
   blindSpots?: readonly string[]
+  /** Wave 108G — LEARNED tuning promoted by the self-optimizing manager team (tenant policy optimization_tuning,
+   *  lib/kernel/self-optimization.ts resolveOptimizationTuning): a bounded bias (±15) on an experience a slice ALREADY
+   *  argued for. It never creates a candidate and never overrides the forced precedence (compliance / wait). */
+  tuning?: { experienceBias?: Partial<Record<"education" | "properties", number>> }
 }
 
 export interface RankedExperience {
@@ -1903,7 +1908,13 @@ export interface RankedExperience {
   manager: ExperienceExecutor
   capability: AppCapability | null
   dueAt: Date | null
+  /** Wave 108: the manager the experience is ROUTED THROUGH (the requester of the executor's capability)
+   *  when it is not the AI ISA — a LIFETIME contact's video goes through sphere_of_influence. */
+  via?: ManagerKey
 }
+
+/** Wave 108 owner ruling: SPHERE OF INFLUENCE handles LIFETIME contacts — it requests their video. */
+export const LIFETIME_EXPERIENCE_OWNER: ManagerKey = "sphere_of_influence"
 
 export interface NextBestExperiencePlan {
   chosen: RankedExperience
@@ -1994,7 +2005,11 @@ export function planNextBestExperience(input: NextBestExperienceInput): NextBest
   if (input.behavior.touchpoints7d >= 3) add("communication", -30, `${input.behavior.touchpoints7d} campaign touchpoints in 7d — another message is the wrong experience`, "behavior")
 
   // PERSON — who they are to us.
-  if (type === "lifetime" || type === "past_client") add("video", 45, `${type} — a memory / anniversary moment, not a nurture message`, "person")
+  // WAVE 108: the LIFETIME test reads the contact-type survivor (LIFETIME_CONTACT_TYPES via
+  // isLifetimeRelationshipType — tolerant of the retired 'lifetime' / 'past_client' spellings). The
+  // literal pair that stood here matched only RETIRED spellings, so a canonical 'lifetime_customer'
+  // never reached its memory video. The video is ROUTED THROUGH sphere_of_influence (see lifetimeVia).
+  if (isLifetimeRelationshipType(type)) add("video", 45, `${type} — a lifetime contact: a memory / anniversary moment the Sphere Manager owns, not a nurture message`, "person")
   if (!input.person.hasAssignedAgent && input.subject === "contact") add("agent_intervention", 20, "no assigned agent — an experience needs an owner", "person")
 
   // MEMORY — what they told us (current facts only).
@@ -2010,12 +2025,19 @@ export function planNextBestExperience(input: NextBestExperienceInput): NextBest
   else add("communication", 10, "no auto-send / no permitted channel — a communication would stage for a human", "policy")
   if (input.fatigue.riskLevel === "moderate") { for (const k of ["communication", "market_update", "video"] as const) if (cand.has(k)) add(k, -10, "fatigue moderate — tempered", "fatigue") }
 
+  // LEARNED — the manager team's promoted bias (education_intervention / property_recommendation classes), clamped,
+  // only on a kind another slice already proposed (a bias never invents an experience).
+  for (const [k, raw] of Object.entries(input.tuning?.experienceBias ?? {}) as Array<["education" | "properties", number | undefined]>) {
+    const b = typeof raw === "number" && Number.isFinite(raw) ? Math.max(-15, Math.min(15, Math.round(raw))) : 0
+    if (b !== 0 && cand.has(k)) add(k, b, `learned bias ${b > 0 ? "+" : ""}${b} (optimization_tuning — promoted team optimization)`, "learned")
+  }
+
   // The floor: nothing argues for acting.
   if (!cand.has("wait")) add("wait", 5, "nothing else argues for an experience", "floor")
 
   const order = (k: ExperienceKind) => EXPERIENCE_KINDS.indexOf(k)
   const ranked: RankedExperience[] = [...cand.entries()]
-    .map(([kind, c]) => ({ kind, score: c.score, reasons: c.reasons, manager: EXPERIENCE_EXECUTORS[kind].manager, capability: EXPERIENCE_EXECUTORS[kind].capability, dueAt: c.dueAt }))
+    .map(([kind, c]) => ({ kind, score: c.score, reasons: c.reasons, manager: EXPERIENCE_EXECUTORS[kind].manager, capability: EXPERIENCE_EXECUTORS[kind].capability, dueAt: c.dueAt, ...(kind === "video" && isLifetimeRelationshipType(type) ? { via: LIFETIME_EXPERIENCE_OWNER } : {}) }))
     .sort((a, b) => b.score - a.score || order(a.kind) - order(b.kind))
   // Precedence that is not a score (see the doc comment).
   const forced: ExperienceKind | null = input.policy.complianceHardFlag ? "agent_intervention"
@@ -2150,6 +2172,16 @@ export async function loadNextBestExperienceInputs(
   const allowedChannels: readonly string[] = settings?.contact_allowed_channels ?? []
   const autoSendAllowed = !!settings && settings.require_broker_approval !== true
 
+  // LEARNED TUNING (wave 108G) — the promoted optimization_tuning bias; a refused read tunes nothing (published).
+  let tuning: NextBestExperienceInput["tuning"] = undefined
+  const tsRes = await supabase.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
+  if (tsRes.error) blindSpots.push(`learned: optimization_tuning unreadable — no learned bias (${msg(tsRes.error)})`)
+  else {
+    const { resolveOptimizationTuning } = await import("@/lib/kernel/self-optimization")
+    const eb = resolveOptimizationTuning((tsRes.data as { settings?: unknown } | null)?.settings ?? null).experienceBias
+    if (Object.keys(eb).length > 0) tuning = { experienceBias: eb }
+  }
+
   return {
     ok: true,
     input: {
@@ -2159,6 +2191,7 @@ export async function loadNextBestExperienceInputs(
       transaction, education, fatigue: { riskLevel },
       policy: { complianceHardFlag: args.complianceHardFlag === true, allowedChannels, autoSendAllowed, videoAllowed: contact.video_opt_out !== true },
       blindSpots,
+      tuning,
     },
   }
 }
@@ -2224,11 +2257,13 @@ export async function recordAndExecuteExperience(
     if (exec.manager === "ai_isa") return { mode: "caller", manager: exec.manager, rail: exec.rail }
     if (!exec.capability) return { mode: "unexecuted", manager: exec.manager, reason: `no catalogue capability — ${exec.manager} executes on its own rail (${exec.rail}); the request is on the ledger` }
     try {
+      // A lifetime contact's experience is requested BY the Sphere Manager (chosen.via), not the ISA.
+      const requester: ManagerKey = chosen.via ?? "ai_isa"
       const r = await delegate({
-        brokerageId, missionId: args.missionId ?? null, requestingManager: "ai_isa", assignedManager: exec.manager, capability: exec.capability,
+        brokerageId, missionId: args.missionId ?? null, requestingManager: requester, assignedManager: exec.manager, capability: exec.capability,
         objective: `Next best experience for contact ${contactId}: ${chosen.kind} — ${chosen.reasons[0] ?? ""}`,
-        inputEntities: { contact_id: contactId, experience: chosen.kind, reasons: chosen.reasons, due_at: chosen.dueAt?.toISOString() ?? null },
-        actor: { type: "manager", id: "ai_isa" },
+        inputEntities: { contact_id: contactId, experience: chosen.kind, reasons: chosen.reasons, due_at: chosen.dueAt?.toISOString() ?? null, ...(chosen.via ? { routed_via: chosen.via } : {}) },
+        actor: { type: "manager", id: requester },
       }, svc)
       if (!r.ok) return { mode: "unexecuted", manager: exec.manager, reason: r.reason }
       return { mode: "delegated", delegationId: r.delegation.id, manager: exec.manager, capability: exec.capability }

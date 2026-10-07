@@ -20,7 +20,7 @@
  * Rules asserted, not waypoints: the capability CHECK is compared to the registry's keys, the status CHECK
  * to DELEGATION_STATUSES; no migration-state pin.
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 import { randomUUID } from "node:crypto"
 import { stripComments } from "./strip-comments"
 import {
@@ -365,9 +365,15 @@ async function main() {
     const statusCheck = /manager_delegations_status_check\s*CHECK\s*\(status IN \(([^)]*)\)/.exec(mig)
     const dbStatuses = statusCheck ? [...statusCheck[1].matchAll(/'([^']+)'/g)].map((x) => x[1]) : []
     check("H12 the migration's status CHECK and DELEGATION_STATUSES are ONE vocabulary (rule, not a pin)", dbStatuses.join(",") === DELEGATION_STATUSES.join(","))
-    const capCheck = /manager_delegations_requested_capability_check\s*CHECK\s*\(requested_capability IN \(([^)]*)\)/.exec(mig)
+    // The capability CHECK is read from the LATEST migration that defines it (wave 108E widened it in a
+    // later file — reading m712 by name would pin the assertion to a waypoint, CLAUDE.md §2).
+    const capRe = /manager_delegations_requested_capability_check\s*CHECK\s*\(requested_capability IN \(([^)]*)\)/
+    const capDefiner = readdirSync("supabase/migrations").filter((f) => /^m\d+.*\.sql$/.test(f))
+      .map((f) => ({ f, n: Number(/^m(\d+)/.exec(f)![1]), body: stripComments(readFileSync(`supabase/migrations/${f}`, "utf8")) }))
+      .filter((x) => capRe.test(x.body)).sort((a, b) => b.n - a.n)[0]
+    const capCheck = capDefiner ? capRe.exec(capDefiner.body) : null
     const dbCaps = capCheck ? [...capCheck[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort() : []
-    check("H13 the migration's capability CHECK equals the catalogue's keys (derived — a new key widens it through the latest defining migration)", dbCaps.join(",") === Object.keys(APP_CAPABILITY_REGISTRY).sort().join(","), `db=${dbCaps.length} registry=${Object.keys(APP_CAPABILITY_REGISTRY).length}`)
+    check("H13 the latest defining migration's capability CHECK equals the catalogue's keys (derived — a new key widens it through the latest defining migration)", dbCaps.join(",") === Object.keys(APP_CAPABILITY_REGISTRY).sort().join(","), `definer=${capDefiner?.f ?? "none"} db=${dbCaps.length} registry=${Object.keys(APP_CAPABILITY_REGISTRY).length}`)
     check("H14 the migration makes manager_delegation_events append-only, revokes session writes, keeps RLS by brokerage, and never widens the reason-code CHECK (MISSION_LIFECYCLE reused)", /BEFORE UPDATE OR DELETE ON public\.manager_delegation_events/.test(mig) && /REVOKE INSERT, UPDATE, DELETE ON public\.manager_delegations\s+FROM anon, authenticated/.test(mig) && /has_brokerage_access\(brokerage_id\)/.test(mig) && !/agent_action_ledger_reason_code_check/.test(mig) && /requesting_manager <> assigned_manager/.test(mig))
     check("H15 the two kernel events exist on the enum", KernelEvent.MANAGER_DELEGATION_REQUESTED === "manager_delegation_requested" && KernelEvent.MANAGER_DELEGATION_STATE_CHANGED === "manager_delegation_state_changed")
     const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> }
@@ -377,6 +383,60 @@ async function main() {
     check("H18 TABLE_MANAGER: manager_delegations + manager_delegation_events → campaign_orchestrator", TABLE_MANAGER.manager_delegations === "campaign_orchestrator" && TABLE_MANAGER.manager_delegation_events === "campaign_orchestrator")
     const fixture = stripComments(`// TOMBSTONE: requestDelegation( used to be called here\nconst x = 1\n/* settleDelegationForRun( */`)
     check("H19 (control) a tombstone naming a door is NOT read as a call site", !fixture.includes("requestDelegation(") && !fixture.includes("settleDelegationForRun(") && fixture.includes("const x = 1"))
+  }
+
+  // ─── W. wave 108 — capability WORKERS + the mission owner's WORK ORDER ──────────────────────
+  console.log("\nW. wave 108 — the approved capabilities are WORKED on their survivors; a work order only for them")
+  {
+    const { DELEGATION_WORKERS, workDelegation } = await import("../lib/kernel/manager-delegation")
+    check("W1 the three approved capabilities are catalogue keys with their owners AND a worker each", ([["recruit_outreach", "recruiting_manager"], ["ad_campaign_launch", "ads_manager"], ["lender_preapproval_handoff", "shopping_agent"]] as const).every(([k, m]) => k in APP_CAPABILITY_REGISTRY && CAPABILITY_MANAGER[k] === m && typeof DELEGATION_WORKERS[k] === "function"))
+    const mk = async (tables: Record<string, Row[]> = {}) => {
+      const c = memClient(tables); const s = seams()
+      const m = await createMission({ brokerageId: T1, objective: "First-time buyer path for c-buyer", ownerManager: "shopping_agent", participatingManagers: ["ai_isa"], initialState: "ACTIVE" }, c as any, s.mission)
+      if (!m.ok) throw new Error(m.reason)
+      return { c, s, m: m.mission }
+    }
+    const wo = (missionId: string | undefined, capability: string, over: Record<string, unknown> = {}) => ({ brokerageId: T1, missionId, requestingManager: "shopping_agent" as const, assignedManager: "shopping_agent" as const, capability: capability as any, objective: "hand the buyer to a lender", inputEntities: { contactId: "c-buyer" }, authority: 1 as any, ownerWorkOrder: true, ...over })
+    const a = await mk()
+    const ok = await requestDelegation(wo(a.m.id, "lender_preapproval_handoff"), a.c as any, a.s.deps)
+    check("W2 the mission OWNER's work order for a worker capability is admitted (requesting = assigned = shopping_agent)", ok.ok && ok.delegation.requesting_manager === "shopping_agent" && ok.delegation.assigned_manager === "shopping_agent", ok.ok ? "" : ok.reason)
+    const noWorker = await requestDelegation(wo(a.m.id, "appointment_schedule"), a.c as any, a.s.deps)
+    const noMission = await requestDelegation(wo(undefined, "lender_preapproval_handoff"), a.c as any, a.s.deps)
+    const noFlag = await requestDelegation(wo(a.m.id, "lender_preapproval_handoff", { ownerWorkOrder: false }), a.c as any, a.s.deps)
+    check("W3 (controls) still self_delegation: a capability with NO worker, no mission, or no work-order flag", [noWorker, noMission, noFlag].every((r) => !r.ok && r.reason === "self_delegation"), [noWorker, noMission, noFlag].map((r) => (r.ok ? "ok" : r.reason)).join(","))
+    const other = await missionFor(a.c, a.s)
+    const notOwner = await requestDelegation(wo(other.id, "lender_preapproval_handoff"), a.c as any, a.s.deps)
+    check("W4 (control) a work order on a mission the manager does NOT own is refused (self_delegation)", !notOwner.ok && notOwner.reason === "self_delegation")
+
+    // THE LENDER HANDOFF, end to end through the survivor (in memory): a BUYER contact, one bench lender.
+    const world = (contactType: string, lenders: number, tenant = T1) => ({
+      contacts: [{ id: "c-buyer", brokerage_id: tenant, first_name: "Pat", last_name: "Buyer", contact_type: contactType, deleted_at: null }],
+      vendors: Array.from({ length: lenders }, (_, i) => ({ id: `v-l${i}`, brokerage_id: T1, name: `Bench Lender ${i}`, category: "lender" })).concat([{ id: "v-x", brokerage_id: T2, name: "Foreign Lender", category: "lender" }]),
+    })
+    const run = async (contactType: string, lenders: number, tenant = T1) => {
+      const w = await mk(world(contactType, lenders, tenant) as any)
+      const d = await requestDelegation(wo(w.m.id, "lender_preapproval_handoff"), w.c as any, w.s.deps)
+      if (!d.ok) throw new Error(d.reason)
+      await acceptDelegation({ brokerageId: T1, delegationId: d.delegation.id, reason: "accepted by a human", actor: { type: "user", id: "u-1" } }, w.c as any, w.s.deps)
+      const out = await workDelegation({ brokerageId: T1, delegationId: d.delegation.id, userId: null, actor: { type: "user", id: "u-1" } }, w.c as any, w.s.deps)
+      return { w, out, row: await getDelegation(T1, d.delegation.id, w.c as any) }
+    }
+    const good = await run("buyer", 1)
+    const prof = (good.w.c.tables.buyer_financial_profiles ?? [])[0]
+    check("W5 ACCEPTED → WORKING → RETURNED through lenderPreapprovalHandoff: the profile names the BENCH lender vendor (m605 column), status referred, the referral row is written, tenant-stamped", good.out.worked && good.row?.status === "RETURNED" && good.row.result?.lenderVendorId === "v-l0" && prof?.lender_referred_vendor_id === "v-l0" && prof?.lender_referral_status === "referred" && prof?.brokerage_id === T1 && (good.w.c.tables.credit_partner_referrals ?? []).length === 1, JSON.stringify({ out: good.out.reason, status: good.row?.status, prof }))
+    check("W6 every worked transition left a ledger row (WORKING + RETURNED, LAW 5)", good.w.s.ledger.length >= 3)
+    const seller = await run("seller", 1)
+    check("W7 (control) a SELLER contact is not handed to a lender — ESCALATED with the reason, nothing written", !seller.out.worked && seller.row?.status === "ESCALATED" && /not a buyer/.test(seller.out.reason ?? "") && !(seller.w.c.tables.buyer_financial_profiles ?? []).length)
+    const two = await run("both", 2)
+    check("W8 two bench lenders and none named → nothing written, ESCALATED for a human to choose, the bench named (never a guessed lender)", !two.out.worked && two.row?.status === "ESCALATED" && /human chooses/.test(two.out.reason ?? "") && /Bench Lender 0/.test(two.out.reason ?? "") && !(two.w.c.tables.buyer_financial_profiles ?? []).length)
+    const foreign = await run("buyer", 1, T2)
+    check("W9 tenant isolation: another brokerage's contact reads not found (a lead must convert to a contact first) — the foreign lender never appears", !foreign.out.worked && /not found/.test(foreign.out.reason ?? "") && !JSON.stringify(good.w.c.tables.buyer_financial_profiles ?? []).includes("v-x"))
+    const notAccepted = await mk(world("buyer", 1) as any)
+    const nd = await requestDelegation(wo(notAccepted.m.id, "lender_preapproval_handoff"), notAccepted.c as any, notAccepted.s.deps)
+    const early = nd.ok ? await workDelegation({ brokerageId: T1, delegationId: nd.delegation.id, userId: null }, notAccepted.c as any, notAccepted.s.deps) : null
+    check("W10 (control) a REQUESTED (not yet accepted) delegation is never worked", !!early && !early.worked && /only an ACCEPTED/.test(early.reason ?? ""))
+    const missionsSrc = src("app/actions/missions.ts"), engineSrc = src("lib/kernel/strategy-engine.ts"), fin = src("app/actions/buyer-financial.ts")
+    check("W11 wired: the Missions card's accept door works the delegation (workDelegation) as the accepting human; the strategy engine files owner work orders; the agent's lender door and the capability share recordLenderReferral (one path)", /workDelegation\(/.test(missionsSrc) && /userId: g\.userId/.test(missionsSrc) && /ownerWorkOrder: ownStep/.test(engineSrc) && /recordLenderReferral\(/.test(fin) && !/from\("credit_partner_referrals"\)/.test(fin))
   }
 
   console.log("\n──────────────────────────────────────────────────")

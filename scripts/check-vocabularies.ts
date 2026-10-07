@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 453 tables, 811 columns.
+ * MEASURED AT GENERATION: 455 tables, 816 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-06
+ * generated: 2026-10-07
  * source: public.live_check_constraints_json()
- * body-sha256: c2caa75c13ee7070fbac8c22c2310c988e3bcc3bacb68a37a48ed3790dda3111
+ * body-sha256: a77d2f1d346df94c99dd807d8dc7f46172688532bf3e72806fc7438b750b5ed2
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -59,7 +59,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   agent_action_ledger: {
     actor_type: ["agent", "manager", "system", "user"],
-    reason_code: ["AGENT_SLA_BREACH", "BUYER_PROPERTY_MATCH", "CAMPAIGN_STEP", "COMPLIANCE_NOTICE", "CONTACT_WELCOME", "CONVERSATION_RESPONSE", "HUMAN_REQUESTED", "LEAD_FIRST_RESPONSE", "LEARNED_IMPROVEMENT", "LIFETIME_TOUCH", "MISSION_LIFECYCLE", "NO_ACTION_NEEDED", "NURTURE_TOUCH", "PROPERTY_VALUE_CHANGE", "SCHEDULED_CONTENT_PUBLISH", "SELLER_FOLLOWUP_INTENT_INCREASE", "SERVICE_NOTICE", "STAFF_ALERT", "SUBSCRIPTION_LIFECYCLE", "TRANSACTION_DEADLINE", "TRANSACTION_MILESTONE", "UNSPECIFIED", "WAIT_COOLDOWN"],
+    reason_code: ["AGENT_SLA_BREACH", "BUYER_PROPERTY_MATCH", "CAMPAIGN_STEP", "COMPLIANCE_NOTICE", "CONTACT_WELCOME", "CONVERSATION_RESPONSE", "HUMAN_REQUESTED", "LEAD_FIRST_RESPONSE", "LEARNED_IMPROVEMENT", "LIFETIME_TOUCH", "MISSION_LIFECYCLE", "NO_ACTION_NEEDED", "NURTURE_TOUCH", "OS_HEALTH_RECOVERY", "PROPERTY_VALUE_CHANGE", "SCHEDULED_CONTENT_PUBLISH", "SELLER_FOLLOWUP_INTENT_INCREASE", "SERVICE_NOTICE", "STAFF_ALERT", "SUBSCRIPTION_LIFECYCLE", "TRANSACTION_DEADLINE", "TRANSACTION_MILESTONE", "UNSPECIFIED", "WAIT_COOLDOWN"],
     status: ["executed", "failed", "proposed", "skipped", "unknown"],
   },
   agent_assistant_sessions: {
@@ -280,6 +280,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   automation_errors: {
     status: ["dismissed", "investigating", "open", "resolved"],
+  },
+  autonomy_budget_consumptions: {
+    envelope: ["ads_budget_shift", "asset_renders", "experiment_budget", "procurement_auto_book", "provider_high_value", "recruiting_prospect_data"],
+    status: ["consumed", "released"],
+    unit: ["renders", "usd"],
   },
   batchdata_smart_search_subscriptions: {
     status: ["active", "cancelled", "deferred", "error", "pending", "provisioning_required", "renewal_due"],
@@ -759,9 +764,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     methodology: ["ai_cma", "attom", "housecanary", "manual", "sqft_regional_average"],
   },
   improvement_proposals: {
-    proposer: ["copy_learning", "human", "media_intelligence", "outcome_autopsy", "predictor_learning", "prompt_calibrator", "resource_allocation", "strategy_learning"],
+    proposer: ["copy_learning", "experimentation", "human", "media_intelligence", "outcome_autopsy", "predictor_learning", "prompt_calibrator", "resource_allocation", "strategy_learning", "team_optimization"],
     status: ["APPROVED", "EVALUATED", "PROMOTED", "PROPOSED", "REJECTED", "ROLLED_BACK"],
-    subject_kind: ["allocation", "policy", "prompt", "strategy", "threshold", "variant"],
+    subject_kind: ["allocation", "experiment", "policy", "prompt", "strategy", "threshold", "variant"],
   },
   inbound_call_classifications: {
     classification: ["business_general", "cooperating_agent", "existing_contact", "real_estate_buyer", "real_estate_investor", "real_estate_seller", "unknown", "vendor"],
@@ -937,7 +942,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     event_kind: ["evidence", "refused", "requested", "review", "transition"],
   },
   manager_delegations: {
-    requested_capability: ["accounting_sync", "appointment_schedule", "blog_publish", "cma_generate", "connectivity_scan", "contact_get", "content_repurpose", "direct_mail_send", "education_assign", "education_path_get", "gift_send", "handwritten_note_send", "inbox_reply_send", "isa_qualify", "lead_create", "lead_search", "listing_appointment_prep", "listing_publish", "marketing_campaign_create", "newsletter_send", "payment_transfer", "podcast_publish", "portal_milestones_get", "report_export", "report_generate", "review_request_send", "social_post_publish", "transaction_advance", "video_distribute"],
+    requested_capability: ["accounting_sync", "ad_campaign_launch", "ads_performance_report", "appointment_schedule", "blog_publish", "campaign_performance_report", "cma_generate", "connectivity_scan", "contact_get", "content_repurpose", "direct_mail_send", "education_assign", "education_path_get", "gift_send", "handwritten_note_send", "inbox_reply_send", "isa_qualify", "lead_create", "lead_search", "lender_preapproval_handoff", "listing_appointment_prep", "listing_demand_report", "listing_publish", "marketing_campaign_create", "newsletter_send", "payment_transfer", "podcast_publish", "portal_milestones_get", "recruit_outreach", "report_export", "report_generate", "review_request_send", "social_post_publish", "transaction_advance", "video_distribute"],
     status: ["ACCEPTED", "CANCELLED", "DISSENTED", "ESCALATED", "REJECTED", "REQUESTED", "RETURNED", "WORKING"],
   },
   manager_signals: {
@@ -1432,6 +1437,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   signature_requests: {
     request_status: ["cancelled", "completed", "expired", "partially_signed", "pending", "sent"],
+  },
+  skill_marketplace_listings: {
+    publisher: ["platform", "tenant", "third_party"],
+    status: ["approved", "evaluated", "published", "rejected", "revoked", "submitted"],
   },
   smart_assistant_suggestions: {
     priority: ["high", "low", "medium"],

@@ -173,7 +173,8 @@ async function main() {
   check("P4 over the cap → approval (named)", !procurementAutonomyDecision(pol, { category: "photographer", amountUsd: 351 }).auto && /over the \$350/.test(procurementAutonomyDecision(pol, { category: "photographer", amountUsd: 351 }).reason))
   check("P5 another category → approval; unknown price → approval (never auto-books)", !procurementAutonomyDecision(pol, { category: "stager", amountUsd: 10 }).auto && !procurementAutonomyDecision(pol, { category: "photographer", amountUsd: null }).auto)
   const mem3 = seed({ procurement_autonomy: { enabled: true, max_auto_approve_usd: 350, allowed_service_categories: ["photographer"] } })
-  const auto = await requestProcurement(mem3 as any, { brokerageId: B, serviceType: "photography", listingId: LISTING, neededBy: day(3), budget: 400, now: NOW }, { access: allow })
+  // Wave 108F: the monthly auto-book envelope is granted here (its caps are test:autonomous-budgeting's).
+  const auto = await requestProcurement(mem3 as any, { brokerageId: B, serviceType: "photography", listingId: LISTING, neededBy: day(3), budget: 400, now: NOW }, { access: allow, envelope: async () => ({ allowed: true, reason: "granted (fixture)" }) })
   const row3 = mem3.tables.vendor_bookings.find((b) => b.id === (auto.ok ? auto.bookingId : ""))
   check("P6 autonomy ON + $300 ≤ $350 cap: books with NO human and no approval proposal", auto.ok && auto.approval === "auto_approved" && row3?.status === "booked" && row3?.approved_by === null && mem3.tables.agent_client_messages.length === 0, JSON.stringify({ auto, row3 }))
   const bookLedger = mem3.tables.agent_action_ledger.find((l) => l.action === "vendor.procurement.book")

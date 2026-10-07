@@ -18,6 +18,7 @@
 // capability layer, keyed by transaction_id and preserved untouched.
 
 import { VENDOR_CATEGORY_LENDER } from "@/lib/kernel/vendor-categories"
+import { isBuyerSideContactType } from "@/lib/contact-types"
 
 /** The vendor category that IS a lender. vendors.category carries a live CHECK
  *  (Contractor|Inspector|Lender|Other|Stager|Title Company) — it is NOT free text,
@@ -256,4 +257,219 @@ export async function linkLenderVendorToTransaction(
   }
 
   return { ok: true, assignmentId }
+}
+
+// ─── THE LENDER REFERRAL — one path for the agent's door and the handoff capability ─────────────
+export interface LenderReferralInput {
+  /** VERIFIED tenant — the session (connectBuyerToLender) or the delegation's anchored row. */
+  brokerageId: string
+  contactId: string
+  /** The human who made / approved the introduction (null for a manager with no human — none today). */
+  actorUserId: string | null
+  agentName: string
+  buyerName: string
+  partnerName: string
+  /** A referral_partners id (the agent's own rolodex) — one of the two rails must be named. */
+  partnerId?: string
+  /** A vendors id ON the brokerage's lender bench — verified by the caller. */
+  lenderVendorId?: string
+  activityNote?: string
+}
+
+/**
+ * Record a buyer → lender introduction: the credit_partner_referrals row, the
+ * buyer_financial_profiles referral columns (each rail writes its own column, m605; real loan facts
+ * never clobbered), the lender_for relationship edge, the lender's people notified, and the
+ * lender.introduced activity. MOVED here verbatim from app/actions/buyer-financial.ts
+ * connectBuyerToLender (wave 108) so the lender_preapproval_handoff capability rides the SAME writes
+ * (§1: one survivor — the action now calls this). The caller verifies tenancy and the bench.
+ */
+export async function recordLenderReferral(supabase: any, p: LenderReferralInput): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!p.partnerId && !p.lenderVendorId) return { ok: false, error: "No lender was selected — pick one from your brokerage's bench or from your own referral partners." }
+  const params = p
+  const access = { brokerageId: p.brokerageId, userId: p.actorUserId }
+  // 1. Insert credit_partner_referral
+  const { error: referralError } = await supabase
+    .from("credit_partner_referrals")
+    .insert({
+      contact_id:    params.contactId,
+      brokerage_id:  access.brokerageId,
+      partner_name:  params.partnerName,
+      referral_date: new Date().toISOString().split("T")[0],
+      status:        "referred",
+      notes:         `Referred by agent ${params.agentName} ${params.activityNote ?? "via buyer dashboard"}`,
+    })
+
+  if (referralError) return { ok: false, error: referralError.message }
+
+  // 2. UPSERT buyer_financial_profiles lender referral — WITHOUT clobbering real
+  // loan facts. A referral must never overwrite an existing profile's finance_type
+  // (e.g. a VA buyer) or cash flag with an invented "conventional" (owner
+  // correction: loan terms come from the pre-approval or the lender, never
+  // assumed). Existing row → update ONLY the referral fields; new row → insert
+  // with the schema-required NOT NULL finance_type placeholder.
+  const { data: existingProfile } = await supabase
+    .from("buyer_financial_profiles")
+    .select("id")
+    .eq("contact_id", params.contactId)
+    .maybeSingle()
+  // EACH RAIL WRITES ITS OWN COLUMN (m605), and a rail the caller did not name
+  // is left UNTOUCHED rather than nulled: an agent introducing a buyer to the
+  // brokerage's bench lender must not silently erase the mortgage broker their
+  // colleague introduced last week. Both are legitimate, and the two columns are
+  // independent by design.
+  const referralFields: Record<string, unknown> = {
+    lender_referral_status: "referred",
+    updated_at:             new Date().toISOString(),
+  }
+  if (params.partnerId)      referralFields.lender_referred_partner_id = params.partnerId
+  if (params.lenderVendorId) referralFields.lender_referred_vendor_id  = params.lenderVendorId
+
+  const { error: profileError } = existingProfile
+    ? await supabase
+        .from("buyer_financial_profiles")
+        .update(referralFields)
+        .eq("contact_id", params.contactId)
+    : await supabase
+        .from("buyer_financial_profiles")
+        .insert({
+          contact_id:                  params.contactId,
+          brokerage_id:                access.brokerageId,
+          agent_user_id:               access.userId ?? null,
+          // finance_type is NOT NULL on the live schema; no honest "unknown" value
+          // exists yet (deferred schema shape). This placeholder is only ever written
+          // on a brand-new row and is replaced the moment real pre-approval terms land.
+          finance_type:                "conventional",
+          is_cash_buyer:               false,
+          ...referralFields,
+        })
+
+  if (profileError) return { ok: false, error: profileError.message }
+
+  // RELATIONSHIP GRAPH (wave 102, lane 102B): the introduction IS a lender_for fact (lender vendor →
+  // buyer contact). The bench rail names a vendors.id directly; the partner rail reaches one only
+  // through referral_partners.vendor_id — a partner with no vendor identity leaves no edge (the
+  // profile row stays the record). Tenant from the SESSION (access.brokerageId); never fails the referral.
+  try {
+    let lenderVendorId: string | null = params.lenderVendorId ?? null
+    let partnerRowId: string | null = null
+    if (!lenderVendorId && params.partnerId) {
+      const { data: partner, error: partnerErr } = await supabase
+        .from("referral_partners").select("id, vendor_id").eq("id", params.partnerId).eq("brokerage_id", access.brokerageId).maybeSingle()
+      if (partnerErr) console.error(`[connectBuyerToLender] partner read refused — no lender_for edge: ${partnerErr.message}`)
+      lenderVendorId = (partner?.vendor_id as string | null) ?? null
+      partnerRowId = (partner?.id as string | null) ?? null
+    }
+    // Wave 102.1 (102F, ruling R7 / m702): a partner with NO vendor identity is still the lender —
+    // the edge points at the referral_partner itself (entity type admitted by m702). The vendor
+    // endpoint stays preferred when the partner has one (one lender, one endpoint).
+    const lenderRef = lenderVendorId
+      ? { type: "vendor" as const, id: lenderVendorId }
+      : partnerRowId ? { type: "referral_partner" as const, id: partnerRowId } : null
+    if (lenderRef) {
+      const { upsertRelationship } = await import("@/lib/kernel/relationship-graph")
+      const edge = await upsertRelationship(supabase, {
+        brokerageId: access.brokerageId,
+        from: lenderRef,
+        to: { type: "contact", id: params.contactId },
+        type: "lender_for",
+        evidence: {
+          source: lenderRef.type === "vendor" ? "buyer_financial_profiles.lender_referral" : "buyer_financial_profiles.lender_referral_partner",
+          confidence: lenderRef.type === "vendor" ? 0.85 : 0.8,
+          observed_at: new Date().toISOString(),
+        },
+        createdBy: access.userId ?? null,
+      })
+      if (!edge.ok && !edge.degraded) console.error(`[connectBuyerToLender] lender_for edge not written: ${edge.error}`)
+    }
+  } catch (e) {
+    console.error("[connectBuyerToLender] relationship edge derivation failed (non-blocking)", e)
+  }
+
+  // 3. Notify the lender's people, if the vendor has any linked accounts.
+  //
+  // `notifications.user_id` FKs `users` (scripts/schema-fk-map.ts:532), and a
+  // vendor is a COMPANY — inserting a vendors.id here is a 23503 that loses the
+  // whole row. The hop from vendor to person is user_role_assignments, resolved
+  // once in lib/kernel/lender-linkage.ts rather than re-derived here. A lender
+  // vendor with no linked account simply has nobody to notify; the referral row
+  // and the activity above are still the record that the introduction happened.
+  if (params.lenderVendorId) {
+    const recipientIds = await lenderVendorUserIds(supabase, params.lenderVendorId)
+    for (const recipientId of recipientIds) {
+      await supabase.from("notifications").insert({
+        user_id:     recipientId,
+        brokerage_id: access.brokerageId,
+        type:        "lender_introduction",
+        title:       `New buyer introduction: ${params.buyerName}`,
+        body:        `Agent ${params.agentName} has introduced a buyer who may need financing assistance.`,
+        entity_type: "contact",
+        entity_id:   params.contactId,
+        priority:    "high",
+        channel:     "in_app",
+      })
+    }
+  }
+
+  // 4. Log activity. This row IS the record that the introduction was made —
+  // both the agent's timeline and the AI's memory of this contact read it.
+  const { error: introActivityError } = await supabase.from("activities").insert({
+    brokerage_id:  access.brokerageId,
+    // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
+    agent_id:      access.userId ? await (await import("@/lib/kernel/agent-identity")).resolveAgentId(supabase, access.userId) : null,
+    contact_id:    params.contactId,
+    activity_type: "lender.introduced",
+    title:         `Lender introduction sent to ${params.partnerName}`,
+    entity_type:   "contact",
+    notes:         `Buyer ${params.buyerName} introduced to lender ${params.partnerName}`,
+    status:        "completed",
+  })
+  if (introActivityError) {
+    console.error("[buyerFinancial] lender.introduced activity REJECTED — the introduction was sent but has no record:", introActivityError.message)
+  }
+
+  return { ok: true }
+}
+
+
+export type LenderHandoffResult =
+  | { ok: true; contactId: string; lenderVendorId: string; lenderName: string | null }
+  | { ok: false; reason: string; needsChoice?: Array<{ id: string; name: string | null }> }
+
+/**
+ * WAVE 108 — the `lender_preapproval_handoff` CAPABILITY (shopping_agent; owner-approved gap of the
+ * 107E First-Time Buyer strategy). A lender is a VENDOR category: the bench is vendors pinned to the
+ * brokerage with category ∈ LENDER_BENCH_CATEGORIES — never a user type. Only a CONTACT of buyer type
+ * (buyer | both) is handed off (a lead converts to a contact first — owner ruling). With no lender named
+ * and more than one on the bench, nothing is written: the bench comes back for a human to choose.
+ * Every read is pinned to the tenant and every refusal is read (§3).
+ */
+export async function lenderPreapprovalHandoff(
+  supabase: any,
+  input: { brokerageId: string; contactId: string; lenderVendorId?: string | null; actorUserId: string | null; actorName?: string | null },
+): Promise<LenderHandoffResult> {
+  if (!input.brokerageId || !input.contactId) return { ok: false, reason: "brokerageId and contactId are required" }
+  const { data: contact, error: cErr } = await supabase.from("contacts")
+    .select("id, first_name, last_name, contact_type, deleted_at")
+    .eq("id", input.contactId).eq("brokerage_id", input.brokerageId).maybeSingle()
+  if (cErr) return { ok: false, reason: `contacts read refused: ${cErr.message}` }
+  if (!contact || contact.deleted_at) return { ok: false, reason: "contact not found in this brokerage (a lead must convert to a contact first)" }
+  if (!isBuyerSideContactType(contact.contact_type)) {
+    return { ok: false, reason: `contact_type '${contact.contact_type ?? "none"}' is not a buyer — only a buyer contact (buyer | both) is handed to a lender` }
+  }
+  const { data: bench, error: bErr } = await supabase.from("vendors")
+    .select("id, name, category").eq("brokerage_id", input.brokerageId).in("category", [...LENDER_BENCH_CATEGORIES]).limit(50)
+  if (bErr) return { ok: false, reason: `vendors (lender bench) read refused: ${bErr.message}` }
+  const lenders = ((bench ?? []) as Array<{ id: string; name: string | null; category: string | null }>).filter((v) => isLenderVendorCategory(v.category))
+  if (lenders.length === 0) return { ok: false, reason: "the brokerage has no lender on its vendor bench — add a lender vendor first" }
+  const chosen = input.lenderVendorId ? lenders.find((v) => v.id === input.lenderVendorId) : lenders.length === 1 ? lenders[0] : undefined
+  if (input.lenderVendorId && !chosen) return { ok: false, reason: "that lender is not on this brokerage's lender bench" }
+  if (!chosen) return { ok: false, reason: "more than one bench lender — a human chooses", needsChoice: lenders.map((v) => ({ id: v.id, name: v.name })) }
+  const buyerName = [contact.first_name, contact.last_name].filter(Boolean).join(" ").trim() || "a buyer"
+  const rec = await recordLenderReferral(supabase, {
+    brokerageId: input.brokerageId, contactId: input.contactId, actorUserId: input.actorUserId,
+    agentName: input.actorName ?? "the Shopping Agent", buyerName, partnerName: chosen.name ?? "bench lender",
+    lenderVendorId: chosen.id, activityNote: "via the buyer → lender pre-approval handoff",
+  })
+  return rec.ok ? { ok: true, contactId: input.contactId, lenderVendorId: chosen.id, lenderName: chosen.name } : { ok: false, reason: rec.error }
 }

@@ -271,6 +271,9 @@ export interface PropertyValuationDeps {
   eligibility?: (brokerageId: string) => Promise<{ eligible: boolean; overBudget: boolean }>
   rentcast?: (p: { brokerageId: string; address: string; systemSource?: string; contactId?: string | null }) => Promise<{ value: number | null; rangeLow: number | null; rangeHigh: number | null; outcome: RentcastReadOutcome; eligibility: { reason: string | null }; cacheHit?: boolean }>
   fallback?: BatchDataFallbackDeps
+  /** Wave 108G — the tenant's promoted provider skips (optimization_tuning.provider_skip.property_valuation, the
+   *  provider_selection class of lib/kernel/self-optimization.ts). Default reads the tenant policy; unreadable → none. */
+  tenantProviderSkips?: (brokerageId: string) => Promise<string[]>
 }
 
 /** THE ONE ELIGIBILITY GATE for the RentCast leg (lib/property/rentcast-eligibility.ts, readKind
@@ -308,8 +311,14 @@ export async function requestPropertyValuation(req: ValuationRequest, deps?: Pro
     for (const e of CONTACT_PROVIDER_ROUTES.property_valuation) {
       if (!exclude.has(e.provider)) health[e.provider] = await healthFn(e.provider).catch(() => null)
     }
-    const route = routeCapability("property_valuation", health, exclude)
-    out.skipped.push(...route.skipped)
+    const routed = routeCapability("property_valuation", health, exclude)
+    out.skipped.push(...routed.skipped)
+    // TENANT PROVIDER SKIP (wave 108G, promoted by the manager team after a deterministic reliability re-measure):
+    // a BACKUP this tenant's own calls show failing is not paid for. The owner-ruled primary (RentCast) is never skipped.
+    const primary = CONTACT_PROVIDER_ROUTES.property_valuation[0]?.provider
+    const tenantSkips = new Set((await (deps?.tenantProviderSkips ?? ((b: string) => import("@/lib/kernel/self-optimization").then((m) => m.loadTenantProviderSkips(b))))(req.brokerageId).catch(() => [] as string[])).filter((p) => p !== primary))
+    for (const p of routed.providers) if (tenantSkips.has(p)) out.skipped.push({ provider: p, reason: "skipped for this tenant (optimization_tuning.provider_skip — promoted provider_selection)" })
+    const route = { ...routed, providers: routed.providers.filter((p) => !tenantSkips.has(p)) }
 
     let eligible = false
     if (!exclude.has("rentcast")) {

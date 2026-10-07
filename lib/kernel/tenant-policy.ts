@@ -95,6 +95,29 @@ export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition>
   // read by lib/intelligence/network-benchmarks.ts readNetworkOptIn (absent / unreadable = NOT contributing);
   // written by app/actions/network-intelligence.ts setNetworkBenchmarksOptIn (tenant admin, session actor).
   network_benchmarks_opt_in: { label: "Network benchmarks — contribute anonymized aggregates", store: "brokerage_settings.settings", defaultNote: "opted OUT (no owner ruling yet — contribution is opt-in)" },
+  // Wave 108 (108G, SELF-OPTIMIZING MANAGER TEAMS — lib/kernel/self-optimization.ts): what the manager team's ALLOWED
+  // classes promote — { experience_bias: { education?, properties? } (±15, read by lib/ai-isa/lead-action-plan.ts
+  // planNextBestExperience), provider_skip: { property_valuation?: [backup providers] } (read by lib/avm/provider-chain.ts
+  // requestPropertyValuation; the owner-ruled primary is never skipped) }. Written ONLY by the proposal promotion path.
+  optimization_tuning:     { label: "Self-optimization tuning (experience bias, valuation provider skip)", store: "brokerage_settings.settings", defaultNote: "nothing tuned — the planners' own scores and the platform route" },
+  // Wave 108 (108G): { autonomous_classes: OptimizationClass[] } — which optimization classes may promote WITHOUT a human
+  // (each still under its owner manager's autonomy gate + authority rung). AUTHORITY POLICY: the optimizer can never
+  // propose it (FORBIDDEN surface); a tenant admin sets it on the Manager Trust page through a human policy proposal.
+  self_optimization:       { label: "Self-optimization — classes allowed to promote autonomously", store: "brokerage_settings.settings", defaultNote: "none — a human approves every optimization" },
+  // Wave 108 (108F): CONTROLLED AUTONOMOUS BUDGETING — per-manager envelopes { ads_manager.max_shift_pct_of_monthly_budget,
+  // provider_router.{per_decision_max_usd{standard,high,top}, monthly_max_usd}, asset_manager.max_renders_per_campaign,
+  // recruiting_manager.max_prospect_data_usd_per_month, experiments.max_usd_per_month, listing_concierge.max_auto_book_usd_per_month,
+  // finance.{burst_share_of_cap, ai_spike_multiple, refusal_pressure} } read by lib/kernel/autonomy-budgets.ts loadAutonomyBudgets
+  // (consumeAutonomyEnvelope — the ONE enforcement function every autonomous spend calls). DEFAULT ALL ZERO =
+  // recommendation only. Written only through mergeBrokerageSettings (a `policy` proposal on the Manager Trust page).
+  autonomy_budgets:        { label: "Autonomous budget envelopes (per manager)", store: "brokerage_settings.settings", defaultNote: "all zero — recommendation only; every spend waits for a human" },
+  // Wave 108 (108C, OS health & self-healing): THE FINANCIAL-WRITER KILL SWITCH — { [writer]: { halted, reason,
+  // incident, set_by, set_at | released_by, released_at } } for the writers in lib/kernel/os-health.ts
+  // FINANCIAL_WRITERS. Set ONLY by the OS health supervisor (actor manager cron_manager) when a financial
+  // discrepancy is detected ("never auto-correct money"); released ONLY by a brokerage finance admin
+  // (app/actions/os-health.ts releaseFinancialWriterHaltAction). Read by each writer at its entry through
+  // loadFinancialWriterHalt — FAILS CLOSED (an unreadable halt state does not write money).
+  financial_writer_halts:  { label: "Financial writer halts (OS health kill switch, Finance releases)", store: "brokerage_settings.settings", defaultNote: "no writer halted" },
 }
 
 /** Real columns that are tenant operating policy. */

@@ -221,15 +221,16 @@ export const PLATFORM_STRATEGY_LIBRARY: readonly StrategyDefinition[] = Object.f
     audience: "Past clients not touched in months", marketSuitability: ["any"], averageCostUsd: 20, priority: 60,
   }),
   def({
-    key: "first_time_buyer", version: 1, title: "VIPAgents First-Time Buyer Path",
+    key: "first_time_buyer", version: 2, title: "VIPAgents First-Time Buyer Path",
     objective: "Educate a first-time buyer to a confident first showing",
     missionType: "campaign", ownerManager: "shopping_agent",
     eligibility: { subjectTypes: ["contact", "lead"], all: [NOT_DNC, NOT_EXHAUSTED, { fact: "intent", op: "in", value: ["buyer", "both"], whenKnown: true }], any: [{ fact: "first_time_buyer", op: "is_true" }, { fact: "persona", op: "eq", value: "first_time" }] },
     steps: [
       { manager: "ai_isa", capabilities: ["isa_qualify"], purpose: "qualify criteria and financing", playbooks: [{ kind: "qualification_goal", key: "buyer_criteria" }, { kind: "qualification_goal", key: "financing_status" }] },
       { manager: "campaign_orchestrator", capabilities: ["education_path_get", "education_assign"], purpose: "the first-time-buyer education path", playbooks: [{ kind: "sequence_persona", key: "first_time" }, { kind: "experience", key: "education" }] },
-      { manager: "shopping_agent", capabilities: ["appointment_schedule", "portal_milestones_get"], purpose: "the buyer kickoff and the first showing", playbooks: [{ kind: "strategy_session", key: "buyer_kickoff" }, { kind: "experience", key: "properties" }],
-        gap: "no catalogue capability hands a buyer to a lender for pre-approval — a lender is a VENDOR category (lib/kernel/lender-linkage.ts), not an APP_CAPABILITY key" },
+      // v2 (wave 108, owner-approved): the lender pre-approval handoff is a catalogue capability now — the
+      // lender is a VENDOR on the brokerage bench (lib/kernel/lender-linkage.ts lenderPreapprovalHandoff).
+      { manager: "shopping_agent", capabilities: ["lender_preapproval_handoff", "appointment_schedule", "portal_milestones_get"], purpose: "the lender pre-approval handoff, the buyer kickoff and the first showing", playbooks: [{ kind: "strategy_session", key: "buyer_kickoff" }, { kind: "experience", key: "properties" }] },
     ],
     budget: { usd: 20, tokens: 60_000 }, authority: { recommended: 3, approval: "per_authority" },
     timing: { horizonDays: 120, cadenceDays: 7, timelineBuckets: ["1-3_months", "3-6_months", "6-12_months"] }, fatigue: CONTACT_FATIGUE,
@@ -238,7 +239,7 @@ export const PLATFORM_STRATEGY_LIBRARY: readonly StrategyDefinition[] = Object.f
     audience: "First-time buyers", marketSuitability: ["any", "affordable"], averageCostUsd: 15, priority: 65,
   }),
   def({
-    key: "listing_launch", version: 1, title: "VIPAgents Listing Launch",
+    key: "listing_launch", version: 2, title: "VIPAgents Listing Launch",
     objective: "Launch a listing with the full bench — media, campaign, ads — in one coordinated week",
     missionType: "campaign", ownerManager: "listing_concierge",
     eligibility: { subjectTypes: ["listing"], all: [{ fact: "listing_status", op: "in", value: ["coming_soon", "active"] }] },
@@ -246,8 +247,8 @@ export const PLATFORM_STRATEGY_LIBRARY: readonly StrategyDefinition[] = Object.f
       { manager: "listing_concierge", capabilities: ["listing_publish"], purpose: "stage and publish the launch", playbooks: [{ kind: "kernel_play", key: "deal_play" }, { kind: "strategy_session", key: "listing_launch" }] },
       { manager: "asset_manager", capabilities: ["content_repurpose"], purpose: "the promo reel and social cuts", playbooks: [{ kind: "experience", key: "video" }] },
       { manager: "campaign_orchestrator", capabilities: ["social_post_publish", "newsletter_send"], purpose: "just-listed social + email + neighbors", playbooks: [{ kind: "creative_playbook", key: "open_house_neighbor_vip" }, { kind: "kernel_play", key: "farm_play" }] },
-      { manager: "ads_manager", capabilities: [], purpose: "the just-listed ad campaign draft", playbooks: [{ kind: "kernel_play", key: "deal_play" }],
-        gap: "ads_manager owns no APP_CAPABILITY key — the just-listed ad draft rides runDealPlay's ads step, not a catalogue capability" },
+      // v2 (wave 108, owner-approved): the ad draft is the ads_manager's catalogue capability (lib/kernel/ads.ts adCampaignLaunchCapability).
+      { manager: "ads_manager", capabilities: ["ad_campaign_launch"], purpose: "the just-listed ad campaign draft (budgeted; live launch stays the ads workspace's approval)", playbooks: [{ kind: "kernel_play", key: "deal_play" }] },
     ],
     budget: { usd: 150, tokens: 150_000 }, authority: { recommended: 3, approval: "per_authority" },
     timing: { horizonDays: 21, cadenceDays: 3 }, fatigue: { scopes: ["contact", "agent"], maxContactRisk: "moderate", deconflict: true },
@@ -256,13 +257,14 @@ export const PLATFORM_STRATEGY_LIBRARY: readonly StrategyDefinition[] = Object.f
     audience: "A new or coming-soon listing", marketSuitability: ["any"], averageCostUsd: 140, priority: 90,
   }),
   def({
-    key: "recruiting", version: 1, title: "VIPAgents Need-Driven Recruiting",
+    key: "recruiting", version: 2, title: "VIPAgents Need-Driven Recruiting",
     objective: "Recruit experienced agents where the twin says capacity is short",
     missionType: "recruiting", ownerManager: "recruiting_manager",
     eligibility: { subjectTypes: ["territory", "brokerage"], all: [{ fact: "recruiting_need", op: "is_true" }] },
     steps: [
-      { manager: "recruiting_manager", capabilities: [], purpose: "target and reach candidate agents", playbooks: [{ kind: "kernel_play", key: "recruit_outreach" }, { kind: "kernel_play", key: "dynamic_playbook" }],
-        gap: "recruiting outreach has no APP_CAPABILITY key (recruiting_manager owns none) — it rides produceRecruitOutreach and the twin's recruiting missions" },
+      // v2 (wave 108, owner-approved): recruiting outreach is the recruiting_manager's catalogue capability
+      // (lib/agents/recruit-outreach-producer.ts recruitOutreachCapability — proposals into the approval gate).
+      { manager: "recruiting_manager", capabilities: ["recruit_outreach"], purpose: "target and reach candidate agents", playbooks: [{ kind: "kernel_play", key: "recruit_outreach" }, { kind: "kernel_play", key: "dynamic_playbook" }] },
       { manager: "campaign_orchestrator", capabilities: ["marketing_campaign_create"], purpose: "the recruiting campaign", playbooks: [] },
       { manager: "finance_manager", capabilities: ["report_generate"], purpose: "the offer economics (splits, residuals) the pitch rests on", playbooks: [] },
     ],

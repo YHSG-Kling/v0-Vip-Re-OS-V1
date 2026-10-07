@@ -89,6 +89,14 @@ export interface ExperimentPolicy {
   /** 102D — the live version of the `experiments` policy (tenant_policy_versions, lib/kernel/tenant-policy.ts
    *  currentPolicyVersion): 0 = never changed through the versioned writer; null = the version read was refused. */
   version?: number | null
+  /** Wave 108 (108F) — the experiment CLASSES a human allowed to DEPLOY autonomously
+   *  (settings.experiments.autonomous_classes; lib/kernel/experiment-pipeline.ts EXPERIMENT_CLASSES).
+   *  DEFAULT NONE: absent / unreadable = every experiment waits for a human. */
+  autonomousClasses?: readonly string[]
+  /** Wave 108 (108F) — PROMOTED experiments: the winning arm now serves the whole cohort
+   *  (settings.experiments.adopted[<experiment key>] = { arm, control_sequence_id, treatment_sequence_id }),
+   *  written only by the proposal promotion (improvement-proposals.ts applyChange → mergeBrokerageSettings). */
+  adopted?: Readonly<Record<string, { arm: string; control_sequence_id?: string | null; treatment_sequence_id?: string | null; contact_types?: string[] | null }>>
 }
 
 /** The registered tenant policy key the kill switch lives under (TENANT_POLICY_SETTINGS_KEYS). */
@@ -97,12 +105,15 @@ export const EXPERIMENTS_POLICY_KEY = "experiments"
 /** PURE. The tenant's experiment policy from brokerage_settings.settings (any shape; unknown → on). */
 function experimentPolicyFromSettings(settings: unknown): ExperimentPolicy {
   const exp = (settings && typeof settings === "object" ? (settings as Record<string, unknown>).experiments : null) as Record<string, unknown> | null | undefined
-  if (!exp || typeof exp !== "object") return { readable: true, killSwitch: false, disabled: [], version: null }
+  if (!exp || typeof exp !== "object") return { readable: true, killSwitch: false, disabled: [], version: null, autonomousClasses: [], adopted: {} }
+  const adopted = exp.adopted && typeof exp.adopted === "object" && !Array.isArray(exp.adopted) ? (exp.adopted as ExperimentPolicy["adopted"]) : {}
   return {
     readable: true,
     killSwitch: exp.kill_switch === true,
     disabled: Array.isArray(exp.disabled) ? exp.disabled.map(String) : [],
     version: null,
+    autonomousClasses: Array.isArray(exp.autonomous_classes) ? exp.autonomous_classes.map(String) : [],
+    adopted,
   }
 }
 

@@ -141,6 +141,11 @@ console.log("\n── 2. EACH INPUT SLICE CONTRIBUTES (and the control: without 
 {
   const p = planNextBestExperience(base({ person: { contactType: "lifetime", persona: null, hasAssignedAgent: true } }))
   check("PERSON: lifetime → video (asset_manager)", p.chosen.kind === "video" && p.chosen.manager === "asset_manager")
+  // WAVE 108: the CANONICAL lifetime spellings (contacts.contact_type 'lifetime_customer' / 'sphere') reach the
+  // video too — the old literal matched only retired spellings — and the video is ROUTED THROUGH sphere_of_influence.
+  const canon = ["lifetime_customer", "sphere"].map((t) => planNextBestExperience(base({ person: { contactType: t, persona: null, hasAssignedAgent: true } })))
+  check("PERSON (wave 108): a canonical lifetime contact (lifetime_customer / sphere) → video, routed via sphere_of_influence (asset_manager renders)", canon.every((x) => x.chosen.kind === "video" && x.chosen.manager === "asset_manager" && x.chosen.via === "sphere_of_influence"))
+  check("PERSON (wave 108, control): a buyer contact's video is NOT routed via the Sphere Manager", (() => { const b = planNextBestExperience(base({ person: { contactType: "buyer", persona: null, hasAssignedAgent: true }, memory: [{ key: "channel_preference", value: "video please" }] } as any)); const vid = b.ranked.find((r) => r.kind === "video"); return !vid || vid.via === undefined })())
   const v = planNextBestExperience(base({ person: { contactType: "lifetime", persona: null, hasAssignedAgent: true }, policy: { complianceHardFlag: false, allowedChannels: ["email"], autoSendAllowed: true, videoAllowed: false } }))
   check("…POLICY: video opt-out removes video", v.chosen.kind !== "video" && (v.ranked.find((r) => r.kind === "video")?.score ?? 0) < 0)
   const a = planNextBestExperience(base({ person: { contactType: "buyer", persona: null, hasAssignedAgent: false } }))

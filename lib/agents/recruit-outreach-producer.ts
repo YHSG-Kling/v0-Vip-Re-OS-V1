@@ -162,18 +162,20 @@ export async function produceRecruitOutreach(
  */
 export async function sweepStaleRecruits(
   brokerageId: string, staleDays = 7, client?: Svc,
-): Promise<{ proposed: number; scanned: number }> {
+): Promise<{ proposed: number; scanned: number; readRefused?: string }> {
   const supabase = client ?? createServiceClient()
   if (!brokerageId) return { proposed: 0, scanned: 0 }
 
   const staleBefore = new Date(Date.now() - staleDays * 86_400_000).toISOString()
-  const { data: recruits } = await supabase
+  const { data: recruits, error: readErr } = await supabase
     .from("recruits")
     .select("id, last_contact_date, status")
     .eq("brokerage_id", brokerageId)
     .in("status", ["prospect", "contacted", "interviewing", "offer_extended"])
     .or(`last_contact_date.is.null,last_contact_date.lt.${staleBefore}`)
     .limit(200)
+  // §3: a refused read is NOT "no stale recruits" — say so (the capability worker returns it).
+  if (readErr) return { proposed: 0, scanned: 0, readRefused: `recruits: ${readErr.message}` }
 
   const rows = (recruits ?? []) as Array<{ id: string }>
   let proposed = 0
@@ -182,4 +184,30 @@ export async function sweepStaleRecruits(
     if (r.proposed) proposed += 1
   }
   return { proposed, scanned: rows.length }
+}
+
+/**
+ * WAVE 108 — the `recruit_outreach` CAPABILITY (recruiting_manager), worked from a manager delegation
+ * (lib/kernel/manager-delegation.ts DELEGATION_WORKERS). It rides THIS pipeline and nothing else: named
+ * recruits (input_entities.recruitIds) get produceRecruitOutreach each; otherwise the stale-recruit sweep
+ * runs. Every message is a PROPOSAL into the approval gate — nothing sends until a human approves it.
+ */
+export async function recruitOutreachCapability(
+  brokerageId: string, input: { recruitIds?: unknown; staleDays?: unknown }, client?: Svc,
+): Promise<{ ok: true; proposed: number; scanned: number; skipped: Array<{ recruitId: string; reason: string }> } | { ok: false; reason: string }> {
+  const supabase = client ?? createServiceClient()
+  const ids = Array.isArray(input.recruitIds) ? input.recruitIds.map(String).filter(Boolean).slice(0, 200) : []
+  if (ids.length === 0) {
+    const days = Number(input.staleDays)
+    const s = await sweepStaleRecruits(brokerageId, Number.isFinite(days) && days > 0 ? days : 7, supabase)
+    return s.readRefused ? { ok: false, reason: s.readRefused } : { ok: true, proposed: s.proposed, scanned: s.scanned, skipped: [] }
+  }
+  let proposed = 0
+  const skipped: Array<{ recruitId: string; reason: string }> = []
+  for (const id of ids) {
+    const r = await produceRecruitOutreach(brokerageId, id, supabase)
+    if (r.proposed) proposed++
+    else skipped.push({ recruitId: id, reason: r.reason ?? "not proposed" })
+  }
+  return { ok: true, proposed, scanned: ids.length, skipped }
 }

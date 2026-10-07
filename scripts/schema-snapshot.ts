@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 725 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 727 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-06
+ * generated: 2026-10-07
  * source: public.live_schema_json()
- * body-sha256: 07fade8565cf7503a735ae08353f1d39eca6157bcd74912ef9ceb2d30a5595e8
+ * body-sha256: c82616a4b119a4867f203875683bd1e99f1cf9770df87e547745f6504d2b6e99
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -124,6 +124,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   auto_response_settings: ["agent_id", "brokerage_id", "created_at", "custom_prompt", "delay_minutes", "id", "is_enabled", "keywords", "tone", "updated_at"],
   automation_errors: ["assigned_at", "assigned_by", "assigned_to", "brokerage_id", "context_json", "created_at", "dismiss_reason", "dismissed_at", "dismissed_by", "error_message", "id", "lead_id", "resolution_notes", "resolved_at", "resolved_by", "severity", "status", "workflow_name"],
   automation_logs: ["automation_id", "brokerage_id", "created_at", "executed_at", "id", "result", "trigger_type", "user_id"],
+  autonomy_budget_consumptions: ["amount", "brokerage_id", "created_at", "envelope", "id", "manager", "period_cap", "period_key", "policy_ref", "reason", "release_reason", "released_at", "scope_cap", "scope_key", "status", "unit"],
   batchdata_incremental_search_state: ["created_at", "id", "lane", "last_error", "last_run_at", "market_id", "page_cursor", "results_found", "session_supported", "updated_at"],
   batchdata_motivated_sellers_raw: ["brokerage_id", "created_at", "email", "first_name", "id", "last_name", "lead_id", "motivation_confidence", "motivation_type", "phone", "predicted_timeframe", "property_address", "property_baths", "property_beds", "property_city", "property_estimated_value", "property_sqft", "property_state", "property_zip", "raw_json", "residential_address", "residential_city", "residential_state", "residential_zip", "scraper_execution_id"],
   batchdata_smart_search_subscriptions: ["created_at", "geography_count", "id", "last_error", "last_reconciled_at", "market_id", "pool_key", "pooled", "priority", "quicklist", "renewed_at", "status", "subscription_id", "updated_at", "webhook_url"],
@@ -605,6 +606,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   signal_reactivations: ["brokerage_id", "contact_id", "id", "isa_reactivated", "isa_reactivated_at", "lead_id", "signal_data", "signal_strength", "signal_type", "triggered_at"],
   signature_requests: ["all_parties", "brokerage_id", "completed_at", "contact_id", "created_at", "document_id", "expires_at", "id", "provider_envelope_id", "request_status", "sent_at", "signing_order", "signing_url", "transaction_id"],
   site_activity: ["action_taken", "behavioral_signal_id", "brokerage_id", "contact_id", "id", "occurred_at", "page_visited", "search_terms", "time_on_page_seconds", "timestamp"],
+  skill_marketplace_listings: ["approved_at", "approved_by", "brokerage_id", "created_at", "declaration", "declaration_digest", "evaluated_at", "evaluation_evidence", "id", "published_at", "publisher", "publisher_name", "revoked_at", "revoked_reason", "skill_id", "status", "submitted_by", "updated_at", "version"],
   smart_assistant_suggestions: ["action_payload_json", "action_type", "action_url", "agent_id", "brokerage_id", "context_type", "created_at", "description", "feedback_text", "id", "metadata", "priority", "rating", "rating_at", "source_system", "status", "suggestion_type", "title"],
   smart_checklists: ["auto_generated", "brokerage_id", "checklist_type", "completed_items", "created_at", "id", "percent_complete", "total_items", "transaction_id", "updated_at"],
   smart_landing_sessions: ["brokerage_id", "contact_id", "created_at", "cta_clicked", "id", "ip_address", "listing_id", "pages_viewed", "qr_source", "session_token", "showing_requested", "time_on_page_seconds", "utm_campaign", "utm_medium", "utm_source", "visitor_fingerprint"],

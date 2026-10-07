@@ -61,7 +61,7 @@ import {
   MISSION_ATTENTION_STATES, MISSION_BLOCKED_STALE_HOURS, MISSION_CONTROL_REASON, MISSION_LIFECYCLE_REASON,
   MISSION_STATES, MISSION_TERMINAL_STATES,
   budgetExhausted, canTransition, evaluateSuccess, blockMission, enlistMissionParticipants, escalateMission,
-  recordMissionEvidence, transitionMission,
+  recordMissionEvidence, transitionMission, isPlatformScopeMission,
   type MissionActor, type MissionDeps, type MissionRow, type MissionState, type MissionType,
 } from "@/lib/kernel/missions"
 
@@ -97,6 +97,11 @@ export const MEASURE_CAPABILITIES: Readonly<Record<string, { owner: AppCapabilit
   "now.pipeline.converted90d":             { owner: "isa_qualify", needs: ["isa_qualify", "lead_search", "contact_get"], rides: ["lead_quality_spend", "assignment_policy_outcomes"] },
   "now.pipeline.leads":                    { owner: "lead_create", needs: ["lead_create", "lead_search"], rides: ["lead_quality_spend"] },
   "now.contacts.active":                   { owner: "lead_create", needs: ["lead_create", "contact_get", "newsletter_send"], rides: ["long_horizon_nurture"] },
+  // wave 108E — the twin SLICE measures an objective-delegation child mission is judged on
+  // (lib/kernel/broker-objectives.ts): paid leads, nurture conversions, approved creative.
+  "slices.ads_manager.measures.leads30d":             { owner: "ads_performance_report", needs: ["ads_performance_report"], rides: [] },
+  "slices.campaign_orchestrator.measures.converted30d": { owner: "campaign_performance_report", needs: ["campaign_performance_report", "marketing_campaign_create"], rides: [] },
+  "slices.asset_manager.measures.approved30d":        { owner: "content_repurpose", needs: ["content_repurpose"], rides: [] },
 }
 
 /**
@@ -509,7 +514,9 @@ export async function controlMissions(brokerageId: string, client?: Client, opts
   if (opts.missionIds?.length) q = q.in("id", opts.missionIds)
   const { data, error } = await q.limit(Math.min(opts.limit ?? MISSION_CONTROL_BATCH, MISSION_CONTROL_BATCH))
   if (error) { result.readRefused = error.message; return result }
-  const missions = (data ?? []) as MissionRow[]
+  // Wave 108B: a platform support mission is the PLATFORM's work on this tenant (owner
+  // platform_sentinel, staff decide it) — the tenant's controller never supervises it.
+  const missions = ((data ?? []) as MissionRow[]).filter((m) => !isPlatformScopeMission(m))
   if (missions.length === 0) return result
   const ids = missions.map((m) => m.id)
 

@@ -54,10 +54,24 @@ export const CAPABILITY_MANAGER: Record<AppCapability, ManagerKey> = {
   // wave 105A: the pre-listing-appointment prep chain is the Concierge's; another manager (the AI ISA
   // that booked the appointment) REQUESTS it through a manager_delegation, never runs it itself.
   listing_appointment_prep:  "listing_concierge",
+  // wave 108E: the broker-objective evidence check (lib/kernel/broker-objectives.ts) — seller demand.
+  listing_demand_report:     "listing_concierge",
+
+  // ── Paid acquisition — the Ads Manager (wave 108E: its first capability; the evidence check) ──
+  ads_performance_report:    "ads_manager",
 
   // ── Buyer journey — the Shopping Agent ──
   appointment_schedule:      "shopping_agent",
   portal_milestones_get:     "shopping_agent",
+  // wave 108: the buyer → lender pre-approval handoff is the buyer journey's step (the lender is a
+  // VENDOR category — lib/kernel/lender-linkage.ts — never a seat the Shopping Agent hands to).
+  lender_preapproval_handoff: "shopping_agent",
+
+  // ── Workforce supply — the Recruiting Manager (wave 108) ──
+  recruit_outreach:          "recruiting_manager",
+
+  // ── Paid acquisition — the Ads Manager (wave 108) ──
+  ad_campaign_launch:        "ads_manager",
 
   // ── Transactions & closings ──
   transaction_advance:       "deal_coordinator",
@@ -67,6 +81,8 @@ export const CAPABILITY_MANAGER: Record<AppCapability, ManagerKey> = {
   marketing_campaign_create: "campaign_orchestrator",
   direct_mail_send:          "campaign_orchestrator",
   video_distribute:          "campaign_orchestrator",
+  // wave 108E: the broker-objective evidence check (lib/kernel/broker-objectives.ts) — nurture performance.
+  campaign_performance_report: "campaign_orchestrator",
 
   // ── Brand & promotion — Campaign Orchestrator (m618: survivor of the retired
   //    marketing_agent/"Marketing Manager" seat) ──

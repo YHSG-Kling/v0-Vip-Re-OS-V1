@@ -342,7 +342,22 @@ console.log("\nK. manager slices — one per MANAGERS key, owned, read through a
 const { TWIN_SLICE_SPECS, TWIN_FLOW_STAGES, detectBottleneck } = await import("../lib/kernel/brokerage-twin")
 // Slice fixture rows for BOTH tenants (A small, B large — a bleed would show as B's numbers in A's slices).
 const sliceRows = (brokerage: string, tag: string, n: number): Record<string, Row[]> => ({
-  tours: Array.from({ length: n }, (_, i) => ({ id: `${tag}-to${i}`, brokerage_id: brokerage, agent_id: `${tag}-ag${(i % 2) + 1}`, created_at: iso(5) })),
+  // Only a CONTACT tours (wave 108): every counted tour names its contact; the extra contact-less row is the control.
+  tours: [...Array.from({ length: n }, (_, i) => ({ id: `${tag}-to${i}`, brokerage_id: brokerage, agent_id: `${tag}-ag${(i % 2) + 1}`, contact_id: `${tag}-cb${i}`, created_at: iso(5) })),
+    { id: `${tag}-toX`, brokerage_id: brokerage, agent_id: `${tag}-ag1`, contact_id: null, created_at: iso(5) }],
+  // Wave 108 contacts: buyer ×2 + both ×1 (buyer side 3), seller ×1, lifetime_customer ×2 + sphere ×1 (lifetime 3), a
+  // deleted buyer (never counted). source_family: 4 arrived DIRECT from an inbound source, 3 via a converted lead.
+  contacts: [
+    ...["buyer", "buyer", "both", "seller", "lifetime_customer", "lifetime_customer", "sphere"].map((t, i) => ({ id: `${tag}-ct${i}`, brokerage_id: brokerage, deleted_at: null, agent_id: `${tag}-ag${(i % 2) + 1}`, contact_type: t, source_family: i < 4 ? "contact_direct" : "lead", created_at: iso(20) })),
+    { id: `${tag}-ctD`, brokerage_id: brokerage, deleted_at: iso(2), agent_id: `${tag}-ag1`, contact_type: "buyer", source_family: "contact_direct", created_at: iso(20) },
+  ],
+  // The owner's pipeline: scraping lands RAW rows (4), two of them promoted to leads (source_family 'raw'),
+  // plus one lead from another source; inactive so the pipeline section's active-lead count is unchanged.
+  raw_scraped_leads: Array.from({ length: 4 }, (_, i) => ({ id: `${tag}-rw${i}`, brokerage_id: brokerage, created_at: iso(15) })),
+  leads: [
+    ...[0, 1].map((i) => ({ id: `${tag}-lr${i}`, brokerage_id: brokerage, is_active: false, lifecycle_state: "assigned", agent_id: `${tag}-ag1`, converted_at: null, lead_type: "buyer", source_family: "raw", created_at: iso(12) })),
+    { id: `${tag}-lw`, brokerage_id: brokerage, is_active: false, lifecycle_state: "assigned", agent_id: `${tag}-ag2`, converted_at: null, lead_type: "seller", source_family: "lead", created_at: iso(12) },
+  ],
   offers: Array.from({ length: n }, (_, i) => ({ id: `${tag}-of${i}`, brokerage_id: brokerage, agent_id: `${tag}-ag2`, created_at: iso(10) })),
   marketing_assets: Array.from({ length: n }, (_, i) => ({ id: `${tag}-ma${i}`, brokerage_id: brokerage, team_id: i === 0 ? TEAM : null, approval_status: i === 0 ? "approved" : "pending", cost_usd: 2.5, created_at: iso(3), performance: i === 0 ? { ctr: 0.02 } : {} })),
   ai_video_projects: [{ id: `${tag}-v1`, brokerage_id: brokerage, agent_id: `${tag}-ag1`, status: "generating" }, { id: `${tag}-v2`, brokerage_id: brokerage, agent_id: `${tag}-ag1`, status: "completed" }],
@@ -376,7 +391,7 @@ let twinK!: BrokerageTwin
   check("K4 every reader slice reads through a survivor: present, fresh-stamped, evidence pinned to brokerage_id and naming its producer", readers.length === 6 && readers.every((s) => s.status === "present" && s.asOf !== null && s.evidence.length > 0 && s.evidence.every((e) => e.filter.includes(`brokerage_id=${A}`) && e.via.length > 0)), readers.map((s) => `${s.manager}:${s.status}`).join(","))
   const m = (k: string) => twinK.slices[k as keyof typeof twinK.slices].measures
   check("K5 slice numbers are A's rows as written (B's 9-row fixture never bleeds): buyer tours 3, live campaigns 1, ad spend $120, experiences 3 (wait 1 / education 2, the allocation row excluded), touchpoints 3 opened 2, sphere avg 60, cron failed 1",
-    m("shopping_agent").tours30d === 3 && m("ads_manager").liveCampaigns === 1 && m("ads_manager").spendCents30d === 12_000 && m("ads_manager").costPerLeadCents === 2000 && m("campaign_orchestrator").experiences30d === 3 && m("campaign_orchestrator")["experience.wait"] === 1 && m("campaign_orchestrator")["experience.education"] === 2 && m("campaign_orchestrator").opened30d === 2 && m("sphere_of_influence").avgScore === 60 && m("cron_manager").failed7d === 1 && m("asset_manager").assets30d === 3 && m("asset_manager").videosInFlight === 1, JSON.stringify({ s: m("shopping_agent"), a: m("ads_manager"), c: m("campaign_orchestrator") }))
+    m("shopping_agent").tours30d === 3 && m("shopping_agent").buyerContacts === 3 && m("sphere_of_influence").lifetimeContacts === 3 && m("ads_manager").liveCampaigns === 1 && m("ads_manager").spendCents30d === 12_000 && m("ads_manager").costPerLeadCents === 2000 && m("campaign_orchestrator").experiences30d === 3 && m("campaign_orchestrator")["experience.wait"] === 1 && m("campaign_orchestrator")["experience.education"] === 2 && m("campaign_orchestrator").opened30d === 2 && m("sphere_of_influence").avgScore === 60 && m("cron_manager").failed7d === 1 && m("asset_manager").assets30d === 3 && m("asset_manager").videosInFlight === 1, JSON.stringify({ s: m("shopping_agent"), a: m("ads_manager"), c: m("campaign_orchestrator") }))
   check("K6 the data steward's slice is the build's own confidence (refusals, blind spots, snapshot baseline, competency source)", twinK.slices.data_steward.status === "present" && twinK.slices.data_steward.measures.snapshotBaseline === 1 && typeof twinK.slices.data_steward.measures.refusedReads === "number")
   check("K7 reader-slice measures ride the snapshot measures (change detection), re-homed slices add none", twinMeasures(twinK)["slices.ads_manager.liveCampaigns"] === 1 && !Object.keys(twinMeasures(twinK)).some((k) => k.startsWith("slices.deal_coordinator.")))
 
@@ -400,13 +415,19 @@ let twinK!: BrokerageTwin
 }
 
 // ─── L. the system view — flow, conversion, bottleneck ───────────────────────────────────────────
-console.log("\nL. system view — lead → opportunity → appointment → agreement → transaction → closed, with the bottleneck named")
+console.log("\nL. system view — the owner's pipeline: raw lead → lead → contact (← inbound direct) → appointment → agreement → transaction → closed, with the bottleneck named")
 {
   const s = twinK.system
-  check("L1 the six stages in flow order with an owner and evidence each", s.stages.map((x) => x.stage).join() === TWIN_FLOW_STAGES.join() && s.stages.every((x) => x.owners.length > 0 && x.evidence.filter.includes(`brokerage_id=${A}`)))
-  const c = (k: string) => s.stages.find((x) => x.stage === k)!.count
-  // A's 90d window: 3 leads created? (fixture leads carry no created_at → 0), converted 1, appointments 3 presentations + 3 tours, agreements 3 offers, closed 1.
-  check("L2 stage counts are the window's rows (appointments = presentations + tours; agreements = listings taken + offers written; closed = the economic section's count)", c("opportunity") === 1 && c("appointment") === 6 && c("agreement") === 3 && c("closed") === twinK.economic.closedCount90d, JSON.stringify(s.stages.map((x) => [x.stage, x.count])))
+  check("L1 the stages in the owner's flow order (raw lead → lead → contact → appointment → agreement → transaction → closed) with an owner and evidence each", TWIN_FLOW_STAGES.join() === "raw_lead,lead,contact,appointment,agreement,transaction,closed" && s.stages.map((x) => x.stage).join() === TWIN_FLOW_STAGES.join() && s.stages.every((x) => x.owners.length > 0 && x.evidence.filter.includes(`brokerage_id=${A}`)))
+  const stg = (k: string) => s.stages.find((x) => x.stage === k)!
+  const c = (k: string) => stg(k).count
+  // A's 90d window: 4 raw rows, 3 leads created (2 promoted from raw), 7 live contacts created (4 direct, the deleted one never),
+  // 1 lead converted, appointments 3 presentations + 3 tours BY CONTACTS (the contact-less tour excluded), agreements 3 offers, closed 1.
+  check("L2 stage counts are the window's rows (appointments = presentations + tours by contacts; agreements = listings taken + offers written; closed = the economic section's count)", c("raw_lead") === 4 && c("lead") === 3 && c("contact") === 7 && c("appointment") === 6 && c("agreement") === 3 && c("closed") === twinK.economic.closedCount90d, JSON.stringify(s.stages.map((x) => [x.stage, x.count])))
+  const trn = (a: string) => s.transitions.find((t) => t.from === a)!
+  check("L2b the contact stage has TWO entries (owner ruling): 4 arrived DIRECT from inbound sources, 1 from a converted lead — lead → contact converts on the converted lead (1/3), never contacts ÷ leads (7/3)", stg("contact").sources?.direct === 4 && stg("contact").sources?.fromLead === 1 && stg("contact").entered === 1 && Math.abs((trn("lead").rate ?? 0) - 1 / 3) < 1e-9, JSON.stringify({ c: stg("contact"), t: trn("lead") }))
+  check("L2c raw → lead converts on the leads promoted FROM a raw row (source_family 'raw': 2 of 4 = 50%), not on every lead created", stg("lead").entered === 2 && trn("raw_lead").rate === 0.5)
+  check("L2d (control) the naive ratio the rule replaced would have read > 100% — the defect L2b catches", (c("contact")! / c("lead")!) > 1)
   const st = (stage: string, count: number | null) => ({ stage: stage as any, count, owners: ["ai_isa" as const], evidence: { table: "t", filter: "f", count: count ?? 0, via: "v" } })
   const stages = [st("lead", 100), st("opportunity", 40), st("appointment", 30), st("agreement", 3), st("transaction", 3), st("closed", 2)]
   const tr = (a: number, b: number) => ({ from: stages[a].stage, to: stages[b].stage, rate: stages[a].count ? stages[b].count! / stages[a].count! : null, status: "measured" as const })
@@ -417,6 +438,28 @@ console.log("\nL. system view — lead → opportunity → appointment → agree
   check("L5 a refused stage read → that stage's count is null (not 0) and both its transitions read 'unmeasured'", refused.stages.find((x) => x.stage === "appointment")!.count === null && refused.transitions.filter((t) => t.from === "appointment" || t.to === "appointment").every((t) => t.status === "unmeasured"))
   check("L6 capacity constraint: half the scored roster at capacity or over (capacityFor) → 'agent capacity' named with the capacity evidence", twinK.system.constraints.some((x) => x.what === "agent capacity" && x.evidence.via.includes("capacityFor")))
   check("L7 the flow counts ride the snapshot measures (system.<stage>)", twinMeasures(twinK)["system.appointment"] === 6)
+}
+
+// ─── N. WAVE 108 DOMAIN CORRECTIONS — contacts, not leads ───────────────────────────────────────
+console.log("\nN. wave 108 domain corrections — the Shopping Agent / Listing Concierge read CONTACTS; only contacts tour; Sphere = LIFETIME contacts")
+{
+  const reads = makeClient(sliceWorld()); await buildBrokerageTwin(A, NOW, { svc: reads as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false })
+  const sel = reads.log.filter((l) => l.op === "select")
+  check("N1 the build never reads leads by lead_type (the buyer / seller demand reads are contacts by contact_type)", !sel.some((l) => l.table === "leads" && l.filters.includes("in:lead_type")) && sel.filter((l) => l.table === "contacts" && l.filters.includes("in:contact_type")).length >= 3, sel.filter((l) => l.table === "leads").map((l) => l.filters.join("|")).join(" ; "))
+  check("N2 (positive control) the N1 finder recognises the retired shape (a leads read filtered by lead_type)", [{ table: "leads", op: "select", filters: ["eq:brokerage_id", "in:lead_type"] }].some((l) => l.table === "leads" && l.filters.includes("in:lead_type")))
+  check("N3 only CONTACTS tour: every tours read requires contact_id (the contact-less tour is never counted — shopping tours30d = 3 of 4 rows)", sel.filter((l) => l.table === "tours").every((l) => l.filters.includes("not:contact_id")) && twinK.slices.shopping_agent.measures.tours30d === 3)
+  check("N4 the Shopping Agent's buyer demand = contacts buyer|both (3; the deleted buyer and the seller excluded); the Sphere slice = LIFETIME contacts (lifetime_customer + sphere = 3), each cited", twinK.slices.shopping_agent.measures.buyerContacts === 3 && twinK.slices.sphere_of_influence.measures.lifetimeContacts === 3 && twinK.slices.sphere_of_influence.evidence.some((e) => e.table === "contacts" && /lifetime_customer,sphere/.test(e.filter)))
+  // Listing Concierge: territory seller demand is seller CONTACTS. Control: seller LEADS with zips never count.
+  const farmW = { farm_territories: [{ id: "f-a", brokerage_id: A, is_active: true, name: "Farm A", zip_codes: ["11111"], agent_id: "a-ag1" }] }
+  const sellerLeadsOnly = (await buildBrokerageTwin(A, NOW, { svc: makeClient(sliceWorld({ ...farmW, leads: [{ id: "sl-1", brokerage_id: A, is_active: true, lifecycle_state: "isa_qualifying", agent_id: null, converted_at: null, lead_type: "seller", property_zip_code: "11111", created_at: iso(3) }] })) as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false })).twin
+  const sellerContact = (await buildBrokerageTwin(A, NOW, { svc: makeClient(sliceWorld({ ...farmW, contacts: [{ id: "sc-1", brokerage_id: A, deleted_at: null, agent_id: null, contact_type: "seller", zip_code: "11111", home_value_estimate: 300000, created_at: iso(3) }] })) as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false })).twin
+  const farmA = (t: BrokerageTwin) => t.workforce.territories.find((x) => x.territory === "Farm A")?.sellerContacts30d ?? -1
+  check("N5 the Listing Concierge's territory demand counts a seller CONTACT in the farm (1) and never a seller LEAD (0) — a lead converts to a contact first", farmA(sellerContact) === 1 && farmA(sellerLeadsOnly) === 0, `contact=${farmA(sellerContact)} lead=${farmA(sellerLeadsOnly)}`)
+  const team = (await buildBrokerageTwin(A, NOW, { svc: makeClient(sliceWorld()) as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false, teamId: TEAM })).twin
+  check("N6 a TEAM board withholds the raw-lead stage (raw rows carry no agent) — null, published as a blind spot, never the brokerage's count", team.system.stages.find((x) => x.stage === "raw_lead")!.count === null && team.blindSpots.some((b) => /raw-lead stage is withheld/.test(b)))
+  const twinSrc = code("lib/kernel/brokerage-twin.ts")
+  const byLeadType = /\.(in|eq)\("lead_type"/
+  check("N7 (stripped source) no twin read filters leads by lead_type any more — the demand vocabulary is the contact-type survivor (BUYER_SIDE / SELLER_SIDE / LIFETIME_CONTACT_TYPES); positive control: the finder catches the retired call", !byLeadType.test(src("lib/kernel/brokerage-twin.ts")) && byLeadType.test(stripComments(`svc.from("leads").select("id").in("lead_type", ["buyer"])`)) && /BUYER_SIDE_CONTACT_TYPES/.test(twinSrc) && /SELLER_SIDE_CONTACT_TYPES/.test(twinSrc) && /LIFETIME_CONTACT_TYPES/.test(twinSrc))
 }
 
 // ─── M. ONE READER — every consumer reads the twin through readBrokerageTwin ─────────────────────

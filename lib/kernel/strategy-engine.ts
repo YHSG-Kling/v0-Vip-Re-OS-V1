@@ -38,7 +38,7 @@ import {
   activeMissionsFor, attachEvidence, createMission, transitionMission,
   MISSION_LIFECYCLE_REASON, type MissionDeps, type MissionRow,
 } from "@/lib/kernel/missions"
-import { requestDelegation, type DelegationDeps } from "@/lib/kernel/manager-delegation"
+import { requestDelegation, DELEGATION_WORKERS, type DelegationDeps } from "@/lib/kernel/manager-delegation"
 import {
   adaptStrategy, participatingManagers, platformStrategy, rankStrategies, strategyCapabilities, strategyDigest,
   strategyGaps, strategyOwnershipOf, strategyRef, STRATEGY_EVIDENCE_KIND, PLATFORM_STRATEGY_LIBRARY,
@@ -228,14 +228,18 @@ export async function activateStrategy(input: ActivateStrategyInput, client?: Cl
   const delegations: Array<{ manager: ManagerKey; capability: AppCapability; ok: boolean; reason?: string; id?: string }> = []
   const deferred: Array<{ manager: ManagerKey; capability: AppCapability; why: string }> = []
   for (const [i, step] of def.steps.entries()) {
-    if (step.manager === def.ownerManager) continue
+    const ownStep = step.manager === def.ownerManager
     for (const capability of step.capabilities) {
+      // The owner's own step is the mission itself — EXCEPT a capability with a worker on its survivor
+      // (wave 108: recruit outreach, the lender handoff), which becomes the owner's WORK ORDER on the
+      // same delegation machine (a human accepts it; the transitions leave the evidence).
+      if (ownStep && !DELEGATION_WORKERS[capability]) continue
       const rung = (MIN_AUTHORITY_FOR_RISK[capabilityRiskClass(capability)] ?? 6) as AuthorityLevel
       if (rung > ceiling) { deferred.push({ manager: step.manager, capability, why: `needs rung ${rung} > ceiling ${ceiling} — requested once the mission is approved` }); continue }
       const r = await requestDelegation({
         brokerageId: input.brokerageId, missionId: mission.id, requestingManager: def.ownerManager, assignedManager: step.manager, capability,
-        objective: `${def.title} — step ${i + 1}: ${step.purpose}`, authority: rung, deadline: mission.deadline,
-        inputEntities: { subject_type: input.subject.type, subject_id: input.subject.id, strategy: ref, step: i + 1, playbooks: step.playbooks },
+        objective: `${def.title} — step ${i + 1}: ${step.purpose}`, authority: rung, deadline: mission.deadline, ownerWorkOrder: ownStep,
+        inputEntities: { subject_type: input.subject.type, subject_id: input.subject.id, strategy: ref, step: i + 1, playbooks: step.playbooks, ...(input.subject.type === "contact" ? { contactId: input.subject.id } : {}), ...(input.subject.type === "listing" ? { listingId: input.subject.id } : {}) },
         actor: { type: "manager", id: def.ownerManager },
       }, svc, { ...(deps.delegation ?? {}), mission: deps.delegation?.mission ?? deps.mission })
       delegations.push(r.ok ? { manager: step.manager, capability, ok: true, id: r.delegation.id } : { manager: step.manager, capability, ok: false, reason: r.reason })

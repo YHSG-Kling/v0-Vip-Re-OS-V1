@@ -32,6 +32,9 @@ import { predictorTuning } from "@/lib/intelligence/predictor-learning"
 import { parsePolicyKey, formatPolicyRef, type PolicyActor } from "@/lib/kernel/tenant-policy"
 import type { AuthorityLevel } from "@/lib/ai-isa/persona-tool-policy"
 import type { AutonomyDecision } from "@/lib/managers/autonomy-gate"
+// Wave 108 (lane 108G): the optimizer's bounds — the classes it may touch and the surfaces it may NEVER touch —
+// are classified here, in the ONE proposal kernel, at propose / evaluate / decide / promote (whoever the actor is).
+import { classifyProposalSurface, loadSelfOptimizationPolicy, OPTIMIZATION_CLASS_AUTHORITY, type SurfaceVerdict, type OptimizationEvalDeps } from "@/lib/kernel/self-optimization"
 
 // Wave 106 (lane 106A, m721 — additive widening): `allocation` = a RESOURCE ALLOCATION recommendation
 // (lib/kernel/resource-allocation.ts — lead assignment / marketing budget) a human approves; proposer
@@ -39,7 +42,12 @@ import type { AutonomyDecision } from "@/lib/managers/autonomy-gate"
 // Wave 107 (107F, m726 — additive widening, superset of m721): `strategy` = a STRATEGY LEARNING finding
 // (lib/intelligence/strategy-learning.ts runStrategyLearning — "Strategy B works platform-wide, but A works better
 // for this brokerage"), proposer `strategy_learning`; a human approves (authority 6).
-export const PROPOSAL_SUBJECT_KINDS = ["policy", "prompt", "variant", "threshold", "allocation", "strategy"] as const
+// Wave 108 (108F, m731 — additive widening, superset of m726): `experiment` = a manager-proposed EXPERIMENT
+// (lib/kernel/experiment-pipeline.ts — hypothesis, metric, cohort, duration, budget, class), proposer
+// `experimentation`. PROPOSED → EVALUATED (historical replay + policy/risk + budget) → APPROVED (= RUNNING:
+// a human, or the system for a class the tenant made autonomous) → PROMOTED (the winning arm is ADOPTED) /
+// REJECTED (control held, no lift, or too little sample at the end).
+export const PROPOSAL_SUBJECT_KINDS = ["policy", "prompt", "variant", "threshold", "allocation", "strategy", "experiment"] as const
 export type ProposalSubjectKind = (typeof PROPOSAL_SUBJECT_KINDS)[number]
 
 export const PROPOSAL_STATUSES = ["PROPOSED", "EVALUATED", "APPROVED", "REJECTED", "PROMOTED", "ROLLED_BACK"] as const
@@ -47,7 +55,10 @@ export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number]
 
 // media_intelligence (wave 106C, m719 widens the m709 CHECK — APPLIED LIVE 2026-10-06; before it a media
 // proposal's insert is refused by the live CHECK and learnFromPerformance reports it, never silently).
-export const PROPOSERS = ["copy_learning", "predictor_learning", "prompt_calibrator", "outcome_autopsy", "human", "media_intelligence", "resource_allocation", "strategy_learning"] as const
+// team_optimization (wave 108G, m732 — additive superset of m726): a SELF-OPTIMIZING MANAGER TEAM's co-proposal
+// (lib/kernel/self-optimization.ts runTeamOptimizationCycle); every such row carries proposed_change.optimization.
+export const PROPOSERS = ["copy_learning", "predictor_learning", "prompt_calibrator", "outcome_autopsy", "human", "media_intelligence", "resource_allocation", "strategy_learning", "team_optimization", "experimentation"] as const
+// experimentation (wave 108F, m731): a manager-proposed EXPERIMENT (lib/kernel/autonomy-budgets.ts / experiments pipeline).
 export type Proposer = (typeof PROPOSERS)[number]
 
 /** The state machine (m709 CHECK is the vocabulary; this is the order). */
@@ -76,10 +87,13 @@ export const PROPOSAL_AUTHORITY: Readonly<Record<ProposalSubjectKind, AuthorityL
   allocation: OWNER_AUTHORITY_LEVEL,
   // 107F: a strategy finding is a recommendation — the strategy engine's activations (107E) apply a choice.
   strategy: OWNER_AUTHORITY_LEVEL,
+  // 108F: an experiment deploys / adopts at rung 4 ONLY for a class the tenant listed in
+  // experiments.autonomous_classes (the human-set grant); every other class waits for a human.
+  experiment: 4,
 })
 
 export type EvaluationVerdict = "pass" | "fail" | "inconclusive"
-export type Evaluator = "decision_replay" | "experiment_arms" | "predictor_record" | "none"
+export type Evaluator = "decision_replay" | "experiment_arms" | "predictor_record" | "reasoning_spend_replay" | "experience_attribution" | "provider_reliability" | "experiment_replay" | "none"
 
 export interface ProposalEvaluation {
   evaluator: Evaluator
@@ -89,7 +103,7 @@ export interface ProposalEvaluation {
   why: string
   detail: Record<string, unknown>
   /** Written by promotion: what the writer replaced (rollback re-applies it) and who wrote it. */
-  promotion?: { writer: string; previous: unknown; loserIds?: string[] }
+  promotion?: { writer: string; previous: unknown; loserIds?: string[]; /** 108G: the patched fields' prior values (rollback restores only these). */ previousFields?: Record<string, unknown> }
 }
 
 export interface ImprovementProposalRow {
@@ -156,10 +170,19 @@ export function promotionDecision(input: {
   authorityRequired: AuthorityLevel
   actor: ProposalActor
   gate?: PromotionGate | null
+  /** Wave 108G — the proposal's surface (classifyProposalSurface) and, for a non-human promoter of an
+   *  optimization, the tenant's autonomous class list (policy key self_optimization; null = unread → none). */
+  optimization?: { surface: SurfaceVerdict; autonomousClasses?: readonly string[] | null } | null
 }): { allow: boolean; reason: string } {
   if (input.status !== "APPROVED") return { allow: false, reason: `proposal is ${input.status} — only an APPROVED proposal promotes` }
+  // A FORBIDDEN SURFACE is refused for EVERY actor — a human approving it does not make it optimizable.
+  const surf = input.optimization?.surface ?? null
+  if (surf?.scope === "forbidden") return { allow: false, reason: `forbidden surface ${surf.surface}: ${surf.reason}` }
   if (input.actor.type === "agent") return { allow: false, reason: "an AI agent never promotes a change to the OS (LAW 4) — a human or a governed manager decides" }
   if (input.verdict === "fail") return { allow: false, reason: "the evaluation FAILED — a failed proposal is never promoted" }
+  if (surf?.scope === "optimizable" && input.actor.type !== "user" && !(input.optimization?.autonomousClasses ?? []).includes(surf.class)) {
+    return { allow: false, reason: `${surf.class} is not on this brokerage's autonomous optimization list — APPROVAL_REQUIRED: a human promotes it` }
+  }
   if (input.actor.type === "user") {
     return input.actor.isTenantAdmin
       ? { allow: true, reason: "tenant admin (human authority)" }
@@ -187,9 +210,17 @@ const REPLAYABLE_ISA_FIELDS = ["blocked_lifecycle_states", "max_touches_lead", "
 export async function evaluateImprovement(
   svc: Svc,
   row: Pick<ImprovementProposalRow, "brokerage_id" | "subject_kind" | "subject_key" | "proposed_change">,
-  opts: { now?: Date; replaySinceDays?: number; /** @proofSeam the proof injects a replay report carrying attributed outcomes */ replay?: typeof import("@/lib/kernel/decision-replay").replayDecisions } = {},
+  opts: { now?: Date; replaySinceDays?: number; /** @proofSeam the proof injects a replay report carrying attributed outcomes */ replay?: typeof import("@/lib/kernel/decision-replay").replayDecisions; experienceStats?: OptimizationEvalDeps["experienceStats"] } = {},
 ): Promise<ProposalEvaluation> {
   const change = row.proposed_change ?? {}
+  // Wave 108G: a forbidden surface FAILS evaluation (→ REJECTED); an optimizable class whose evaluator lives in
+  // self-optimization.ts is re-measured there; the rest fall through to the survivor evaluators below.
+  const surf = classifyProposalSurface({ ...row, proposer: (row as { proposer?: string | null }).proposer ?? null })
+  if (surf.scope === "forbidden") return { evaluator: "none", verdict: "fail", score: null, why: `forbidden surface ${surf.surface}: ${surf.reason}`, detail: { paths: surf.paths } }
+  if (surf.scope === "optimizable" && (surf.class === "model_routing" || surf.class === "education_intervention" || surf.class === "property_recommendation" || surf.class === "provider_selection")) {
+    const { evaluateOptimizationClass } = await import("@/lib/kernel/self-optimization")
+    return evaluateOptimizationClass(svc, row, surf.class, { now: opts.now, experienceStats: opts.experienceStats })
+  }
   switch (row.subject_kind) {
     case "variant": {
       const stats = Array.isArray(change.stats) ? (change.stats as VariantStat[]) : []
@@ -259,6 +290,11 @@ export async function evaluateImprovement(
         ? { evaluator: "none", verdict: "pass", score: sig.z, why: `re-measured: ${winner} still wins — ${sig.why}`, detail }
         : { evaluator: "none", verdict: "fail", score: sig.z, why: `re-measured: ${winner} wins now, not the proposed ${String(change.winner)}`, detail }
     }
+    case "experiment": {
+      // Wave 108F: the PRE-RUN gate — historical replay of the cohort + policy/risk + budget, deterministic.
+      const { evaluateExperimentProposal } = await import("@/lib/kernel/experiment-pipeline")
+      return evaluateExperimentProposal(svc, row, { now: opts.now })
+    }
     case "prompt":
     default:
       return { evaluator: "none", verdict: "inconclusive", score: null, why: "a prompt change has no deterministic replay — a human decides; it is never model-promoted", detail: {} }
@@ -279,12 +315,23 @@ export async function proposeImprovement(
   if (!PROPOSAL_SUBJECT_KINDS.includes(input.subjectKind)) return { ok: false, error: `unknown subject kind ${String(input.subjectKind)}` }
   if (!PROPOSERS.includes(input.proposer)) return { ok: false, error: `unknown proposer ${String(input.proposer)}` }
   if (input.subjectKind === "policy" && !parsePolicyKey(input.subjectKey)) return { ok: false, error: `"${input.subjectKey}" is not a registered tenant policy key` }
+  // Wave 108G: the optimizer's bounds are checked BEFORE anything is written — a forbidden surface is refused here.
+  const surf = classifyProposalSurface({ subject_kind: input.subjectKind, subject_key: input.subjectKey, proposer: input.proposer, proposed_change: input.proposedChange ?? {} })
+  if (surf.scope === "forbidden") return { ok: false, error: `forbidden surface ${surf.surface}: ${surf.reason} — not recorded` }
   const { data: open, error: readErr } = await svc
-    .from("improvement_proposals").select("id, status")
+    .from("improvement_proposals").select("id, status, proposed_change")
     .eq("brokerage_id", input.brokerageId).eq("subject_kind", input.subjectKind).eq("subject_key", input.subjectKey)
-    .in("status", [...OPEN_STATUSES]).limit(1)
+    .in("status", [...OPEN_STATUSES]).limit(20)
   if (readErr) return { ok: false, degraded: MISSING_TABLE.has(String(readErr.code ?? "")), error: `proposals could not be read (${readErr.message}) — not recorded` }
-  const existing = (open ?? [])[0] as { id: string } | undefined
+  // Wave 108G: several optimization classes share ONE policy key (optimization_tuning) — an optimization dedups on
+  // its OWN class (else a class-less open proposal on the subject, which a human decides first); a learner's
+  // class-less proposal keeps the original rule (any open row on the subject — a co-signed row is still its own).
+  const openRows = (open ?? []) as Array<{ id: string; proposed_change?: Record<string, unknown> | null }>
+  const classOf = (c: Record<string, unknown> | null | undefined) => { const o = c?.optimization; return o && typeof o === "object" ? String((o as Record<string, unknown>).class ?? "") : null }
+  const wantClass = surf.scope === "optimizable" ? surf.class : null
+  const existing = wantClass
+    ? openRows.find((r) => classOf(r.proposed_change) === wantClass) ?? openRows.find((r) => classOf(r.proposed_change) === null)
+    : openRows[0]
   if (existing) return { ok: true, id: existing.id, existing: true }
   const { data: ins, error: insErr } = await svc.from("improvement_proposals").insert({
     brokerage_id: input.brokerageId,
@@ -294,7 +341,8 @@ export async function proposeImprovement(
     proposed_change: input.proposedChange ?? {},
     evidence_refs: input.evidenceRefs ?? [],
     status: "PROPOSED",
-    authority_required: PROPOSAL_AUTHORITY[input.subjectKind],
+    // An optimization on a PROVEN-allowed surface needs rung 4, not owner level; the autonomous list still decides.
+    authority_required: surf.scope === "optimizable" ? Math.min(PROPOSAL_AUTHORITY[input.subjectKind], OPTIMIZATION_CLASS_AUTHORITY) : PROPOSAL_AUTHORITY[input.subjectKind],
   }).select("id")
   if (insErr) return { ok: false, degraded: MISSING_TABLE.has(String(insErr.code ?? "")), error: `proposal not recorded (${insErr.message})` }
   const id = (Array.isArray(ins) ? ins[0] : ins)?.id as string | undefined
@@ -362,6 +410,25 @@ export async function evaluateProposal(svc: Svc, input: { brokerageId: string; i
   return { ok: true, status: next, evaluation }
 }
 
+/** The surface of a stored row + (for a non-human actor on an optimization) the tenant's autonomous list — FAIL CLOSED. */
+async function optimizationContext(svc: Svc, row: ImprovementProposalRow, actor: ProposalActor): Promise<{ surface: SurfaceVerdict; autonomousClasses: readonly string[] | null }> {
+  const surface = classifyProposalSurface(row)
+  if (surface.scope !== "optimizable" || actor.type === "user") return { surface, autonomousClasses: null }
+  const policy = await loadSelfOptimizationPolicy(svc, row.brokerage_id)
+  return { surface, autonomousClasses: policy.readable ? policy.autonomousClasses : [] }
+}
+
+/**
+ * Wave 108F — the MEASURED result of a RUNNING (APPROVED) experiment onto its evaluation (the pre-run gate is
+ * kept under detail.pipeline). Counted, tenant-scoped; only an APPROVED experiment row is written.
+ */
+export async function recordExperimentResult(svc: Svc, input: { brokerageId: string; id: string; evaluation: ProposalEvaluation }): Promise<{ ok: true } | { ok: false; error: string }> {
+  const got = await loadProposal(svc, input.brokerageId, input.id)
+  if (!got.ok) return got
+  if (got.row.subject_kind !== "experiment" || got.row.status !== "APPROVED") return { ok: false, error: `only a RUNNING experiment records a result (this is ${got.row.subject_kind} ${got.row.status})` }
+  return patchProposal(svc, input.brokerageId, input.id, { evaluation: input.evaluation })
+}
+
 export type DecideResult = { ok: true; status: ProposalStatus } | { ok: false; error: string }
 
 /**
@@ -379,9 +446,13 @@ export async function decideProposal(
   if (!canTransition(row.status, next)) return { ok: false, error: `cannot move ${row.status} → ${next}` }
   if (input.actor.type === "agent") return { ok: false, error: "an AI agent never decides a proposal (LAW 4)" }
   if (input.actor.type === "user" && !input.actor.isTenantAdmin) return { ok: false, error: "only a broker, owner, admin, team lead or compliance officer decides a proposal" }
-  if (input.decision === "approve" && input.actor.type !== "user") {
-    const d = promotionDecision({ status: "APPROVED", verdict: row.evaluation?.verdict ?? null, authorityRequired: row.authority_required, actor: input.actor, gate: input.gate })
-    if (!d.allow) return { ok: false, error: d.reason }
+  if (input.decision === "approve") {
+    const optimization = await optimizationContext(svc, row, input.actor)
+    if (optimization.surface.scope === "forbidden") return { ok: false, error: `forbidden surface ${optimization.surface.surface}: ${optimization.surface.reason}` }
+    if (input.actor.type !== "user") {
+      const d = promotionDecision({ status: "APPROVED", verdict: row.evaluation?.verdict ?? null, authorityRequired: row.authority_required, actor: input.actor, gate: input.gate, optimization })
+      if (!d.allow) return { ok: false, error: d.reason }
+    }
   }
   const now = new Date().toISOString()
   const w = await patchProposal(svc, row.brokerage_id, row.id, {
@@ -397,8 +468,44 @@ export type PromoteResult =
   | { ok: true; policyVersionRef: string | null; writer: string }
   | { ok: false; error: string; held?: boolean }
 
+const PROPOSAL_META_KEYS = new Set(["previous", "optimization", "summary", "changed_keys"])
+
+/** PURE — a field patch merged onto a live policy object (one nested level; arrays replace). */
+function mergeFieldPatch(current: unknown, patch: Record<string, unknown>): Record<string, unknown> {
+  const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v)
+  const out: Record<string, unknown> = isObj(current) ? { ...current } : {}
+  for (const [k, v] of Object.entries(patch)) out[k] = isObj(v) && isObj(out[k]) ? { ...(out[k] as Record<string, unknown>), ...v } : v
+  return out
+}
+
+/** PURE — the live values at a patch's leaf paths (`a` or `a.b`); an absent field is recorded as null. */
+function fieldValues(current: unknown, patch: Record<string, unknown>): Record<string, unknown> {
+  const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v)
+  const cur = isObj(current) ? current : {}
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(patch)) {
+    if (isObj(v)) for (const k2 of Object.keys(v)) out[`${k}.${k2}`] = isObj(cur[k]) ? ((cur[k] as Record<string, unknown>)[k2] ?? null) : null
+    else out[k] = cur[k] ?? null
+  }
+  return out
+}
+
+/** PURE — put recorded field values back (null = the field was absent → removed). */
+function restoreFieldValues(current: unknown, fields: Record<string, unknown>): Record<string, unknown> {
+  const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v)
+  const out: Record<string, unknown> = isObj(current) ? { ...current } : {}
+  for (const [path, v] of Object.entries(fields)) {
+    const [k, k2] = path.split(".")
+    if (k2 === undefined) { if (v === null) delete out[k]; else out[k] = v; continue }
+    const inner: Record<string, unknown> = isObj(out[k]) ? { ...(out[k] as Record<string, unknown>) } : {}
+    if (v === null) delete inner[k2]; else inner[k2] = v
+    out[k] = inner
+  }
+  return out
+}
+
 /** How a promotion lands — each kind through its SURVIVOR writer; returns what to roll back to. */
-async function applyChange(svc: Svc, row: ImprovementProposalRow, actor: PolicyActor, direction: "promote" | "rollback"): Promise<{ writer: string; previous: unknown; policyVersionRef: string | null; loserIds?: string[] }> {
+async function applyChange(svc: Svc, row: ImprovementProposalRow, actor: PolicyActor, direction: "promote" | "rollback"): Promise<{ writer: string; previous: unknown; policyVersionRef: string | null; loserIds?: string[]; previousFields?: Record<string, unknown> }> {
   const change = row.proposed_change ?? {}
   const prior = row.evaluation?.promotion
   switch (row.subject_kind) {
@@ -409,17 +516,29 @@ async function applyChange(svc: Svc, row: ImprovementProposalRow, actor: PolicyA
       if (policyKey.kind === "settings") {
         const { mergeBrokerageSettings } = await import("@/lib/settings/brokerage-settings-merge")
         let previous: unknown = undefined
-        const value = direction === "promote" ? change.value : prior?.previous
-        const w = await mergeBrokerageSettings(svc, row.brokerage_id, (cur) => { previous = cur[policyKey.key]; return { [policyKey.key]: value === null ? undefined : value } }, { policy: actor })
+        // Wave 108G: an optimization carries a FIELD PATCH (only the class's allowed fields) merged onto the live
+        // value; the whole previous value is recorded so rollback restores it exactly.
+        // Several classes share one key, so a field-patch rollback restores ONLY its own fields (a later promotion
+        // of another class on the same key survives the rollback).
+        const patch = direction === "promote" && change.patch && typeof change.patch === "object" && !Array.isArray(change.patch) ? (change.patch as Record<string, unknown>) : null
+        const restore = direction === "rollback" && prior?.previousFields && typeof prior.previousFields === "object" ? prior.previousFields : null
+        let previousFields: Record<string, unknown> | undefined = undefined
+        const w = await mergeBrokerageSettings(svc, row.brokerage_id, (cur) => {
+          previous = cur[policyKey.key]
+          if (patch) previousFields = fieldValues(previous, patch)
+          const value = patch ? mergeFieldPatch(previous, patch) : restore ? restoreFieldValues(previous, restore) : direction === "promote" ? change.value : prior?.previous
+          return { [policyKey.key]: value === null ? undefined : value }
+        }, { policy: actor })
         if (!w.ok) throw new Error(w.error)
         const v = w.policyVersions.find((p) => p.key === policyKey.key)
-        return { writer: "mergeBrokerageSettings", previous, policyVersionRef: v?.version ? formatPolicyRef(policyKey.key, v.version) : null }
+        return { writer: "mergeBrokerageSettings", previous, previousFields, policyVersionRef: v?.version ? formatPolicyRef(policyKey.key, v.version) : null }
       }
       if (policyKey.kind === "isa") {
         const { writeIsaSettings } = await import("@/lib/ai-isa/resolve-isa-settings")
         const { currentPolicyVersion } = await import("@/lib/kernel/tenant-policy")
         const ownerId = policyKey.ownerType === "brokerage" ? row.brokerage_id : policyKey.ownerId
-        const updates = (direction === "promote" ? change : (prior?.previous ?? {})) as Record<string, unknown>
+        // The proposal's bookkeeping (previous / optimization / summary) is never an ISA column (PGRST204 refuses the row).
+        const updates = Object.fromEntries(Object.entries((direction === "promote" ? change : (prior?.previous ?? {})) as Record<string, unknown>).filter(([k]) => !PROPOSAL_META_KEYS.has(k)))
         const w = await writeIsaSettings({ owner: { ownerType: policyKey.ownerType, ownerId } as any, brokerageId: row.brokerage_id, updates: updates as any, actor })
         if (!w.success) throw new Error(w.error ?? "ISA settings not written")
         const v = await currentPolicyVersion(svc, row.brokerage_id, row.subject_key)
@@ -476,6 +595,28 @@ async function applyChange(svc: Svc, row: ImprovementProposalRow, actor: PolicyA
       if (logErr) console.error(`[improvement-proposals] assignment_log routing_reason not stamped for lead ${leadId}: ${logErr.message}`)
       return { writer: "handleLeadAssigned", previous: null, policyVersionRef: null }
     }
+    case "experiment": {
+      // 108F: ADOPT the winning arm for the whole cohort — the experiments policy key, through the survivor
+      // writer (mergeBrokerageSettings → appendTenantPolicyVersion); rollback removes the adoption (a new version).
+      const spec = (change.spec ?? {}) as { cohort?: { control_sequence_id?: string | null; treatment_sequence_id?: string | null; contact_types?: string[] | null } }
+      const result = (row.evaluation?.detail?.result ?? {}) as { winner?: string }
+      const key = row.subject_key
+      if (direction === "promote" && result.winner !== "treatment") throw new Error("only a measured treatment win is adopted — the control already serves the cohort")
+      const { mergeBrokerageSettings } = await import("@/lib/settings/brokerage-settings-merge")
+      let previous: unknown = undefined
+      const w = await mergeBrokerageSettings(svc, row.brokerage_id, (cur) => {
+        const exp = (cur.experiments && typeof cur.experiments === "object" ? { ...(cur.experiments as Record<string, unknown>) } : {}) as Record<string, unknown>
+        const adopted = (exp.adopted && typeof exp.adopted === "object" ? { ...(exp.adopted as Record<string, unknown>) } : {}) as Record<string, unknown>
+        previous = adopted[key] ?? null
+        if (direction === "promote") {
+          adopted[key] = { arm: "treatment", control_sequence_id: spec.cohort?.control_sequence_id ?? null, treatment_sequence_id: spec.cohort?.treatment_sequence_id ?? null, contact_types: spec.cohort?.contact_types ?? null, proposal_id: row.id }
+        } else delete adopted[key]
+        return { experiments: { ...exp, adopted } }
+      }, { policy: actor })
+      if (!w.ok) throw new Error(w.error)
+      const v = w.policyVersions.find((p) => p.key === "experiments")
+      return { writer: "mergeBrokerageSettings:experiments.adopted", previous, policyVersionRef: v?.version ? formatPolicyRef("experiments", v.version) : null }
+    }
     case "strategy":
       // 107F: the approval IS the review — which strategy runs is the strategy engine's activation (107E), never this kernel.
       throw new Error("a strategy finding is applied by selecting the strategy in the strategy engine — the approval is the review")
@@ -496,7 +637,8 @@ export async function promoteProposal(
   const got = await loadProposal(svc, input.brokerageId, input.id)
   if (!got.ok) return got
   const row = got.row
-  const d = promotionDecision({ status: row.status, verdict: row.evaluation?.verdict ?? null, authorityRequired: row.authority_required, actor: input.actor, gate: input.gate })
+  const optimization = await optimizationContext(svc, row, input.actor)
+  const d = promotionDecision({ status: row.status, verdict: row.evaluation?.verdict ?? null, authorityRequired: row.authority_required, actor: input.actor, gate: input.gate, optimization })
   if (!d.allow) return { ok: false, held: true, error: d.reason }
   return ledgered(svc, row, input.actor, "promote")
 }
@@ -517,7 +659,7 @@ export async function rollbackProposal(
 
 async function ledgered(svc: Svc, row: ImprovementProposalRow, actor: ProposalActor, direction: "promote" | "rollback"): Promise<PromoteResult> {
   const policyActor: PolicyActor = { type: actor.type === "agent" ? "system" : actor.type, userId: actor.userId ?? null, managerKey: actor.managerKey ?? null, reason: (actor.reason ?? `${direction} improvement proposal ${row.id} (${row.subject_kind} ${row.subject_key})`).slice(0, 500) }
-  const policyKey = row.subject_kind === "policy" ? row.subject_key : row.subject_kind === "threshold" ? "predictor_tuning" : null
+  const policyKey = row.subject_kind === "policy" ? row.subject_key : row.subject_kind === "threshold" ? "predictor_tuning" : row.subject_kind === "experiment" ? "experiments" : null
   try {
     const { withActionLedger } = await import("@/lib/kernel/action-ledger")
     const res = await withActionLedger<{ ok: true; applied: Awaited<ReturnType<typeof applyChange>> } | { ok: false; error: string }>(
@@ -544,7 +686,7 @@ async function ledgered(svc: Svc, row: ImprovementProposalRow, actor: ProposalAc
     if (!res.ok) return { ok: false, error: res.error }
     const now = new Date().toISOString()
     const patch = direction === "promote"
-      ? { status: "PROMOTED", promoted_at: now, policy_version_ref: res.applied.policyVersionRef, evaluation: { ...(row.evaluation ?? { evaluator: "none", verdict: "inconclusive", score: null, why: "", detail: {} }), promotion: { writer: res.applied.writer, previous: res.applied.previous ?? null, loserIds: res.applied.loserIds } } }
+      ? { status: "PROMOTED", promoted_at: now, policy_version_ref: res.applied.policyVersionRef, evaluation: { ...(row.evaluation ?? { evaluator: "none", verdict: "inconclusive", score: null, why: "", detail: {} }), promotion: { writer: res.applied.writer, previous: res.applied.previous ?? null, loserIds: res.applied.loserIds, previousFields: res.applied.previousFields } } }
       : { status: "ROLLED_BACK", rolled_back_at: now, rollback_policy_version_ref: res.applied.policyVersionRef }
     const w = await patchProposal(svc, row.brokerage_id, row.id, patch)
     if (!w.ok) return { ok: false, error: `${direction} LANDED but the proposal row was not marked: ${w.error}` }

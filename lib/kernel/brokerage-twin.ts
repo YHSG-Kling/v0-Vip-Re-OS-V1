@@ -62,6 +62,7 @@ import {
 } from "@/lib/kernel/capacity-guardian"
 import { TRANSACTION_STATUSES_OPEN, TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
+import { BUYER_SIDE_CONTACT_TYPES, SELLER_SIDE_CONTACT_TYPES, LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
 
 type Svc = { from: (table: string) => any }
 
@@ -200,7 +201,8 @@ export interface TwinChanged {
 // agents.languages / agents.specializations (the profile columns the people-ops profile writes),
 // listings / offers / contacts.contact_persona (the m589 vocabulary: 'investor', 'luxury').
 // TERRITORY DEMAND (the recruiting trigger): farm_territories (an agent's farm — the only
-// territory model, m551/m715) × leads.property_zip_code — seller leads in the trailing 30 days
+// territory model, m551/m715) × contacts.zip_code — seller CONTACTS (contact_type seller | both, the
+// wave-108 owner ruling: the Listing Concierge reads contacts, never leads) created in the trailing 30 days
 // against the 30 before, per territory; the serving agents' headroom and specialist coverage
 // are the capacity and competency coverage a recruiting need is judged against (recruitingNeeds).
 
@@ -365,10 +367,10 @@ export interface TwinTerritoryDemand {
   territory: string
   zips: string[]
   servingAgentIds: string[]
-  sellerLeads30d: number
-  sellerLeadsPrev30d: number
+  sellerContacts30d: number
+  sellerContactsPrev30d: number
   trend: "up" | "flat" | "down"
-  /** 0..1 — share of the 30-day seller leads priced at or above luxury_list_price_usd (estimated_value). */
+  /** 0..1 — share of the 30-day seller contacts valued at or above luxury_list_price_usd (contacts.home_value_estimate). */
   luxuryShare30d: number
   /** Serving agents with headroom (band available / busy — the one capacity answer). */
   agentsWithHeadroom: number
@@ -444,14 +446,14 @@ export interface TwinSliceSpec {
  *  @proofSeam the proof asserts ownership, re-homing and the reader census against it */
 export const TWIN_SLICE_SPECS: Readonly<Record<ManagerKey, TwinSliceSpec>> = {
   ai_isa: { answers: "lead / opportunity state", reader: "leads.lifecycle_state + converted_at (lib/lead-pipeline)", sections: ["now.pipeline", "system.stages"], teamNarrowable: true },
-  shopping_agent: { answers: "buyer demand", reader: "leads(lead_type buyer|both) + tours + offers (the tour planner / offer rail) · buyer_stall_predicted", sections: [], teamNarrowable: true },
-  listing_concierge: { answers: "seller / listing demand", reader: "listings.status + listing_health_scores (calculateListingHealth) + seller leads (workforce territory demand)", sections: ["now.listings", "atRisk", "workforce.territories"], teamNarrowable: true },
+  shopping_agent: { answers: "buyer demand", reader: "contacts(contact_type buyer|both) + tours by contacts + offers (the tour planner / offer rail) · buyer_stall_predicted", sections: [], teamNarrowable: true },
+  listing_concierge: { answers: "seller / listing demand", reader: "listings.status + listing_health_scores (calculateListingHealth) + seller contacts (contact_type seller|both — workforce territory demand)", sections: ["now.listings", "atRisk", "workforce.territories"], teamNarrowable: true },
   deal_coordinator: { answers: "transaction state", reader: "transactions.status (lib/transactions/transaction-status.ts) + deal_health_scores (calculateDealHealth)", sections: ["now.transactions", "atRisk"], teamNarrowable: true },
   recruiting_manager: { answers: "workforce supply", reader: "capacityFor + classifyWorkforceAgent (106E) + agent_retention_scores (runRetentionRadar)", sections: ["workforce", "capacity"], teamNarrowable: true },
   asset_manager: { answers: "creative / media capacity + outcomes", reader: "marketing_assets (lib/kernel/media-intelligence.ts recordMediaAsset, 106C) + ai_video_projects (lib/video/video-director.ts)", sections: [], teamNarrowable: true },
   ads_manager: { answers: "paid acquisition", reader: "ad_campaigns + ad_performance (lib/ads/ad-performance-ingest.ts)", sections: [], teamNarrowable: false },
   campaign_orchestrator: { answers: "nurture / journey performance", reader: "agent_action_ledger journey.experience.<kind> (planNextBestExperience, 106B) + marketing_campaign_touchpoints", sections: [], teamNarrowable: false },
-  sphere_of_influence: { answers: "relationship lifecycle", reader: "sphere_engagement_scores (lib/lifetime-customer-npv/scorer.ts)", sections: [], teamNarrowable: true },
+  sphere_of_influence: { answers: "relationship lifecycle — the LIFETIME contacts", reader: "contacts(contact_type ∈ LIFETIME_CONTACT_TYPES — lib/contact-types.ts) + sphere_engagement_scores (lib/lifetime-customer-npv/scorer.ts)", sections: [], teamNarrowable: true },
   finance_manager: { answers: "economics", reader: "transactions.commission_amount + income_forecast_snapshots + ai_tool_usage + economic-graph contribution margin (104A)", sections: ["economic"], teamNarrowable: true },
   compliance_officer: { answers: "risk", reader: "compliance_flags (lib/compliance flag writers)", sections: ["atRisk"], teamNarrowable: true },
   data_steward: { answers: "data confidence", reader: "the build's own refusal log (loadBrokerageTwinFacts blindSpots) + the brokerage_twin_snapshots chain", sections: [], teamNarrowable: true },
@@ -459,13 +461,18 @@ export const TWIN_SLICE_SPECS: Readonly<Record<ManagerKey, TwinSliceSpec>> = {
 }
 
 /** @proofSeam the proof walks the stage vocabulary */
-export const TWIN_FLOW_STAGES = ["lead", "opportunity", "appointment", "agreement", "transaction", "closed"] as const
+export const TWIN_FLOW_STAGES = ["raw_lead", "lead", "contact", "appointment", "agreement", "transaction", "closed"] as const
 export type TwinFlowStageKey = (typeof TWIN_FLOW_STAGES)[number]
 
 export interface TwinFlowStage {
   stage: TwinFlowStageKey
   /** null = the read was refused (never 0). */
   count: number | null
+  /** Wave 108: what ARRIVED from the previous stage when the stage has a second entry (lead ← raw;
+   *  contact ← converted leads, beside the direct inbound contacts). Absent = everything arrived from it. */
+  entered?: number | null
+  /** The contact stage's two entries (owner ruling): inbound sources direct vs converted leads. */
+  sources?: { direct: number | null; fromLead: number | null }
   owners: ManagerKey[]
   evidence: EvidenceRef
 }
@@ -554,13 +561,18 @@ export interface TwinFacts {
     thresholdsSource: TwinWorkforce["thresholdsSource"]
     agents: WorkforceAgentFacts[]
     farms: Array<{ name: string | null; zip_codes: string[] | null; agent_id: string | null }>
-    /** Seller-side leads in the trailing 60 days (brokerage-owned — a territory fact, never team-narrowed). */
-    sellerLeads60d: Array<{ id: string; property_zip_code: string | null; estimated_value: number | null; created_at: string }>
+    /** Seller-side CONTACTS (contact_type seller | both) created in the trailing 60 days — wave 108 owner ruling:
+     *  the Listing Concierge reads CONTACTS, not leads (a territory fact, never team-narrowed). */
+    sellerContacts60d: Array<{ id: string; zip_code: string | null; home_value_estimate: number | null; created_at: string }>
   }
   /** 107C — reader slices as read (re-homed slices need no facts). Absent → every reader slice "unregistered". */
   slices?: Partial<Record<ManagerKey, { status: TwinSliceStatus; reading: TwinSliceReading | null; blindSpot: string | null; reader: string }>>
   /** 107C — the 90-day flow counts (null = refused). Absent → the system view is unmeasured. */
   flow?: Partial<Record<TwinFlowStageKey, number | null>>
+  /** Wave 108 — the second entries of the owner's pipeline (null = refused / withheld, never 0):
+   *  leads promoted from a raw row (source_family 'raw') and contacts created DIRECTLY by an inbound
+   *  source (source_family 'contact_direct'). */
+  flowEntries?: { leadFromRaw: number | null; contactDirect: number | null }
 }
 
 // ─── Seams (104A economic graph, 104D missions) ──────────────────────────────
@@ -642,7 +654,7 @@ export function twinMeasures(t: Pick<BrokerageTwin, "now" | "atRisk" | "capacity
   // reads every total as a change against 0 (a workforce that APPEARED is a change).
   if (t.workforce) {
     for (const k of WORKFORCE_CLASSIFICATIONS) m[`workforce.${k}`] = t.workforce.totals[k] ?? 0
-    for (const d of t.workforce.territories) if (d.trend === "up") m[`workforce.territory.${d.territory}.sellerLeads30d`] = d.sellerLeads30d
+    for (const d of t.workforce.territories) if (d.trend === "up") m[`workforce.territory.${d.territory}.sellerContacts30d`] = d.sellerContacts30d
   }
   // 107C: the flow stage counts and the READER slices' measures (re-homed slices carry none — their
   // numbers are already measured above). A snapshot older than 107C diffs them as changes against 0.
@@ -710,12 +722,12 @@ export function composeTerritoryDemand(
   }
   const buckets = new Map<string, { cur: number; prev: number; lux: number }>()
   for (const name of byName.keys()) buckets.set(name, { cur: 0, prev: 0, lux: 0 })
-  for (const l of f.sellerLeads60d) {
+  for (const l of f.sellerContacts60d) {
     const ms = new Date(l.created_at).getTime()
     if (!Number.isFinite(ms) || ms < d60 || ms > atMs) continue
-    const name = (l.property_zip_code && zipToTerritory.get(String(l.property_zip_code).trim())) || "unassigned"
+    const name = (l.zip_code && zipToTerritory.get(String(l.zip_code).trim())) || "unassigned"
     const b = buckets.get(name) ?? { cur: 0, prev: 0, lux: 0 }
-    if (ms >= d30) { b.cur++; if ((Number(l.estimated_value) || 0) >= t.luxury_list_price_usd) b.lux++ } else b.prev++
+    if (ms >= d30) { b.cur++; if ((Number(l.home_value_estimate) || 0) >= t.luxury_list_price_usd) b.lux++ } else b.prev++
     buckets.set(name, b)
   }
   const capById = new Map(perAgent.map((a) => [a.agentId, a]))
@@ -728,14 +740,14 @@ export function composeTerritoryDemand(
     const trend: TwinTerritoryDemand["trend"] = b.cur >= t.demand_min_leads_30d && b.cur >= b.prev * (1 + t.demand_rise_pct / 100) && b.cur > b.prev ? "up" : b.cur < b.prev ? "down" : "flat"
     out.push({
       territory: name, zips: e ? [...e.zips].sort() : [], servingAgentIds: serving,
-      sellerLeads30d: b.cur, sellerLeadsPrev30d: b.prev, trend,
+      sellerContacts30d: b.cur, sellerContactsPrev30d: b.prev, trend,
       luxuryShare30d: b.cur > 0 ? b.lux / b.cur : 0,
       agentsWithHeadroom: serving.filter((id) => { const c = capById.get(id); return !!c && (c.band === "available" || c.band === "busy") }).length,
       listingSpecialists: serving.filter((id) => has(id, "strong_listing")).length,
       luxurySpecialists: serving.filter((id) => has(id, "luxury_specialist")).length,
     })
   }
-  return out.sort((a, b) => b.sellerLeads30d - a.sellerLeads30d || a.territory.localeCompare(b.territory))
+  return out.sort((a, b) => b.sellerContacts30d - a.sellerContacts30d || a.territory.localeCompare(b.territory))
 }
 
 /** PURE: fold the workforce facts into the twin section (the composer calls it; the proof drives it). */
@@ -756,7 +768,7 @@ export function composeWorkforce(f: TwinFacts, scope: string): TwinWorkforce {
       { table: "contacts", filter: `brokerage_id=${f.brokerageId} ∧ deleted_at IS NULL ∧ contact_persona='investor' per agent_id`, count: w.agents.reduce((a, x) => a + x.investorContacts, 0), via: "contacts.contact_persona (normalizeContactPersona)" },
       { table: "(competency)", filter: `loadAgentCompetency per agent (${competencyRead} of ${agents.length} read)`, count: competencyRead, via: "lib/education/skill-freshness-radar.ts loadAgentCompetency → scoreCompetency gaps" },
       { table: "farm_territories", filter: `brokerage_id=${f.brokerageId} ∧ is_active=true`, count: w.farms.length, via: "farm_territories.name / zip_codes / agent_id (an agent's farm)" },
-      { table: "leads", filter: `brokerage_id=${f.brokerageId} ∧ lead_type∈{seller,both} ∧ created_at ≥ at−60d (brokerage-owned, §5)`, count: w.sellerLeads60d.length, via: "leads.property_zip_code / estimated_value (lib/lead-pipeline)" },
+      { table: "contacts", filter: `brokerage_id=${f.brokerageId} ∧ deleted_at IS NULL ∧ contact_type∈{${SELLER_SIDE_CONTACT_TYPES.join(",")}} ∧ created_at ≥ at−60d (brokerage-owned, §5)`, count: w.sellerContacts60d.length, via: "contacts.zip_code / home_value_estimate (seller contacts — inbound sources convert straight to contacts; leads convert to contacts first)" },
       { table: "brokerage_settings", filter: `brokerage_id=${f.brokerageId} → settings.${WORKFORCE_THRESHOLDS_KEY} (${w.thresholdsSource})`, count: w.thresholdsSource === "policy" ? 1 : 0, via: "lib/kernel/tenant-policy.ts TENANT_POLICY_SETTINGS_KEYS.workforce_thresholds · resolveWorkforceThresholds" },
     ],
   }
@@ -771,12 +783,12 @@ export function recruitingNeeds(twin: Pick<BrokerageTwin, "workforce">): Recruit
   const out: RecruitingNeed[] = []
   for (const d of twin.workforce.territories) {
     if (d.trend !== "up") continue
-    const required = Math.ceil(d.sellerLeads30d / t.seller_leads_per_agent_30d)
+    const required = Math.ceil(d.sellerContacts30d / t.seller_leads_per_agent_30d)
     const shortfall = required - d.agentsWithHeadroom
     const luxury = d.luxuryShare30d * 100 >= t.luxury_share_pct && d.luxurySpecialists === 0
     if (shortfall <= 0 && !luxury) continue
     const reasons = [
-      `${d.territory}: seller leads ${d.sellerLeadsPrev30d} → ${d.sellerLeads30d} in 30d (policy: ≥ ${t.demand_rise_pct}% rise, ≥ ${t.demand_min_leads_30d} leads)`,
+      `${d.territory}: seller leads ${d.sellerContactsPrev30d} → ${d.sellerContacts30d} in 30d (policy: ≥ ${t.demand_rise_pct}% rise, ≥ ${t.demand_min_leads_30d} leads)`,
       `${required} listing agent${required === 1 ? "" : "s"} needed at ${t.seller_leads_per_agent_30d} seller leads each; ${d.agentsWithHeadroom} serving agent${d.agentsWithHeadroom === 1 ? "" : "s"} with headroom (${d.servingAgentIds.length} serving, ${d.listingSpecialists} strong listing)`,
     ]
     if (luxury) reasons.push(`${Math.round(d.luxuryShare30d * 100)}% of the seller leads are priced ≥ $${t.luxury_list_price_usd.toLocaleString()} and no serving agent is a luxury specialist (policy ≥ ${t.luxury_share_pct}%)`)
@@ -809,7 +821,7 @@ export function detectBottleneck(stages: TwinFlowStage[], transitions: TwinFlowT
   const pct = (r: number) => `${Math.round(r * 100)}%`
   return {
     from: worst.from, to: worst.to, rate: worst.rate, medianOtherRate: median, owners: to.owners,
-    headline: `${worst.from} → ${worst.to} converts ${pct(worst.rate)} (${from.count} → ${to.count} in ${TWIN_FLOW_WINDOW_DAYS}d)${median !== null ? ` against a median ${pct(median)} for the other stages` : ""} — owned by ${to.owners.join(" + ")}`,
+    headline: `${worst.from} → ${worst.to} converts ${pct(worst.rate)} (${from.count} → ${to.entered !== undefined ? to.entered : to.count} in ${TWIN_FLOW_WINDOW_DAYS}d)${median !== null ? ` against a median ${pct(median)} for the other stages` : ""} — owned by ${to.owners.join(" + ")}`,
     evidence: [from.evidence, to.evidence],
   }
 }
@@ -820,10 +832,18 @@ function composeSystemView(f: TwinFacts, capacity: TwinCapacity, economic: TwinE
   const w = `≥ at−${TWIN_FLOW_WINDOW_DAYS}d`
   const stage = (s: TwinFlowStageKey, count: number | null, owners: ManagerKey[], table: string, filter: string, via: string): TwinFlowStage =>
     ({ stage: s, count, owners, evidence: { table, filter: `${scope} ∧ ${filter}`, count: count ?? 0, via } })
+  // THE OWNER'S PIPELINE (wave 108 ruling, binding): scraping / behavior → RAW LEAD → LEAD → CONTACT;
+  // ads, landing pages, forms, widgets, website, external lead sites and chat → CONTACT directly
+  // (contacts.source_family 'contact_direct' — the lineage vocabulary, app/actions/source-analytics.ts);
+  // only a CONTACT tours. So the contact stage has TWO entries, and the lead → contact conversion is
+  // the leads CONVERTED in the window (never contacts ÷ leads, which counts the direct entries as conversions).
+  const entered = (s: TwinFlowStage, n: number | null | undefined): TwinFlowStage => ({ ...s, entered: n ?? null })
+  const contactStage = stage("contact", flow.contact ?? null, ["ai_isa", "shopping_agent", "listing_concierge"], "contacts", `deleted_at IS NULL ∧ created_at ${w}`, "contacts (inbound sources create contacts directly; leads.converted_at marks a lead that became one)")
   const stages: TwinFlowStage[] = [
-    stage("lead", flow.lead ?? null, ["ai_isa"], "leads", `created_at ${w}`, "lib/lead-pipeline (lead intake writers)"),
-    stage("opportunity", f.converted90d, ["ai_isa"], "leads", `converted_at ${w}`, "leads.converted_at (the ISA hand-off)"),
-    stage("appointment", flow.appointment ?? null, ["listing_concierge", "shopping_agent"], "listing_presentations + tours", `appointment_at / created_at ${w}`, "lib/listing-presentation (seller appointments) + tours (buyer appointments)"),
+    stage("raw_lead", flow.raw_lead ?? null, ["data_steward"], "raw_scraped_leads", `created_at ${w}`, "lib/kernel/scraping.ts (lead / behavior scraping lands raw)"),
+    entered(stage("lead", flow.lead ?? null, ["ai_isa"], "leads", `created_at ${w}`, "lib/lead-pipeline (lead intake writers; source_family 'raw' = promoted from a raw row)"), f.flowEntries?.leadFromRaw),
+    { ...entered(contactStage, f.converted90d), sources: { direct: f.flowEntries?.contactDirect ?? null, fromLead: f.converted90d } },
+    stage("appointment", flow.appointment ?? null, ["listing_concierge", "shopping_agent"], "listing_presentations + tours", `appointment_at / created_at ${w} (tours: contact_id IS NOT NULL — only contacts tour)`, "lib/listing-presentation (seller appointments) + tours (buyer appointments)"),
     stage("agreement", flow.agreement ?? null, ["listing_concierge", "shopping_agent"], "listings + offers", `listing_date / created_at ${w}`, "listings.listing_date (listings taken) + offers.agent_id (buyer offers written)"),
     stage("transaction", flow.transaction ?? null, ["deal_coordinator"], "transactions", `created_at ${w}`, "lib/transactions (transaction creation)"),
     stage("closed", f.closed90d.length, ["deal_coordinator", "finance_manager"], "transactions", `status∈{closed,funded} ∧ close_date ${w}`, "transactions.commission_amount (lib/commission/*)"),
@@ -831,8 +851,10 @@ function composeSystemView(f: TwinFacts, capacity: TwinCapacity, economic: TwinE
   const transitions: TwinFlowTransition[] = []
   for (let i = 0; i + 1 < stages.length; i++) {
     const a = stages[i], b = stages[i + 1]
-    const ok = a.count !== null && b.count !== null && a.count > 0
-    transitions.push({ from: a.stage, to: b.stage, rate: ok ? b.count! / a.count! : null, status: ok ? "measured" : "unmeasured" })
+    // A stage with a second entry (lead ← raw, contact ← direct) converts on what ARRIVED from the previous stage.
+    const arrived = b.entered !== undefined ? b.entered : b.count
+    const ok = a.count !== null && arrived !== null && a.count > 0
+    transitions.push({ from: a.stage, to: b.stage, rate: ok ? arrived! / a.count! : null, status: ok ? "measured" : "unmeasured" })
   }
   const constraints: TwinSystemView["constraints"] = []
   const strained = capacity.bands.over + capacity.bands.at_capacity
@@ -1149,8 +1171,10 @@ export interface SubTarget {
   label: string
   /** The twin field that measures it (dotted path), or null when the twin has no measure. */
   measuredBy: string | null
-  /** Target for the sub-target, null when it cannot be derived from the twin. */
+  /** Target for the sub-target, null when it cannot be derived from the twin. By default an INCREMENT
+   *  (the gap still to close on top of `current`); `basis: "absolute"` marks a target that is already a level. */
   target: number | null
+  basis?: "increment" | "absolute"
   /** The twin's current reading for the field (null when unsupported or absent). */
   current: number | null
   status: "ok" | "unsupported"
@@ -1194,10 +1218,14 @@ export function decomposeObjective(objective: ObjectiveInput, twin?: BrokerageTw
   if (!isAgentGoalType(objective.goalType)) {
     return { goalType: objective.goalType, status: "unsupported", remaining: 0, subTargets: [], reason: `goal_type not in AGENT_GOAL_TYPES (${AGENT_GOAL_TYPES.join(", ")})` }
   }
-  const remaining = Math.max(0, (Number(objective.targetValue) || 0) - (Number(objective.currentValue) || 0))
   const measure = OBJECTIVE_MEASURES[objective.goalType]
   const sub: SubTarget[] = []
   const reading = (path: string | null) => (twin && path ? readPath(twin, path) : null)
+  // Wave 108 integration: with no currentValue given, the baseline is the twin's own reading of the
+  // measure (not 0) — otherwise "remaining" overstated the gap and the derived criteria disagreed with
+  // the level the twin reports. An explicit currentValue (an agent goal's own counter) still wins.
+  const baseline = objective.currentValue != null ? Number(objective.currentValue) || 0 : Number(reading(measure)) || 0
+  const remaining = Math.max(0, (Number(objective.targetValue) || 0) - baseline)
 
   if (measure === null) {
     sub.push({ key: objective.goalType, label: "progress", measuredBy: null, target: remaining, current: null, status: "unsupported", reason: "the twin carries no measure for this goal type (hand-updated goal)" })
@@ -1225,7 +1253,7 @@ export function decomposeObjective(objective: ObjectiveInput, twin?: BrokerageTw
     sub.push({ key: "qualifying", label: "leads in ISA qualification feeding representation", measuredBy: "now.pipeline.byLifecycle.isa_qualifying", target: null, current: reading("now.pipeline.byLifecycle.isa_qualifying"), status: "unsupported", reason: "no qualification→representation rate in the twin" })
   } else if (objective.goalType === "conversion_rate") {
     const leads = reading("now.pipeline.leads"), conv = reading("now.pipeline.converted90d")
-    sub.push({ key: "conversions_needed", label: "conversions needed on the current lead base", measuredBy: "now.pipeline.converted90d", target: leads !== null ? Math.ceil((Number(objective.targetValue) / 100) * leads) : null, current: conv, status: leads !== null ? "ok" : "unsupported", reason: leads !== null ? undefined : "no lead base in the twin" })
+    sub.push({ key: "conversions_needed", label: "conversions needed on the current lead base", measuredBy: "now.pipeline.converted90d", basis: "absolute", target: leads !== null ? Math.ceil((Number(objective.targetValue) / 100) * leads) : null, current: conv, status: leads !== null ? "ok" : "unsupported", reason: leads !== null ? undefined : "no lead base in the twin" })
   } else if (objective.goalType === "new_contacts") {
     sub.push({ key: "contacts", label: "active contacts", measuredBy: "now.contacts.active", target: remaining, current: reading("now.contacts.active"), status: "ok" })
   }
@@ -1264,15 +1292,17 @@ const sinceFrom = (at: Date, days: number) => new Date(at.getTime() - days * 86_
 
 const DEFAULT_SLICE_READERS: Partial<Record<ManagerKey, TwinSliceReader>> = {
   shopping_agent: async (svc, b, ctx) => {
+    // WAVE 108 owner ruling: the Shopping Agent reads CONTACTS of buyer type (buyer | both), never leads —
+    // a lead converts to a contact first, and ONLY a contact tours (tours.contact_id is the tourer).
     const d30 = sinceFrom(ctx.at, 30)
-    const [buyerLeads, tours30d, offers30d] = await Promise.all([
-      sliceHead("leads(buyer)", teamAgents(svc.from("leads").select("id", { count: "exact", head: true }).eq("brokerage_id", b).eq("is_active", true).in("lead_type", ["buyer", "both"]), ctx)),
-      sliceHead("tours(30d)", teamAgents(svc.from("tours").select("id", { count: "exact", head: true }).eq("brokerage_id", b).gte("created_at", d30), ctx)),
+    const [buyerContacts, tours30d, offers30d] = await Promise.all([
+      sliceHead("contacts(buyer)", teamAgents(svc.from("contacts").select("id", { count: "exact", head: true }).eq("brokerage_id", b).is("deleted_at", null).in("contact_type", [...BUYER_SIDE_CONTACT_TYPES]), ctx)),
+      sliceHead("tours(30d)", teamAgents(svc.from("tours").select("id", { count: "exact", head: true }).eq("brokerage_id", b).not("contact_id", "is", null).gte("created_at", d30), ctx)),
       sliceHead("offers(30d)", teamAgents(svc.from("offers").select("id", { count: "exact", head: true }).eq("brokerage_id", b).gte("created_at", d30), ctx)),
     ])
-    return { measures: { buyerLeads, tours30d, offers30d }, asOf: ctx.at.toISOString(), evidence: [
-      { table: "leads", filter: `brokerage_id=${b} ∧ is_active ∧ lead_type∈{buyer,both}`, count: buyerLeads, via: "lib/lead-pipeline (lead intake)" },
-      { table: "tours", filter: `brokerage_id=${b} ∧ created_at ≥ at−30d`, count: tours30d, via: "tours (the tour planner)" },
+    return { measures: { buyerContacts, tours30d, offers30d }, asOf: ctx.at.toISOString(), evidence: [
+      { table: "contacts", filter: `brokerage_id=${b} ∧ deleted_at IS NULL ∧ contact_type∈{${BUYER_SIDE_CONTACT_TYPES.join(",")}}`, count: buyerContacts, via: "contacts (inbound sources create contacts directly; leads convert to contacts)" },
+      { table: "tours", filter: `brokerage_id=${b} ∧ contact_id IS NOT NULL ∧ created_at ≥ at−30d (only contacts tour)`, count: tours30d, via: "tours (the tour planner)" },
       { table: "offers", filter: `brokerage_id=${b} ∧ created_at ≥ at−30d`, count: offers30d, via: "offers.agent_id (the offer rail)" },
     ] }
   },
@@ -1328,12 +1358,20 @@ const DEFAULT_SLICE_READERS: Partial<Record<ManagerKey, TwinSliceReader>> = {
     ] }
   },
   sphere_of_influence: async (svc, b, ctx) => {
-    const rows = await sliceRead<{ score: number | null; referrals_given: number | null; calculated_at: string | null }>("sphere_engagement_scores", teamAgents(svc.from("sphere_engagement_scores").select("score, referrals_given, calculated_at, agent_id").eq("brokerage_id", b), ctx).limit(5000))
+    // WAVE 108 owner ruling: SPHERE OF INFLUENCE handles the LIFETIME contacts — the post-close roster
+    // (contacts.contact_type ∈ LIFETIME_CONTACT_TYPES, lib/contact-types.ts) is this slice's population.
+    const [rows, lifetimeContacts] = await Promise.all([
+      sliceRead<{ score: number | null; referrals_given: number | null; calculated_at: string | null }>("sphere_engagement_scores", teamAgents(svc.from("sphere_engagement_scores").select("score, referrals_given, calculated_at, agent_id").eq("brokerage_id", b), ctx).limit(5000)),
+      sliceHead("contacts(lifetime)", teamAgents(svc.from("contacts").select("id", { count: "exact", head: true }).eq("brokerage_id", b).is("deleted_at", null).in("contact_type", [...LIFETIME_CONTACT_TYPES]), ctx)),
+    ])
     const scored = rows.filter((r) => r.score !== null)
     const asOf = newest(rows.map((r) => r.calculated_at))
     const stale = rows.length && (!asOf || new Date(asOf).getTime() < ctx.at.getTime() - SLICE_STALE_DAYS * 86_400_000) ? `newest sphere score ${asOf ?? "undated"} is older than ${SLICE_STALE_DAYS}d` : null
-    return { measures: { scored: scored.length, avgScore: scored.length ? Math.round(scored.reduce((s, r) => s + Number(r.score), 0) / scored.length) : 0, referralsGiven: rows.reduce((s, r) => s + (Number(r.referrals_given) || 0), 0) },
-      asOf, stale, evidence: [{ table: "sphere_engagement_scores", filter: `brokerage_id=${b}`, count: rows.length, via: "lib/lifetime-customer-npv/scorer.ts" }] }
+    return { measures: { lifetimeContacts, scored: scored.length, avgScore: scored.length ? Math.round(scored.reduce((s, r) => s + Number(r.score), 0) / scored.length) : 0, referralsGiven: rows.reduce((s, r) => s + (Number(r.referrals_given) || 0), 0) },
+      asOf: asOf ?? ctx.at.toISOString(), stale, evidence: [
+        { table: "contacts", filter: `brokerage_id=${b} ∧ deleted_at IS NULL ∧ contact_type∈{${LIFETIME_CONTACT_TYPES.join(",")}}`, count: lifetimeContacts, via: "lib/contact-types.ts LIFETIME_CONTACT_TYPES (the post-close roster)" },
+        { table: "sphere_engagement_scores", filter: `brokerage_id=${b}`, count: rows.length, via: "lib/lifetime-customer-npv/scorer.ts" },
+      ] }
   },
   cron_manager: async (svc, b, ctx) => {
     const rows = await sliceRead<{ status: string | null; started_at: string | null; cron_name: string | null }>("cron_execution_logs(7d)", svc.from("cron_execution_logs").select("status, started_at, cron_name").eq("brokerage_id", b).gte("started_at", sinceFrom(ctx.at, 7)).limit(5000))
@@ -1410,13 +1448,13 @@ export async function loadBrokerageTwinFacts(svc: Svc, brokerageId: string, opts
   if (agents.length > maxScored) { unscored += agents.length - maxScored; blindSpots.push(`capacity: ${agents.length - maxScored} agent(s) beyond the ${maxScored}-agent scoring cap`) }
 
   // WORKFORCE (106E) — the per-agent facts behind the classifications, every read tenant-pinned.
-  const [settingsRow, listings180, offers180, investorContacts, farms, sellerLeads60d] = await Promise.all([
+  const [settingsRow, listings180, offers180, investorContacts, farms, sellerContacts60d] = await Promise.all([
     (async () => { const { data, error } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle(); refused("brokerage_settings(workforce_thresholds)", error); return error ? null : (data as { settings?: unknown } | null) })(),
     rows<{ id: string; agent_id: string | null; list_price: number | null; listing_date?: string | null }>("listings(180d)", scoped(svc.from("listings").select("id, agent_id, list_price, listing_date").eq("brokerage_id", brokerageId).is("deleted_at", null).gte("listing_date", since(180).slice(0, 10))).limit(LIMIT)),
     rows<{ id: string; agent_id: string | null; created_at?: string | null }>("offers(180d)", scoped(svc.from("offers").select("id, agent_id, created_at").eq("brokerage_id", brokerageId).gte("created_at", since(180))).limit(LIMIT)),
     rows<{ id: string; agent_id: string | null }>("contacts(investor)", scoped(svc.from("contacts").select("id, agent_id").eq("brokerage_id", brokerageId).is("deleted_at", null).eq("contact_persona", "investor")).limit(LIMIT)),
     rows<TwinFacts["workforce"]["farms"][number]>("farm_territories", svc.from("farm_territories").select("name, zip_codes, agent_id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(LIMIT)),
-    rows<TwinFacts["workforce"]["sellerLeads60d"][number]>("leads(seller 60d)", svc.from("leads").select("id, property_zip_code, estimated_value, created_at").eq("brokerage_id", brokerageId).in("lead_type", ["seller", "both"]).gte("created_at", since(60)).limit(LIMIT)),
+    rows<TwinFacts["workforce"]["sellerContacts60d"][number]>("contacts(seller 60d)", svc.from("contacts").select("id, zip_code, home_value_estimate, created_at").eq("brokerage_id", brokerageId).is("deleted_at", null).in("contact_type", [...SELLER_SIDE_CONTACT_TYPES]).gte("created_at", since(60)).limit(LIMIT)),
   ])
   const settingsHasKey = !!(settingsRow?.settings && typeof settingsRow.settings === "object" && (settingsRow.settings as Record<string, unknown>)[WORKFORCE_THRESHOLDS_KEY])
   const thresholds = resolveWorkforceThresholds(settingsRow?.settings)
@@ -1478,18 +1516,27 @@ export async function loadBrokerageTwinFacts(svc: Svc, brokerageId: string, opts
 
   // TWIN 2.0 (107C) — the 90-day FLOW counts (null when refused, never 0) …
   const d90 = since(TWIN_FLOW_WINDOW_DAYS)
-  const [lead90, presentations90, tours90, txn90] = await Promise.all([
+  // Wave 108 — the owner's pipeline: raw rows (scraping) and the two second entries. Raw rows carry no
+  // agent, so a TEAM board withholds the raw stage (null, published) instead of showing the brokerage's.
+  const [lead90, presentations90, tours90, txn90, raw90, leadFromRaw90, contact90, contactDirect90] = await Promise.all([
     headOrNull("leads(created 90d)", scoped(svc.from("leads").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).gte("created_at", d90))),
     headOrNull("listing_presentations(90d)", scoped(svc.from("listing_presentations").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).gte("appointment_at", d90))),
-    headOrNull("tours(90d)", scoped(svc.from("tours").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).gte("created_at", d90))),
+    headOrNull("tours(90d)", scoped(svc.from("tours").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).not("contact_id", "is", null).gte("created_at", d90))),
     headOrNull("transactions(created 90d)", scoped(svc.from("transactions").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).is("deleted_at", null).gte("created_at", d90))),
+    teamId ? Promise.resolve(null) : headOrNull("raw_scraped_leads(90d)", svc.from("raw_scraped_leads").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).gte("created_at", d90)),
+    headOrNull("leads(from raw 90d)", scoped(svc.from("leads").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("source_family", "raw").gte("created_at", d90))),
+    headOrNull("contacts(created 90d)", scoped(svc.from("contacts").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).is("deleted_at", null).gte("created_at", d90))),
+    headOrNull("contacts(direct 90d)", scoped(svc.from("contacts").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).is("deleted_at", null).eq("source_family", "contact_direct").gte("created_at", d90))),
   ])
+  if (teamId) blindSpots.push("system: the raw-lead stage is withheld from a team board (raw rows carry no agent)")
   const agreements = refusedWhat.has("listings(180d)") || refusedWhat.has("offers(180d)") ? null
     : listings180.filter((l) => (l.listing_date ?? "") >= d90.slice(0, 10)).length + offers180.filter((o) => (o.created_at ?? "") >= d90).length
   const flow: NonNullable<TwinFacts["flow"]> = {
-    lead: lead90, appointment: presentations90 === null || tours90 === null ? null : presentations90 + tours90,
+    raw_lead: raw90, lead: lead90, contact: contact90,
+    appointment: presentations90 === null || tours90 === null ? null : presentations90 + tours90,
     agreement: agreements, transaction: txn90,
   }
+  const flowEntries: NonNullable<TwinFacts["flowEntries"]> = { leadFromRaw: teamId ? null : leadFromRaw90, contactDirect: contactDirect90 }
 
   // … and the READER slices: a registered `slice:<manager>` seam, else the default survivor reader.
   // A team twin withholds a slice whose rows carry no agent / team column (teams see their board only).
@@ -1530,8 +1577,8 @@ export async function loadBrokerageTwinFacts(svc: Svc, brokerageId: string, opts
     forecast: latestPer(forecast, (r) => r.agent_id, (r) => r.computed_at),
     aiCost30dCents: aiRows.reduce((a, r) => a + (Number(r.cost_cents) || 0), 0),
     contributionMargin, missions, previous, previousReason, blindSpots,
-    workforce: { thresholds, thresholdsSource: settingsHasKey ? "policy" : "default", agents: workforceAgents, farms, sellerLeads60d },
-    slices: sliceFacts, flow,
+    workforce: { thresholds, thresholdsSource: settingsHasKey ? "policy" : "default", agents: workforceAgents, farms, sellerContacts60d },
+    slices: sliceFacts, flow, flowEntries,
   }
 }
 

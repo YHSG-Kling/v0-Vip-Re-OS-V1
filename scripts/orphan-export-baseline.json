@@ -20,8 +20,8 @@
     "app/constants/auth.ts": 1,
     "lib/ads/ad-creative-engine.ts": 2,
     "lib/ads/ad-lead-intake.ts": 2,
-    "lib/ads/ad-manager.ts": 2,
-    "lib/ads/ad-outcome-loop.ts": 1,
+    "lib/ads/ad-manager.ts": 4,
+    "lib/ads/ad-outcome-loop.ts": 2,
     "lib/ads/audience-persona-basis.ts": 1,
     "lib/ads/audience-source-rules.ts": 2,
     "lib/ads/connectors/ad-payload.ts": 2,
@@ -194,13 +194,13 @@
     "lib/intelligence/manager-touch-provenance.ts": 1,
     "lib/intelligence/manager-weekly-exec-plan.ts": 5,
     "lib/intelligence/negotiation-bands.ts": 2,
-    "lib/intelligence/network-benchmarks.ts": 1,
+    "lib/intelligence/network-benchmarks.ts": 3,
     "lib/intelligence/partners-meeting-reel-props.ts": 1,
     "lib/intelligence/partners-meeting.ts": 1,
     "lib/intelligence/playbook-engine.ts": 1,
     "lib/intelligence/portfolio-intelligence.ts": 3,
     "lib/intelligence/predictor-learning-runner.ts": 1,
-    "lib/intelligence/reaper-net.ts": 2,
+    "lib/intelligence/reaper-net.ts": 1,
     "lib/intelligence/relationship-health.ts": 1,
     "lib/intelligence/retention-board.ts": 1,
     "lib/intelligence/retention-outcomes.ts": 2,
@@ -208,7 +208,7 @@
     "lib/intelligence/roi-ledger.ts": 4,
     "lib/intelligence/skill-freshness-board.ts": 2,
     "lib/intelligence/steer-my-day.ts": 1,
-    "lib/intelligence/strategy-learning.ts": 3,
+    "lib/intelligence/strategy-learning.ts": 2,
     "lib/intelligence/time-to-value-radar.ts": 1,
     "lib/kernel/action-ledger.ts": 2,
     "lib/kernel/agent-coaching.ts": 1,
@@ -218,11 +218,13 @@
     "lib/kernel/appointment-noshow-autopilot.ts": 3,
     "lib/kernel/appraiser-packet.ts": 1,
     "lib/kernel/area-query.ts": 2,
+    "lib/kernel/autonomy-budgets.ts": 2,
     "lib/kernel/bidding-war-concierge.ts": 4,
     "lib/kernel/billing.ts": 1,
     "lib/kernel/board-packet-reel.ts": 1,
     "lib/kernel/board-packet.ts": 1,
     "lib/kernel/brand-voice.ts": 1,
+    "lib/kernel/broker-objectives.ts": 5,
     "lib/kernel/brokerage-twin.ts": 9,
     "lib/kernel/call-intelligence.ts": 1,
     "lib/kernel/campaign-center.ts": 1,
@@ -250,38 +252,41 @@
     "lib/kernel/dual-intent-linker.ts": 2,
     "lib/kernel/economic-graph.ts": 5,
     "lib/kernel/equity-trigger.ts": 4,
+    "lib/kernel/exceptions-first.ts": 7,
+    "lib/kernel/experiment-pipeline.ts": 6,
     "lib/kernel/farm-play.ts": 2,
     "lib/kernel/financial.ts": 3,
     "lib/kernel/financing-pit-stop.ts": 3,
     "lib/kernel/fire-drills.ts": 2,
     "lib/kernel/flow-integrity.ts": 4,
     "lib/kernel/idle-hands.ts": 2,
-    "lib/kernel/improvement-proposals.ts": 4,
+    "lib/kernel/improvement-proposals.ts": 2,
     "lib/kernel/ingress-continuity.ts": 2,
     "lib/kernel/intelligence-report.ts": 4,
     "lib/kernel/intent-campaign.ts": 4,
     "lib/kernel/launch-war-room.ts": 2,
-    "lib/kernel/lead-intake-cockpit.ts": 4,
+    "lib/kernel/lead-intake-cockpit.ts": 2,
     "lib/kernel/lead-magnets.ts": 1,
-    "lib/kernel/lender-linkage.ts": 1,
+    "lib/kernel/lender-linkage.ts": 2,
     "lib/kernel/listing-inventory-radar.ts": 3,
     "lib/kernel/listing-propensity.ts": 2,
     "lib/kernel/listings-batchdata-feed.ts": 1,
     "lib/kernel/lookalike-audience.ts": 1,
-    "lib/kernel/manager-delegation.ts": 6,
+    "lib/kernel/manager-delegation.ts": 3,
     "lib/kernel/manager-dissent.ts": 2,
     "lib/kernel/manager-registry.ts": 1,
     "lib/kernel/manager-signals.ts": 1,
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 1,
     "lib/kernel/media-intelligence.ts": 11,
     "lib/kernel/mission-context.ts": 2,
-    "lib/kernel/mission-controller.ts": 4,
+    "lib/kernel/mission-controller.ts": 3,
     "lib/kernel/missions.ts": 5,
     "lib/kernel/morning-standup.ts": 2,
     "lib/kernel/neighbor-farm.ts": 1,
     "lib/kernel/objection-library.ts": 3,
     "lib/kernel/office-hours.ts": 1,
     "lib/kernel/onboarding-fallbehind.ts": 1,
+    "lib/kernel/os-health.ts": 5,
     "lib/kernel/os-self-audit.ts": 3,
     "lib/kernel/outcome-learning.ts": 2,
     "lib/kernel/overnight-digest.ts": 1,
@@ -302,12 +307,15 @@
     "lib/kernel/schema-adaptation.ts": 1,
     "lib/kernel/schema-memory.ts": 2,
     "lib/kernel/self-book.ts": 4,
+    "lib/kernel/self-optimization.ts": 3,
     "lib/kernel/service-recovery.ts": 1,
     "lib/kernel/showing-lifecycle.ts": 2,
     "lib/kernel/signal-registry.ts": 1,
     "lib/kernel/signal-routing.ts": 2,
     "lib/kernel/signature-chase.ts": 3,
     "lib/kernel/site-traffic-insights.ts": 1,
+    "lib/kernel/skill-marketplace.ts": 2,
+    "lib/kernel/skill-registry.ts": 1,
     "lib/kernel/standup-action.ts": 1,
     "lib/kernel/strategy-engine.ts": 1,
     "lib/kernel/strategy-library.ts": 1,
@@ -421,7 +429,7 @@
     "lib/platform/demo-tenant.ts": 1,
     "lib/platform/go-live-readiness.ts": 1,
     "lib/platform/impersonation.ts": 1,
-    "lib/platform/manager-ops.ts": 5,
+    "lib/platform/manager-ops.ts": 3,
     "lib/platform/nps.ts": 1,
     "lib/platform/os-sentinel.ts": 3,
     "lib/platform/platform-controls.ts": 1,
@@ -437,6 +445,7 @@
     "lib/platform/public-tiers.ts": 1,
     "lib/platform/referral-payouts.ts": 1,
     "lib/platform/revenue-analytics.ts": 1,
+    "lib/platform/saas-operations.ts": 3,
     "lib/platform/sales-rep.ts": 2,
     "lib/platform/self-audit-rollup.ts": 1,
     "lib/platform/subscriber-door.ts": 3,
@@ -546,7 +555,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10974,
+  "census": 11086,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -577,7 +586,7 @@
     "app/actions/admin/create-subscriber.ts": 2,
     "app/actions/admin/domain-coherence.ts": 8,
     "app/actions/admin/get-admin-stats.ts": 1,
-    "app/actions/admin/improvement-proposals.ts": 7,
+    "app/actions/admin/improvement-proposals.ts": 9,
     "app/actions/admin/invitations.ts": 4,
     "app/actions/admin/invite-user.ts": 1,
     "app/actions/admin/lead-routing-settings.ts": 4,
@@ -882,7 +891,7 @@
     "app/actions/marketing-ops.ts": 2,
     "app/actions/marketing-package-automation.ts": 11,
     "app/actions/marketing-studio.ts": 18,
-    "app/actions/missions.ts": 6,
+    "app/actions/missions.ts": 7,
     "app/actions/mls-check.ts": 1,
     "app/actions/multi-persona.ts": 27,
     "app/actions/negotiation-copilot.ts": 2,
@@ -924,6 +933,7 @@
     "app/actions/open-house-kernel.ts": 7,
     "app/actions/open-house.ts": 7,
     "app/actions/orchestrator.ts": 2,
+    "app/actions/os-health.ts": 2,
     "app/actions/outside-agent-showing.ts": 1,
     "app/actions/overdue.ts": 1,
     "app/actions/partner-orders.ts": 4,
@@ -1014,6 +1024,7 @@
     "app/actions/settings/update-notification-rules.ts": 1,
     "app/actions/setup-readiness.ts": 1,
     "app/actions/showings.ts": 6,
+    "app/actions/skill-marketplace.ts": 7,
     "app/actions/smart-insights.ts": 12,
     "app/actions/smart-queue.ts": 1,
     "app/actions/smarter-this-week.ts": 1,
@@ -1059,6 +1070,7 @@
     "app/actions/superadmin/platform-staff.ts": 9,
     "app/actions/superadmin/portal-clients.ts": 2,
     "app/actions/superadmin/provider-posture.ts": 3,
+    "app/actions/superadmin/saas-operations.ts": 1,
     "app/actions/superadmin/screenshot-capture.ts": 5,
     "app/actions/superadmin/stripe-webhook-events.ts": 2,
     "app/actions/superadmin/subscriber-referrals.ts": 4,
@@ -1391,6 +1403,7 @@
     "app/api/cron/task-due/route.ts": 1,
     "app/api/cron/task-overdue/route.ts": 1,
     "app/api/cron/team-heatmap-snapshot/route.ts": 1,
+    "app/api/cron/team-optimization/route.ts": 1,
     "app/api/cron/tenant-safety-scan/route.ts": 1,
     "app/api/cron/territory-metrics/route.ts": 1,
     "app/api/cron/tour-optimizer/route.ts": 1,
@@ -1820,6 +1833,7 @@
     "app/components/shared/role-gate-notice.tsx": 1,
     "app/components/shared/staged-draft-banner.tsx": 1,
     "app/components/shell/todays-focus-card.tsx": 1,
+    "app/components/skills/skill-marketplace-panel.tsx": 1,
     "app/components/title/transaction-list.tsx": 1,
     "app/components/transactions/DealShakyToggle.tsx": 1,
     "app/components/transactions/VendorBookingSection.tsx": 1,
@@ -1920,6 +1934,7 @@
     "app/dashboard/admin/command-center/command-center-client.tsx": 1,
     "app/dashboard/admin/command-center/coverage-card.tsx": 1,
     "app/dashboard/admin/command-center/earned-autonomy-panel.tsx": 1,
+    "app/dashboard/admin/command-center/exceptions-first-panel.tsx": 1,
     "app/dashboard/admin/command-center/manager-activity-feed.tsx": 1,
     "app/dashboard/admin/command-center/manager-talk-feed.tsx": 1,
     "app/dashboard/admin/command-center/missions-card.tsx": 1,
@@ -1966,6 +1981,7 @@
     "app/dashboard/admin/manager-trust/improvement-proposals-panel.tsx": 1,
     "app/dashboard/admin/manager-trust/manager-trust-client.tsx": 1,
     "app/dashboard/admin/manager-trust/revert-policy-button.tsx": 1,
+    "app/dashboard/admin/manager-trust/self-optimization-panel.tsx": 1,
     "app/dashboard/admin/manager-trust/strategy-library-panel.tsx": 1,
     "app/dashboard/admin/manager-trust/tenant-constitution-panel.tsx": 1,
     "app/dashboard/admin/manager-trust/workforce-thresholds-editor.tsx": 1,
@@ -2467,7 +2483,9 @@
     "app/dashboard/superadmin/rollout/cohort-drill.tsx": 1,
     "app/dashboard/superadmin/rollout/sunset-control.tsx": 1,
     "app/dashboard/superadmin/sentinel/os-sentinel-board.tsx": 1,
+    "app/dashboard/superadmin/sentinel/saas-operations-board.tsx": 1,
     "app/dashboard/superadmin/sentinel/sentinel-action-queue.tsx": 1,
+    "app/dashboard/superadmin/sentinel/support-mission-decision.tsx": 1,
     "app/dashboard/superadmin/staff/capability-matrix.tsx": 1,
     "app/dashboard/superadmin/staff/platform-staff-manager.tsx": 1,
     "app/dashboard/superadmin/support/[id]/reply-box.tsx": 1,
@@ -2740,9 +2758,9 @@
     "lib/ads/ad-destination.ts": 1,
     "lib/ads/ad-engagement-decay.ts": 1,
     "lib/ads/ad-lead-intake.ts": 3,
-    "lib/ads/ad-manager.ts": 5,
+    "lib/ads/ad-manager.ts": 9,
     "lib/ads/ad-monitor.ts": 8,
-    "lib/ads/ad-outcome-loop.ts": 4,
+    "lib/ads/ad-outcome-loop.ts": 5,
     "lib/ads/ad-performance-ingest.ts": 2,
     "lib/ads/audience-eligibility.ts": 1,
     "lib/ads/audience-exclusion.ts": 5,
@@ -2821,7 +2839,7 @@
     "lib/agents/offer-strategy-producer.ts": 3,
     "lib/agents/outcomes.ts": 4,
     "lib/agents/persona-context.ts": 1,
-    "lib/agents/recruit-outreach-producer.ts": 4,
+    "lib/agents/recruit-outreach-producer.ts": 5,
     "lib/agents/referral-closer.ts": 3,
     "lib/agents/seller-conversion-eligibility.ts": 1,
     "lib/agents/seller-conversion-nurture.ts": 1,
@@ -3171,7 +3189,7 @@
     "lib/contact-promotion/qualification.ts": 2,
     "lib/contact-promotion/welcome-avatar-video.ts": 1,
     "lib/contact-promotion/welcome-situation.ts": 2,
-    "lib/contact-types.ts": 4,
+    "lib/contact-types.ts": 5,
     "lib/contact-validation.ts": 3,
     "lib/contacts/buyer-stage.ts": 1,
     "lib/contacts/card-classifier.ts": 1,
@@ -3490,7 +3508,7 @@
     "lib/intelligence/multi-agent-router.ts": 7,
     "lib/intelligence/negotiation-bands.ts": 6,
     "lib/intelligence/neighborhood-future-lens.ts": 3,
-    "lib/intelligence/network-benchmarks.ts": 5,
+    "lib/intelligence/network-benchmarks.ts": 7,
     "lib/intelligence/offer-doc-completeness-runner.ts": 1,
     "lib/intelligence/offer-doc-completeness.ts": 1,
     "lib/intelligence/offer-property-prefill-runner.ts": 2,
@@ -3549,7 +3567,7 @@
     "lib/kernel/adapters/compliance.ts": 3,
     "lib/kernel/adapters/financial.ts": 1,
     "lib/kernel/addressing.ts": 1,
-    "lib/kernel/ads.ts": 7,
+    "lib/kernel/ads.ts": 8,
     "lib/kernel/agent-coaching.ts": 5,
     "lib/kernel/agent-identity-resolver.ts": 3,
     "lib/kernel/agent-identity.ts": 5,
@@ -3571,6 +3589,7 @@
     "lib/kernel/approval-sources.ts": 4,
     "lib/kernel/area-query.ts": 3,
     "lib/kernel/assistant-starter.ts": 1,
+    "lib/kernel/autonomy-budgets.ts": 8,
     "lib/kernel/bidding-war-concierge.ts": 5,
     "lib/kernel/billing.ts": 9,
     "lib/kernel/board-packet-pdf.ts": 1,
@@ -3578,6 +3597,7 @@
     "lib/kernel/board-packet.ts": 2,
     "lib/kernel/brand-compliance.ts": 1,
     "lib/kernel/brand-voice.ts": 2,
+    "lib/kernel/broker-objectives.ts": 6,
     "lib/kernel/brokerage-twin.ts": 22,
     "lib/kernel/calendar-deadline-watcher.ts": 1,
     "lib/kernel/calendar-engine.ts": 1,
@@ -3648,6 +3668,8 @@
     "lib/kernel/event-fanout.ts": 2,
     "lib/kernel/event-reactor.ts": 1,
     "lib/kernel/exception-center.ts": 2,
+    "lib/kernel/exceptions-first.ts": 8,
+    "lib/kernel/experiment-pipeline.ts": 10,
     "lib/kernel/experiments.ts": 3,
     "lib/kernel/farm-play.ts": 3,
     "lib/kernel/financial.ts": 22,
@@ -3658,7 +3680,7 @@
     "lib/kernel/global-settings.ts": 2,
     "lib/kernel/helpers.ts": 6,
     "lib/kernel/idle-hands.ts": 3,
-    "lib/kernel/improvement-proposals.ts": 11,
+    "lib/kernel/improvement-proposals.ts": 12,
     "lib/kernel/ingress-continuity.ts": 7,
     "lib/kernel/intelligence-report.ts": 8,
     "lib/kernel/intent-campaign.ts": 6,
@@ -3668,7 +3690,7 @@
     "lib/kernel/lead-acquisition-handlers.ts": 7,
     "lib/kernel/lead-intake-cockpit.ts": 6,
     "lib/kernel/lead-magnets.ts": 8,
-    "lib/kernel/lender-linkage.ts": 8,
+    "lib/kernel/lender-linkage.ts": 10,
     "lib/kernel/lifecycle-promo-policy.ts": 2,
     "lib/kernel/lifecycle.ts": 1,
     "lib/kernel/listing-archive.ts": 2,
@@ -3681,7 +3703,7 @@
     "lib/kernel/local-lifestyle.ts": 1,
     "lib/kernel/lookalike-audience.ts": 2,
     "lib/kernel/manager-activity.ts": 1,
-    "lib/kernel/manager-delegation.ts": 16,
+    "lib/kernel/manager-delegation.ts": 17,
     "lib/kernel/manager-dissent.ts": 6,
     "lib/kernel/manager-registry.ts": 7,
     "lib/kernel/manager-signals.ts": 6,
@@ -3693,7 +3715,7 @@
     "lib/kernel/milestone-calendar-bridge.ts": 1,
     "lib/kernel/mission-context.ts": 5,
     "lib/kernel/mission-controller.ts": 8,
-    "lib/kernel/missions.ts": 29,
+    "lib/kernel/missions.ts": 31,
     "lib/kernel/morning-standup.ts": 3,
     "lib/kernel/neighbor-farm.ts": 3,
     "lib/kernel/newsletter/assemble.ts": 2,
@@ -3715,6 +3737,7 @@
     "lib/kernel/onboarding.ts": 4,
     "lib/kernel/open-house.ts": 6,
     "lib/kernel/org-recipients.ts": 1,
+    "lib/kernel/os-health.ts": 9,
     "lib/kernel/os-self-audit.ts": 4,
     "lib/kernel/outcome-learning.ts": 5,
     "lib/kernel/outreach-reasons.ts": 2,
@@ -3756,6 +3779,7 @@
     "lib/kernel/second-opinion.ts": 1,
     "lib/kernel/self-book.ts": 7,
     "lib/kernel/self-heal-ledger.ts": 5,
+    "lib/kernel/self-optimization.ts": 12,
     "lib/kernel/seller-decision-room.ts": 1,
     "lib/kernel/seller-listing-timeline.ts": 2,
     "lib/kernel/service-recovery.ts": 2,
@@ -3766,6 +3790,8 @@
     "lib/kernel/signal-routing.ts": 3,
     "lib/kernel/signature-chase.ts": 4,
     "lib/kernel/site-traffic-insights.ts": 2,
+    "lib/kernel/skill-marketplace.ts": 8,
+    "lib/kernel/skill-registry.ts": 10,
     "lib/kernel/social-proof.ts": 2,
     "lib/kernel/stalled-deferrals-runner.ts": 1,
     "lib/kernel/stalled-deferrals.ts": 1,
@@ -4130,6 +4156,7 @@
     "lib/platform/referral-payouts.ts": 7,
     "lib/platform/require-capability.ts": 2,
     "lib/platform/revenue-analytics.ts": 2,
+    "lib/platform/saas-operations.ts": 6,
     "lib/platform/sales-rep.ts": 3,
     "lib/platform/save-offer.ts": 2,
     "lib/platform/self-audit-rollup.ts": 2,
@@ -4804,7 +4831,9 @@
       "promoteProposalAction",
       "rollbackProposalAction",
       "getWorkforceThresholdsEditor",
-      "submitWorkforceThresholdsAction"
+      "submitWorkforceThresholdsAction",
+      "getSelfOptimizationAutonomy",
+      "setSelfOptimizationAutonomyFormAction"
     ],
     "app/actions/admin/invitations.ts": [
       "listPendingInvitationsAction",
@@ -6857,6 +6886,7 @@
       "listMissionsAction",
       "decideDelegationAction",
       "createMissionAction",
+      "submitBrokerObjectiveAction",
       "decideMissionAction",
       "controlMissionAction",
       "blockMissionAction"
@@ -7111,6 +7141,10 @@
     "app/actions/orchestrator.ts": [
       "emitEvent",
       "orchestrateEventById"
+    ],
+    "app/actions/os-health.ts": [
+      "getOsHealthLine",
+      "releaseFinancialWriterHaltAction"
     ],
     "app/actions/outside-agent-showing.ts": [
       "submitOutsideAgentShowingRequest"
@@ -7692,6 +7726,15 @@
       "updateShowing",
       "cancelShowing"
     ],
+    "app/actions/skill-marketplace.ts": [
+      "getSkillRegistry",
+      "submitTenantSkill",
+      "decideTenantSkill",
+      "submitThirdPartySkill",
+      "getPlatformSkillQueue",
+      "decidePlatformSkill",
+      "runSkillForTenant"
+    ],
     "app/actions/smart-insights.ts": [
       "generateSmartInsights",
       "getCommuteDestinations",
@@ -7970,6 +8013,9 @@
       "getTwilioFleetPostureAction",
       "getFullProviderPostureAction",
       "getSendgridPostureAction"
+    ],
+    "app/actions/superadmin/saas-operations.ts": [
+      "decidePlatformSupportMission"
     ],
     "app/actions/superadmin/screenshot-capture.ts": [
       "captureDemoStillAction",
@@ -9369,6 +9415,9 @@
     "app/api/cron/team-heatmap-snapshot/route.ts": [
       "GET"
     ],
+    "app/api/cron/team-optimization/route.ts": [
+      "GET"
+    ],
     "app/api/cron/tenant-safety-scan/route.ts": [
       "GET"
     ],
@@ -10682,6 +10731,9 @@
     "app/components/shell/todays-focus-card.tsx": [
       "TodaysFocusCard"
     ],
+    "app/components/skills/skill-marketplace-panel.tsx": [
+      "SkillMarketplacePanel"
+    ],
     "app/components/title/transaction-list.tsx": [
       "TitleTransactionList"
     ],
@@ -10987,6 +11039,9 @@
     "app/dashboard/admin/command-center/earned-autonomy-panel.tsx": [
       "EarnedAutonomyPanel"
     ],
+    "app/dashboard/admin/command-center/exceptions-first-panel.tsx": [
+      "ExceptionsFirstPanel"
+    ],
     "app/dashboard/admin/command-center/manager-activity-feed.tsx": [
       "ManagerActivityFeed"
     ],
@@ -11124,6 +11179,9 @@
     ],
     "app/dashboard/admin/manager-trust/revert-policy-button.tsx": [
       "RevertPolicyButton"
+    ],
+    "app/dashboard/admin/manager-trust/self-optimization-panel.tsx": [
+      "SelfOptimizationPanel"
     ],
     "app/dashboard/admin/manager-trust/strategy-library-panel.tsx": [
       "StrategyLibraryPanel"
@@ -12678,8 +12736,14 @@
     "app/dashboard/superadmin/sentinel/os-sentinel-board.tsx": [
       "OsSentinelBoard"
     ],
+    "app/dashboard/superadmin/sentinel/saas-operations-board.tsx": [
+      "SaasOperationsBoard"
+    ],
     "app/dashboard/superadmin/sentinel/sentinel-action-queue.tsx": [
       "SentinelActionQueue"
+    ],
+    "app/dashboard/superadmin/sentinel/support-mission-decision.tsx": [
+      "SupportMissionDecision"
     ],
     "app/dashboard/superadmin/staff/capability-matrix.tsx": [
       "CapabilityMatrix"
@@ -13530,9 +13594,13 @@
     "lib/ads/ad-manager.ts": [
       "evaluateAdPerformance",
       "clampDailyBudget",
+      "detectBudgetOverrun",
+      "loadCampaignOverruns",
       "proposeAdOptimizations",
       "proposeAdLaunches",
-      "executeAdManagerAction"
+      "executeAdManagerAction",
+      "planBudgetShift",
+      "executeAutonomousBudgetShift"
     ],
     "lib/ads/ad-monitor.ts": [
       "ingestCompetitorAd",
@@ -13547,6 +13615,7 @@
     "lib/ads/ad-outcome-loop.ts": [
       "decideWinningArm",
       "learnedCreativeEmphasis",
+      "provenRebalance",
       "decideBudgetRebalance",
       "runAdOutcomeLoop"
     ],
@@ -13906,7 +13975,8 @@
       "recruitStageNeedsOutreach",
       "buildRecruitOutreach",
       "produceRecruitOutreach",
-      "sweepStaleRecruits"
+      "sweepStaleRecruits",
+      "recruitOutreachCapability"
     ],
     "lib/agents/referral-closer.ts": [
       "referralCommissionFor",
@@ -15917,7 +15987,8 @@
       "canonicalContactType",
       "isStorableContactType",
       "isLifetimeCustomerType",
-      "isLifetimeRelationshipType"
+      "isLifetimeRelationshipType",
+      "isBuyerSideContactType"
     ],
     "lib/contact-validation.ts": [
       "validateEmail",
@@ -17462,7 +17533,9 @@
       "composeColdStartBandLine"
     ],
     "lib/intelligence/network-benchmarks.ts": [
+      "benchmarkRateStep",
       "publishBenchmarkCells",
+      "marketBandForState",
       "readNetworkOptIn",
       "runNetworkBenchmarkAggregation",
       "readNetworkBenchmarks",
@@ -17723,7 +17796,8 @@
       "loadAudienceDefinitions",
       "syncAudience",
       "previewAudienceResolution",
-      "createAudienceSegment"
+      "createAudienceSegment",
+      "adCampaignLaunchCapability"
     ],
     "lib/kernel/agent-coaching.ts": [
       "composeCoachingBrief",
@@ -17860,6 +17934,16 @@
     "lib/kernel/assistant-starter.ts": [
       "seedStarterAssistant"
     ],
+    "lib/kernel/autonomy-budgets.ts": [
+      "resolveAutonomyBudgets",
+      "loadAutonomyBudgets",
+      "opportunityValueTier",
+      "envelopeLimits",
+      "consumeAutonomyEnvelope",
+      "releaseAutonomyEnvelope",
+      "composeAutonomyBudgetReport",
+      "deliverAutonomyBudgetReport"
+    ],
     "lib/kernel/bidding-war-concierge.ts": [
       "inferMarketHeat",
       "escalationPlan",
@@ -17896,6 +17980,14 @@
     "lib/kernel/brand-voice.ts": [
       "resolveBrandVoiceCore",
       "applyBrandVoice"
+    ],
+    "lib/kernel/broker-objectives.ts": [
+      "matchTerritory",
+      "parseBrokerObjective",
+      "rankContributingCauses",
+      "fitLiftToCap",
+      "planObjectiveDelegation",
+      "submitBrokerObjective"
     ],
     "lib/kernel/brokerage-twin.ts": [
       "resolveWorkforceThresholds",
@@ -18331,6 +18423,28 @@
       "composeExceptionCenter",
       "applyExceptionLocationFilter"
     ],
+    "lib/kernel/exceptions-first.ts": [
+      "resolveActivityWindow",
+      "bucketActivity",
+      "rankExceptions",
+      "exceptionsHeadline",
+      "composeExceptionsFirst",
+      "capacityItems",
+      "humanInterventionItems",
+      "loadExceptionsFirst"
+    ],
+    "lib/kernel/experiment-pipeline.ts": [
+      "validateExperimentSpec",
+      "measureExperimentArms",
+      "experimentConclusion",
+      "evaluateExperimentProposal",
+      "proposeExperiment",
+      "deployExperiment",
+      "routeEnrollmentThroughExperiments",
+      "concludeExperiments",
+      "pickVideoFirstSellerPair",
+      "proposeVideoFirstSellerExperiments"
+    ],
     "lib/kernel/experiments.ts": [
       "assignExperimentArm",
       "experimentLedgerDetail",
@@ -18428,6 +18542,7 @@
       "loadProposal",
       "listImprovementProposals",
       "evaluateProposal",
+      "recordExperimentResult",
       "decideProposal",
       "promoteProposal",
       "rollbackProposal",
@@ -18507,7 +18622,9 @@
       "lenderVendorForUser",
       "lenderVendorUserIds",
       "lenderVendorTransactionIds",
-      "linkLenderVendorToTransaction"
+      "linkLenderVendorToTransaction",
+      "recordLenderReferral",
+      "lenderPreapprovalHandoff"
     ],
     "lib/kernel/lifecycle-promo-policy.ts": [
       "resolveLifecycleAutoSpawn",
@@ -18578,6 +18695,7 @@
       "dissentDelegation",
       "escalateDelegation",
       "cancelDelegation",
+      "workDelegation",
       "sweepDelegationDeadlines",
       "settleDelegationForRun"
     ],
@@ -18679,6 +18797,7 @@
     "lib/kernel/missions.ts": [
       "isMissionState",
       "canTransition",
+      "isPlatformScopeMission",
       "currentWorkingContext",
       "evaluateSuccess",
       "budgetExhausted",
@@ -18699,6 +18818,7 @@
       "recordMissionProgress",
       "syncMissionProgressFromTwin",
       "recruitingNeedSubjectId",
+      "stableMissionSubjectId",
       "recruitingTargetingOf",
       "ensureRecruitingMissionsFromTwin",
       "recruitingTargetingFor",
@@ -18811,6 +18931,17 @@
     ],
     "lib/kernel/org-recipients.ts": [
       "resolveOrgRecipients"
+    ],
+    "lib/kernel/os-health.ts": [
+      "decideRecovery",
+      "loadFinancialWriterHalt",
+      "haltFinancialWriter",
+      "releaseFinancialWriterHalt",
+      "foldIncidentHistory",
+      "runOsHealthSupervisor",
+      "composeOsHealthLine",
+      "loadOsHealthLine",
+      "subjectFor"
     ],
     "lib/kernel/os-self-audit.ts": [
       "isDecisionBreach",
@@ -19131,6 +19262,20 @@
       "loadSelfHealRollup",
       "composeRepairAutonomy"
     ],
+    "lib/kernel/self-optimization.ts": [
+      "isOptimizationClass",
+      "classifyProposalSurface",
+      "resolveSelfOptimizationPolicy",
+      "resolveOptimizationTuning",
+      "readTenantSettings",
+      "loadSelfOptimizationPolicy",
+      "loadTenantProviderSkips",
+      "replayReasoningSpend",
+      "experienceDirection",
+      "providerSkipVerdict",
+      "evaluateOptimizationClass",
+      "runTeamOptimizationCycle"
+    ],
     "lib/kernel/seller-decision-room.ts": [
       "buildSellerDecisionRoom"
     ],
@@ -19172,6 +19317,28 @@
     "lib/kernel/site-traffic-insights.ts": [
       "composeSiteInsights",
       "runSiteTrafficInsights"
+    ],
+    "lib/kernel/skill-marketplace.ts": [
+      "skillDeclarationDigest",
+      "submitSkillListing",
+      "evaluateSkillListing",
+      "decideSkillListing",
+      "listVisibleSkillListings",
+      "listPlatformSkillListings",
+      "resolveRunnableSkill",
+      "runSkill"
+    ],
+    "lib/kernel/skill-registry.ts": [
+      "builtinSkill",
+      "authorityBandFor",
+      "validateSkillDeclaration",
+      "validateSkillInputs",
+      "knownEvaluationSuites",
+      "canSkillListingTransition",
+      "canDecideSkillListing",
+      "isSkillListingRunnableBy",
+      "stableSkillJson",
+      "skillRef"
     ],
     "lib/kernel/social-proof.ts": [
       "mineClientConcern",
@@ -21226,6 +21393,14 @@
     "lib/platform/revenue-analytics.ts": [
       "rollupRevenueAnalytics",
       "loadRevenueAnalytics"
+    ],
+    "lib/platform/saas-operations.ts": [
+      "detectUsageAnomaly",
+      "computeTenantSignals",
+      "diagnoseAnomaly",
+      "supportMissionSubjectId",
+      "runSaasOperations",
+      "listPlatformSupportMissions"
     ],
     "lib/platform/sales-rep.ts": [
       "salesBenchDerivesFromRoster",

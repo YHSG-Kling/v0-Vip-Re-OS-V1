@@ -87,6 +87,9 @@ const ACTION_REASON_CODES = [
   // m710 (wave 104D): a mission created / moved by the state machine (lib/kernel/missions.ts) —
   // the WHY of the transition rides reason_detail, the mission id rides detail.mission_id.
   "MISSION_LIFECYCLE",
+  // m729 (wave 108C): the OS health supervisor (lib/kernel/os-health.ts) recovered, routed, halted or
+  // escalated an operational incident — the incident class + recovery ride detail, the WHY reason_detail.
+  "OS_HEALTH_RECOVERY",
   "UNSPECIFIED",
 ] as const
 export type ActionReasonCode = (typeof ACTION_REASON_CODES)[number]

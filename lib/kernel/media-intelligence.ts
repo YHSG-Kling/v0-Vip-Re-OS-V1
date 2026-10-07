@@ -540,6 +540,9 @@ export interface MediaDeps {
   generateImage?: (a: { need: MediaNeed; angle: string; brand: MediaBrand }) => Promise<GeneratedVariant>
   /** lib/video/video-director.ts commissionVideo (stages a gated ai_video_projects row; the capture on completion cites the lineage) */
   commissionVideo?: (svc: Svc, a: { need: MediaNeed; angle: string; brand: MediaBrand }) => Promise<GeneratedVariant>
+  /** Wave 108F — lib/kernel/autonomy-budgets.ts consumeAutonomyEnvelope("asset_renders"): the per-campaign render
+   *  envelope every autonomous production consumes first (default all zero = recommendation only). */
+  envelope?: (svc: Svc, a: { brokerageId: string; scopeKey: string; renders: number; need: MediaNeed; idempotencyKey: string; now: Date }) => Promise<{ allowed: boolean; reason: string }>
   /** lib/kernel/action-ledger.ts withActionLedger */
   ledger?: <T>(ctx: Record<string, unknown>, run: () => Promise<T>, hooks: { settle: (r: T) => Record<string, unknown>; replay: (claim: { kind: string }) => T }, svc: Svc) => Promise<T>
 }
@@ -551,6 +554,17 @@ async function defaultLedger<T>(ctx: Record<string, unknown>, run: () => Promise
 
 const DEFAULT_DEPS: Required<MediaDeps> = {
   now: () => new Date(),
+  async envelope(svc, a) {
+    const { consumeAutonomyEnvelope } = await import("@/lib/kernel/autonomy-budgets")
+    const v = await consumeAutonomyEnvelope(svc, {
+      brokerageId: a.brokerageId, envelope: "asset_renders", amount: a.renders, scopeKey: a.scopeKey,
+      reasonCode: a.need.campaignId ? "CAMPAIGN_STEP" : "SCHEDULED_CONTENT_PUBLISH",
+      reasonDetail: `${a.renders} ${a.need.assetType} variant render(s) for "${a.need.subject.slice(0, 80)}" (${a.need.purpose})`,
+      subject: { type: a.need.campaignId ? "marketing_campaign" : a.need.listingId ? "listing" : "media_need", id: a.need.campaignId ?? a.need.listingId ?? null, ref: a.scopeKey },
+      idempotencyKey: a.idempotencyKey, now: a.now,
+    })
+    return { allowed: v.allowed, reason: v.reason }
+  },
   async afford(svc, a) {
     const { mayUseAndAfford } = await import("@/lib/billing/billing-access")
     const d = await mayUseAndAfford({ brokerageId: a.brokerageId, capability: "ai.generate", estTokens: a.estTokens, client: svc })
@@ -669,6 +683,10 @@ export async function produceVariants(svc: Svc, need: MediaNeed, n: number = MAX
   if (!afford.allowed) return empty(`entitlement refused: ${afford.reason}`)
   const now = need.now ?? d.now()
   const setId = `${needKey(need)}:${now.toISOString().slice(0, 10)}`
+  // Wave 108F — CONTROLLED AUTONOMOUS BUDGETING: the Asset Manager's render envelope (per campaign) is consumed
+  // atomically BEFORE any generator runs; a zero / exhausted envelope produces nothing (recommendation only).
+  const env = await d.envelope(svc, { brokerageId: need.brokerageId, scopeKey: need.campaignId ?? need.listingId ?? `need:${needKey(need)}`, renders: count, need, idempotencyKey: `media.variants.envelope:${need.brokerageId}:${setId}`, now })
+  if (!env.allowed) return empty(`render envelope refused — recommendation only: ${env.reason}`)
   const run = async (): Promise<ProduceVariantsResult> => {
     const out: ProduceVariantsResult = { ok: true, reason: null, assetIds: [], staged: [], requested: count, produced: 0, costUsd: 0, violations: [], degraded: null }
     for (let i = 0; i < count; i++) {

@@ -169,7 +169,16 @@ async function main() {
     check("A3 Seller Equity runs in the owner's order: data_steward → ai_isa → campaign_orchestrator → asset_manager → listing_concierge → finance_manager",
       participatingManagers(se).join(">") === ["data_steward", "ai_isa", "campaign_orchestrator", "asset_manager", "listing_concierge", "finance_manager"].join(">"))
     const gaps = PLATFORM_STRATEGY_LIBRARY.flatMap((s) => strategyGaps(s).map((g) => `${s.key}:${g.manager}`))
-    check("A4 missing capabilities are NAMED as gaps, never invented (recruiting_manager, ads_manager, the lender handoff)", gaps.includes("recruiting:recruiting_manager") && gaps.includes("listing_launch:ads_manager") && gaps.includes("first_time_buyer:shopping_agent"), gaps.join(", "))
+    // A4 asserts the RULE (every step either names catalogue keys its manager owns or names its gap — never
+    // invented), not the waypoint "these three gaps exist": wave 108 BUILT them (owner-approved).
+    const ownedStep = (s: StrategyDefinition, key: string, manager: string, cap: string) => s.key === key && s.steps.some((x) => x.manager === manager && x.capabilities.includes(cap as any) && !x.gap)
+    check("A4 every gap is NAMED, never invented — and the three owner-approved gaps (wave 108) now name catalogue keys their managers own: recruit_outreach, ad_campaign_launch, lender_preapproval_handoff",
+      PLATFORM_STRATEGY_LIBRARY.every((s) => s.steps.every((x) => x.capabilities.length > 0 || !!x.gap))
+      && ownedStep(platformStrategy("recruiting")!, "recruiting", "recruiting_manager", "recruit_outreach")
+      && ownedStep(platformStrategy("listing_launch")!, "listing_launch", "ads_manager", "ad_campaign_launch")
+      && ownedStep(platformStrategy("first_time_buyer")!, "first_time_buyer", "shopping_agent", "lender_preapproval_handoff")
+      && !gaps.some((g) => ["recruiting:recruiting_manager", "listing_launch:ads_manager", "first_time_buyer:shopping_agent"].includes(g)), gaps.join(", "))
+    check("A4b a strategy whose steps CHANGED carries a new version (the published platform version is immutable): the three are v2", ["recruiting", "listing_launch", "first_time_buyer"].every((k) => platformStrategy(k)!.version >= 2))
     // positive controls — the validator recognises each defect it was written for
     const mutCap = { ...se, steps: [{ ...se.steps[1], capabilities: ["cma_generate"] }] } as unknown as StrategyDefinition
     const mutInvented = { ...se, steps: [{ ...se.steps[0], capabilities: ["teleport_buyer"] }] } as unknown as StrategyDefinition
@@ -240,6 +249,17 @@ async function main() {
     check("C11 the owner's ladder ceiling below the needed rung → APPROVAL_REQUIRED, the communicating steps DEFERRED (recorded, not requested)", low.ok && low.mission.state === "APPROVAL_REQUIRED" && low.deferred.length > 0 && low.deferred.every((d) => /needs rung 3 > ceiling 1/.test(d.why)), JSON.stringify(low))
     const bad = await activateStrategy({ brokerageId: T1, candidate: candidate(platformStrategy("listing_launch")!), subject: { type: "contact", id: "c-1" } }, memClient() as any, seams().deps)
     check("C12 a subject type the strategy does not serve is refused", !bad.ok && /subject_type_not_eligible/.test(bad.reason))
+    // WAVE 108 — the approved capabilities are WIRED into the steps that named them as gaps.
+    const c4 = memClient(), s4 = seams()
+    const ftb = await activateStrategy({ brokerageId: T1, candidate: candidate(platformStrategy("first_time_buyer")!), subject: { type: "contact", id: "c-ftb" } }, c4 as any, s4.deps)
+    const ftbDel = (c4.tables.manager_delegations ?? []).filter((d: any) => d.requested_capability === "lender_preapproval_handoff")
+    check("C13 First-Time Buyer v2 files the lender pre-approval handoff as the owner's WORK ORDER (shopping_agent → itself, inside the mission, carrying the buyer contact); the owner's non-worker steps stay the mission itself",
+      ftb.ok && ftbDel.length === 1 && ftbDel[0].requesting_manager === "shopping_agent" && ftbDel[0].assigned_manager === "shopping_agent" && ftbDel[0].mission_id === ftb.mission.id && ftbDel[0].input_entities?.contactId === "c-ftb"
+      && !(c4.tables.manager_delegations ?? []).some((d: any) => d.requested_capability === "appointment_schedule"), JSON.stringify(ftb.ok ? ftb.delegations : ftb))
+    const c5 = memClient(), s5 = seams()
+    const ll = await activateStrategy({ brokerageId: T1, candidate: candidate(platformStrategy("listing_launch")!), subject: { type: "listing", id: "l-1" } }, c5 as any, s5.deps)
+    const adDel = (c5.tables.manager_delegations ?? []).filter((d: any) => d.requested_capability === "ad_campaign_launch")
+    check("C14 Listing Launch v2 delegates the ad draft to the ads_manager (ad_campaign_launch) — a delegation, not a gap", ll.ok && adDel.length === 1 && adDel[0].assigned_manager === "ads_manager" && adDel[0].requesting_manager === "listing_concierge", JSON.stringify(ll.ok ? ll.delegations : ll))
   }
 
   console.log("\nD. platform version immutable; tenant adaptation recorded")

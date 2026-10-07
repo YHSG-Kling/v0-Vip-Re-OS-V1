@@ -211,13 +211,32 @@ export async function GET(req: NextRequest) {
       errors.push(`subscription-watch: ${err.message}`)
     }
 
+    // AUTONOMOUS BUDGET ENVELOPES (wave 108F) — Finance watches every envelope: per tenant, the daily report
+    // (consumed / refused / AI spend) + an escalation on any anomaly, on the bus to finance_manager
+    // (lib/kernel/autonomy-budgets.ts deliverAutonomyBudgetReport — silent for a tenant with no open envelope,
+    // no envelope activity and no anomaly). Tenant ids are the active agents' own brokerages.
+    let envelopeReports = 0, envelopeEscalations = 0
+    try {
+      const { deliverAutonomyBudgetReport } = await import("@/lib/kernel/autonomy-budgets")
+      const { data: tenants, error: tenantErr } = await supabase.from("agents").select("brokerage_id").eq("is_active", true).not("brokerage_id", "is", null).limit(10000)
+      if (tenantErr) throw new Error(`tenant list refused: ${tenantErr.message}`)
+      for (const bid of [...new Set(((tenants ?? []) as Array<{ brokerage_id: string }>).map((t) => t.brokerage_id))]) {
+        const r = await deliverAutonomyBudgetReport(supabase, bid, now)
+        if (r.reported) envelopeReports++
+        if (r.escalated) envelopeEscalations++
+        if (r.error) errors.push(`autonomy-budgets ${bid}: ${r.error}`)
+      }
+    } catch (err: any) {
+      errors.push(`autonomy-budgets: ${err.message}`)
+    }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: processed,
-      metadata: { month_year: monthYear, teamsWritten, meterRows, snapshotRows, subscriptionAlerts, errors: errors.slice(0, 10) },
+      metadata: { month_year: monthYear, teamsWritten, meterRows, snapshotRows, subscriptionAlerts, envelopeReports, envelopeEscalations, errors: errors.slice(0, 10) },
     })
 
-    return NextResponse.json({ ok: true, monthYear, processed, teamsWritten, brokerageRowsWritten, meterRows, snapshotRows, subscriptionAlerts, errors })
+    return NextResponse.json({ ok: true, monthYear, processed, teamsWritten, brokerageRowsWritten, meterRows, snapshotRows, subscriptionAlerts, envelopeReports, envelopeEscalations, errors })
   } catch (err: any) {
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 })

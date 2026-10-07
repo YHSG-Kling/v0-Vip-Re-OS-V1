@@ -329,7 +329,7 @@ async function main() {
     // G4 a brokerage_objective with no criteria derives them through the twin's decomposition; the twin build then measures them.
     const c = memClient(); const s = seams()
     const twin = { brokerageId: T1, economic: { gciClosed90dCents: 800_000, closedCount90d: 1 }, now: { transactions: { inEscrow: 1, openCommissionCents: 1_300_000 } } } as unknown as BrokerageTwin
-    const d = decomposeObjective({ goalType: "transactions_closed", targetValue: 3, currentValue: 0 }, twin)
+    const d = decomposeObjective({ goalType: "transactions_closed", targetValue: 3 }, twin)  // baseline = the twin reading (1) → remaining 2; criteria are LEVELS (1+2 = 3)
     const derived = criteriaFromDecomposition(d)
     check("G4 criteriaFromDecomposition: one criterion per supported sub-target, keyed on the twin field that measures it", derived.length === 3 && derived.every((x) => x.metric.includes(".") && x.op === ">=") && derived.some((x) => x.metric === "economic.closedCount90d" && x.target === 3), JSON.stringify(derived))
     const m = await createMission({ ...base, objective: "close 3 this quarter", missionType: "brokerage_objective", initialState: "ACTIVE", objectiveSpec: { goalType: "transactions_closed", targetValue: 3 }, twin }, c as any, s.deps)

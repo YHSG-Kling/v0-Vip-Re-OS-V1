@@ -70,8 +70,8 @@ function facts(brokerageId: string, o: { agents?: number; headroomEach?: number;
     workforce: {
       thresholds: DEFAULT_WORKFORCE_THRESHOLDS, thresholdsSource: "default",
       agents: perAgent.map((a, i) => ({ agentId: a.agentId, userId: null, languages: [], specializations: [], listings180d: i === 0 ? 5 : 0, luxuryListings180d: 0, offers180d: i === 1 ? 5 : 0, investorContacts: 0, competencyGaps: 0, competencyRefused: null })),
-      farms: [{ name: "Gulf Breeze", zip_codes: ["32561"], agent_id: "ag-0" }, { name: "Pensacola", zip_codes: ["32501"], agent_id: "ag-1" }],
-      sellerLeads60d: Array.from({ length: seller }, (_, i) => ({ id: `s-${i}`, property_zip_code: i % 3 === 0 ? "32501" : "32561", estimated_value: 400000, created_at: day(5) })),
+      farms: [{ name: "Farm A", zip_codes: ["32561"], agent_id: "ag-0" }, { name: "Farm B", zip_codes: ["32501"], agent_id: "ag-1" }],
+      sellerContacts60d: Array.from({ length: seller }, (_, i) => ({ id: `s-${i}`, zip_code: i % 3 === 0 ? "32501" : "32561", home_value_estimate: 400000, created_at: day(5) })),
     },
   }
 }
@@ -128,9 +128,19 @@ console.log("C — assumptions listed")
   const cpl = (xs: typeof all) => xs.find((k) => k.key === "marginal_cost_per_lead_usd")!
   check("C4 no marketing ledger → CPL is an ASSUMPTION (not 0)", cpl(bare).assumption && cpl(bare).value > 0)
   check("C5 (positive control) a measured ledger → CPL is measured", !cpl(all).assumption && cpl(all).value === 50 && /territory_metrics/.test(cpl(all).source))
-  const noTerr = composeBrokerageTwin({ ...facts(A), workforce: { ...facts(A).workforce, farms: [], sellerLeads60d: [] } })
-  const seller = scenarioCoefficients(noTerr).find((k) => k.key === "base_seller_leads_30d")!
+  const noTerr = composeBrokerageTwin({ ...facts(A), workforce: { ...facts(A).workforce, farms: [], sellerContacts60d: [] } })
+  const seller = scenarioCoefficients(noTerr).find((k) => k.key === "base_seller_contacts_30d")!
   check("C6 no territory reading → base seller demand is an assumption", seller.assumption && seller.value > 0, seller)
+  // WAVE 108 owner ruling — demand is CONTACTS (buyer contacts for the Shopping Agent, seller contacts for
+  // the Listing Concierge); the buyer flow is the twin's CONTACT-stage inflow when it is measured.
+  const withFlow = composeBrokerageTwin({ ...facts(A), flow: { contact: 90 }, flowEntries: { leadFromRaw: null, contactDirect: 60 } })
+  const buyerK = scenarioCoefficients(withFlow).find((k) => k.key === "base_buyer_contacts_30d")!
+  const sellerK = scenarioCoefficients(twinA).find((k) => k.key === "base_seller_contacts_30d")!
+  check("C6b buyer demand is MEASURED from the twin's contact stage (90 contacts / 90d → 30/mo, less the seller-contact reading), in contacts — never a lead count", !buyerK.assumption && /contact stage/.test(buyerK.source) && buyerK.unit === "contacts/30d" && buyerK.value === Math.max(0, 30 - sellerK.value), JSON.stringify(buyerK))
+  check("C6c (control) without a contact-stage reading the buyer base is an ASSUMPTION, still in contacts", (() => { const k = scenarioCoefficients(twinA).find((x) => x.key === "base_buyer_contacts_30d")!; return k.assumption && k.unit === "contacts/30d" })())
+  check("C6d seller demand reads the seller CONTACTS of the territories (contact_type seller|both)", !sellerK.assumption && /contacts contact_type∈\{seller,both\}/.test(sellerK.source) && sellerK.unit === "contacts/30d", JSON.stringify(sellerK))
+  const noLeadKeys = scenarioCoefficients(twinA).filter((k) => /_(seller|buyer)_leads_|seller_leads_per_listing/.test(k.key))
+  check("C6e no demand coefficient is spelled as LEADS any more (one vocabulary — the demand is contacts)", noLeadKeys.length === 0, noLeadKeys.map((k) => k.key).join(","))
   const p = simulateScenario({ brokerageId: A, levers: { seller_lead_acquisition_pct: 30 } }, twinA, EMPTY_SCENARIO_FACTS)
   check("C7 the projection publishes its assumptions", p.assumptions.length > 0 && p.assumptions.every((k) => k.assumption || k.confidence === "low"))
   check("C8 …and names the assumption load as a risk", p.risks.some((r) => /assumptions or low-confidence/.test(r)))
@@ -140,7 +150,7 @@ console.log("C — assumptions listed")
 
 console.log("D — deterministic")
 {
-  const l = { seller_lead_acquisition_pct: 30, agent_headcount: { listing: 2 }, territory_activation: ["Pensacola"] }
+  const l = { seller_lead_acquisition_pct: 30, agent_headcount: { listing: 2 }, territory_activation: ["Farm B"] }
   const a = simulateScenario({ brokerageId: A, levers: l }, twinA, marketFacts)
   const b = simulateScenario({ brokerageId: A, levers: JSON.parse(JSON.stringify(l)) }, twinA, marketFacts)
   check("D1 identical inputs → identical projection", JSON.stringify(a) === JSON.stringify(b))
@@ -226,7 +236,7 @@ console.log("G — unsupported levers")
   check("G2 an unknown territory is returned", p.unsupported.includes("territory_activation:Atlantis"), p.unsupported)
   check("G3 an unknown specialization is returned", p.unsupported.includes("agent_headcount.wizard"), p.unsupported)
   check("G4 the published lever vocabulary", SCENARIO_LEVER_KEYS.length === 7)
-  const aimed = simulateScenario({ brokerageId: A, levers: { seller_lead_acquisition_pct: 50, territory_activation: ["Pensacola"] } }, twinA, marketFacts)
+  const aimed = simulateScenario({ brokerageId: A, levers: { seller_lead_acquisition_pct: 50, territory_activation: ["Farm B"] } }, twinA, marketFacts)
   const broad = simulateScenario({ brokerageId: A, levers: { seller_lead_acquisition_pct: 50 } }, twinA, marketFacts)
   check("G5 territory activation narrows the lift to the named territory", aimed.opportunityGain.addedLeads30d < broad.opportunityGain.addedLeads30d && aimed.opportunityGain.addedLeads30d > 0, { aimed: aimed.opportunityGain.addedLeads30d, broad: broad.opportunityGain.addedLeads30d })
 }

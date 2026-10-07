@@ -139,6 +139,18 @@ export const VOICE_WITHHELD: readonly AppCapability[] = [
   // lib/kernel/manager-delegation.ts). A human books the appointment by speaking
   // appointment_schedule; the prep is what the concierge does for the ISA, never a voice command.
   "listing_appointment_prep",
+  // Wave 108E: the broker-objective EVIDENCE capabilities are what a manager returns to the Mission
+  // Controller inside an investigation (lib/kernel/broker-objectives.ts); a human asks the objective
+  // itself on the Missions card, never one manager's evidence check by voice.
+  "campaign_performance_report",
+  "ads_performance_report",
+  "listing_demand_report",
+  // Wave 108 (108H): the strategy library's three work-order / delegation capabilities. Each is worked
+  // ONLY from an accepted manager delegation (DELEGATION_WORKERS) — a voice command would bypass the
+  // acceptance a human gives on the Missions card (and the ad draft needs the accepting human as creator).
+  "recruit_outreach",
+  "ad_campaign_launch",
+  "lender_preapproval_handoff",
 ] as const
 
 export interface IntentMatch {

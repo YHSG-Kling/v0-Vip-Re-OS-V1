@@ -28,6 +28,7 @@ import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-rost
 import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 import { listMissionsAction } from "@/app/actions/missions"
 import { MissionsCard } from "./missions-card"
+import { ExceptionsFirstPanel } from "./exceptions-first-panel"
 import { AllocationCard } from "./allocation-card"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { MISSION_TYPES } from "@/lib/kernel/missions"
@@ -175,6 +176,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
         : { brokerageId }),
       scope: effectiveScope,
       limit: 100,
+      viewerUserId: user.id,
     })
   } catch (e) {
     if (!isTenantScopeRefusal(e)) throw e
@@ -324,6 +326,12 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
 
   return (
     <>
+      {/* EXCEPTIONS FIRST (wave 108D) — the page LEADS with the sentence and the ranked list. */}
+      {data.exceptionsFirst && (
+        <div className="mx-6 mt-4">
+          <ExceptionsFirstPanel view={data.exceptionsFirst} />
+        </div>
+      )}
       {tenantHalt?.halted && (
         <div className="mx-6 mt-4">
           <AutonomyHaltBanner reason={tenantHalt.reason} haltedAt={tenantHalt.haltedAt} />
@@ -350,7 +358,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
         </div>
       )}
       {missions?.ok && (
-        <div className="mx-6 mt-4">
+        <div id="missions" className="mx-6 mt-4">
           <MissionsCard active={missions.data.active} attention={missions.data.attention} readRefused={missions.data.readRefused} delegations={missions.data.delegations} delegationsRefused={missions.data.delegationsRefused} verdicts={missions.data.verdicts} managers={missionManagers} missionTypes={MISSION_TYPES} />
         </div>
       )}

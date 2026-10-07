@@ -17,6 +17,7 @@ import { ListeningPreferencesPanel } from "./listening-preferences-panel"
 import { ReplyStylePanel } from "./reply-style-panel"
 import { AutoResponsePanel, type AutoResponseSettings } from "./auto-response-panel"
 import { AiAgentCapabilitiesPanel } from "./capabilities-panel"
+import { SkillMarketplacePanel } from "@/components/skills/skill-marketplace-panel"
 import { getAgentContext } from "@/lib/identity"
 import { getAgentChatPreferences } from "@/app/actions/ai-chat"
 import { getAutoResponseSettings } from "@/app/actions/ai-auto-response"
@@ -107,6 +108,11 @@ async function AssistantContent() {
           the panel itself just reflects whatever that gate returns. */}
       <div className="mt-6">
         <AiAgentCapabilitiesPanel />
+      </div>
+      {/* Wave 108 (lane 108A) — the manager skill registry + marketplace. Every door is gated by
+          app/actions/skill-marketplace.ts (tenant admin for authoring / deciding / running). */}
+      <div className="mt-6">
+        <SkillMarketplacePanel mode="tenant" />
       </div>
     </div>
   )

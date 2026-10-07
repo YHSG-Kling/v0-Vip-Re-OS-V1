@@ -176,8 +176,13 @@ export function CommandCenterClient({
 
       {/* Manager Daily Standup — the morning roll-call: what each Claude manager did in
           the last 24h and what is waiting on a human. The governed-autonomy report. */}
+      {/* WAVE 108D: with the exceptions-first panel leading the page, this per-manager roll-call is
+          "handled automatically" detail — collapsed (counts in the summary), never removed. */}
       {data.standup.length > 0 && (
-        <section className="space-y-2">
+        <details className="space-y-2" open={!data.exceptionsFirst}>
+          <summary className="cursor-pointer text-sm text-muted-foreground">
+            Handled automatically — {data.standup.reduce((s, l) => s + l.activity_24h, 0)} manager action{data.standup.reduce((s, l) => s + l.activity_24h, 0) === 1 ? "" : "s"} in 24h across {data.standup.length} manager{data.standup.length === 1 ? "" : "s"}
+          </summary>
           <div className="flex items-baseline justify-between gap-3">
             <h2 className="text-lg font-semibold">Manager standup — last 24 hours</h2>
             <div className="flex items-center gap-3">
@@ -221,7 +226,7 @@ export function CommandCenterClient({
               </Card>
             ))}
           </div>
-        </section>
+        </details>
       )}
 
       {/* AI ISA dial batches awaiting approval — "call my hottest N consented contacts". */}
@@ -346,7 +351,7 @@ export function CommandCenterClient({
             </div>
             {data.brokerageTwin.workforce.territories.filter((t) => t.trend === "up").length > 0 && (
               <div className="text-xs text-muted-foreground">
-                Seller demand rising: {data.brokerageTwin.workforce.territories.filter((t) => t.trend === "up").map((t) => `${t.territory} (${t.sellerLeadsPrev30d}→${t.sellerLeads30d} seller leads, ${t.agentsWithHeadroom} serving with headroom${t.luxuryShare30d >= 0.3 ? `, ${Math.round(t.luxuryShare30d * 100)}% luxury` : ""})`).join("; ")} — recruiting needs are held on the Missions card until you approve them.
+                Seller demand rising: {data.brokerageTwin.workforce.territories.filter((t) => t.trend === "up").map((t) => `${t.territory} (${t.sellerContactsPrev30d}→${t.sellerContacts30d} seller leads, ${t.agentsWithHeadroom} serving with headroom${t.luxuryShare30d >= 0.3 ? `, ${Math.round(t.luxuryShare30d * 100)}% luxury` : ""})`).join("; ")} — recruiting needs are held on the Missions card until you approve them.
               </div>
             )}
             {data.brokerageTwin.blindSpots.length > 0 && (
@@ -754,7 +759,7 @@ export function CommandCenterClient({
       )}
 
       {/* Approval queue */}
-      <section className="space-y-3">
+      <section id="approval-queue" className="space-y-3">
         <h2 className="text-lg font-semibold">Approval queue</h2>
         {actions.length === 0 ? (
           <Card className="p-6 text-sm text-muted-foreground">No actions awaiting approval.</Card>

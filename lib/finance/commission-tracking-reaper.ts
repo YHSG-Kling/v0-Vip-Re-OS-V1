@@ -54,10 +54,22 @@ export async function reapCommissionTrackingDrift(
   const bridgeTxns = Array.from(new Set(((paidBridge ?? []) as Array<{ transaction_id: string | null }>)
     .map((r) => r.transaction_id).filter((x): x is string => !!x)))
 
+  // WAVE 108C — THE FINANCIAL-WRITER KILL SWITCH. This direction WRITES money (it locks the ledger to
+  // the summary). While the OS health supervisor holds a financial discrepancy open for this tenant the
+  // auto-heal is HALTED (Finance releases it); the drift is still COUNTED below, never corrected.
+  // Fails closed: an unreadable halt state does not heal.
+  const { loadFinancialWriterHalt } = await import("@/lib/kernel/os-health")
+  const healHalt = await loadFinancialWriterHalt(svc, brokerageId, "commission_tracking_heal")
+  if (healHalt.halted) console.warn(`[commission-tracking-reaper] ${brokerageId} auto-heal halted: ${healHalt.reason ?? "no reason recorded"}`)
+
   for (const txnId of bridgeTxns) {
     scanned++
     const ledgerStatus = await ledgerStatusFor(txnId)
     const { direction } = detectCommissionTrackingDrift({ bridgeStatus: "paid", ledgerStatus })
+    if (direction === "bridge_ahead" && healHalt.halted) {
+      escalated++ // seen, held for Finance — the halt is the escalation (os_health_escalated_financial)
+      continue
+    }
     if (direction === "bridge_ahead") {
       const r = await reconcileCommissionDisbursement(svc, { transactionId: txnId, brokerageId, actorUserId })
       // Orphan rows (referral fees and the legacy path — no commission_id) count as a heal.

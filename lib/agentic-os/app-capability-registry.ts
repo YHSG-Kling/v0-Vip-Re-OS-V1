@@ -50,6 +50,17 @@ export type AppCapability =
   // prep chain (CMA → presentation → chapter reels → section drip), requested by another manager through
   // a manager_delegation (lib/kernel/manager-delegation.ts). ONE spelling: this catalogue key.
   | "listing_appointment_prep"
+  // wave 108E — BROKER OBJECTIVES (lib/kernel/broker-objectives.ts): the Mission Controller asks each
+  // participating manager for its EVIDENCE CHECK through a manager_delegation. Three participants owned
+  // no read capability (the ads manager owned none at all), so a 105A delegation to them was impossible.
+  // Read-only, kernel-only (no provider): each returns the manager's period-over-period evidence.
+  | "campaign_performance_report" // nurture / sequence performance by window (Campaign Orchestrator)
+  | "ads_performance_report"      // paid acquisition spend / leads / CPL by window (Ads Manager)
+  | "listing_demand_report"       // seller demand, listing appointments, capacity by window (Listing Concierge)
+  // wave 108 (owner-approved gaps the 107E strategy library named): each rides an EXISTING survivor.
+  | "recruit_outreach"           // recruiting outreach through the recruiting pipeline (recruit-outreach-producer)
+  | "ad_campaign_launch"         // a budgeted ad campaign DRAFT through the ads kernel (lib/kernel/ads.ts)
+  | "lender_preapproval_handoff" // hand a buyer CONTACT to a bench lender VENDOR for pre-approval (lender-linkage)
 
 export type AppDomain =
   | "lead_generation" | "crm" | "valuation" | "scheduling" | "transactions" | "listings"
@@ -190,9 +201,27 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
 
   connectivity_scan:        { capability: "connectivity_scan",         verb: "GET",     scope: "connectivity:read", domain: "connectivity",  mutates: false, purpose: "Report live connection health of every api/oauth/mcp connector for the brokerage (expiry-aware).", inputs: ["brokerageId?"] },
 
+  // wave 108E — the broker-objective EVIDENCE capabilities (lib/kernel/broker-objectives.ts). Read-only,
+  // in-repo readers over the tenant's own rows — no external dependency.
+  campaign_performance_report: { capability: "campaign_performance_report", verb: "ANALYZE", scope: "reporting:read", domain: "reporting", mutates: false, purpose: "Report nurture performance for a window against the window before (sequence opens / replies / conversions, touches sent).", inputs: ["brokerageId", "windowDays"] },
+  ads_performance_report:      { capability: "ads_performance_report",      verb: "ANALYZE", scope: "reporting:read", domain: "reporting", mutates: false, purpose: "Report paid acquisition for a window against the window before (spend, leads, conversions, cost per lead).", inputs: ["brokerageId", "windowDays"] },
+  listing_demand_report:       { capability: "listing_demand_report",       verb: "ANALYZE", scope: "reporting:read", domain: "reporting", mutates: false, purpose: "Report seller demand for a window against the window before (seller leads, listing appointments, agent capacity).", inputs: ["brokerageId", "windowDays"] },
+
   // "PLATFORM Stripe" per its own purpose — a tenant does not connect this.
   payment_transfer:         { capability: "payment_transfer",          verb: "CREATE",  scope: "finance:write",    domain: "finance",        mutates: true,  purpose: "Move funds / commission payout via the PLATFORM Stripe account (offered to all subscribers).", inputs: ["amount", "destinationAccountId", "description?"], requires: { platform: ["stripe"] } },
   accounting_sync:          { capability: "accounting_sync",           verb: "UPDATE",  scope: "finance:write",    domain: "finance",        mutates: true,  purpose: "Sync an invoice or journal entry to the PLATFORM QuickBooks account (offered to all subscribers).", inputs: ["kind", "amount?", "customerRef?"], requires: { platform: ["quickbooks"] } },
+
+  // ── wave 108 — the strategy library's approved gaps, each on its survivor (worked by lib/kernel/manager-delegation.ts DELEGATION_WORKERS) ──
+  // GROUNDED: produceRecruitOutreach PROPOSES the stage-appropriate message into the approval gate
+  // (agent_client_messages, entity_type 'recruit') — no provider until a human approves the send, so it
+  // is operable on the kernel alone.
+  recruit_outreach:           { capability: "recruit_outreach",           verb: "CREATE",  scope: "recruiting:write", domain: "communications", mutates: true,  purpose: "Propose stage-appropriate recruiting outreach for the brokerage's open recruits into the approval gate (the recruiting pipeline).", inputs: ["brokerageId", "recruitIds?", "limit?"] },
+  // GROUNDED: createAdCampaign (lib/kernel/ads.ts) writes the campaign as a DRAFT with its budget; going
+  // live is the ads workspace's own approval step, so the draft needs no ad-platform connection.
+  ad_campaign_launch:         { capability: "ad_campaign_launch",         verb: "CREATE",  scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Draft a budgeted paid-ad campaign through the ads kernel (live launch stays the ads workspace's approval).", inputs: ["brokerageId", "campaignName", "platform", "objective", "dailyBudget?", "lifetimeBudget?"] },
+  // GROUNDED: the referral rides the brokerage's lender BENCH (vendors.category ∈ LENDER_BENCH_CATEGORIES,
+  // lib/kernel/lender-linkage.ts) and the buyer_financial_profiles referral columns (m605) — no provider.
+  lender_preapproval_handoff: { capability: "lender_preapproval_handoff", verb: "CREATE",  scope: "contact:write",    domain: "crm",            mutates: true,  purpose: "Hand a buyer contact to a bench lender (a VENDOR) for pre-approval — records the referral and notifies the lender's people.", inputs: ["brokerageId", "contactId", "lenderVendorId?"] },
 }
 
 /**

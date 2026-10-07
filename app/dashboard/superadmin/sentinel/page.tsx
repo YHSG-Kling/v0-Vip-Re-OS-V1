@@ -3,6 +3,7 @@ import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { createServiceClient } from "@/lib/supabase/service"
 import { OsSentinelBoard } from "./os-sentinel-board"
 import { SentinelActionQueue } from "./sentinel-action-queue"
+import { SaasOperationsBoard } from "./saas-operations-board"
 
 export const dynamic = "force-dynamic"
 
@@ -89,6 +90,8 @@ export default async function OsSentinelPage() {
         <p className="text-muted-foreground text-sm">One view of the whole agentic OS — every subsystem, the top open incidents, and the self-healing that keeps it running. Below it: the sentinel&apos;s daily proposed actions for the subscriber fleet, drafted and waiting on your approval.</p>
       </div>
       <SentinelActionQueue />
+      {/* Wave 108B: platform self-operation — per-tenant SaaS signals + support missions */}
+      <SaasOperationsBoard />
       {/* Platform-rail bus signals — feed-only manager_signals staff must see */}
       <section className="rounded-lg border p-4 space-y-3">
         <div>

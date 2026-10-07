@@ -1,7 +1,7 @@
 // lib/intelligence/network-benchmarks.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVACY-SAFE NETWORK INTELLIGENCE (wave 107, lane 107F; m726). Owner: "Do not mix tenants' private
-// records … anonymized/aggregated benchmarks (Gulf Coast seller campaigns, brokerage conversion, provider
+// records … anonymized/aggregated benchmarks (regional seller campaigns, brokerage conversion, provider
 // reliability, channel response, content performance, education effectiveness) … without seeing another
 // brokerage's data."
 //
@@ -36,7 +36,7 @@ const NETWORK_BENCHMARK_METRICS = [
 export type NetworkBenchmarkMetric = (typeof NETWORK_BENCHMARK_METRICS)[number]
 
 /** Platform policy. Raising k / n is a code review; lowering below the floors is impossible (clamped). */
-export const NETWORK_BENCHMARK_POLICY = Object.freeze({ version: "nb-1", minTenants: 5, minEvents: 30, maxTenantShare: 0.6, windowDays: 90 })
+export const NETWORK_BENCHMARK_POLICY = Object.freeze({ version: "nb-2", minTenants: 5, minEvents: 30, maxTenantShare: 0.6, windowDays: 90 })
 const POLICY_FLOOR = Object.freeze({ minTenants: 3, minEvents: 10, maxTenantShare: 0.8 })
 type BenchmarkPolicy = { version: string; minTenants: number; minEvents: number; maxTenantShare: number; windowDays: number }
 
@@ -93,6 +93,43 @@ export interface PublishReport {
   policy: BenchmarkPolicy
 }
 
+/**
+ * ROUNDING — closes the JOIN / LEAVE leak (wave 108 owner ruling: "ROUND benchmark rates").
+ *
+ * k-anonymity stops a cell naming one tenant, but not DIFFERENCING: when one tenant joins (or leaves)
+ * between two periods, an observer holding both cells recovers that tenant's own numbers exactly —
+ * numerator_t = R1·D1 − R0·D0 and denominator_t = D1 − D0, so rate_t = Δnum / Δden. Exact rates, exact
+ * pooled denominators and exact tenant / event counts make that subtraction exact.
+ *
+ * The publish path therefore rounds EVERYTHING a subtraction could use:
+ *   · rate to a step g (below); sample_size + event_count DOWN to multiples of COUNT_STEP; tenant_count
+ *     DOWN to multiples of TENANT_STEP (never below k); mean to two significant figures.
+ *   · With rates rounded to g (each published rate off by up to g/2) the recovered numerator is off by up
+ *     to (g/2)(D0 + D1), so the recovered rate_t carries a half-width of (g/2)(D0 + D1)/d_t. The dominance
+ *     rule caps one tenant at s = maxTenantShare of the events (d_t ≤ s·D1, D0 ≥ (1−s)·D1), so EVEN THE
+ *     LARGEST PERMITTED TENANT is blurred by at least (g/2)(2 − s)/s; a smaller tenant is blurred more.
+ *   · g is DERIVED, never hand-picked: the smallest step in RATE_STEPS whose worst-case blur reaches
+ *     MIN_RECOVERY_HALF_WIDTH (±5 percentage points — wider than the spread between typical brokerage
+ *     conversion rates, so the subtraction cannot rank the joiner against its peers). At the platform
+ *     policy (s = 0.6) that is 0.05; at the policy floor (s = 0.8) 0.10. A policy edit cannot make the
+ *     step finer — it is a function of the dominance cap.
+ * @proofSeam exported so scripts/network-intelligence-guard.ts proves the leak (positive control) and the blur.
+ */
+export const MIN_RECOVERY_HALF_WIDTH = 0.05
+const RATE_STEPS = [0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5] as const
+const COUNT_STEP = 10
+const TENANT_STEP = 5
+/** PURE — the derived rate step for a dominance cap (the rounding rule above).
+ *  @proofSeam scripts/network-intelligence-guard.ts asserts the step is derived (0.05 at s = 0.6, 0.1 at the floor). */
+export function benchmarkRateStep(maxTenantShare: number): number {
+  const s = Math.min(1, Math.max(0.01, maxTenantShare))
+  for (const g of RATE_STEPS) if ((g / 2) * ((2 - s) / s) >= MIN_RECOVERY_HALF_WIDTH - 1e-12) return g
+  return RATE_STEPS[RATE_STEPS.length - 1]
+}
+const roundTo = (x: number, step: number) => +(Math.round(x / step) * step).toFixed(4)
+const floorTo = (x: number, step: number) => Math.floor(x / step) * step
+const roundSig2 = (x: number) => (x === 0 ? 0 : +x.toPrecision(2))
+
 function effectivePolicy(p: Partial<BenchmarkPolicy> = {}): BenchmarkPolicy {
   const base = { ...NETWORK_BENCHMARK_POLICY, ...p }
   return {
@@ -111,6 +148,7 @@ function effectivePolicy(p: Partial<BenchmarkPolicy> = {}): BenchmarkPolicy {
  */
 export function publishBenchmarkCells(contribs: TenantContribution[], period: { start: string; end: string }, policyIn: Partial<BenchmarkPolicy> = {}): PublishReport {
   const policy = effectivePolicy(policyIn)
+  const rateStep = benchmarkRateStep(policy.maxTenantShare)
   const suppressed = { belowTenants: 0, belowEvents: 0, dominance: 0, unsafeSegment: 0 }
   const groups = new Map<string, { metric: NetworkBenchmarkMetric; seg: Record<SegmentDim, string | null>; byTenant: Map<string, { num: number; den: number; ev: number; ms: number; mc: number }> }>()
   const unsafeKeys = new Set<string>()
@@ -138,29 +176,25 @@ export function publishBenchmarkCells(contribs: TenantContribution[], period: { 
     const ms = tenants.reduce((s, t) => s + t.ms, 0), mc = tenants.reduce((s, t) => s + t.mc, 0)
     cells.push({
       period_start: period.start, period_end: period.end, metric: g.metric, ...g.seg, cell_key: key,
-      rate: den > 0 ? +(num / den).toFixed(4) : null, sample_size: Math.floor(den / 10) * 10,
-      mean: mc > 0 ? +(ms / mc).toFixed(2) : null, tenant_count: tenants.length, event_count: events,
+      rate: den > 0 ? roundTo(num / den, rateStep) : null, sample_size: floorTo(den, COUNT_STEP),
+      mean: mc > 0 ? roundSig2(ms / mc) : null, tenant_count: Math.max(policy.minTenants, floorTo(tenants.length, TENANT_STEP)), event_count: floorTo(events, COUNT_STEP),
       k_min: policy.minTenants, n_min: policy.minEvents, policy_version: policy.version,
     })
   }
   return { cells, suppressed, policy }
 }
 
-// ── market band (region) — a vocabulary token, never an address ─────────────────────────────
-const BANDS: Record<string, string[]> = {
-  gulf_coast: ["TX", "LA", "MS", "AL", "FL"],
-  southeast: ["GA", "SC", "NC", "TN", "KY", "VA", "WV", "AR"],
-  northeast: ["ME", "NH", "VT", "MA", "RI", "CT", "NY", "NJ", "PA", "DE", "MD", "DC"],
-  midwest: ["OH", "MI", "IN", "IL", "WI", "MN", "IA", "MO", "ND", "SD", "NE", "KS"],
-  mountain: ["MT", "ID", "WY", "CO", "UT", "NV", "AZ", "NM"],
-  pacific: ["WA", "OR", "CA", "AK", "HI"],
-  south_central: ["OK"],
-}
-/** PURE — the market band of a two-letter state ("unknown_market" when absent). */
-function marketBandForState(state: string | null | undefined): string {
-  const s = String(state ?? "").trim().toUpperCase()
-  for (const [band, states] of Object.entries(BANDS)) if (states.includes(s)) return band
-  return "unknown_market"
+// ── market band — DERIVED from tenant data, never a hard-coded region ──────────────────────
+// Wave 108 owner ruling: territories are anywhere in the US, so no module names a region or a state.
+// TOMBSTONE (§1): a hand-written region table (seven named bands mapping state codes) stood here — a
+// literal geography no tenant chose. SURVIVOR: this function, which reads the brokerage's OWN stored
+// brokerages.state and lower-cases it into a vocabulary token. k-anonymity still holds per band: a
+// band with fewer than k opted-in tenants publishes nothing (suppressed.belowTenants).
+/** PURE — the market band of a stored state code ("unknown_market" when absent / not a 2-letter code).
+ *  @proofSeam scripts/network-intelligence-guard.ts drives it directly (derived, never a literal). */
+export function marketBandForState(state: string | null | undefined): string {
+  const s = String(state ?? "").trim().toLowerCase()
+  return /^[a-z]{2}$/.test(s) ? s : "unknown_market"
 }
 
 // ── consent ─────────────────────────────────────────────────────────────────────────────────

@@ -36,8 +36,13 @@ async function main() {
   // settler (both need the 30-minute cadence); the rule is the lane each one is on.
   check("the bus handoff reaper rides the signals lane", signals.some((e) => e.domain === "manager_handoffs"))
   check("the unknown-action settler rides the signals lane (30-min cadence, no new cron)", signals.some((e) => e.domain === "unknown_action_outcomes"))
-  check("every other reaper is proactive", REAPER_NET.every((e) => e.lane === "proactive" || ["manager_handoffs", "unknown_action_outcomes"].includes(e.domain)))
-  check("lanes are disjoint (every entry in exactly one lane)", proactive.length + signals.length === REAPER_NET.length)
+  // Wave 108C: the OS health supervisor rides its own "health" lane (the manager-signals cron runs it
+  // over EVERY tenant — the signals lane only visits tenants with open bus traffic).
+  const health = REAPER_NET.filter((e) => e.lane === "health")
+  check("the OS health supervisor rides the health lane, owned by cron_manager", health.some((e) => e.domain === "os_health" && e.manager === "cron_manager"))
+  check("the health lane carries only the supervisor (no reaper double-fires through it)", health.every((e) => e.domain === "os_health"))
+  check("every other reaper is proactive", REAPER_NET.every((e) => e.lane === "proactive" || ["manager_handoffs", "unknown_action_outcomes", "os_health"].includes(e.domain)))
+  check("lanes are disjoint (every entry in exactly one lane)", proactive.length + signals.length + health.length === REAPER_NET.length)
 
   console.log("\n[coverage map is honest]")
   const cov = reaperCoverage()
@@ -64,23 +69,19 @@ async function main() {
   check("effective + uncovered = the whole live roster (honest, no overlap)", cov.effectiveCoveredManagers.length + cov.uncoveredManagers.length === totalManagerCount)
   // m618: MANAGERS went 14 -> 13 ("marketing_agent" retired) — derive the "all but
   // cron_manager" expectation from the live roster rather than re-pinning the number.
-  check("effective coverage is every manager but the one uncovered (cron_manager)", cov.effectiveCoveredManagers.length === totalManagerCount - 1)
-  // THE ONE UNCOVERED MANAGER, NAMED RATHER THAN ASSERTED AWAY.
-  // This used to demand ZERO uncovered, and it was true when written. cron_manager
-  // ("schedules, heartbeat & loop health") was added later and no REAPER_NET entry
-  // covers it — coverage silently went 13/13 → 13/14 and nothing said so, because
-  // this simulator was never wired to CI.
-  //
-  // It is uncovered BY DESIGN, not by omission: REAPER_NET entries are PER-TENANT
-  // sweeps over a brokerage's own stuck records, and loop health is a PLATFORM
-  // concern — lib/platform/os-sentinel.ts and lib/platform/ai-ops.ts watch cron
-  // health cross-tenant, from the superadmin surface, which is the right place for
-  // it. A per-brokerage "reap the crons" sweep would be the wrong shape.
-  //
-  // Pinned as an exact set, not a count, so ANY other manager losing coverage
-  // fails here instead of hiding behind a tolerated number.
-  check("exactly one uncovered manager, and it is cron_manager (platform-scoped by design)",
-    cov.uncoveredManagers.length === 1 && cov.uncoveredManagers[0] === "cron_manager")
+  // Wave 108C — cron_manager is now COVERED: the owner made it the operational-health coordinator and
+  // its per-tenant health supervisor (domain os_health, lane health) is a registered net entry. The
+  // RULE is "every manager is covered by a dedicated reaper or a predictor chain"; the set of uncovered
+  // managers is asserted EMPTY by name below, so any manager losing coverage fails here.
+  check("effective coverage is the whole live roster", cov.effectiveCoveredManagers.length === totalManagerCount)
+  // TOMBSTONE (wave 108C): the pin "exactly one uncovered manager, and it is cron_manager
+  // (platform-scoped by design)" stood here. It was a WAYPOINT — true only until the owner ruled the
+  // Cron Manager the operational-health coordinator (wave 108). Platform-wide loop health stays with
+  // lib/platform/os-sentinel.ts; the per-TENANT health supervisor is lib/kernel/os-health.ts, registered
+  // in REAPER_NET (domain os_health). The rule that survives: no manager is uncovered.
+  check(`no manager is uncovered (named set is empty: [${cov.uncoveredManagers.join(", ")}])`, cov.uncoveredManagers.length === 0)
+  // POSITIVE CONTROL: the coverage map still reports a manager with no entry as uncovered.
+  check("POSITIVE CONTROL: a manager key absent from the net reads as uncovered", !managersUnderReaperCoverage().includes("no_such_manager" as any))
   check("uncovered managers are genuinely unregistered", cov.uncoveredManagers.every((m) => !managersUnderReaperCoverage().includes(m)))
   check("coverage domains list = the registry", cov.domains.length === REAPER_NET.length)
 

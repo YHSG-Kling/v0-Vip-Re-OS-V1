@@ -96,6 +96,16 @@ export async function GET(request: NextRequest) {
         await runSequenceCopyLearning(b.id, svc)
       } catch { /* best-effort — never fails the source learner */ }
 
+      // AUTONOMOUS EXPERIMENTATION (wave 108F) — the Campaign Manager proposes the owner's example
+      // (video-first seller campaign → appointment rate) and every RUNNING experiment is measured; at the end
+      // of its window it is adopted or rejected deterministically (lib/kernel/experiment-pipeline.ts).
+      try {
+        const { proposeVideoFirstSellerExperiments, concludeExperiments } = await import("@/lib/kernel/experiment-pipeline")
+        await proposeVideoFirstSellerExperiments(svc, b.id)
+        const concluded = await concludeExperiments(svc, b.id)
+        if (concluded.errors.length > 0) console.error(`[source-conversion-learning] experiments for ${b.id}: ${concluded.errors.join("; ")}`)
+      } catch (e) { console.error(`[source-conversion-learning] experiments skipped for ${b.id}: ${(e as Error).message}`) }
+
       // CHANNEL-ORDER learning — recommend the lead channel per brokerage by real reply rate (advisory).
       try {
         const { runChannelOrderLearning } = await import("@/lib/campaign-sequences/channel-order-runner")

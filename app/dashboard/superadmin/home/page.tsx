@@ -96,6 +96,8 @@ const GROUPS: ToolGroup[] = [
         desc: "One view of the whole agentic OS — subsystems, open incidents, self-healing." },
       { label: "Sentinel — today's proposed actions", href: "/dashboard/superadmin/sentinel#proposed-actions", cap: "sentinel", countKey: "proposedSentinel", managerKey: "platform_sentinel",
         desc: "The AI fleet manager's daily queue: engagement risk, expiring connections, dunning, SLA breaches, expiring trials — each with drafted outreach awaiting your approval." },
+      { label: "Skill Marketplace", href: "/dashboard/superadmin/skill-marketplace", cap: "sentinel",
+        desc: "Third-party and platform agent skills awaiting evaluation, approval, publication or revocation." },
       { label: "Observability", href: "/dashboard/superadmin/observability", cap: "sentinel",
         desc: "System health, cron runs, and error surfaces across the platform." },
       { label: "Continuity board", href: "/dashboard/superadmin/continuity", cap: "sentinel",

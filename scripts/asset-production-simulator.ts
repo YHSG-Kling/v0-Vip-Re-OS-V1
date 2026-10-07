@@ -719,9 +719,17 @@ async function main() {
         { campaignId: "b", campaignName: "B", spend: 200, leads: 8 },
       ]) === null)
     const loop = src("lib/ads/ad-outcome-loop.ts")
-    check("distribution intelligence is GATED: rebalances ride the manager bus as proposals (deduped 14d per pair) — nothing spends on its own",
+    // Wave 108F (owner: "Ads may shift ≤10% of monthly budget between proven campaigns"): the loop still never
+    // WRITES a budget itself — a proven shift moves only through the ONE envelope (consumeAutonomyEnvelope) and then
+    // the ads kernel's executeAutonomousBudgetShift; everything else stays the gated proposal. The rule is "no
+    // budget write in this file" (a read of daily_budget in a select type is not a spend), with a positive control.
+    const budgetWrite = /\.update\(\s*\{[^}]*\bdaily_budget\b/
+    const envelopeAt = loop.indexOf("consumeAutonomyEnvelope("), shiftAt = loop.indexOf("executeAutonomousBudgetShift(")
+    check("distribution intelligence is GATED: rebalances ride the manager bus as proposals (deduped 14d per pair) — nothing spends outside the ads_budget_shift envelope",
       loop.includes("publishManagerSignal") && loop.includes('"budget_rebalance"')
-      && loop.includes("from_campaign_id: decision.fromCampaignId") && !loop.includes("daily_budget:"))
+      && loop.includes("from_campaign_id: decision.fromCampaignId") && !budgetWrite.test(loop)
+      && (shiftAt < 0 || (envelopeAt >= 0 && envelopeAt < shiftAt))
+      && budgetWrite.test('await svc.from("ad_campaigns").update({ daily_budget: 99 })'))
     const producer = src("lib/ads/listing-ad-producer.ts")
     check("feedback-conditioned generation: the producer adopts ONLY a generic learned headline (no digits, another listing's facts can never leak) and records generated_from='learned:<arm>'",
       producer.includes("learnedCreativeEmphasis") && producer.includes("!/\\d/.test(learned.headline)")

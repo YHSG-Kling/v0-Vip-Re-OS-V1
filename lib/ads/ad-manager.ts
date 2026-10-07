@@ -10,6 +10,12 @@
  * movement):
  *   1. SCOPE: zero autonomous spend. Every spend action is proposed → a human
  *      stamps approved_by → executeAdManagerAction runs it. Nothing self-fires.
+ *      WAVE 108 (108F, owner: "Ads may shift ≤10% of monthly budget between proven
+ *      campaigns"): the ONE exception is executeAutonomousBudgetShift below — a
+ *      REALLOCATION (never new spend) between two live campaigns whose difference is
+ *      statistically PROVEN, only after lib/kernel/autonomy-budgets.ts
+ *      consumeAutonomyEnvelope("ads_budget_shift") consumed the tenant's envelope
+ *      (default 0% = still zero autonomous spend), through the SAME handler and caps.
  *   2. HARD CAP: the agent can never set a daily budget above MAX_AD_DAILY_BUDGET
  *      or scale beyond MAX_SCALE_MULTIPLE — enforced at EXECUTION, not just in the
  *      proposal, so an approved-but-oversized action is still clamped/refused.
@@ -68,6 +74,61 @@ export function evaluateAdPerformance(rows: CampaignPerf[]): AdDecision[] {
 export function clampDailyBudget(proposed: number, currentDaily: number): number {
   const scaleCap = Math.max(currentDaily, 0) * MAX_SCALE_MULTIPLE || MAX_AD_DAILY_BUDGET_USD
   return Math.max(1, Math.min(proposed, scaleCap, MAX_AD_DAILY_BUDGET_USD))
+}
+
+// ── Budget pacing (wave 108, lane 108D — the exceptions-first "campaign overspend" reader) ──
+//
+// ad_performance keeps the LATEST reading per pass, and the connector decides its spend window
+// (Meta: insights date_preset=last_30d). A campaign is OVER BUDGET when that spend exceeds
+// daily_budget × the window by more than the tolerance. Read-only; the Ads Manager still only
+// PROPOSES (a human approves any change to spend).
+
+/** The spend window the connectors report (Meta insights last_30d). */
+export const SPEND_WINDOW_DAYS = 30
+/** Spend may exceed the daily-budget pace by this share before it is an exception. */
+export const OVERSPEND_TOLERANCE = 0.1
+
+export interface BudgetOverrun { campaignId: string; name: string | null; spend: number; budget: number; ratio: number }
+
+/** Pure: spend vs daily_budget × window. Null when within tolerance or the campaign has no budget.
+ * @proofSeam exported so scripts/exceptions-first-guard.ts asserts the overrun rule directly. */
+export function detectBudgetOverrun(c: { campaignId: string; name: string | null; dailyBudget: number; spend: number }, windowDays = SPEND_WINDOW_DAYS): BudgetOverrun | null {
+  const budget = c.dailyBudget * windowDays
+  if (!(budget > 0) || !(c.spend > budget * (1 + OVERSPEND_TOLERANCE))) return null
+  return { campaignId: c.campaignId, name: c.name, spend: c.spend, budget, ratio: c.spend / budget }
+}
+
+/** Live campaigns (optionally one team's) whose latest reported spend overruns the budget pace.
+ *  A refused read returns ok:false — never "no overspend". */
+export async function loadCampaignOverruns(
+  brokerageId: string,
+  opts: { teamId?: string | null } = {},
+  client?: ReturnType<typeof createServiceClient>,
+): Promise<{ ok: true; overruns: BudgetOverrun[]; blindSpot: string | null } | { ok: false; error: string }> {
+  const supabase = client ?? createServiceClient()
+  let q = supabase.from("ad_campaigns").select("id, campaign_name, daily_budget")
+    .eq("brokerage_id", brokerageId).in("status", ["live", "launching"]).gt("daily_budget", 0).limit(200)
+  if (opts.teamId) q = q.eq("team_id", opts.teamId)
+  const { data: camps, error } = await q
+  if (error) return { ok: false, error: `ad_campaigns: ${error.message}` }
+  const live = (camps ?? []) as Array<{ id: string; campaign_name: string | null; daily_budget: number | null }>
+  if (live.length === 0) return { ok: true, overruns: [], blindSpot: null }
+  const { data: perf, error: perfErr } = await supabase.from("ad_performance").select("ad_campaign_id, spend, captured_at")
+    .eq("brokerage_id", brokerageId).in("ad_campaign_id", live.map((c) => c.id))
+    .order("captured_at", { ascending: false }).limit(1000)
+  if (perfErr) return { ok: false, error: `ad_performance: ${perfErr.message}` }
+  const latest = new Map<string, number>()
+  for (const p of (perf ?? []) as Array<{ ad_campaign_id: string; spend: number | null }>) {
+    if (!latest.has(p.ad_campaign_id)) latest.set(p.ad_campaign_id, Number(p.spend ?? 0))
+  }
+  const overruns = live.flatMap((c) => {
+    const spend = latest.get(c.id)
+    if (spend == null) return []
+    const o = detectBudgetOverrun({ campaignId: c.id, name: c.campaign_name, dailyBudget: Number(c.daily_budget ?? 0), spend })
+    return o ? [o] : []
+  })
+  const unread = live.filter((c) => !latest.has(c.id)).length
+  return { ok: true, overruns, blindSpot: `spend window as each connector reports it (Meta last_${SPEND_WINDOW_DAYS}d)${unread ? ` · ${unread} live campaign${unread === 1 ? "" : "s"} with no performance reading yet` : ""}` }
 }
 
 // ── Proposer — reads performance, proposes into the Command Center ──────────
@@ -392,4 +453,54 @@ async function runAdHandler(
     default:
       return { status: "failed", result: { error: "unknown ad action_type" } }
   }
+}
+
+
+// ── Wave 108F — the envelope-bound autonomous REALLOCATION ──────────────────
+
+export interface AutonomousShiftResult { ok: boolean; shiftedDailyUsd: number; from: { id: string; before: number; after: number } | null; to: { id: string; before: number; after: number } | null; error?: string }
+
+/** PURE — the daily amounts after moving `shift` from one campaign to another under the hard caps (the receiving
+ *  side is clamped by clampDailyBudget; the shift shrinks to what it can absorb; a campaign never drops below $1/day).
+ * @proofSeam scripts/autonomous-budgeting-guard.ts asserts the reallocation under the caps directly. */
+export function planBudgetShift(fromDaily: number, toDaily: number, shift: number): { shift: number; fromAfter: number; toAfter: number } {
+  const want = Math.max(0, Math.min(shift, fromDaily - 1))
+  const toAfter = clampDailyBudget(toDaily + want, toDaily)
+  const moved = Math.max(0, Math.round((toAfter - toDaily) * 100) / 100)
+  return { shift: moved, fromAfter: Math.round((fromDaily - moved) * 100) / 100, toAfter: Math.round((toDaily + moved) * 100) / 100 }
+}
+
+/**
+ * Execute an ENVELOPE-AUTHORISED shift (the caller already consumed autonomy_budgets' ads_budget_shift envelope):
+ * two ad_manager_actions rows (shift_ad_budget, approved_by NULL = autonomous, rationale names the policy ref) run
+ * through the SAME handler and hard caps as a human-approved shift. Tenant-pinned reads; outcomes recorded.
+ */
+export async function executeAutonomousBudgetShift(
+  svc: ReturnType<typeof createServiceClient>,
+  input: { brokerageId: string; fromCampaignId: string; toCampaignId: string; dailyShiftUsd: number; policyRef: string; reason: string },
+): Promise<AutonomousShiftResult> {
+  const fail = (error: string): AutonomousShiftResult => ({ ok: false, shiftedDailyUsd: 0, from: null, to: null, error })
+  const { data, error } = await svc.from("ad_campaigns").select("id, brokerage_id, status, daily_budget").eq("brokerage_id", input.brokerageId).in("id", [input.fromCampaignId, input.toCampaignId])
+  if (error) return fail(`ad_campaigns read refused: ${error.message}`)
+  const rows = (data ?? []) as Array<{ id: string; status: string; daily_budget: number | null }>
+  const from = rows.find((r) => r.id === input.fromCampaignId), to = rows.find((r) => r.id === input.toCampaignId)
+  if (!from || !to) return fail("both campaigns must belong to this brokerage")
+  if (from.status !== "live" || to.status !== "live") return fail("both campaigns must be live")
+  const plan = planBudgetShift(Number(from.daily_budget ?? 0), Number(to.daily_budget ?? 0), input.dailyShiftUsd)
+  if (!(plan.shift > 0)) return fail("nothing to shift under the hard caps")
+  const now = new Date().toISOString()
+  const rationale = `AUTONOMOUS (${input.policyRef}): ${input.reason}`.slice(0, 1000)
+  const legs: Array<{ id: string; daily: number }> = [{ id: from.id, daily: plan.fromAfter }, { id: to.id, daily: plan.toAfter }]
+  for (const leg of legs) {
+    const { data: act, error: actErr } = await svc.from("ad_manager_actions").insert({
+      brokerage_id: input.brokerageId, action_type: "shift_ad_budget", action_input: { campaign_id: leg.id, new_daily_budget: leg.daily, autonomous: true, policy_ref: input.policyRef },
+      rationale, status: "executing", proposed_at: now, approved_at: now, approved_by: null,
+    }).select("id").single()
+    if (actErr || !act) return fail(`shift action not recorded: ${actErr?.message ?? "no row"}`)
+    const outcome = await runAdHandler("shift_ad_budget", input.brokerageId, { campaign_id: leg.id, new_daily_budget: leg.daily }, svc)
+    const { error: outErr } = await svc.from("ad_manager_actions").update({ status: outcome.status, result: outcome.result, executed_at: new Date().toISOString() }).eq("id", (act as { id: string }).id)
+    if (outErr) console.error(`[ad-manager] autonomous shift outcome NOT recorded: ${outErr.message}`)
+    if (outcome.status !== "succeeded") return fail(`shift leg ${leg.id} ${outcome.status}: ${JSON.stringify(outcome.result).slice(0, 200)}`)
+  }
+  return { ok: true, shiftedDailyUsd: plan.shift, from: { id: from.id, before: Number(from.daily_budget ?? 0), after: plan.fromAfter }, to: { id: to.id, before: Number(to.daily_budget ?? 0), after: plan.toAfter } }
 }

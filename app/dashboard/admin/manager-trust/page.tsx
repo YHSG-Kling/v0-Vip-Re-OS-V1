@@ -15,6 +15,7 @@ import { TenantConstitutionPanel } from "./tenant-constitution-panel"
 import { ImprovementProposalsPanel } from "./improvement-proposals-panel"
 import { WorkforceThresholdsEditor } from "./workforce-thresholds-editor"
 import { StrategyLibraryPanel } from "./strategy-library-panel"
+import { SelfOptimizationPanel } from "./self-optimization-panel"
 
 /**
  * OWNED PROOFS — every maintenance/burn domain in the registry, grouped by the manager
@@ -118,6 +119,9 @@ export default async function ManagerTrustPage({ searchParams }: { searchParams?
     {/* CONTROLLED LEARNING (wave 104, lane 104C, m709): what the OS proposes to change about itself, with
         the evidence, the deterministic evaluation and the human approve / reject / promote / roll back. */}
     <ImprovementProposalsPanel />
+    {/* SELF-OPTIMIZING MANAGER TEAMS (wave 108G): which optimization classes the weekly team cycle may promote
+        without a human (policy key self_optimization, set through a human policy proposal). */}
+    <SelfOptimizationPanel />
     {/* STRATEGY LIBRARY (wave 107, lane 107E, m725): the platform's versioned strategies — activate a version,
         see the benchmark and the recorded local adaptation. */}
     <StrategyLibraryPanel />

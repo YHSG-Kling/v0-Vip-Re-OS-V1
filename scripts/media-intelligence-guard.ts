@@ -61,6 +61,8 @@ function stubs(counter: { image: number; video: number; afford: number }): Media
   return {
     now: () => NOW,
     afford: async () => { counter.afford++; return { allowed: true, reason: "ok" } },
+    // Wave 108F: the render envelope (lib/kernel/autonomy-budgets.ts) is granted here — its caps are test:autonomous-budgeting's.
+    envelope: async () => ({ allowed: true, reason: "granted (fixture)" }),
     brand: async () => ({ brand: BRAND, prohibited: ["guaranteed sale"] }),
     fairHousing: hasFairHousingViolation,
     generateImage: async ({ angle }) => { counter.image++; return { ok: true, assetUrl: `https://cdn.example/${angle}-${counter.image}.png`, costUsd: 0.04, generationModel: "gpt-image-1" } },

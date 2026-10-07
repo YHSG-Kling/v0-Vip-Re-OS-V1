@@ -263,6 +263,12 @@ export interface CommandCenterData {
    *  (lib/kernel/resource-allocation.ts loadAllocationBoard). Brokerage-wide, admin-gated by this
    *  loader's caller; null when not read (no brokerage scope) — never a fake zero. */
   allocationBoard: import("@/lib/kernel/resource-allocation").AllocationBoard | null
+  /** EXCEPTIONS FIRST (wave 108, lane 108D) — "N activities occurred since your last visit. You need
+   *  to care about M.": the ranked exceptions (each with severity, why, evidence and its one action
+   *  door) over the counted, denominated ledger activity that collapses under "handled automatically"
+   *  (lib/kernel/exceptions-first.ts loadExceptionsFirst). Tenant / team scope honoured; null on the
+   *  platform view (no one tenant to rank for) — never a fake "nothing needs you". */
+  exceptionsFirst: import("@/lib/kernel/exceptions-first").ExceptionsFirstView | null
   /** Proposed AI ISA voice dial batches awaiting approval (AI ISA — "call my hottest N"). */
   dialBatches:     Array<{ id: string; proposedCount: number; proposedAt: string | null }>
   /** Managers talking — recent inter-manager signals (who told whom what, and what the
@@ -332,6 +338,9 @@ export interface CommandCenterParams {
    * Omit entirely for the platform-wide superadmin view.
    */
   scope?: EgressScope
+  /** The viewer's users.id — the exceptions-first window is "since your last visit" (their last
+   *  recorded ledger action). Omitted → the last 24 hours, said so on the page. */
+  viewerUserId?: string | null
 }
 
 /** UUID that matches no row — used so an empty scoped-id list filters to nothing
@@ -405,8 +414,10 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // THROUGH the owned entities — the egress tables carry only brokerage_id.
   let sessionIdFilter: string[] | null = null
   let contactIdFilter: string[] | null = null
+  let scopedEntityIds: string[] | null = null
   if (entityScoped && brokerageId) {
     const { contactIds, listingIds } = await resolveScopedEntities(supabase, scope!, brokerageId)
+    scopedEntityIds = [...contactIds, ...listingIds]
     contactIdFilter = contactIds.length ? contactIds : [NO_MATCH_UUID]
     const entityIds = [...contactIds, ...listingIds]
     if (entityIds.length === 0) {
@@ -894,6 +905,32 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     }
   }
 
+  // EXCEPTIONS FIRST (wave 108D) — rank what needs a human over what the OS handled, from the
+  // survivors this loader already read (twin, approvals, client decisions, economic graph, heartbeat)
+  // plus the category readers named in EXCEPTION_CATEGORIES. Best-effort: a failed build leaves the
+  // panel out (null) and is logged — the queue below still renders.
+  let exceptionsFirst: import("@/lib/kernel/exceptions-first").ExceptionsFirstView | null = null
+  if (brokerageId) {
+    try {
+      const { loadExceptionsFirst } = await import("@/lib/kernel/exceptions-first")
+      exceptionsFirst = await loadExceptionsFirst(supabase, {
+        brokerageId,
+        scope: brokerageWide ? "brokerage" : scope?.kind === "team" && scope.teamId ? "team" : "narrow",
+        teamId: scope?.kind === "team" ? scope.teamId ?? null : null,
+        viewerUserId: params.viewerUserId ?? null,
+        scopedEntityIds,
+        now,
+        twin: brokerageTwin,
+        pendingActions,
+        clientDecisions,
+        economicGraph,
+        cronOwners,
+      })
+    } catch (err) {
+      console.error("[command-center] exceptions-first failed:", err)
+    }
+  }
+
   return {
     sessions,
     pendingActions,
@@ -913,6 +950,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     brokerageTwin,
     relationships,
     allocationBoard,
+    exceptionsFirst,
     dialBatches,
     managerTalk,
     managerActivity,

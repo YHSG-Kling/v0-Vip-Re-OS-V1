@@ -60,6 +60,19 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
     return { success: false, error: "enrollContact requires exactly one of contactId / leadId" }
   }
 
+  // WAVE 108F — AUTONOMOUS EXPERIMENTATION's cohort assignment: a RUNNING experiment on this sequence picks the
+  // contact's arm (deterministic, ledgered experiment.assign) and an ADOPTED winner serves the whole cohort
+  // (lib/kernel/experiment-pipeline.ts). Contacts only; anything unreadable keeps the asked-for sequence.
+  if (!isLead) {
+    try {
+      const { routeEnrollmentThroughExperiments } = await import("@/lib/kernel/experiment-pipeline")
+      const routed = await routeEnrollmentThroughExperiments(supabase, { brokerageId: params.brokerageId, sequenceId: params.sequenceId, contactId: recipientId })
+      if (routed.sequenceId !== params.sequenceId) params = { ...params, sequenceId: routed.sequenceId }
+    } catch (e) {
+      console.error(`[enrollment-engine] experiment routing skipped (control kept): ${(e as Error).message}`)
+    }
+  }
+
   // Validate sequence exists, is active, and compliance_gated=true
   const { data: sequence, error: seqErr } = await supabase
     .from("campaign_sequences")

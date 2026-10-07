@@ -103,13 +103,16 @@ export async function generateRoiLedger(svc: any, brokerageId: string, periodDay
 //   · ALL-TOUCH: an equal split across every eligible row, actions and decisions alike, in whole
 //     cents, the remainder to the latest row so the split sums exactly to the revenue.
 
-type LedgerOutcomeKind = "reply" | "appointment" | "contract" | "closed"
+export type LedgerOutcomeKind = "reply" | "appointment" | "contract" | "closed"
 
 /** Days before an outcome in which a ledger row may earn credit for it. contract / closed match the
  *  marketing engine's LOOKBACK_DAYS (lib/marketing/attribution.ts) so the two never disagree. */
 const ATTRIBUTION_WINDOW_DAYS: Readonly<Record<LedgerOutcomeKind, number>> = Object.freeze({
   reply: 30, appointment: 90, contract: 180, closed: 180,
 })
+
+/** The outcome kinds, in one place — wave 108F's experiment METRIC vocabulary reads this (never restates it). */
+export const LEDGER_OUTCOME_KINDS: readonly LedgerOutcomeKind[] = Object.freeze(Object.keys(ATTRIBUTION_WINDOW_DAYS) as LedgerOutcomeKind[])
 
 interface AttributableOutcome {
   /** `<kind>:<source row id>` — stable, so a credit names what it credits. */
