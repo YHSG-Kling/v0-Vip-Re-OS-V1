@@ -707,7 +707,11 @@ export interface IncidentHistory {
   openEscalation: boolean
   /** Every row this subject has in the window — monotonic per tick, so it makes each ledger key unique. */
   rowsSeen: number
+  /** Wave 138B — self-healing playbook runs (os_health_playbook:* rows) in 24h: the troubleshooter's bound. */
+  playbookAttempts24h: number
 }
+
+const PLAYBOOK_ROW_PREFIX = "os_health_playbook:"
 
 /** PURE — fold this tenant's os_health ledger rows into per-subject attempts + open-escalation state. */
 /** @proofSeam the pure ledger fold the proof checks for closer semantics */
@@ -715,9 +719,10 @@ export function foldIncidentHistory(rows: Array<{ subject: string; action: strin
   const out = new Map<string, IncidentHistory>()
   const dayAgo = now.getTime() - 24 * 3_600_000
   for (const r of [...rows].sort((a, b) => a.created_at.localeCompare(b.created_at))) {
-    const h = out.get(r.subject) ?? { attempts24h: 0, openEscalation: false, rowsSeen: 0 }
+    const h = out.get(r.subject) ?? { attempts24h: 0, openEscalation: false, rowsSeen: 0, playbookAttempts24h: 0 }
     h.rowsSeen++
     if (r.action && RECOVERY_LEDGER_ACTIONS.has(r.action) && Date.parse(r.created_at) >= dayAgo) h.attempts24h++
+    if (r.action?.startsWith(PLAYBOOK_ROW_PREFIX) && Date.parse(r.created_at) >= dayAgo) h.playbookAttempts24h++
     if (r.outcome === "escalated") h.openEscalation = true
     else if (CLOSERS.has(r.outcome) && !(r.action && RECOVERY_LEDGER_ACTIONS.has(r.action))) h.openEscalation = false
     out.set(r.subject, h)
@@ -741,9 +746,20 @@ export interface ExecutorDeps {
   halt?: (svc: Svc, h: { brokerageId: string; writer: FinancialWriterKey; reason: string; incident: string }) => Promise<{ ok: boolean; error?: string; alreadyHalted?: boolean }>
   /** Bell a human (org recipients). */
   notifyHuman?: (svc: Svc, i: HealthIncident, reason: string) => Promise<void>
+  /** Wave 138 (138A): the provider self-healer's exported entry (connector-healer.ts healProviderFailure)
+   *  the failover step calls after routing around — probe-first, then apply-declared / propose. */
+  healProvider?: (input: { connector: string; brokerageId: string; failures: Array<{ status: number | null; path: string | null; error: string | null }>; cycle: string },
+    deps: { client: Svc; derivedHealth: (k: string) => Promise<{ state: string; routeAround: boolean; reason: string } | null> }) => Promise<{ decision: { step: string; reason: string } }>
   /** withActionLedger (LAW 5) and emitKernelEvent seams — the real ones by default. */
   ledger?: typeof import("@/lib/kernel/action-ledger").withActionLedger
   emit?: (input: Record<string, unknown>) => Promise<{ error: string | null }>
+  /**
+   * Wave 138B — the self-healing troubleshooter (lib/kernel/self-healing.ts) for every incident this
+   * policy sends to a human as `unknown`: hard gate → bounded AI diagnosis → a DECLARED playbook, or the
+   * human escalation below with the diagnosis attached. Seams for its model / budget / executors;
+   * `false` = this supervisor run escalates unknowns without troubleshooting (a proof fixture's choice).
+   */
+  troubleshoot?: import("@/lib/kernel/self-healing").TroubleshootDeps | false
 }
 
 export interface SupervisorOutcome {
@@ -752,6 +768,8 @@ export interface SupervisorOutcome {
   executed: boolean
   outcome: string
   skipped?: "already_escalated"
+  /** Wave 138B — the declared playbook the troubleshooter ran instead of escalating. */
+  playbook?: string
 }
 
 export interface SupervisorReport {
@@ -833,7 +851,28 @@ async function execute(svc: Svc, i: HealthIncident, d: RecoveryDecision, deps: E
       case "retry": return (deps.retry ?? defaultRetry)(svc, i)
       case "resume": return (deps.resume ?? defaultResume)(svc, i)
       case "backoff": return { ok: true, outcome: `backoff until ${new Date(Date.now() + (d.delayMs ?? 0)).toISOString()}${i.retryOwner ? ` (the retry belongs to ${i.retryOwner})` : ""}` }
-      case "failover": return { ok: true, outcome: `routed around by routeCapability: ${JSON.stringify((i.evidence.routes as unknown[] | undefined) ?? []).slice(0, 300)}` }
+      case "failover": {
+        // Wave 138 (138A — closes 137C open loop 3): after routing around, hand the provider to the
+        // self-healer's exported entry (probe → failover / apply-declared + retry / proposal, each step
+        // ledgered under this tenant). The derived health is the incident's own evidence. A healer that
+        // cannot run never undoes the failover — the router already routes around — it is reported.
+        const routed = `routed around by routeCapability: ${JSON.stringify((i.evidence.routes as unknown[] | undefined) ?? []).slice(0, 300)}`
+        const provider = String(i.evidence.provider ?? "")
+        if (!provider) return { ok: true, outcome: routed }
+        try {
+          // The real healer also gets its metered internet-research budget (138B) — the same constant the
+          // connector-health cron passes, never a second number.
+          const healer = deps.healProvider ? null : await import("@/lib/agentic-os/connector-healer")
+          const heal = deps.healProvider ?? ((input, d) => healer!.healProviderFailure(input, d as never))
+          const h = await heal(
+            { connector: provider, brokerageId: i.brokerageId, failures: [{ status: null, path: null, error: String(i.evidence.reason ?? i.summary).slice(0, 300) }], cycle, ...(healer ? { research: { capUsd: healer.PROVIDER_RESEARCH_CAP_USD } } : {}) },
+            { client: svc, derivedHealth: async () => ({ state: String(i.evidence.state ?? "failing"), routeAround: i.evidence.state === "failing", reason: String(i.evidence.reason ?? "") }) },
+          )
+          return { ok: true, outcome: `${routed}; provider heal: ${h.decision.step} — ${h.decision.reason}`.slice(0, 600) }
+        } catch (e) {
+          return { ok: true, outcome: `${routed}; provider heal could not run: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600) }
+        }
+      }
       case "route_data_steward":
       case "route_compliance": {
         const r = await (deps.publishSignal ?? defaultPublish)(svc, { brokerageId: i.brokerageId, toManager: d.action === "route_compliance" ? "compliance_officer" : "data_steward", message: i.summary, payload: { subject, class: i.class, evidence: i.evidence } })
@@ -940,14 +979,36 @@ export async function runOsHealthSupervisor(
     const history = foldIncidentHistory((hist ?? []) as Array<{ subject: string; action: string | null; outcome: string; created_at: string }>, now)
 
     for (const inc of incidents) {
-      const h = history.get(subjectFor(inc)) ?? { attempts24h: 0, openEscalation: false, rowsSeen: 0 }
+      const h = history.get(subjectFor(inc)) ?? { attempts24h: 0, openEscalation: false, rowsSeen: 0, playbookAttempts24h: 0 }
       if (h.openEscalation) {
         report.outcomes.push({ incident: inc, decision: decideRecovery(inc, { priorAttempts: h.attempts24h }), executed: false, outcome: "already escalated — waiting on its owner", skipped: "already_escalated" })
         continue
       }
-      const decision = decideRecovery(inc, { priorAttempts: h.attempts24h })
+      let decision = decideRecovery(inc, { priorAttempts: h.attempts24h })
+      const cycle = `${now.toISOString().slice(0, 10)}.${h.rowsSeen}`
+      const xd = opts.executorDeps ?? {}
+      // Wave 138B — "unknown → human" is first TROUBLESHOOTED (gate → bounded diagnosis → declared playbook).
+      if (decision.action === "escalate_human" && inc.class === "unknown" && xd.troubleshoot !== false) {
+        try {
+          const { troubleshootIncident } = await import("@/lib/kernel/self-healing")
+          const t = await troubleshootIncident(svc, inc, { playbookAttempts24h: h.playbookAttempts24h, cycle, attempt: decision.attempt }, {
+            ...(xd.troubleshoot ?? {}), ledger: xd.troubleshoot?.ledger ?? xd.ledger, emit: xd.troubleshoot?.emit ?? xd.emit,
+            notify: xd.troubleshoot?.notify ?? xd.notifyHuman ?? defaultNotify,
+            executors: { retry: (s, i) => (xd.retry ?? defaultRetry)(s, i), resume: (s, i) => (xd.resume ?? defaultResume)(s, i), ...(xd.troubleshoot?.executors ?? {}) },
+          })
+          if (t.kind === "playbook") {
+            report.outcomes.push({ incident: inc, decision: { ...decision, reason: `self-healing playbook ${t.playbook}: ${t.diagnosis.diagnosis.slice(0, 200)}` }, executed: t.ok, outcome: t.outcome, playbook: t.playbook })
+            if (t.ok && t.acts) report.recovered++
+            else report.escalated++
+            continue
+          }
+          decision = { ...decision, reason: `${decision.reason} — ${t.reason}`.slice(0, 1500) }
+        } catch (e) {
+          decision = { ...decision, reason: `${decision.reason} — troubleshooter failed: ${(e as Error).message}` }
+        }
+      }
       try {
-        const o = await execute(svc, inc, decision, opts.executorDeps ?? {}, `${now.toISOString().slice(0, 10)}.${h.rowsSeen}`)
+        const o = await execute(svc, inc, decision, xd, cycle)
         report.outcomes.push(o)
         if (["retry", "backoff", "failover", "resume"].includes(decision.action) && o.executed) report.recovered++
         else report.escalated++

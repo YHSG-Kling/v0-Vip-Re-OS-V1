@@ -337,8 +337,14 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
   email_validation: [
     { provider: "peopledata", unitCostUsd: PEOPLEDATA_EMAIL_VALIDATE_COST_USD, keyedBy: "email" },
   ],
+  // Wave 138 (lane 138A, owner: "Versium (ALSO a property-data provider)"): Versium's demographic /
+  // property append is the THIRD property-data source — BEHIND BatchData here (equal unit price, so
+  // cheapest-first holds and table order breaks the tie) and absent from property_valuation, whose
+  // owner order (RentCast primary, BatchData backup) is not reordered. Same transport constant the
+  // Versium adapter books (VERSIUM_MATCH_CREDIT_USD; a no-match is free).
   property_facts: [
     { provider: "batchdata", unitCostUsd: MCP_TOOL_CALL_COST_USD, keyedBy: "property_address" },
+    { provider: "versium", unitCostUsd: VERSIUM_MATCH_CREDIT_USD, keyedBy: "property_address" },
   ],
   motivated_seller_list: [
     { provider: "batchdata", unitCostUsd: BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD, keyedBy: "geography" },

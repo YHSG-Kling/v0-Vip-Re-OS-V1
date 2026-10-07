@@ -556,7 +556,8 @@ const POSTURE_CANON: Record<string, string> = {
   anthropic_claude: "anthropic",
   openai_gpt4: "openai",
   openai_gpt35: "openai",
-  peoplesdata: "peopledata",
+  // TOMBSTONE (wave 138, 138A): the "peoplesdata" alias fold is gone — its only writer, the tenancy
+  // matrix row (lib/providers/tenancy-matrix.ts), now spells it "peopledata" (§6 one vocabulary).
   apify_social: "apify",
   facebook: "meta",
   instagram: "meta",

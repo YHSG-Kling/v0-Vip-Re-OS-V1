@@ -432,6 +432,30 @@ export function deriveProviderHealth(outcomes: readonly ProviderOutcome[], now: 
   return { ...base, state: "healthy", routeAround: false, streak, reason: `${counted.length} call(s), ${faults} fault(s) in the window` }
 }
 
+/** A live-probe verdict (connector-health cron → self_heal_events action provider_probe). */
+interface ProbeVerdictRow { status: string; at: string; ref: string | null }
+
+/** The probe statuses that mean the provider is DOWN (auth_failed / shape_drift mean it is UP). */
+const PROBE_DOWN: ReadonlySet<string> = new Set(["unreachable"])
+
+/**
+ * PURE (wave 138, lane 138A — closes 137C open loop 2: "the router routes around only on derived
+ * health in api_response_logs, so the probe writes no row there"). A live probe that found the
+ * provider UNREACHABLE inside the cool-down puts it in `failing` with routeAround, so routeCapability
+ * SKIPS it and its skipped[] reason cites the probe's evidence row. A derived `failing` is never
+ * softened, an older probe is ignored, and an UP verdict (auth_failed / shape_drift) never routes.
+ * @proofSeam scripts/provider-adapter-guard.ts drives it into routeCapability; production reader:
+ * loadProviderHealth below.
+ */
+export function foldProbeVerdict(h: ProviderHealth, probe: ProbeVerdictRow | null, now: Date = new Date()): ProviderHealth {
+  if (!probe || h.routeAround || !PROBE_DOWN.has(probe.status)) return h
+  const at = new Date(probe.at).getTime()
+  if (!Number.isFinite(at) || now.getTime() - at > PROVIDER_HEALTH_POLICY.cooldownMs || at > now.getTime()) return h
+  const until = new Date(at + PROVIDER_HEALTH_POLICY.cooldownMs).toISOString()
+  return { ...h, state: "failing", routeAround: true, cooldownUntil: until,
+    reason: `live probe ${probe.status} at ${probe.at} (evidence self_heal_events ${probe.ref ?? "?"}) — routed around until ${until}` }
+}
+
 const providerHealthCache = new Map<string, { value: ProviderHealth; expiresAt: number }>()
 const PROVIDER_HEALTH_TTL_MS = 30_000
 
@@ -462,6 +486,20 @@ export async function loadProviderHealth(serviceKey: string, now: Date = new Dat
     } else {
       value = deriveProviderHealth(((data ?? []) as Array<{ recorded_at: string; is_error: boolean; error_type: string | null }>)
         .map((r) => ({ at: r.recorded_at, ok: r.is_error !== true, errorType: r.error_type })), now)
+      // Wave 138 (138A): the newest PLATFORM probe verdict inside the cool-down (connector-health cron).
+      // A refused read is logged and leaves the derived health as-is — never a reason to route around.
+      const probeRes = await createServiceClient()
+        .from("self_heal_events")
+        .select("id, created_at, detail")
+        .eq("action", "provider_probe")
+        .eq("subject", `platform_provider:${serviceKey}`)
+        .is("brokerage_id", null)
+        .gte("created_at", new Date(now.getTime() - PROVIDER_HEALTH_POLICY.cooldownMs).toISOString())
+        .order("created_at", { ascending: false })
+        .limit(1)
+      if (probeRes.error) console.warn(`[connector-gateway] probe verdict read refused for ${serviceKey}: ${probeRes.error.message} — derived health only`)
+      const row = ((probeRes.data ?? []) as Array<{ id: string; created_at: string; detail: { status?: string } | null }>)[0]
+      value = foldProbeVerdict(value, row ? { status: String(row.detail?.status ?? ""), at: row.created_at, ref: row.id } : null, now)
     }
   } catch (e) {
     value = unreadable(e instanceof Error ? e.message : String(e))

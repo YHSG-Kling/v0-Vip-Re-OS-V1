@@ -130,11 +130,14 @@ export function voiceCapabilities(): VoiceCapability[] {
  *  server-only — the planner re-exports it for callers. */
 export const VOICE_COMMAND_SIGNAL = "voice_command_dispatched" as const
 
+/** The capabilities NO spoken path may start, not even as a request a human later accepts: money, the books,
+ *  a deal's legal stage. Wave 138E: named apart from the delegation-only withholds below so the assistant's
+ *  run_skill door (lib/voice-admin/assistant-reach.ts assistantSkillRefusal) refuses a skill that needs one. */
+export const VOICE_NEVER_SPOKEN: readonly AppCapability[] = ["payment_transfer", "accounting_sync", "transaction_advance"] as const
+
 /** Capabilities intentionally unreachable by voice. Named so the guard can hold them. */
 export const VOICE_WITHHELD: readonly AppCapability[] = [
-  "payment_transfer",
-  "accounting_sync",
-  "transaction_advance",
+  ...VOICE_NEVER_SPOKEN,
   // Wave 105 (105A): a MANAGER-TO-MANAGER delegation capability (AI ISA → Listing Concierge through
   // lib/kernel/manager-delegation.ts). A human books the appointment by speaking
   // appointment_schedule; the prep is what the concierge does for the ISA, never a voice command.
@@ -151,6 +154,10 @@ export const VOICE_WITHHELD: readonly AppCapability[] = [
   "recruit_outreach",
   "ad_campaign_launch",
   "lender_preapproval_handoff",
+  // Wave 138C: the 137E strategy gaps' capabilities — worked from an accepted manager delegation
+  // (DELEGATION_WORKERS): the compliance officer's review verdict and the recruiting manager's coaching cycle.
+  "compliance_review",
+  "agent_coaching_assign",
 ] as const
 
 export interface IntentMatch {

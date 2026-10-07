@@ -26,6 +26,15 @@ export interface VendorPricing {
 }
 
 /**
+ * THE ONE LOB PRICE (wave 138, lane 138A — §6 one vocabulary). Three spellings of "what does a Lob
+ * piece cost" existed: VENDOR_PRICING.lob $0.65, PLATFORM_VENDOR_RATES.lob $0.84 and the per-size
+ * table lib/providers/dispatch.ts BOOKS (vendor_usage_tracking estimatedCost + the budget preflight's
+ * addCost) — $0.78 postcard. The booked one is the true price source in code; it moved here, and the
+ * other two now read it. Telemetry figures, reconciled against Lob's invoice.
+ */
+export const DIRECT_MAIL_PIECE_COST_USD = { letter: 1.2, postcard: 0.78, self_mailer: 1.05 } as const
+
+/**
  * VENDOR PRICING TABLE
  * 
  * This is the single source of truth for vendor costs.
@@ -161,7 +170,7 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
   'lob': {
     vendorName: 'Lob',
     unitType: 'pieces',
-    costPerUnit: 0.65, // $0.65 per postcard
+    costPerUnit: DIRECT_MAIL_PIECE_COST_USD.postcard, // the ONE Lob price (above) — was a second spelling, $0.65
     notes: 'Includes printing and postage',
   },
   

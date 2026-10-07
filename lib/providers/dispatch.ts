@@ -42,7 +42,7 @@ import {
   sendSMS as messagingSendSMS,
 } from "@/lib/providers/messaging"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
-import { normalizeVendorCost } from "@/lib/vendor-governance/cost-normalizer"
+import { normalizeVendorCost, DIRECT_MAIL_PIECE_COST_USD } from "@/lib/vendor-governance/cost-normalizer"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { convertSpeech } from "@/lib/providers/elevenlabs/client"
 import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
@@ -158,7 +158,8 @@ interface DispatchActorContext {
 // runs inside withActionLedger. Costs are the same per-unit figures the vendor-usage meter books.
 const EMAIL_SEND_COST_USD = 0.001
 const SMS_SEND_COST_USD = 0.0075 // Twilio SMS ~$0.0075/segment
-const DIRECT_MAIL_PIECE_COST_USD: Record<DirectMailPieceType, number> = { letter: 1.2, postcard: 0.78, self_mailer: 1.05 }
+// TOMBSTONE (wave 138, lane 138A): the per-piece Lob table moved to its survivor
+// lib/vendor-governance/cost-normalizer.ts DIRECT_MAIL_PIECE_COST_USD (the ONE Lob price; imported above).
 
 function ledgerContextFor(
   action: string,
@@ -1713,7 +1714,9 @@ export interface DispatchWebSearchParams {
   /** `estimate_comparison` (wave 83C): lib/marketing/estimate-web-search.ts
    *  finding what realtor.com / redfin.com / homes.com publish for a tenant's
    *  territory property — booked like the other two, never a screenshot. */
-  purpose: "search_enrichment" | "intent_acquisition" | "estimate_comparison"
+  /** `provider_setup_research` (wave 138B): lib/agentic-os/connector-healer.ts researching a
+   *  failing-but-UP provider's current docs / changelog / status page — cost-capped by the healer. */
+  purpose: "search_enrichment" | "intent_acquisition" | "estimate_comparison" | "provider_setup_research"
   metadata?: Record<string, unknown>
 }
 

@@ -27,11 +27,83 @@ import { join } from "node:path"
 import { stripComments } from "./strip-comments"
 import {
   deriveProviderAdapters, routedProviders, validateAdapterSet, validateProviderAdapter, adapterFor,
-  bookAdapterUsage, decideProviderHeal, type ProviderAdapter,
+  bookAdapterUsage, decideProviderHeal, resolveAdapterKey, type ProviderAdapter,
 } from "../lib/kernel/provider-adapters"
 import { healProviderFailure } from "../lib/agentic-os/connector-healer"
-import { buildAuthedRequest, applyAlternateToRequest, loadAppliedAlternate } from "../lib/agentic-os/connector-gateway"
-import { CONTACT_PROVIDER_ROUTES } from "../lib/ai-isa/property-lookup-rail"
+import { buildAuthedRequest, applyAlternateToRequest, loadAppliedAlternate, foldProbeVerdict, deriveProviderHealth } from "../lib/agentic-os/connector-gateway"
+import { CONTACT_PROVIDER_ROUTES, routeCapability } from "../lib/ai-isa/property-lookup-rail"
+import { runtimeFiles } from "./runtime-roots"
+import { existsSync } from "node:fs"
+import { VENDOR_PRICING, DIRECT_MAIL_PIECE_COST_USD } from "../lib/vendor-governance/cost-normalizer"
+import { PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
+
+/**
+ * PUBLISHED declaration faults (wave 138, lane 138A) — a provider the census found that is truthfully
+ * declared but breaks the constitution today (an unpriced or unmetered platform-paid call). The
+ * validator refuses each (adapterFor does not serve it: the healer only proposes); this list is a
+ * RATCHET — a fault not listed fails the guard, a listed one that is fixed fails until it is removed.
+ */
+const KNOWN_DECLARATION_FAULTS: Record<string, string> = {
+  zyte: "zyte — platform-paid scraper with NO price constant (callers pass their own cost to bookSourceSpend); one Zyte price is owed (138B research: current Zyte API pricing)",
+  tavily: "tavily — platform-paid search with NO price constant (callers pass their own cost); one Tavily price is owed",
+  openai: "openai — direct-key image generation/edit (lib/ai/image-generation.ts, lib/listings/photo-intelligence.ts) is not booked to ai_tool_usage; route through the AI Gateway or book it",
+  voicedrop: "voicedrop (Slybroadcast) — platform-key ringless drops are neither priced nor booked to vendor_usage_tracking",
+  google_maps: "google_maps — platform Maps key (server static/street-view + browser) is neither priced nor booked per tenant",
+  mapbox: "mapbox — platform browser token (team heatmap) is neither priced nor booked",
+}
+
+/** Env / gateway / module / webhook names that are NOT an external provider — each with its reason. */
+const NON_PROVIDER: Record<string, string> = {
+  supabase: "the platform's own database/auth/storage — the OS runs ON it; not a provider adapter",
+  cron: "CRON_SECRET — our own cron-route auth",
+  admin_maintenance: "our own maintenance-route key",
+  agent_assistant_tool: "guards OUR assistant-tool webhook (not a vendor account)",
+  internal_api: "our own internal-route secret",
+  secrets_encryption: "our own at-rest credential encryption key",
+  relay_shared: "our own voice relay shared secret",
+  workflow_webhook: "our own workflow trigger webhook secret",
+  inbound_suppression: "our own inbound-suppression webhook (any sender)",
+  inbound_mail: "the multi-provider inbound-parse route — each provider's own verification key is censused under its adapter",
+  asset_download: "a signed-URL fetch of a provider's own asset — the provider is the caller's",
+  rss: "arbitrary publishers' public RSS feeds — no vendor relationship",
+}
+
+interface CensusSignal { kind: "env" | "gateway" | "module" | "webhook"; name: string; file: string }
+
+/** PURE — the provider signals in a corpus (stripped source; module + webhook paths from file names). */
+function censusSignals(files: Array<{ path: string; src: string }>): CensusSignal[] {
+  const out = new Map<string, CensusSignal>()
+  const add = (s: CensusSignal) => { const k = `${s.kind}:${s.name}`; if (!out.has(k)) out.set(k, s) }
+  const GENERIC = new Set(["accounting", "calendar", "email", "esign", "messaging", "payment", "content-safety", "dispatch", "inbound-router", "index", "mailing-cass-gate", "outbound-sender", "tenancy-matrix", "webhook-contract", "permissions"])
+  for (const { path, src } of files) {
+    const p = path.replace(/^\.\//, "")
+    const s = stripComments(src)
+    for (const m of s.matchAll(/process\.env(?:\.|\[["'])([A-Z0-9_]+)/g)) if (/(_API_KEY|_TOKEN|_SECRET|_CLIENT_ID|_KEY)$/.test(m[1])) add({ kind: "env", name: m[1], file: p })
+    if (/\bcallConnector\b/.test(s)) for (const m of s.matchAll(/\bconnector:\s*["'`]([a-z0-9_-]+)/g)) add({ kind: "gateway", name: m[1], file: p })
+    let mod: string | null = null
+    if (/^lib\/.*\/?([a-z0-9-]+)-client\.ts$/.test(p)) mod = /([a-z0-9-]+)-client\.ts$/.exec(p)![1]
+    else if (/^lib\/integrations\/providers\/[a-z0-9-]+-provider\.ts$/.test(p)) mod = /([a-z0-9-]+)-provider\.ts$/.exec(p)![1]
+    else if (/^lib\/crm\/providers\/[a-z0-9-]+\.ts$/.test(p)) mod = /([a-z0-9-]+)\.ts$/.exec(p)![1]
+    else if (/^lib\/providers\/[a-z0-9-]+\//.test(p)) mod = /^lib\/providers\/([a-z0-9-]+)\//.exec(p)![1]
+    else if (/^lib\/providers\/[a-z0-9-]+\.ts$/.test(p)) mod = /([a-z0-9-]+)\.ts$/.exec(p)![1]
+    else if (/^lib\/(remotion|did|elevenlabs|voicedrop)\//.test(p)) mod = /^lib\/([a-z0-9-]+)\//.exec(p)![1]
+    if (mod && !GENERIC.has(mod)) add({ kind: "module", name: mod, file: p })
+    const wh = /^app\/api\/webhooks\/([a-z0-9-]+)\//.exec(p)
+    if (wh) add({ kind: "webhook", name: wh[1], file: p })
+  }
+  return [...out.values()]
+}
+
+/** A signal → the declared provider it belongs to, a non-provider reason, or null (UNACCOUNTED). */
+function accountFor(sig: CensusSignal, envOwner: Map<string, string>): { provider: string } | { nonProvider: string } | null {
+  if (sig.kind === "env" && envOwner.has(sig.name)) return { provider: envOwner.get(sig.name)! }
+  const k = resolveAdapterKey(sig.name, { prefix: true })
+  if (k) return { provider: k }
+  const n = sig.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^next_public_/, "")
+  const tokens = n.split("_")
+  for (let i = tokens.length; i >= 1; i--) { const pre = tokens.slice(0, i).join("_"); if (NON_PROVIDER[pre]) return { nonProvider: pre } }
+  return null
+}
 
 let pass = 0, fail = 0
 const ok = (c: unknown, m: string) => { if (c) { pass++; console.log(`  ✓ ${m}`) } else { fail++; console.log(`  ✗ ${m}`) } }
@@ -83,12 +155,22 @@ async function main() {
   console.log("\nA. every routed provider has one valid declaration")
   const derived = deriveProviderAdapters()
   const routed = routedProviders()
-  ok(derived.adapters.length === routed.length && routed.length > 0, `derived adapters (${derived.adapters.length}) == routed providers (${routed.length})`)
+  // Wave 138: the routed NAMES (five route tables, many spellings) fold onto fewer adapters, and a
+  // gateway-only / published-exception provider adds adapters no table names — so the count asserted
+  // is DERIVED both ways: every routed name resolves, and every adapter is routed or publishes why not.
+  const routedKeys = new Set(routed.map((n) => resolveAdapterKey(n)).filter(Boolean))
+  ok(routed.length > 0 && routedKeys.size > 0 && derived.adapters.filter((a) => a.route.paths.some((p) => p !== "connector_gateway")).every((a) => routedKeys.has(a.provider)),
+    `${routed.length} routed names fold onto ${routedKeys.size} declared adapters (of ${derived.adapters.length}; the rest are gateway-only or published exceptions)`)
   const tableProviders = new Set(Object.values(CONTACT_PROVIDER_ROUTES).flat().map((e) => e.provider))
   ok([...tableProviders].every((p) => routed.includes(p)), `every CONTACT_PROVIDER_ROUTES provider is routed (${[...tableProviders].join(", ")})`)
   ok(derived.missing.length === 0 && derived.unrouted.length === 0, `no missing / unrouted declaration (missing=${derived.missing.join(",") || "-"} unrouted=${derived.unrouted.join(",") || "-"})`)
   const setErrs = validateAdapterSet(derived)
-  ok(setErrs.length === 0, `validateAdapterSet clean${setErrs.length ? ": " + setErrs.slice(0, 4).join(" | ") : ""}`)
+  const unknownFaults = setErrs.filter((e) => !KNOWN_DECLARATION_FAULTS[e.split(":")[0]])
+  ok(unknownFaults.length === 0, `validateAdapterSet clean except the PUBLISHED faults (${setErrs.length} fault line(s) across ${Object.keys(KNOWN_DECLARATION_FAULTS).length} published adapters)${unknownFaults.length ? ": " + unknownFaults.slice(0, 4).join(" | ") : ""}`)
+  for (const [p, why] of Object.entries(KNOWN_DECLARATION_FAULTS)) {
+    ok(setErrs.some((e) => e.startsWith(`${p}:`)) && !adapterFor(p), `published fault still real (else delete it) and NOT served (fail closed): ${p}`)
+    console.log(`      open item: ${why}`)
+  }
   ok(derived.adapters.every((a) => a.api.version && a.health.serviceKeys.length && a.provenance.includes("ADAPTER_FACTS")), "every adapter declares version + health key + provenance")
   // positive controls — remove a routed provider's facts / add an unrouted one
   const factsMinus: Record<string, any> = {}
@@ -206,6 +288,84 @@ async function main() {
   ok(!!qboPinned && adapterFor("quickbooks")?.api.version.endsWith(`minorversion=${qboPinned}`), `quickbooks declared version == the minorversion the code pins (${qboPinned})`)
   const pkg = read("package.json")
   ok(new RegExp("npm run test:provider-adapter(\\s|&|$)").test(pkg), "test:provider-adapter is in the guard chain")
+
+  // ── I. census — EVERY provider the code references is a declared kernel connection ──
+  console.log("\nI. census: every provider signal in the runtime corpus is accounted for")
+  const corpus = runtimeFiles().map((p) => ({ path: p.replace(/^\.\//, ""), src: readFileSync(join(ROOT, p), "utf8") }))
+  const envOwner = new Map<string, string>()
+  for (const a of derived.adapters) for (const v of a.credential.envVars) envOwner.set(v, a.provider)
+  const signals = censusSignals(corpus)
+  const accounted = signals.map((s) => ({ s, r: accountFor(s, envOwner) }))
+  const unaccounted = accounted.filter((x) => !x.r)
+  const byKind = (k: CensusSignal["kind"]) => signals.filter((s) => s.kind === k).length
+  ok(signals.length > 0 && unaccounted.length === 0,
+    `${signals.length} signals over ${corpus.length} runtime files (env ${byKind("env")} · gateway ${byKind("gateway")} · module ${byKind("module")} · webhook ${byKind("webhook")}) — ${unaccounted.length} unaccounted${unaccounted.length ? ": " + unaccounted.slice(0, 8).map((x) => `${x.s.kind}:${x.s.name}@${x.s.file}`).join(", ") : ""}`)
+  const censusKeys = new Set<string>()
+  for (const x of accounted) if (x.r && "provider" in x.r) censusKeys.add(x.r.provider)
+  for (const n of routed) { const k = resolveAdapterKey(n); if (k) censusKeys.add(k) }
+  const declaredKeys = new Set(derived.adapters.map((a) => a.provider))
+  const phantom = [...declaredKeys].filter((k) => !censusKeys.has(k))
+  const undeclared = [...censusKeys].filter((k) => !declaredKeys.has(k))
+  ok(censusKeys.size === declaredKeys.size && phantom.length === 0 && undeclared.length === 0,
+    `derived census count (${censusKeys.size}) == declared adapter count (${declaredKeys.size})${phantom.length ? ` · phantom: ${phantom.join(",")}` : ""}${undeclared.length ? ` · undeclared: ${undeclared.join(",")}` : ""}`)
+  const gwHit = new Set(accounted.filter((x) => x.s.kind === "gateway" && x.r && "provider" in x.r).map((x) => (x.r as { provider: string }).provider))
+  const gwClaimNoSite = derived.adapters.filter((a) => a.route.paths.includes("connector_gateway") && !gwHit.has(a.provider)).map((a) => a.provider)
+  ok(gwClaimNoSite.length === 0, `every adapter claiming the connector_gateway path has a live callConnector site (${gwHit.size} gateway-reached providers)${gwClaimNoSite.length ? " — claimed with no site: " + gwClaimNoSite.join(",") : ""}`)
+  const usedExclusions = new Set(accounted.filter((x) => x.r && "nonProvider" in x.r).map((x) => (x.r as { nonProvider: string }).nonProvider))
+  const staleExclusions = Object.keys(NON_PROVIDER).filter((k) => !usedExclusions.has(k))
+  ok(staleExclusions.length === 0, `every NON_PROVIDER exclusion is still hit (${usedExclusions.size}; stale: ${staleExclusions.join(",") || "-"})`)
+  const exceptions = derived.adapters.filter((a) => a.route.exception)
+  ok(exceptions.every((a) => (a.route.exception ?? "").length >= 40), `${exceptions.length} provider(s) reached outside the rails each PUBLISH a reason (${exceptions.map((a) => a.provider).join(", ")})`)
+  // POSITIVE CONTROL — a planted client file with an env key is flagged twice (module + env); a tombstone is not read.
+  const planted = censusSignals([{ path: "lib/external/acmeleads-client.ts", src: "// tombstone: was process.env.OLDVENDOR_API_KEY\nexport const k = process.env.ACMELEADS_API_KEY\n" }])
+  const plantedOut = planted.filter((s) => !accountFor(s, envOwner))
+  ok(plantedOut.length === 2 && plantedOut.some((s) => s.kind === "env" && s.name === "ACMELEADS_API_KEY") && plantedOut.some((s) => s.kind === "module") && !planted.some((s) => s.name === "OLDVENDOR_API_KEY"),
+    "POSITIVE CONTROL: a planted client file with an env key is flagged (module + env), and a tombstone comment is not a signal")
+
+  // ── J. declarations — research roots + bookings that exist in code ──
+  console.log("\nJ. every declaration carries its research roots; every named booking exists")
+  ok(derived.adapters.every((a) => !!a.api.docsUrl && /^https:\/\//.test(a.api.docsUrl)), `every adapter names an https docs root for the provider-setup research step (${derived.adapters.filter((a) => a.api.statusUrl).length} status pages, ${derived.adapters.filter((a) => a.api.changelogUrl).length} changelogs declared)`)
+  const bookingFaults: string[] = []
+  for (const a of derived.adapters) {
+    if (a.cost.payer !== "platform" || a.cost.ledger === "free" || /^none\b/.test(a.cost.booking)) continue
+    const m = /^([A-Za-z]+) \(([^)]+)\)/.exec(a.cost.booking)
+    if (!m || !existsSync(join(ROOT, m[2])) || !new RegExp(`\\b${m[1]}\\(`).test(stripComments(read(m[2])))) bookingFaults.push(`${a.provider}: ${a.cost.booking}`)
+  }
+  ok(bookingFaults.length === 0, `every platform-paid booking names a module that calls it (${bookingFaults.length ? bookingFaults.join(" | ") : "all present"})`)
+  const vocabOnly = derived.adapters.filter((a) => a.lifecycle !== "live").map((a) => `${a.provider}:${a.lifecycle}`)
+  console.log(`      not-live declarations (published): ${vocabOnly.join(", ")}`)
+
+  // ── K. the router uses PROBE results ──
+  console.log("\nK. a probe-DOWN provider is skipped by routeCapability (evidence row cited)")
+  const healthy = deriveProviderHealth([], NOW)
+  const probeDown = foldProbeVerdict(healthy, { status: "unreachable", at: new Date(NOW.getTime() - 60_000).toISOString(), ref: "she-1" }, NOW)
+  const rK = routeCapability("property_valuation", { rentcast: probeDown, batchdata: healthy })
+  ok(rK.providers[0] === "batchdata" && rK.skipped.some((x) => x.provider === "rentcast" && /live probe unreachable/.test(x.reason) && /self_heal_events she-1/.test(x.reason)), `rentcast probe-unreachable → skipped, batchdata serves (${rK.skipped.map((x) => x.reason).join("; ").slice(0, 120)})`)
+  const stale = foldProbeVerdict(healthy, { status: "unreachable", at: new Date(NOW.getTime() - 60 * 60_000).toISOString(), ref: "she-0" }, NOW)
+  const upAuth = foldProbeVerdict(healthy, { status: "auth_failed", at: new Date(NOW.getTime() - 60_000).toISOString(), ref: "she-2" }, NOW)
+  ok(!stale.routeAround && !upAuth.routeAround && routeCapability("property_valuation", { rentcast: upAuth }).providers[0] === "rentcast",
+    "POSITIVE CONTROLS: a probe older than the cool-down, and an UP verdict (auth_failed), never route around")
+  const gwSrc = stripComments(read("lib/agentic-os/connector-gateway.ts"))
+  ok(/foldProbeVerdict\(value,/.test(gwSrc) && /from\("self_heal_events"\)/.test(gwSrc) && /eq\("action", "provider_probe"\)/.test(gwSrc), "loadProviderHealth folds the newest platform probe verdict (self_heal_events provider_probe) into the health the router reads")
+
+  // ── L. os-health failover → the provider healer ──
+  console.log("\nL. os-health's provider failover hands the provider to healProviderFailure")
+  const osh = stripComments(read("lib/kernel/os-health.ts"))
+  const failoverArm = /case "failover": \{[\s\S]*?\n {6}\}/.exec(osh)?.[0] ?? ""
+  ok(/healProviderFailure\(/.test(failoverArm) && /deps\.healProvider/.test(failoverArm) && /routed around by routeCapability/.test(failoverArm), "the failover arm routes around AND calls the healer's exported entry (healProviderFailure)")
+
+  // ── M. one vocabulary ──
+  console.log("\nM. one vocabulary: the Lob price, the PeopleData spelling")
+  ok(VENDOR_PRICING.lob.costPerUnit === DIRECT_MAIL_PIECE_COST_USD.postcard && PLATFORM_VENDOR_RATES.lob.perUnit === DIRECT_MAIL_PIECE_COST_USD.postcard && adapterFor("lob")?.cost.unitUsd === DIRECT_MAIL_PIECE_COST_USD.postcard,
+    `VENDOR_PRICING.lob == PLATFORM_VENDOR_RATES.lob == the adapter == DIRECT_MAIL_PIECE_COST_USD.postcard ($${DIRECT_MAIL_PIECE_COST_USD.postcard})`)
+  const lobLiteral = (src: string) => /\blob\b[^\n]{0,40}\b(perUnit|costPerUnit)\s*:\s*\d|DIRECT_MAIL_PIECE_COST_USD[^=\n]*=\s*\{\s*letter:\s*\d/.test(stripComments(src))
+  const lobLiteralFiles = corpus.filter((f) => f.path !== "lib/vendor-governance/cost-normalizer.ts" && lobLiteral(f.src)).map((f) => f.path)
+  ok(lobLiteralFiles.length === 0, `no second Lob price literal outside cost-normalizer.ts (${lobLiteralFiles.join(", ") || "none"})`)
+  ok(lobLiteral(`export const PLATFORM_VENDOR_RATES = { lob: { perUnit: 0.84, unit: "piece" } }`) && !lobLiteral(`// lob: { perUnit: 0.84 }`), "POSITIVE CONTROL: the finder sees a live second Lob price, not a comment")
+  const peoples = (src: string) => /peoples_?data/i.test(stripComments(src))
+  const peoplesFiles = corpus.filter((f) => peoples(f.src)).map((f) => f.path)
+  ok(peoplesFiles.length === 0, `"peoplesdata" spelled nowhere in runtime code (${peoplesFiles.join(", ") || "none"}) — ONE spelling: peopledata`)
+  ok(peoples(`const provider = "peoplesdata"`) && !peoples(`// tombstone: "peoplesdata" retired`), "POSITIVE CONTROL: the finder sees a live \"peoplesdata\" literal, not a tombstone")
 
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   process.exit(fail === 0 ? 0 : 1)

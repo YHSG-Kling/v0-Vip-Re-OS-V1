@@ -9,6 +9,7 @@
 
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import { publishManagerSignal } from "@/lib/kernel/manager-signals"
+import { VOICE_TOOL_MANAGER } from "@/lib/voice/tool-registry"
 
 export type VoiceActionTool =
   | "create_task" | "log_activity" | "send_portal_message" | "accept_offer"
@@ -16,21 +17,12 @@ export type VoiceActionTool =
   | "reject_offer" | "counter_offer" | "withdraw_offer"
   | "convert_lead" | "reassign_contact" | "broadcast_announcement" | "stage_showing"
 
-/** PURE: the manager who OWNS a voice action (the "from" on the bus). */
+/** PURE: the manager who OWNS a voice action (the "from" on the bus).
+ *  TOMBSTONE (wave 138E): the per-tool switch that lived here MOVED to the one tool → manager table,
+ *  VOICE_TOOL_MANAGER (lib/voice/tool-registry.ts), which the assistant reach matrix also reads — two
+ *  copies of "who owns this tool" would drift (CLAUDE.md §6). Same answers, typed exhaustive over the union. */
 export function ownerManagerForVoiceAction(tool: VoiceActionTool): ManagerKey {
-  switch (tool) {
-    case "create_task": return "deal_coordinator"        // tasks / ops
-    case "log_activity": return "ai_isa"                 // contact engagement / CRM touch
-    case "send_portal_message": return "campaign_orchestrator" // client message gate owner
-    case "accept_offer": return "deal_coordinator"       // deal decision — the deal file's owner announces it
-    case "reject_offer": return "deal_coordinator"       // same deal-decision family as accept
-    case "counter_offer": return "deal_coordinator"
-    case "withdraw_offer": return "deal_coordinator"
-    case "convert_lead": return "ai_isa"                 // lead pipeline — the ISA's domain (qualified lead → contact)
-    case "reassign_contact": return "data_steward"       // book-of-record move (routes to deal_coordinator)
-    case "broadcast_announcement": return "data_steward" // principal comms, kept on the record
-    case "stage_showing": return "shopping_agent"        // buyer-side scheduling
-  }
+  return VOICE_TOOL_MANAGER[tool]
 }
 
 /**

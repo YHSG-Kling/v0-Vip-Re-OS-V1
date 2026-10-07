@@ -26,7 +26,7 @@ import {
   OPTIMIZATION_CLASSES, OPTIMIZATION_CLASS_DEFS, FORBIDDEN_SURFACES, classifyProposalSurface, replayReasoningSpend, providerSkipVerdict,
   experienceDirection, loadTenantProviderSkips, resolveOptimizationTuning, runTeamOptimizationCycle, OPTIMIZATION_CLASS_AUTHORITY, TEAM_OPTIMIZATION_PROPOSER,
   type OptimizationClass,
-  loadDeadlineReminderHours, DEADLINE_REMINDER_MAX_HOURS, evaluateOptimizationClass,
+  loadDeadlineReminderHours, DEADLINE_REMINDER_MAX_HOURS, evaluateOptimizationClass, OPTIMIZATION_CANDIDATES_NOT_BUILT,
 } from "../lib/kernel/self-optimization"
 import {
   PROPOSERS, promotionDecision, proposeImprovement, evaluateProposal, decideProposal, promoteProposal, rollbackProposal, loadProposal,
@@ -155,6 +155,15 @@ async function main() {
     const sym = (/([A-Za-z]+) \(|([A-Za-z]+)$/.exec(r.replace(/\s*\(.*\)\s*$/, "")) ?? [])[0]?.replace(/[ (]/g, "") ?? ""
     return files.length > 0 && files.every((f) => existsSync(join(ROOT, f))) && files.some((f) => src(f).includes(sym))
   }), OPTIMIZATION_CLASSES.map((c) => OPTIMIZATION_CLASS_DEFS[c].reader).join(" | "))
+
+  // Wave 138E — the candidates evaluated and NOT built stay honest: none is a class, each names a real file, and
+  // that file still reads no tenant tuning (a reader appearing makes the record stale → build the class or drop it).
+  {
+    const readsTuning = (f: string) => /optimization_tuning|resolveOptimizationTuning\(/.test(src(f))
+    const bad = OPTIMIZATION_CANDIDATES_NOT_BUILT.filter((c) => (OPTIMIZATION_CLASSES as readonly string[]).includes(c.candidate) || !existsSync(join(ROOT, c.wouldBeReadBy)) || readsTuning(c.wouldBeReadBy) || c.missing.length < 40)
+    check(`E4b the ${OPTIMIZATION_CANDIDATES_NOT_BUILT.length} evaluated-not-built candidates are not classes, name a real would-be reader, and that reader still reads no tenant tuning`, OPTIMIZATION_CANDIDATES_NOT_BUILT.length > 0 && bad.length === 0, bad.map((c) => c.candidate).join(","))
+    check("E4c (POSITIVE CONTROL) the staleness test recognises a real reader: lib/ai-isa/lead-action-plan.ts (the NBE planner) reads the tuning", readsTuning("lib/ai-isa/lead-action-plan.ts"))
+  }
 
   // model_routing — reasoning-spend replay, live promote + rollback.
   const memE = memSupabase({

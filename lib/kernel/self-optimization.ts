@@ -45,6 +45,20 @@ type Svc = { from: (t: string) => any }
 // (lib/kernel/calendar-deadline-watcher.ts) are all real. m740 widens m732's CHECK to this list.
 export const OPTIMIZATION_CLASSES = ["campaign_sequencing", "model_routing", "creative_choice", "education_intervention", "followup_timing", "provider_selection", "property_recommendation", "transaction_reminder_timing"] as const
 export type OptimizationClass = (typeof OPTIMIZATION_CLASSES)[number]
+
+/**
+ * Wave 138E — candidates EVALUATED and NOT built, each because a real piece is missing. A class is built only
+ * with a real evaluator + rollback + READER (E1–E4); a promoted value nobody reads is a write wearing the
+ * costume of a learning loop. Each entry names the file that WOULD read the promoted value; the proof fails
+ * the moment that file starts reading tenant tuning (the record is then stale — build the class or drop the
+ * line), so this list can never sit here reading as "still impossible" after the gap closes.
+ * @proofSeam the self-optimization proof reads each named reader file to hold the record honest
+ */
+export const OPTIMIZATION_CANDIDATES_NOT_BUILT: ReadonlyArray<{ candidate: string; wouldBeReadBy: string; missing: string }> = Object.freeze([
+  { candidate: "home_value_review_cadence", wouldBeReadBy: "lib/agents/sphere-agent.ts", missing: "no cadence reader: the home_value_review strategy runs on the mission cadence (strategy timing.cadenceDays), and no producer reads a tenant review interval" },
+  { candidate: "recruiting_outreach_timing", wouldBeReadBy: "lib/agents/recruit-outreach-producer.ts", missing: "no timing knob and no outcome reader: recruit outreach proposes into the approval gate on demand; recruit reply/hire outcomes are not attributed back to send timing" },
+  { candidate: "video_variant_selection", wouldBeReadBy: "lib/video/format-learning.ts", missing: "covered, not missing: creative_choice already records the media_kind preference (lib/kernel/media-intelligence.ts mediaKindVerdict); a second class would be a second vocabulary for one choice" },
+])
 export function isOptimizationClass(v: unknown): v is OptimizationClass {
   return typeof v === "string" && (OPTIMIZATION_CLASSES as readonly string[]).includes(v)
 }

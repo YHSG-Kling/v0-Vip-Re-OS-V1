@@ -16,7 +16,10 @@
  *   E. a write cannot bypass the domain service — the delegation service's own refusals surface through
  *      the handler (authority above the rung, self-delegation) and nothing is inserted; positive control
  *      202 with the service's ledger evidence
- *   F. per-credential rate limit trips (429 + Retry-After + evidence) and does not starve another credential
+ *   F. per-credential rate limit trips (429 + Retry-After + evidence) and does not starve another credential;
+ *      (wave 138D) the DURABLE ceiling holds across two simulated instances (separate in-memory fast paths, one
+ *      shared database), with a positive control that the fast paths alone would have let the burst through,
+ *      and an uncountable window fails closed (503)
  *   G. entitlement — mayUseAndAfford refusal → 402
  *   H. evidence — every call above left an agentic_invocation_log row (kind domain, credential id)
  *   I. stripped-source census — every v1 handler imports the domain service and calls no .from();
@@ -29,7 +32,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
 import { stripComments, blankStrings } from "./strip-comments"
-import { serveDomainApi, DOMAIN_API_RESOURCE_NAMES, type DomainApiDeps } from "../lib/kernel/domain-api"
+import { serveDomainApi, DOMAIN_API_RESOURCE_NAMES, durableRateVerdict, type DomainApiDeps } from "../lib/kernel/domain-api"
 import { hashAgentToken, generateAgentToken } from "../lib/agentic-os/agent-credentials"
 import { TENANT_MINTABLE_SCOPES } from "../lib/platform/tenant-webhooks-core"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
@@ -51,7 +54,10 @@ function memClient(tables: Record<string, Row[]> = {}) {
       let op: "select" | "insert" | "update" | "delete" = "select"
       let payload: Row | Row[] | null = null
       let limitN: number | null = null
-      const run = (): { data: any; error: any } => {
+      let wantCount = false
+      // a `col->>key` filter reads one key of a jsonb column (agentic_invocation_log.detail->>credential_id)
+      const get = (r: Row, c: string) => { const [col, key] = c.split("->>"); return key === undefined ? r[col] : (r[col] ?? {})[key] }
+      const run = (): { data: any; error: any; count?: number } => {
         if (op === "insert") {
           const rows = (Array.isArray(payload) ? payload : [payload!]).map((r) => ({ id: randomUUID(), created_at: new Date().toISOString(), updated_at: new Date().toISOString(), ...r }))
           for (const r of rows) {
@@ -63,16 +69,19 @@ function memClient(tables: Record<string, Row[]> = {}) {
         const hits = t(table).filter((r) => preds.every((p) => p(r)))
         if (op === "update") { for (const r of hits) Object.assign(r, payload); return { data: hits.map((r) => structuredClone(r)), error: null } }
         if (op === "delete") { tables[table] = t(table).filter((r) => !hits.includes(r)); return { data: hits, error: null } }
-        return { data: (limitN ? hits.slice(0, limitN) : hits).map((r) => structuredClone(r)), error: null }
+        return { data: (limitN ? hits.slice(0, limitN) : hits).map((r) => structuredClone(r)), error: null, ...(wantCount ? { count: hits.length } : {}) }
       }
       const b: any = {
-        select: () => b, order: () => b, not: () => b, or: () => b, gte: () => b, lte: () => b, lt: () => b, neq: () => b,
+        select: (_cols?: string, o?: { count?: string }) => { if (o?.count) wantCount = true; return b },
+        order: () => b, not: () => b, or: () => b, lte: () => b, lt: () => b,
+        gte: (c: string, v: unknown) => { preds.push((r) => String(get(r, c) ?? "") >= String(v)); return b },
+        neq: (c: string, v: unknown) => { preds.push((r) => get(r, c) !== v); return b },
         is: (c: string, v: unknown) => { preds.push((r) => (r[c] ?? null) === v); return b },
         limit: (n: number) => { limitN = n; return b },
         insert: (p: Row | Row[]) => { op = "insert"; payload = p; return b },
         update: (p: Row) => { op = "update"; payload = p; return b },
         delete: () => { op = "delete"; return b },
-        eq: (c: string, v: unknown) => { preds.push((r) => r[c] === v); return b },
+        eq: (c: string, v: unknown) => { preds.push((r) => get(r, c) === v); return b },
         in: (c: string, vs: unknown[]) => { preds.push((r) => vs.includes(r[c])); return b },
         single: () => { const r = run(); return Promise.resolve({ data: Array.isArray(r.data) ? r.data[0] ?? null : r.data, error: r.error }) },
         maybeSingle: () => { const r = run(); return Promise.resolve({ data: Array.isArray(r.data) ? r.data[0] ?? null : r.data, error: r.error }) },
@@ -234,6 +243,33 @@ async function main() {
     check("F2 the 429 carries Retry-After", Number(last.headers.get("retry-after")) > 0)
     check("F3 another credential of the same tenant is not starved", (await w.call("contact", other.raw, { over: rate })).status === 200)
     check("F4 the refusal left evidence (decision rate_limited, outcome denied)", (w.c.tables.agentic_invocation_log ?? []).some((r) => r.decision === "rate_limited" && r.outcome === "denied" && r.detail?.credential_id === a.row.id))
+  }
+  {
+    // TWO INSTANCES: each has its OWN in-memory window (a serverless warm instance); the database is shared.
+    const w = world()
+    const a = w.mint()
+    const instance = () => { const m = new Map<string, { n: number; reset: number }>(); return (_s: string, key: string, o: { limit: number; windowMs: number }) => { const now = Date.now(); const e = m.get(key); if (!e || now > e.reset) { m.set(key, { n: 1, reset: now + o.windowMs }); return { allowed: true, retryAfterSeconds: 0 } } if (e.n >= o.limit) return { allowed: false, retryAfterSeconds: 1 }; e.n++; return { allowed: true, retryAfterSeconds: 0 } } }
+    const rate = { limit: 3, windowMs: 60_000 }
+    const i1 = instance(), i2 = instance()
+    const statuses: number[] = []
+    for (let n = 0; n < 6; n++) statuses.push((await w.call("contact", a.raw, { over: { rate, rateLimit: n % 2 === 0 ? i1 : i2 } })).status)
+    const c1 = instance(), c2 = instance()
+    const fastOnly = Array.from({ length: 6 }, (_, n) => (n % 2 === 0 ? c1 : c2)("domain-api", a.row.id, rate).allowed)
+    check("F5 (positive control) the two per-instance fast paths ALONE would admit all 6 alternating calls (each instance sees 3)", fastOnly.every(Boolean))
+    check("F6 the DURABLE ceiling holds across both instances: 3 served, then 429 on every later call whichever instance takes it", statuses.join(",") === "200,200,200,429,429,429", statuses.join(","))
+    const durableRows = (w.c.tables.agentic_invocation_log ?? []).filter((r) => r.decision === "rate_limited")
+    check("F7 each durable refusal is evidenced with its layer (rate_limited, layer durable)", durableRows.length === 3 && durableRows.every((r) => r.detail?.layer === "durable"))
+    const other = w.mint()
+    check("F8 another credential of the same tenant is not starved by the durable count", (await w.call("contact", other.raw, { over: { rate, rateLimit: i1 } })).status === 200)
+    const v = await durableRateVerdict(w.c as any, A, a.row.id, rate)
+    check("F9 refused calls are not counted (a 429 does not extend its own lockout) and Retry-After derives from the oldest counted row", "allowed" in v && !v.allowed && v.retryAfterSeconds > 0 && v.retryAfterSeconds <= 60)
+    const broken = { from: () => { const q: any = { select: () => q, eq: () => q, neq: () => q, gte: () => q, order: () => q, limit: () => Promise.resolve({ data: null, error: { message: "permission denied" }, count: null }) }; return q } }
+    const refused = await durableRateVerdict(broken as any, A, a.row.id, rate)
+    // Through the REAL handler: the evidence table refuses the count read (but still takes the evidence insert).
+    const blind = { from: (t: string) => (t === "agentic_invocation_log" ? { select: () => broken.from().select(), insert: (p: Row) => w.c.from(t).insert(p) } : w.c.from(t)) }
+    const third = w.mint()
+    const res = await w.call("contact", third.raw, { over: { client: blind as any, rateLimit: instance() } })
+    check("F10 an uncountable window refuses: durableRateVerdict → refused, the handler → 503 with evidence (fail closed, never served)", "refused" in refused && res.status === 503 && (w.c.tables.agentic_invocation_log ?? []).some((r) => r.detail?.credential_id === third.row.id && r.detail?.why === "rate_limit_unverifiable"), `${res.status}`)
   }
 
   // ─── G. entitlement ────────────────────────────────────────────────────────────────────────

@@ -116,3 +116,7 @@ No principle restates a law. Each one is the specific rule a law is enforced thr
 - A brokerage **objective → mission** engine.
 
 All four are marked MISSING or PARTIAL in `OS-BLUEPRINT-GAP-MAP.md` under "Planes not yet mapped".
+
+## Production architecture (wave 138F)
+
+This constitution holds the laws. The deployed shape lives in `PRODUCTION-ARCHITECTURE.md`. That page covers the seven layers mapped to modules, the kernel request path, the extension and self-healing models, the security, tenancy, evidence and cost rails, the assistant team, the deploy topology with its required env and fail-closed behaviour, and the operational runbook. `test:production-readiness` holds that page in agreement with the code: cron ownership, env documentation, the NEXT_PUBLIC secret census, the webhook signature census, the public-write throttle census, the RLS backstop and the build heap. Each check has a positive control.

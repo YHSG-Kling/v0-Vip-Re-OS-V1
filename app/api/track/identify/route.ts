@@ -60,6 +60,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
 import { processKernelEvent } from '@/lib/kernel'
 import { KernelEvent } from '@/lib/kernel/events'
 
@@ -97,6 +98,13 @@ function normalizePhone(raw: unknown): string | null {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1). Over the ceiling the
+  // answer stays the constant OPAQUE_OK (note 3) — a throttle must not become
+  // the oracle this route refuses to be. Idiom: app/api/track/visitor/route.ts.
+  const rateIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || req.headers.get('x-real-ip') || 'unknown'
+  if (!checkPublicRateLimit('track-identify', rateIp, { limit: 60, windowMs: 60_000 }).allowed) {
+    return NextResponse.json(OPAQUE_OK)
+  }
   let body: IdentifyBody
 
   try {

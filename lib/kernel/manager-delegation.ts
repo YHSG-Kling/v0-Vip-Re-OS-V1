@@ -541,6 +541,33 @@ export const DELEGATION_WORKERS: Readonly<Partial<Record<AppCapability, Delegati
     if (r.ok) return { ok: true, result: { contactId: r.contactId, lenderVendorId: r.lenderVendorId, lenderName: r.lenderName, via: "lib/kernel/lender-linkage.ts recordLenderReferral" } }
     return { ok: false, reason: r.needsChoice ? `${r.reason}: ${r.needsChoice.map((v) => v.name ?? v.id).join(", ")}` : r.reason }
   },
+  // Wave 138C — the 137E strategy library's two named gaps, each worked on its survivor.
+  // compliance_review: READ-ONLY — the compliance engine (lib/compliance-rules/compliance-engine.ts, which loads the
+  // tenant's state rules from the law-rule registry's rows) returns a verdict; nothing is edited, sent or approved.
+  compliance_review: async (_svc, row) => {
+    const content = typeof row.input_entities?.content === "string" ? row.input_entities.content.trim() : ""
+    if (!content) return { ok: false, reason: "no content to review (input_entities.content)" }
+    const { evaluateContentCompliance } = await import("@/lib/compliance-rules/compliance-engine")
+    const v = await evaluateContentCompliance({
+      content_type: typeof row.input_entities?.contentType === "string" ? row.input_entities.contentType : "marketing_copy",
+      channel_intent: typeof row.input_entities?.channel === "string" ? row.input_entities.channel : "unspecified",
+      raw_content: content.slice(0, 20_000),
+      brokerage_id: row.brokerage_id,
+    })
+    return { ok: true, result: { verdict: v.compliance_status, violations: v.violations.map((x) => ({ rule: x.rule_name, severity: x.severity, reference: x.regulation_reference ?? null, excerpt: x.offending_excerpt ?? null, fix: x.suggested_fix ?? null })), highest_severity: v.summary.highest_severity, required_actions: v.required_actions, via: "lib/compliance-rules/compliance-engine.ts evaluateContentCompliance" } }
+  },
+  // agent_coaching_assign: ONE adaptive development cycle (lib/education/skill-freshness-radar.ts) for an agent of
+  // THIS tenant — the agent row is read with the delegation's brokerage_id, never trusted from the ask.
+  agent_coaching_assign: async (svc, row) => {
+    const agentId = typeof row.input_entities?.agentId === "string" ? row.input_entities.agentId : null
+    if (!agentId) return { ok: false, reason: "no agent on the delegation (input_entities.agentId)" }
+    const { data: agent, error } = await svc.from("agents").select("id, user_id, brokerage_id").eq("brokerage_id", row.brokerage_id).eq("id", agentId).maybeSingle()
+    if (error) return { ok: false, reason: `agents read refused: ${error.message}` }
+    if (!agent) return { ok: false, reason: "agent not found in this brokerage" }
+    const { runAdaptiveDevelopmentCycle } = await import("@/lib/education/skill-freshness-radar")
+    const r = await runAdaptiveDevelopmentCycle(svc as any, agent as { id: string; user_id: string | null; brokerage_id: string })
+    return { ok: true, result: { agentId: r.agentId, weakest: r.weakest.map((w) => w.skill), assigned: r.recommended.filter((x) => x.assigned).map((x) => ({ skill: x.skill, moduleId: x.moduleId, title: x.title })), assessments: r.assessments.length, refusedRails: r.refusedRails, replayed: r.replayed, via: "lib/education/skill-freshness-radar.ts runAdaptiveDevelopmentCycle" } }
+  },
 })
 
 /**

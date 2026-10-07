@@ -1,6 +1,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { checkPublicRateLimit } from "@/lib/security/public-rate-limit"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { persistContactConsent } from "@/lib/kernel/compliance/require-contact-consent"
@@ -18,6 +19,14 @@ import { persistFieldProvenance } from "@/lib/enrichment/field-provenance-store"
 const KIOSK_PROVENANCE = { source: "kiosk", capability: "open_house.kiosk_signin", purpose: "self_service" as const, matchConfidence: "self_reported", actor: null }
 
 export async function POST(req: NextRequest) {
+  // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1): unauthenticated
+  // attendee capture. Generous ceiling — a sign-in kiosk posts every attendee
+  // from ONE address. Idiom: app/api/track/visitor/route.ts.
+  const rateIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown"
+  const rateVerdict = checkPublicRateLimit("open-house-attend", rateIp, { limit: 60, windowMs: 10 * 60_000 })
+  if (!rateVerdict.allowed) {
+    return NextResponse.json({ error: "Too many sign-ins from this connection — try again shortly." }, { status: 429, headers: { "Retry-After": String(rateVerdict.retryAfterSeconds) } })
+  }
   try {
     const body = await req.json()
     const {

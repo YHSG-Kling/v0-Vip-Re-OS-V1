@@ -4,6 +4,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
 import { captureContact, resolveCapturedLanguage } from '@/lib/contact-pipeline/contact-capture'
 import { KernelEvent } from '@/lib/kernel/events'
 
@@ -20,6 +21,14 @@ interface QRSubmitBody {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1): unauthenticated
+  // lead capture from a printed QR code (venue wifi shares one address, so
+  // the ceiling is generous). Idiom: app/api/track/visitor/route.ts.
+  const rateIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown"
+  const rateVerdict = checkPublicRateLimit("qr-submit", rateIp, { limit: 60, windowMs: 10 * 60_000 })
+  if (!rateVerdict.allowed) {
+    return NextResponse.json({ error: "Too many submissions from this connection — try again shortly." }, { status: 429, headers: { "Retry-After": String(rateVerdict.retryAfterSeconds) } })
+  }
   try {
     const body = (await req.json()) as QRSubmitBody
     const { slug, qrCodeId, first_name, last_name, email, phone, tcpa_checked } = body

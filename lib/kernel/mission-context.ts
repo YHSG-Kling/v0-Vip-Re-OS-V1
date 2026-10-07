@@ -55,6 +55,23 @@ import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import type { NextBestActionContext } from "@/lib/ai-isa/lead-action-plan"
 import type { ContactMemoryForPrompt } from "@/lib/kernel/conversation-memory"
 import type { BrandVoicePromptResult } from "@/lib/ai-isa/brand-voice-prompt"
+import type { CustomManagerMemoryAccess } from "@/lib/kernel/skill-registry"
+
+/**
+ * MEMORY ACCESS (wave 138D) — the slices a CUSTOM manager's declared `memory_access` admits (its contract:
+ * lib/kernel/skill-registry.ts CUSTOM_MANAGER_MEMORY_ACCESS). Enforced HERE, in the one compiler: a slice outside
+ * the declaration is never READ (its reader is not called), so it cannot leak through rendering, tools or the
+ * booking. The governance slices (the mission's own objective, policy, authority, budget) are always compiled — they
+ * bound the run. A built-in manager passes no memoryAccess and is unaffected.
+ */
+const GOVERNANCE_SLICES = ["mission", "policy", "tools", "budget"] as const
+const MISSION_CONTEXT_SLICES = [...GOVERNANCE_SLICES, "working", "person", "property", "opportunity", "fatigue", "capacity", "events", "delegations"] as const
+/** @proofSeam the proof asserts each access level's admitted set against a compile with every reader observed */
+export const CONTEXT_SLICES_BY_MEMORY_ACCESS: Readonly<Record<CustomManagerMemoryAccess, ReadonlySet<string>>> = Object.freeze({
+  none: new Set<string>(GOVERNANCE_SLICES),
+  mission_context: new Set<string>(MISSION_CONTEXT_SLICES),
+  contact_memory: new Set<string>([...MISSION_CONTEXT_SLICES, "memory"]),
+})
 
 /**
  * Is a mission IN PLAY for this subject? The one read every consumer makes before compiling
@@ -284,6 +301,8 @@ export interface CompileInput {
   eventLimit?: number
   client?: Client
   deps?: MissionContextDeps
+  /** A CUSTOM manager's declared memory_access — only its admitted slices are read (absent = built-in, all). */
+  memoryAccess?: CustomManagerMemoryAccess | null
 }
 
 const fmtDate = (v: unknown) => (typeof v === "string" ? v.slice(0, 16).replace("T", " ") : v instanceof Date ? v.toISOString().slice(0, 16).replace("T", " ") : "")
@@ -299,6 +318,10 @@ export async function compileManagerContext(input: CompileInput): Promise<Compil
   const blind: BlindSpot[] = []
   const slice = <T,>(reader: string, data: T | null, refused: string | null = null): ContextSlice<T> => ({ reader, freshness: at, data, refused })
   const refuse = <T,>(name: string, reader: string, reason: string): ContextSlice<T> => { blind.push({ slice: name, reader, reason }); return slice<T>(reader, null, reason) }
+  // memory_access: an unknown declared value admits only governance (fail closed); absent = a built-in manager.
+  const admitted = input.memoryAccess == null ? null : (CONTEXT_SLICES_BY_MEMORY_ACCESS[input.memoryAccess] ?? CONTEXT_SLICES_BY_MEMORY_ACCESS.none)
+  const may = (name: string) => admitted === null || admitted.has(name)
+  const withheld = <T,>(): ContextSlice<T> => slice<T>(`withheld — memory_access ${String(input.memoryAccess)} does not admit this slice`, null)
 
   // ── mission (tenant-pinned; a foreign id is not_found, never another tenant's row) ──
   const m = await d.mission(input.brokerageId, input.missionId, svc)
@@ -309,13 +332,13 @@ export async function compileManagerContext(input: CompileInput): Promise<Compil
     priority: m.priority, deadline: m.deadline, progress: m.progress ?? {}, successCriteria: m.success_criteria ?? [],
     blockers: (m.blockers ?? []).filter((b) => !b.cleared_at).map((b) => `${b.key}: ${b.reason}`), subject,
   })
-  const working = slice("lib/kernel/missions.ts currentWorkingContext (missions.evidence kind working_context)", currentWorkingContext(m))
+  const working = may("working") ? slice("lib/kernel/missions.ts currentWorkingContext (missions.evidence kind working_context)", currentWorkingContext(m)) : withheld<WorkingContext>()
 
   // ── person: the contact row (once) + identity ──
   const contactId = subject?.type === "contact" ? subject.id : null
   let person: ManagerContext["person"] = slice<SliceData<"person">>("lib/kernel/mission-context.ts readContactRow + lib/kernel/person-identity.ts personForContact", null, null)
   let contact: Record<string, any> | null = null
-  if (contactId) {
+  if (contactId && may("person")) {
     const c = await d.contactRow(input.brokerageId, contactId, svc)
     if (c.error) person = refuse("person", person.reader, c.error)
     else if (!c.row) person = refuse("person", person.reader, "contact not found in this brokerage")
@@ -329,7 +352,7 @@ export async function compileManagerContext(input: CompileInput): Promise<Compil
 
   // ── property ──
   let property: ManagerContext["property"] = slice<SliceData<"property">>("lib/kernel/mission-context.ts readListing (listings by id / seller_contact_id)", null)
-  if (subject && (subject.type === "listing" || subject.type === "contact")) {
+  if (subject && (subject.type === "listing" || subject.type === "contact") && may("property")) {
     const l = await d.listing(input.brokerageId, subject, svc)
     if (l.error) property = refuse("property", property.reader, l.error)
     else if (l.row) property = slice(property.reader, { listingId: l.row.id, address: [l.row.address, l.row.city, l.row.state].filter(Boolean).join(", "), status: l.row.status ?? null, lifecycleStage: l.row.lifecycle_stage ?? null, listPrice: typeof l.row.list_price === "number" ? l.row.list_price : null })
@@ -339,11 +362,18 @@ export async function compileManagerContext(input: CompileInput): Promise<Compil
   let memory: ManagerContext["memory"] = slice<SliceData<"memory">>("lib/kernel/conversation-memory.ts loadContactMemoryForPrompt", null)
   let opportunity: ManagerContext["opportunity"] = slice<SliceData<"opportunity">>("lib/ai-isa/lead-action-plan.ts loadContactNbaContext (activities / showings / tasks / relationship graph / dead ends)", null)
   if (contact && contactId) {
-    const mem = await d.memory(input.brokerageId, contactId, svc, now)
-    memory = slice(memory.reader, mem)
-    const nba = await d.nba(input.brokerageId, contact, mem, svc, now)
-    opportunity = nba.ok ? slice(opportunity.reader, nba.context) : refuse("opportunity", opportunity.reader, nba.error)
+    // Long-term memory is read ONLY when admitted; the NBA reader is then handed null (preloaded) and never reads it itself.
+    const mem = may("memory") ? await d.memory(input.brokerageId, contactId, svc, now) : null
+    if (may("memory")) memory = slice(memory.reader, mem)
+    if (may("opportunity")) {
+      const nba = await d.nba(input.brokerageId, contact, mem, svc, now)
+      opportunity = nba.ok ? slice(opportunity.reader, nba.context) : refuse("opportunity", opportunity.reader, nba.error)
+    }
   }
+  if (!may("memory")) memory = withheld<SliceData<"memory">>()
+  if (!may("opportunity")) opportunity = withheld<SliceData<"opportunity">>()
+  if (!may("person")) person = withheld<SliceData<"person">>()
+  if (!may("property")) property = withheld<SliceData<"property">>()
 
   // ── policy + brand ──
   const pol = await d.policy(input.brokerageId, input.manager, contactId, contact?.agent_id ?? null, contact?.team_id ?? null, svc)
@@ -354,23 +384,26 @@ export async function compileManagerContext(input: CompileInput): Promise<Compil
 
   // ── fatigue (contact scope) + capacity (agent scope) ──
   let fatigue: ManagerContext["fatigue"] = slice<SliceData<"fatigue">>("buyer_fatigue_scores (lib/fatigue calculateFatigue's score row, read as lib/kernel/deconflict reads it)", null)
-  if (contactId) {
+  if (contactId && may("fatigue")) {
     const f = await d.fatigue(input.brokerageId, contactId, svc)
     fatigue = f.error ? refuse("fatigue", fatigue.reader, f.error) : f.found ? slice(fatigue.reader, { riskLevel: f.riskLevel, score: f.score, at: f.at }) : slice<SliceData<"fatigue">>(fatigue.reader, null)
   }
   let capacity: ManagerContext["capacity"] = slice<SliceData<"capacity">>("lib/lead-assignment/capacity-pick.ts capacityFor", null)
   const agentId = (contact?.agent_id as string | null | undefined) ?? null
-  if (agentId) {
+  if (agentId && may("capacity")) {
     const cap = await d.capacity(input.brokerageId, agentId, svc, now)
     capacity = cap.error ? refuse("capacity", capacity.reader, cap.error) : slice(capacity.reader, { agentId, band: cap.band, load: cap.load, fatigueTier: cap.fatigueTier })
   }
 
+  if (!may("fatigue")) fatigue = withheld<SliceData<"fatigue">>()
+  if (!may("capacity")) capacity = withheld<SliceData<"capacity">>()
+
   // ── events + delegations ──
-  const ev = await d.events(input.brokerageId, m.id, subject, svc, input.eventLimit ?? 12)
-  const events = ev.error ? refuse<ContextEvent[]>("events", "mission_events + lifecycle_events (newest first)", ev.error) : slice("mission_events + lifecycle_events (newest first)", ev.rows)
-  const dl = await d.delegations(input.brokerageId, m.id, svc)
+  const ev = may("events") ? await d.events(input.brokerageId, m.id, subject, svc, input.eventLimit ?? 12) : null
+  const events = !ev ? withheld<ContextEvent[]>() : ev.error ? refuse<ContextEvent[]>("events", "mission_events + lifecycle_events (newest first)", ev.error) : slice("mission_events + lifecycle_events (newest first)", ev.rows)
+  const dl = may("delegations") ? await d.delegations(input.brokerageId, m.id, svc) : null
   const delegReader = "lib/kernel/manager-delegation.ts pendingDelegationsFor (manager_delegations) + open manager_signals addressed to the mission"
-  const delegations = dl.error ? refuse<ContextDelegation[]>("delegations", delegReader, dl.error) : slice(delegReader, dl.rows)
+  const delegations = !dl ? withheld<ContextDelegation[]>() : dl.error ? refuse<ContextDelegation[]>("delegations", delegReader, dl.error) : slice(delegReader, dl.rows)
 
   // ── authority / tools ──
   let managerAuthority: AuthorityLevel = DEFAULT_AUTHORITY_LEVEL

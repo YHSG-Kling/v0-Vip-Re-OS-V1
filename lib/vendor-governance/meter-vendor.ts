@@ -9,6 +9,7 @@
 
 import { logVendorUsage, type VendorUsageEvent, type UsageLogResult } from "./usage-logger"
 import { elevenLabsUsdForChars } from "@/lib/video/realism-profile"
+import { DIRECT_MAIL_PIECE_COST_USD } from "./cost-normalizer"
 
 export type MeterLogger = (event: VendorUsageEvent) => Promise<UsageLogResult>
 
@@ -93,7 +94,7 @@ export const PLATFORM_VENDOR_RATES = {
   elevenlabs: { perUnit: elevenLabsUsdForChars(1), unit: "character" },
   vapi:       { perUnit: 0.07,    unit: "minute"    }, // ~$0.07 / call minute (LEGACY lane)
   twilio_voice: { perUnit: 0.02,  unit: "minute"    }, // ~$0.014 carrier + STT/AI overhead — the Twilio-native AI lane
-  lob:        { perUnit: 0.84,    unit: "piece"     }, // ~$0.84 / printed+mailed postcard
+  lob:        { perUnit: DIRECT_MAIL_PIECE_COST_USD.postcard, unit: "piece" }, // the ONE Lob price (cost-normalizer.ts) — was a second spelling, $0.84
 } as const
 
 export type PlatformVendor = keyof typeof PLATFORM_VENDOR_RATES

@@ -311,6 +311,8 @@ export interface RegSearchResult {
   answer: string | null
   hits: Array<{ title: string | null; url: string | null; snippet: string | null }>
   provider: string
+  /** USD the search rail reports for this call (wave 138C: the law-rule healing loop meters + caps it). */
+  cost?: number
 }
 
 /** Injectable seam: run ONE reg-scan query and return the answer/hits. Real default =
@@ -324,12 +326,14 @@ export type RegSearchFetcher = (params: { query: string; brokerageId: string }) 
  * and returns provider "none" with no hits when no creds are configured → the runner
  * records "search unavailable" and escalates nothing. No key is read or logged here.
  */
-const realRegSearchFetcher: RegSearchFetcher = async (params) => {
+// Wave 138C: exported — the ONE law-research rail; lib/kernel/law-rule-healing.ts researches missing / stale
+// law rules through it (metered + cost-capped there) instead of opening a second search path.
+export const realRegSearchFetcher: RegSearchFetcher = async (params) => {
   const { webSearch } = await import("@/lib/ai/web-search")
   const res = await webSearch({ query: params.query, maxResults: 8, mode: "research", deep: true }).catch(
     () => ({ answer: null, hits: [], provider: "none" as const, cost: 0 }),
   )
-  return { answer: res.answer, hits: res.hits, provider: res.provider }
+  return { answer: res.answer, hits: res.hits, provider: res.provider, cost: res.cost }
 }
 
 /** The default scan queries — named regulators × "recent change" so a real change

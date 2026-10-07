@@ -61,11 +61,14 @@ export type AppCapability =
   | "recruit_outreach"           // recruiting outreach through the recruiting pipeline (recruit-outreach-producer)
   | "ad_campaign_launch"         // a budgeted ad campaign DRAFT through the ads kernel (lib/kernel/ads.ts)
   | "lender_preapproval_handoff" // hand a buyer CONTACT to a bench lender VENDOR for pre-approval (lender-linkage)
+  // wave 138C — the two gaps the 137E strategy library named (compliance_first_marketing / agent_development_retention):
+  | "compliance_review"          // read-only verdict on content / a communication against the law-rule registry (compliance-engine)
+  | "agent_coaching_assign"      // one adaptive-development cycle for an agent: weakness → learning_assignments (skill-freshness-radar)
 
 export type AppDomain =
   | "lead_generation" | "crm" | "valuation" | "scheduling" | "transactions" | "listings"
   | "marketing" | "social" | "reporting" | "education" | "portal" | "reputation" | "communications" | "gifting"
-  | "connectivity" | "finance"
+  | "connectivity" | "finance" | "compliance"
 
 /**
  * WHAT A CAPABILITY NEEDS IN ORDER TO ACTUALLY RUN — its contract.
@@ -221,6 +224,9 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
   ad_campaign_launch:         { capability: "ad_campaign_launch",         verb: "CREATE",  scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Draft a budgeted paid-ad campaign through the ads kernel (live launch stays the ads workspace's approval).", inputs: ["brokerageId", "campaignName", "platform", "objective", "dailyBudget?", "lifetimeBudget?"] },
   // GROUNDED: the referral rides the brokerage's lender BENCH (vendors.category ∈ LENDER_BENCH_CATEGORIES,
   // lib/kernel/lender-linkage.ts) and the buyer_financial_profiles referral columns (m605) — no provider.
+  // wave 138C — kernel-only (no provider): the compliance engine + the law-rule registry, and the adaptive development loop.
+  compliance_review:          { capability: "compliance_review",          verb: "ANALYZE", scope: "compliance:read",  domain: "compliance",     mutates: false, purpose: "Review content or a communication against the law-rule registry (fair housing, state protected classes, advertising, AI-safety rules) — a read-only verdict, never an edit or a send.", inputs: ["brokerageId", "content", "contentType?", "channel?"] },
+  agent_coaching_assign:      { capability: "agent_coaching_assign",      verb: "CREATE",  scope: "education:write",  domain: "education",      mutates: true,  purpose: "Run one adaptive development cycle for an agent — the weakest competencies (COMPETENCY_SKILLS) observed from evidence, a matching learning module assigned, an assessment nudged through the gated proposal rail.", inputs: ["brokerageId", "agentId"] },
   lender_preapproval_handoff: { capability: "lender_preapproval_handoff", verb: "CREATE",  scope: "contact:write",    domain: "crm",            mutates: true,  purpose: "Hand a buyer contact to a bench lender (a VENDOR) for pre-approval — records the referral and notifies the lender's people.", inputs: ["brokerageId", "contactId", "lenderVendorId?"] },
 }
 

@@ -46,6 +46,14 @@ import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { classifyCoordination } from "../lib/kernel/coordination-kind"
 import { COMMAND_MAP } from "../app/actions/voice-assistant/helpers/command-map"
 import { stripComments } from "./strip-comments"
+import { assistantReachMatrix, reachGaps, assistantSkillRefusal, composeManagerStatus } from "../lib/voice-admin/assistant-reach"
+import { VOICE_NEVER_SPOKEN } from "../lib/voice-admin/kernel-command-surface"
+import { voiceTools, VOICE_TOOL_MANAGER } from "../lib/voice/tool-registry"
+import { TEAM_COMMAND_MANAGER } from "../lib/kernel/ai-teammates"
+import { MANAGER_SKILLS } from "../lib/kernel/skill-registry"
+import { parseTeamCommandText } from "../lib/voice/parse-team-command"
+import { BROKER_COMMANDS } from "../lib/voice/team-command-names"
+import { speakableToolNames } from "../lib/voice/command-coverage"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -266,6 +274,77 @@ console.log("\n[the direct lane is untouched — no regression]")
     /validateReadiness/.test(src("app/actions/voice-assistant/handle-voice-command.ts")))
   check("the kernel lane does not import the direct lane's executors",
     !/command-executors/.test(src("lib/voice-admin/plan-voice-command.ts")))
+}
+
+console.log("\n[the whole team, 24/7 — the assistant's reach matrix (wave 138E)]")
+{
+  const rows = assistantReachMatrix()
+  const managers = Object.keys(MANAGERS)
+  console.log(`     reach matrix (manager: speak/tool/skill · explain) — ${rows.map((r) => `${r.manager}: ${r.speak.length}/${r.tools.length}/${r.skills.length}·E${r.exempt ? " (exempt)" : ""}`).join(" · ")}`)
+  console.log(`     denominator: ${managers.length} tenant managers × 4 doors; ${Object.keys(CAPABILITY_MANAGER).length} catalogue capabilities; ${Object.keys(voiceTools).length} assistant tools`)
+  check("RM1 the matrix has a row for EVERY tenant manager (derived from MANAGERS, none hand-listed) and every row has the explain door",
+    rows.length === managers.length && managers.every((m) => rows.some((r) => r.manager === m && r.explain === true)))
+  const gaps = reachGaps(rows)
+  check("RM2 every manager is COMMANDABLE through a governed door (speak / tool / skill) or carries a NAMED reason; no reason is stale",
+    gaps.unreachable.length === 0 && gaps.staleExempt.length === 0, JSON.stringify(gaps))
+  {
+    const planted = [
+      { ...rows[0], speak: [], tools: [], skills: [], commandable: false, exempt: null },
+      { ...rows[1], commandable: true, exempt: "a reason that outlived its gap" },
+    ]
+    const g = reachGaps(planted)
+    check("RM3 (POSITIVE CONTROL) the census recognises both defects — a door-less manager with no reason, and a stale reason",
+      g.unreachable.includes(rows[0].manager) && g.staleExempt.includes(rows[1].manager), JSON.stringify(g))
+  }
+  check("RM4 the exemptions are reasons, not silence (every exempt row says why in a sentence)", rows.filter((r) => r.exempt).every((r) => (r.exempt ?? "").length >= 40))
+  // The skill door's restraint — by RISK and by the never-spoken capabilities, so a marketplace skill cannot route around it.
+  const refusedMoney = MANAGER_SKILLS.filter((s) => s.required_capabilities.some((c) => (VOICE_NEVER_SPOKEN as readonly string[]).includes(c)))
+  check(`RM5 every built-in skill needing money / the books / a deal's legal stage is refused by the assistant (${refusedMoney.length})`,
+    refusedMoney.length >= 3 && refusedMoney.every((s) => assistantSkillRefusal(s) !== null) && rows.every((r) => r.skills.every((n) => !refusedMoney.some((s) => s.name === n))))
+  check("RM6 FINANCIAL / LEGAL / IRREVERSIBLE risk is refused even with harmless capabilities; a LOW_RISK_WRITE read-path skill passes (control)",
+    (["FINANCIAL", "LEGAL", "IRREVERSIBLE"] as const).every((risk) => assistantSkillRefusal({ risk_class: risk, required_capabilities: ["lead_search"] }) !== null) &&
+    assistantSkillRefusal({ risk_class: "LOW_RISK_WRITE", required_capabilities: ["lead_search"] }) === null)
+  check("RM7 VOICE_WITHHELD still contains the never-spoken three (the kernel voice lane's own withhold is unchanged)",
+    VOICE_NEVER_SPOKEN.every((c) => (VOICE_WITHHELD as readonly string[]).includes(c)) && VOICE_NEVER_SPOKEN.length === 3)
+  // ONE tool → manager answer.
+  const vtm = Object.keys(VOICE_TOOL_MANAGER)
+  check("RM8 every VOICE_TOOL_MANAGER key is a registered assistant tool, owned by a real manager, and disjoint from the custom-teammate attribution",
+    vtm.every((t) => t in voiceTools && (VOICE_TOOL_MANAGER as Record<string, string>)[t] in MANAGERS) && vtm.every((t) => !(t in TEAM_COMMAND_MANAGER)),
+    vtm.filter((t) => !(t in voiceTools) || t in TEAM_COMMAND_MANAGER).join(","))
+  const busCode = code("lib/voice/voice-bus.ts")
+  check("RM9 the voice bus reads the SAME table (no second per-tool switch)", /VOICE_TOOL_MANAGER\[tool\]/.test(busCode) && !/case "create_task"/.test(busCode))
+  // Every manager can be NAMED in free speech and lands on manager_status.
+  const unnamed = managers.filter((m) => {
+    const p = parseTeamCommandText(`what is the ${MANAGERS[m as keyof typeof MANAGERS].label} working on?`)
+    return !(p?.name === "manager_status" && p.params.manager === m)
+  })
+  check("RM10 every manager is nameable: 'what is the <label> working on?' parses to manager_status for THAT manager", unnamed.length === 0, unnamed.join(","))
+  check("RM11 the parser routes the other two doors and keeps its old routes (control: 'status of 44 Birch' stays team_query)",
+    parseTeamCommandText("objective: grow listings 10% in our farm")?.name === "broker_objective" &&
+    parseTeamCommandText("run skill lead qualification pass for the new leads")?.params.skill === "lead_qualification_pass" &&
+    parseTeamCommandText("team status")?.name === "manager_status" &&
+    parseTeamCommandText("status of 44 Birch")?.name === "team_query" &&
+    parseTeamCommandText("what should I do today")?.name === "morning_standup")
+  // Governed paths only: each backend gates the tenant-admin roster BEFORE its kernel call, and calls only kernel services.
+  const tc = code("lib/voice/team-commands.ts")
+  const caseBody = (name: string) => { const i = tc.indexOf(`case "${name}":`); return i < 0 ? "" : tc.slice(i, tc.indexOf("case \"", i + 10) > 0 ? tc.indexOf("case \"", i + 10) : tc.length) }
+  const gated = (name: string, kernelCall: RegExp) => { const b = caseBody(name); const g = b.indexOf("tenantAdminRefusal("); const k = b.search(kernelCall); return g >= 0 && k > g }
+  check("RM12 manager_status / broker_objective / run_skill each gate the tenant-admin roster BEFORE their kernel call (pendingDelegationsFor · submitBrokerObjective · runSkill)",
+    gated("manager_status", /pendingDelegationsFor\(/) && gated("broker_objective", /submitBrokerObjective\(/) && gated("run_skill", /runSkill\(/))
+  check("RM13 the gate is the ONE roster (resolveTenantAdmin) and fails closed on an unreadable role", /async function tenantAdminRefusal[\s\S]{0,700}if \(error \|\| !me\) return[\s\S]{0,400}resolveTenantAdmin\([\s\S]{0,300}if \(!r\.ok\) return/.test(tc))
+  check("RM14 run_skill refuses by the assistant rule BEFORE runSkill (assistantSkillRefusal → runSkill)", (() => { const b = caseBody("run_skill"); const a = b.indexOf("assistantSkillRefusal("); return a > 0 && b.indexOf("runSkill(", a) > a })())
+  const reach = code("lib/voice-admin/assistant-reach.ts")
+  check("RM15 the matrix module is PURE: no table read, no fetch, no provider (never LLM → SQL)", !/\.from\(|fetch\(|createServiceClient|createClient/.test(reach))
+  check("RM16 every new door is WIRED: registry rows (authority admin), the broker-lane set, the tool-call route, the coverage map",
+    ["manager_status", "broker_objective", "run_skill"].every((t) => voiceTools[t]?.authority === "admin" && BROKER_COMMANDS.has(t) && new RegExp(`case "${t}":`).test(code("app/api/agent-assistant/tool-call/route.ts")) && speakableToolNames().includes(t)))
+  {
+    const withRefusal = composeManagerStatus("ads_manager", [], [], ["ads: permission denied"])
+    const clean = composeManagerStatus("ads_manager", [], [], [])
+    check("RM17 a refused source is SPOKEN, never rendered as 'nothing' (control: a clean read does not say it)", /could not read/.test(withRefusal) && !/could not read/.test(clean))
+  }
+  check("RM18 the activity read-model reports refusals to a caller that asks (onRefused), the feed's callers unchanged",
+    /onRefused\?: \(source: ManagerActivitySource, message: string\) => void/.test(code("lib/kernel/manager-activity.ts")) && /if \(res\.error\) onRefused\(/.test(code("lib/kernel/manager-activity.ts")))
+  console.log(" BLIND SPOTS (138E reach): the matrix proves a DOOR exists per manager, not that every capability inside it is operable for a given tenant (plan-voice-command's operability gate and runSkill's entitlement gate decide that at call time); the three new commands are proven by source order + pure parsing, not against a live session; the ElevenLabs agent reaches them through run_team_command's free-text bridge (conv-ai buildToolsConfig was not changed).")
 }
 
 console.log("\n[a manager owns it]")

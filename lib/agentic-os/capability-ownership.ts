@@ -69,6 +69,11 @@ export const CAPABILITY_MANAGER: Record<AppCapability, ManagerKey> = {
 
   // ── Workforce supply — the Recruiting Manager (wave 108) ──
   recruit_outreach:          "recruiting_manager",
+  // wave 138C: agent development is the Recruiting Manager's charter (agent_coaching_loop / agent_competency_model).
+  agent_coaching_assign:     "recruiting_manager",
+
+  // ── Fair Housing, consent & regulatory governance — the Compliance Officer (wave 138C: its first capability) ──
+  compliance_review:         "compliance_officer",
 
   // ── Paid acquisition — the Ads Manager (wave 108) ──
   ad_campaign_launch:        "ads_manager",

@@ -77,6 +77,7 @@ export async function loadManagerActivity(
   brokerageId: string,
   limit = 40,
   client?: Svc,
+  onRefused?: (source: ManagerActivitySource, message: string) => void,
 ): Promise<ManagerActivityEntry[]> {
   if (!brokerageId) return []
   const supabase = client ?? createServiceClient()
@@ -129,6 +130,16 @@ export async function loadManagerActivity(
       .order("ran_at", { ascending: false })
       .limit(limit),
   ])
+
+  // Wave 138E: a refused source is REPORTED to a caller that asks (the assistant's manager_status says "I
+  // could not read part of its record"), instead of reading as "this manager did nothing". The feed's own
+  // callers pass no callback and render exactly as before.
+  if (onRefused) {
+    const sources: Array<[ManagerActivitySource, { error: { message: string } | null }]> = [
+      ["signal", signalsRes], ["marketing", marketingRes], ["asset", assetRes], ["ads", adsRes], ["client_message", clientMsgRes], ["reaper", reaperRes],
+    ]
+    for (const [source, res] of sources) if (res.error) onRefused(source, res.error.message)
+  }
 
   const entries: ManagerActivityEntry[] = []
 

@@ -8,14 +8,21 @@
  *         resolveAgenticCaller, token-only: a cookie session never authenticates here)
  *       → TENANT FROM THE CREDENTIAL (its brokerage_id; a platform token with no tenant is refused;
  *         a query/body `brokerageId` is never read)
- *       → PER-CREDENTIAL RATE LIMIT (THE survivor lib/security/public-rate-limit.ts, keyed by
- *         agent_credentials.id — 429 + Retry-After + an evidence row)
+ *       → PER-CREDENTIAL RATE LIMIT, two layers (wave 138D): the in-memory survivor lib/security/
+ *         public-rate-limit.ts as the per-instance FAST PATH, then the DURABLE ceiling that holds across
+ *         instances — the credential's own evidence rows (agentic_invocation_log, kind "domain",
+ *         detail.credential_id) counted in the database over the window (durableRateVerdict below).
+ *         429 + Retry-After + an evidence row; an uncountable window refuses (503, fail closed)
  *       → SCOPE (lib/agentic-os/agent-scopes.ts hasScope) → ENTITLEMENT (mayUseAndAfford app.access)
  *       → DOMAIN SERVICE (the reads below; the one write is requestDelegation — the manager-delegation
  *         service applies its own review / authority / entitlement and writes withActionLedger +
  *         emitKernelEvent evidence; this file never inserts a domain row)
  *       → EVIDENCE (an agentic_invocation_log row, kind "domain", on EVERY outcome — served, refused,
  *         rate-limited — through lib/agentic-os/invocation-log.ts recordInvocation)
+ *
+ * TOKEN MINTING (owner ruling, wave 138): minting / rotating / revoking a credential STAYS on the current narrower
+ * gate — the tenancy principal (app/actions/tenant-webhooks.ts principalGate, a subset of TENANT_ADMIN_USER_TYPES);
+ * team_lead and compliance_officer do not mint. Not widened here.
  *
  * The route handler (app/api/v1/[resource]/route.ts) holds no business logic: it hands the request
  * here. v1 is READ + CAPABILITY REQUEST only (owner: "prefer read + capability-request in v1").
@@ -38,7 +45,7 @@ type Row = Record<string, unknown>
 const DOMAIN_API_VERSION = "v1"
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_LIMIT = 100
-/** Per-credential ceiling — THE survivor limiter, one bucket per agent_credentials.id. */
+/** Per-credential ceiling — one bucket per agent_credentials.id, held per instance AND durably (durableRateVerdict). */
 const DEFAULT_RATE = { limit: 120, windowMs: 60_000 }
 /** The manager that REQUESTS on behalf of an external credential: the Data Steward owns the
  *  capability contract (manager-registry agentic_os_door_verdicts). Never a new manager. */
@@ -143,6 +150,31 @@ export interface DomainApiDeps {
   delegation?: DelegationDeps
 }
 
+/**
+ * THE DURABLE PER-CREDENTIAL CEILING (wave 138D; closes the 137A "per-instance only" posture). No new table: the
+ * survivor is the evidence log this pipeline ALREADY writes on every outcome (recordInvocation, step EVIDENCE), so the
+ * window is counted where every instance writes — the database. Rows refused by the limiter itself are not counted (a
+ * client hammering a 429 does not extend its own lockout). Tenant-pinned (brokerage_id = the credential's) so the read
+ * rides the m101 (brokerage_id, created_at) index. A refused count is returned as `refused` — the caller fails CLOSED.
+ * Bound: a request counts once its evidence row lands, so a burst in flight at the same instant can exceed the ceiling
+ * by at most the number of concurrent in-flight requests (published as a blind spot, never hidden).
+ * @proofSeam the proof drives two simulated instances (separate in-memory fast paths) over one shared client
+ */
+export async function durableRateVerdict(c: Client, brokerageId: string, credentialId: string, rate: { limit: number; windowMs: number }, now: Date = new Date()): Promise<{ allowed: boolean; retryAfterSeconds: number } | { refused: string }> {
+  const since = new Date(now.getTime() - rate.windowMs).toISOString()
+  const { data, error, count } = await c.from("agentic_invocation_log")
+    .select("created_at", { count: "exact" })
+    .eq("brokerage_id", brokerageId).eq("kind", "domain").eq("detail->>credential_id", credentialId)
+    .neq("decision", "rate_limited").gte("created_at", since)
+    .order("created_at", { ascending: true }).limit(1)
+  if (error) return { refused: error.message }
+  const n = typeof count === "number" ? count : Array.isArray(data) ? data.length : 0
+  if (n < rate.limit) return { allowed: true, retryAfterSeconds: 0 }
+  const oldest = Date.parse(String((data as Row[] | null)?.[0]?.created_at ?? ""))
+  const retry = Number.isFinite(oldest) ? Math.ceil((oldest + rate.windowMs - now.getTime()) / 1000) : Math.ceil(rate.windowMs / 1000)
+  return { allowed: false, retryAfterSeconds: Math.max(1, retry) }
+}
+
 function json(body: unknown, status: number, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } })
 }
@@ -178,11 +210,19 @@ export async function serveDomainApi(req: Request, resource: string, deps: Domai
     return json({ error: "This credential is not bound to a brokerage — the domain API serves tenant credentials only", version: DOMAIN_API_VERSION }, 403)
   }
 
-  // 2. RATE LIMIT — per credential, on the survivor limiter.
+  // 2. RATE LIMIT — per credential: the in-memory survivor first (fast path, this instance), then the DURABLE
+  //    ceiling every instance shares (the evidence log, counted in the database).
+  const rate = deps.rate ?? DEFAULT_RATE
   const limiter = deps.rateLimit ?? (await import("@/lib/security/public-rate-limit")).checkPublicRateLimit
-  const verdict = limiter("domain-api", credentialId, deps.rate ?? DEFAULT_RATE)
+  const fast = limiter("domain-api", credentialId, rate)
+  const durable = fast.allowed ? await durableRateVerdict(svc, brokerageId, credentialId, rate) : null
+  if (durable && "refused" in durable) {
+    await evidence("error", { why: "rate_limit_unverifiable" }, durable.refused)
+    return json({ error: "Rate limit could not be verified — refused (fail closed)", version: DOMAIN_API_VERSION }, 503)
+  }
+  const verdict = durable ?? fast
   if (!verdict.allowed) {
-    await evidence("rate_limited", { retry_after_seconds: verdict.retryAfterSeconds })
+    await evidence("rate_limited", { retry_after_seconds: verdict.retryAfterSeconds, layer: durable ? "durable" : "instance" })
     return json({ error: "Rate limit exceeded for this credential", retryAfterSeconds: verdict.retryAfterSeconds, version: DOMAIN_API_VERSION }, 429, { "retry-after": String(verdict.retryAfterSeconds) })
   }
 

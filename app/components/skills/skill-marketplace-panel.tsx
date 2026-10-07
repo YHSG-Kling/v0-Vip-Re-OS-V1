@@ -19,11 +19,12 @@ import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import {
   getSkillRegistry, submitTenantSkill, decideTenantSkill, runSkillForTenant,
-  getPlatformSkillQueue, submitThirdPartySkill, decidePlatformSkill,
+  getPlatformSkillQueue, submitThirdPartySkill, decidePlatformSkill, getPlatformTenantExtensions,
 } from "@/app/actions/skill-marketplace"
 import { getPlatformSkillExamples } from "@/app/actions/platform-skill-examples"
-import type { CustomManagerDeclaration, SkillDeclaration } from "@/lib/kernel/skill-registry"
-import type { ExtensionListingRow, SkillDecision } from "@/lib/kernel/skill-marketplace"
+import type { CustomManagerDeclaration, ExtensionKind, SkillDeclaration, StrategyExtensionDeclaration, WebhookAppDeclaration } from "@/lib/kernel/skill-registry"
+import type { ExtensionDeclaration, ExtensionListingRow, SkillDecision } from "@/lib/kernel/skill-marketplace"
+import { PLATFORM_STRATEGY_LIBRARY } from "@/lib/kernel/strategy-library"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 
 const TEMPLATE: SkillDeclaration = {
@@ -50,6 +51,23 @@ const CUSTOM_MANAGER_TEMPLATE: CustomManagerDeclaration = {
   escalation_owner: "campaign_orchestrator", evaluation_suite: "extension_eval:custom_manager_contract_v1",
 }
 
+// Wave 138D — the three kinds whose contract lives in another survivor (validated against it server-side).
+// Seeded from a platform strategy whose every step names a registered capability (a gap step is not composable).
+const STRATEGY_SEED = PLATFORM_STRATEGY_LIBRARY.find((s) => s.steps.every((st) => st.capabilities.length > 0 && !st.gap)) ?? PLATFORM_STRATEGY_LIBRARY[0]
+const STRATEGY_TEMPLATE: StrategyExtensionDeclaration = {
+  name: "my_strategy", version: 1, evaluation_suite: "extension_eval:strategy_contract_v1",
+  strategy: { ...STRATEGY_SEED, key: "my_strategy", version: 1, tier: "tenant", title: "My strategy" },
+}
+const WEBHOOK_APP_TEMPLATE: WebhookAppDeclaration = {
+  name: "my_webhook_app", version: 1, purpose: "Notify our CRM when a lead converts to a contact.",
+  events: ["lead.converted"], payload_fields: { "lead.converted": ["contactId"] }, endpoint_url: "https://hooks.example.com/vip",
+  evaluation_suite: "extension_eval:webhook_app_contract_v1",
+}
+// A provider adapter is a declaration for a provider the route table ALREADY routes (platform staff only).
+const PROVIDER_ADAPTER_TEMPLATE = { name: "<routed provider>", version: 1, adapter: { provider: "<routed provider>", "…": "paste the adapter declaration (lib/kernel/provider-adapters.ts ProviderAdapter)" }, evaluation_suite: "extension_eval:provider_adapter_contract_v1" }
+const TEMPLATES: Record<ExtensionKind, unknown> = { skill: TEMPLATE, custom_manager: CUSTOM_MANAGER_TEMPLATE, strategy: STRATEGY_TEMPLATE, webhook_app: WEBHOOK_APP_TEMPLATE, provider_adapter: PROVIDER_ADAPTER_TEMPLATE }
+const KILL_SWITCH: readonly SkillDecision[] = ["suspend", "disable"]
+
 // The ONE extension lifecycle (lib/kernel/skill-registry.ts EXTENSION_TRANSITIONS) as the buttons each status offers.
 function nextDecisions(l: ExtensionListingRow): SkillDecision[] {
   if (l.status === "validated") return ["approve", "disable"]
@@ -62,11 +80,15 @@ function nextDecisions(l: ExtensionListingRow): SkillDecision[] {
 
 function summary(l: ExtensionListingRow): { line: string; purpose: string } {
   const d = l.declaration as Partial<SkillDeclaration & CustomManagerDeclaration>
+  if (l.extension_kind === "strategy") { const s = (l.declaration as StrategyExtensionDeclaration).strategy; return { line: `owner ${s?.ownerManager} · ${(s?.steps ?? []).length} steps · ${s?.missionType}`, purpose: s?.objective ?? "" } }
+  if (l.extension_kind === "webhook_app") { const w = l.declaration as WebhookAppDeclaration; return { line: `${(w.events ?? []).join(", ")}`, purpose: w.purpose ?? "" } }
+  if (l.extension_kind === "provider_adapter") return { line: "provider adapter (platform-controlled routing)", purpose: "" }
   if (l.extension_kind === "custom_manager") return { line: `escalates to ${d.escalation_owner} · ceiling rung ${d.authority_ceiling} · ${(d.allowed_capabilities ?? []).length} capabilities`, purpose: d.responsibility ?? "" }
   return { line: `${d.manager_owner} · ${d.risk_class} · rung ${d.authority_requirement}`, purpose: d.purpose ?? "" }
 }
 
-function ListingRow({ l, onDecide, busy }: { l: ExtensionListingRow; onDecide?: (id: string, d: SkillDecision) => void; busy: boolean }) {
+function ListingRow({ l, onDecide, busy, only }: { l: ExtensionListingRow; onDecide?: (id: string, d: SkillDecision) => void; busy: boolean; only?: readonly SkillDecision[] }) {
+  const decisions = nextDecisions(l).filter((d) => !only || only.includes(d))
   const failed = l.evaluation_evidence?.checks.filter((c) => !c.ok) ?? []
   const s = summary(l)
   return (
@@ -82,9 +104,9 @@ function ListingRow({ l, onDecide, busy }: { l: ExtensionListingRow; onDecide?: 
       {failed.length > 0 && <p className="text-destructive">Evaluation failed: {failed.map((c) => `${c.name}${c.detail ? ` (${c.detail})` : ""}`).join("; ")}</p>}
       {l.suspended_reason && l.status === "suspended" && <p className="text-muted-foreground">Suspended: {l.suspended_reason}</p>}
       {l.disabled_reason && <p className="text-muted-foreground">Disabled: {l.disabled_reason}</p>}
-      {onDecide && nextDecisions(l).length > 0 && (
+      {onDecide && decisions.length > 0 && (
         <div className="flex gap-2">
-          {nextDecisions(l).map((d) => <Button key={d} size="sm" variant={d === "disable" || d === "suspend" ? "destructive" : "default"} disabled={busy} onClick={() => onDecide(l.id, d)}>{d}</Button>)}
+          {decisions.map((d) => <Button key={d} size="sm" variant={d === "disable" || d === "suspend" ? "destructive" : "default"} disabled={busy} onClick={() => onDecide(l.id, d)}>{d}</Button>)}
         </div>
       )}
     </div>
@@ -96,7 +118,9 @@ type PlatformSkillExampleOption = Extract<Awaited<ReturnType<typeof getPlatformS
 export function SkillMarketplacePanel({ mode }: { mode: "tenant" | "platform" }) {
   const [builtin, setBuiltin] = useState<readonly SkillDeclaration[]>([])
   const [listings, setListings] = useState<ExtensionListingRow[]>([])
-  const [kind, setKind] = useState<"skill" | "custom_manager">("skill")
+  // Wave 138D: every tenant-authored listing, for the platform kill switch (suspend / disable only).
+  const [tenantListings, setTenantListings] = useState<ExtensionListingRow[]>([])
+  const [kind, setKind] = useState<ExtensionKind>("skill")
   const [canManage, setCanManage] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState(JSON.stringify(TEMPLATE, null, 2))
@@ -113,6 +137,8 @@ export function SkillMarketplacePanel({ mode }: { mode: "tenant" | "platform" })
       if (mode === "platform") {
         const q = await getPlatformSkillQueue()
         setListings(q.listings); setError(q.ok ? null : q.error ?? "Could not read the queue."); setCanManage(q.ok)
+        const tq = await getPlatformTenantExtensions()
+        setTenantListings(tq.listings); if (!tq.ok) setError(tq.error ?? "Could not read tenant extensions.")
         const ex = await getPlatformSkillExamples()
         if (ex.ok) { setExamples(ex.examples); setRejectedExamples(ex.rejected) }
       } else {
@@ -124,7 +150,7 @@ export function SkillMarketplacePanel({ mode }: { mode: "tenant" | "platform" })
   useEffect(() => { load() }, [load])
 
   const submit = () => start(async () => {
-    let decl: SkillDeclaration | CustomManagerDeclaration
+    let decl: ExtensionDeclaration
     try { decl = JSON.parse(draft) } catch { toast.error("The declaration is not valid JSON."); return }
     const r = mode === "platform" ? await submitThirdPartySkill(decl, publisherName, publisherKind, kind) : await submitTenantSkill(decl, kind)
     if (r.ok) toast.success(`Submitted — ${r.listing.status}`)
@@ -177,6 +203,14 @@ export function SkillMarketplacePanel({ mode }: { mode: "tenant" | "platform" })
           {listings.length === 0 ? <p className="text-sm text-muted-foreground">No marketplace skills yet.</p> :
             listings.map((l) => <ListingRow key={l.id} l={l} busy={busy} onDecide={canManage && (mode === "platform" || l.publisher === "tenant") ? decide : undefined} />)}
         </section>
+        {mode === "platform" && canManage && (
+          <section className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold">Tenant extensions — platform kill switch ({tenantListings.length})</h3>
+            <p className="text-xs text-muted-foreground">Tenant-authored extensions are decided by their own tenant admin. Platform staff may only suspend or disable one (incident response); the reason and the move are ledgered on that tenant, and the declaration, digest and evaluation evidence are kept.</p>
+            {tenantListings.length === 0 ? <p className="text-sm text-muted-foreground">No tenant extensions.</p> :
+              tenantListings.map((l) => <ListingRow key={l.id} l={l} busy={busy} onDecide={decide} only={KILL_SWITCH} />)}
+          </section>
+        )}
         {canManage && (
           <section className="flex flex-col gap-2">
             <h3 className="text-sm font-semibold">{mode === "platform" ? "Take in a third-party skill" : "Author a skill for your brokerage"}</h3>
@@ -198,11 +232,14 @@ export function SkillMarketplacePanel({ mode }: { mode: "tenant" | "platform" })
             )}
             {mode === "platform" && <Input placeholder="Publisher name" value={publisherName} onChange={(e) => { setPublisherName(e.target.value); setPublisherKind("third_party") }} />}
             <select className="w-fit rounded border px-2 py-1 text-sm" value={kind} onChange={(e) => {
-              const k = e.target.value === "custom_manager" ? "custom_manager" : "skill"
-              setKind(k); setDraft(JSON.stringify(k === "custom_manager" ? CUSTOM_MANAGER_TEMPLATE : TEMPLATE, null, 2))
+              const k = (Object.keys(TEMPLATES) as ExtensionKind[]).find((x) => x === e.target.value) ?? "skill"
+              setKind(k); setDraft(JSON.stringify(TEMPLATES[k], null, 2))
             }}>
               <option value="skill">Skill</option>
               <option value="custom_manager">Custom manager (a contract under an existing manager)</option>
+              <option value="strategy">Strategy (composed of registered capabilities)</option>
+              <option value="webhook_app">Webhook app (approved events only)</option>
+              {mode === "platform" && <option value="provider_adapter">Provider adapter (a routed provider)</option>}
             </select>
             <Textarea rows={12} className="font-mono text-xs" value={draft} onChange={(e) => setDraft(e.target.value)} />
             <Button disabled={busy} onClick={submit}>Submit for evaluation</Button>

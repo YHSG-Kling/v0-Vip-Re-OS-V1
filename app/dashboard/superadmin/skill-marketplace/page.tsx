@@ -2,7 +2,8 @@
 // The platform's approval queue for THIRD-PARTY (and platform) skills: intake → the evaluation suite runs at
 // once → platform staff approve → enable → suspend / deprecate → disable (the ONE extension lifecycle, wave 137
 // lane 137D; staff hold the kill switch on every listing). Tenant-authored extensions are decided by their own tenant
-// admin (Settings → Assistant), never here. The page gates on platform staff; every door re-gates server-side
+// admin (Settings → Assistant); here staff may only SUSPEND / DISABLE one (wave 138D kill-switch queue — the move is
+// ledgered on that tenant and the declaration, digest and evaluation evidence are kept). The page gates on platform staff; every door re-gates server-side
 // (app/actions/skill-marketplace.ts).
 import { redirect } from "next/navigation"
 import { requirePlatformStaff } from "@/lib/auth/platform-guard"
@@ -19,7 +20,8 @@ export default async function SkillMarketplacePage() {
         <h1 className="text-2xl font-semibold">Skill marketplace</h1>
         <p className="text-sm text-muted-foreground">
           Third-party skills are data declarations composed of registered capabilities. They run only through the kernel
-          gate — tenant isolation, entitlement, authority, metering and the action ledger — and only after passing evaluation.
+          gate — tenant isolation, entitlement, authority, metering and the action ledger — and only after passing evaluation. Platform staff hold the kill switch (suspend / disable) on every listing,
+          tenant-authored ones included.
         </p>
       </div>
       <SkillMarketplacePanel mode="platform" />

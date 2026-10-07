@@ -641,6 +641,12 @@ async function runTool(
     case "convert_lead":
     case "reassign_contact":
     case "broadcast_announcement":
+    // Wave 138E — the whole team, 24/7 (lib/voice-admin/assistant-reach.ts): manager_status ("what is the
+    // ads manager working on, and why"), broker_objective (the Missions card's kernel path) and run_skill
+    // (runSkill — a request a human accepts). Registry authority 'admin' AND each backend re-checks it.
+    case "manager_status":
+    case "broker_objective":
+    case "run_skill":
     case "find_properties": {
       const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
       return dispatchTeamCommand(

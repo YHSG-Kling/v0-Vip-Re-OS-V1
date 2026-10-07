@@ -85,7 +85,8 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
     envVars: ["BATCHDATA_API_KEY"],
   },
   {
-    provider: "peoplesdata",
+    // Wave 138 (138A): ONE spelling — was "peoplesdata" here and "peopledata" everywhere else (§6).
+    provider: "peopledata",
     models: ["platform_metered"],
     why: "Contact/person enrichment for the lead pipeline (PeopleData/PDL rail) — platform key, enrichment lands via the merge/column-map so tenant records stay canonical. Same NON-FCRA legal line as all enrichment data.",
     envVars: ["PEOPLEDATA_API_KEY", "PDL_API_KEY"],

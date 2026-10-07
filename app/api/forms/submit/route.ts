@@ -5,6 +5,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
 import { captureContact } from '@/lib/contact-pipeline/contact-capture'
 import { KernelEvent } from '@/lib/kernel/events'
 import { emitKernelEvent } from '@/lib/kernel/emit'
@@ -13,6 +14,14 @@ import { persistContactConsent } from '@/lib/kernel/compliance/require-contact-c
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1): an unauthenticated
+  // contact-creating write. Same keep-one limiter + idiom as
+  // app/api/track/visitor/route.ts (lib/security/public-rate-limit.ts).
+  const rateIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown"
+  const rateVerdict = checkPublicRateLimit("forms-submit", rateIp, { limit: 20, windowMs: 10 * 60_000 })
+  if (!rateVerdict.allowed) {
+    return NextResponse.json({ error: "Too many submissions from this connection — try again shortly." }, { status: 429, headers: { "Retry-After": String(rateVerdict.retryAfterSeconds) } })
+  }
   try {
     const body = await req.json() as { slug: string; data: Record<string, unknown>; tcpaConsent?: boolean; tcpaConsentText?: string }
     const { slug, data, tcpaConsent, tcpaConsentText } = body

@@ -19,6 +19,7 @@
 import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { checkPublicRateLimit } from "@/lib/security/public-rate-limit"
 import { captureContact, resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
@@ -35,6 +36,13 @@ interface Body {
 }
 
 export async function POST(request: NextRequest) {
+  // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1): unauthenticated
+  // contact capture from a third-party page. Idiom: app/api/track/visitor/route.ts.
+  const rateIp = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || "unknown"
+  const rateVerdict = checkPublicRateLimit("embed-capture", rateIp, { limit: 20, windowMs: 10 * 60_000 })
+  if (!rateVerdict.allowed) {
+    return NextResponse.json({ error: "Too many submissions from this connection — try again shortly." }, { status: 429, headers: { "Retry-After": String(rateVerdict.retryAfterSeconds) } })
+  }
   const body = await request.json().catch(() => null) as Body | null
   if (!body?.publicId || !body?.sessionId) {
     return NextResponse.json({ error: "publicId + sessionId required" }, { status: 400 })

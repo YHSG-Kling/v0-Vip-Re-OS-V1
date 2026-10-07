@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 455 tables, 817 columns.
+ * MEASURED AT GENERATION: 455 tables, 820 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-07
  * source: public.live_check_constraints_json()
- * body-sha256: 35a9774e81eb4852fca51ee76291a1cd4b579ddaebcbee05df8422de00d0b8cf
+ * body-sha256: bb1f0b7f6d5cb5dc7c4c85a6d114197335be3d44479f31305f173fba2524319f
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -764,9 +764,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     methodology: ["ai_cma", "attom", "housecanary", "manual", "sqft_regional_average"],
   },
   improvement_proposals: {
-    proposer: ["copy_learning", "experimentation", "human", "media_intelligence", "outcome_autopsy", "predictor_learning", "prompt_calibrator", "resource_allocation", "strategy_learning", "team_optimization"],
+    proposer: ["copy_learning", "experimentation", "human", "law_rule_healing", "media_intelligence", "outcome_autopsy", "predictor_learning", "prompt_calibrator", "resource_allocation", "strategy_learning", "team_optimization"],
     status: ["APPROVED", "EVALUATED", "PROMOTED", "PROPOSED", "REJECTED", "ROLLED_BACK"],
-    subject_kind: ["allocation", "experiment", "policy", "prompt", "strategy", "threshold", "variant"],
+    subject_kind: ["allocation", "experiment", "law_rule", "policy", "prompt", "strategy", "threshold", "variant"],
   },
   inbound_call_classifications: {
     classification: ["business_general", "cooperating_agent", "existing_contact", "real_estate_buyer", "real_estate_investor", "real_estate_seller", "unknown", "vendor"],
@@ -942,7 +942,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     event_kind: ["evidence", "refused", "requested", "review", "transition"],
   },
   manager_delegations: {
-    requested_capability: ["accounting_sync", "ad_campaign_launch", "ads_performance_report", "appointment_schedule", "blog_publish", "campaign_performance_report", "cma_generate", "connectivity_scan", "contact_get", "content_repurpose", "direct_mail_send", "education_assign", "education_path_get", "gift_send", "handwritten_note_send", "inbox_reply_send", "isa_qualify", "lead_create", "lead_search", "lender_preapproval_handoff", "listing_appointment_prep", "listing_demand_report", "listing_publish", "marketing_campaign_create", "newsletter_send", "payment_transfer", "podcast_publish", "portal_milestones_get", "recruit_outreach", "report_export", "report_generate", "review_request_send", "social_post_publish", "transaction_advance", "video_distribute"],
+    requested_capability: ["accounting_sync", "ad_campaign_launch", "ads_performance_report", "agent_coaching_assign", "appointment_schedule", "blog_publish", "campaign_performance_report", "cma_generate", "compliance_review", "connectivity_scan", "contact_get", "content_repurpose", "direct_mail_send", "education_assign", "education_path_get", "gift_send", "handwritten_note_send", "inbox_reply_send", "isa_qualify", "lead_create", "lead_search", "lender_preapproval_handoff", "listing_appointment_prep", "listing_demand_report", "listing_publish", "marketing_campaign_create", "newsletter_send", "payment_transfer", "podcast_publish", "portal_milestones_get", "recruit_outreach", "report_export", "report_generate", "review_request_send", "social_post_publish", "transaction_advance", "video_distribute"],
     status: ["ACCEPTED", "CANCELLED", "DISSENTED", "ESCALATED", "REJECTED", "REQUESTED", "RETURNED", "WORKING"],
   },
   manager_signals: {
@@ -1474,6 +1474,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     rate_basis: ["pct_of_comp_price", "per_unit_dollars"],
   },
   state_protected_classes: {
+    enforcement_mode: ["enforce", "warn"],
+    provenance: ["compliance_officer", "law_rule_healing", "seed"],
+    rule_scope: ["advertising", "agency", "communications", "disclosures", "licensing", "privacy", "wire_fraud"],
     severity_default: ["critical", "high", "low", "medium"],
   },
   strategy_activations: {

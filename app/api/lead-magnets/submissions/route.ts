@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { captureFormSubmission, trackMagnetEvent, type CaptureFormSubmissionInput } from "@/lib/kernel/lead-magnets"
 import { LEAD_MAGNET_EMBED_CORS_HEADERS } from "@/lib/lead-magnets/embed-snippet"
+import { checkPublicRateLimit } from "@/lib/security/public-rate-limit"
 
 // THE EMBED IS THE OTHER HALF (lane 85E, census 6d): the lead-magnet library's
 // "Embed on your site" control (app/components/features/lead-magnets/
@@ -36,6 +37,14 @@ export async function POST(req: NextRequest) {
 }
 
 async function handleSubmission(req: NextRequest): Promise<NextResponse> {
+  // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1): anonymous intake.
+  // Inside handleSubmission so the 429 still carries the CORS headers.
+  // Idiom: app/api/track/visitor/route.ts.
+  const rateIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown"
+  const rateVerdict = checkPublicRateLimit("lead-magnet-submit", rateIp, { limit: 20, windowMs: 10 * 60_000 })
+  if (!rateVerdict.allowed) {
+    return NextResponse.json({ success: false, error: "Too many submissions from this connection — try again shortly." }, { status: 429, headers: { "Retry-After": String(rateVerdict.retryAfterSeconds) } })
+  }
   try {
     const body: CaptureFormSubmissionInput = await req.json()
 

@@ -47,7 +47,11 @@ import { classifyProposalSurface, loadSelfOptimizationPolicy, OPTIMIZATION_CLASS
 // `experimentation`. PROPOSED → EVALUATED (historical replay + policy/risk + budget) → APPROVED (= RUNNING:
 // a human, or the system for a class the tenant made autonomous) → PROMOTED (the winning arm is ADOPTED) /
 // REJECTED (control held, no lift, or too little sample at the end).
-export const PROPOSAL_SUBJECT_KINDS = ["policy", "prompt", "variant", "threshold", "allocation", "strategy", "experiment"] as const
+// Wave 138 (138C, m744 — additive widening, superset of m732): `law_rule` = a drafted federal / state law rule the
+// LAW-RULE HEALING loop (lib/kernel/law-rule-healing.ts) could NOT auto-enable — it loosens a rule, touches money, or
+// is ambiguous — proposer `law_rule_healing`. Owner-level (authority 6): the compliance officer (a human on the
+// tenant admin roster) decides; promotion writes the rule through applyLawRuleProposal.
+export const PROPOSAL_SUBJECT_KINDS = ["policy", "prompt", "variant", "threshold", "allocation", "strategy", "experiment", "law_rule"] as const
 export type ProposalSubjectKind = (typeof PROPOSAL_SUBJECT_KINDS)[number]
 
 export const PROPOSAL_STATUSES = ["PROPOSED", "EVALUATED", "APPROVED", "REJECTED", "PROMOTED", "ROLLED_BACK"] as const
@@ -57,7 +61,7 @@ export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number]
 // proposal's insert is refused by the live CHECK and learnFromPerformance reports it, never silently).
 // team_optimization (wave 108G, m732 — additive superset of m726): a SELF-OPTIMIZING MANAGER TEAM's co-proposal
 // (lib/kernel/self-optimization.ts runTeamOptimizationCycle); every such row carries proposed_change.optimization.
-export const PROPOSERS = ["copy_learning", "predictor_learning", "prompt_calibrator", "outcome_autopsy", "human", "media_intelligence", "resource_allocation", "strategy_learning", "team_optimization", "experimentation"] as const
+export const PROPOSERS = ["copy_learning", "predictor_learning", "prompt_calibrator", "outcome_autopsy", "human", "media_intelligence", "resource_allocation", "strategy_learning", "team_optimization", "experimentation", "law_rule_healing"] as const
 // experimentation (wave 108F, m731): a manager-proposed EXPERIMENT (lib/kernel/autonomy-budgets.ts / experiments pipeline).
 export type Proposer = (typeof PROPOSERS)[number]
 
@@ -90,6 +94,8 @@ export const PROPOSAL_AUTHORITY: Readonly<Record<ProposalSubjectKind, AuthorityL
   // 108F: an experiment deploys / adopts at rung 4 ONLY for a class the tenant listed in
   // experiments.autonomous_classes (the human-set grant); every other class waits for a human.
   experiment: 4,
+  // 138C: compliance boundaries are never relaxed (or newly enforced) without a human — always the compliance officer.
+  law_rule: OWNER_AUTHORITY_LEVEL,
 })
 
 export type EvaluationVerdict = "pass" | "fail" | "inconclusive"
@@ -294,6 +300,15 @@ export async function evaluateImprovement(
       // Wave 108F: the PRE-RUN gate — historical replay of the cohort + policy/risk + budget, deterministic.
       const { evaluateExperimentProposal } = await import("@/lib/kernel/experiment-pipeline")
       return evaluateExperimentProposal(svc, row, { now: opts.now })
+    }
+    case "law_rule": {
+      // 138C: deterministic re-check of the draft's evidence — every citation must still be a PRIMARY source; the
+      // legal judgement itself is the compliance officer's (inconclusive → a human decides). Never a model.
+      const { isPrimarySourceUrl } = await import("@/lib/compliance-rules/law-rule-registry")
+      const draft = (change.draft ?? null) as { citations?: Array<{ url?: string }>; change?: string } | null
+      const cites = Array.isArray(draft?.citations) ? draft!.citations! : []
+      if (!draft || cites.length === 0 || !cites.every((c) => isPrimarySourceUrl(c?.url ?? null))) return { evaluator: "none", verdict: "fail", score: null, why: "the law-rule draft is uncited or cites a non-primary source — refused", detail: { citations: cites } }
+      return { evaluator: "none", verdict: "inconclusive", score: null, why: `a ${String(change.direction ?? "law-rule")} change (${String(draft.change)}) — the compliance officer decides: ${String(change.why ?? "")}`, detail: { citations: cites, direction: change.direction ?? null } }
     }
     case "prompt":
     default:
@@ -616,6 +631,12 @@ async function applyChange(svc: Svc, row: ImprovementProposalRow, actor: PolicyA
       if (!w.ok) throw new Error(w.error)
       const v = w.policyVersions.find((p) => p.key === "experiments")
       return { writer: "mergeBrokerageSettings:experiments.adopted", previous, policyVersionRef: v?.version ? formatPolicyRef("experiments", v.version) : null }
+    }
+    case "law_rule": {
+      // 138C: the APPROVED law rule lands on its survivor (state_protected_classes) through the healing module's writer.
+      const { applyLawRuleProposal } = await import("@/lib/kernel/law-rule-healing")
+      const w = await applyLawRuleProposal(svc, row.brokerage_id, change.draft as Parameters<typeof applyLawRuleProposal>[2], direction)
+      return { writer: w.writer, previous: w.previous, policyVersionRef: null }
     }
     case "strategy":
       // 107F: the approval IS the review — which strategy runs is the strategy engine's activation (107E), never this kernel.

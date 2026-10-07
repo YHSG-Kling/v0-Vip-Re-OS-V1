@@ -346,6 +346,24 @@ async function main() {
     const seedOnly = Object.fromEntries(Object.entries(STRATEGY_DOMAINS).filter(([k]) => (OWNER_SEED_STRATEGY_KEYS as readonly string[]).includes(k)))
     const seedHoles = OS_DOMAINS.filter((d) => census(seedOnly, []).hasOwnProperty(d) && census(seedOnly, [])[d].strategies.length === 0)
     check("G4 (POSITIVE CONTROL) the census recognises the defect it was written for: the owner's eight seeds alone, with no skill examples, leave domains uncovered", seedHoles.length > 0 && OS_DOMAINS.every((d) => census(seedOnly, [])[d].skills === 0), seedHoles.join(", "))
+    // Wave 138E — the BREADTH FLOOR is two, not one: a domain with a single strategy or a single example has no
+    // alternative when that one is ineligible for a subject. The floor is the RULE; the counts are derived.
+    const FLOOR = 2
+    const belowFloor = (cc: ReturnType<typeof census>) => OS_DOMAINS.filter((d) => cc[d].strategies.length < FLOOR || cc[d].skills < FLOOR)
+    check(`G3b breadth floor: all ${OS_DOMAINS.length} OS domains carry ≥ ${FLOOR} platform strategies AND ≥ ${FLOOR} platform skill examples`, belowFloor(c).length === 0,
+      belowFloor(c).map((d) => `${d}: ${c[d].strategies.length}/${c[d].skills}`).join(", "))
+    {
+      // POSITIVE CONTROL: drop every strategy tag but one from the first domain that has two, and every example
+      // but one from the first domain that has two — the floor must flag exactly those domains.
+      const dS = OS_DOMAINS.find((d) => c[d].strategies.length >= FLOOR)!
+      const keep = c[dS].strategies[0]
+      const thinTags = Object.fromEntries(Object.entries(STRATEGY_DOMAINS).map(([k, ds]) => [k, k === keep ? ds : ds.filter((d) => d !== dS)]))
+      const dE = OS_DOMAINS.find((d) => c[d].skills >= FLOOR)!
+      let kept = false
+      const thinExamples = PLATFORM_SKILL_EXAMPLES.map((e) => (e.domains.includes(dE) ? (kept ? { domains: e.domains.filter((d) => d !== dE) } : ((kept = true), e)) : e))
+      const flagged = belowFloor(census(thinTags, thinExamples))
+      check("G4b (POSITIVE CONTROL) the ≥2 floor recognises a thinned domain — one strategy left, one example left — and names it", flagged.includes(dS) && flagged.includes(dE), `flagged=${flagged.join(",")} expected ${dS} + ${dE}`)
+    }
     check("G5 the library edition is bumped for the breadth release (≥ 3) and no published key changed version under it (the eight seeds keep their versions)", PLATFORM_STRATEGY_LIBRARY_EDITION >= 3 && ["expired_listing", "fsbo", "seller_equity", "sphere_reactivation", "past_client_referral"].every((k) => platformStrategy(k)!.version === 1) && ["first_time_buyer", "listing_launch", "recruiting"].every((k) => platformStrategy(k)!.version === 2))
     check("G6 every published (key, version) is unique — a change is a NEW version, never an edited one", new Set(PLATFORM_STRATEGY_LIBRARY.map((s) => `${s.key}@${s.version}`)).size === PLATFORM_STRATEGY_LIBRARY.length)
     check("G7 no strategy hard-codes a market (marketSuitability is a vocabulary, never a city / state / territory name)", PLATFORM_STRATEGY_LIBRARY.every((s) => s.marketSuitability.every((m) => /^(any|balanced|buyer_market|sellers_market|appreciating|affordable|growth)$/.test(m))))

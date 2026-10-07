@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-07
  * source: public.live_schema_json()
- * body-sha256: 83afa909f488cd71b0b80b33df6b02eda5864acf3fd99895c9a0902679ec5b46
+ * body-sha256: e5cc49c65bb8d85d6861c2fecde665218e6af13524b394945f30f43c9ab2d0cc
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -625,7 +625,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   sphere_engagement_scores: ["agent_id", "brokerage_id", "calculated_at", "contact_id", "created_at", "id", "last_interaction", "referrals_given", "score", "touchpoints_count"],
   state_appraiser_adjustment_rates: ["adjustment_type", "applicable_property_types", "created_at", "effective_year", "id", "notes", "rate_basis", "source", "state", "typical_rate_high", "typical_rate_low", "typical_rate_mid", "unit", "updated_at"],
   state_compliance_requirements: ["applies_to_closing_type", "created_at", "description", "document_type", "federal_law_reference", "id", "is_mandatory", "rate_value", "requirement_category", "requirement_name", "state", "timeline_days", "transaction_type", "updated_at"],
-  state_protected_classes: ["created_at", "id", "is_active", "patterns", "protected_class", "regulation_reference", "severity_default", "state_code"],
+  state_protected_classes: ["created_at", "effective_date", "enforcement_mode", "evidence", "id", "is_active", "last_verified_at", "patterns", "protected_class", "provenance", "regulation_reference", "rule_scope", "severity_default", "source_citations", "state_code"],
   storage_orphaned_objects: ["brokerage_id", "bucket", "cleaned_at", "cleanup_attempts", "cleanup_error", "detail", "detected_at", "id", "last_attempt_at", "object_path", "reason"],
   strategy_activations: ["activated_by", "adaptation", "adapted_from_digest", "brokerage_id", "created_at", "deactivated_at", "id", "library_id", "status", "strategy_key", "tier", "updated_at", "version"],
   strategy_library: ["brokerage_id", "created_at", "definition", "definition_digest", "id", "published_at", "retired_at", "strategy_key", "tier", "title", "version"],

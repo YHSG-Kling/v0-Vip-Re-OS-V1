@@ -8,6 +8,7 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { createMailCampaign } from "@/app/actions/direct-mail"
+import { DIRECT_MAIL_PIECE_COST_USD } from "@/lib/vendor-governance/cost-normalizer"
 
 /**
  * TENANT + IDENTITY GUARD for every action in this file.
@@ -533,9 +534,11 @@ Return JSON:
     }
 
     // Estimate mailing costs
+    // Wave 138 (138A): postcard / letter read THE ONE Lob price (cost-normalizer.ts) — they were a
+    // fourth spelling ($0.75 / $1.25). The other formats are not Lob piece types the dispatcher books.
     const costPerPiece: Record<string, number> = {
-      postcard: 0.75,
-      letter: 1.25,
+      postcard: DIRECT_MAIL_PIECE_COST_USD.postcard,
+      letter: DIRECT_MAIL_PIECE_COST_USD.letter,
       flyer: 0.95,
       door_hanger: 0.65,
       market_report: 2.50,

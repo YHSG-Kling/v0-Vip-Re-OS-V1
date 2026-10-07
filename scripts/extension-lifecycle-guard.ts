@@ -15,6 +15,11 @@
  *      platform-only kinds refused; entitlement refused → nothing written; unreadable enablement fails closed
  *   F. run-path census — every capability call sits inside withActionLedger; no raw DB; one writer of the table
  *   G. registration + one vocabulary (migration CHECKs = the code's lists; rule, not waypoint)
+ *   H. (wave 138D) the strategy / provider_adapter / webhook_app contracts — each validated AGAINST its own survivor
+ *      (good + bad per refusal), each reaches ENABLED through the one lifecycle; a tenant cannot author an adapter
+ *   I. (138D) memory_access ENFORCED by the context compiler — an undeclared slice's reader is never called
+ *   J. (138D) a custom-manager run receives only its declared slices and BOOKS its cost on its ledger row
+ *   K. (138D) the platform kill-switch queue for TENANT listings — staff suspend works, evidence kept, wired
  */
 import { readFileSync, readdirSync } from "node:fs"
 import { randomUUID } from "node:crypto"
@@ -32,6 +37,11 @@ import {
 import { CAPABILITY_MANAGER } from "../lib/agentic-os/capability-ownership"
 import { MANAGERS, MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 import { TENANT_POLICY_SETTINGS_KEYS } from "../lib/kernel/tenant-policy"
+import { EXTENSION_CONTRACT_EVALUATORS, validateProviderAdapterExtension, validateStrategyExtension, validateWebhookAppDeclaration } from "../lib/kernel/skill-registry"
+import { listPlatformSkillListings } from "../lib/kernel/skill-marketplace"
+import { compileManagerContext, CONTEXT_SLICES_BY_MEMORY_ACCESS, type MissionContextDeps } from "../lib/kernel/mission-context"
+import { PLATFORM_STRATEGY_LIBRARY, strategyGaps } from "../lib/kernel/strategy-library"
+import { deriveProviderAdapters, validateProviderAdapter } from "../lib/kernel/provider-adapters"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -254,12 +264,13 @@ async function main() {
     check("D9 DISABLED cannot execute (skill + custom manager) and is terminal", dis.ok && disCm.ok && !(await runSk()).ok && !(await runCm()).ok && !(await decideSkillListing({ listingId: sk.id, decision: "resume", actor: ADMIN1 }, c, s.deps)).ok)
     check("D10 the kill switch KEEPS the evidence: rows still exist; declaration, digest, evaluation evidence, approver unchanged", c.tables.skill_marketplace_listings.length === 2 && frozen(sk.id) === evidenceBefore.sk && frozen(cm.id) === evidenceBefore.cm)
     check("D11 every kill-switch move was ledgered (suspend, resume, disable) — the ledger only grew", s.ledger.length > ledgerBefore && ["extension.listing.suspend", "extension.listing.resume", "extension.listing.disable"].every((x) => s.ledger.some((l) => l.action === x)))
-    // kinds without a registered contract fail closed
+    // every kind is judged by its OWN contract (wave 138D): a shell declaration is refused at submit, never drafted
     const st = await submitSkillListing({ kind: "strategy", publisher: "third_party", brokerageId: null, submittedBy: "u-staff", publisherName: "Acme", declaration: { name: "acme_strategy", version: 1, evaluation_suite: "skill_eval:contract_v1" } as any }, c, s.deps)
-    const stEv = st.ok ? await evaluateSkillListing({ listingId: st.listing.id, actorBrokerageId: null }, c, s.deps) : null
-    check("D12 a kind whose contract lives in another survivor (strategy) can be DRAFTED but never validated (no evaluator) — fails closed", st.ok && st.listing.status === "draft" && !!stEv && !stEv.ok && /^no_evaluation_suite:strategy/.test(stEv.reason))
+    check("D12 a strategy shell (no StrategyDefinition, a skill suite) is refused at submit by the strategy contract — nothing inserted", !st.ok && st.reason === "declaration_invalid" && (st.errors ?? []).includes("strategy_missing") && c.tables.skill_marketplace_listings.length === 2, JSON.stringify(st))
     const checks = extensionEnablementChecks({ extension_kind: "webhook_app", declaration: {}, evaluation_evidence: { suite: "x", passed: true, checks: [] } }, true)
-    check("D13 enablement checks for an unregistered kind refuse contract + risk + dependencies even with passing evidence", ["contract_valid", "risk_classified", "dependencies_available"].every((n) => checks.find((x) => x.name === n)?.ok === false))
+    check("D13 enablement checks for an empty webhook_app refuse contract + risk + dependencies even with passing evidence", ["contract_valid", "risk_classified", "dependencies_available"].every((n) => checks.find((x) => x.name === n)?.ok === false))
+    const bogus = extensionEnablementChecks({ extension_kind: "plugin" as any, declaration: {}, evaluation_evidence: { suite: "x", passed: true, checks: [] } }, true)
+    check("D13b an UNKNOWN kind still fails closed (contract_validator_not_registered)", bogus.every((x) => x.name === "evaluation_passed" || x.name === "digest_intact" || !x.ok) && /contract_validator_not_registered/.test(bogus.find((x) => x.name === "contract_valid")?.detail ?? ""))
     const enChecks = extensionEnablementChecks({ extension_kind: "skill", declaration: legacy(), evaluation_evidence: { suite: "x", passed: false, checks: [] } }, true)
     check("D14 enablement requires the evaluation pass (contract-valid but failed evidence → evaluation_passed false)", enChecks.find((x) => x.name === "evaluation_passed")?.ok === false && enChecks.find((x) => x.name === "contract_valid")?.ok === true)
   }
@@ -347,11 +358,141 @@ async function main() {
     check("G8 the retired m727 names live only in tombstones (stripped code never uses them)", staleNames.length === 0, staleNames.join(","))
   }
 
+
+  console.log("\nH. the three survivor-owned contracts (strategy · provider_adapter · webhook_app)")
+  {
+    const lib = PLATFORM_STRATEGY_LIBRARY.find((x) => strategyGaps(x).length === 0 && x.steps.every((st) => st.capabilities.length > 0))!
+    const strat = (over: Record<string, unknown> = {}, env: Record<string, unknown> = {}) => ({ name: "t1_sphere_plan", version: 1, evaluation_suite: "extension_eval:strategy_contract_v1", strategy: { ...lib, key: "t1_sphere_plan", version: 1, tier: "tenant", ...over }, ...env })
+    const sErr = (d: unknown) => validateStrategyExtension(d).errors
+    check(`H1 (positive control) a strategy composed of registered capabilities (from ${lib.key}) validates`, validateStrategyExtension(strat()).ok, sErr(strat()).join(","))
+    const firstCap = lib.steps[0].capabilities[0]
+    check("H2 an UNREGISTERED capability → unregistered_capability", sErr(strat({ steps: [{ ...lib.steps[0], capabilities: ["teleport_buyer"] }, ...lib.steps.slice(1)] })).includes("unregistered_capability:teleport_buyer"))
+    const foreign = (Object.keys(CAPABILITY_MANAGER) as Array<keyof typeof CAPABILITY_MANAGER>).find((c) => CAPABILITY_MANAGER[c] !== lib.steps[0].manager)!
+    check("H3 a capability the step's manager does not own → capability_not_owned_by_step_manager", sErr(strat({ steps: [{ ...lib.steps[0], capabilities: [firstCap, foreign] }, ...lib.steps.slice(1)] })).some((e) => e.startsWith(`capability_not_owned_by_step_manager:${foreign}`)))
+    check("H4 a step that names a GAP (no catalogue key) → step_not_composable", sErr(strat({ steps: [{ ...lib.steps[0], capabilities: [], gap: "no key yet" }, ...lib.steps.slice(1)] })).some((e) => e.startsWith("step_not_composable")))
+    check("H5 NO HARD-CODED LOCATION: a city fact, a ZIP literal and a market outside the library vocabulary are refused", sErr(strat({ eligibility: { ...lib.eligibility, all: [...lib.eligibility.all, { fact: "city", op: "eq", value: "Springfield" }] } })).includes("unknown_fact:city") && sErr(strat({ eligibility: { ...lib.eligibility, all: [...lib.eligibility.all, { fact: lib.eligibility.all[0]?.fact ?? "dnc", op: "in", value: ["12345"] }] } })).some((e) => e.startsWith("hard_coded_location")) && sErr(strat({ marketSuitability: ["springfield_metro"] })).includes("market_not_in_vocabulary:springfield_metro"))
+    check("H6 VERSIONED: version 0 refused; envelope ≠ strategy version refused; a platform key cannot be shadowed", sErr(strat({ version: 0 }, { version: 0 })).includes("version_invalid") && sErr(strat({ version: 2 })).includes("version_must_equal_strategy_version") && sErr(strat({ key: lib.key }, { name: lib.key })).some((e) => e.startsWith("key_shadows_platform_strategy")))
+    check("H7 code-shaped keys are not data (strategy.run / envelope.script)", sErr(strat({ run: "x" })).includes("not_data:strategy.run") && sErr(strat({}, { script: "x" })).includes("not_data:script"))
+
+    const good = deriveProviderAdapters().adapters.find((a) => validateProviderAdapter(a).length === 0 && /^[a-z][a-z0-9_]{2,63}$/.test(a.provider))!
+    const adapter = (over: Record<string, unknown> = {}) => ({ name: good.provider, version: 1, evaluation_suite: "extension_eval:provider_adapter_contract_v1", adapter: { ...good, ...over } })
+    const aErr = (d: unknown) => validateProviderAdapterExtension(d).errors
+    check(`H8 (positive control) a declaration for a ROUTED provider (${good.provider}) validates through validateProviderAdapter`, validateProviderAdapterExtension(adapter()).ok, aErr(adapter()).join(","))
+    check("H9 an UNMETERED paid adapter is refused by THE adapter validator", aErr(adapter({ cost: { ...good.cost, payer: "platform", unitUsd: 0.5, ledger: "tenant_account", booking: "none" } })).some((e) => /UNMETERED/.test(e)))
+    check("H10 a provider nothing routes (a hidden provider) → unrouted_provider", aErr({ ...adapter({ provider: "shadow_vendor" }), name: "shadow_vendor" }).includes("unrouted_provider:shadow_vendor"))
+    check("H11 a capability the route table does not send to this provider → capability_not_routed_to_provider", aErr(adapter({ capabilities: [...good.capabilities, "skip_trace_everyone"] })).includes("capability_not_routed_to_provider:skip_trace_everyone"))
+    check("H12 a malformed adapter never reaches the validator (adapter_shape_invalid)", aErr({ name: good.provider, version: 1, evaluation_suite: "x", adapter: { provider: good.provider } }).includes("adapter_shape_invalid"))
+
+    const hook = (over: Record<string, unknown> = {}) => ({ name: "acme_crm_sync", version: 1, purpose: "Mirror conversions into Acme CRM.", events: ["lead.converted"], payload_fields: { "lead.converted": ["contactId"] }, endpoint_url: "https://hooks.acme.example/vip", evaluation_suite: "extension_eval:webhook_app_contract_v1", ...over })
+    const wErr = (d: unknown) => validateWebhookAppDeclaration(d).errors
+    check("H13 (positive control) a webhook app on approved events with a narrowing projection validates", validateWebhookAppDeclaration(hook()).ok, wErr(hook()).join(","))
+    check("H14 an internal / unknown event and the wildcard are refused (approved catalogue only)", wErr(hook({ events: ["contact.updated_internal"], payload_fields: undefined })).some((e) => e.startsWith("events_invalid")) && wErr(hook({ events: ["*"], payload_fields: undefined })).includes("wildcard_refused"))
+    check("H15 a projection WIDER than the catalogue's allow-list (email) → projection_widened", wErr(hook({ payload_fields: { "lead.converted": ["contactId", "email"] } })).includes("projection_widened:lead.converted.email"))
+    check("H16 http / private-host endpoints and a smuggled secret are refused", wErr(hook({ endpoint_url: "http://hooks.acme.example/vip" })).includes("endpoint_not_https") && wErr(hook({ endpoint_url: "https://10.0.0.5/x" })).includes("endpoint_private_host") && wErr(hook({ secret: "s" })).includes("not_data:secret"))
+    const wev = EXTENSION_CONTRACT_EVALUATORS.webhook_app["extension_eval:webhook_app_contract_v1"](hook())
+    check("H17 the platform evaluator BUILDS each payload and proves only allow-listed keys leave (PII + nested planted)", wev.passed && wev.checks.some((x) => x.name === "projection_allow_list_only" && x.ok))
+
+    const c = memClient()
+    const st = await toEnabled(c, { kind: "strategy", publisher: "tenant", brokerageId: T1, submittedBy: "u-admin-1", declaration: strat() as any }, ADMIN1)
+    const pa = await toEnabled(c, { kind: "provider_adapter", publisher: "platform", brokerageId: null, submittedBy: "u-staff", publisherName: "VIPAgents", declaration: adapter() as any }, STAFF)
+    const wa = await toEnabled(c, { kind: "webhook_app", publisher: "third_party", brokerageId: null, submittedBy: "u-staff", publisherName: "Acme", declaration: hook() as any }, STAFF)
+    check("H18 each of the three kinds reaches ENABLED through the one lifecycle (validated → approved → enabled, evidence passed)", [st, pa, wa].every((l) => l.status === "enabled" && l.evaluation_evidence?.passed === true), JSON.stringify([st, pa, wa].map((l) => [l.extension_kind, l.status])))
+    const bad = await submitSkillListing({ kind: "webhook_app", publisher: "third_party", brokerageId: null, submittedBy: "u-staff", publisherName: "Acme", declaration: hook({ events: ["*"] }) as any }, c, seams().deps)
+    check("H19 a contract-invalid declaration of a new kind is refused at submit (never drafted)", !bad.ok && bad.reason === "declaration_invalid")
+    const tenantAdapter = await submitSkillListing({ kind: "provider_adapter", publisher: "tenant", brokerageId: T1, submittedBy: "u-admin-1", declaration: adapter() as any }, c, seams().deps)
+    check("H20 a TENANT can never author a provider adapter (platform_controlled)", !tenantAdapter.ok && tenantAdapter.reason === "platform_controlled:provider_adapter")
+    const sx = seams()
+    const c2 = memClient({ skill_marketplace_listings: c.tables.skill_marketplace_listings, brokerage_settings: [{ id: "bs", brokerage_id: T2, settings: {}, updated_at: "2026-10-01T00:00:00.000Z" }] })
+    const optIn = await setTenantExtensionEnabled({ brokerageId: T2, listingId: wa.id, enable: true, actor: { userId: "u-admin-2", isTenantAdmin: true } }, c2, sx.deps)
+    check("H21 a tenant opts in to the enabled webhook app through the entitlement gate (app.access asked)", optIn.ok && sx.affords.some((a) => a.capability === "app.access"), JSON.stringify(optIn))
+  }
+
+  console.log("\nI. memory_access ENFORCED by the context compiler (lib/kernel/mission-context.ts)")
+  const M1 = "99999999-1111-4111-8111-999999999999", C1 = "88888888-1111-4111-8111-888888888888"
+  const missionRow: any = { id: M1, brokerage_id: T1, objective: "Launch 1 Main", mission_type: "campaign", owner_manager: "campaign_orchestrator", participating_managers: [], subject_type: "contact", subject_id: C1, state: "ACTIVE", priority: "normal", success_criteria: [], budget: { usd: 10 }, spent_usd: 0, spent_tokens: 0, authority_ceiling: 4, deadline: null, dependencies: [], blockers: [], evidence: [], progress: {}, actions: [], outcomes: [], created_by: null, parent_mission: null, state_changed_at: null, completed_at: null, created_at: "2026-10-01T00:00:00.000Z", updated_at: null }
+  const observed = () => {
+    const called: string[] = []
+    const mark = (k: string) => { called.push(k) }
+    const deps: MissionContextDeps = {
+      mission: async (b, id) => (b === T1 && id === M1 ? missionRow : null),
+      contactRow: async () => { mark("person"); return { row: { id: C1, first_name: "Dana", contact_type: "seller", agent_id: "a1" }, error: null } },
+      identity: async () => ({ personId: null, evidenceCount: 0, error: null }),
+      listing: async () => { mark("property"); return { row: { id: "l1", address: "1 Main", status: "draft" }, error: null } },
+      memory: async () => { mark("memory"); return { spine: {}, block: "SECRET-MEMORY-LINE: prefers texts after 6pm" } as any },
+      nba: async () => { mark("opportunity"); return { ok: true, context: { appointmentAt: null, callbackRequested: false, deadEnds: [], memoryFacts: [], householdContactIds: [] } as any } },
+      policy: async (_b, m) => { mark("policy"); return { isaPolicyRef: "p@1", managerPolicyRef: `authority_level:${m}@1`, brandBlock: "", voice: null, error: null } },
+      fatigue: async () => { mark("fatigue"); return { riskLevel: "fresh", score: 1, at: null, found: true, error: null } },
+      capacity: async () => { mark("capacity"); return { band: "available", load: 1, fatigueTier: null, error: null } },
+      authority: async () => 4 as any,
+      events: async () => { mark("events"); return { rows: [{ at: "2026-10-01T00:00", source: "mission_events", kind: "transition", summary: "e" }], error: null } },
+      delegations: async () => { mark("delegations"); return { rows: [], error: null } },
+      book: async () => ({ booked: true, error: null }),
+    }
+    return { called, deps }
+  }
+  const compileAs = async (access: any) => { const o = observed(); const r = await compileManagerContext({ brokerageId: T1, missionId: M1, manager: "campaign_orchestrator", tokenBudget: 4000, memoryAccess: access, deps: o.deps, client: memClient() as any }); return { o, r } }
+  {
+    const builtin = await compileAs(undefined)
+    check("I1 (positive control) a BUILT-IN manager (no memory_access) gets every slice — memory read and rendered", builtin.r.ok && builtin.o.called.includes("memory") && builtin.r.section.includes("SECRET-MEMORY-LINE"))
+    const mc = await compileAs("mission_context")
+    check("I2 memory_access mission_context: the memory reader is NEVER CALLED and the memory line is absent from the section", mc.r.ok && !mc.o.called.includes("memory") && !mc.r.section.includes("SECRET-MEMORY-LINE") && mc.r.context.memory.data === null, JSON.stringify(mc.o.called))
+    check("I3 mission_context still compiles its declared slices (person, property, opportunity, events)", mc.r.ok && ["person", "property", "opportunity", "events"].every((k) => mc.o.called.includes(k)))
+    const none = await compileAs("none")
+    const undeclared = ["person", "property", "memory", "opportunity", "fatigue", "capacity", "events", "delegations"]
+    check("I4 memory_access none: only governance slices (mission, policy, tools, budget) — no undeclared reader is called", none.r.ok && undeclared.every((k) => !none.o.called.includes(k)) && none.o.called.includes("policy") && none.r.context.person.data === null && /withheld/.test(none.r.context.person.reader), JSON.stringify(none.o.called))
+    const cm = await compileAs("contact_memory")
+    check("I5 memory_access contact_memory admits the memory slice (read + rendered)", cm.r.ok && cm.o.called.includes("memory") && cm.r.section.includes("SECRET-MEMORY-LINE"))
+    const unknown = await compileAs("everything")
+    check("I6 an unknown memory_access value fails CLOSED to governance only", unknown.r.ok && !unknown.o.called.includes("memory") && !unknown.o.called.includes("person"))
+    check("I7 each declared level's admitted set is a superset of the one below (none ⊂ mission_context ⊂ contact_memory; memory only in the last)", [...CONTEXT_SLICES_BY_MEMORY_ACCESS.none].every((x) => CONTEXT_SLICES_BY_MEMORY_ACCESS.mission_context.has(x)) && [...CONTEXT_SLICES_BY_MEMORY_ACCESS.mission_context].every((x) => CONTEXT_SLICES_BY_MEMORY_ACCESS.contact_memory.has(x)) && !CONTEXT_SLICES_BY_MEMORY_ACCESS.mission_context.has("memory") && CONTEXT_SLICES_BY_MEMORY_ACCESS.contact_memory.has("memory"))
+  }
+
+  console.log("\nJ. a custom-manager run: declared slices only + cost booked on its ledger row")
+  {
+    const c = memClient()
+    await toEnabled(c, { kind: "custom_manager", publisher: "tenant", brokerageId: T1, submittedBy: "u-admin-1", declaration: desk() }, ADMIN1)
+    const o = observed()
+    const s = seams({ authority: 6 })
+    const passed: any[] = []
+    s.deps.compileContext = async (input) => { passed.push(input); return compileManagerContext({ ...input, deps: o.deps }) }
+    const r = await runCustomManagerCapability({ brokerageId: T1, customManager: "listing_launch_desk", capability: "cma_generate", inputs: CMA_INPUTS, objective: "prep", missionId: M1 }, c, s.deps)
+    check("J1 the run compiles its context through THE compiler with its DECLARED memory_access (mission_context), as its escalation owner", r.ok && passed.length === 1 && passed[0].memoryAccess === "mission_context" && passed[0].manager === "campaign_orchestrator", r.ok ? JSON.stringify(passed.map((p) => [p.memoryAccess, p.manager])) : (r as any).reason)
+    check("J2 what it RECEIVED holds no undeclared slice (no memory read, no memory line; slices published on the result)", r.ok && !!r.context && !r.context.slices.includes("memory") && !r.context.section.includes("SECRET-MEMORY-LINE") && !o.called.includes("memory"), r.ok ? JSON.stringify(r.context?.slices) : (r as any).reason)
+    const row = s.ledger.find((l) => l.action === "extension.custom_manager.run")
+    check("J3 COST is booked on its run ledger row (cost_usd = the metered per-run ceiling, basis named) and returned", r.ok && row?.costUsd === 2 && row?.detail?.cost_basis === "per_run_budget_ceiling_metered" && r.costUsd === 2 && Array.isArray(row?.detail?.context_slices), JSON.stringify(row?.detail))
+    const foreignMission = await runCustomManagerCapability({ brokerageId: T2, customManager: "listing_launch_desk", capability: "cma_generate", inputs: CMA_INPUTS, objective: "x", missionId: M1 }, c, s.deps)
+    check("J4 another tenant cannot run it against this tenant's mission (refused)", !foreignMission.ok)
+    const s2 = seams({ authority: 6 })
+    s2.deps.compileContext = async (input) => compileManagerContext({ ...input, deps: o.deps })
+    const nf = await runCustomManagerCapability({ brokerageId: T1, customManager: "listing_launch_desk", capability: "cma_generate", inputs: CMA_INPUTS, objective: "x", missionId: "00000000-0000-4000-8000-000000000000" }, c, s2.deps)
+    check("J5 an unknown mission → mission_context_refused (fail closed: no ledger row, no delegation)", !nf.ok && /^mission_context_refused:not_found/.test(nf.reason) && s2.delegations.length === 0 && s2.ledger.length === 0, JSON.stringify(nf))
+  }
+
+  console.log("\nK. the platform kill-switch queue for TENANT listings")
+  {
+    const c = memClient()
+    const own = await toEnabled(c, { kind: "custom_manager", publisher: "tenant", brokerageId: T2, submittedBy: "u-admin-2", declaration: desk({ name: "t2_desk" }) }, { ...ADMIN1, brokerageId: T2, userId: "u-admin-2" })
+    await toEnabled(c, { publisher: "third_party", brokerageId: null, submittedBy: "u-staff", publisherName: "Acme", declaration: legacy({ name: "acme_touch" }) }, STAFF)
+    const q = await listPlatformSkillListings(c, "tenant")
+    const g = await listPlatformSkillListings(c)
+    check("K1 the staff tenant queue lists tenant-authored listings (any tenant) and the global queue does not", q.listings.some((l) => l.id === own.id) && q.listings.every((l) => l.publisher === "tenant") && g.listings.length > 0 && g.listings.every((l) => l.publisher !== "tenant"))
+    const s = seams()
+    const sus = await decideSkillListing({ listingId: own.id, decision: "suspend", actor: STAFF, reason: "abuse report #7" }, c, s.deps)
+    const row = s.ledger.find((l) => l.action === "extension.listing.suspend")
+    check("K2 staff SUSPEND works on a tenant listing; evidence: ledgered on THAT tenant as platform_staff with the reason; declaration + digest + evidence kept", sus.ok && sus.listing.status === "suspended" && sus.listing.suspended_reason === "abuse report #7" && row?.brokerageId === T2 && row?.detail?.approver === "platform_staff" && sus.listing.declaration_digest === own.declaration_digest && JSON.stringify(sus.listing.evaluation_evidence) === JSON.stringify(own.evaluation_evidence), JSON.stringify(row))
+    const run = await runCustomManagerCapability({ brokerageId: T2, customManager: "t2_desk", capability: "cma_generate", inputs: CMA_INPUTS, objective: "x" }, c, seams().deps)
+    check("K3 the suspended tenant extension cannot execute", !run.ok && /not_executable:suspended/.test(run.reason))
+    const resume = await decideSkillListing({ listingId: own.id, decision: "resume", actor: STAFF }, c, s.deps)
+    check("K4 staff hold ONLY the kill switch on a tenant listing (resume refused)", !resume.ok)
+    const panel = src("app/components/skills/skill-marketplace-panel.tsx")
+    check("K5 wired: the superadmin panel reads getPlatformTenantExtensions and offers only the kill switch; the door is staff-gated; the page mounts the platform panel", panel.includes("getPlatformTenantExtensions()") && /only=\{KILL_SWITCH\}/.test(panel) && /KILL_SWITCH[^=]*=\s*\["suspend", "disable"\]/.test(panel) && /export async function getPlatformTenantExtensions\(\)[\s\S]{0,200}requirePlatformStaff\(\)/.test(src("app/actions/skill-marketplace.ts")) && /<SkillMarketplacePanel mode="platform" \/>/.test(src("app/dashboard/superadmin/skill-marketplace/page.tsx")))
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
-  console.log(" BLIND SPOTS: in-memory client (no RLS / CHECK / trigger — m738 holds those live once applied); mayUseAndAfford, resolveAgentAuthorityLevel, requestDelegation and withActionLedger are seams here (skill-registry-guard runs the REAL ledger; their own proofs cover them); mergeBrokerageSettings + appendTenantPolicyVersion run REAL against the in-memory client; strategy / provider_adapter / webhook_app have NO contract validator registered (they fail closed — drafted, never enabled) until 137B/C/E plug theirs in; a custom manager's memory_access is declared + ledgered, not yet enforced by the context compiler; the census reads one runtime file (a second run path elsewhere would need its own census).")
+  console.log(" BLIND SPOTS: in-memory client (no RLS / CHECK / trigger — m738 holds those live once applied); mayUseAndAfford, resolveAgentAuthorityLevel, requestDelegation and withActionLedger are seams here (skill-registry-guard runs the REAL ledger; their own proofs cover them); mergeBrokerageSettings + appendTenantPolicyVersion run REAL against the in-memory client; the three survivor-owned contracts are judged against the CURRENT strategy library / route table / event catalogue (a later edit there re-judges every listing at enablement); the compiler's readers are seams in I/J (mission-context-guard runs the real readers); a custom-manager run's cost is the metered per-run CEILING, not a measured spend; the census reads one runtime file (a second run path elsewhere would need its own census).")
   if (fail > 0) { console.log(" ❌ EXTENSION_LIFECYCLE_FAIL"); process.exit(1) }
-  console.log(" ✅ EXTENSION_LIFECYCLE_PASS — skills and custom managers are bounded contracts on one lifecycle; suspended / disabled never execute and keep their evidence; tenants opt in through versioned policy")
+  console.log(" ✅ EXTENSION_LIFECYCLE_PASS — skills, custom managers, strategies, provider adapters and webhook apps are bounded contracts on one lifecycle; suspended / disabled never execute and keep their evidence; tenants opt in through versioned policy")
 }
 main().catch((e) => { console.error(e); process.exit(1) })

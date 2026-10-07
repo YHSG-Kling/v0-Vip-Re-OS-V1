@@ -1,5 +1,6 @@
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { CONTACT_STATUSES } from "@/lib/contact-promotion/qualification"
+import type { ManagerKey } from "@/lib/kernel/manager-registry"
 /**
  * Voice tool registry — single source of truth for which tools the voice
  * cockpit (ElevenLabs Conv AI + browser STT in internal-ai-assistant.tsx)
@@ -758,7 +759,82 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_nar_regulated: false,
     description: "Free-text bridge: parseTeamCommandText → dispatchTeamCommand (the same parser + dispatcher as the text command bar). Each parsed command dispatches to its own registered tool's backend, which enforces that tool's gate; ambiguous text asks for a rephrase instead of mis-routing.",
   },
+
+  // ── The whole team, 24/7 (wave 138E — lib/voice-admin/assistant-reach.ts) ──
+  //    Each backend re-checks the tenant-admin roster ITSELF (resolveTenantAdmin) — the
+  //    run_team_command bridge reaches these without this row's authority check.
+  manager_status: {
+    name: "manager_status",
+    category: "report",
+    authority: "admin",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "'What is the ads manager working on — and why?' One manager's open delegations (pendingDelegationsFor) and its latest completed work WITH the rationale (loadManagerActivity), plus what you may ask it; no manager named → the whole bench's open work. Brokerage-wide, so tenant-admin only. Read-only.",
+  },
+  broker_objective: {
+    name: "broker_objective",
+    category: "stage",
+    authority: "admin",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "'Objective: grow listings 10% in <territory> under $2,000 a month.' The SAME kernel path as the Missions card (submitBrokerObjective): an investigation report, an APPROVAL_REQUIRED proposal, or proposed child missions across the managers — nothing runs until a human approves. Tenant-admin only.",
+  },
+  run_skill: {
+    name: "run_skill",
+    category: "stage",
+    authority: "admin",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "'Run skill anniversary note and gift for the Hendersons.' REQUESTS a built-in or tenant-enabled skill through runSkill (entitlement, metering, the owner's authority rung, withActionLedger, one delegation per capability a human accepts). Financial / legal / irreversible skills and money-moving capabilities are refused by voice. Tenant-admin only.",
+  },
 }
+
+/**
+ * THE MANAGER EACH ASSISTANT TOOL ACTS FOR (wave 138E). One answer, read by the voice bus
+ * (lib/voice/voice-bus.ts ownerManagerForVoiceAction — its switch moved here) and by the
+ * assistant reach matrix (lib/voice-admin/assistant-reach.ts). Bench-wide tools (team_query,
+ * morning_standup, manager_status …) are deliberately ABSENT — attributing a bench answer to
+ * one manager would be dishonest; the custom-teammate attribution keeps its own six
+ * (lib/kernel/ai-teammates.ts TEAM_COMMAND_MANAGER — the proof holds the two disjoint).
+ */
+export const VOICE_TOOL_MANAGER = {
+  create_task: "deal_coordinator",          // tasks / ops
+  log_activity: "ai_isa",                   // contact engagement / CRM touch
+  send_portal_message: "campaign_orchestrator", // client message gate owner
+  accept_offer: "deal_coordinator",         // deal decision — the deal file's owner announces it
+  reject_offer: "deal_coordinator",
+  counter_offer: "deal_coordinator",
+  withdraw_offer: "deal_coordinator",
+  convert_lead: "ai_isa",                   // lead pipeline — qualified lead → contact
+  reassign_contact: "data_steward",         // book-of-record move
+  broadcast_announcement: "data_steward",   // principal comms, kept on the record
+  stage_showing: "shopping_agent",          // buyer-side scheduling
+  stage_offer_packet: "shopping_agent",
+  stage_bba_packet: "shopping_agent",
+  query_buyer_stage: "shopping_agent",
+  stage_listing_packet: "listing_concierge",
+  query_listing_status: "listing_concierge",
+  dispatch_transaction_packet: "deal_coordinator",
+  get_transactions_in_progress: "deal_coordinator",
+  stage_newsletter_draft: "campaign_orchestrator",
+  stage_email_campaign: "campaign_orchestrator",
+  stage_blog_draft: "campaign_orchestrator",
+  stage_podcast_episode: "campaign_orchestrator",
+  stage_direct_mail_campaign: "campaign_orchestrator",
+  stage_open_house: "campaign_orchestrator",
+  stage_video_project: "asset_manager",
+  book_studio_session: "asset_manager",
+  stage_ad_campaign: "ads_manager",
+  get_income_truth: "finance_manager",
+  get_buyer_financials: "shopping_agent",   // buyer journey (pre-approval is the Shopping Agent's handoff)
+  confirm_buyer_financials: "shopping_agent",
+} as const satisfies Readonly<Record<string, ManagerKey>>
 
 /**
  * Lookup helper — returns the registry entry or undefined.

@@ -41,7 +41,13 @@ import {
   validateSkillDeclaration, validateSkillInputs,
   type CustomManagerDeclaration, type CustomManagerEntry, type ExtensionKind, type ExtensionStatus, type SkillApprover,
   type SkillContract, type SkillDeclaration, type SkillEvaluationEvidence, type SkillPublisher,
+  PLATFORM_ONLY_EXTENSION_KINDS,
+  type ProviderAdapterExtensionDeclaration, type StrategyExtensionDeclaration, type WebhookAppDeclaration,
 } from "@/lib/kernel/skill-registry"
+import type { CompileInput, CompileResult } from "@/lib/kernel/mission-context"
+
+/** Every kind's declaration (wave 138D: strategy / provider_adapter / webhook_app envelopes joined the union). */
+export type ExtensionDeclaration = SkillDeclaration | CustomManagerDeclaration | StrategyExtensionDeclaration | ProviderAdapterExtensionDeclaration | WebhookAppDeclaration
 
 type Client = { from: (table: string) => any }
 
@@ -57,7 +63,7 @@ export interface ExtensionListingRow {
   publisher_name: string | null
   brokerage_id: string | null
   version: number
-  declaration: SkillDeclaration | CustomManagerDeclaration
+  declaration: ExtensionDeclaration
   declaration_digest: string
   status: ExtensionStatus
   evaluation_evidence: SkillEvaluationEvidence | null
@@ -105,6 +111,8 @@ export interface SkillMarketplaceDeps {
   tenantEnablement?: (brokerageId: string, client: Client) => Promise<TenantEnablementRead>
   /** The ONE brokerage_settings writer (versioned tenant policy). */
   mergeSettings?: (brokerageId: string, patch: (current: Record<string, unknown>) => Record<string, unknown>, actor: { userId: string; reason: string }, client: Client) => Promise<{ ok: boolean; error?: string }>
+  /** THE context compiler (lib/kernel/mission-context.ts compileManagerContext) — enforces a custom manager's memory_access. */
+  compileContext?: (input: CompileInput) => Promise<CompileResult>
 }
 
 const defaultDeps: Required<SkillMarketplaceDeps> = {
@@ -145,6 +153,7 @@ const defaultDeps: Required<SkillMarketplaceDeps> = {
     )
     return out as any
   },
+  compileContext: async (input) => (await import("@/lib/kernel/mission-context")).compileManagerContext(input),
   delegate: async (i, client) => {
     const { requestDelegation } = await import("@/lib/kernel/manager-delegation")
     const r = await requestDelegation({ ...i, actor: { type: "manager", id: i.requestingManager } }, client)
@@ -162,7 +171,7 @@ function withDeps(deps: SkillMarketplaceDeps): Required<SkillMarketplaceDeps> { 
 
 /** PURE — the declaration digest the listing stores and every later read re-verifies.
  *  @proofSeam the proof asserts the stored digest equals this over the submitted declaration */
-export function skillDeclarationDigest(d: SkillDeclaration | CustomManagerDeclaration): string {
+export function skillDeclarationDigest(d: ExtensionDeclaration): string {
   return createHash("sha256").update(stableSkillJson(d)).digest("hex")
 }
 
@@ -192,7 +201,7 @@ async function loadTenantExtensionEnablement(svc: Client, brokerageId: string): 
 }
 
 /** PURE — the plan + meter asks an extension run (or a tenant opt-in) must pass, DERIVED from the contract. */
-function entitlementAndBudgetAsks(kind: ExtensionKind, decl: SkillDeclaration | CustomManagerDeclaration): Array<{ gate: "entitlement" | "budget"; label: string; ask: { capability: string; featureKey?: string; estCostUsd?: number; estTokens?: number } }> {
+function entitlementAndBudgetAsks(kind: ExtensionKind, decl: ExtensionDeclaration): Array<{ gate: "entitlement" | "budget"; label: string; ask: { capability: string; featureKey?: string; estCostUsd?: number; estTokens?: number } }> {
   const out: ReturnType<typeof entitlementAndBudgetAsks> = []
   if (kind === "skill") {
     const s = skillContractOf(decl as SkillDeclaration)
@@ -203,6 +212,18 @@ function entitlementAndBudgetAsks(kind: ExtensionKind, decl: SkillDeclaration | 
     else if (s.cost_estimate.budget === "vendor_spend") out.push({ gate: "budget", label: "vendor_spend", ask: { capability: "comms.send", estCostUsd: s.max_cost.usd } })
     return out
   }
+  // Wave 138D: a strategy asks the plan features its capabilities' actions gate on + its declared budget; a webhook
+  // app and a provider adapter ask the base plan (a provider adapter's spend is booked per call by bookAdapterUsage).
+  if (kind === "strategy") {
+    const s = (decl as StrategyExtensionDeclaration).strategy
+    const caps = (s?.steps ?? []).flatMap((st) => st.capabilities ?? [])
+    out.push({ gate: "entitlement", label: BASE_PLAN_ENTITLEMENT, ask: { capability: "app.access" } })
+    for (const f of new Set(caps.map((c) => CAPABILITY_ENTITLEMENT[c]?.feature).filter((x): x is string => !!x))) out.push({ gate: "entitlement", label: f, ask: { capability: "feature.use", featureKey: f } })
+    if ((s?.budget?.tokens ?? 0) > 0) out.push({ gate: "budget", label: "ai_tokens", ask: { capability: "ai.generate", estTokens: s.budget.tokens } })
+    if ((s?.budget?.usd ?? 0) > 0) out.push({ gate: "budget", label: "vendor_spend", ask: { capability: "comms.send", estCostUsd: s.budget.usd } })
+    return out
+  }
+  if (kind === "webhook_app" || kind === "provider_adapter") return [{ gate: "entitlement", label: BASE_PLAN_ENTITLEMENT, ask: { capability: "app.access" } }]
   const m = decl as CustomManagerDeclaration
   out.push({ gate: "entitlement", label: BASE_PLAN_ENTITLEMENT, ask: { capability: "app.access" } })
   for (const f of new Set((m.allowed_capabilities ?? []).map((c) => CAPABILITY_ENTITLEMENT[c]?.feature).filter((x): x is string => !!x))) {
@@ -230,7 +251,7 @@ export interface SubmitSkillInput {
   brokerageId: string | null
   submittedBy: string | null
   publisherName?: string | null
-  declaration: SkillDeclaration | CustomManagerDeclaration
+  declaration: ExtensionDeclaration
 }
 
 export async function submitSkillListing(input: SubmitSkillInput, svc: Client, deps: SkillMarketplaceDeps = {}): Promise<ListingResult> {
@@ -239,6 +260,8 @@ export async function submitSkillListing(input: SubmitSkillInput, svc: Client, d
   if (!(EXTENSION_KINDS as readonly string[]).includes(kind)) return { ok: false, reason: `extension_kind_invalid:${String(kind)}` }
   if (input.publisher === "tenant" && !input.brokerageId) return { ok: false, reason: "no_tenant" }
   if (input.publisher !== "tenant" && input.brokerageId) return { ok: false, reason: "tenant_id_on_global_listing" }
+  // Provider routing stays platform-controlled: a tenant never authors a provider adapter (wave 138D).
+  if (input.publisher === "tenant" && PLATFORM_ONLY_EXTENSION_KINDS.has(kind)) return { ok: false, reason: `platform_controlled:${kind}` }
   const name = (input.declaration as { name?: unknown } | null)?.name
   if (kind === "skill" && typeof name === "string" && builtinSkill(name)) return { ok: false, reason: `name_reserved_by_builtin:${name}` }
   // No self-granted provenance: the ROW publisher is the session's, and a declaration claiming another is refused.
@@ -396,8 +419,11 @@ export async function listTenantExtensions(brokerageId: string, svc: Client, dep
 
 /** The platform approval queue: every third-party / platform listing, any status (platform staff only — the
  *  caller gates). */
-export async function listPlatformSkillListings(svc: Client): Promise<{ listings: ExtensionListingRow[]; readRefused: string | null }> {
-  const { data, error } = await svc.from("skill_marketplace_listings").select(LISTING_COLS).in("publisher", ["platform", "third_party"]).order("created_at", { ascending: false })
+export async function listPlatformSkillListings(svc: Client, scope: "global" | "tenant" = "global"): Promise<{ listings: ExtensionListingRow[]; readRefused: string | null }> {
+  // scope "tenant" (wave 138D) = every TENANT-authored listing, for the platform kill switch (suspend / disable only —
+  // canDecideSkillListing). Platform staff are cross-tenant by role; the door gates on requirePlatformStaff.
+  const publishers = scope === "tenant" ? ["tenant"] : ["platform", "third_party"]
+  const { data, error } = await svc.from("skill_marketplace_listings").select(LISTING_COLS).in("publisher", publishers).order("created_at", { ascending: false })
   return { listings: (data ?? []) as ExtensionListingRow[], readRefused: error?.message ?? null }
 }
 
@@ -531,7 +557,8 @@ export interface RunCustomManagerInput {
   missionType?: string | null
 }
 
-export type RunCustomManagerResult = { ok: true; manager: string; delegationId: string | null } | { ok: false; reason: string; errors?: string[] }
+/** `context` = what the custom manager RECEIVED: the compiled mission context, only its declared memory_access slices. */
+export type RunCustomManagerResult = { ok: true; manager: string; delegationId: string | null; costUsd: number; context: { slices: string[]; tokens: number; section: string } | null } | { ok: false; reason: string; errors?: string[] }
 
 /** The custom-manager path: an ENABLED custom_manager extension asks the owning manager for ONE allowed capability,
  *  as its escalation owner, at min(its ceiling, its owner's ladder rung), metered and ledgered. */
@@ -562,14 +589,27 @@ export async function runCustomManagerCapability(input: RunCustomManagerInput, s
   const rung = await d.authority(input.brokerageId, m.escalation_owner, svc)
   const effective = Math.min(rung, m.authority_ceiling) as AuthorityLevel
   if (effective < min) return { ok: false, reason: `authority:${effective}<${min}` }
+  // CONTEXT (wave 138D) — compiled by THE compiler under the declared memory_access: an undeclared slice is never read.
+  // A mission of another tenant is not_found there, so the run is refused.
+  let context: { slices: string[]; tokens: number; section: string } | null = null
+  if (input.missionId) {
+    const tokenBudget = m.budget.max_tokens_per_run > 0 ? Math.min(m.budget.max_tokens_per_run, 2000) : 1200
+    const cx = await d.compileContext({ brokerageId: input.brokerageId, missionId: input.missionId, manager: m.escalation_owner, tokenBudget, memoryAccess: m.memory_access, client: svc })
+    if (!cx.ok) return { ok: false, reason: `mission_context_refused:${cx.reason}` }
+    const ctx = cx.context as unknown as Record<string, { data?: unknown; reader?: unknown } | null>
+    const slices = Object.keys(ctx).filter((k) => !!ctx[k] && typeof ctx[k] === "object" && typeof ctx[k]!.reader === "string" && ctx[k]!.data != null)
+    context = { slices, tokens: cx.tokens, section: cx.section }
+  }
+  // COST — booked on the run's ledger row: the per-run amount the meter was asked to afford (its declared ceiling).
+  const costUsd = m.budget.max_usd_per_run
   const ref = `${m.key}@v${m.version}`
   const out = await d.ledger(
     {
       brokerageId: input.brokerageId, action: "extension.custom_manager.run", actor: { type: "manager", managerKey: m.escalation_owner },
       subjectType: "extension", subjectRef: ref, subjectId: r.listing.id, riskClass: risk, policyKey: `authority_level:${m.escalation_owner}`,
       reasonDetail: `${ref} (escalates to ${m.escalation_owner}) asks ${CAPABILITY_MANAGER[cap]} for ${cap}: ${input.objective.trim()}`.slice(0, 900),
-      detail: { custom_manager: m.key, version: m.version, listing_id: r.listing.id, publisher: r.listing.publisher, capability: cap, authority: effective, authority_ceiling: m.authority_ceiling, budget: m.budget, policy_requirements: m.policy_requirements, memory_access: m.memory_access, mission_id: input.missionId ?? null, mission_type: input.missionType ?? null, evaluation_suite: m.evaluation_suite },
-      costUsd: null,
+      detail: { custom_manager: m.key, version: m.version, listing_id: r.listing.id, publisher: r.listing.publisher, capability: cap, authority: effective, authority_ceiling: m.authority_ceiling, budget: m.budget, policy_requirements: m.policy_requirements, memory_access: m.memory_access, context_slices: context?.slices ?? null, cost_basis: "per_run_budget_ceiling_metered", mission_id: input.missionId ?? null, mission_type: input.missionType ?? null, evaluation_suite: m.evaluation_suite },
+      costUsd,
     },
     () => requestExtensionCapability({ declared: m.allowed_capabilities, owner: null }, {
       brokerageId: input.brokerageId, requestingManager: m.escalation_owner, capability: cap,
@@ -580,5 +620,5 @@ export async function runCustomManagerCapability(input: RunCustomManagerInput, s
   )
   if (!out) return { ok: false, reason: "ledger_replay:already_run" }
   if (!out.ok) return { ok: false, reason: `delegation_refused:${cap}:${out.reason}` }
-  return { ok: true, manager: m.key, delegationId: out.delegationId ?? null }
+  return { ok: true, manager: m.key, delegationId: out.delegationId ?? null, costUsd, context }
 }

@@ -42,6 +42,11 @@ import { capabilityRiskClass } from "@/lib/kernel/mission-controller"
 import { paidCapabilitiesFor } from "@/lib/kernel/manager-delegation"
 import { MISSION_TYPES, type MissionType } from "@/lib/kernel/missions"
 import { TENANT_POLICY_SETTINGS_KEYS } from "@/lib/kernel/tenant-policy"
+// Wave 138D — the three kinds whose contract lives in another survivor are validated AGAINST that survivor
+// (import only; 138A owns provider-adapters.ts, 138E owns strategy-library.ts, 137B's tenant-webhooks-core.ts).
+import { PLATFORM_STRATEGY_LIBRARY, STRATEGY_SUBJECT_TYPES, STRATEGY_TIERS, platformStrategy, strategyCapabilities, type StrategyDefinition } from "@/lib/kernel/strategy-library"
+import { adapterFor, routedProviders, validateProviderAdapter, type ProviderAdapter } from "@/lib/kernel/provider-adapters"
+import { WEBHOOK_EVENT_CATALOG, buildWebhookPayload, validateWebhookEventFilter } from "@/lib/platform/tenant-webhooks-core"
 
 // ─── the declaration ──────────────────────────────────────────────────────────────────────────
 export const SKILL_FIELD_TYPES = ["string", "number", "boolean", "uuid", "iso_datetime", "object", "array"] as const
@@ -422,7 +427,8 @@ export function knownEvaluationSuites(): ReadonlySet<string> {
 
 /** Context a custom manager may read — each one an existing reader (no raw DB access):
  *  mission_context = lib/kernel/mission-context.ts compileManagerContext; contact_memory = lib/kernel/
- *  conversation-memory.ts loadContactMemoryForPrompt (via the compiler's memory slice). */
+ *  conversation-memory.ts loadContactMemoryForPrompt (via the compiler's memory slice). ENFORCED (wave 138D) by the
+ *  compiler itself: CONTEXT_SLICES_BY_MEMORY_ACCESS in mission-context.ts — an undeclared slice is never read. */
 export const CUSTOM_MANAGER_MEMORY_ACCESS = ["none", "mission_context", "contact_memory"] as const
 export type CustomManagerMemoryAccess = (typeof CUSTOM_MANAGER_MEMORY_ACCESS)[number]
 
@@ -609,13 +615,196 @@ export const EXTENSION_EXECUTABLE_STATUSES: ReadonlySet<ExtensionStatus> = new S
  *  routeCapability own the route table). */
 export const PLATFORM_ONLY_EXTENSION_KINDS: ReadonlySet<ExtensionKind> = new Set<ExtensionKind>(["provider_adapter"])
 
-/** PURE — one validator per kind. Kinds whose contract lives in another survivor (strategy → strategy-library,
- *  provider_adapter → providers / property-lookup-rail, webhook_app → tenant-webhooks) have NO validator registered
- *  here, so they FAIL CLOSED: they can be drafted, never validated or enabled, until their contract is plugged in. */
+// ─── CONTRACTS FOR THE KINDS WHOSE SHAPE LIVES IN ANOTHER SURVIVOR (wave 138, lane 138D) ─────────────────
+// Each is a thin ENVELOPE ({ name, version, <the survivor's own shape>, evaluation_suite }) judged AGAINST that
+// survivor — never a second copy of its rules: strategy → lib/kernel/strategy-library.ts (StrategyDefinition,
+// CAPABILITY_MANAGER ownership, the library's own market vocabulary); provider_adapter → lib/kernel/provider-adapters.ts
+// validateProviderAdapter + the route table (routedProviders / adapterFor); webhook_app → lib/platform/
+// tenant-webhooks-core.ts (the APPROVED event catalogue + its allow-list payload projection).
+const EXT_NAME_RE = /^[a-z][a-z0-9_]{2,63}$/
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v)
+function envelopeErrors(d: unknown, keys: ReadonlySet<string>): string[] {
+  if (!isObj(d)) return ["declaration_missing"]
+  const errors: string[] = []
+  for (const k of Object.keys(d)) if (!keys.has(k)) errors.push(`not_data:${k}`)
+  if (typeof d.name !== "string" || !EXT_NAME_RE.test(d.name)) errors.push("name_invalid")
+  if (!Number.isInteger(d.version) || (d.version as number) < 1) errors.push("version_invalid")
+  if (typeof d.evaluation_suite !== "string" || !d.evaluation_suite.trim()) errors.push("no_evaluation_suite")
+  return errors
+}
+
+/** A STRATEGY extension: a tenant / third-party StrategyDefinition, versioned, composed only of registered capabilities. */
+export interface StrategyExtensionDeclaration { name: string; version: number; strategy: StrategyDefinition; evaluation_suite: string }
+const STRATEGY_ENVELOPE_KEYS: ReadonlySet<string> = new Set(["name", "version", "strategy", "evaluation_suite"])
+const STRATEGY_DEFINITION_KEYS: ReadonlySet<string> = new Set([
+  "key", "version", "tier", "title", "objective", "missionType", "ownerManager", "eligibility", "steps", "budget", "authority",
+  "timing", "fatigue", "exitCriteria", "outcomeMetrics", "audience", "marketSuitability", "averageCostUsd", "priority",
+])
+/** The market vocabulary and the eligibility facts are DERIVED from the platform library (never restated here). A
+ *  strategy that names a fact the library never judges (a city, a ZIP, a territory name) is refused. */
+const LIBRARY_MARKETS: ReadonlySet<string> = new Set(PLATFORM_STRATEGY_LIBRARY.flatMap((s) => [...s.marketSuitability]))
+const LIBRARY_FACTS: ReadonlySet<string> = new Set(PLATFORM_STRATEGY_LIBRARY.flatMap((s) => [...s.eligibility.all, ...(s.eligibility.any ?? [])].map((c) => c.fact as string)))
+const POSTAL_CODE_RE = /^\d{5}(-\d{4})?$/
+
+/** PURE — the strategy extension contract. @proofSeam the proof asserts each refusal code directly (production
+ *  reaches it through validateExtensionDeclaration) */
+export function validateStrategyExtension(d: unknown): SkillValidation {
+  const errors = envelopeErrors(d, STRATEGY_ENVELOPE_KEYS)
+  if (errors[0] === "declaration_missing") return { ok: false, errors }
+  const env = d as Record<string, unknown>
+  const s = env.strategy as StrategyDefinition | undefined
+  if (!isObj(s)) return { ok: false, errors: [...errors, "strategy_missing"] }
+  for (const k of Object.keys(s)) if (!STRATEGY_DEFINITION_KEYS.has(k)) errors.push(`not_data:strategy.${k}`)
+  if (s.key !== env.name) errors.push("name_must_equal_strategy_key")
+  if (s.version !== env.version) errors.push("version_must_equal_strategy_version")
+  if (typeof s.key === "string" && platformStrategy(s.key)) errors.push(`key_shadows_platform_strategy:${s.key}`)
+  if (!(STRATEGY_TIERS as readonly string[]).includes(s.tier)) errors.push(`tier_invalid:${String(s.tier)}`)
+  if (!(MISSION_TYPES as readonly string[]).includes(s.missionType)) errors.push(`unknown_mission_type:${String(s.missionType)}`)
+  const steps = Array.isArray(s.steps) ? s.steps : []
+  if (!steps.length) errors.push("no_steps")
+  for (const st of steps) {
+    if (!isObj(st) || !(typeof st.manager === "string" && st.manager in MANAGERS)) { errors.push(`unknown_step_manager:${String((st as { manager?: unknown })?.manager)}`); continue }
+    const caps: readonly string[] = Array.isArray(st.capabilities) ? st.capabilities : []
+    // Composed ONLY of registered capabilities: a step that names a gap (no catalogue key) cannot be executed.
+    if (!caps.length || st.gap) errors.push(`step_not_composable:${st.manager}`)
+    for (const c of caps) {
+      if (!(c in APP_CAPABILITY_REGISTRY)) { errors.push(`unregistered_capability:${c}`); continue }
+      if (CAPABILITY_MANAGER[c as AppCapability] !== st.manager) errors.push(`capability_not_owned_by_step_manager:${c}:${st.manager}`)
+      if (MIN_AUTHORITY_FOR_RISK[capabilityRiskClass(c as AppCapability)] === null) errors.push(`risk_never_ai:${c}`)
+    }
+  }
+  if (!steps.some((st) => isObj(st) && st.manager === s.ownerManager)) errors.push("owner_not_a_step_manager")
+  if (!isObj(s.authority) || !isAuthorityLevel(s.authority.recommended) || !["per_authority", "always"].includes(s.authority.approval as string)) errors.push("authority_invalid")
+  if (!isObj(s.budget) || !Number.isFinite(s.budget.usd) || s.budget.usd < 0) errors.push("budget_invalid")
+  const el = s.eligibility
+  const subjects: readonly string[] = isObj(el) && Array.isArray(el.subjectTypes) ? el.subjectTypes : []
+  if (!subjects.length || subjects.some((t) => !(STRATEGY_SUBJECT_TYPES as readonly string[]).includes(t))) errors.push("subject_types_invalid")
+  // NO HARD-CODED LOCATION (owner, wave 108: territories are anywhere in the US).
+  const clauses = isObj(el) ? [...(Array.isArray(el.all) ? el.all : []), ...(Array.isArray(el.any) ? el.any : [])] : []
+  for (const c of clauses) {
+    if (!LIBRARY_FACTS.has(c?.fact as string)) errors.push(`unknown_fact:${String(c?.fact)}`)
+    const vals: readonly unknown[] = Array.isArray(c?.value) ? c.value : [c?.value]
+    if (vals.some((v) => typeof v === "string" && POSTAL_CODE_RE.test(v.trim()))) errors.push(`hard_coded_location:${String(c?.fact)}`)
+  }
+  for (const m of Array.isArray(s.marketSuitability) ? s.marketSuitability : ["<not an array>"]) if (!LIBRARY_MARKETS.has(m)) errors.push(`market_not_in_vocabulary:${m}`)
+  return { ok: errors.length === 0, errors }
+}
+
+/** A PROVIDER ADAPTER extension: a declaration for a provider the route table ALREADY routes (a provider plugs in
+ *  through the route table — LAW 3), validated by THE adapter validator. Platform-controlled (never a tenant's). */
+export interface ProviderAdapterExtensionDeclaration { name: string; version: number; adapter: ProviderAdapter; evaluation_suite: string }
+const ADAPTER_ENVELOPE_KEYS: ReadonlySet<string> = new Set(["name", "version", "adapter", "evaluation_suite"])
+
+/** PURE — the provider-adapter extension contract. @proofSeam the proof asserts each refusal code directly */
+export function validateProviderAdapterExtension(d: unknown): SkillValidation {
+  const errors = envelopeErrors(d, ADAPTER_ENVELOPE_KEYS)
+  if (errors[0] === "declaration_missing") return { ok: false, errors }
+  const a = (d as Record<string, unknown>).adapter as ProviderAdapter | undefined
+  // Shape first — validateProviderAdapter reads nested fields and must never be handed a malformed object.
+  const shapeOk = isObj(a) && typeof a.provider === "string" && Array.isArray(a.capabilities) && isObj(a.api) && typeof a.api.version === "string"
+    && typeof a.api.baseUrl === "string" && Array.isArray(a.api.alternates) && isObj(a.cost) && isObj(a.health) && Array.isArray(a.health.serviceKeys)
+    && isObj(a.credential) && Array.isArray(a.credential.envVars)
+  if (!shapeOk) return { ok: false, errors: [...errors, "adapter_shape_invalid"] }
+  if (a.provider !== (d as { name?: unknown }).name) errors.push("name_must_equal_provider")
+  for (const e of validateProviderAdapter(a)) errors.push(`adapter:${e}`)
+  if (!routedProviders().includes(a.provider)) errors.push(`unrouted_provider:${a.provider}`)
+  else {
+    const routed = new Set(adapterFor(a.provider)?.capabilities ?? [])
+    for (const c of a.capabilities) if (!routed.has(c)) errors.push(`capability_not_routed_to_provider:${c}`)
+  }
+  return { ok: errors.length === 0, errors }
+}
+
+/** A WEBHOOK APP extension: an external subscriber bounded by the APPROVED event catalogue and its allow-list
+ *  projection (it may NARROW a projection, never widen it). No secret, no tenant id, no wildcard. */
+export interface WebhookAppDeclaration { name: string; version: number; purpose: string; events: readonly string[]; payload_fields?: Readonly<Record<string, readonly string[]>>; endpoint_url: string; evaluation_suite: string }
+const WEBHOOK_APP_KEYS: ReadonlySet<string> = new Set(["name", "version", "purpose", "events", "payload_fields", "endpoint_url", "evaluation_suite"])
+const PRIVATE_HOST_RE = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.|\[?::1\]?$|.*\.local$|.*\.internal$)/i
+
+/** PURE — the webhook-app extension contract. @proofSeam the proof asserts each refusal code directly */
+export function validateWebhookAppDeclaration(d: unknown): SkillValidation {
+  const errors = envelopeErrors(d, WEBHOOK_APP_KEYS)
+  if (errors[0] === "declaration_missing") return { ok: false, errors }
+  const w = d as Partial<WebhookAppDeclaration>
+  if (typeof w.purpose !== "string" || !w.purpose.trim()) errors.push("purpose_missing")
+  const events: readonly string[] = Array.isArray(w.events) ? w.events : []
+  if (events.includes("*")) errors.push("wildcard_refused")
+  const f = validateWebhookEventFilter(events.filter((e) => e !== "*"))
+  if (!f.ok) errors.push(`events_invalid:${f.error}`)
+  if (w.payload_fields !== undefined) {
+    if (!isObj(w.payload_fields)) errors.push("payload_fields_invalid")
+    else for (const [ev, fields] of Object.entries(w.payload_fields)) {
+      const def = WEBHOOK_EVENT_CATALOG.find((x) => x.event === ev)
+      if (!events.includes(ev) || !def) { errors.push(`payload_fields_for_unsubscribed_event:${ev}`); continue }
+      for (const k of Array.isArray(fields) ? fields : ["<not an array>"]) if (!def.payloadFields.includes(k)) errors.push(`projection_widened:${ev}.${k}`)
+    }
+  }
+  let host = ""
+  try { const u = new URL(String(w.endpoint_url)); if (u.protocol !== "https:") errors.push("endpoint_not_https"); host = u.hostname } catch { errors.push("endpoint_invalid") }
+  if (host && PRIVATE_HOST_RE.test(host)) errors.push("endpoint_private_host")
+  return { ok: errors.length === 0, errors }
+}
+
+const evidenceOf = (suite: string, checks: SkillEvaluationEvidence["checks"]): SkillEvaluationEvidence => ({ suite, passed: checks.every((c) => c.ok), checks })
+
+/** Platform-owned evaluators for the three kinds (deterministic; the submitter never supplies one).
+ *  @proofSeam the proof runs each suite on a good and a bad declaration (production reaches it through evaluateExtension) */
+export const EXTENSION_CONTRACT_EVALUATORS: Readonly<Record<"strategy" | "provider_adapter" | "webhook_app", Readonly<Record<string, (d: unknown) => SkillEvaluationEvidence>>>> = Object.freeze({
+  strategy: Object.freeze({
+    "extension_eval:strategy_contract_v1": (d: unknown) => {
+      const v = validateStrategyExtension(d)
+      const s = (d as StrategyExtensionDeclaration).strategy
+      const caps = v.ok ? strategyCapabilities(s) : []
+      return evidenceOf("extension_eval:strategy_contract_v1", [
+        { name: "contract_valid", ok: v.ok, detail: v.errors.join(", ") || undefined },
+        { name: "composed_of_registered_capabilities", ok: v.ok && caps.length > 0 && caps.every((c) => c in APP_CAPABILITY_REGISTRY) },
+        { name: "no_hard_coded_location", ok: !v.errors.some((e) => /^(hard_coded_location|unknown_fact|market_not_in_vocabulary)/.test(e)) },
+        { name: "versioned", ok: v.ok && Number.isInteger(s.version) && s.version >= 1 },
+      ])
+    },
+  }),
+  provider_adapter: Object.freeze({
+    "extension_eval:provider_adapter_contract_v1": (d: unknown) => {
+      const v = validateProviderAdapterExtension(d)
+      return evidenceOf("extension_eval:provider_adapter_contract_v1", [
+        { name: "contract_valid", ok: v.ok, detail: v.errors.join(", ") || undefined },
+        { name: "routed_through_the_route_table", ok: !v.errors.some((e) => /^(unrouted_provider|capability_not_routed)/.test(e)) },
+        { name: "metered", ok: !v.errors.some((e) => /UNMETERED|no declared price/.test(e)) },
+      ])
+    },
+  }),
+  webhook_app: Object.freeze({
+    "extension_eval:webhook_app_contract_v1": (d: unknown) => {
+      const v = validateWebhookAppDeclaration(d)
+      const w = d as WebhookAppDeclaration
+      // The projection actually built for every subscribed event carries ONLY allow-listed primitive keys — a PII
+      // key and a nested object planted on the internal row never leave.
+      const leaks: string[] = []
+      if (v.ok) for (const ev of w.events) {
+        const def = WEBHOOK_EVENT_CATALOG.find((x) => x.event === ev)!
+        const metadata: Record<string, unknown> = { email: "x@y.z", phone: "5555550100", nested: { a: 1 } }
+        for (const k of def.payloadFields) metadata[k] = "v"
+        const p = buildWebhookPayload(ev, { id: "e", event_type: String(def.internalTypes[0]), entity_type: "x", entity_id: "x", brokerage_id: "b", created_at: "t", metadata })
+        for (const k of Object.keys(p.data)) if (!def.payloadFields.includes(k)) leaks.push(`${ev}.${k}`)
+      }
+      return evidenceOf("extension_eval:webhook_app_contract_v1", [
+        { name: "contract_valid", ok: v.ok, detail: v.errors.join(", ") || undefined },
+        { name: "catalogue_bounded", ok: v.ok && w.events.every((e) => WEBHOOK_EVENT_CATALOG.some((x) => x.event === e)) },
+        { name: "projection_allow_list_only", ok: v.ok && leaks.length === 0, detail: leaks.join(", ") || undefined },
+      ])
+    },
+  }),
+})
+
+/** PURE — one validator per kind; each judged against its own survivor. An unknown kind fails closed. */
 export function validateExtensionDeclaration(kind: ExtensionKind, d: unknown): SkillValidation {
   if (kind === "skill") return validateSkillDeclaration(d as SkillDeclaration, { knownEvaluationSuites: new Set(Object.keys(SKILL_EVALUATORS)) })
   if (kind === "custom_manager") return validateCustomManagerDeclaration(d as CustomManagerDeclaration)
-  return { ok: false, errors: [`contract_validator_not_registered:${kind}`] }
+  const v = kind === "strategy" ? validateStrategyExtension(d) : kind === "provider_adapter" ? validateProviderAdapterExtension(d) : kind === "webhook_app" ? validateWebhookAppDeclaration(d) : null
+  if (!v) return { ok: false, errors: [`contract_validator_not_registered:${String(kind)}`] }
+  const suite = (d as { evaluation_suite?: unknown } | null)?.evaluation_suite
+  if (typeof suite === "string" && !(suite in EXTENSION_CONTRACT_EVALUATORS[kind])) v.errors.push(`unknown_evaluation_suite:${suite}`)
+  return { ok: v.errors.length === 0, errors: v.errors }
 }
 
 /** PURE — run the kind's platform-owned evaluator (null = none exists for that suite / kind). */
@@ -624,6 +813,7 @@ export function evaluateExtension(kind: ExtensionKind, d: unknown): SkillEvaluat
   if (typeof suite !== "string") return null
   if (kind === "skill") return SKILL_EVALUATORS[suite]?.(d as SkillDeclaration) ?? null
   if (kind === "custom_manager") return CUSTOM_MANAGER_EVALUATORS[suite]?.(d as CustomManagerDeclaration) ?? null
+  if (kind === "strategy" || kind === "provider_adapter" || kind === "webhook_app") return EXTENSION_CONTRACT_EVALUATORS[kind][suite]?.(d) ?? null
   return null
 }
 
@@ -652,9 +842,28 @@ export function extensionEnablementChecks(row: { extension_kind: ExtensionKind; 
     const caps = Array.isArray(d?.allowed_capabilities) ? d.allowed_capabilities : []
     checks.push({ name: "risk_classified", ok: caps.length > 0 && caps.every((c) => c in APP_CAPABILITY_REGISTRY && MIN_AUTHORITY_FOR_RISK[capabilityRiskClass(c)] !== null) })
     checks.push({ name: "dependencies_available", ok: !!d && d.escalation_owner in MANAGERS && (d.tools ?? []).every((t) => !!builtinSkill(t)) && (d.policy_requirements ?? []).every((p) => p in TENANT_POLICY_SETTINGS_KEYS) })
+  } else if (row.extension_kind === "strategy") {
+    // Re-asked at enablement time: capability ownership may have moved since validation.
+    const s = (row.declaration as StrategyExtensionDeclaration | null)?.strategy
+    const steps: readonly StrategyDefinition["steps"][number][] = Array.isArray(s?.steps) ? s.steps : []
+    const capsOf = (st: StrategyDefinition["steps"][number]): readonly AppCapability[] => (Array.isArray(st?.capabilities) ? st.capabilities : [])
+    const caps = steps.flatMap(capsOf)
+    checks.push({ name: "risk_classified", ok: caps.length > 0 && caps.every((c) => c in APP_CAPABILITY_REGISTRY && MIN_AUTHORITY_FOR_RISK[capabilityRiskClass(c)] !== null) })
+    const moved = steps.flatMap((st) => capsOf(st).filter((c) => CAPABILITY_MANAGER[c] !== st.manager).map((c) => `${c}:${st.manager}`))
+    checks.push({ name: "dependencies_available", ok: steps.length > 0 && steps.every((st) => st?.manager in MANAGERS) && moved.length === 0, detail: moved.join(", ") || undefined })
+  } else if (row.extension_kind === "provider_adapter") {
+    const a = (row.declaration as ProviderAdapterExtensionDeclaration | null)?.adapter
+    const v = validateProviderAdapterExtension(row.declaration)
+    checks.push({ name: "risk_classified", ok: v.ok && !v.errors.some((e) => /UNMETERED|no declared price/.test(e)), detail: "a paid adapter names its usage booking" })
+    checks.push({ name: "dependencies_available", ok: !!a && typeof a.provider === "string" && routedProviders().includes(a.provider) && !!adapterFor(a.provider) })
+  } else if (row.extension_kind === "webhook_app") {
+    const w = row.declaration as WebhookAppDeclaration | null
+    const events: readonly string[] = Array.isArray(w?.events) ? w.events : []
+    checks.push({ name: "risk_classified", ok: events.length > 0 && !events.includes("*"), detail: "external_message — catalogue events, allow-list projection" })
+    checks.push({ name: "dependencies_available", ok: events.length > 0 && events.every((e) => WEBHOOK_EVENT_CATALOG.some((x) => x.event === e)) })
   } else {
-    checks.push({ name: "risk_classified", ok: false, detail: `no contract registered for ${row.extension_kind}` })
-    checks.push({ name: "dependencies_available", ok: false, detail: `no contract registered for ${row.extension_kind}` })
+    checks.push({ name: "risk_classified", ok: false, detail: `no contract registered for ${String(row.extension_kind)}` })
+    checks.push({ name: "dependencies_available", ok: false, detail: `no contract registered for ${String(row.extension_kind)}` })
   }
   return checks
 }

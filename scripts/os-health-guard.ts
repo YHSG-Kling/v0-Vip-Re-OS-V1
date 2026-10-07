@@ -197,6 +197,8 @@ async function main() {
     publishSignal: async (_s: any, s: any) => { signals.push(s); return { ok: true } },
     halt: async (s: any, h: any) => { halts.push(h); return haltFinancialWriter(s, h) },
     notifyHuman: async (_s: any, i: HealthIncident) => { belled.push(i.subjectKey) },
+    // The unknown→human POLICY is proven here; its troubleshooting step is proven by test:self-healing.
+    troubleshoot: false as const,
   }
   const detectorDeps = { providerHealth: async (_p: string) => ({ state: "healthy", routeAround: false, reason: "ok" }) }
   const detectors = ["stale_missions", "stuck_workflows", "failed_webhooks", "missing_reconciliations", "usage_inconsistencies", "event_backlog", "compliance_flags"] as const
@@ -247,6 +249,8 @@ async function main() {
     const repP2 = await runOsHealthSupervisor(A, svcP2, { now: NOW, detectors: ["provider_failures"], detectorDeps: { providerHealth: async (p) => (p === "versium" ? health.versium : { state: "healthy", routeAround: false, reason: "ok" }) }, executorDeps })
     const v2 = repP2.outcomes.find((o) => o.incident.subjectKey === "provider:versium")
     check("POSITIVE CONTROL: versium failing with batchdata / peopledata healthy → FAILOVER through the chain", v2?.decision.action === "failover" && v2.executed && /routed around/.test(v2.outcome))
+    // Wave 138 (138A): the failover step then hands the provider to the self-healer's exported entry.
+    check(`failover → healProviderFailure ran on the executor path (${(v2?.outcome ?? "").split("; ")[1]?.slice(0, 90) ?? "no heal step"})`, /; provider heal: (failover|escalate|none|propose|apply_declared|propose_unregistered) — /.test(v2?.outcome ?? ""))
     check("batchdata failing → a single-provider capability (dnc_tcpa) has NO alternative → human", k.get("provider:batchdata")?.decision.action === "escalate_human" && k.get("provider:batchdata")?.incident.failoverAvailable === false)
     check("a provider this tenant never uses is not THIS tenant's incident (peopledata is B's)", !k.has("provider:peopledata"))
     check("rentcast rate-limited → backoff (the incident carries the cooldown)", k.get("provider:rentcast")?.decision.action === "backoff" && !!k.get("provider:rentcast")?.incident.retryAfter)

@@ -428,8 +428,8 @@ export const PLATFORM_STRATEGY_LIBRARY: readonly StrategyDefinition[] = Object.f
     missionType: "recruiting", ownerManager: "recruiting_manager",
     eligibility: { subjectTypes: ["brokerage", "territory"], all: [] },
     steps: [
-      { manager: "recruiting_manager", capabilities: [], purpose: "the competency coaching plan for in-development agents", playbooks: [],
-        gap: "agent coaching / competency intervention has no catalogue capability — the learning router (lib/learning-router) and the coaching engine (lib/intelligence/coaching-engine.ts) are survivors without a capability key" },
+      // wave 138C: the named gap is closed — agent_coaching_assign runs the adaptive development cycle (skill-freshness-radar).
+      { manager: "recruiting_manager", capabilities: ["agent_coaching_assign"], purpose: "the competency coaching plan for in-development agents", playbooks: [] },
       { manager: "finance_manager", capabilities: ["report_generate"], purpose: "the agent's own production and cap progress (agents see their own economics, never brokerage margin)", playbooks: [] },
     ],
     budget: { usd: 0, tokens: 40_000 }, authority: { recommended: 2, approval: "always" },
@@ -444,8 +444,8 @@ export const PLATFORM_STRATEGY_LIBRARY: readonly StrategyDefinition[] = Object.f
     missionType: "compliance", ownerManager: "compliance_officer",
     eligibility: { subjectTypes: ["brokerage"], all: [] },
     steps: [
-      { manager: "compliance_officer", capabilities: [], purpose: "the fair-housing review of the campaign's copy and audience basis", playbooks: [],
-        gap: "the compliance_officer owns no catalogue capability — fair-housing review runs on the compliance scan survivors (lib/compliance) outside the capability catalogue" },
+      // wave 138C: the named gap is closed — compliance_review is the compliance officer's read-only verdict capability.
+      { manager: "compliance_officer", capabilities: ["compliance_review"], purpose: "the fair-housing review of the campaign's copy and audience basis", playbooks: [] },
       { manager: "asset_manager", capabilities: ["content_repurpose"], purpose: "compliance-first scripts (fair housing in the writing prompt, not only the post-hoc scan)", playbooks: [{ kind: "experience", key: "video" }] },
       { manager: "campaign_orchestrator", capabilities: ["campaign_performance_report"], purpose: "the opt-out / reply read-back before the campaign scales", playbooks: [] },
     ],
@@ -470,11 +470,68 @@ export const PLATFORM_STRATEGY_LIBRARY: readonly StrategyDefinition[] = Object.f
     outcomeMetrics: ["attributedGciCents", "attributedDeals"],
     audience: "The brokerage's finance desk", marketSuitability: ["any"], averageCostUsd: 0, priority: 30,
   }),
+  // ── v4 (wave 138E): the domains 137E left at ONE strategy (investors, transactions/closing, compliance,
+  // territory) each get a second — appended at v1, no published version edited. Domain sources: realestate-invest
+  // / -rental / real-estate-investment (portfolio review), real-estate-expert + legal-compliance (closing file),
+  // recruiter-talent-acquisition + realestate-market (territory capacity), ecc autonomous-loops (bounded cadence).
+  def({
+    key: "investor_portfolio_review", version: 1, title: "VIPAgents Investor Portfolio Review",
+    objective: "Give a past-client investor a property-only value review of what they hold and tour the next acquisition that pencils",
+    missionType: "campaign", ownerManager: "sphere_of_influence",
+    eligibility: { subjectTypes: ["contact"], all: [NOT_DNC, NOT_EXHAUSTED, { fact: "is_past_client", op: "is_true" }], any: [{ fact: "persona", op: "eq", value: "investor" }, { fact: "intent", op: "eq", value: "investor" }] },
+    steps: [
+      { manager: "data_steward", capabilities: ["contact_get"], purpose: "the holdings and buy box on the contact record (property-only — no person data leaves it)", playbooks: [] },
+      { manager: "listing_concierge", capabilities: ["cma_generate"], purpose: "a value review of each held property on the AVM provider chain", playbooks: [{ kind: "creative_playbook", key: "anniversary_equity" }] },
+      { manager: "sphere_of_influence", capabilities: ["handwritten_note_send"], purpose: "the review delivered as a lifetime-client touch", playbooks: [] },
+      { manager: "shopping_agent", capabilities: ["appointment_schedule"], purpose: "the review meeting and the next acquisition tour", playbooks: [{ kind: "experience", key: "properties" }] },
+    ],
+    budget: { usd: 15, tokens: 30_000 }, authority: { recommended: 3, approval: "per_authority" },
+    timing: { horizonDays: 60, cadenceDays: 21 }, fatigue: CONTACT_FATIGUE,
+    exitCriteria: [{ metric: "appointmentsBooked", op: ">=", target: 1 }],
+    outcomeMetrics: ["appointmentsBooked", "attributedDeals", "optOutsHonored"],
+    audience: "Past-client investors (property-only)", marketSuitability: ["any"], averageCostUsd: 12, priority: 50,
+  }),
+  def({
+    key: "closing_file_compliance_review", version: 1, title: "VIPAgents Closing File Compliance Review",
+    objective: "Audit an under-contract file (documents, disclosures, the dates that govern the deal) before a stage advances",
+    missionType: "transaction", ownerManager: "deal_coordinator",
+    eligibility: { subjectTypes: ["contact", "listing"], all: [], any: [{ fact: "buyer_stage", op: "eq", value: "BUYER_UNDER_CONTRACT" }, { fact: "listing_status", op: "in", value: ["pending", "under_contract"] }] },
+    steps: [
+      { manager: "data_steward", capabilities: ["connectivity_scan"], purpose: "the e-sign / document connectors are live before the file is read", playbooks: [] },
+      { manager: "compliance_officer", capabilities: [], purpose: "the file audit — disclosures, signatures, deadline conflicts", playbooks: [],
+        gap: "the compliance_officer owns no catalogue capability — the file audit runs on lib/kernel/document-compliance-audit.ts outside the capability catalogue" },
+      { manager: "shopping_agent", capabilities: ["portal_milestones_get"], purpose: "the client-visible dates that govern the deal", playbooks: [{ kind: "experience", key: "document_explanation" }] },
+      { manager: "deal_coordinator", capabilities: ["transaction_advance"], purpose: "advance the stage ONLY once the audit clears (a human approves every advance)", playbooks: [{ kind: "sequence_type", key: "transaction" }] },
+    ],
+    budget: { usd: 0, tokens: 20_000 }, authority: { recommended: 2, approval: "always" },
+    timing: { horizonDays: 45, cadenceDays: 3 }, fatigue: { scopes: ["contact", "agent"], maxContactRisk: "moderate", deconflict: true },
+    exitCriteria: [{ metric: "attributedDeals", op: ">=", target: 1 }],
+    outcomeMetrics: ["attributedDeals"],
+    audience: "Files under contract", marketSuitability: ["any"], averageCostUsd: 1, priority: 70,
+  }),
+  def({
+    key: "territory_capacity_recruiting", version: 1, title: "VIPAgents Territory Capacity Recruiting",
+    objective: "Where a territory's seller demand outruns its agent capacity, recruit for that territory before buying more leads",
+    missionType: "recruiting", ownerManager: "recruiting_manager",
+    // The territory is the tenant's own farm_territories row — never a hard-coded market.
+    eligibility: { subjectTypes: ["territory"], all: [{ fact: "territory_seller_demand_up", op: "is_true" }, { fact: "recruiting_need", op: "is_true" }] },
+    steps: [
+      { manager: "listing_concierge", capabilities: ["listing_demand_report"], purpose: "seller demand and agent capacity in the territory against the window before", playbooks: [] },
+      { manager: "ai_isa", capabilities: ["lead_search"], purpose: "the territory's seller leads waiting on capacity (read only)", playbooks: [] },
+      { manager: "recruiting_manager", capabilities: ["recruit_outreach"], purpose: "outreach to recruits who farm or live in the territory (proposals into the approval gate)", playbooks: [{ kind: "kernel_play", key: "recruit_outreach" }] },
+    ],
+    budget: { usd: 0, tokens: 30_000 }, authority: { recommended: 2, approval: "always" },
+    timing: { horizonDays: 90, cadenceDays: 30 }, fatigue: { scopes: ["agent"], maxContactRisk: "moderate", deconflict: true },
+    exitCriteria: [{ metric: "attributedDeals", op: ">=", target: 1 }],
+    outcomeMetrics: ["attributedDeals"],
+    audience: "A territory whose seller demand outruns its agent capacity", marketSuitability: ["any", "growth"], averageCostUsd: 2, priority: 42,
+  }),
 ])
 
 /** The library's published edition — v1 the owner's eight (107E), v2 the three owner-approved gaps built
- *  (108H), v3 the full-OS breadth (137E). A bump appends; it never edits a published strategy version. */
-export const PLATFORM_STRATEGY_LIBRARY_EDITION = 3
+ *  (108H), v3 the full-OS breadth (137E), v4 every OS domain at ≥ 2 strategies (138E). A bump appends; it
+ *  never edits a published strategy version. */
+export const PLATFORM_STRATEGY_LIBRARY_EDITION = 4
 
 /** The OS domains the platform must cover (owner, wave 137 BREADTH) — the census the proof asserts:
  *  every domain carries ≥ 1 platform strategy and ≥ 1 platform skill example. */
@@ -506,6 +563,9 @@ export const STRATEGY_DOMAINS: Readonly<Record<string, readonly OsDomain[]>> = O
   agent_development_retention: ["recruiting_retention", "education_coaching"],
   compliance_first_marketing: ["compliance", "marketing_content"],
   commission_residual_review: ["finance_commission"],
+  investor_portfolio_review: ["investors", "sphere_lifetime", "property_intelligence"],
+  closing_file_compliance_review: ["transactions_closing", "compliance"],
+  territory_capacity_recruiting: ["territory_acquisition", "recruiting_retention"],
 })
 
 /** The owner's eight, by key (the seed set the proof checks). */

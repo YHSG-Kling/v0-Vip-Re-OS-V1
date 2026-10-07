@@ -142,6 +142,22 @@ const CANDIDATES: readonly PlatformSkillExample[] = [
     required_capabilities: ["isa_qualify"], risk_class: "LOW_RISK_WRITE", authority_requirement: 1, cost_estimate: unmeasured("none"), tenant_entitlement: "app.access",
     evaluation_fixtures: [{ leadId: UUID }] },
     ["buyers", "sellers"], ["sales-qualify", "sales-rep-sales-strategy"]),
+  // ── wave 138E: the domains 137E left at ONE example (investors, recruiting/retention, education/coaching) ──
+  ex({ name: "investor_demand_valuation", manager_owner: "listing_concierge", purpose: "Value an investor's target property (property-only) beside the window's measured seller demand, so the buy decision reads supply as well as price.",
+    inputs: { fields: [f("agentId", "uuid"), f("propertyAddress", "string"), f("propertyCity", "string"), f("propertyState", "string"), f("propertyZip", "string"), f("windowDays", "number")] },
+    required_capabilities: ["cma_generate", "listing_demand_report"], risk_class: "LOW_RISK_WRITE", authority_requirement: 1, cost_estimate: unmeasured("none"), tenant_entitlement: "app.access",
+    evaluation_fixtures: [{ agentId: UUID, propertyAddress: "300 Elm St", propertyCity: "Anytown", propertyState: "ST", propertyZip: "00000", windowDays: 90 }] },
+    ["investors", "property_intelligence", "territory_acquisition"], ["realestate-invest", "realestate-market", "real-estate-investment"]),
+  ex({ name: "recruit_shortlist_outreach", manager_owner: "recruiting_manager", purpose: "Propose outreach to a named recruit shortlist (e.g. agents who farm an under-capacity territory) into the approval gate — never sent blind.",
+    inputs: { fields: [f("recruitIds", "array"), f("limit", "number", false)] },
+    required_capabilities: ["recruit_outreach"], risk_class: "LOW_RISK_WRITE", authority_requirement: 1, cost_estimate: unmeasured("vendor_spend"), tenant_entitlement: "app.access",
+    evaluation_fixtures: [{ recruitIds: [UUID], limit: 5 }] },
+    ["recruiting_retention", "territory_acquisition"], ["recruiter:candidate-outreach", "recruiter-employer-branding", "recruiter-talent-acquisition"]),
+  ex({ name: "agent_production_coaching_read", manager_owner: "finance_manager", purpose: "Generate the team production report a coaching or retention conversation starts from (agents see their own economics, never brokerage margin).",
+    inputs: { fields: [f("reportType", "string"), f("range", "string", false)] },
+    required_capabilities: ["report_generate"], risk_class: "READ", authority_requirement: 0, cost_estimate: unmeasured("none"), tenant_entitlement: "app.access",
+    evaluation_fixtures: [{ reportType: "team", range: "90d" }] },
+    ["education_coaching", "recruiting_retention"], ["sales-rep-sales-strategy", "management-consultant-strategic-analysis", "bookkeeper-financial-reporting"]),
 ]
 
 /** PURE: the load-time gate — the marketplace's own validator + the platform evaluator. Not a builtin name. */

@@ -382,6 +382,34 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
       `SAME canonical action as the composer (notifyBrokerageAgentsAction) — IN-APP ONLY by construction (notifications rows, channel 'in_app'; never email/SMS — no egress), same team_announcement_posted lifecycle_events ledger with honest counters; voice origin: ${VOICE_RECEIPT} + ${BUS_RECEIPT}`,
     sayIt: "“Announce to the team: the office closes at noon Friday”",
   },
+  // ── Wave 138E — the whole team, 24/7 (lib/voice-admin/assistant-reach.ts) ──
+  {
+    command: "lib/kernel/manager-delegation.pendingDelegationsFor + lib/kernel/manager-activity.loadManagerActivity (manager status)",
+    domain: "team-coordination",
+    speakable: true,
+    toolName: "manager_status",
+    guard: "authority 'admin' (route) + the backend re-checks resolveTenantAdmin (user_type OR a grant pinned to the session's tenant); a role that cannot be read refuses",
+    auditParity: `read-only — the same two readers the Missions card and the Command Center activity feed use; a refused source is spoken, never shown as 'nothing'; voice origin: ${VOICE_RECEIPT}`,
+    sayIt: "“What is the ads manager working on?” / “Team status”",
+  },
+  {
+    command: "lib/kernel/broker-objectives.submitBrokerObjective",
+    domain: "team-coordination",
+    speakable: true,
+    toolName: "broker_objective",
+    guard: "authority 'admin' (route) + resolveTenantAdmin in the backend — the Missions card's own rule (an objective commits the brokerage)",
+    auditParity: `SAME kernel call as submitBrokerObjectiveAction — the same mission / proposal / evidence rows, nothing runs before a human approves; voice origin: ${VOICE_RECEIPT}`,
+    sayIt: "“Objective: grow listings 10% in Riverside under $2,000 a month”",
+  },
+  {
+    command: "lib/kernel/skill-marketplace.runSkill",
+    domain: "team-coordination",
+    speakable: true,
+    toolName: "run_skill",
+    guard: "authority 'admin' (route) + resolveTenantAdmin in the backend; risk ≤ COMMUNICATION and no money / books / legal-stage capability (assistantSkillRefusal); then runSkill's own entitlement, metering and authority-rung gates",
+    auditParity: `SAME run path as runSkillForTenant — one withActionLedger row (skill.manager_skill.run) + one delegation per capability, each accepted by a human; voice origin: ${VOICE_RECEIPT}`,
+    sayIt: "“Run skill anniversary note and gift for the Hendersons”",
+  },
 
   // ── DEAL DOCUMENTS (offer/BBA/listing packets + e-sign) ───────────────────
   {

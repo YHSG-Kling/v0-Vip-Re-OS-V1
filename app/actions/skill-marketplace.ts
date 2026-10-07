@@ -15,11 +15,11 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
 import { requirePlatformStaff } from "@/lib/auth/platform-guard"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
-import { MANAGER_SKILLS, type CustomManagerDeclaration, type SkillDeclaration } from "@/lib/kernel/skill-registry"
+import { EXTENSION_KINDS, MANAGER_SKILLS, type ExtensionKind, type SkillDeclaration } from "@/lib/kernel/skill-registry"
 import {
   decideSkillListing, evaluateSkillListing, listPlatformSkillListings, listTenantExtensions, listVisibleSkillListings,
   runCustomManagerCapability, runSkill, setTenantExtensionEnabled, submitSkillListing,
-  type ExtensionListingRow, type ListingResult, type RunCustomManagerResult, type RunSkillResult, type SkillDecision, type TenantExtensionView,
+  type ExtensionDeclaration, type ExtensionListingRow, type ListingResult, type RunCustomManagerResult, type RunSkillResult, type SkillDecision, type TenantExtensionView,
 } from "@/lib/kernel/skill-marketplace"
 
 type TenantGate = { ok: true; brokerageId: string; userId: string; isTenantAdmin: boolean; impersonating: boolean } | { ok: false; error: string }
@@ -34,9 +34,9 @@ async function tenantGate(): Promise<TenantGate> {
   return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, isTenantAdmin: admin.isTenantAdmin, impersonating: !!ctx.isImpersonating }
 }
 
-/** The extension kinds a door accepts a declaration for — the kinds whose contract this lane owns. */
-type AuthoredKind = "skill" | "custom_manager"
-const authoredKind = (k: unknown): AuthoredKind => (k === "custom_manager" ? "custom_manager" : "skill")
+/** The extension kinds a door accepts a declaration for — every kind now has a contract validator (wave 138D);
+ *  the kernel refuses a tenant-authored platform-only kind (provider_adapter). Anything unknown is a skill. */
+const authoredKind = (k: unknown): ExtensionKind => ((EXTENSION_KINDS as readonly unknown[]).includes(k) ? (k as ExtensionKind) : "skill")
 
 export interface SkillRegistryView {
   ok: boolean
@@ -56,7 +56,7 @@ export async function getSkillRegistry(): Promise<SkillRegistryView> {
 }
 
 /** A tenant admin submits a tenant-authored skill or custom manager; it is evaluated at once (deterministic suite). */
-export async function submitTenantSkill(declaration: SkillDeclaration | CustomManagerDeclaration, kind?: AuthoredKind): Promise<ListingResult> {
+export async function submitTenantSkill(declaration: ExtensionDeclaration, kind?: ExtensionKind): Promise<ListingResult> {
   const gate = await tenantGate()
   if (!gate.ok) return { ok: false, reason: gate.error }
   if (!gate.isTenantAdmin || gate.impersonating) return { ok: false, reason: "tenant_admin_only" }
@@ -76,7 +76,7 @@ export async function decideTenantSkill(listingId: string, decision: SkillDecisi
 }
 
 /** Platform staff take a THIRD-PARTY (or platform) submission into the lifecycle and evaluate it. */
-export async function submitThirdPartySkill(declaration: SkillDeclaration | CustomManagerDeclaration, publisherName: string, publisher: "third_party" | "platform" = "third_party", kind?: AuthoredKind): Promise<ListingResult> {
+export async function submitThirdPartySkill(declaration: ExtensionDeclaration, publisherName: string, publisher: "third_party" | "platform" = "third_party", kind?: ExtensionKind): Promise<ListingResult> {
   const staff = await requirePlatformStaff()
   if (!staff.ok) return { ok: false, reason: staff.error }
   if (publisher === "third_party" && !publisherName?.trim()) return { ok: false, reason: "publisher_name_required" }
@@ -91,6 +91,15 @@ export async function getPlatformSkillQueue(): Promise<{ ok: boolean; error?: st
   const staff = await requirePlatformStaff()
   if (!staff.ok) return { ok: false, error: staff.error, listings: [] }
   const { listings, readRefused } = await listPlatformSkillListings(createServiceClient())
+  return readRefused ? { ok: false, error: readRefused, listings } : { ok: true, listings }
+}
+
+/** Platform staff read every TENANT-authored listing (any status) — the kill-switch queue (wave 138D). Staff may only
+ *  suspend / disable these (canDecideSkillListing); each move is ledgered on the listing's own tenant. */
+export async function getPlatformTenantExtensions(): Promise<{ ok: boolean; error?: string; listings: ExtensionListingRow[] }> {
+  const staff = await requirePlatformStaff()
+  if (!staff.ok) return { ok: false, error: staff.error, listings: [] }
+  const { listings, readRefused } = await listPlatformSkillListings(createServiceClient(), "tenant")
   return readRefused ? { ok: false, error: readRefused, listings } : { ok: true, listings }
 }
 
@@ -127,9 +136,11 @@ export async function setTenantExtension(listingId: string, enable: boolean): Pr
 }
 
 /** A tenant admin asks an ENABLED custom manager to request ONE of its allowed capabilities. */
-export async function runCustomManagerForTenant(customManager: string, capability: string, inputs: Record<string, unknown>, objective: string): Promise<RunCustomManagerResult> {
+export async function runCustomManagerForTenant(customManager: string, capability: string, inputs: Record<string, unknown>, objective: string, missionId?: string | null): Promise<RunCustomManagerResult> {
   const gate = await tenantGate()
   if (!gate.ok) return { ok: false, reason: gate.error }
   if (!gate.isTenantAdmin || gate.impersonating) return { ok: false, reason: "tenant_admin_only" }
-  return runCustomManagerCapability({ brokerageId: gate.brokerageId, customManager, capability, inputs: inputs ?? {}, objective }, createServiceClient())
+  // A mission id is a REFERENCE, never a tenant: the compiler resolves it inside the session's tenant (foreign = not_found).
+  const mission = typeof missionId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(missionId.trim()) ? missionId.trim() : null
+  return runCustomManagerCapability({ brokerageId: gate.brokerageId, customManager, capability, inputs: inputs ?? {}, objective, missionId: mission }, createServiceClient())
 }

@@ -20,10 +20,12 @@ import { getTenantExtensions, setTenantExtension, runCustomManagerForTenant } fr
 import type { TenantExtensionView } from "@/lib/kernel/skill-marketplace"
 import type { CustomManagerDeclaration } from "@/lib/kernel/skill-registry"
 
-function CustomManagerRun({ name, decl, busy, onRun }: { name: string; decl: CustomManagerDeclaration; busy: boolean; onRun: (capability: string, objective: string, inputs: string) => void }) {
+function CustomManagerRun({ name, decl, busy, onRun }: { name: string; decl: CustomManagerDeclaration; busy: boolean; onRun: (capability: string, objective: string, inputs: string, missionId: string) => void }) {
   const [capability, setCapability] = useState<string>(decl.allowed_capabilities?.[0] ?? "")
   const [objective, setObjective] = useState("")
   const [inputs, setInputs] = useState("{}")
+  // Wave 138D: with a mission id the manager receives the compiled mission context — only its declared memory_access slices.
+  const [missionId, setMissionId] = useState("")
   return (
     <div className="flex flex-wrap items-center gap-2">
       <select aria-label={`Capability for ${name}`} className="rounded border px-2 py-1 text-xs" value={capability} onChange={(e) => setCapability(e.target.value)}>
@@ -31,7 +33,8 @@ function CustomManagerRun({ name, decl, busy, onRun }: { name: string; decl: Cus
       </select>
       <Input className="h-8 w-56 text-xs" placeholder="Objective" value={objective} onChange={(e) => setObjective(e.target.value)} />
       <Input className="h-8 w-56 font-mono text-xs" placeholder='Inputs JSON' value={inputs} onChange={(e) => setInputs(e.target.value)} />
-      <Button size="sm" variant="outline" disabled={busy || !capability || !objective} onClick={() => onRun(capability, objective, inputs)}>Ask</Button>
+      <Input className="h-8 w-56 font-mono text-xs" placeholder={`Mission id (context: ${decl.memory_access})`} value={missionId} onChange={(e) => setMissionId(e.target.value)} />
+      <Button size="sm" variant="outline" disabled={busy || !capability || !objective} onClick={() => onRun(capability, objective, inputs, missionId)}>Ask</Button>
     </div>
   )
 }
@@ -56,11 +59,11 @@ export function TenantExtensionsPanel() {
     load()
   })
 
-  const run = (name: string) => (capability: string, objective: string, inputsJson: string) => start(async () => {
+  const run = (name: string) => (capability: string, objective: string, inputsJson: string, missionId: string) => start(async () => {
     let inputs: Record<string, unknown>
     try { inputs = JSON.parse(inputsJson) } catch { toast.error("Inputs are not valid JSON."); return }
-    const r = await runCustomManagerForTenant(name, capability, inputs, objective)
-    if (r.ok) toast.success(`${r.manager} asked for ${capability}`); else toast.error(r.reason)
+    const r = await runCustomManagerForTenant(name, capability, inputs, objective, missionId.trim() || null)
+    if (r.ok) toast.success(`${r.manager} asked for ${capability}${r.context ? ` — context: ${r.context.slices.join(", ")}` : ""}`); else toast.error(r.reason)
   })
 
   return (

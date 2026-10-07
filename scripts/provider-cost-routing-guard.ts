@@ -122,9 +122,15 @@ check("dnc_tcpa / property_facts book MCP_TOOL_CALL_COST_USD; email_validation b
   && CONTACT_PROVIDER_ROUTES.property_facts[0].unitCostUsd === aiTools.MCP_TOOL_CALL_COST_USD
   && CONTACT_PROVIDER_ROUTES.email_validation[0].unitCostUsd === pdl.PEOPLEDATA_EMAIL_VALIDATE_COST_USD
   && CONTACT_PROVIDER_ROUTES.motivated_seller_list[0].unitCostUsd === bd.BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD)
-for (const cap of ["person_profile", "dnc_tcpa", "email_validation", "property_facts", "motivated_seller_list"] as const) {
+for (const cap of ["person_profile", "dnc_tcpa", "email_validation", "motivated_seller_list"] as const) {
   check(`${cap}: does NOT overlap — exactly one provider (${CONTACT_PROVIDER_ROUTES[cap][0].provider})`, CONTACT_PROVIDER_ROUTES[cap].length === 1)
 }
+// Wave 138 (lane 138A): Versium is ALSO a property-data provider (owner) — property_facts gains it
+// BEHIND BatchData at its own transport constant; property_valuation's owner order is untouched.
+const pf = CONTACT_PROVIDER_ROUTES.property_facts
+check("property_facts: BatchData first, Versium BEHIND it at VERSIUM_MATCH_CREDIT_USD (not ahead — the owner's RentCast → BatchData order stands); property_valuation carries no Versium",
+  pf.length === 2 && pf[0].provider === "batchdata" && pf[1].provider === "versium" && pf[1].unitCostUsd === vs.VERSIUM_MATCH_CREDIT_USD
+  && !CONTACT_PROVIDER_ROUTES.property_valuation.some((e) => e.provider === "versium"))
 check("person_profile / email_validation are PeopleData-only; dnc_tcpa / property_facts / motivated_seller_list are BatchData-only",
   CONTACT_PROVIDER_ROUTES.person_profile[0].provider === "peopledata" && CONTACT_PROVIDER_ROUTES.email_validation[0].provider === "peopledata"
   && CONTACT_PROVIDER_ROUTES.dnc_tcpa[0].provider === "batchdata" && CONTACT_PROVIDER_ROUTES.property_facts[0].provider === "batchdata" && CONTACT_PROVIDER_ROUTES.motivated_seller_list[0].provider === "batchdata")

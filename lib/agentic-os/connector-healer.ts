@@ -24,7 +24,9 @@ import { getConnectorSpec } from "./connector-registry"
 import { loadProviderHealth, loadAppliedAlternate } from "./connector-gateway"
 import { applyDeclaredAlternate } from "./connector-auto-applier"
 import { withActionLedger } from "@/lib/kernel/action-ledger"
-import { adapterFor, decideProviderHeal, bookAdapterUsage, type HealDecision, type HealSignals, type ProbeVerdict } from "@/lib/kernel/provider-adapters"
+import { adapterFor, decideProviderHeal, bookAdapterUsage, type HealDecision, type HealSignals, type ProbeVerdict, type ProviderAdapter } from "@/lib/kernel/provider-adapters"
+import { runBoundedModel, type BoundedModelDeps } from "@/lib/kernel/self-healing"
+import { z } from "zod"
 import type { MeterVendorInput } from "@/lib/vendor-governance/meter-vendor"
 
 export interface FailureSample {
@@ -41,7 +43,12 @@ export interface ProposeHealingParams {
   /** Optional current request shape (path, method, sample body, auth style) so the LLM can diff it
    *  against the docs. */
   currentRequest?: Record<string, any>
+  /** Wave 138B — the provider-setup research already ran (cited, cost-capped): write the proposal
+   *  from it instead of searching + asking a model a second time. */
+  researched?: { proposalKind: string; summary: string; finding: Record<string, unknown>; citations: Citation[]; confidence: number }
 }
+
+interface Citation { url: string; title: string | null; snippet: string }
 
 export interface ProposalRow {
   id:                string
@@ -69,14 +76,22 @@ export async function proposeConnectorHealing(
 
   // Always write at least a 'no_evidence' placeholder so the failure is auditable, then refine.
   const writeRow = async (row: Record<string, any>): Promise<ProposalRow | null> => {
-    const { data, error: proposalInsErr } = await supabase.from("connector_healing_proposals").insert({
-      connector:        params.connector,
-      failure_signature: signature,
-      failure_sample:   sample,
-      ...row,
-    }).select("id, connector, proposal_kind, proposal_summary, confidence, status").maybeSingle()
-    if (proposalInsErr) console.error(`[connector-healer] healing proposal NOT recorded: ${proposalInsErr.message}`)
-    return (data as any) ?? null
+    const r = await recordHealingProposal(supabase, { connector: params.connector, failure_signature: signature, failure_sample: sample, ...row } as HealingProposalInsert)
+    return r.row
+  }
+
+  // Wave 138B — the research step already found + cited the change: record it, notify, done.
+  if (params.researched) {
+    const rs = params.researched
+    const proposal = await writeRow({
+      proposal_kind:    rs.proposalKind,
+      proposal_summary: rs.summary.slice(0, 500),
+      proposal_payload: { finding: rs.finding, source: "provider_setup_research" },
+      docs_evidence:    rs.citations,
+      confidence:       Math.max(0, Math.min(1, rs.confidence)),
+    })
+    if (proposal) await notifyPlatformStaffOfProposal(supabase, params.connector, proposal).catch((err) => console.error("[connector-healer] notify failed (non-fatal):", err))
+    return { proposal, error: proposal ? null : "proposal not recorded" }
   }
 
   // 2. Look up registry + 3. Fetch docs via Exa (Tavily fallback)
@@ -188,6 +203,30 @@ export async function proposeConnectorHealing(
   return { proposal, error: null }
 }
 
+interface HealingProposalInsert {
+  connector: string
+  failure_signature: string
+  failure_sample: unknown
+  proposal_kind: string
+  proposal_summary: string
+  proposal_payload: Record<string, unknown>
+  docs_evidence: unknown[]
+  confidence: number
+}
+
+/**
+ * THE ONE healing-proposal writer (connector_healing_proposals): the provider healer above and the
+ * self-healing troubleshooter's exhausted playbooks (lib/kernel/self-healing.ts, kind
+ * 'playbook_exhausted' — not on the auto-applier's SAFE_KINDS, so it always waits for platform staff).
+ * Reads its error; never throws.
+ */
+export async function recordHealingProposal(client: { from: (table: string) => any }, row: HealingProposalInsert): Promise<{ id: string | null; error: string | null; row: ProposalRow | null }> {
+  const { data, error } = await client.from("connector_healing_proposals").insert({ ...row, failure_signature: row.failure_signature.slice(0, 300), proposal_summary: row.proposal_summary.slice(0, 500) })
+    .select("id, connector, proposal_kind, proposal_summary, confidence, status").maybeSingle()
+  if (error) console.error(`[connector-healer] healing proposal NOT recorded: ${error.message}`)
+  return { id: (data as ProposalRow | null)?.id ?? null, error: error?.message ?? (data ? null : "no row"), row: (data as ProposalRow | null) ?? null }
+}
+
 /** Targeted bell notification to every superadmin + platform-staff user — surfaces the new
  *  proposal in the same in-app notification feed they already watch. */
 async function notifyPlatformStaffOfProposal(
@@ -220,6 +259,101 @@ async function notifyPlatformStaffOfProposal(
 
 type HealLedgerClient = { from: (table: string) => any }
 
+// ─── PROVIDER SETUP RESEARCH (wave 138, lane 138B — owner: "provider self-healing includes SEARCHING
+// THE INTERNET for the provider's correct current setup (docs, changelog, status page, SDK/MCP version),
+// metered through the existing research capability, with citations as evidence; config-level fixes
+// apply + retry; code-level fixes become a healing proposal carrying the researched evidence").
+// The research capability survivor is lib/providers/dispatch.ts dispatchWebSearch (Exa, tenant-
+// attributed, booked to vendor_usage_tracking via meterVendorSpend); the extraction is ONE bounded
+// model call (lib/kernel/self-healing.ts runBoundedModel — Gateway, structured, cost-capped, booked).
+// A finding is only ever APPLIED when it names a CONFIG-level alternate the adapter ALREADY DECLARES
+// (the web can point at a fix; it can never point egress at an undeclared endpoint — the applier
+// re-validates against the declaration). Everything else is a proposal for platform staff.
+
+const RESEARCH_RESULTS_PER_QUERY = 4
+/** Default per-heal research ceiling (USD) — searches + the extraction call. */
+export const PROVIDER_RESEARCH_CAP_USD = 0.06
+
+const FindingSchema = z.object({
+  change: z.enum(["version_change", "endpoint_change", "auth_change", "shape_change", "outage", "none"]),
+  newVersion: z.string().max(80).nullable(),
+  newBaseUrl: z.string().max(300).nullable(),
+  summary: z.string().max(600),
+  citations: z.array(z.number().int().min(1).max(20)).max(8),
+  confidence: z.number().min(0).max(1),
+})
+type ProviderSetupFinding = z.infer<typeof FindingSchema>
+
+type SearchFn = (p: { brokerageId: string; query: string; includeDomains?: string[]; numResults: number; provider: string }) => Promise<{ ok: boolean; results: Array<{ url: string | null; title: string | null; text?: string | null; summary?: string | null }>; costUsd: number; reason: string }>
+type DeclaredAlternate = ProviderAdapter["api"]["alternates"][number]
+
+/** PURE — the research queries for one adapter: its docs host first, then changelog / status / SDK. */
+/** @proofSeam the proof asserts the docs host + version land in the queries */
+export function providerResearchQueries(adapter: ProviderAdapter): Array<{ query: string; includeDomains?: string[] }> {
+  let host: string | null = null
+  try { host = adapter.api.docsUrl ? new URL(adapter.api.docsUrl).host : null } catch { host = null }
+  const sdk = [adapter.api.sdk, adapter.api.mcp].filter(Boolean).join(" ")
+  return [
+    { query: `${adapter.provider} API ${adapter.api.version} deprecation changelog breaking change`, ...(host ? { includeDomains: [host] } : {}) },
+    { query: `${adapter.provider} API status incident ${sdk ? `${sdk} latest version` : "latest version"}` },
+  ]
+}
+
+/** PURE — a researched version / base URL resolves ONLY to a CONFIG-level alternate the adapter declares. */
+/** @proofSeam the proof asserts a cited finding maps to the declared alternate and nothing else */
+export function matchDeclaredConfigAlternate(adapter: ProviderAdapter, f: Pick<ProviderSetupFinding, "change" | "newVersion" | "newBaseUrl">, appliedAlternateId: string | null): DeclaredAlternate | null {
+  if (f.change !== "version_change" && f.change !== "endpoint_change") return null
+  const tok = (s: string) => s.toLowerCase().split(/[\s=&?,;:/]+/).map((t) => t.replace(/^v(?=\d)/, "")).filter(Boolean)
+  const current = new Set(tok(adapter.api.version))
+  const wanted = f.newVersion ? tok(f.newVersion).filter((t) => !current.has(t) && /\d/.test(t)) : []
+  for (const a of adapter.api.alternates) {
+    if (a.level !== "config" || a.id === appliedAlternateId) continue
+    if (f.newBaseUrl && a.baseUrl && a.baseUrl.replace(/\/+$/, "") === f.newBaseUrl.replace(/\/+$/, "")) return a
+    const own = new Set([...tok(a.version ?? ""), ...Object.values(a.query ?? {}).flatMap(tok)].filter((t) => !current.has(t)))
+    if (wanted.length && wanted.every((t) => own.has(t))) return a
+  }
+  return null
+}
+
+type ResearchOutcome =
+  | { ok: true; finding: ProviderSetupFinding; citations: Citation[]; costUsd: number }
+  | { ok: false; reason: string; costUsd: number }
+
+async function researchProviderSetup(adapter: ProviderAdapter, input: ProviderHealInput, capUsd: number, deps: ProviderHealDeps): Promise<ResearchOutcome> {
+  const queries = providerResearchQueries(adapter)
+  const { exaSearchListCost } = await import("@/lib/external/exa-client")
+  const estSearch = queries.length * exaSearchListCost(RESEARCH_RESULTS_PER_QUERY)
+  if (!(capUsd > 0) || estSearch >= capUsd) return { ok: false, reason: `cost cap: searches alone estimate $${estSearch.toFixed(4)} ≥ cap $${Math.max(0, capUsd).toFixed(4)} — not researched`, costUsd: 0 }
+  const search: SearchFn = deps.search ?? (async (p) => {
+    const { dispatchWebSearch } = await import("@/lib/providers/dispatch")
+    const r = await dispatchWebSearch({ brokerageId: p.brokerageId, query: p.query, includeDomains: p.includeDomains, numResults: p.numResults, purpose: "provider_setup_research", metadata: { provider: p.provider } })
+    return { ok: r.ok, results: r.results, costUsd: r.costUsd, reason: r.reason }
+  })
+  let spent = 0
+  const hits: Citation[] = []
+  for (const q of queries) {
+    const r = await search({ brokerageId: input.brokerageId, query: q.query, includeDomains: q.includeDomains, numResults: RESEARCH_RESULTS_PER_QUERY, provider: adapter.provider })
+      .catch((e: Error) => ({ ok: false, results: [] as Array<{ url: string | null; title: string | null; text?: string | null }>, costUsd: 0, reason: e.message }))
+    spent += Number(r.costUsd) || 0
+    if (!r.ok) continue
+    for (const h of r.results) if (h.url && !hits.some((x) => x.url === h.url)) hits.push({ url: h.url, title: h.title ?? null, snippet: String(h.text ?? (h as { summary?: string | null }).summary ?? "").replace(/\s+/g, " ").slice(0, 700) })
+  }
+  if (!hits.length) return { ok: false, reason: "research found no source (search unavailable or empty)", costUsd: spent }
+  const sources = hits.slice(0, 8)
+  const m = await runBoundedModel({
+    brokerageId: input.brokerageId, feature: "provider_setup_research", capUsd: capUsd - spent, schema: FindingSchema,
+    system: "You extract ONE provider-setup finding from numbered web sources. Report only what a source states; cite source numbers; never invent a version, URL or change. If the sources do not establish a change, return change \"none\".",
+    prompt:
+      `PROVIDER: ${adapter.provider}\nCODE SPEAKS: ${adapter.api.version} at ${adapter.api.baseUrl}\nDOCS: ${adapter.api.docsUrl ?? "-"}\nSDK/MCP: ${adapter.api.sdk ?? "-"} / ${adapter.api.mcp ?? "-"}\n` +
+      `FAILURES: ${JSON.stringify(input.failures.slice(0, 5)).slice(0, 1200)}\n\nSOURCES:\n${sources.map((h, n) => `[${n + 1}] ${h.title ?? "Untitled"} — ${h.url}\n${h.snippet}`).join("\n\n").slice(0, 6000)}`,
+  }, deps.researchModel ?? {})
+  const costUsd = spent + m.costUsd
+  if (!m.ok) return { ok: false, reason: m.reason, costUsd }
+  const cited = [...new Set(m.object.citations)].map((n) => sources[n - 1]).filter((c): c is Citation => !!c)
+  if (m.object.change !== "none" && !cited.length) return { ok: false, reason: "the finding cited no real source — discarded (never act on an uncited claim)", costUsd }
+  return { ok: true, finding: m.object, citations: cited, costUsd }
+}
+
 interface ProviderHealInput {
   /** Gateway service key or provider name (adapterFor resolves either). */
   connector: string
@@ -230,6 +364,8 @@ interface ProviderHealInput {
   cycle: string
   /** The ONE retry after an applied alternate. Absent → no retry is made (and nothing is booked). */
   retry?: () => Promise<{ ok: boolean; units?: number }>
+  /** Wave 138B — research budget for a provider that is UP but failing / drifting. Absent → no research. */
+  research?: { capUsd: number }
 }
 
 interface ProviderHealDeps {
@@ -243,6 +379,11 @@ interface ProviderHealDeps {
   apply?: typeof applyDeclaredAlternate
   propose?: (p: ProposeHealingParams) => Promise<{ proposal: ProposalRow | null; error: string | null }>
   meter?: (input: MeterVendorInput) => Promise<boolean>
+  /** Wave 138B seams — the research capability and the bounded extraction model. */
+  search?: SearchFn
+  researchModel?: BoundedModelDeps
+  /** Test seam for a synthetic adapter declaration (production resolves adapterFor). */
+  resolveAdapter?: (connector: string) => ProviderAdapter | null
 }
 
 interface ProviderHealReport {
@@ -252,14 +393,16 @@ interface ProviderHealReport {
   retryOk: boolean | null
   booked: number
   proposalId: string | null
+  /** Wave 138B — the cited finding the research step produced (null when it did not run / found none). */
+  research: { finding: ProviderSetupFinding; citations: Citation[]; costUsd: number } | null
 }
 
 export async function healProviderFailure(input: ProviderHealInput, deps: ProviderHealDeps = {}): Promise<ProviderHealReport> {
   const client = deps.client ?? createServiceClient()
   const now = deps.now ?? new Date()
   const propose = deps.propose ?? proposeConnectorHealing
-  const report: ProviderHealReport = { decision: { step: "propose_unregistered", reason: "" }, applied: false, retried: false, retryOk: null, booked: 0, proposalId: null }
-  const ledger = <T>(step: string, detail: Record<string, unknown>, run: () => Promise<T>, outcome: (r: T) => { ok: boolean; note: string }) =>
+  const report: ProviderHealReport = { decision: { step: "propose_unregistered", reason: "" }, applied: false, retried: false, retryOk: null, booked: 0, proposalId: null, research: null }
+  const ledger = <T>(step: string, detail: Record<string, unknown>, run: () => Promise<T>, outcome: (r: T) => { ok: boolean; note: string; costUsd?: number }) =>
     withActionLedger<T | null>(
       {
         brokerageId: input.brokerageId,
@@ -276,15 +419,15 @@ export async function healProviderFailure(input: ProviderHealInput, deps: Provid
       run,
       {
         settle: (r) => {
-          const o = r === null ? { ok: false, note: "no result" } : outcome(r as T)
-          return { status: o.ok ? "executed" : "failed", outcome: o.note.slice(0, 300), provider: input.connector, error: o.ok ? null : o.note }
+          const o: { ok: boolean; note: string; costUsd?: number } = r === null ? { ok: false, note: "no result" } : outcome(r as T)
+          return { status: o.ok ? "executed" : "failed", outcome: o.note.slice(0, 300), provider: input.connector, error: o.ok ? null : o.note, costUsd: o.costUsd ?? null }
         },
         replay: () => null,
       },
       { client },
     )
 
-  const adapter = adapterFor(input.connector)
+  const adapter = (deps.resolveAdapter ?? adapterFor)(input.connector)
   if (!adapter) {
     // No (valid) adapter declaration — the pre-137 path: an LLM-assisted proposal for platform staff.
     const reason = `${input.connector} has no valid adapter declaration — proposal only`
@@ -311,6 +454,51 @@ export async function healProviderFailure(input: ProviderHealInput, deps: Provid
   report.decision = decision
   const evidence = { adapter: adapter.provider, version: adapter.api.version, probe: s.probe, derived: s.derived, shapeChange: s.shapeChange, decision }
 
+  /** Apply ONE declared config alternate through the auto-applier, then retry ONCE (booked). */
+  const applyAndRetry = async (alternate: DeclaredAlternate, reason: string, extra: Record<string, unknown> = {}): Promise<ProviderHealReport> => {
+    const apply = deps.apply ?? applyDeclaredAlternate
+    const sig = `HTTP {${input.failures.map((f) => f.status ?? "?").join(",")}} — ${reason}`
+    const applied = await ledger("apply", { reason, alternate: alternate.id, ...evidence, ...extra },
+      () => apply(client, { connector: input.connector, alternateId: alternate.id, failureSignature: sig, evidence: { ...evidence, ...extra } }),
+      (x) => ({ ok: x.applied, note: x.reason }))
+    report.applied = !!applied?.applied
+    report.proposalId = applied?.proposalId ?? null
+    if (!report.applied || !input.retry) return report
+    // 2. RETRY ONCE under the applied alternate — ledgered, and booked only when it executed.
+    report.retried = true
+    const retried = await ledger("retry", { reason: `retry once under ${alternate.id}`, alternate: alternate.id }, () => input.retry!(),
+      (x) => ({ ok: x.ok, note: x.ok ? "retry succeeded" : "retry failed" }))
+    report.retryOk = retried?.ok ?? false
+    const booked = await bookAdapterUsage(adapter, { brokerageId: input.brokerageId, executed: !!retried?.ok, units: retried?.units, systemSource: "provider_self_heal", usageType: "heal_retry" }, { meter: deps.meter })
+    report.booked = booked ? 1 : 0
+    return report
+  }
+
+  // 1b. UP but failing / drifting with no declared remedy → RESEARCH the provider's current setup
+  //     (cost-capped, metered, cited). Never for a refused credential (a credential is a human's call).
+  const upAndUnremedied = (decision.step === "propose" && decision.proposalKind !== "rotate_key") || (decision.step === "none" && input.failures.length > 0)
+  if (upAndUnremedied && input.research) {
+    const capUsd = input.research.capUsd
+    const rs = await ledger("research", { reason: `research ${adapter.provider}'s current setup (docs / changelog / status / SDK) — cap $${capUsd}`, adapter: adapter.provider, version: adapter.api.version },
+      () => researchProviderSetup(adapter, input, capUsd, deps),
+      (x) => x.ok ? { ok: true, note: `${x.finding.change}: ${x.finding.summary} [${x.citations.length} cited]`, costUsd: x.costUsd } : { ok: false, note: x.reason, costUsd: x.costUsd })
+    if (rs?.ok && rs.finding.change !== "none") {
+      report.research = { finding: rs.finding, citations: rs.citations, costUsd: rs.costUsd }
+      const researched = { finding: rs.finding, citations: rs.citations }
+      const alt = matchDeclaredConfigAlternate(adapter, rs.finding, s.appliedAlternateId)
+      if (alt) return applyAndRetry(alt, `researched ${rs.finding.change} (${rs.finding.newVersion ?? rs.finding.newBaseUrl}) matches declared config alternate ${alt.id}`, { researched })
+      if (rs.finding.change !== "outage") {
+        const proposalKind = rs.finding.change === "auth_change" ? "auth_change" : rs.finding.change === "shape_change" ? "shape_update" : "endpoint_change"
+        const r = await ledger("propose", { reason: `researched code-level ${rs.finding.change} — a proposal carrying ${rs.citations.length} citation(s)`, ...evidence, researched },
+          () => propose({ connector: input.connector, failures: input.failures, currentRequest: { adapterVersion: adapter.api.version, baseUrl: adapter.api.baseUrl }, researched: { proposalKind, summary: rs.finding.summary, finding: rs.finding, citations: rs.citations, confidence: rs.finding.confidence } }),
+          (x) => ({ ok: !!x.proposal, note: x.proposal ? `proposal ${x.proposal.id} (${proposalKind}, researched)` : `proposal not written: ${x.error}` }))
+        report.proposalId = r?.proposal?.id ?? null
+        return report
+      }
+      // outage → the router's derived health owns it; the cited finding stays on the research row.
+    }
+  }
+
   switch (decision.step) {
     case "failover":
     case "escalate":
@@ -329,23 +517,7 @@ export async function healProviderFailure(input: ProviderHealInput, deps: Provid
       report.proposalId = r?.proposal?.id ?? null
       return report
     }
-    case "apply_declared": {
-      const apply = deps.apply ?? applyDeclaredAlternate
-      const sig = `HTTP {${input.failures.map((f) => f.status ?? "?").join(",")}} — ${decision.reason}`
-      const applied = await ledger("apply", { reason: decision.reason, alternate: decision.alternate.id, ...evidence },
-        () => apply(client, { connector: input.connector, alternateId: decision.alternate.id, failureSignature: sig, evidence }),
-        (x) => ({ ok: x.applied, note: x.reason }))
-      report.applied = !!applied?.applied
-      report.proposalId = applied?.proposalId ?? null
-      if (!report.applied || !input.retry) return report
-      // 2. RETRY ONCE under the applied alternate — ledgered, and booked only when it executed.
-      report.retried = true
-      const retried = await ledger("retry", { reason: `retry once under ${decision.alternate.id}`, alternate: decision.alternate.id }, () => input.retry!(),
-        (x) => ({ ok: x.ok, note: x.ok ? "retry succeeded" : "retry failed" }))
-      report.retryOk = retried?.ok ?? false
-      const booked = await bookAdapterUsage(adapter, { brokerageId: input.brokerageId, executed: !!retried?.ok, units: retried?.units, systemSource: "provider_self_heal", usageType: "heal_retry" }, { meter: deps.meter })
-      report.booked = booked ? 1 : 0
-      return report
-    }
+    case "apply_declared":
+      return applyAndRetry(decision.alternate, decision.reason)
   }
 }
