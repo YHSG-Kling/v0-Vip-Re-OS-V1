@@ -278,10 +278,14 @@ export async function GET(req: Request) {
         // WAVE 137 (lane 137C) — PROVIDER SELF-HEALING: probe first (this tick's probe verdict + the
         // gateway's derived health), then failover / apply a DECLARED config alternate + retry once /
         // propose. A connector with no adapter declaration falls through to the same proposal as before.
-        const { healProviderFailure, PROVIDER_RESEARCH_CAP_USD } = await import('@/lib/agentic-os/connector-healer')
+        const { healProviderFailure } = await import('@/lib/agentic-os/connector-healer')
         const first = failures[0]
         const brokerageId = (first.brokerage_id as string | null) ?? null
         if (!brokerageId) { healingSkippedExisting++; continue } // no tenant → no ledger owner; never healed unattributed
+        // WAVE 139 (lane 139F) — the research budget + auto-apply threshold come from the ONE self-healing policy
+        // reader (the tenant's policy under the platform ceiling). Unreadable → cap 0 → nothing researched.
+        const { loadHealingPolicy } = await import('@/lib/kernel/healing-policy')
+        const healingPolicy = await loadHealingPolicy(svc, brokerageId)
         const samples = failures.slice(0, 10).map((r): { status: number | null; path: string | null; error: string | null; at: string } => {
           // For shape_drift the actual diff lives in detail.drift; without forwarding it the
           // healer's LLM has no payload to reason on and produces generic guesses.
@@ -304,7 +308,7 @@ export async function GET(req: Request) {
           cycle: now.toISOString().slice(0, 13),
           // WAVE 138 (lane 138B) — UP but failing / drifting with no declared remedy → research the
           // provider's current setup on the web (cited, metered, cost-capped) before proposing.
-          research: { capUsd: PROVIDER_RESEARCH_CAP_USD },
+          research: { capUsd: healingPolicy.providerResearchCapUsd, autoApplyMinConfidence: healingPolicy.autoFixMinConfidence },
           // The one retry: the same live probe again, now that the applied alternate rides egress.
           retry: async () => {
             const conn = await resolveConnection({ brokerageId, provider })

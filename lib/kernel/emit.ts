@@ -63,6 +63,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { processKernelEvent } from "./notification-engine"
 import { KernelEvent } from "./events"
 import { currentCausation } from "./causation"
+import { redactSecretValues } from "@/lib/security/export-credential-scan"
 
 /** lifecycle_events.source — live CHECK `lifecycle_events_source_check`. */
 export type LifecycleEventSource = "ui" | "webhook" | "system" | "cron"
@@ -163,7 +164,8 @@ export async function emitKernelEvent(input: EmitKernelEventInput): Promise<Emit
   } catch (e) {
     return { inserted: false, lifecycleEventId: null, fanOutOk: false, error: (e as Error).message }
   }
-  const metadata: Record<string, unknown> = { ...(input.metadata ?? {}) }
+  // Audit sink: a secret by name or shape never lands in lifecycle_events.metadata (wave 139E).
+  const metadata: Record<string, unknown> = redactSecretValues({ ...(input.metadata ?? {}) })
 
   let lifecycleEventId: string | null = input.lifecycleEventId ?? null
   let inserted = false

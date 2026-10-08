@@ -1100,6 +1100,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
           logoUrl: b?.logo_url ?? null,
           primaryColor: b?.brand_primary_color ?? null,
         },
+        spend: { brokerageId, userId, feature: "blog_cover_image", manager: "asset_manager" },
       })
       if (img.success && img.imageUrl) featuredImageUrl = img.imageUrl
     } catch (imgErr) {

@@ -554,7 +554,7 @@ export async function loadEconomicGraph(
   if (vendor.error) refuse("vendor_usage_tracking", vendor.error.message)
   else for (const r of (vendor.data ?? []) as Array<Record<string, any>>) {
     const meta = (r.request_metadata ?? {}) as Record<string, unknown>
-    costs.push({ table: "vendor_usage_tracking", id: String(r.id), brokerage_id: r.brokerage_id ?? null, agent_id: r.agent_id ?? null, transaction_id: (meta.transactionId as string | undefined) ?? null, cents: toCents(r.total_cost), platform_paid: false })
+    costs.push({ table: "vendor_usage_tracking", id: String(r.id), brokerage_id: r.brokerage_id ?? null, agent_id: r.agent_id ?? null, transaction_id: (meta.transactionId as string | undefined) ?? null, cents: toCents(r.total_cost), platform_paid: meta.platform_paid === true }) // wave 139: platform-covered rows (139C) are the platform's cost
   }
   if (actions.error) refuse("agent_action_ledger", actions.error.message)
   else for (const r of (actions.data ?? []) as Array<Record<string, any>>) {

@@ -963,10 +963,12 @@ export async function enrichPropertyIntelligence(
     // than failing the whole enrichment (BatchData data is still useful with
     // no photo signal).
     try {
-      const { getStreetViewImageUrl } = await import("@/lib/property/street-view")
+      const { getStreetViewImageUrl, bookMapsImageSpend } = await import("@/lib/property/street-view")
       const streetView = getStreetViewImageUrl({ address: `${propertyData.address}, ${propertyData.city}, ${propertyData.state}` })
       const imageUrl = streetView?.url ?? null
       if (imageUrl) {
+        // The vision model FETCHES this image — Google bills it (wave 139, 139C: platform-covered, booked).
+        await bookMapsImageSpend({ brokerageId: auth.brokerageId, sku: "street_view_static", url: imageUrl, systemSource: "lead_intelligence" })
         const { scorePropertyImage } = await import("@/lib/external/vision-property")
         const vision = await scorePropertyImage({
           imageUrl,

@@ -292,7 +292,8 @@ export async function POST(request: Request) {
       const focusAddress = activeTransaction?.property_address
         ?? (activeListing ? [activeListing.address, activeListing.city, activeListing.state].filter(Boolean).join(', ') : null)
       if (geoapifyConfigured() && focusAddress) {
-        const nearby = await fetchNearbyPlaces(focusAddress)
+        // tenant = the session-authorized contact row's brokerage (never the body) — wave 139 (139B)
+        const nearby = await fetchNearbyPlaces(focusAddress, { brokerageId: contact.brokerage_id ?? null })
         if (nearby.ok) {
           const { composeLocalLifestyle } = await import('@/lib/kernel/local-lifestyle')
           nearbyLifeBlock = composeLocalLifestyle(nearby.places)

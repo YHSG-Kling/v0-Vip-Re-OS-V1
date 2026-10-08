@@ -26,7 +26,7 @@ import { deriveMetrics } from "./types"
 export const CHATGPT_PLATFORM = "chatgpt"
 
 function toOpenaiCredential(cred: ConnectorCredential) {
-  return { apiKey: cred.accessToken, accountId: cred.accountId, config: cred.config }
+  return { apiKey: cred.accessToken, accountId: cred.accountId, config: cred.config, brokerageId: cred.brokerageId ?? null }
 }
 
 export const chatgptConnector: AdConnector = {

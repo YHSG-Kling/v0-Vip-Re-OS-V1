@@ -31,6 +31,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireCaller }        from "@/lib/auth/require-caller"
 import { isValidUUID }          from "@/lib/validations"
 import { OFFER_EVENT }          from "@/lib/buyer-offer/offer-lifecycle"
 import { notifyComplianceFlag } from "@/lib/notifications/notify-helpers"
@@ -69,22 +70,32 @@ export interface RecordSellerSignedCounterResult {
 export async function recordSellerSignedCounter(
   params: RecordSellerSignedCounterParams,
 ): Promise<RecordSellerSignedCounterResult> {
-  const { parentOfferId, raiserUserId, source, terms, sellerSignedDocumentUrl, sellerSignedAt } = params
+  const { parentOfferId, source, terms, sellerSignedDocumentUrl, sellerSignedAt } = params
 
-  if (!isValidUUID(parentOfferId) || !isValidUUID(raiserUserId)) {
+  if (!isValidUUID(parentOfferId) || !isValidUUID(params.raiserUserId)) {
     return { success: false, error: "Invalid IDs" }
   }
   if (source === "external" && !sellerSignedDocumentUrl) {
     return { success: false, error: "sellerSignedDocumentUrl required for external counters" }
   }
 
+  // Wave 139 (139G, P0): a public "use server" endpoint that created a COUNTER OFFER (price,
+  // closing date, contingencies) on ANY tenant's offer id, attributed to a BODY-supplied user,
+  // with the service client and no session gate. Gate first; the actor is the SESSION's user
+  // (params.raiserUserId is ignored) and the offer read is pinned to the session's brokerage.
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.error }
+  const raiserUserId = caller.userId
+
   const supabase = createServiceClient()
 
-  const { data: parentOffer } = await supabase
+  const { data: parentOffer, error: parentErr } = await supabase
     .from("offers")
     .select("id, brokerage_id, contact_id, agent_id, listing_id")
     .eq("id", parentOfferId)
+    .eq("brokerage_id", caller.brokerageId)
     .maybeSingle()
+  if (parentErr) return { success: false, error: `Could not read the offer: ${parentErr.message}` }
   if (!parentOffer) return { success: false, error: "Parent offer not found" }
 
   // Resolve assigned agent for the brokerage scope + ownership

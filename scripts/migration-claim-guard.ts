@@ -305,6 +305,8 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // three DROP INDEX statements retiring m727's skill-listing indexes (m738's re-keyed replacements are live).
 // The Supabase MCP holds destructive statements for the OWNER's confirmation; the integrator's session
 // could not give it. Deliberate bump, named per this guard's instruction; drops back to 0 once applied.
+// (wave 139: lane 139E bumped this to 2 for m752; the integrator applied m752 live the same day, so it drops back to 1.)
+// (wave 139: lane 139C bumped this for m750; the integrator applied m750 live the same day — no net change.)
 const NOT_APPLIED_BASELINE = 1
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)

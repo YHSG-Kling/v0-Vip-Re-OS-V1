@@ -329,6 +329,106 @@ export async function logAIUsage(params: {
   }
 }
 
+/** The idempotency key a stored context_json (TEXT holding JSON, or an object) carries, or null. */
+function contextKey(raw: unknown): string | null {
+  try {
+    const o = (typeof raw === "string" ? JSON.parse(raw) : raw) as { idempotency_key?: unknown } | null
+    return typeof o?.idempotency_key === "string" ? o.idempotency_key : null
+  } catch { return null }
+}
+
+/**
+ * THE IMAGE-SPEND BOOKING (wave 139, lane 139C) — logAIUsage's sibling for a model call priced PER
+ * IMAGE, not per token. Before it, OpenAI image generation / photo edits (lib/ai/image-generation.ts,
+ * lib/listings/photo-intelligence.ts) reached the AI Gateway (or the direct key) and booked NOTHING
+ * unless one of two callers hand-rolled an ai_tool_usage insert — spend invisible to per-manager cost,
+ * the per-agent P&L and the Finance Manager. Same ledger (ai_tool_usage, CLAUDE.md §5), same tenant
+ * rules as logAIUsage (a tenant, a user, or the m668 platform flag), plus:
+ *   · model_used stays NULL (the column is CHECK-constrained to TEXT models) — the image model, the
+ *     price state, the cost basis and the unit ride context_json, exactly where the two existing
+ *     hand-rolled image bookings already put them;
+ *   · an IDEMPOTENCY KEY — a retried step / re-run cron books the charge ONCE (tenant-pinned read;
+ *     m750's unique index holds it under a race → 23505 is "already booked", not a failure);
+ *   · an UNKNOWN cost books the image at 0¢ with price_state 'unknown' (never a guessed number).
+ * Never throws; returns what happened so the caller can report it.
+ */
+export async function logAIImageUsage(
+  params: {
+    brokerageId: string | null
+    userId?: string | null
+    agentId?: string | null
+    feature: string
+    manager?: string | null
+    /** The image model that SERVED the call ("openai/gpt-image-1", "dall-e-3"). */
+    model: string
+    images?: number
+    /** null = unknown price. */
+    costUsd: number | null
+    priceState: "fixed" | "variable" | "unknown" | "free"
+    costBasis: "estimated" | "final"
+    idempotencyKey?: string | null
+    platformPaid?: boolean
+    contextExtra?: Record<string, unknown> | null
+  },
+  deps: { client?: ReturnType<typeof createServiceClient> } = {},
+): Promise<{ booked: boolean; duplicate: boolean; error: string | null }> {
+  const platformPaid = !params.brokerageId && params.platformPaid === true
+  if (!params.brokerageId && !params.userId && !platformPaid) {
+    return { booked: false, duplicate: false, error: `image spend for "${params.feature}" has no tenant, user or platform flag — not booked` }
+  }
+  try {
+    const svc = deps.client ?? createServiceClient()
+    const key = (params.idempotencyKey ?? "").trim() || null
+    if (key) {
+      // context_json is a TEXT column (live schema) holding compact JSON — narrowed with LIKE on the
+      // serialized key, then CONFIRMED by parsing each candidate (a LIKE is a superset, never the proof).
+      const needle = `%"idempotency_key":${JSON.stringify(key).replace(/[%_\\]/g, (c) => `\\${c}`)}%`
+      let q = svc.from("ai_tool_usage").select("id, context_json").like("context_json", needle)
+      q = params.brokerageId ? q.eq("brokerage_id", params.brokerageId) : q.is("brokerage_id", null)
+      const { data: prior, error: priorErr } = await q.limit(5)
+      if (priorErr) console.error("[cost-tracking] image-spend idempotency lookup refused, booking anyway (the unique index still holds):", priorErr.message)
+      else if (((prior ?? []) as Array<{ context_json: unknown }>).some((r) => contextKey(r.context_json) === key)) return { booked: false, duplicate: true, error: null }
+    }
+    const unknown = params.priceState === "unknown" || params.costUsd === null
+    const { data, error } = await svc.from("ai_tool_usage").insert({
+      user_id: params.userId ?? null,
+      brokerage_id: params.brokerageId,
+      agent_id: params.agentId ?? null,
+      tool_name: "image_generation",
+      // 0 BY CONSTRAINT: ai_tool_usage_tokens_name_their_model refuses tokens without a (text) model_used.
+      tokens_used: 0,
+      model_used: null,
+      cost_cents: unknown ? 0 : Math.round((params.costUsd as number) * 100),
+      feature: params.feature,
+      manager: params.manager ?? null,
+      success: true,
+      ...(platformPaid ? { platform_paid: true } : {}),
+      context_json: {
+        ...(params.contextExtra ?? {}),
+        model: params.model,
+        unit: "image",
+        images: params.images ?? 1,
+        cost_usd: unknown ? null : params.costUsd,
+        price_state: unknown ? "unknown" : params.priceState,
+        cost_basis: params.costBasis,
+        coverage: "platform_covered",
+        ...(key ? { idempotency_key: key } : {}),
+      },
+    }).select("id")
+    if (error && key && String((error as { code?: string }).code ?? "") === "23505") return { booked: false, duplicate: true, error: null }
+    if (error) {
+      console.error("[cost-tracking] image spend NOT booked on ai_tool_usage:", error.message)
+      return { booked: false, duplicate: false, error: error.message }
+    }
+    const n = ((data ?? []) as unknown[]).length
+    return n === 1 ? { booked: true, duplicate: false, error: null } : { booked: false, duplicate: false, error: `ai_tool_usage insert returned ${n} rows` }
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e)
+    console.error("[cost-tracking] image spend booking threw:", m)
+    return { booked: false, duplicate: false, error: m }
+  }
+}
+
 /**
  * Get current month's usage statistics
  */

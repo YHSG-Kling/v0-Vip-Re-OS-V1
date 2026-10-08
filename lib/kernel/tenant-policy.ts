@@ -123,6 +123,12 @@ export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition>
   // lib/kernel/skill-marketplace.ts loadTenantExtensionEnablement (FAILS CLOSED: unreadable = nothing enabled);
   // written ONLY by setTenantExtensionEnabled (tenant admin, session actor) through mergeBrokerageSettings.
   extensions:              { label: "Extensions enabled for this brokerage (approved skills / custom managers)", store: "brokerage_settings.settings", defaultNote: "none — no global extension runs here until a tenant admin enables it" },
+  // Wave 139 (139F, owner "approve all" (4)): THE SELF-HEALING POLICY — { diagnosis_cap_usd, provider_research_cap_usd,
+  // law_rule_research_cap_usd, law_rule_research_max_calls, max_attempts_per_day, allowed_remediation_classes,
+  // auto_fix_min_confidence } read ONLY through lib/kernel/healing-policy.ts loadHealingPolicy, which resolves it UNDER the
+  // platform ceiling (platform_settings.self_healing_ceilings, m753) — a tenant value above the ceiling is clamped, never
+  // honored. Written only through the policy-proposal promotion path (improvement_proposals → mergeBrokerageSettings).
+  self_healing:            { label: "Self-healing (diagnosis / research budgets, attempts per day, allowed remediation classes, auto-fix threshold)", store: "brokerage_settings.settings", defaultNote: "platform defaults ($0.05 diagnosis, $0.06 provider research, $0.10 / 6 calls law-rule research, 2 attempts/day, every declared playbook, auto-fix at ≥ 50% confidence) under the platform ceiling" },
 }
 
 /** Real columns that are tenant operating policy. */

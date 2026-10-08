@@ -12,6 +12,7 @@ import {
   type ConnectorShapeSpec,
   type ShapeDrift,
 } from "./connector-shape"
+import { QBO_MINOR_VERSION } from "./connector-registry"
 
 export type ProbeStatus =
   | "ok"             // reachable, authed, shape healthy
@@ -91,7 +92,7 @@ export const PROBE_SPECS: Record<string, ProbeSpec> = {
     provider: "quickbooks",
     url: (conn) => {
       const realmId = conn.config?.realmId as string | undefined
-      return realmId ? `https://quickbooks.api.intuit.com/v3/company/${realmId}/companyinfo/${realmId}?minorversion=73` : null
+      return realmId ? `https://quickbooks.api.intuit.com/v3/company/${realmId}/companyinfo/${realmId}?minorversion=${QBO_MINOR_VERSION}` : null
     },
     auth: "bearer_access_token",
     shape: { connector: "quickbooks", fields: [{ canonical: "CompanyInfo", aliases: ["companyInfo", "company"], required: true }] },

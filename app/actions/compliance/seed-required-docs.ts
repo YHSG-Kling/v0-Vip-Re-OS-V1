@@ -20,6 +20,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID }          from "@/lib/validations"
 import { getRequiredDocPresetsForState } from "@/lib/compliance/required-doc-presets"
+import { authorizeRequiredDocsScope } from "@/app/actions/compliance/manage-required-docs"
 
 export interface SeedRequiredDocsParams {
   brokerageId:   string
@@ -48,15 +49,25 @@ export interface SeedRequiredDocsResult {
 export async function seedRequiredDocsForBrokerage(
   params: SeedRequiredDocsParams,
 ): Promise<SeedRequiredDocsResult> {
-  const { brokerageId, scope, scopeId, stateCode, actorUserId } = params
+  const { scope, scopeId, stateCode } = params
   const dealType = params.dealType ?? "buyer"
 
-  if (!isValidUUID(brokerageId) || !isValidUUID(scopeId) || !isValidUUID(actorUserId)) {
+  if (!isValidUUID(params.brokerageId) || !isValidUUID(scopeId) || !isValidUUID(params.actorUserId)) {
     return { success: false, inserted_count: 0, skipped_count: 0, classifications_inserted: [], error: "Invalid IDs" }
   }
   if (!["brokerage","team","agent"].includes(scope)) {
     return { success: false, inserted_count: 0, skipped_count: 0, classifications_inserted: [], error: "Invalid scope" }
   }
+  // Wave 139 (139G, P0): this public "use server" endpoint wrote compliance requirements into the
+  // BODY's brokerage with the service client and no session gate. Gate first on the one required-docs
+  // authority (survivor: app/actions/compliance/manage-required-docs.ts authorizeRequiredDocsScope);
+  // the tenant and the recorded actor are the SESSION's — the body's brokerageId / actorUserId are ignored.
+  const authz = await authorizeRequiredDocsScope(scope, scopeId)
+  if (!authz.ok) {
+    return { success: false, inserted_count: 0, skipped_count: 0, classifications_inserted: [], error: authz.error }
+  }
+  const brokerageId = authz.brokerageId
+  const actorUserId = authz.userId
 
   // Pass the deal type through. Without it this seeded the BUYER stack under a
   // seller deal_type — pre_approval_letter and proof_of_funds as blocking

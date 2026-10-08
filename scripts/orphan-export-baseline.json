@@ -111,6 +111,7 @@
     "lib/commission/payment-tracker.ts": 1,
     "lib/commission/reconcile-tracking.ts": 2,
     "lib/communication/tcpa-gate.ts": 2,
+    "lib/competitive-intel/brand-listening.ts": 1,
     "lib/compliance/federal-holidays.ts": 1,
     "lib/compliance/phone-scrub-runner.ts": 1,
     "lib/compliance/trid-disclosure-clock.ts": 2,
@@ -124,7 +125,6 @@
     "lib/did/avatar-completion.ts": 2,
     "lib/direct-mail/address-suppression.ts": 2,
     "lib/direct-mail/variant-bandit.ts": 1,
-    "lib/documents/auto-filer.ts": 1,
     "lib/documents/autonomy-ratchet.ts": 3,
     "lib/documents/client-pdf.ts": 2,
     "lib/documents/contact-legal-writeback.ts": 1,
@@ -213,7 +213,7 @@
     "lib/intelligence/time-to-value-radar.ts": 1,
     "lib/kernel/action-ledger.ts": 2,
     "lib/kernel/agent-coaching.ts": 1,
-    "lib/kernel/ai-search-citation-monitor.ts": 5,
+    "lib/kernel/ai-search-citation-monitor.ts": 3,
     "lib/kernel/ai-sentinel.ts": 1,
     "lib/kernel/anniversary-equity.ts": 5,
     "lib/kernel/appointment-noshow-autopilot.ts": 3,
@@ -261,6 +261,7 @@
     "lib/kernel/financing-pit-stop.ts": 3,
     "lib/kernel/fire-drills.ts": 2,
     "lib/kernel/flow-integrity.ts": 4,
+    "lib/kernel/healing-policy.ts": 2,
     "lib/kernel/idle-hands.ts": 2,
     "lib/kernel/improvement-proposals.ts": 2,
     "lib/kernel/ingress-continuity.ts": 2,
@@ -310,7 +311,8 @@
     "lib/kernel/schema-adaptation.ts": 1,
     "lib/kernel/schema-memory.ts": 2,
     "lib/kernel/self-book.ts": 4,
-    "lib/kernel/self-healing.ts": 2,
+    "lib/kernel/self-heal-ledger.ts": 1,
+    "lib/kernel/self-healing.ts": 4,
     "lib/kernel/self-optimization.ts": 3,
     "lib/kernel/service-recovery.ts": 1,
     "lib/kernel/showing-lifecycle.ts": 2,
@@ -559,7 +561,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 11175,
+  "census": 11208,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -745,7 +747,7 @@
     "app/actions/communications.ts": 10,
     "app/actions/compliance/dashboard.ts": 2,
     "app/actions/compliance/document-access-audit.ts": 1,
-    "app/actions/compliance/manage-required-docs.ts": 4,
+    "app/actions/compliance/manage-required-docs.ts": 5,
     "app/actions/compliance/seed-required-docs.ts": 1,
     "app/actions/compliance-bridge-actions.ts": 3,
     "app/actions/compliance-monitoring.ts": 16,
@@ -937,7 +939,7 @@
     "app/actions/open-house-kernel.ts": 7,
     "app/actions/open-house.ts": 7,
     "app/actions/orchestrator.ts": 2,
-    "app/actions/os-health.ts": 2,
+    "app/actions/os-health.ts": 3,
     "app/actions/outside-agent-showing.ts": 1,
     "app/actions/overdue.ts": 1,
     "app/actions/partner-orders.ts": 4,
@@ -998,7 +1000,7 @@
     "app/actions/seller-listing/record-lifecycle-event.ts": 1,
     "app/actions/seller-offers.ts": 13,
     "app/actions/seller-open-house.ts": 14,
-    "app/actions/seller-showing-sentiment.ts": 2,
+    "app/actions/seller-showing-sentiment.ts": 1,
     "app/actions/seller-showings.ts": 13,
     "app/actions/seller-updates.ts": 5,
     "app/actions/sequence-step-ai.ts": 2,
@@ -1066,7 +1068,7 @@
     "app/actions/superadmin/platform-announcements.ts": 1,
     "app/actions/superadmin/platform-brand.ts": 6,
     "app/actions/superadmin/platform-content.ts": 5,
-    "app/actions/superadmin/platform-controls.ts": 6,
+    "app/actions/superadmin/platform-controls.ts": 8,
     "app/actions/superadmin/platform-growth.ts": 8,
     "app/actions/superadmin/platform-overview.ts": 3,
     "app/actions/superadmin/platform-providers.ts": 2,
@@ -1239,6 +1241,7 @@
     "app/api/cron/billing-dunning/route.ts": 1,
     "app/api/cron/blog-cadence-tick/route.ts": 1,
     "app/api/cron/board-packet/route.ts": 1,
+    "app/api/cron/brand-listening/route.ts": 1,
     "app/api/cron/brokerage-intelligence-mine/route.ts": 2,
     "app/api/cron/brokerage-pl-rollup/route.ts": 1,
     "app/api/cron/bundle-attribution-rollup/route.ts": 1,
@@ -2108,6 +2111,7 @@
     "app/dashboard/campaigns/ads/ads-dashboard-client.tsx": 1,
     "app/dashboard/campaigns/ads/chatgpt-lane.tsx": 1,
     "app/dashboard/campaigns/ads/ctv-lane.tsx": 1,
+    "app/dashboard/campaigns/competitive/brand-listening-card.tsx": 1,
     "app/dashboard/campaigns/competitive/competitive-monitor-client.tsx": 1,
     "app/dashboard/campaigns/competitive/track-competitor-dialog.tsx": 1,
     "app/dashboard/campaigns/mail/components/analytics-tab.tsx": 1,
@@ -2494,6 +2498,8 @@
     "app/dashboard/superadmin/rollout/sunset-control.tsx": 1,
     "app/dashboard/superadmin/sentinel/financial-halt-release.tsx": 1,
     "app/dashboard/superadmin/sentinel/financial-halts-board.tsx": 1,
+    "app/dashboard/superadmin/sentinel/healing-ceilings-editor.tsx": 1,
+    "app/dashboard/superadmin/sentinel/healing-console.tsx": 1,
     "app/dashboard/superadmin/sentinel/os-sentinel-board.tsx": 1,
     "app/dashboard/superadmin/sentinel/saas-operations-board.tsx": 1,
     "app/dashboard/superadmin/sentinel/sentinel-action-queue.tsx": 1,
@@ -2865,7 +2871,7 @@
     "lib/agents/vendor-loop-producer.ts": 5,
     "lib/ai/ai-error.ts": 3,
     "lib/ai/content-features.ts": 2,
-    "lib/ai/cost-tracking.ts": 6,
+    "lib/ai/cost-tracking.ts": 7,
     "lib/ai/fair-use.ts": 2,
     "lib/ai/gateway-chat.ts": 2,
     "lib/ai/generate.ts": 6,
@@ -3143,6 +3149,7 @@
     "lib/communications/send-invitation.ts": 3,
     "lib/communications/vendor-communications.tsx": 2,
     "lib/communications/vendor-follow-up-cadence.ts": 1,
+    "lib/competitive-intel/brand-listening.ts": 4,
     "lib/competitive-intel/content-intel-scan.ts": 1,
     "lib/competitive-intel/exa-competitor-ads.ts": 1,
     "lib/competitive-intel/promote-to-topic-bank.ts": 1,
@@ -3376,7 +3383,7 @@
     "lib/external/socrata-client.ts": 4,
     "lib/external/socrata-market-registry.ts": 7,
     "lib/external/tavily-client.ts": 2,
-    "lib/external/versium-client.ts": 7,
+    "lib/external/versium-client.ts": 8,
     "lib/external/vision-property.ts": 1,
     "lib/external/zenrows-client.ts": 5,
     "lib/external/zenrows-normalizer.ts": 1,
@@ -3588,7 +3595,7 @@
     "lib/kernel/ai-copy.ts": 3,
     "lib/kernel/ai-isa.ts": 12,
     "lib/kernel/ai-model.ts": 1,
-    "lib/kernel/ai-search-citation-monitor.ts": 8,
+    "lib/kernel/ai-search-citation-monitor.ts": 9,
     "lib/kernel/ai-sentinel.ts": 2,
     "lib/kernel/ai-teammates.ts": 7,
     "lib/kernel/ai-tools.ts": 4,
@@ -3692,6 +3699,7 @@
     "lib/kernel/flow-integrity.ts": 10,
     "lib/kernel/forms.ts": 9,
     "lib/kernel/global-settings.ts": 2,
+    "lib/kernel/healing-policy.ts": 5,
     "lib/kernel/helpers.ts": 6,
     "lib/kernel/idle-hands.ts": 3,
     "lib/kernel/improvement-proposals.ts": 12,
@@ -3794,8 +3802,8 @@
     "lib/kernel/second-opinion-runner.ts": 1,
     "lib/kernel/second-opinion.ts": 1,
     "lib/kernel/self-book.ts": 7,
-    "lib/kernel/self-heal-ledger.ts": 5,
-    "lib/kernel/self-healing.ts": 4,
+    "lib/kernel/self-heal-ledger.ts": 7,
+    "lib/kernel/self-healing.ts": 6,
     "lib/kernel/self-optimization.ts": 13,
     "lib/kernel/seller-decision-room.ts": 1,
     "lib/kernel/seller-listing-timeline.ts": 2,
@@ -4012,6 +4020,7 @@
     "lib/listings/seller-team-activity.ts": 2,
     "lib/listings/seller-weekly-report-runner.ts": 1,
     "lib/listings/seller-weekly-report.ts": 4,
+    "lib/listings/showing-sentiment.ts": 1,
     "lib/listings/tier-assigner.ts": 10,
     "lib/live-agent/face-render.ts": 3,
     "lib/managers/accuracy-gate.ts": 10,
@@ -4240,7 +4249,7 @@
     "lib/property/rentcast-query.ts": 1,
     "lib/property/rentcast.ts": 12,
     "lib/property/resolve-property-facts.ts": 4,
-    "lib/property/street-view.ts": 2,
+    "lib/property/street-view.ts": 3,
     "lib/property-alerts/alert-cadence.ts": 3,
     "lib/property-alerts/alert-engine.ts": 2,
     "lib/property-alerts/alert-matcher.ts": 2,
@@ -4340,12 +4349,12 @@
     "lib/reputation/review-request-draft.ts": 1,
     "lib/revenue-protection/scorer.ts": 1,
     "lib/security/audio-source-allowlist.ts": 2,
-    "lib/security/credential-rotation.ts": 3,
-    "lib/security/export-credential-scan.ts": 2,
+    "lib/security/credential-rotation.ts": 5,
+    "lib/security/export-credential-scan.ts": 3,
     "lib/security/oauth-refresh.ts": 3,
     "lib/security/public-rate-limit.ts": 2,
     "lib/security/rbac.ts": 5,
-    "lib/security/secret-crypto.ts": 4,
+    "lib/security/secret-crypto.ts": 5,
     "lib/security/server-action-guard.ts": 2,
     "lib/security/share-password.ts": 2,
     "lib/security/types.ts": 6,
@@ -4477,7 +4486,7 @@
     "lib/vendor-governance/budget-eval.ts": 4,
     "lib/vendor-governance/budget-gate.ts": 4,
     "lib/vendor-governance/budget-visibility.ts": 2,
-    "lib/vendor-governance/cost-normalizer.ts": 3,
+    "lib/vendor-governance/cost-normalizer.ts": 7,
     "lib/vendor-governance/meter-vendor.ts": 2,
     "lib/vendor-governance/track-vendor-usage.ts": 1,
     "lib/vendor-governance/usage-logger.ts": 1,
@@ -5913,6 +5922,7 @@
       "getDocumentAccessAudit"
     ],
     "app/actions/compliance/manage-required-docs.ts": [
+      "authorizeRequiredDocsScope",
       "addRequiredDocument",
       "setRequiredDocTemplate",
       "setRequiredDocBlocking",
@@ -7164,6 +7174,7 @@
     ],
     "app/actions/os-health.ts": [
       "getOsHealthLine",
+      "getMyHealingIncidentsAction",
       "releaseFinancialWriterHaltAction"
     ],
     "app/actions/outside-agent-showing.ts": [
@@ -7594,7 +7605,6 @@
       "getPostEventIntelligence"
     ],
     "app/actions/seller-showing-sentiment.ts": [
-      "buildShowingSentimentSummary",
       "getShowingSentimentSummaryAction"
     ],
     "app/actions/seller-showings.ts": [
@@ -7987,7 +7997,9 @@
       "setStatusNoticeAction",
       "getStatusNoticeStateAction",
       "publishProposedStatusNoticeAction",
-      "dismissProposedStatusNoticeAction"
+      "dismissProposedStatusNoticeAction",
+      "getHealingConsoleAction",
+      "setHealingCeilingsAction"
     ],
     "app/actions/superadmin/platform-growth.ts": [
       "capturePlatformProspectAction",
@@ -8923,6 +8935,9 @@
       "GET"
     ],
     "app/api/cron/board-packet/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/brand-listening/route.ts": [
       "GET"
     ],
     "app/api/cron/brokerage-intelligence-mine/route.ts": [
@@ -11578,6 +11593,9 @@
     "app/dashboard/campaigns/ads/ctv-lane.tsx": [
       "CtvLane"
     ],
+    "app/dashboard/campaigns/competitive/brand-listening-card.tsx": [
+      "BrandListeningCard"
+    ],
     "app/dashboard/campaigns/competitive/competitive-monitor-client.tsx": [
       "CompetitiveMonitorClient"
     ],
@@ -12784,6 +12802,12 @@
     ],
     "app/dashboard/superadmin/sentinel/financial-halts-board.tsx": [
       "FinancialHaltsBoard"
+    ],
+    "app/dashboard/superadmin/sentinel/healing-ceilings-editor.tsx": [
+      "HealingCeilingsEditor"
+    ],
+    "app/dashboard/superadmin/sentinel/healing-console.tsx": [
+      "HealingConsole"
     ],
     "app/dashboard/superadmin/sentinel/os-sentinel-board.tsx": [
       "OsSentinelBoard"
@@ -14100,6 +14124,7 @@
       "calculateCost",
       "estimateTokens",
       "logAIUsage",
+      "logAIImageUsage",
       "getCurrentMonthUsage",
       "checkPlatformAIEnabled"
     ],
@@ -15757,6 +15782,12 @@
     "lib/communications/vendor-follow-up-cadence.ts": [
       "runVendorFollowUpCadence"
     ],
+    "lib/competitive-intel/brand-listening.ts": [
+      "sourceFromUrl",
+      "loadBrandListeningReading",
+      "runBrandListeningPass",
+      "runBrandListeningSweep"
+    ],
     "lib/competitive-intel/content-intel-scan.ts": [
       "runContentIntelScan"
     ],
@@ -16944,7 +16975,8 @@
       "parseVersiumFinancialResponse",
       "appendVersiumFinancial",
       "appendVersiumContact",
-      "appendVersiumDemographics"
+      "appendVersiumDemographics",
+      "appendVersiumPropertyFacts"
     ],
     "lib/external/vision-property.ts": [
       "scorePropertyImage"
@@ -17927,6 +17959,7 @@
       "siteOrigin",
       "buildCitationQuery",
       "buildLandingCitationQuery",
+      "loadCompetitorTargets",
       "runCitationMonitor",
       "runLandingPageCitationMonitor"
     ],
@@ -18597,6 +18630,13 @@
     "lib/kernel/global-settings.ts": [
       "getGlobalSettings",
       "updateGlobalSettings"
+    ],
+    "lib/kernel/healing-policy.ts": [
+      "resolveHealingPolicy",
+      "loadPlatformHealingCeilings",
+      "loadHealingPolicy",
+      "validateHealingCeilingsEdit",
+      "setPlatformHealingCeilings"
     ],
     "lib/kernel/helpers.ts": [
       "determineVisibleNavigation",
@@ -19355,12 +19395,16 @@
       "loadFlowActionStats",
       "recordSelfHeal",
       "loadSelfHealRollup",
-      "composeRepairAutonomy"
+      "composeRepairAutonomy",
+      "foldHealingIncidents",
+      "loadHealingIncidents"
     ],
     "lib/kernel/self-healing.ts": [
       "classifyForbidden",
       "validatePlaybookSelection",
       "runBoundedModel",
+      "isDerivedCacheTable",
+      "requeueVerdict",
       "troubleshootIncident"
     ],
     "lib/kernel/self-optimization.ts": [
@@ -20600,6 +20644,9 @@
       "buildFeedbackNote",
       "buildSellerWeeklyReport",
       "weekStartMonday"
+    ],
+    "lib/listings/showing-sentiment.ts": [
+      "buildShowingSentimentSummary"
     ],
     "lib/listings/tier-assigner.ts": [
       "assignTierToListing",
@@ -21854,7 +21901,8 @@
     ],
     "lib/property/street-view.ts": [
       "getStreetViewImageUrl",
-      "getStaticMapImageUrl"
+      "getStaticMapImageUrl",
+      "bookMapsImageSpend"
     ],
     "lib/property-alerts/alert-cadence.ts": [
       "isSnoozed",
@@ -22361,11 +22409,14 @@
     "lib/security/credential-rotation.ts": [
       "credentialRotationStatus",
       "loadRotationRisks",
-      "escalateRotationRisks"
+      "escalateRotationRisks",
+      "raiseSecretStorageIncident",
+      "reportSecretStoragePosture"
     ],
     "lib/security/export-credential-scan.ts": [
       "findCredentialsInCsv",
-      "redactCredentials"
+      "redactCredentials",
+      "redactSecretValues"
     ],
     "lib/security/oauth-refresh.ts": [
       "shouldAttemptRefresh",
@@ -22384,6 +22435,7 @@
       "getResourceAccessList"
     ],
     "lib/security/secret-crypto.ts": [
+      "isSecretStorageRefused",
       "isEncryptionConfigured",
       "isEncrypted",
       "encryptSecret",
@@ -22959,7 +23011,11 @@
       "redactBudgetForActor"
     ],
     "lib/vendor-governance/cost-normalizer.ts": [
+      "imageUsageFrom",
+      "priceImageGeneration",
       "normalizeVendorCost",
+      "vendorPriceState",
+      "priceVendorUsage",
       "getVendorPricing",
       "estimateCost"
     ],

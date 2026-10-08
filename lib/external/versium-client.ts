@@ -71,7 +71,7 @@ import { householdFinancialsFromVersium, buildVersiumDemographicProfile, fieldPr
 
 /** The capabilities this adapter serves, named as the platform asks for them (not as Versium's
  *  endpoints are named). The ledger rows a caller books carry the same name in metadata.capability. */
-type VersiumCapability = "person.enrich_contact" | "person.enrich_demographics" | "person.enrich_financial"
+type VersiumCapability = "person.enrich_contact" | "person.enrich_demographics" | "person.enrich_financial" | "property.enrich_facts"
 
 /** Provenance for a value this adapter returned — written beside the value where it is stored.
  *  Wave 100 (lane 100C): this shape is the SURVIVOR every provider now writes — it is THE
@@ -411,4 +411,103 @@ export async function appendVersiumDemographics(
   }
   out.cost = credits > 0 ? Math.round(credits * VERSIUM_MATCH_CREDIT_USD * 100) / 100 : VERSIUM_NO_MATCH_COST_USD
   return out
+}
+
+// ─── PROPERTY FACTS — GAP-ONLY (wave 139, lane 139D) ────────────────────────────────────────
+// Owner (wave 138): "Versium (ALSO a property-data provider)". AUDITED against the official docs
+// (api-documentation.versium.com/reference/api-output-1 "Demographic Output Sample" and
+// /reference/data-dictionary "Available Data", read 2026-10-08 via Exa): Versium sells NO property
+// record — no beds / baths / square feet / lot / APN / tax bill. What it does sell is the household
+// block of the Demographic Append `financial` output ("Financial, Household and Auto Insights"),
+// which accepts a postal ADDRESS alone (address + city/state or zip): `Home Year Built`,
+// `Dwelling Type`, `Home Purchase Date`, plus `Home Purchase Price` / `Home Value` (RANGES, e.g.
+// "$350,000-399,999"), `Home Market Value` (a modeled estimate) and mortgage fields. So Versium is a
+// NARROW, GAP-ONLY property-facts source behind RentCast (primary) and BatchData (backup):
+//   · mapped (exact values only): yearBuilt, propertyType (Dwelling Type), lastSaleDate (purchase date);
+//   · NEVER mapped: any price / value / market value — a valuation belongs to property_valuation
+//     (RentCast → BatchData, owner rulings) and a range is not a figure; and every person, credit or
+//     household-financial field — an address-keyed answer describes the RESIDENT household, so it is
+//     dropped here, inside the adapter (no raw row leaves this file).
+// Same request, auth, billing unit and fail-closed rules as appendVersiumFinancial above (one match
+// credit per matched `financial` output; a no-match is free).
+
+/** The property facts Versium can fill — OUR shape, exact values only. */
+interface VersiumPropertyFacts {
+  yearBuilt: number | null
+  propertyType: string | null
+  /** ISO YYYY-MM-DD — only from a full 8-digit purchase date (a month-only date is never padded). */
+  lastSaleDate: string | null
+}
+
+/** PURE — one Versium `financial` result row → the property facts it carries (null fields when absent).
+ *  In-file only: scripts/provider-adapter-guard.ts (section O) asserts the mapping through
+ *  appendVersiumPropertyFacts with an injected `call` (no value / price / person field is ever mapped). */
+function versiumPropertyFactsFrom(row: unknown): VersiumPropertyFacts {
+  const r = row && typeof row === "object" ? (row as Record<string, unknown>) : {}
+  const text = (k: string) => (typeof r[k] === "string" || typeof r[k] === "number" ? String(r[k]).trim() : "")
+  const yRaw = text("Home Year Built")
+  const y = /^\d{4}$/.test(yRaw) ? Number(yRaw) : NaN
+  const yearBuilt = Number.isInteger(y) && y >= 1700 && y <= new Date().getUTCFullYear() + 1 ? y : null
+  const dwelling = text("Dwelling Type")
+  const d = text("Home Purchase Date").replace(/-/g, "")
+  const lastSaleDate = /^\d{8}$/.test(d) && Number(d.slice(4, 6)) >= 1 && Number(d.slice(4, 6)) <= 12 && Number(d.slice(6, 8)) >= 1 && Number(d.slice(6, 8)) <= 31
+    ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null
+  return { yearBuilt, propertyType: dwelling || null, lastSaleDate }
+}
+
+export interface VersiumPropertyFactsResult {
+  /** null on a no-match or when the match carried none of the three facts. */
+  facts: VersiumPropertyFacts | null
+  /** Credits charged (match_counts.financial; a result row with no count is one credit). */
+  credits: number
+  /** USD billed (credits × VERSIUM_MATCH_CREDIT_USD) — the caller books it; a no-match is $0. */
+  cost: number
+  provenance: VersiumProvenance | null
+  skipped?: "unconfigured" | "no_address"
+  error?: string
+}
+
+/** Versium property facts for ONE postal address (never a person — no name / email / phone is sent).
+ *  Never throws. */
+export async function appendVersiumPropertyFacts(
+  addr: { address: string | null; city: string | null; state: string | null; zip: string | null },
+  deps: { call?: VersiumDemographicCall } = {},
+): Promise<VersiumPropertyFactsResult> {
+  const none: VersiumPropertyFactsResult = { facts: null, credits: 0, cost: 0, provenance: null }
+  const apiKey = process.env.VERSIUM_API_KEY
+  if (!apiKey && !deps.call) return { ...none, skipped: "unconfigured" }
+  const query = versiumQueryFor({ address: addr.address, city: addr.city, state: addr.state, zip: addr.zip })
+  if (!query || !query.address) return { ...none, skipped: "no_address" }
+  const call: VersiumDemographicCall = deps.call ?? (async (output, q) => {
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    return callConnector<any>({
+      connector: "versium",
+      baseUrl: VERSIUM_API_BASE,
+      path: "demographic",
+      method: "GET",
+      query: { ...q, "output[]": output, cfg_maxrecs: "1", rcfg_max_time: VERSIUM_MAX_TIME_SECONDS },
+      auth: { style: "header", name: "x-versium-api-key", value: apiKey as string },
+      timeoutMs: 15_000,
+    })
+  })
+  try {
+    const res = await call("financial", query)
+    // A refused call bills nothing (401/402/403/429/4xx are refusals; a 5xx returns no result).
+    if (!res.ok) return { ...none, error: `${versiumStatusProblem(res.status)}${res.error ? ` — ${res.error}` : ""}` }
+    const v = (res.data && typeof res.data === "object" ? (res.data as Record<string, any>).versium : null) ?? {}
+    const first = Array.isArray(v.results) ? v.results.find((x: unknown) => !!x && typeof x === "object") : null
+    if (!first) return none
+    const counted = Number(v.match_counts?.financial)
+    const credits = Number.isFinite(counted) && counted >= 0 ? counted : 1
+    const f = versiumPropertyFactsFrom(first)
+    const any = f.yearBuilt !== null || f.propertyType !== null || f.lastSaleDate !== null
+    return {
+      facts: any ? f : null,
+      credits,
+      cost: credits > 0 ? Math.round(credits * VERSIUM_MATCH_CREDIT_USD * 100) / 100 : VERSIUM_NO_MATCH_COST_USD,
+      provenance: any ? provenance("property.enrich_facts", new Date().toISOString(), first) : null,
+    }
+  } catch (e) {
+    return { ...none, error: e instanceof Error ? e.message : String(e) }
+  }
 }

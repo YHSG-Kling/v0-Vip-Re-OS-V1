@@ -860,12 +860,14 @@ async function execute(svc: Svc, i: HealthIncident, d: RecoveryDecision, deps: E
         const provider = String(i.evidence.provider ?? "")
         if (!provider) return { ok: true, outcome: routed }
         try {
-          // The real healer also gets its metered internet-research budget (138B) — the same constant the
-          // connector-health cron passes, never a second number.
+          // The real healer also gets its metered internet-research budget (138B) — read through the ONE
+          // self-healing policy reader (139F: tenant policy under the platform ceiling), exactly as the
+          // connector-health cron reads it, never a second number. Unreadable policy → cap 0 → no research.
           const healer = deps.healProvider ? null : await import("@/lib/agentic-os/connector-healer")
+          const policy = healer ? await (await import("@/lib/kernel/healing-policy")).loadHealingPolicy(svc, i.brokerageId) : null
           const heal = deps.healProvider ?? ((input, d) => healer!.healProviderFailure(input, d as never))
           const h = await heal(
-            { connector: provider, brokerageId: i.brokerageId, failures: [{ status: null, path: null, error: String(i.evidence.reason ?? i.summary).slice(0, 300) }], cycle, ...(healer ? { research: { capUsd: healer.PROVIDER_RESEARCH_CAP_USD } } : {}) },
+            { connector: provider, brokerageId: i.brokerageId, failures: [{ status: null, path: null, error: String(i.evidence.reason ?? i.summary).slice(0, 300) }], cycle, ...(policy ? { research: { capUsd: policy.providerResearchCapUsd, autoApplyMinConfidence: policy.autoFixMinConfidence } } : {}) },
             { client: svc, derivedHealth: async () => ({ state: String(i.evidence.state ?? "failing"), routeAround: i.evidence.state === "failing", reason: String(i.evidence.reason ?? "") }) },
           )
           return { ok: true, outcome: `${routed}; provider heal: ${h.decision.step} — ${h.decision.reason}`.slice(0, 600) }
@@ -988,7 +990,10 @@ export async function runOsHealthSupervisor(
       const cycle = `${now.toISOString().slice(0, 10)}.${h.rowsSeen}`
       const xd = opts.executorDeps ?? {}
       // Wave 138B — "unknown → human" is first TROUBLESHOOTED (gate → bounded diagnosis → declared playbook).
-      if (decision.action === "escalate_human" && inc.class === "unknown" && xd.troubleshoot !== false) {
+      // Wave 139A — so is EVERY other escalate_human (a provider failure with no failover, a non-idempotent send
+      // failure, a non-resumable stall): the owning-rail playbooks (failover / requeue / re_sync …) are their
+      // remedies. NOT when this supervisor's own retry bound escalated it — a bound is never re-run by another door.
+      if (decision.action === "escalate_human" && h.attempts24h < OS_HEALTH_RETRY_CAP && xd.troubleshoot !== false) {
         try {
           const { troubleshootIncident } = await import("@/lib/kernel/self-healing")
           const t = await troubleshootIncident(svc, inc, { playbookAttempts24h: h.playbookAttempts24h, cycle, attempt: decision.attempt }, {

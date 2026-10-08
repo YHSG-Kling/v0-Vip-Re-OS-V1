@@ -9,17 +9,27 @@
 
 import { logVendorUsage, type VendorUsageEvent, type UsageLogResult } from "./usage-logger"
 import { elevenLabsUsdForChars } from "@/lib/video/realism-profile"
-import { DIRECT_MAIL_PIECE_COST_USD } from "./cost-normalizer"
+import { DIRECT_MAIL_PIECE_COST_USD, type CostBasis, type CostCoverage, type PriceState } from "./cost-normalizer"
 
 export type MeterLogger = (event: VendorUsageEvent) => Promise<UsageLogResult>
 
 export interface MeterVendorInput {
   vendorName: string
   usageType: string
-  /** USD cost for this call (skipped when <= 0 — no spend, nothing to record). */
+  /** USD cost for this call (skipped when <= 0 — no spend, nothing to record). With
+   *  `priceState: "unknown"` (wave 139) pass 0: the units ARE booked, at $0 with price_state 'unknown' —
+   *  never skipped, never guessed. */
   cost: number
   unitCount?: number
   brokerageId?: string | null
+  /** Wave 139 (139C) — see VendorUsageEvent. `priceState: "unknown"` books the units even at cost 0. */
+  priceState?: PriceState
+  costBasis?: CostBasis
+  coverage?: CostCoverage
+  /** ONE charge, ONE row (a retried booking under the same key is skipped — usage-logger + m750). */
+  idempotencyKey?: string | null
+  /** The platform's own spend with NO tenant (m750). Without it a tenant-less call books nothing (unchanged). */
+  platformPaid?: boolean
   systemSource?: string
   metadata?: Record<string, any>
   /**
@@ -48,8 +58,12 @@ export async function meterVendorSpend(
   input: MeterVendorInput,
   deps: { logger?: MeterLogger } = {},
 ): Promise<boolean> {
-  if (!input.cost || input.cost <= 0) return false
-  if (!input.brokerageId) return false
+  // An UNKNOWN price is not "no spend": the call happened and its units are booked, cost explicitly
+  // not asserted. A known $0 (free / nothing charged) still books nothing — unchanged.
+  const unknownPrice = input.priceState === "unknown"
+  if (!unknownPrice && (!input.cost || input.cost <= 0)) return false
+  const platformPaid = !input.brokerageId && input.platformPaid === true
+  if (!input.brokerageId && !platformPaid) return false
   const logger = deps.logger ?? logVendorUsage
   const who = input.attribution ?? {}
   try {
@@ -57,10 +71,15 @@ export async function meterVendorSpend(
       vendorName: input.vendorName,
       usageType: input.usageType,
       unitCount: input.unitCount ?? 1,
-      estimatedCost: input.cost,
+      estimatedCost: unknownPrice ? 0 : input.cost,
       systemSource: input.systemSource ?? "lead_scraping",
-      brokerageId: input.brokerageId,
+      brokerageId: input.brokerageId ?? null,
+      ...(platformPaid ? { platformPaid: true } : {}),
       ...(who.leadId ? { leadId: who.leadId } : {}),
+      priceState: unknownPrice ? "unknown" : input.priceState,
+      costBasis: input.costBasis,
+      coverage: input.coverage,
+      idempotencyKey: input.idempotencyKey ?? null,
       metadata: {
         ...(input.metadata ?? {}),
         ...(who.contactId ? { contactId: who.contactId } : {}),

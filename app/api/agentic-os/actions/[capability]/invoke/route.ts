@@ -18,9 +18,10 @@ import { recordInvocation } from "@/lib/agentic-os/invocation-log"
 // Executors for read/analyze actions. Side-effecting capabilities intentionally have
 // no executor here — they run through their dedicated guarded routes after confirmation.
 const EXECUTORS: Partial<Record<VendorCapability, (inputs: any, ctx: { brokerageId: string }) => Promise<unknown>>> = {
-  web_research: async (inputs) => {
+  web_research: async (inputs, ctx) => {
     const { webSearch } = await import("@/lib/ai/web-search")
-    return webSearch({ query: String(inputs.query), maxResults: 6 })
+    // Wave 139 (139C): the search's spend books under the CALLER's tenant (was unbooked).
+    return webSearch({ query: String(inputs.query), maxResults: 6, spend: { brokerageId: ctx.brokerageId || null, systemSource: "agentic_api_invoke" } })
   },
   property_valuation: async (inputs, ctx) => {
     const { getCurrentAvm } = await import("@/lib/avm/provider-chain")

@@ -35,8 +35,14 @@ const empty   = checkEmailSyntax("")
 ok(!empty.verified,                                                 "email Tier 1: empty rejected")
 
 // ── #7 Email verifier — Tier 2 (live MX lookup, free) ───────────────────────
+// The positive Tier-2 control needs a live resolver. In an environment whose DNS is unreachable (a locked-down
+// sandbox — wave 139: the resolver answers ENOTFOUND for google.com itself), the LIVE check DID NOT RUN; that
+// is published loudly and is neither a pass nor a fail (the schema-cache-drift "no credentials" convention).
+// CI runners resolve DNS, so the check stays enforced there. The negative .invalid / syntax checks still run.
+const dnsReachable = await import("node:dns").then((d) => d.promises.resolveMx("google.com").then(() => true, (e: { code?: string }) => !["ENOTFOUND", "ECONNREFUSED", "ETIMEOUT", "EAI_AGAIN"].includes(String(e?.code))))
 const mxOk   = await checkEmailMx("alice@google.com")  // google.com has MX
-ok(mxOk.verified && mxOk.tier === 2 && mxOk.hasMx === true,         "email Tier 2: google.com has MX")
+if (dnsReachable) ok(mxOk.verified && mxOk.tier === 2 && mxOk.hasMx === true, "email Tier 2: google.com has MX")
+else console.log(" ⚠ email Tier 2 positive control DID NOT RUN — no DNS resolver reachable in this environment (enforced where DNS resolves, e.g. CI)")
 const mxBad  = await checkEmailMx("alice@nonexistent-test-domain-12345.invalid")
 ok(!mxBad.verified && mxBad.tier === 2 && mxBad.hasMx === false,    "email Tier 2: .invalid domain has no MX")
 // Bad-syntax address short-circuits at Tier 1 and never hits DNS.

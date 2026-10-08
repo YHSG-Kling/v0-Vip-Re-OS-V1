@@ -65,8 +65,10 @@ export async function GET(req: NextRequest) {
     })
   }
 
+  // The claim's timestamp is this regen's identity — the image spend books once per claim (wave 139).
+  const claimedAt = new Date().toISOString()
   const claim = await svc.from("marketing_assets")
-    .update({ regen_status: "processing", updated_at: new Date().toISOString() })
+    .update({ regen_status: "processing", updated_at: claimedAt })
     .eq("id", cand.id)
     .eq("regen_status", "requested")
     .select("id, brokerage_id, agent_user_id, asset_name, metadata")
@@ -127,6 +129,7 @@ export async function GET(req: NextRequest) {
       listingContext: meta.listing_address
         ? { address: String(meta.listing_address) }
         : undefined,
+      spend: { brokerageId: asset.brokerage_id, userId: asset.agent_user_id, feature: "marketing_image_regen", manager: "asset_manager", idempotencyKey: `marketing_image_regen:${asset.id}:${claimedAt}` },
     })
 
     if (!result.success || !result.imageUrl) {

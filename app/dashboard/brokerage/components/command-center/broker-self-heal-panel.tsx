@@ -14,8 +14,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { HeartPulse, ChevronDown, ChevronUp, Activity } from "lucide-react"
 import { getSelfHealRollup, getRepairAutonomy } from "@/app/actions/self-heal-rollup"
-import { getOsHealthLine, releaseFinancialWriterHaltAction } from "@/app/actions/os-health"
-import type { SelfHealRollup, RepairAutonomyRow } from "@/lib/kernel/self-heal-ledger"
+import { getOsHealthLine, releaseFinancialWriterHaltAction, getMyHealingIncidentsAction } from "@/app/actions/os-health"
+import type { SelfHealRollup, RepairAutonomyRow, HealingIncident } from "@/lib/kernel/self-heal-ledger"
 import type { OsHealthLine } from "@/lib/kernel/os-health"
 
 const DOMAIN_LABEL: Record<string, string> = { data_flow: "data flows", connector: "connections" }
@@ -26,6 +26,20 @@ export function BrokerSelfHealPanel() {
   const [showRepairs, setShowRepairs] = useState(false)
   const [health, setHealth] = useState<OsHealthLine | null>(null)
   const [releaseNote, setReleaseNote] = useState<string | null>(null)
+  // WAVE 139F — this brokerage's OWN healing incidents (tenant-scoped console) + its effective healing policy.
+  const [incidents, setIncidents] = useState<HealingIncident[]>([])
+  const [policyLine, setPolicyLine] = useState<string | null>(null)
+  const [showIncidents, setShowIncidents] = useState(false)
+  useEffect(() => {
+    getMyHealingIncidentsAction().then((x) => {
+      if (!x.success) return
+      setIncidents(x.incidents)
+      const p = x.policy
+      setPolicyLine(p.readable
+        ? `Healing policy: diagnosis ≤ $${p.diagnosisCapUsd} · research ≤ $${p.providerResearchCapUsd} · ${p.maxAttemptsPerDay} attempts/day · auto-fix at ≥ ${Math.round(p.autoFixMinConfidence * 100)}% confidence${p.clamped.length ? ` (platform ceiling applied to ${p.clamped.join(", ")})` : ""}`
+        : `Healing policy unreadable — the OS takes no autonomous healing action (${p.note ?? "no detail"})`)
+    }).catch(() => {})
+  }, [])
   useEffect(() => {
     getSelfHealRollup().then((x) => { if (x.success) setR(x.rollup) }).catch(() => {})
     getRepairAutonomy().then((x) => { if (x.success) setRepairs(x.repairs) }).catch(() => {})
@@ -64,11 +78,41 @@ export function BrokerSelfHealPanel() {
     </div>
   ) : null
 
+  const incidentsBlock = incidents.length > 0 || policyLine ? (
+    <div className="rounded-md border px-3 py-2 text-xs" data-healing-incidents={incidents.length}>
+      {policyLine ? <p className="text-muted-foreground">{policyLine}</p> : null}
+      {incidents.length > 0 ? (
+        <>
+          <button type="button" onClick={() => setShowIncidents((v) => !v)} className="mt-1 flex items-center gap-1 text-muted-foreground hover:text-foreground">
+            {showIncidents ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            {incidents.length} healing incident{incidents.length === 1 ? "" : "s"} in your brokerage
+          </button>
+          {showIncidents ? (
+            <ul className="mt-1 space-y-1.5">
+              {incidents.slice(0, 25).map((i) => (
+                <li key={i.key} className="border-t pt-1">
+                  <div className="flex justify-between gap-2"><span className="font-medium">{i.subject}</span><Badge variant="outline" className="shrink-0">{i.finalState}</Badge></div>
+                  <div className="text-muted-foreground">
+                    {[i.classification, i.domain, i.provider, i.playbook ? `${i.playbook} × ${i.attempts}` : null, `$${i.costUsd.toFixed(4)}`].filter(Boolean).join(" · ")}
+                  </div>
+                  {i.diagnosis ? <div>{i.diagnosis.summary}</div> : null}
+                  {i.verification ? <div className="text-muted-foreground">{i.verification}</div> : null}
+                  {i.escalation?.reason ? <div className="text-amber-700">{i.escalation.reason}</div> : null}
+                  {i.evidence.map((c) => <a key={c.url} className="block underline" href={c.url} target="_blank" rel="noreferrer">{c.title ?? c.url}</a>)}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  ) : null
+
   if (!r || r.healed === 0) {
-    if (!healthLine) return null
+    if (!healthLine && !incidentsBlock) return null
     return (
       <Card>
-        <CardContent className="pt-4">{healthLine}</CardContent>
+        <CardContent className="pt-4 space-y-2">{healthLine}{incidentsBlock}</CardContent>
       </Card>
     )
   }
@@ -84,6 +128,7 @@ export function BrokerSelfHealPanel() {
       </CardHeader>
       <CardContent className="space-y-2">
         {healthLine}
+        {incidentsBlock}
         <p className="text-sm">
           The OS auto-fixed <span className="font-semibold">{r.healed}</span> issue{r.healed === 1 ? "" : "s"} before {r.healed === 1 ? "it" : "they"} could reach you.
         </p>

@@ -16,11 +16,28 @@
  *   G. CENSUS — no manager / skill module imports a provider client directly (stripped source; positive
  *      control; exceptions published with reasons, a stale exception fails).
  *   H. WIRING + VERSION PINS — the cron calls the healer, the gateway applies the alternate, the
- *      auto-applier knows the kind; declared versions equal the versions the code pins.
+ *      auto-applier knows the kind; declared versions equal the versions the code pins; ONE QuickBooks
+ *      minor version (QBO_MINOR_VERSION = 75, wave 139) and no literal pin anywhere (positive control).
+ *   I–M (wave 138, 138A) census / research roots / probe routing / failover→healer / one vocabulary.
+ *   N. (wave 139, 139B) ZERO HIDDEN PROVIDER CALLS — a raw-fetch census (positive control: a planted
+ *      raw fetch to a provider host is flagged), the gateway path is tenant scoped and books its
+ *      outcome row (behavioural, fetch stubbed), an unhealthy provider is skipped (egress health
+ *      gate; router failover where an alternate exists), the declared transport matches the code.
+ *   O. URL INTEGRITY (wave 139, 139D) — every docs / status / changelog URL is on an official domain
+ *      and not a placeholder shape, or NULL with its published reason; planted placeholders, an
+ *      invented domain and a silent null are each refused (positive controls).
+ *   P. VERSIUM PROPERTY (wave 139, 139D) — declared on property_facts ⇒ walked: getPropertyRecordWithFallback
+ *      fills ONLY the caller's empty facts through routeCapability (BatchData excluded, budget-gated,
+ *      health-aware, booked once); never asked without a named gap; never on property_valuation; the
+ *      adapter maps no price / value range / person field.
  * BLIND SPOTS (published): the live probe and the derived health are injected (their own proofs are
  * test:connector-gateway / test:connector-healer); the census reads static + dynamic import specifiers
  * only (a provider reached through a re-export barrel is not seen); the cron route is checked by
- * stripped-source wiring, not executed.
+ * stripped-source wiring, not executed. Wave 139: URLs are judged by SHAPE + OFFICIAL DOMAIN (no network
+ * in a proof) — that a page still answers was verified by the lane's research run (2026-10-08), not
+ * here; the declared-alternate apply path runs on a fixture (no live provider declares a config
+ * alternate since QBO pins 75), and the real applier is exercised on its refusal path only; the
+ * Versium gap fill runs on injected seams (the live Versium call shape is appendVersiumPropertyFacts).
  */
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
@@ -36,6 +53,9 @@ import { runtimeFiles } from "./runtime-roots"
 import { existsSync } from "node:fs"
 import { VENDOR_PRICING, DIRECT_MAIL_PIECE_COST_USD } from "../lib/vendor-governance/cost-normalizer"
 import { PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
+import { QBO_MINOR_VERSION } from "../lib/agentic-os/connector-registry"
+import { PROBE_SPECS } from "../lib/agentic-os/connector-probe"
+import { appendVersiumPropertyFacts } from "../lib/external/versium-client"
 
 /**
  * PUBLISHED declaration faults (wave 138, lane 138A) — a provider the census found that is truthfully
@@ -43,14 +63,13 @@ import { PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
  * validator refuses each (adapterFor does not serve it: the healer only proposes); this list is a
  * RATCHET — a fault not listed fails the guard, a listed one that is fixed fails until it is removed.
  */
-const KNOWN_DECLARATION_FAULTS: Record<string, string> = {
-  zyte: "zyte — platform-paid scraper with NO price constant (callers pass their own cost to bookSourceSpend); one Zyte price is owed (138B research: current Zyte API pricing)",
-  tavily: "tavily — platform-paid search with NO price constant (callers pass their own cost); one Tavily price is owed",
-  openai: "openai — direct-key image generation/edit (lib/ai/image-generation.ts, lib/listings/photo-intelligence.ts) is not booked to ai_tool_usage; route through the AI Gateway or book it",
-  voicedrop: "voicedrop (Slybroadcast) — platform-key ringless drops are neither priced nor booked to vendor_usage_tracking",
-  google_maps: "google_maps — platform Maps key (server static/street-view + browser) is neither priced nor booked per tenant",
-  mapbox: "mapbox — platform browser token (team heatmap) is neither priced nor booked",
-}
+// Wave 139 (lane 139C) — all six wave-138 faults CLOSED, so the ratchet is empty (each was removed the
+// moment it stopped being real, as this list demands): zyte + tavily priced in VENDOR_PRICING (VARIABLE,
+// sourced); openai image generation/edit booked through logAIImageUsage; voicedrop booked per delivered
+// drop with its price explicitly UNKNOWN; google_maps server-minted images booked through
+// bookMapsImageSpend; mapbox re-proven at HEAD to make NO request (vocabulary_only). The per-capability
+// cost record + its proofs: scripts/cost-completeness-guard.ts.
+const KNOWN_DECLARATION_FAULTS: Record<string, string> = {}
 
 /** Env / gateway / module / webhook names that are NOT an external provider — each with its reason. */
 const NON_PROVIDER: Record<string, string> = {
@@ -209,27 +228,41 @@ async function main() {
   ok(dUp.step === "none", "UP with no drift → nothing to heal (the gateway retry owns a blip)")
 
   // ── D. up + version drift → apply declared + retry once ───────────────────
-  console.log("\nD. UP + version drift → declared alternate applied, retried once")
+  // Wave 139 (lane 139D): the LIVE QuickBooks declaration now pins QBO_MINOR_VERSION (75) and declares
+  // NO alternate and NO deprecation — it has nothing to heal (asserted below). The apply path is
+  // therefore proven on a FIXTURE of the retired pre-75 declaration (an assertion is never pinned to a
+  // waypoint, CLAUDE.md §2), injected through the healer's resolveAdapter / apply / appliedAlternateId
+  // seams; the REAL applier and the REAL egress reader are exercised on what the live code now holds.
+  console.log("\nD. UP + version drift → declared alternate applied, retried once (fixture); the live QBO pin has nothing to heal")
+  const qboLive = adapterFor("quickbooks") as ProviderAdapter
+  const FIXTURE_ALT = { id: "fixture_minor_next", level: "config" as const, version: "v3 minorversion=75", query: { minorversion: "75" }, supersedesCurrent: true, reason: "fixture: a pre-75 declaration's superseding minor version" }
+  const qboFixture: ProviderAdapter = { ...qboLive, api: { ...qboLive.api, version: "v3 minorversion=73", deprecatedAfter: "2025-08-01", alternates: [FIXTURE_ALT] } }
   const cD = fakeClient()
   let retries = 0
+  const appliedD: any[] = []
+  const applyD = async (_c: unknown, p: any) => { appliedD.push(p); return { applied: true, proposalId: `pD${appliedD.length}`, reason: `applied ${p.alternateId}` } }
   const repD = await healProviderFailure({ connector: "quickbooks", brokerageId: A, failures: [{ status: 400, path: "companyinfo", error: "minor version" }], cycle: "d", retry: async () => { retries++; return { ok: true } } },
-    { client: cD, now: NOW, probe: async () => "ok", derivedHealth: UP, propose: async () => { throw new Error("must not propose") } })
-  const propRows = cD.tables().connector_healing_proposals ?? []
-  ok(repD.decision.step === "apply_declared" && repD.applied && propRows.length === 1 && propRows[0].proposal_kind === "declared_alternate" && propRows[0].status === "applied" && propRows[0].applied_by === "auto", "deprecated QBO minor version → declared alternate written as evidence and applied (pending → applied)")
-  ok(propRows[0]?.proposal_payload?.alternate_id === "qbo_minorversion_75" && !JSON.stringify(propRows[0]?.proposal_payload ?? {}).includes("https://evil"), "the row stores the alternate ID; the config comes from the code declaration")
+    { client: cD, now: NOW, probe: async () => "ok", derivedHealth: UP, appliedAlternateId: async () => null, resolveAdapter: () => qboFixture, apply: applyD as any, propose: async () => { throw new Error("must not propose") } })
+  ok(repD.decision.step === "apply_declared" && repD.applied && appliedD.length === 1 && appliedD[0].alternateId === FIXTURE_ALT.id, "deprecated minor version (fixture) → the declared config alternate is applied through the applier seam")
   ok(retries === 1 && repD.retried && repD.retryOk === true, "retried exactly ONCE under the applied alternate")
   ok(ledgerActions(cD).join(",") === "provider.heal.probe:executed,provider.heal.apply:executed,provider.heal.retry:executed", `every step ledgered: ${ledgerActions(cD).join(", ")}`)
   ok((cD.tables().agent_action_ledger ?? []).every((r) => r.brokerage_id === A && r.reason_code === "OS_HEALTH_RECOVERY" && r.actor_manager_key === "data_steward"), "ledger rows carry the tenant, OS_HEALTH_RECOVERY and the data_steward actor")
-  const applied = await loadAppliedAlternate("quickbooks", cD)
-  ok(applied?.alternate.id === "qbo_minorversion_75", "loadAppliedAlternate resolves the applied row back through the declaration")
-  const egress = buildAuthedRequest(applyAlternateToRequest({ connector: "quickbooks", baseUrl: "https://quickbooks.api.intuit.com/v3/company/1", path: "companyinfo/1?minorversion=73" }, applied!.alternate, applied!.currentBaseUrl))
+  const egress = buildAuthedRequest(applyAlternateToRequest({ connector: "quickbooks", baseUrl: "https://quickbooks.api.intuit.com/v3/company/1", path: "companyinfo/1?minorversion=73" }, FIXTURE_ALT, qboFixture.api.baseUrl))
   ok(/minorversion=75/.test(egress.url) && !/minorversion=73/.test(egress.url), `egress carries the applied version (${new URL(egress.url).pathname}${new URL(egress.url).search})`)
   const repD2 = await healProviderFailure({ connector: "quickbooks", brokerageId: A, failures: [], cycle: "d2", retry: async () => { retries++; return { ok: true } } },
-    { client: cD, now: NOW, probe: async () => "ok", derivedHealth: UP, propose: async () => ({ proposal: { id: "p2", connector: "quickbooks", proposal_kind: "endpoint_change", proposal_summary: "", confidence: 0, status: "pending" }, error: null }) })
-  ok(repD2.decision.step === "none" && retries === 1 && (cD.tables().connector_healing_proposals ?? []).length === 1, "a second heal after the apply does NOT re-apply or retry — the applied alternate answered the deprecation")
+    { client: cD, now: NOW, probe: async () => "ok", derivedHealth: UP, appliedAlternateId: async () => FIXTURE_ALT.id, resolveAdapter: () => qboFixture, apply: applyD as any, propose: async () => ({ proposal: { id: "p2", connector: "quickbooks", proposal_kind: "endpoint_change", proposal_summary: "", confidence: 0, status: "pending" }, error: null }) })
+  ok(repD2.decision.step === "none" && retries === 1 && appliedD.length === 1, "a second heal after the apply does NOT re-apply or retry — the applied alternate answered the deprecation")
   const repD3 = await healProviderFailure({ connector: "quickbooks", brokerageId: A, failures: [], cycle: "d3", retry: async () => { retries++; return { ok: true } } },
-    { client: cD, now: NOW, probe: async () => "shape_drift", derivedHealth: UP, propose: async () => ({ proposal: { id: "p3", connector: "quickbooks", proposal_kind: "shape_update", proposal_summary: "", confidence: 0, status: "pending" }, error: null }) })
-  ok(repD3.decision.step === "propose" && retries === 1 && repD3.proposalId === "p3", "drift that persists AFTER the declared alternate → a proposal (never a second auto-apply)")
+    { client: cD, now: NOW, probe: async () => "shape_drift", derivedHealth: UP, appliedAlternateId: async () => FIXTURE_ALT.id, resolveAdapter: () => qboFixture, apply: applyD as any, propose: async () => ({ proposal: { id: "p3", connector: "quickbooks", proposal_kind: "shape_update", proposal_summary: "", confidence: 0, status: "pending" }, error: null }) })
+  ok(repD3.decision.step === "propose" && retries === 1 && repD3.proposalId === "p3" && appliedD.length === 1, "drift that persists AFTER the declared alternate → a proposal (never a second auto-apply)")
+  // The LIVE declaration: pinned at 75, nothing deprecated, nothing superseding — an UP QBO is not "healed".
+  ok(qboLive.api.alternates.length === 0 && !qboLive.api.deprecatedAfter && decideProviderHeal(qboLive, { probe: "ok", derived: null, shapeChange: null, appliedAlternateId: null, now: NOW }).step === "none",
+    `live QBO declaration (${qboLive.api.version}) has no alternate / deprecation → an UP QBO has nothing to heal`)
+  // The REAL applier + the REAL egress reader on the RETIRED alternate: a stale applied row is inert.
+  const retired = await (await import("../lib/agentic-os/connector-auto-applier")).applyDeclaredAlternate(fakeClient(), { connector: "quickbooks", alternateId: "qbo_minorversion_75", failureSignature: "x", evidence: {} })
+  ok(!retired.applied && /not a declared config-level alternate/.test(retired.reason), "POSITIVE CONTROL: the real applier refuses the RETIRED qbo_minorversion_75 (tombstoned — never re-applied)")
+  const staleApplied = fakeClient({ connector_healing_proposals: [{ id: "old", connector: "quickbooks", proposal_kind: "declared_alternate", status: "applied", applied_at: "2026-10-01T00:00:00Z", proposal_payload: { alternate_id: "qbo_minorversion_75" } }] })
+  ok((await loadAppliedAlternate("quickbooks", staleApplied)) === null, "a stale APPLIED row naming the retired alternate resolves to nothing at egress (the gateway reads only declared alternates)")
   const forged = await (await import("../lib/agentic-os/connector-auto-applier")).applyDeclaredAlternate(fakeClient(), { connector: "rentcast", alternateId: "rentcast_mcp", failureSignature: "x", evidence: {} })
   ok(!forged.applied && /not a declared config-level alternate/.test(forged.reason), "POSITIVE CONTROL: a CODE-level alternate can never be applied through the applier")
 
@@ -284,8 +317,19 @@ async function main() {
   ok(/declared_alternate:\s*\{\s*minConfidence/.test(applier) && /declaredConfigAlternate\(p\.connector/.test(applier), "auto-applier SAFE_KINDS includes declared_alternate, re-validated against the declaration")
   const stripeV = /STRIPE_API_VERSION = '([^']+)'/.exec(read("lib/stripe.ts"))?.[1]
   ok(!!stripeV && adapterFor("stripe")?.api.version === stripeV, `stripe declared version == lib/stripe.ts STRIPE_API_VERSION (${stripeV})`)
-  const qboPinned = /minorversion=(\d+)/.exec(stripComments(read("lib/providers/accounting/quickbooks.ts")))?.[1]
-  ok(!!qboPinned && adapterFor("quickbooks")?.api.version.endsWith(`minorversion=${qboPinned}`), `quickbooks declared version == the minorversion the code pins (${qboPinned})`)
+  // Wave 139 (lane 139D, owner "approve all" (3): QuickBooks minorversion = 75) — ONE constant.
+  const qboCorpus = runtimeFiles().map((p) => ({ path: p.replace(/^\.\//, ""), src: stripComments(readFileSync(join(ROOT, p), "utf8")) }))
+  const minorLiteral = (src: string) => /minorversion=\d|minorversion["']?\s*:\s*["'`]?\d/.test(src)
+  const literalPins = qboCorpus.filter((f) => minorLiteral(f.src)).map((f) => f.path)
+  ok(literalPins.length === 0, `no QBO minor-version LITERAL anywhere in runtime code — every pin reads QBO_MINOR_VERSION (${literalPins.join(", ") || "none"})`)
+  ok(minorLiteral(`path: "/invoice?minorversion=73"`) && minorLiteral(`query: { minorversion: "74" }`) && !minorLiteral(stripComments(`// was "/invoice?minorversion=73"\nconst p = \`/invoice?minorversion=\${QBO_MINOR_VERSION}\``)),
+    "POSITIVE CONTROL: the finder sees a live literal pin (path or query form), not a tombstone comment nor the constant's template")
+  const constantSites = qboCorpus.filter((f) => /minorversion=\$\{QBO_MINOR_VERSION\}/.test(f.src)).map((f) => f.path)
+  ok(constantSites.length >= 6 && ["lib/providers/accounting/quickbooks.ts", "lib/agentic-os/connector-probe.ts"].every((p) => constantSites.includes(p)),
+    `every QBO request site speaks the ONE constant (${constantSites.length} files: ${constantSites.join(", ")})`)
+  ok(QBO_MINOR_VERSION === "75", `QBO_MINOR_VERSION is the owner-ruled 75 (wave 139 approve-all (3); no newer Intuit minor version found 2026-10-08) — got ${QBO_MINOR_VERSION}`)
+  ok(adapterFor("quickbooks")?.api.version === `v3 minorversion=${QBO_MINOR_VERSION}` && (() => { const u = PROBE_SPECS.quickbooks?.url; return (typeof u === "function" ? u({ config: { realmId: "1" } } as any) : u) ?? "" })().endsWith(`minorversion=${QBO_MINOR_VERSION}`),
+    `the adapter declaration (${adapterFor("quickbooks")?.api.version}) and the live probe speak the same constant`)
   const pkg = read("package.json")
   ok(new RegExp("npm run test:provider-adapter(\\s|&|$)").test(pkg), "test:provider-adapter is in the guard chain")
 
@@ -324,7 +368,9 @@ async function main() {
 
   // ── J. declarations — research roots + bookings that exist in code ──
   console.log("\nJ. every declaration carries its research roots; every named booking exists")
-  ok(derived.adapters.every((a) => !!a.api.docsUrl && /^https:\/\//.test(a.api.docsUrl)), `every adapter names an https docs root for the provider-setup research step (${derived.adapters.filter((a) => a.api.statusUrl).length} status pages, ${derived.adapters.filter((a) => a.api.changelogUrl).length} changelogs declared)`)
+  // Wave 139 (139D): a docs root is a verified https page OR null WITH its published reason (section N).
+  ok(derived.adapters.every((a) => a.api.docsUrl ? /^https:\/\//.test(a.api.docsUrl) : (a.api.urlNote ?? "").trim().length >= 40),
+    `every adapter names an https docs root or publishes why it has none (${derived.adapters.filter((a) => a.api.docsUrl).length} docs roots, ${derived.adapters.filter((a) => !a.api.docsUrl).length} null-with-reason, ${derived.adapters.filter((a) => a.api.statusUrl).length} status pages, ${derived.adapters.filter((a) => a.api.changelogUrl).length} changelogs declared)`)
   const bookingFaults: string[] = []
   for (const a of derived.adapters) {
     if (a.cost.payer !== "platform" || a.cost.ledger === "free" || /^none\b/.test(a.cost.booking)) continue
@@ -367,7 +413,294 @@ async function main() {
   ok(peoplesFiles.length === 0, `"peoplesdata" spelled nowhere in runtime code (${peoplesFiles.join(", ") || "none"}) — ONE spelling: peopledata`)
   ok(peoples(`const provider = "peoplesdata"`) && !peoples(`// tombstone: "peoplesdata" retired`), "POSITIVE CONTROL: the finder sees a live \"peoplesdata\" literal, not a tombstone")
 
+  await sectionN(corpus, derived)
+  // ── O. URL integrity (wave 139, lane 139D) ──
+  console.log("\nO. every docs / status / changelog URL is a verified official page or NULL with its reason")
+  const urlFaults = derived.adapters.flatMap((a) => validateProviderAdapter(a).filter((e) => /URL|urlNote/.test(e)).map((e) => `${a.provider}: ${e}`))
+  const urlCount = derived.adapters.reduce((n, a) => n + [a.api.docsUrl, a.api.statusUrl, a.api.changelogUrl].filter(Boolean).length, 0)
+  ok(urlFaults.length === 0, `${urlCount} declared URLs over ${derived.adapters.length} adapters — ${urlFaults.length} placeholder / off-domain / unexplained-null fault(s)${urlFaults.length ? ": " + urlFaults.slice(0, 6).join(" | ") : ""}`)
+  for (const a of derived.adapters.filter((x) => x.api.urlNote)) console.log(`      ${a.provider}: ${a.api.docsUrl ? "docs " + a.api.docsUrl + " · " : "docs NULL · "}${a.api.urlNote}`)
+  // The wave-138 research roots — each a site homepage standing in for docs — are flagged by the finder…
+  const RETIRED_ROOTS = ["https://lofty.com", "https://skyslope.com", "https://my.brokermint.com", "https://www.formsimplicity.com", "https://www.showingtime.com", "https://www.slybroadcast.com", "https://www.arello.org", "https://www.listhub.com"]
+  const rootFlagged = (u: string) => { const a = adapterFor("lofty") as ProviderAdapter; return validateProviderAdapter({ ...a, api: { ...a.api, docsUrl: u } }).some((e) => /homepage/.test(e)) }
+  ok(RETIRED_ROOTS.every(rootFlagged), `POSITIVE CONTROL: all ${RETIRED_ROOTS.length} wave-138 homepage roots are refused as placeholders by validateProviderAdapter`)
+  // …and none remains declared (derived from the live declarations — a regression fails here).
+  const declaredUrls = new Set(derived.adapters.flatMap((a) => [a.api.docsUrl, a.api.statusUrl, a.api.changelogUrl]).filter(Boolean).map((u) => String(u).replace(/\/$/, "")))
+  ok(RETIRED_ROOTS.every((u) => !declaredUrls.has(u)), "no wave-138 placeholder root is declared any more")
+  const loftyA = adapterFor("lofty") as ProviderAdapter
+  const plant = (api: Partial<ProviderAdapter["api"]>) => validateProviderAdapter({ ...loftyA, api: { ...loftyA.api, ...api } })
+  ok(validateProviderAdapter(loftyA).length === 0, `POSITIVE CONTROL: the real (verified) lofty declaration is valid (${loftyA.api.docsUrl})`)
+  ok(plant({ docsUrl: "https://lofty.com" }).some((e) => /homepage/.test(e)), "a planted homepage docs root is REFUSED (placeholder)")
+  ok(plant({ docsUrl: "https://docs.example.com/api" }).some((e) => /placeholder host/.test(e)), "a planted reserved-host docs URL is REFUSED")
+  ok(plant({ docsUrl: "https://docs.lofty-api.io/v1" }).some((e) => /not on an official lofty domain/.test(e)), "a planted INVENTED domain (well-shaped, off-domain) is REFUSED")
+  ok(plant({ statusUrl: "https://lofty.com/blog" }).some((e) => /names no status page/.test(e)) && plant({ changelogUrl: "https://developer.lofty.com/intro" }).some((e) => /names no changelog/.test(e)), "a 'status' / 'changelog' URL that is neither is REFUSED")
+  ok(plant({ docsUrl: null, urlNote: null }).some((e) => /no docs URL and no published reason/.test(e)), "a NULL docs root with no reason is REFUSED (never silent)")
+  ok(plant({ docsUrl: null, urlNote: "docs: no public developer documentation could be verified on 2026-10-08 (fixture)" }).filter((e) => /URL|urlNote/.test(e)).length === 0, "a NULL docs root WITH its published reason is accepted")
+
+  // ── P. Versium property: declared ⇒ routed AND walked (gap-only), never a valuation ──
+  console.log("\nP. Versium as a property-data provider: routed + walked on the property_facts route, gap-only")
+  const versiumA = adapterFor("versium") as ProviderAdapter
+  const declaresProperty = CONTACT_PROVIDER_ROUTES.property_facts.some((e) => e.provider === "versium")
+  ok(declaresProperty === versiumA.capabilities.includes("property_facts"), `the declaration matches the route table (versium property_facts: ${declaresProperty ? "DECLARED" : "not declared"})`)
+  ok(!CONTACT_PROVIDER_ROUTES.property_valuation.some((e) => e.provider === "versium"), "Versium is NEVER on property_valuation (RentCast primary, BatchData backup — owner rulings)")
+  const chainSrc = stripComments(read("lib/avm/provider-chain.ts"))
+  const investigatorSrc = stripComments(read("lib/agentic-os/deal-investigator.ts"))
+  ok(!declaresProperty || (/routeCapability\("property_facts"/.test(chainSrc) && /getPropertyRecordWithFallback\(\{[\s\S]{0,400}gapFields:/.test(investigatorSrc)),
+    "declared ⇒ WALKED: the provider chain routes property_facts through routeCapability, and a real caller (the deal investigator) names the gaps it needs")
+  const chain = await import("../lib/avm/provider-chain")
+  const rcRow = { address: "1 Main St", city: "Anytown", state: "ZZ", zip: "00001", bedrooms: 3, bathrooms: 2, squareFeet: 1800, yearBuilt: null, propertyType: "Single Family", assessedValue: 210000, annualPropertyTax: 4100, taxYear: 2025, ownerNames: [], lastSaleDate: null, lastSalePrice: 199000 } as any
+  const rentcastSeam = (detail: any) => async () => ({ detail, outcome: "answered" as const, eligibility: { reason: "eligible" } })
+  const asks: any[] = [], meters: any[] = []
+  const gap = (over: Record<string, unknown> = {}) => ({
+    providerHealth: async () => null, checkBudget: async () => ({ allowed: true }),
+    versium: async (addr: any) => { asks.push(addr); return { facts: { yearBuilt: 1987, propertyType: "Condominium", lastSaleDate: "2015-06-01" }, credits: 1, cost: 0.05, provenance: null } },
+    meter: async (m: any) => { meters.push(m); return true }, ...over,
+  })
+  const ALL = ["yearBuilt", "propertyType", "lastSaleDate"] as const
+  const o1 = await chain.getPropertyRecordWithFallback({ brokerageId: A, address: "1 Main St, Anytown, ZZ 00001", contactId: "c-1", gapFields: ALL }, { rentcast: rentcastSeam(rcRow), gapFill: gap() as any })
+  ok(o1.record?.provider === "rentcast" && o1.record.yearBuilt === 1987 && o1.record.lastSaleDate === "2015-06-01" && o1.record.propertyType === "Single Family",
+    `EXECUTED: RentCast answered with gaps → Versium filled ONLY the empty facts (yearBuilt, lastSaleDate); RentCast's propertyType was NOT overwritten (filled: ${Object.keys(o1.gapFill?.filled ?? {}).join(", ")})`)
+  ok(asks.length === 1 && Object.keys(asks[0]).sort().join(",") === "address,city,state,zip", "Versium was asked ONCE, by the postal address alone (no name / email / phone)")
+  ok(o1.gapFill?.route.join(",") === "versium" && (o1.gapFill?.skipped ?? []).some((s) => s.provider === "batchdata" && /ONE BatchData door/.test(s.reason)), "the walk is routeCapability(property_facts) minus BatchData (its one door already ran)")
+  ok(meters.length === 1 && meters[0].vendorName === "versium" && meters[0].usageType === "property_facts_gap_fill" && meters[0].cost === 0.05 && meters[0].brokerageId === A && o1.gapFill?.costUsd === 0.05, "the match credit is booked ONCE to the tenant on the vendor ledger (meterVendorSpend seam) and reported")
+  ok(o1.record?.assessedValue === 210000 && o1.record.lastSalePrice === 199000, "no value / price field is touched by the gap fill (never a valuation)")
+  const before = asks.length
+  const o2 = await chain.getPropertyRecordWithFallback({ brokerageId: A, address: "1 Main St" }, { rentcast: rentcastSeam(rcRow), gapFill: gap() as any })
+  const o3 = await chain.getPropertyRecordWithFallback({ brokerageId: A, address: "1 Main St", gapFields: ALL }, { rentcast: rentcastSeam({ ...rcRow, yearBuilt: 1990, lastSaleDate: "2001-01-01" }), gapFill: gap() as any })
+  const o4 = await chain.getPropertyRecordWithFallback({ brokerageId: A, address: "1 Main St", gapFields: ALL }, { rentcast: rentcastSeam(rcRow), gapFill: gap({ providerHealth: async () => ({ state: "failing", routeAround: true, reason: "3 consecutive faults" }) }) as any })
+  const o5 = await chain.getPropertyRecordWithFallback({ brokerageId: A, address: "1 Main St", gapFields: ALL }, { rentcast: rentcastSeam(rcRow), gapFill: gap({ checkBudget: async () => ({ allowed: false }) }) as any })
+  const o6 = await chain.getPropertyRecordWithFallback({ brokerageId: A, address: "1 Main St", gapFields: ALL, gapFillMaxUsd: 0.01 }, { rentcast: rentcastSeam(rcRow), gapFill: gap() as any })
+  ok(asks.length === before && o2.gapFill === null && o3.gapFill?.asked.length === 0 && o4.record?.yearBuilt === null && o5.record?.yearBuilt === null && o6.record?.yearBuilt === null,
+    "POSITIVE CONTROLS: no gaps named (net-sheet) / no gaps left / Versium failing (routed around) / budget refused / over the caller's cap → Versium is NEVER asked")
+  const mBefore = meters.length
+  const o7 = await chain.getPropertyRecordWithFallback({ brokerageId: A, address: "1 Main St", gapFields: ALL }, { rentcast: rentcastSeam(rcRow), gapFill: gap({ versium: async () => ({ facts: null, credits: 0, cost: 0, provenance: null }) }) as any })
+  ok(meters.length === mBefore && o7.record?.yearBuilt === null && (o7.gapFill?.costUsd ?? -1) === 0, "a Versium no-match is free: nothing filled, nothing booked")
+  // The adapter's own mapping — documented sample row (api-documentation.versium.com/reference/api-output-1).
+  const sample = { "Individual Level Match": "Yes", "Home Year Built": "2008", "Home Purchase Date": "20081219", "Home Purchase Price": "$350,000-399,999", "Dwelling Type": "Single Family Dwelling Unit", "Home Value": "$500,000-749,999", "Home Market Value": "568200", "Credit Rating": "700-749", "Household Income": "$150,000-199,999" }
+  // Through the REAL adapter (appendVersiumPropertyFacts) with only the network injected.
+  const sent: Array<{ output: string; q: Record<string, string> }> = []
+  const vCall = (row: Record<string, unknown>) => async (output: "demographic" | "financial", q: Record<string, string>) => { sent.push({ output, q }); return { ok: true, status: 200, data: { versium: { match_counts: { financial: 1 }, results: [row] } } } }
+  const r1 = await appendVersiumPropertyFacts({ address: "1 Main St", city: "Anytown", state: "ZZ", zip: "00001" }, { call: vCall(sample) })
+  const mapped = r1.facts
+  ok(!!mapped && mapped.yearBuilt === 2008 && mapped.propertyType === "Single Family Dwelling Unit" && mapped.lastSaleDate === "2008-12-19" && r1.credits === 1 && r1.cost === 0.05 && r1.provenance?.capability === "property.enrich_facts",
+    `the documented sample maps to exact facts through appendVersiumPropertyFacts (${JSON.stringify(mapped)}; 1 credit, $${r1.cost}, provenance property.enrich_facts)`)
+  ok(sent.length === 1 && sent[0].output === "financial" && !("first" in sent[0].q) && !("last" in sent[0].q) && !("email" in sent[0].q) && !("phone" in sent[0].q) && sent[0].q.address === "1 Main St",
+    "ONE `financial` request, keyed by the postal address alone (no person identifier is ever sent)")
+  ok(!/350,000|500,000|568200|700-749|150,000/.test(JSON.stringify(r1)) && Object.keys(mapped ?? {}).sort().join(",") === "lastSaleDate,propertyType,yearBuilt", "no price / value range / market value / credit / income field is ever mapped")
+  const r2 = await appendVersiumPropertyFacts({ address: "1 Main St", city: null, state: null, zip: "00001" }, { call: vCall({ "Home Purchase Date": "200812", "Home Year Built": "20o8" }) })
+  const r3 = await appendVersiumPropertyFacts({ address: null, city: "Anytown", state: "ZZ", zip: "00001" }, { call: vCall(sample) })
+  ok(r2.facts === null && r2.credits === 1 && r3.skipped === "no_address" && sent.length === 2,
+    "POSITIVE CONTROLS: a month-only date is never padded and a malformed year is dropped (a billed match with no usable fact still reports its credit); no street address → nothing asked")
+
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   process.exit(fail === 0 ? 0 : 1)
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// N. ZERO HIDDEN PROVIDER CALLS (wave 139, lane 139B). Section I's census reads env keys, client
+//    module names, webhook dirs and callConnector literals — a BARE fetch to a vendor host with none
+//    of those (Open-Meteo, a second Tavily client, six Google Ads calls behind a declaration that
+//    said "no ads call path exists") was invisible to it. This census reads every `fetch(` in the
+//    stripped runtime corpus and resolves its URL (a literal, or a same-file const holding one): an
+//    external host outside the gateway is a HIDDEN PROVIDER CALL unless RAW_FETCH_EXCEPTIONS
+//    publishes a TECHNICAL reason. Plus: the gateway path is tenant scoped, an unhealthy provider is
+//    skipped, migrated paths book their outcome row, and the declared transport matches the code.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** A raw fetch that may stay raw — `file|host` → the technical reason it cannot ride callConnector. */
+const RAW_FETCH_EXCEPTIONS: Record<string, string> = {
+  "lib/voice/elevenlabs-tts.ts|api.elevenlabs.io": "STREAMING TTS — the raw Response body is piped to the client as it arrives; callConnector buffers every response (json/text/arraybuffer) and cannot hand back a stream. The buffered TTS path in the same file uses the gateway (scripts/elevenlabs-egress-guard.ts pins exactly one raw /stream fetch).",
+  "app/components/ui/address-autocomplete.tsx|nominatim.openstreetmap.org": "BROWSER call (\"use client\") — the gateway is server-only (it imports the service-role client for its outcome row), so a client component cannot reach it; keyless free geocoder, nothing to meter. Recommendation: a server action over osint_free's nominatim connector.",
+  "app/crm/contacts/[contactId]/offers/components/offer-initiation-flow.tsx|nominatim.openstreetmap.org": "BROWSER call (\"use client\") — same as address-autocomplete: the server-only gateway cannot run in a client component; keyless free geocoder. Recommendation: the same server action.",
+}
+
+/** Files that ARE the egress (the gateway's own fetch, the probe's) — never a hidden call. */
+const EGRESS_FILES = new Set(["lib/agentic-os/connector-gateway.ts", "lib/agentic-os/connector-probe.ts"])
+
+/** PURE — every raw `fetch(` whose URL resolves to an external https host (stripped source; a URL
+ *  held in a parameter / property / non-literal const is NOT resolved — published blind spot). */
+function rawProviderFetches(files: Array<{ path: string; src: string }>): { hits: Array<{ file: string; host: string; line: number }>; total: number; unresolved: number } {
+  const hits: Array<{ file: string; host: string; line: number }> = []
+  let total = 0, unresolved = 0
+  for (const { path, src } of files) {
+    if (EGRESS_FILES.has(path)) continue
+    const s = stripComments(src)
+    if (!/(?<![.\w])fetch\s*\(/.test(s)) continue
+    const consts = new Map<string, string>()
+    for (const m of s.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*[\w<>[\]| ]+)?=\s*["'`](https?:\/\/[^"'`$/?]+)/g)) consts.set(m[1], m[2])
+    for (const m of s.matchAll(/(?<![.\w])fetch\s*\(\s*([^,)\n]{0,200})/g)) {
+      total++
+      const arg = m[1].trim()
+      const lit = /^["'`](https?:\/\/[^/"'`$?]+)/.exec(arg)
+      const ref = lit ? null : (/^`\$\{([A-Za-z_$][\w$]*)\}/.exec(arg) ?? /^([A-Za-z_$][\w$]*)\b/.exec(arg))
+      const origin = lit?.[1] ?? (ref && consts.get(ref[1])) ?? null
+      if (!origin) { unresolved++; continue }
+      let host = ""
+      try { host = new URL(origin).hostname.toLowerCase() } catch { unresolved++; continue }
+      if (host === "localhost" || host.startsWith("127.") || host.endsWith(".supabase.co")) continue
+      hits.push({ file: path, host, line: s.slice(0, m.index).split("\n").length })
+    }
+  }
+  return { hits, total, unresolved }
+}
+
+/** The SDK half of the transport audit — the official npm SDK a provider's code imports. */
+const SDK_PACKAGE_OF: Record<string, string> = {
+  twilio: "twilio", stripe: "stripe", lob: "lob", "@hubspot/api-client": "hubspot", "exa-js": "exa",
+  "apify-client": "apify", zenrows: "zenrows", peopledatalabs: "peopledata", "facebook-nodejs-business-sdk": "meta",
+  "@elevenlabs/elevenlabs-js": "elevenlabs", "intuit-oauth": "quickbooks", "web-push": "web_push", "@ai-sdk/gateway": "anthropic",
+}
+
+async function sectionN(corpus: Array<{ path: string; src: string }>, derived: ReturnType<typeof deriveProviderAdapters>) {
+  console.log("\nN. zero hidden provider calls — the raw-fetch census, tenant scope, health skip, outcome booking, transport truth")
+  const { hits, total, unresolved } = rawProviderFetches(corpus)
+  const key = (h: { file: string; host: string }) => `${h.file}|${h.host}`
+  const hidden = hits.filter((h) => !RAW_FETCH_EXCEPTIONS[key(h)])
+  ok(total > 0 && hidden.length === 0,
+    `${total} raw fetch( calls in ${corpus.length} runtime files · ${hits.length} resolve to an external host · ${hits.length - hidden.length} published exception(s) · ${hidden.length} UNEXPLAINED hidden provider call(s)${hidden.length ? ": " + hidden.map((h) => `${h.host}@${h.file}:${h.line}`).join(", ") : ""} (blind spot: ${unresolved} fetch( with a non-literal URL — self-calls, signed asset URLs, OAuth token URLs held in a property)`)
+  const stale = Object.keys(RAW_FETCH_EXCEPTIONS).filter((k) => !hits.some((h) => key(h) === k))
+  ok(stale.length === 0, `every RAW_FETCH_EXCEPTION is still a real raw call (else delete it): ${stale.join(", ") || "none stale"}`)
+  for (const [k, why] of Object.entries(RAW_FETCH_EXCEPTIONS)) { ok(why.length >= 80, `exception ${k} publishes a technical reason`); }
+  // POSITIVE CONTROLS — a planted raw provider fetch (literal + const forms) is flagged; a tombstone,
+  // a self-call and the gateway's own fetch are not.
+  const planted = rawProviderFetches([
+    { path: "lib/external/acmeleads-client.ts", src: `// tombstone: was fetch("https://api.pexels.com/v1/search")\nexport async function a() { return fetch("https://api.acmeleads.com/v1/people?q=1") }\nconst ACME = "https://api.acme.io/v2"\nexport async function b() { return fetch(\`\${ACME}/x\`) }\nexport async function c(baseUrl: string) { return fetch(\`\${baseUrl}/api/cron/x\`) }\n` },
+    { path: "lib/agentic-os/connector-gateway.ts", src: `const res = await fetch("https://api.vendor.com/x")` },
+  ])
+  ok(planted.hits.length === 2 && planted.hits.some((h) => h.host === "api.acmeleads.com") && planted.hits.some((h) => h.host === "api.acme.io") && !planted.hits.some((h) => h.host === "api.pexels.com") && planted.unresolved === 1,
+    "POSITIVE CONTROL: a planted raw fetch to a provider host (literal AND const forms) is flagged; a tombstone, a self-call and the gateway's own fetch are not")
+
+  // The migrated sites — each module reaches its provider through callConnector, carries the tenant
+  // where the call is made FOR a tenant, and keeps no raw provider fetch.
+  const MIGRATED: Array<{ file: string; connector: string; tenant: boolean }> = [
+    { file: "lib/marketing/image-library.ts", connector: "pexels", tenant: true },
+    { file: "lib/external/geoapify-client.ts", connector: "geoapify", tenant: true },
+    { file: "lib/providers/openai-ads.ts", connector: "openai_ads", tenant: true },
+    { file: "lib/providers/vibe.ts", connector: "vibe", tenant: true },
+    { file: "lib/ads/connectors/google.ts", connector: "google_ads", tenant: true },
+    { file: "app/actions/open-house-automation.ts", connector: "open_meteo", tenant: true },
+    { file: "lib/kernel/email-deliverability.ts", connector: "sendgrid", tenant: false },
+    { file: "lib/platform/custom-domains.ts", connector: "vercel", tenant: false },
+  ]
+  for (const m of MIGRATED) {
+    const s = stripComments(read(m.file))
+    const site = new RegExp(`callConnector[\\s\\S]{0,400}connector:\\s*"${m.connector}"`).test(s)
+    const tenant = !m.tenant || new RegExp(`connector:\\s*"${m.connector}"[^\\n]*brokerageId|brokerageId[^\\n]*connector:\\s*"${m.connector}"|connector:\\s*"${m.connector}",\\s*\\n\\s*brokerageId`).test(s)
+    ok(site && tenant && !hits.some((h) => h.file === m.file) && !!adapterFor(m.connector)?.route.paths.includes("connector_gateway"),
+      `${m.file} → callConnector("${m.connector}")${m.tenant ? " with the tenant" : " (platform scope)"}, no raw provider fetch, adapter routed + served`)
+  }
+  const brand = stripComments(read("app/actions/superadmin/platform-brand.ts"))
+  ok(/tavilySearch\(/.test(brand) && !/api\.tavily\.com/.test(brand), "the platform-brand harvest's duplicate raw Tavily client is merged onto the survivor tavilySearch (lib/external/tavily-client.ts)")
+  const regSrc = stripComments(read("lib/ads/connectors/registry.ts"))
+  ok((regSrc.match(/brokerageId \}/g) ?? []).length >= 3, "loadConnectorCredential stamps the tenant it loaded FOR on every credential it returns (vibe_ctv, chatgpt, platform_credentials)")
+  const exceptionsLeft = derived.adapters.filter((a) => a.route.exception).map((a) => a.provider)
+  ok(!exceptionsLeft.some((p) => ["pexels", "geoapify", "openai_ads", "vibe", "google_ads", "vercel"].includes(p)), `the outside-the-rails list shrank: ${exceptionsLeft.length} remain (${exceptionsLeft.join(", ")})`)
+
+  // ── behavioural: the gateway path is tenant scoped + books its outcome row (fetch stubbed, fake
+  //    service env — nothing leaves the process; every supabase REST call lands in the stub) ──
+  const T = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+  const saved = { fetch: globalThis.fetch, url: process.env.NEXT_PUBLIC_SUPABASE_URL, key: process.env.SUPABASE_SERVICE_ROLE_KEY, geo: process.env.GEOAPIFY_API_KEY }
+  const calls: Array<{ url: string; method: string; headers: Record<string, string>; body: string | null }> = []
+  let healthRows: Array<Record<string, unknown>> = []
+  const now = Date.now()
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const url = String(typeof input === "string" ? input : input?.url ?? input)
+    const h: Record<string, string> = {}
+    const src = init?.headers ?? {}
+    if (typeof src.forEach === "function") src.forEach((v: string, k: string) => { h[k.toLowerCase()] = v })
+    else for (const [k, v] of Object.entries(src)) h[k.toLowerCase()] = String(v)
+    const body = typeof init?.body === "string" ? init.body : null
+    calls.push({ url, method: String(init?.method ?? "GET"), headers: h, body })
+    const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } })
+    if (url.startsWith("https://fake-139b.supabase.test/rest/v1/api_response_logs") && String(init?.method ?? "GET") === "GET") return json(/service_key=eq\.geoapify(&|$)/.test(url) ? healthRows : [])
+    if (url.startsWith("https://fake-139b.supabase.test/")) return json([], 201)
+    if (url.startsWith("https://api.pexels.com/")) return json({ photos: [{ src: { large2x: "https://images.pexels.com/1.jpg", medium: "https://images.pexels.com/1m.jpg" }, alt: "kitchen", photographer: "A" }] })
+    if (url.startsWith("https://googleads.googleapis.com/")) return json([{ results: [{ metrics: { costMicros: "5000000", impressions: "100", clicks: "4", conversions: "1", conversionsValue: "0" } }] }])
+    if (url.startsWith("https://api.geoapify.com/")) return json({ features: [] })
+    return json({ error: { message: "unexpected host in proof" } }, 599)
+  }) as typeof fetch
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://fake-139b.supabase.test"
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "fake-service-role"
+  process.env.GEOAPIFY_API_KEY = "geo-key"
+  const flush = () => new Promise((r) => setTimeout(r, 60))
+  const logInserts = () => calls.filter((c) => c.url.includes("/rest/v1/api_response_logs") && c.method === "POST").map((c) => { try { const b = JSON.parse(c.body ?? "null"); return Array.isArray(b) ? b[0] : b } catch { return null } })
+  try {
+    const { searchPexels } = await import("../lib/marketing/image-library")
+    const px = await searchPexels("kitchen island", 3, "tenant-pexels-key", T)
+    await flush()
+    const pxVendor = calls.find((c) => c.url.startsWith("https://api.pexels.com/"))
+    const pxLog = logInserts().find((r) => r?.service_key === "pexels")
+    ok(px.ok && px.images.length === 1 && pxVendor?.headers.authorization === "tenant-pexels-key" && /per_page=3/.test(pxVendor.url) && pxLog?.brokerage_id === T && pxLog?.endpoint === "search" && pxLog?.is_error === false,
+      `searchPexels → ONE gateway egress (Authorization = the tenant's key) + ONE api_response_logs outcome row booked for the tenant (service_key=${pxLog?.service_key}, brokerage_id=${pxLog?.brokerage_id === T ? "the caller's" : pxLog?.brokerage_id}, endpoint=${pxLog?.endpoint})`)
+
+    const { googleConnector } = await import("../lib/ads/connectors/google")
+    const perfAny = await googleConnector.fetchPerformance({ campaignExternalId: "42", sinceIso: new Date(now - 86_400_000).toISOString(), cred: { accessToken: "ya29.t", accountId: "123-456-7890", config: { developer_token: "dev-tok", login_customer_id: "111-222-3333" }, brokerageId: T } })
+    const perf = perfAny && "spend" in perfAny ? perfAny : null
+    await flush()
+    const gVendor = calls.find((c) => c.url.startsWith("https://googleads.googleapis.com/"))
+    const gLog = logInserts().find((r) => r?.service_key === "google_ads")
+    ok(perf?.spend === 5 && gVendor?.method === "POST" && /customers\/1234567890\/googleAds:searchStream$/.test(gVendor.url) && gVendor.headers.authorization === "Bearer ya29.t" && gVendor.headers["developer-token"] === "dev-tok" && gVendor.headers["login-customer-id"] === "1112223333" && gLog?.brokerage_id === T,
+      `google_ads searchStream → the gateway (bearer + developer-token + login-customer-id), mapped spend $${perf?.spend}, outcome row booked for the tenant`)
+
+    // HEALTH: geoapify in a failing cool-down (3 newest faults inside the window) → skipped WITHOUT egress.
+    healthRows = [0, 1, 2].map((i) => ({ recorded_at: new Date(now - (i + 1) * 30_000).toISOString(), is_error: true, error_type: "network_or_timeout" }))
+    const before = calls.filter((c) => c.url.startsWith("https://api.geoapify.com/")).length
+    const { fetchNearbyPlaces } = await import("../lib/external/geoapify-client")
+    const geo = await fetchNearbyPlaces("1 Main St", { brokerageId: T })
+    const after = calls.filter((c) => c.url.startsWith("https://api.geoapify.com/")).length
+    ok(!geo.ok && /^provider_failing: geoapify is failing/.test((geo as { reason: string }).reason) && after === before,
+      `an UNHEALTHY provider is skipped at the egress: geoapify failing → no request left the process (${(geo as { reason?: string }).reason?.slice(0, 90)}…)`)
+    // POSITIVE CONTROL — a healthy connector with skipWhenFailing still egresses (one attempt, retry off).
+    const { callConnector } = await import("../lib/agentic-os/connector-gateway")
+    const ctrl = await callConnector({ connector: "geoapify_ctrl_139b", baseUrl: "https://api.geoapify.com", path: "v1/geocode/search", skipWhenFailing: true, retry: false, timeoutMs: 2500, brokerageId: T })
+    ok(ctrl.ok && calls.filter((c) => c.url.startsWith("https://api.geoapify.com/")).length === after + 1, "POSITIVE CONTROL: a healthy provider under skipWhenFailing egresses exactly once")
+    // REDACTION + SCOPE on the rows logApiResponse really posts: a query-carried key never reaches the
+    // ledger; a `url`-mode (presigned) call logs its HOST only; an untenanted call stays platform scope.
+    await callConnector({ connector: "redaction_ctrl_139b", baseUrl: "https://api.geoapify.com", path: "v1/geocode/search", query: { text: "x" }, auth: { style: "query", name: "apiKey", value: "SECRET-KEY" }, brokerageId: T, retry: false })
+    await callConnector({ connector: "presigned_ctrl_139b", url: "https://api.geoapify.com/bucket/tenant-object.mp4?X-Amz-Signature=SECRET-SIG", method: "POST", body: {} })
+    await flush()
+    const qRow = logInserts().find((r) => r?.service_key === "redaction_ctrl_139b")
+    const uRow = logInserts().find((r) => r?.service_key === "presigned_ctrl_139b")
+    ok(qRow?.brokerage_id === T && qRow?.endpoint === "v1/geocode/search" && !JSON.stringify(qRow).includes("SECRET") && uRow?.brokerage_id === null && uRow?.endpoint === "api.geoapify.com" && !JSON.stringify(uRow).includes("SECRET") && !JSON.stringify(uRow).includes("tenant-object"),
+      "the posted outcome rows: the tenant lands on the row; no query-carried key, presigned signature or object path reaches the ledger; an untenanted call stays platform scope (null), never an invented tenant")
+  } finally {
+    globalThis.fetch = saved.fetch
+    if (saved.url === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL; else process.env.NEXT_PUBLIC_SUPABASE_URL = saved.url
+    if (saved.key === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = saved.key
+    if (saved.geo === undefined) delete process.env.GEOAPIFY_API_KEY; else process.env.GEOAPIFY_API_KEY = saved.geo
+  }
+  ok(!calls.some((c) => !c.url.startsWith("https://fake-139b.supabase.test/") && !/^https:\/\/(api\.pexels\.com|googleads\.googleapis\.com|api\.geoapify\.com)\//.test(c.url)), `the stub saw only the proof's hosts (${calls.length} requests, none to a live database)`)
+
+  // FAILOVER where an alternate exists: a derived-health failing provider is skipped by the router.
+  const failing = deriveProviderHealth([0, 1, 2].map((i) => ({ at: new Date(now - (i + 1) * 30_000), ok: false, errorType: "provider_error" })), new Date(now))
+  const rF = routeCapability("property_facts", { batchdata: failing })
+  ok(failing.routeAround && rF.providers[0] !== "batchdata" && rF.skipped.some((x) => x.provider === "batchdata"), `an unhealthy provider WITH an alternate is skipped by routeCapability: property_facts → ${rF.providers[0]} (batchdata failing)`)
+  const migratedAlternates = ["pexels", "geoapify", "openai_ads", "vibe", "google_ads", "open_meteo"].filter((p) => Object.values(CONTACT_PROVIDER_ROUTES).some((rows) => rows.some((r) => resolveAdapterKey(r.provider) === p)))
+  console.log(`      migrated providers with a routed alternate: ${migratedAlternates.join(", ") || "none — each fails fast on health (skipWhenFailing where latency-bound) and escalates through os-health"}`)
+
+  // ── transport truth: the declared transport matches the code ──
+  const imported = new Map<string, Set<string>>()
+  for (const f of corpus) {
+    const s = stripComments(f.src)
+    for (const m of s.matchAll(/(?:from\s+|import\s*\(\s*|require\(\s*|createRequire\([^)]*\)\(\s*)["']([^"']+)["']/g)) {
+      const pkg = m[1].startsWith("@") ? m[1].split("/").slice(0, 2).join("/") : m[1].split("/")[0]
+      if (SDK_PACKAGE_OF[pkg]) (imported.get(pkg) ?? imported.set(pkg, new Set()).get(pkg)!).add(f.path)
+    }
+  }
+  const staleSdk = Object.keys(SDK_PACKAGE_OF).filter((p) => !imported.has(p))
+  ok(staleSdk.length === 0, `every SDK in the transport audit is really imported by runtime code (${imported.size}/${Object.keys(SDK_PACKAGE_OF).length}; stale: ${staleSdk.join(",") || "-"})`)
+  const sdkProviders = new Set([...imported.keys()].map((p) => SDK_PACKAGE_OF[p]))
+  // A provider reached ONLY through its SDK (no callConnector site) must not be declared "rest"; one
+  // declared "sdk" must have an SDK import. Mixed providers (SDK + gateway) keep their primary.
+  const mismatches = (adapters: ProviderAdapter[]) => ({
+    restButSdkOnly: adapters.filter((a) => a.api.transport === "rest" && sdkProviders.has(a.provider) && !a.route.paths.includes("connector_gateway")).map((a) => a.provider),
+    sdkWithoutImport: adapters.filter((a) => a.api.transport === "sdk" && !sdkProviders.has(a.provider)).map((a) => a.provider),
+  })
+  const mm = mismatches(derived.adapters)
+  ok(mm.restButSdkOnly.length === 0 && mm.sdkWithoutImport.length === 0, `declared transport matches the code (rest-declared but SDK-only: ${mm.restButSdkOnly.join(",") || "-"}; sdk-declared with no SDK import: ${mm.sdkWithoutImport.join(",") || "-"})`)
+  const forged = mismatches(derived.adapters.map((a) => a.provider === "hubspot" ? { ...a, api: { ...a.api, transport: "rest" as const } } : a.provider === "pexels" ? { ...a, api: { ...a.api, transport: "sdk" as const } } : a))
+  ok(forged.restButSdkOnly.includes("hubspot") && forged.sdkWithoutImport.includes("pexels"), "POSITIVE CONTROL: a forged SDK-only provider declared rest (hubspot) and a forged sdk declaration with no SDK import (pexels) are both flagged")
+  console.log(`      SDK transports in code: ${[...imported.entries()].map(([p, fs]) => `${SDK_PACKAGE_OF[p]}←${p} (${fs.size})`).join(", ")}`)
 }
 main().catch((e) => { console.error(e); process.exit(1) })

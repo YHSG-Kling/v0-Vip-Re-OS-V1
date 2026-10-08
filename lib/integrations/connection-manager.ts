@@ -212,6 +212,10 @@ export async function resolveConnectionResult(
         .from("agent_api_credentials")
         .select("id, api_key, api_secret, access_token, refresh_token, config, is_active, token_expires_at")
         .eq("agent_id", input.agentId)
+        // TENANT PIN (wave 139E): agentId alone is not proven to belong to input.brokerageId, so a
+        // foreign agent id would have handed back another tenant's secret. Both writers stamp it
+        // (app/actions/crm-connect.ts, app/api/integrations/oauth/[provider]/route.ts).
+        .eq("brokerage_id", input.brokerageId)
         .in("service_name", aliases)
         .eq("is_active", true)
         .limit(1)

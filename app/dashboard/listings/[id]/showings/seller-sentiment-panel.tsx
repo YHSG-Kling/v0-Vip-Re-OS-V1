@@ -22,7 +22,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { HeartPulse, Loader2, AlertTriangle } from "lucide-react"
 import { getShowingSentimentSummaryAction } from "@/app/actions/seller-showing-sentiment"
-import type { ShowingSentimentSummary } from "@/app/actions/seller-showing-sentiment"
+import type { ShowingSentimentSummary } from "@/lib/listings/showing-sentiment"
 
 const PRESSURE_COPY: Record<string, { label: string; cls: string }> = {
   raise: { label: "Demand supports a higher ask", cls: "bg-green-100 text-green-800" },

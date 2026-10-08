@@ -266,7 +266,8 @@ console.log("\n[Layer 2c · VERSIUM CONTRACT — normalized results, provenance,
   const gw = stripped("lib/agentic-os/connector-gateway.ts")
   const methods = stripped("lib/external/versium-client.ts").match(/method: "(\w+)"/g) ?? []
   check(`retry is bounded and GET-only (idempotent) in the ONE egress the adapter uses; the adapter issues GETs only (${methods.length} request sites)`,
-    /if \(method !== "GET"\) return attempt\(\)/.test(gw) && methods.length >= 3 && methods.every((m) => m === 'method: "GET"'))
+    // the RULE (a non-GET is one attempt), not the exact condition — wave 139 (139B) added a `retry: false` opt-out to the same arm
+    /if \(method !== "GET"(?:\s*\|\|\s*req\.retry === false)?\) return attempt\(\)/.test(gw) && methods.length >= 3 && methods.every((m) => m === 'method: "GET"'))
   // The leg: provenance rides the profile; every booking names the capability; an unbooked spend is reported.
   const booked2: any[] = [], warned: string[] = []
   const origWarn = console.warn

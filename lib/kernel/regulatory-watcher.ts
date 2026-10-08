@@ -464,12 +464,18 @@ export async function runRegulatoryWatcher(
   const candidateChanges: RegulatoryChange[] = []
 
   for (const query of queries) {
-    const res = await fetcher({ query, brokerageId }).catch(
+    const res: RegSearchResult = await fetcher({ query, brokerageId }).catch(
       () => ({ answer: null, hits: [], provider: "none" as const }),
     )
     if (res.provider !== "none") {
       result.searchRan = true
       if (result.provider === "none") result.provider = res.provider
+      // Wave 139 (139C): the watcher's own pass was UNMETERED (only law-rule-healing metered the same
+      // rail). Monitoring is PLATFORM-COVERED — booked, tenant-attributed; a $0 / no-cost result books nothing.
+      if ((res.cost ?? 0) > 0) {
+        const { meterVendorSpend } = await import("@/lib/vendor-governance/meter-vendor")
+        await meterVendorSpend({ vendorName: res.provider, usageType: "web_search", cost: res.cost as number, brokerageId, systemSource: "regulatory_watcher", priceState: "variable", coverage: "platform_covered" })
+      }
     }
     for (const ch of parseChangesFromSearchResult(res, query)) {
       const sig = changeSignature(ch)

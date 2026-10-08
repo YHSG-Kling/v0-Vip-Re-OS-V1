@@ -127,6 +127,10 @@ export const CLASSIFICATION: Record<string, { verdict: Verdict; why: string }> =
     verdict: "anchored",
     why: "lane 97B's dated intent reads (valuation_requests, ai_callback tasks, the contact's own row) are each pinned to ONE contact by `.eq(contact_id|id, contactId)` before the optional brokerage predicate — the tenant filter only NARROWS an already single-subject read, exactly like the osint/signals-log siblings beside it that carry no tenant filter at all. A null brokerageId cannot widen the read past that one contact.",
   },
+  "lib/ai/cost-tracking.ts :: params.brokerageId": {
+    verdict: "anchored",
+    why: "logAIImageUsage's idempotency lookup (wave 139, 139C): a brokerageId pins the read to that tenant's rows; its absence pins to brokerage_id IS NULL — the m668 PLATFORM rows (or a user-only row) — never every tenant. Both arms are ALSO narrowed to the one charge's idempotency key (LIKE, then confirmed by parsing), and the function only reads to decide whether to WRITE — it returns no row to the caller.",
+  },
   "lib/marketing/tracked-qr.ts :: brokerageId": {
     verdict: "anchored",
     why: "the QR registry's owner model (wave 81D, m664): a brokerageId anchors the lookup to that tenant's codes; its absence anchors to brokerage_id IS NULL — the PLATFORM-owned codes (label platform:…) — never every tenant. Callers are the tenant mint (session tenant) and the platform mint (platform staff gate).",

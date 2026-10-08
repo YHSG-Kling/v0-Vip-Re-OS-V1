@@ -8,6 +8,8 @@ import {
   getAdInsights,
   getTrendAlerts,
 } from "@/lib/ads/ad-monitor"
+import { loadBrandListeningReading } from "@/lib/competitive-intel/brand-listening"
+import { BrandListeningCard } from "./brand-listening-card"
 
 export const dynamic = "force-dynamic"
 
@@ -48,11 +50,14 @@ export default async function CompetitiveMonitorPage() {
   const brokerageId = userData.brokerage_id
 
   // Fetch initial data
-  const [adsResult, postsResult, insightsResult, alertsResult] = await Promise.all([
+  // Brand listening (wave 139H) reads brand_mentions through THIS session client — RLS-scoped to the
+  // session's brokerage, with the tenant predicate pinned as well (lib/competitive-intel/brand-listening.ts).
+  const [adsResult, postsResult, insightsResult, alertsResult, listening] = await Promise.all([
     getCompetitorAds(brokerageId),
     getCompetitorPosts(brokerageId),
     getAdInsights(brokerageId),
     getTrendAlerts(brokerageId),
+    loadBrandListeningReading(supabase, brokerageId),
   ])
 
   return (
@@ -63,6 +68,8 @@ export default async function CompetitiveMonitorPage() {
           Track competitor ads and posts, analyze trends, and get AI-powered recommendations
         </p>
       </div>
+
+      <BrandListeningCard reading={listening} />
 
       <CompetitiveMonitorClient
         brokerageId={brokerageId}

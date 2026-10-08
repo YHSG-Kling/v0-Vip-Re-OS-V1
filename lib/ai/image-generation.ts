@@ -31,6 +31,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import sharp from "sharp"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { IMAGE_SCENE_REALISM_PROMPT_BLOCK } from "@/lib/video/realism-profile"
+import { imageUsageFrom, priceImageGeneration } from "@/lib/vendor-governance/cost-normalizer"
+import { logAIImageUsage } from "@/lib/ai/cost-tracking"
 
 export type ImageSize = "1024x1024" | "1792x1024" | "1024x1792"
 export type ImageQuality = "standard" | "hd"
@@ -102,6 +104,24 @@ export interface GenerateImageInput {
    * Defaults to the public OpenAI endpoint.
    */
   endpointBase?: string
+  /**
+   * WHO THIS SPEND BELONGS TO (wave 139, lane 139C). When present, the image's cost is booked on
+   * ai_tool_usage through logAIImageUsage the moment the provider returns it (the vendor has charged
+   * even if storage later fails) — ONCE per idempotencyKey. A caller that books the spend itself
+   * (lib/kernel/media-intelligence.ts recordMediaAsset, lib/video/plan-asset-readiness.ts) omits it;
+   * every other caller passes it (scripts/cost-completeness-guard.ts holds that rule).
+   */
+  spend?: ImageSpendAttribution
+}
+
+export interface ImageSpendAttribution {
+  brokerageId: string | null
+  userId?: string | null
+  feature: string
+  manager?: string | null
+  /** The charge's identity (a job / asset / workflow-step id) — a retry under it books nothing. */
+  idempotencyKey?: string | null
+  platformPaid?: boolean
 }
 
 export interface GenerateImageResult {
@@ -110,7 +130,10 @@ export interface GenerateImageResult {
   thumbnailUrl?: string     // same as imageUrl for now (future: separate)
   revisedPrompt?: string    // what DALL-E actually used
   size?: ImageSize
-  cost?: number             // estimated USD
+  cost?: number             // USD — `costBasis` says whether the provider reported it or we priced it
+  costBasis?: "estimated" | "final"
+  /** true when input.spend was given and the cost landed on ai_tool_usage (or was already there). */
+  booked?: boolean
   error?: string
   errorCode?: "no_api_key" | "rate_limit" | "content_policy" | "auth" | "blob_failed" | "unknown"
 }
@@ -127,14 +150,9 @@ const DEFAULT_SIZES: Record<ImagePurpose, ImageSize> = {
   generic: "1024x1024",
 }
 
-const COST_PER_IMAGE: Record<string, number> = {
-  "standard:1024x1024": 0.04,
-  "standard:1792x1024": 0.08,
-  "standard:1024x1792": 0.08,
-  "hd:1024x1024": 0.08,
-  "hd:1792x1024": 0.12,
-  "hd:1024x1792": 0.12,
-}
+// TOMBSTONE (wave 139, lane 139C): COST_PER_IMAGE (the DALL-E 3 per-image table) moved to the ONE
+// price table — lib/vendor-governance/cost-normalizer.ts priceImageGeneration, which also prices the
+// gpt-image-1 path this file reaches FIRST (the old table priced a gpt-image-1 image as DALL-E 3).
 
 // ---------------------------------------------------------------------------
 
@@ -154,7 +172,7 @@ async function callGptImage1Gateway(
   prompt: string,
   size: ImageSize,
   quality: ImageQuality
-): Promise<{ imageBytes: Buffer; revisedPrompt: string } | null> {
+): Promise<{ imageBytes: Buffer; revisedPrompt: string; usage: unknown } | null> {
   const gatewayKey = process.env.AI_GATEWAY_API_KEY
   if (!gatewayKey) return null
 
@@ -187,6 +205,7 @@ async function callGptImage1Gateway(
   return {
     imageBytes: Buffer.from(b64, "base64"),
     revisedPrompt: data?.data?.[0]?.revised_prompt ?? prompt,
+    usage: data?.usage ?? null,
   }
 }
 
@@ -200,12 +219,15 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
   // 1. Try gpt-image-1 via Vercel AI Gateway (Flex mode) when key is available
   let imageBytes: Buffer | null = null
   let revisedPrompt = fullPrompt
+  // Which model SERVED (and what it reported) — the price is the served model's, never a default.
+  let served: { model: "gpt-image-1" | "dall-e-3"; label: string; usage: unknown } | null = null
 
   try {
     const gatewayResult = await callGptImage1Gateway(fullPrompt, size, quality)
     if (gatewayResult) {
       imageBytes = gatewayResult.imageBytes
       revisedPrompt = gatewayResult.revisedPrompt
+      served = { model: "gpt-image-1", label: "openai/gpt-image-1 (AI Gateway)", usage: gatewayResult.usage }
     }
   } catch { /* gateway unavailable — fall through to DALL-E 3 */ }
 
@@ -272,6 +294,28 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
     }
     imageBytes = dl.data
     revisedPrompt = dalleResp.revisedPrompt
+    served = { model: "dall-e-3", label: "dall-e-3 (direct OpenAI key)", usage: null }
+  }
+
+  // THE SPEND (wave 139, 139C) — priced by the model that served, booked ONCE (idempotency key) the
+  // moment the provider returned bytes: the vendor has charged even if compositing or hosting fails.
+  const price = priceImageGeneration({ model: served?.model ?? "dall-e-3", quality, size, usage: imageUsageFrom(served?.usage) })
+  let booked = false
+  if (input.spend) {
+    const r = await logAIImageUsage({
+      brokerageId: input.spend.brokerageId,
+      userId: input.spend.userId ?? null,
+      feature: input.spend.feature,
+      manager: input.spend.manager ?? "asset_manager",
+      model: served?.label ?? "dall-e-3",
+      costUsd: price.costUsd,
+      priceState: price.priceState,
+      costBasis: price.costBasis,
+      idempotencyKey: input.spend.idempotencyKey ?? null,
+      platformPaid: input.spend.platformPaid,
+      contextExtra: { purpose: input.purpose, size, quality, price_source: price.priceSource },
+    })
+    booked = r.booked || r.duplicate
   }
 
   // imageBytes is now populated (either from gateway or DALL-E fallback)
@@ -319,7 +363,7 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
     // function's callers (they branch on it) and renaming it here would be a
     // silent behaviour change in code this lane does not own. The message now
     // names the real store.
-    return { success: false, errorCode: "blob_failed", error: err?.message ?? "Supabase storage upload failed" }
+    return { success: false, errorCode: "blob_failed", error: err?.message ?? "Supabase storage upload failed", cost: price.costUsd, costBasis: price.costBasis, booked }
   }
 
   return {
@@ -328,7 +372,9 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
     thumbnailUrl: permanentUrl,
     revisedPrompt,
     size,
-    cost: COST_PER_IMAGE[`${quality}:${size}`] ?? 0.04,
+    cost: price.costUsd,
+    costBasis: price.costBasis,
+    booked,
   }
 }
 

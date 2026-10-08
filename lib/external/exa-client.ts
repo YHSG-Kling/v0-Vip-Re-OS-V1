@@ -34,7 +34,7 @@ export async function exaSearch(params: {
   /** Restrict to recent content (ISO date) — buyer intent is time-sensitive. */
   startPublishedDate?: string
   includeDomains?: string[]
-}): Promise<{ results: ExaResult[]; cost: number }> {
+}): Promise<{ results: ExaResult[]; cost: number; costBasis?: "final" | "estimated" }> {
   const apiKey = process.env.EXA_API_KEY
   if (!apiKey) return { results: [], cost: 0 }
 
@@ -53,6 +53,8 @@ export async function exaSearch(params: {
   return {
     results: rows.map((r) => normalizeExaRow(r)),
     cost: typeof res.data.costDollarsTotal === "number" ? res.data.costDollarsTotal : exaSearchListCost(params.numResults ?? rows.length),
+    // Wave 139 (139C): the SDK-reported charge is FINAL; the list-price fallback is an estimate.
+    costBasis: typeof res.data.costDollarsTotal === "number" ? "final" : "estimated",
   }
 }
 

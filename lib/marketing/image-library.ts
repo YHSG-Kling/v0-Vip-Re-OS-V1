@@ -83,21 +83,24 @@ export function validateLibrarySave(input: {
  *  configured" when neither exists. */
 export async function searchPexels(
   query: string, perPage = 12, apiKeyOverride?: string | null,
+  /** Wave 139 (139B): the caller's SESSION tenant — rides the gateway call onto api_response_logs. */
+  brokerageId?: string | null,
 ): Promise<{ ok: true; images: LibraryImage[] } | { ok: false; error: string; notConfigured?: boolean }> {
   const key = apiKeyOverride || process.env.PEXELS_API_KEY
   if (!key) return { ok: false, error: "Stock search not configured — add your Pexels API key in Settings → Stock Library (or the platform can set PEXELS_API_KEY).", notConfigured: true }
   const q = query.trim()
   if (q.length < 2) return { ok: false, error: "Give the search at least 2 characters." }
-  try {
-    const res = await fetch(
-      `https://api.pexels.com/v1/search?query=${encodeURIComponent(q)}&per_page=${Math.min(30, Math.max(1, perPage))}`,
-      { headers: { Authorization: key } },
-    )
-    if (!res.ok) return { ok: false, error: `Pexels search failed (${res.status})` }
-    const data = await res.json() as { photos?: unknown[] }
-    const images = ((data.photos ?? []) as any[]).map(normalizePexelsPhoto).filter(Boolean) as LibraryImage[]
-    return { ok: true, images }
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "Pexels search failed" }
-  }
+  // The ONE Pexels egress — through the connector gateway (wave 139, lane 139B: was a raw fetch).
+  // Free API (no spend to book); the gateway's api_response_logs row is the per-tenant usage +
+  // health record, and its timeout / GET retry replace the bare fetch's none. Never throws.
+  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  const res = await callConnector<{ photos?: unknown[] }>({
+    connector: "pexels", brokerageId: brokerageId ?? null,
+    baseUrl: "https://api.pexels.com/v1", path: "search",
+    query: { query: q, per_page: String(Math.min(30, Math.max(1, perPage))) },
+    auth: { style: "header", name: "Authorization", value: key },
+  })
+  if (!res.ok) return { ok: false, error: res.status ? `Pexels search failed (${res.status})` : (res.error ?? "Pexels search failed") }
+  const images = (((res.data?.photos) ?? []) as any[]).map(normalizePexelsPhoto).filter(Boolean) as LibraryImage[]
+  return { ok: true, images }
 }

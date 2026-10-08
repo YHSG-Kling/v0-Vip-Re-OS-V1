@@ -39,9 +39,11 @@
  */
 
 import "server-only"
-import type { RentcastMissReason } from "@/lib/ai-isa/property-lookup-rail"
+import type { RentcastMissReason, CapabilityProviderHealth } from "@/lib/ai-isa/property-lookup-rail"
 import type { BatchDataPropertyFallback } from "@/lib/external/batchdata-client"
 import type { RentcastPropertyDetail, RentcastReadOutcome } from "@/lib/property/rentcast"
+import type { VersiumPropertyFactsResult, VersiumProvenance } from "@/lib/external/versium-client"
+import type { MeterVendorInput } from "@/lib/vendor-governance/meter-vendor"
 
 // "batchdata" is produced again since wave 93 (lane 93B) — ONLY by the BACKUP leg
 // (tryBatchDataBackup), after a named RentCast miss. Wave 92 had retired it as a primary.
@@ -449,17 +451,26 @@ export interface ChainPropertyRecord {
  * THE PROPERTY LOOKUP on the chain (wave 93, lane 93B): RentCast's full record first; on a named
  * miss, the BatchData backup. SERVER-SIDE callers only (net-sheet tax preload, deal investigator) —
  * the AI agents' lookup_property_facts rides the conversation rail, which never reaches BatchData.
+ * Wave 139 (lane 139D): a caller that NEEDS facts the answering record left empty names them in
+ * `gapFields`; only those gaps walk the property_facts capability route (fillPropertyFactGaps) —
+ * a caller that names none (the net-sheet tax preload) never buys a gap fill.
  */
 export async function getPropertyRecordWithFallback(
-  params: { brokerageId: string; address: string; systemSource?: string; contactId?: string | null },
-  deps: { rentcast?: (p: { brokerageId: string; address: string; systemSource?: string; contactId?: string | null }) => Promise<{ detail: RentcastPropertyDetail | null; outcome: RentcastReadOutcome; eligibility: { reason: string } }>; fallback?: BatchDataFallbackDeps } = {},
-): Promise<{ record: ChainPropertyRecord | null; rentcastMiss: RentcastMissReason | null; note: string; backupCostUsd: number }> {
+  params: { brokerageId: string; address: string; systemSource?: string; contactId?: string | null; gapFields?: readonly PropertyFactGapField[]; gapFillMaxUsd?: number },
+  deps: { rentcast?: (p: { brokerageId: string; address: string; systemSource?: string; contactId?: string | null }) => Promise<{ detail: RentcastPropertyDetail | null; outcome: RentcastReadOutcome; eligibility: { reason: string } }>; fallback?: BatchDataFallbackDeps; gapFill?: PropertyFactGapFillDeps } = {},
+): Promise<{ record: ChainPropertyRecord | null; rentcastMiss: RentcastMissReason | null; note: string; backupCostUsd: number; gapFill: PropertyFactGapFill | null }> {
+  const withGaps = async (out: { record: ChainPropertyRecord; rentcastMiss: RentcastMissReason | null; note: string; backupCostUsd: number }) => {
+    if (!params.gapFields?.length) return { ...out, gapFill: null }
+    const maxUsd = params.gapFillMaxUsd === undefined ? undefined : Math.max(0, params.gapFillMaxUsd - out.backupCostUsd)
+    const g = await fillPropertyFactGaps(out.record, { brokerageId: params.brokerageId, systemSource: params.systemSource, contactId: params.contactId, rentcastMiss: out.rentcastMiss, maxUsd }, params.gapFields, deps.gapFill)
+    return { ...out, record: g.record, gapFill: g.fill }
+  }
   const rc = deps.rentcast
     ? await deps.rentcast(params)
     : await (await import("@/lib/property/rentcast")).getRentcastPropertyDetailWithOutcome(params)
   if (rc.detail) {
     const d = rc.detail
-    return {
+    return withGaps({
       record: {
         provider: "rentcast", address: d.address, city: d.city, state: d.state, zip: d.zip,
         bedrooms: d.bedrooms, bathrooms: d.bathrooms, squareFeet: d.squareFeet, yearBuilt: d.yearBuilt,
@@ -469,14 +480,14 @@ export async function getPropertyRecordWithFallback(
       rentcastMiss: null,
       note: "RentCast property record",
       backupCostUsd: 0,
-    }
+    })
   }
   const miss = rentcastMissFrom(rc.outcome, rc.eligibility.reason)
-  if (!miss) return { record: null, rentcastMiss: null, note: `RentCast did not answer (${rc.outcome}) and no backup applies`, backupCostUsd: 0 }
+  if (!miss) return { record: null, rentcastMiss: null, note: `RentCast did not answer (${rc.outcome}) and no backup applies`, backupCostUsd: 0, gapFill: null }
   const bd = await batchDataPropertyFallback({ ...params, kind: "record", rentcastMiss: miss }, deps.fallback)
   const f = bd.result?.facts
-  if (bd.answeredBy !== "batchdata" || !f) return { record: null, rentcastMiss: miss, note: `RentCast missed (${miss}); ${bd.reason}`, backupCostUsd: 0 }
-  return {
+  if (bd.answeredBy !== "batchdata" || !f) return { record: null, rentcastMiss: miss, note: `RentCast missed (${miss}); ${bd.reason}`, backupCostUsd: 0, gapFill: null }
+  return withGaps({
     record: {
       provider: "batchdata", address: f.address, city: f.city, state: f.state, zip: f.zip,
       bedrooms: f.beds, bathrooms: f.baths, squareFeet: f.sqft, yearBuilt: f.yearBuilt, propertyType: f.propertyType,
@@ -486,7 +497,104 @@ export async function getPropertyRecordWithFallback(
     rentcastMiss: miss,
     note: `BatchData property record — the backup after a RentCast miss (${miss})`,
     backupCostUsd: bd.cacheHit ? 0 : (bd.result?.cost ?? 0),
+  })
+}
+
+// ─── PROPERTY FACTS GAP FILL — the property_facts capability route, walked (wave 139, lane 139D) ───
+// Owner (wave 138): "Versium (ALSO a property-data provider)"; owner order for a property read stands:
+// RentCast primary, BatchData backup (waves 92/93) — Versium never answers in their place. It fills
+// only the facts the record left EMPTY that the caller says it needs (gap-only enrichment), through
+// THE route table (CONTACT_PROVIDER_ROUTES.property_facts, routeCapability — health-aware), never a
+// competing rail. BatchData is excluded from this walk: its ONE door (batchDataPropertyFallback above)
+// already ran or the owner's backup rule refused it — a second BatchData purchase is never made here.
+// Versium's property facts are exact values only (year built, dwelling type, purchase date); its
+// price / value RANGES never reach the record (lib/external/versium-client.ts appendVersiumPropertyFacts).
+
+/** The record fields a gap fill may write — exact facts only, never a valuation figure. */
+type PropertyFactGapField = "yearBuilt" | "propertyType" | "lastSaleDate"
+
+/** Injectable seams so the proof walks the route with zero network (scripts/provider-adapter-guard.ts §O). */
+interface PropertyFactGapFillDeps {
+  providerHealth?: (serviceKey: string) => Promise<CapabilityProviderHealth | null>
+  configured?: () => boolean
+  checkBudget?: (p: { brokerageId: string; addCost: number }) => Promise<{ allowed: boolean }>
+  versium?: (addr: { address: string | null; city: string | null; state: string | null; zip: string | null }) => Promise<VersiumPropertyFactsResult>
+  meter?: (m: MeterVendorInput) => Promise<unknown>
+}
+
+interface PropertyFactGapFill {
+  /** The gaps the caller needed that the record left empty. */
+  asked: PropertyFactGapField[]
+  /** Which provider filled each gap. */
+  filled: Partial<Record<PropertyFactGapField, "versium">>
+  /** The route's providers in order, and who was left out with why. */
+  route: string[]
+  skipped: Array<{ provider: string; reason: string }>
+  provenance: VersiumProvenance | null
+  /** USD this fill metered (a no-match and every refusal cost 0). */
+  costUsd: number
+}
+
+/** Walk the property_facts route for the record's empty facts. Never throws. */
+async function fillPropertyFactGaps(
+  record: ChainPropertyRecord,
+  req: { brokerageId: string; systemSource?: string; contactId?: string | null; rentcastMiss: RentcastMissReason | null; maxUsd?: number },
+  wanted: readonly PropertyFactGapField[],
+  deps: PropertyFactGapFillDeps = {},
+): Promise<{ record: ChainPropertyRecord; fill: PropertyFactGapFill }> {
+  const fill: PropertyFactGapFill = { asked: wanted.filter((f) => record[f] === null || record[f] === undefined || record[f] === ""), filled: {}, route: [], skipped: [], provenance: null, costUsd: 0 }
+  if (!fill.asked.length) return { record, fill }
+  const next: ChainPropertyRecord = { ...record }
+  try {
+    const { CONTACT_PROVIDER_ROUTES, routeCapability } = await import("@/lib/ai-isa/property-lookup-rail")
+    const exclude = new Set<string>(["batchdata"])
+    const healthFn = deps.providerHealth ?? (async (k: string) => (await import("@/lib/agentic-os/connector-gateway")).loadProviderHealth(k))
+    const health: Record<string, CapabilityProviderHealth | null> = {}
+    for (const e of CONTACT_PROVIDER_ROUTES.property_facts) if (!exclude.has(e.provider)) health[e.provider] = await healthFn(e.provider).catch(() => null)
+    const route = routeCapability("property_facts", health, exclude)
+    fill.route = [...route.providers]
+    fill.skipped.push(...route.skipped.map((s) => ({ provider: s.provider, reason: s.provider === "batchdata" ? "the chain's ONE BatchData door already ran (or the owner's backup rule refused it) — never a second BatchData purchase" : s.reason })))
+    for (const provider of route.providers) {
+      const gaps = fill.asked.filter((f) => !fill.filled[f])
+      if (!gaps.length) break
+      const unitUsd = CONTACT_PROVIDER_ROUTES.property_facts.find((e) => e.provider === provider)?.unitCostUsd ?? 0
+      if (req.maxUsd !== undefined && unitUsd > req.maxUsd - fill.costUsd) { fill.skipped.push({ provider, reason: `over the caller's remaining cap ($${(req.maxUsd - fill.costUsd).toFixed(2)})` }); continue }
+      if (provider !== "versium") { fill.skipped.push({ provider, reason: "no gap-fill executor for this provider" }); continue }
+      const configured = deps.configured ?? (deps.versium ? () => true : (await import("@/lib/external/versium-client")).isVersiumConfigured)
+      if (!configured()) { fill.skipped.push({ provider, reason: "unconfigured (no VERSIUM_API_KEY) — nothing asked, nothing spent" }); continue }
+      if (!next.address || !(next.zip || (next.city && next.state))) { fill.skipped.push({ provider, reason: "the record carries no full postal address to ask by" }); continue }
+      // THE vendor budget gate, asked BEFORE the paid call with the worst-case bill (one match credit) —
+      // a gate that cannot run refuses (CLAUDE.md §4).
+      try {
+        const checkBudget = deps.checkBudget ?? (async (p: { brokerageId: string; addCost: number }) => (await import("@/lib/vendor-governance/budget-gate")).checkVendorBudget(p))
+        const budget = await checkBudget({ brokerageId: req.brokerageId, addCost: unitUsd })
+        if (!budget.allowed) { fill.skipped.push({ provider, reason: "vendor budget gate refused" }); continue }
+      } catch (e) { fill.skipped.push({ provider, reason: `budget gate unavailable — refused: ${e instanceof Error ? e.message : String(e)}` }); continue }
+      const ask = deps.versium ?? (async (a: Parameters<NonNullable<PropertyFactGapFillDeps["versium"]>>[0]) => (await import("@/lib/external/versium-client")).appendVersiumPropertyFacts(a))
+      const r = await ask({ address: next.address, city: next.city, state: next.state, zip: next.zip })
+      if (r.cost > 0) {
+        const meter = deps.meter ?? (async (m: MeterVendorInput) => (await import("@/lib/vendor-governance/meter-vendor")).meterVendorSpend(m))
+        let booked: unknown
+        try { booked = await meter({ vendorName: "versium", usageType: "property_facts_gap_fill", unitCount: r.credits, cost: r.cost, brokerageId: req.brokerageId, systemSource: req.systemSource ?? "property_provider_chain", metadata: { capability: "property.enrich_facts", answered_by: r.facts ? "versium" : null, gaps_asked: gaps, record_provider: record.provider, rentcast_miss: req.rentcastMiss, contact_id: req.contactId ?? null, credits: r.credits }, attribution: { contactId: req.contactId ?? null } }) } catch (e) { booked = e instanceof Error ? e.message : String(e) }
+        // The booking's answer is READ (CLAUDE.md §3): spend the ledger never saw is reported, never swallowed.
+        if (booked === false || typeof booked === "string") console.warn(`[provider-chain] $${r.cost} versium property_facts_gap_fill NOT booked (brokerage ${req.brokerageId})${typeof booked === "string" ? `: ${booked}` : ""}`)
+        fill.costUsd += r.cost
+      }
+      if (r.skipped || r.error || !r.facts) { fill.skipped.push({ provider, reason: r.skipped ?? r.error ?? "no match (free)" }); continue }
+      for (const f of gaps) {
+        const v = r.facts[f]
+        if (v === null || v === undefined) continue
+        if (f === "yearBuilt") next.yearBuilt = v as number
+        else if (f === "propertyType") next.propertyType = v as string
+        else next.lastSaleDate = v as string
+        fill.filled[f] = "versium"
+      }
+      fill.provenance = r.provenance
+    }
+  } catch (e) {
+    fill.skipped.push({ provider: "*", reason: `gap fill threw: ${e instanceof Error ? e.message : String(e)}` })
   }
+  return { record: next, fill }
 }
 
 async function tryZillowViaZenRows(req: AvmRequest): Promise<AvmResult | null> {

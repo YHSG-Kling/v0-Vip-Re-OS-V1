@@ -106,11 +106,13 @@ const EXTRA_INBOUND_ROUTES = [
  *  derived, never listed: every route under app/api/voice/twilio/** (Twilio is
  *  the only caller of that tree) plus every app/api route with a path segment
  *  naming a webhook — except the cron tree (app/api/cron/webhook-deliveries is
- *  OUR outbound retry loop, not an inbound webhook). */
+ *  OUR outbound retry loop, not an inbound webhook). Wave 139 (139G): the
+ *  app/api/twiml/** tree is Twilio-called TwiML too (the whisper bridge sat
+ *  uncontracted there through wave 138 — readiness finding R-4). */
 function derivedInboundRoutes(allApiRoutes: string[]): string[] {
   return allApiRoutes.filter((r) =>
     !r.startsWith("app/api/cron/") && !r.startsWith("app/api/webhooks/") &&
-    (r.startsWith("app/api/voice/twilio/") || r.split("/").slice(2, -1).some((seg) => /webhook/i.test(seg))))
+    (r.startsWith("app/api/voice/twilio/") || r.startsWith("app/api/twiml/") || r.split("/").slice(2, -1).some((seg) => /webhook/i.test(seg))))
 }
 
 // ── Brace-matched POST reachability ──────────────────────────────────────────

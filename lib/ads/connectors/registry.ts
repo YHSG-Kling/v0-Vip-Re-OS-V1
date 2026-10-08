@@ -45,7 +45,7 @@ export async function loadConnectorCredential(
       if (r.status === "unreadable") console.error("[ad-connectors] vibe credential unreadable:", r.reason)
       return null
     }
-    return { accessToken: r.conn.apiKey as string, accountId: r.conn.accountId, config: { ...r.conn.config, api_secret: r.conn.apiSecret } }
+    return { accessToken: r.conn.apiKey as string, accountId: r.conn.accountId, config: { ...r.conn.config, api_secret: r.conn.apiSecret }, brokerageId }
   }
   if (platform === "chatgpt") {
     const { resolveOpenaiAdsCredential } = await import("@/lib/providers/openai-ads")
@@ -54,17 +54,19 @@ export async function loadConnectorCredential(
       if (r.status === "unreadable") console.error("[ad-connectors] openai_ads credential unreadable:", r.reason)
       return null
     }
-    return { accessToken: r.conn.apiKey as string, accountId: r.conn.accountId, config: r.conn.config ?? {} }
+    return { accessToken: r.conn.apiKey as string, accountId: r.conn.accountId, config: r.conn.config ?? {}, brokerageId }
   }
   const supabase = client ?? createServiceClient()
   // instagram auth lives under the facebook (Meta) credential.
   const lookup = platform === "instagram" ? "facebook" : platform
-  const { data } = await supabase
+  // supabase-js RESOLVES a refusal (CLAUDE.md §3) — read it; a refused read is logged, not "not connected" in silence.
+  const { data, error } = await supabase
     .from("platform_credentials")
     .select("access_token, account_id, config, is_active")
     .eq("brokerage_id", brokerageId).eq("platform", lookup).eq("is_active", true)
     .maybeSingle()
+  if (error) { console.error(`[ad-connectors] ${lookup} credential read refused:`, error.message); return null }
   const c = data as { access_token?: string; account_id?: string | null; config?: Record<string, unknown> | null; is_active?: boolean } | null
   if (!c?.access_token) return null
-  return { accessToken: c.access_token, accountId: c.account_id ?? null, config: c.config ?? {} }
+  return { accessToken: c.access_token, accountId: c.account_id ?? null, config: c.config ?? {}, brokerageId }
 }

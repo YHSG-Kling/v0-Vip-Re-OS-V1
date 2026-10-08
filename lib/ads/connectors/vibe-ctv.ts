@@ -33,6 +33,7 @@ function toVibeCredential(cred: ConnectorCredential) {
     apiSecret: (cred.config.api_secret as string | undefined) ?? null,
     accountId: cred.accountId,
     config: cred.config,
+    brokerageId: cred.brokerageId ?? null,
   }
 }
 

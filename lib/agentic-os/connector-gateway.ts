@@ -55,6 +55,21 @@ export interface GatewayRequest {
    *  there because BodyInit happens to accept it. */
   bodyType?: "json" | "form" | "binary" | "multipart"
   timeoutMs?: number
+  /** Wave 139 (139B) — TENANT SCOPE. The brokerage this call is made FOR (resolved by the caller
+   *  from the session / the tenant-owned row — never from a request body). It lands on the call's
+   *  api_response_logs row, so per-tenant usage and provider health are attributable. Omitted =
+   *  a platform-scope call (brokerage_id null), exactly as before. */
+  brokerageId?: string | null
+  /** Wave 139 (139B) — false turns the GET transient retry off (a caller with a hard latency budget,
+   *  e.g. a chat turn, takes one attempt). Default: GET retries once, other methods never. */
+  retry?: boolean
+  /** Wave 139 (139B) — HEALTH STATE at the egress. true = consult the derived provider health
+   *  (loadProviderHealth: api_response_logs + the newest platform probe) and, when the provider is
+   *  in a `failing` cool-down (routeAround), refuse WITHOUT egress (status null, error
+   *  `provider_failing: …`). For a provider with no alternate this is fail-fast instead of every
+   *  caller waiting out a dead vendor; a skipped call writes no outcome row, so the cool-down still
+   *  expires into `fallback` and the next real call probes it (the half-open design below). */
+  skipWhenFailing?: boolean
 }
 
 export interface GatewayResponse<T = any> {
@@ -67,6 +82,10 @@ export interface GatewayResponse<T = any> {
   /** Shape drift detected on the response (vendor renamed/dropped fields), when a shape was given. */
   drift: ShapeDrift | null
   error: string | null
+  /** Wave 139 (139B) — on a non-2xx JSON answer, the vendor's parsed error body (a client wrapped
+   *  onto the gateway keeps reading its own error envelope: Vercel `error.code`, OpenAI Ads
+   *  `error.code`, Vibe `error.detail`). Absent on success and on transport failures. */
+  errorBody?: unknown
 }
 
 /** Pure: build the request URL + headers for an auth style. Exported for tests. */
@@ -215,7 +234,20 @@ async function withAppliedAlternate(req: GatewayRequest): Promise<GatewayRequest
   }
 }
 
+/** PURE — the refusal a `skipWhenFailing` call gets when its provider is in a failing cool-down
+ *  (null = go ahead). Only `routeAround` (the router's own skip signal) refuses: degraded,
+ *  rate_limited, fallback and recovered all still egress. (Module-private: scripts/provider-adapter-guard.ts
+ *  section N proves both arms BEHAVIOURALLY through callConnector — failing → no egress, healthy → one.) */
+function healthGateRefusal(connector: string, health: Pick<ProviderHealth, "state" | "routeAround" | "reason"> | null): string | null {
+  if (!health?.routeAround) return null
+  return `provider_failing: ${connector} is ${health.state} (${health.reason}) — skipped without egress`
+}
+
 export async function callConnector<T = any>(original: GatewayRequest): Promise<GatewayResponse<T>> {
+  if (original.skipWhenFailing) {
+    const refusal = healthGateRefusal(original.connector, await loadProviderHealth(original.connector).catch(() => null))
+    if (refusal) return { ok: false, status: null, data: null, headers: {}, drift: null, error: refusal } as GatewayResponse<T>
+  }
   const req = await withAppliedAlternate(original)
   const attempt = async (): Promise<GatewayResponse<T>> => {
     const startedAt = Date.now()
@@ -225,7 +257,7 @@ export async function callConnector<T = any>(original: GatewayRequest): Promise<
   }
 
   const method = req.method ?? (req.body !== undefined ? "POST" : "GET")
-  if (method !== "GET") return attempt()
+  if (method !== "GET" || req.retry === false) return attempt()
 
   try {
     // maxRetries 2 = two attempts total, one 400ms retry. Bounded on purpose:
@@ -249,22 +281,34 @@ export async function callConnector<T = any>(original: GatewayRequest): Promise<
   }
 }
 
+/** PURE — the one api_response_logs row a gateway attempt lands. Wave 139 (139B): the row carries
+ *  the call's TENANT (req.brokerageId; null = platform scope) so per-tenant usage and health are
+ *  attributable; the endpoint never carries a query string (keys/PII), and a `url` override logs
+ *  its HOST only (a signed/presigned URL's token AND its object path stay out of the ledger).
+ *  Module-private: scripts/provider-adapter-guard.ts section N proves tenant + redaction on the rows
+ *  logApiResponse actually posts (fetch stubbed). */
+function apiResponseLogRow(req: GatewayRequest, result: Pick<GatewayResponse<unknown>, "ok" | "status">, elapsedMs: number, now: Date = new Date()) {
+  let endpoint = (req.path ?? "").split("?")[0]
+  if (!req.path && req.url) { try { endpoint = new URL(req.url).host } catch { endpoint = "" } }
+  return {
+    brokerage_id: req.brokerageId ?? null,
+    service_key: req.connector,
+    endpoint: endpoint.slice(0, 300),
+    method: req.method ?? (req.body !== undefined ? "POST" : "GET"),
+    response_time_ms: elapsedMs,
+    status_code: result.status,
+    is_error: !result.ok,
+    error_type: result.ok ? null : (result.status == null ? "network_or_timeout" : result.status === 429 ? "rate_limited" : result.status >= 500 ? "provider_error" : "request_rejected"),
+    recorded_at: now.toISOString(),
+  }
+}
+
 async function logApiResponse(req: GatewayRequest, result: GatewayResponse<any>, elapsedMs: number): Promise<void> {
   try {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const svc = createServiceClient()
-    const endpoint = (req.path ?? "").split("?")[0].slice(0, 300) // never log query strings (keys/PII)
-    await sentinelWrite(svc, svc.from("api_response_logs").insert({
-      brokerage_id: null, // gateway calls are provider-scoped; tenant attribution lives in vendor_usage metering
-      service_key: req.connector,
-      endpoint,
-      method: req.method ?? (req.body !== undefined ? "POST" : "GET"),
-      response_time_ms: elapsedMs,
-      status_code: result.status,
-      is_error: !result.ok,
-      error_type: result.ok ? null : (result.status == null ? "network_or_timeout" : result.status === 429 ? "rate_limited" : result.status >= 500 ? "provider_error" : "request_rejected"),
-      recorded_at: new Date().toISOString(),
-    }), { table: "api_response_logs", flow: "api_response_logs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
+    await sentinelWrite(svc, svc.from("api_response_logs").insert(apiResponseLogRow(req, result, elapsedMs)),
+      { table: "api_response_logs", flow: "api_response_logs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   } catch { /* telemetry is best-effort by contract */ }
 }
 
@@ -335,7 +379,7 @@ async function executeConnector<T = any>(req: GatewayRequest): Promise<GatewayRe
       const structured = (raw?.error as any)?.message || (raw?.message as string)
       const snippet = structured || (raw && Object.keys(raw).length ? JSON.stringify(raw) : "")
       const msg = snippet ? `${snippet}` : `HTTP ${res.status}`
-      return { ok: false, status: res.status, data: null, headers: respHeaders, drift: null, error: String(msg).slice(0, 300) }
+      return { ok: false, status: res.status, data: null, headers: respHeaders, drift: null, error: String(msg).slice(0, 300), errorBody: raw }
     }
     let data: any = raw
     let drift: ShapeDrift | null = null

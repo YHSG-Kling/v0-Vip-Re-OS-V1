@@ -293,8 +293,11 @@ export async function generateAssistantFaceOptionsAction(): Promise<
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthenticated" }
   try {
+    // Wave 139 (139C): the gallery's image spend books under the SESSION tenant (requireCaller), or —
+    // for a signed-in seat with no brokerage — under the user alone (ai_tool_usage admits a user row).
+    const auth = await requireCaller()
     const { generateAssistantFaceOptions } = await import("@/lib/video/assistant-faces")
-    const options = await generateAssistantFaceOptions(3)
+    const options = await generateAssistantFaceOptions(3, { brokerageId: auth.ok ? auth.brokerageId : null, userId: user.id })
     if (options.length === 0) return { success: false, error: "Image generation unavailable — add a photo URL instead" }
     return { success: true, options }
   } catch (e) {

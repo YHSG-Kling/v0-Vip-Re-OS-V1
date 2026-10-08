@@ -96,6 +96,23 @@ function canManage(actor: Actor, scope: Scope, scopeId: string): boolean {
   return false
 }
 
+/**
+ * Wave 139 (lane 139G, P0): THE one authority for a required-docs write at (scope, scopeId), shared
+ * with the preset seed door (app/actions/compliance/seed-required-docs.ts), which took brokerageId +
+ * actorUserId from the BODY and wrote with the service client behind no session gate at all. The
+ * tenant and the actor come from the SESSION here; the caller uses them, never its own arguments.
+ */
+export async function authorizeRequiredDocsScope(
+  scope: Scope,
+  scopeId: string,
+): Promise<{ ok: true; userId: string; brokerageId: string } | { ok: false; error: string }> {
+  const actor = await resolveActor()
+  if ("error" in actor) return { ok: false, error: actor.error }
+  if (!isValidUUID(scopeId)) return { ok: false, error: "Invalid scope id" }
+  if (!canManage(actor, scope, scopeId)) return { ok: false, error: "Forbidden for your role/scope" }
+  return { ok: true, userId: actor.userId, brokerageId: actor.brokerageId }
+}
+
 // ── ADD ───────────────────────────────────────────────────────────────────────
 
 export interface AddRequiredDocInput {

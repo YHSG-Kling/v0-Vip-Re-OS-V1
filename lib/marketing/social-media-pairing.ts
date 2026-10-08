@@ -216,6 +216,7 @@ export async function resolveSocialMedia(
         primaryColor: (b as any)?.primary_color ?? null,
         logoUrl: (b as any)?.logo_url ?? null,
       },
+      spend: { brokerageId: params.brokerageId, userId: params.agentUserId ?? null, feature: "social_post_image", manager: "asset_manager" },
     })
     if (!result.success || !result.imageUrl) return null
 

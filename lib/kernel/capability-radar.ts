@@ -122,7 +122,8 @@ export async function runCapabilityRadar(
   const raw: Array<{ watchKey: string; title: string; url: string; snippet: string }> = []
   for (const w of RADAR_WATCHLIST) {
     try {
-      const r = await webSearch({ query: w.query, maxResults: opts.maxPerQuery ?? 5, mode: "research" })
+      // Wave 139 (139C): the platform's own research — no tenant, booked as PLATFORM spend (m750; was unbooked).
+      const r = await webSearch({ query: w.query, maxResults: opts.maxPerQuery ?? 5, mode: "research", spend: { brokerageId: null, platformPaid: true, systemSource: "capability_radar" } })
       result.searched++
       for (const h of r.hits) {
         if (!h.url) continue // a hit with no URL cannot be cited or deduped

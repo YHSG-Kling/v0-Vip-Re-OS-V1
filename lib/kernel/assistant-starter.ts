@@ -37,6 +37,8 @@ export async function seedStarterAssistant(svc: any, brokerageId: string): Promi
       purpose: "generic",
       size: "1024x1024",
       style: "natural",
+      // Seeded once per brokerage (the existing-profile check above) — the key holds a retried seed to one charge.
+      spend: { brokerageId, feature: "starter_assistant_headshot", manager: "asset_manager", idempotencyKey: `starter_assistant_headshot:${brokerageId}` },
     })
     if (img.success && img.imageUrl) photoUrl = img.imageUrl
   } catch { /* seed without a face — monogram PIP until one is set */ }

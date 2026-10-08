@@ -38,7 +38,7 @@ export async function deliverMagnet(
 
   // 1. What are buyers/sellers actually asking? (gated web-search rail → ranked topics)
   const { fetchContentTopics } = await import("./content-topics-runner")
-  const topics = await fetchContentTopics(args.magnetType, args.ctx?.area ?? null).catch(() => [])
+  const topics = await fetchContentTopics(args.magnetType, args.ctx?.area ?? null, { brokerageId: args.brokerageId }).catch(() => [])
 
   // 2. AI-write the deliverable grounded in those topics, then clear the compliance gate.
   const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")

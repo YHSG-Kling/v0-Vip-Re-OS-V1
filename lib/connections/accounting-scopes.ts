@@ -36,6 +36,7 @@
 
 import type { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { QBO_MINOR_VERSION } from "@/lib/agentic-os/connector-registry"
 
 type ServiceClient = ReturnType<typeof createServiceClient>
 
@@ -364,7 +365,7 @@ export async function findOrCreateQboCustomer(args: {
     accessToken: args.accessToken,
     realmId: args.realmId,
     method: "GET",
-    path: `/query?query=${encodeURIComponent(query)}&minorversion=73`,
+    path: `/query?query=${encodeURIComponent(query)}&minorversion=${QBO_MINOR_VERSION}`,
   })
   const existing = found.QueryResponse?.Customer?.[0]?.Id
   if (existing) return existing
@@ -373,7 +374,7 @@ export async function findOrCreateQboCustomer(args: {
     accessToken: args.accessToken,
     realmId: args.realmId,
     method: "POST",
-    path: "/customer?minorversion=73",
+    path: `/customer?minorversion=${QBO_MINOR_VERSION}`,
     body: {
       DisplayName: name,
       ...(args.email ? { PrimaryEmailAddr: { Address: args.email } } : {}),

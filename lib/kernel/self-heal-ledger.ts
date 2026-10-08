@@ -21,6 +21,8 @@
 // A single recorded failure holds a probation action in supervised mode —
 // autonomy is earned by evidence, never assumed.
 
+import { applyTenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
+
 export type SelfHealDomain = "data_flow" | "connector"
 export type SelfHealOutcome = "healed" | "failed" | "escalated"
 
@@ -294,4 +296,220 @@ export function composeRepairAutonomy(stats: Record<string, ActionStats>): Repai
   }
   // supervised-with-activity first (the ones a broker is actually hearing about), then earned, then idle
   return rows.sort((a, b) => Number(a.earned) - Number(b.earned) || (b.healed + b.failed) - (a.healed + a.failed))
+}
+
+// ── THE HEALING CONSOLE (wave 139, lane 139F) ─────────────────────────────────────────────────────
+// Owner: "a platform-staff healing console listing per incident: classification, manager/domain,
+// provider/capability, structured diagnosis (no hidden chain-of-thought — store only structured
+// diagnosis/rationale/evidence), cited research evidence, chosen playbook, attempts, cost, action,
+// verification result, escalation/proposal, final state — read from the existing ledger /
+// self_heal_events / proposal rows; a tenant admin sees only their own incidents."
+// NOT A NEW STORE: a read-only projection over the rows the healers already write —
+//   agent_action_ledger  system_source os_health (lib/kernel/self-healing.ts troubleshootIncident steps),
+//                        provider_self_heal (lib/agentic-os/connector-healer.ts healProviderFailure steps),
+//                        law_rule_healing (lib/kernel/law-rule-healing.ts verify / enable / propose);
+//   self_heal_events     os_health_playbook:* rows (the playbook's verified outcome);
+//   connector_healing_proposals (by the ids the incident's own ledger rows name) and improvement_proposals
+//                        (proposer law_rule_healing, by the incident's own subject keys).
+// WHITELIST PROJECTION: every field is picked by name — a ledger `detail` is NEVER spread, so a key the
+// projection does not name (a model's free-form reasoning, a chain-of-thought, raw web text) cannot reach
+// the console. The model contract itself (self-healing.ts DiagnosisSchema) has no reasoning field.
+// TENANCY: the scope is the explicit discriminator (lib/kernel/tenant-scope.ts) — a tenant scope pins
+// EVERY read; proposal reads are keyed by ids / subject keys taken from the scope's own pinned rows.
+
+const HEALING_LEDGER_SOURCES = ["os_health", "provider_self_heal", "law_rule_healing"] as const
+
+interface HealingLedgerRow {
+  brokerage_id: string | null; action: string; actor_manager_key: string | null; subject_ref: string | null
+  status: string | null; outcome: string | null; reason_detail: string | null; provider: string | null
+  cost_usd: number | string | null; system_source: string | null; detail: Record<string, unknown> | null
+  policy_ref: string | null; created_at: string
+}
+interface HealingEventRow { brokerage_id: string | null; subject: string; action: string; outcome: string; created_at: string }
+
+export interface HealingIncident {
+  key: string
+  brokerageId: string | null
+  source: string
+  subject: string
+  /** The hard-gate class (money / tenant_boundary / security / data_deletion), else the incident class / law-rule route. */
+  classification: string | null
+  manager: string | null
+  domain: string | null
+  provider: string | null
+  capability: string | null
+  /** STRUCTURED diagnosis only: the schema's summary, root cause, confidence and the flags it raised. */
+  diagnosis: { summary: string; rootCause: string | null; confidence: number | null; flags: string[] } | null
+  /** Cited research evidence (URL + title only — never the fetched web text). */
+  evidence: Array<{ url: string; title: string | null }>
+  playbook: string | null
+  attempts: number
+  costUsd: number
+  action: string | null
+  verification: string | null
+  escalation: { reason: string | null; proposalId: string | null; proposalStatus: string | null } | null
+  finalState: "healed" | "failed" | "escalated" | "proposed" | "verified" | "in_progress"
+  policyRef: string | null
+  firstAt: string
+  lastAt: string
+}
+
+const PROPOSAL_ID_RE = /proposal ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
+const pickStr = (v: unknown, n = 300): string | null => (typeof v === "string" && v.trim() ? v.slice(0, n) : null)
+const pickObj = (v: unknown): Record<string, unknown> | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null)
+
+function citationsOf(detail: Record<string, unknown> | null): Array<{ url: string; title: string | null }> {
+  const out: Array<{ url: string; title: string | null }> = []
+  for (const list of [detail?.citations, pickObj(detail?.researched)?.citations]) {
+    if (!Array.isArray(list)) continue
+    for (const c of list) {
+      const o = pickObj(c)
+      const url = pickStr(o?.url, 500)
+      if (url && /^https?:\/\//i.test(url) && !out.some((x) => x.url === url)) out.push({ url, title: pickStr(o?.title, 200) })
+    }
+  }
+  return out.slice(0, 10)
+}
+
+function structuredDiagnosis(detail: Record<string, unknown> | null): HealingIncident["diagnosis"] {
+  const d = pickObj(detail?.diagnosis)
+  const summary = pickStr(d?.diagnosis, 800)
+  if (!d || !summary) return null
+  return {
+    summary,
+    rootCause: pickStr(d.rootCause, 40),
+    confidence: typeof d.confidence === "number" && Number.isFinite(d.confidence) ? d.confidence : null,
+    flags: Object.entries(pickObj(d.touches) ?? {}).filter(([, v]) => v === true).map(([k]) => k).slice(0, 4),
+  }
+}
+
+/**
+ * PURE — fold the healers' own rows into one line per incident (tenant + source + subject), newest first.
+ * @proofSeam scripts/healing-policy-guard.ts drives the whitelist (a planted chain-of-thought key never
+ * surfaces) and the per-incident fields directly.
+ */
+export function foldHealingIncidents(input: {
+  ledger: HealingLedgerRow[]
+  events: HealingEventRow[]
+  connectorProposals: Array<{ id: string; status: string | null }>
+  lawProposals: Array<{ id: string; brokerage_id: string | null; subject_key: string; status: string | null }>
+}): HealingIncident[] {
+  const groups = new Map<string, HealingLedgerRow[]>()
+  for (const r of input.ledger) {
+    if (!r.system_source || !(HEALING_LEDGER_SOURCES as readonly string[]).includes(r.system_source)) continue
+    const k = `${r.brokerage_id ?? "platform"}|${r.system_source}|${r.subject_ref ?? r.action}`
+    groups.set(k, [...(groups.get(k) ?? []), r])
+  }
+  const cp = new Map(input.connectorProposals.map((p) => [p.id, p]))
+  const out: HealingIncident[] = []
+  for (const [key, group] of groups) {
+    const rows = [...group].sort((a, b) => a.created_at.localeCompare(b.created_at))
+    const first = rows[0], last = rows[rows.length - 1]
+    const source = String(first.system_source)
+    const subject = String(first.subject_ref ?? first.action)
+    const inc: HealingIncident = {
+      key, brokerageId: first.brokerage_id, source, subject, classification: null, manager: first.actor_manager_key,
+      domain: null, provider: null, capability: null, diagnosis: null, evidence: [], playbook: null, attempts: 0, costUsd: 0,
+      action: null, verification: null, escalation: null, finalState: "in_progress", policyRef: null, firstAt: first.created_at, lastAt: last.created_at,
+    }
+    let proposed = false, escalated = false, failed = false
+    let settled: "healed" | "verified" | "failed" | "escalated" | null = null
+    for (const r of rows) {
+      const d = pickObj(r.detail)
+      const step = source === "os_health" ? r.action.split(".").slice(2).join(".") : (r.action.split(".").pop() ?? "")
+      inc.costUsd += Number(r.cost_usd) || 0
+      inc.policyRef = r.policy_ref ?? pickStr(d?.policy_ref, 80) ?? inc.policyRef
+      inc.domain = pickStr(d?.domain, 40) ?? inc.domain
+      inc.classification = pickStr(d?.gate, 40) ?? pickStr(d?.class, 40) ?? inc.classification
+      inc.provider = r.provider ?? pickStr(d?.adapter, 60) ?? inc.provider
+      inc.capability = pickStr(pickObj(d?.params)?.capability, 60) ?? pickStr(d?.capability, 60) ?? inc.capability
+      inc.diagnosis = structuredDiagnosis(d) ?? inc.diagnosis
+      for (const c of citationsOf(d)) if (!inc.evidence.some((x) => x.url === c.url)) inc.evidence.push(c)
+      inc.action = step || inc.action
+      // A troubleshooter playbook (playbook_<key>) or the supervisor's own recovery (decideRecovery's action).
+      const recovery = step.startsWith("playbook_") && step !== "playbook_refused" ? step.slice("playbook_".length)
+        : ["retry", "resume", "backoff", "failover", "route_data_steward", "route_compliance"].includes(step) ? step : null
+      if (source === "os_health" && recovery) {
+        inc.playbook = recovery
+        inc.attempts++
+        inc.verification = pickStr(r.outcome, 300)
+        if (r.status !== "executed") failed = true
+      }
+      if (source === "provider_self_heal") {
+        if (step === "retry") inc.verification = r.status === "executed" ? "retry succeeded" : "retry failed"
+        if (step === "apply") { inc.playbook = "apply_declared_alternate"; inc.attempts++; if (r.status !== "executed") failed = true }
+        if (step === "failover") inc.playbook = "failover"
+      }
+      if (source === "law_rule_healing") {
+        inc.classification = pickStr(pickObj(d?.resolution)?.route, 40) ?? inc.classification
+        if (step === "verify" && r.status === "executed") { inc.verification = "verified against cited primary sources"; settled = "verified" }
+        if (step === "enable" && r.status === "executed") { inc.verification = "stricter-only rule enabled in WARN mode"; settled = "healed" }
+      }
+      if (step === "propose" || step.startsWith("escalate")) {
+        const id = (pickStr(r.outcome, 300) ?? "").match(PROPOSAL_ID_RE)?.[1] ?? null
+        if (step === "propose") proposed = proposed || r.status === "executed"
+        else escalated = true
+        inc.escalation = { reason: pickStr(r.reason_detail, 500), proposalId: id ?? inc.escalation?.proposalId ?? null, proposalStatus: id ? cp.get(id)?.status ?? null : inc.escalation?.proposalStatus ?? null }
+      }
+    }
+    if (source === "law_rule_healing" && proposed) {
+      const lp = input.lawProposals.find((p) => p.subject_key === `law_rule:${subject}` && p.brokerage_id === inc.brokerageId)
+      if (lp) inc.escalation = { reason: inc.escalation?.reason ?? null, proposalId: lp.id, proposalStatus: lp.status }
+    }
+    // The playbook's VERIFIED outcome is the self_heal_events row the troubleshooter wrote for this subject.
+    if (source === "os_health") {
+      const ev = input.events
+        .filter((e) => e.brokerage_id === inc.brokerageId && e.subject.endsWith(`:${subject}`) && e.action.startsWith("os_health_playbook:"))
+        .sort((a, b) => a.created_at.localeCompare(b.created_at)).pop()
+      if (ev) settled = ev.outcome === "healed" ? "healed" : ev.outcome === "failed" ? "failed" : "escalated"
+    }
+    if (source === "provider_self_heal" && inc.verification === "retry succeeded") settled = "healed"
+    inc.finalState = settled === "healed" || settled === "verified" ? settled
+      : proposed ? "proposed"
+      : settled === "failed" || failed ? "failed"
+      : escalated || settled === "escalated" ? "escalated" : "in_progress"
+    out.push(inc)
+  }
+  return out.sort((a, b) => b.lastAt.localeCompare(a.lastAt))
+}
+
+/**
+ * The healing console's read for one scope (a tenant's own incidents, or the platform's every-tenant view).
+ * Every read reads its error (§3) — a refused read is a refusal, never "nothing healed".
+ */
+export async function loadHealingIncidents(svc: any, scope: TenantScope, windowDays = 14): Promise<{ ok: true; incidents: HealingIncident[]; windowDays: number } | { ok: false; error: string }> {
+  const since = new Date(Date.now() - windowDays * 86_400_000).toISOString()
+  const ledgerQ = applyTenantScope(
+    svc.from("agent_action_ledger")
+      .select("brokerage_id, action, actor_manager_key, subject_ref, status, outcome, reason_detail, provider, cost_usd, system_source, detail, policy_ref, created_at")
+      .in("system_source", HEALING_LEDGER_SOURCES as unknown as string[]).gte("created_at", since),
+    scope,
+  ).order("created_at", { ascending: false }).limit(1000)
+  const eventsQ = applyTenantScope(
+    svc.from("self_heal_events").select("brokerage_id, subject, action, outcome, created_at").like("action", "os_health_playbook:%").gte("created_at", since),
+    scope,
+  ).order("created_at", { ascending: false }).limit(1000)
+  const [l, e] = await Promise.all([ledgerQ, eventsQ])
+  if (l.error) return { ok: false, error: `healing ledger unreadable: ${l.error.message}` }
+  if (e.error) return { ok: false, error: `self-heal events unreadable: ${e.error.message}` }
+  const ledger = (l.data ?? []) as HealingLedgerRow[]
+  const ids = Array.from(new Set(ledger.map((r) => (r.outcome ?? "").match(PROPOSAL_ID_RE)?.[1]).filter((x): x is string => !!x))).slice(0, 200)
+  const lawKeys = Array.from(new Set(ledger.filter((r) => r.system_source === "law_rule_healing" && r.subject_ref).map((r) => `law_rule:${r.subject_ref}`))).slice(0, 200)
+  let connectorProposals: Array<{ id: string; status: string | null }> = []
+  if (ids.length) {
+    // Keyed ONLY by ids named in this scope's own (pinned) ledger rows — a tenant never lists another's proposal.
+    const { data, error } = await svc.from("connector_healing_proposals").select("id, status").in("id", ids)
+    if (error) return { ok: false, error: `healing proposals unreadable: ${error.message}` }
+    connectorProposals = (data ?? []) as typeof connectorProposals
+  }
+  let lawProposals: Array<{ id: string; brokerage_id: string | null; subject_key: string; status: string | null }> = []
+  if (lawKeys.length) {
+    const { data, error } = await applyTenantScope(
+      svc.from("improvement_proposals").select("id, brokerage_id, subject_key, status").eq("proposer", "law_rule_healing").in("subject_key", lawKeys),
+      scope,
+    ).limit(500)
+    if (error) return { ok: false, error: `law-rule proposals unreadable: ${error.message}` }
+    lawProposals = (data ?? []) as typeof lawProposals
+  }
+  return { ok: true, incidents: foldHealingIncidents({ ledger, events: (e.data ?? []) as HealingEventRow[], connectorProposals, lawProposals }), windowDays }
 }

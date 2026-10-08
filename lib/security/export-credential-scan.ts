@@ -94,3 +94,41 @@ export function redactCredentials(text: string): string {
     CSV_CREDENTIAL_PATTERNS.some((p) => p.re.test(tok)) ? CREDENTIAL_REDACTED : tok,
   )
 }
+
+// ── AUDIT / EVENT PAYLOAD REDACTION (wave 139E — owner: "logs redact") ─────────────────────────
+// The event store (lifecycle_events.metadata via lib/kernel/emit.ts) and the action ledger
+// (agent_action_ledger.detail via lib/kernel/action-ledger.ts) are AUDIT sinks: a stored secret
+// must never land in them. Unlike the CSV export above, these blobs are READ BACK by the platform
+// (a report's Blob URL rides event metadata to its notification), so the URL/JWT patterns are NOT
+// applied here — only what is a secret by NAME or by unmistakable SHAPE.
+
+/** Field names (case/separator-insensitive) whose value is a secret wherever it appears.
+ *  Deliberately not bare "token": event metadata uses it for message-template tokens. */
+const SECRET_FIELD_KEYS: ReadonlySet<string> = new Set([
+  "apikey", "apisecret", "accesstoken", "refreshtoken", "idtoken", "smtppassword", "password",
+  "clientsecret", "privatekey", "secret", "webhooksecret", "signingsecret", "previoussecret", "authorization",
+])
+/** Values that are secrets by shape: our own at-rest envelope, Stripe secret keys, webhook signing secrets. */
+const SECRET_VALUE_RE = /^enc:v1:|\b(sk|rk)_(live|test)_[A-Za-z0-9]{16,}|\bwhsec_[A-Za-z0-9+/=_-]{16,}/
+
+/** What replaces a secret in an audit/event payload — a NAMED hole. */
+const SECRET_REDACTED = "[redacted:secret]"
+
+/**
+ * PURE: a deep copy of an audit/event payload with every secret-named field and every secret-shaped
+ * string replaced by a named marker. Non-secret values pass through untouched (same keys, same order).
+ */
+export function redactSecretValues<T>(value: T, depth = 0): T {
+  if (depth > 8) return value
+  if (typeof value === "string") return (SECRET_VALUE_RE.test(value) ? SECRET_REDACTED : value) as unknown as T
+  if (Array.isArray(value)) return value.map((v) => redactSecretValues(v, depth + 1)) as unknown as T
+  if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const secretKey = SECRET_FIELD_KEYS.has(k.toLowerCase().replace(/[^a-z]/g, ""))
+      out[k] = secretKey && v !== null && v !== undefined && v !== "" ? SECRET_REDACTED : redactSecretValues(v, depth + 1)
+    }
+    return out as T
+  }
+  return value
+}

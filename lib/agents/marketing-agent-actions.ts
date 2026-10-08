@@ -775,7 +775,7 @@ async function runHandler(
       const ctx = { area: (prev.area as string) ?? null, brand: (prev.brand as string) ?? null }
 
       const { fetchContentTopics } = await import("@/lib/marketing/content-topics-runner")
-      const topics = await fetchContentTopics(magnetType, ctx.area).catch(() => [])
+      const topics = await fetchContentTopics(magnetType, ctx.area, { brokerageId }).catch(() => [])
       const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
       const { landingPageCopyFromTopics } = await import("@/lib/marketing/lead-magnet-copy")
       const { buildFaqFromTopics, faqJsonLdScript } = await import("@/lib/marketing/geo-faq")

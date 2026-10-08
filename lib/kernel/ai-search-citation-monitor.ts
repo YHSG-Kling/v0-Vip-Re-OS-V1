@@ -233,7 +233,8 @@ export type SearchFetcher = (params: { query: string; brokerageId: string }) => 
 // internal helper — called in-file by runCitationMonitor/runLandingPageCitationMonitor
 const realSearchFetcher: SearchFetcher = async (params) => {
   const { webSearch, formatWebSearchContext } = await import("@/lib/ai/web-search")
-  const res = await webSearch({ query: params.query, maxResults: 8, mode: "research" }).catch(
+  // Wave 139 (139C): brand/AI-search listening is PLATFORM-COVERED — booked, tenant-attributed (was unbooked).
+  const res = await webSearch({ query: params.query, maxResults: 8, mode: "research", spend: { brokerageId: params.brokerageId, systemSource: "ai_search_citation_monitor" } }).catch(
     () => ({ answer: null, hits: [], provider: "none" as const, cost: 0 }),
   )
   if (res.provider === "none") return { text: "", provider: "none" }
@@ -330,8 +331,13 @@ interface CitationMonitorResult {
  * merged by name — a broker who added a rival in one surface must not be
  * invisible to the other. Never throws: share of voice is an enrichment, and a
  * read failure must not stop the citation monitor from recording OUR outcome.
+ *
+ * EXPORTED (wave 139H) — the ONE watched-competitor list. Brand listening
+ * (lib/competitive-intel/brand-listening.ts) listens to the SAME rivals this
+ * monitor detects in AI answers, so share of voice in AI answers and share of
+ * voice in public conversation are measured against one roster, never two.
  */
-async function loadCompetitorTargets(supabase: Svc, brokerageId: string): Promise<CompetitorTarget[]> {
+export async function loadCompetitorTargets(supabase: Svc, brokerageId: string): Promise<CompetitorTarget[]> {
   const byName = new Map<string, CompetitorTarget>()
   const add = (name: unknown, domain: unknown) => {
     const n = String(name ?? "").trim()

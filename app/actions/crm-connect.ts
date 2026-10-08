@@ -64,8 +64,10 @@ async function requireMember(): Promise<{ ok: true; member: Member } | { ok: fal
  * writer for the providers that DO issue one.
  *
  * STORED THE WAY THIS TREE STORES SECRETS, not a new scheme: lib/security/secret-crypto.ts
- * (`encryptSecret` → self-describing `enc:v1:` envelope, AES-256-GCM, a NO-OP when
- * SECRETS_ENCRYPTION_KEY is unset so a missing key never blocks a write). The reader
+ * (`encryptSecret` → self-describing `enc:v1:` envelope, AES-256-GCM; since wave 139E
+ * it REFUSES — throws SecretStorageRefusedError — when SECRETS_ENCRYPTION_KEY is unset,
+ * never storing plaintext). The api_key column is still written as given: its readers
+ * do not all decrypt yet (lib/content-intel/newsapi-ai.ts reads it raw) — open item. The reader
  * — connection-manager — was switched to the backward-compatible `decryptSecret`
  * FIRST, which is the documented safe order in that module's own header. The
  * discrete `api_secret` COLUMN is used, not a second `*_encrypted` column: the only
@@ -95,18 +97,23 @@ export async function connectCrmAction(params: {
   // provider instead of an honest "not connected" here.
   const rawSecret = params.apiSecret?.trim()
 
-  // FAIL CLOSED (CLAUDE.md §4) — the half secret-crypto.ts:12-13 says a caller
-  // must supply and nobody had. `encryptSecret` is a DELIBERATE no-op with no
-  // SECRETS_ENCRYPTION_KEY, so that a missing key never blocks a write; that is
-  // right for the api_key-only path and WRONG here. With no key this line stored
+  // FAIL CLOSED (CLAUDE.md §4). Since wave 139E `encryptSecret` itself THROWS
+  // SecretStorageRefusedError with no SECRETS_ENCRYPTION_KEY (it used to be a
+  // deliberate no-op). This check runs first so the refusal is a typed result
+  // with an incident, not an exception. Before 139E, with no key this line stored
   // the operator's provider SECRET as plaintext into
   // agent_api_credentials.api_secret / integration_credentials.api_secret and
   // reported success — "nobody checked" rendering as "checked and fine".
   //
   // Scoped to the NEW-SECRET branch ONLY. Most CRMs (Follow Up Boss, Lofty,
   // GoHighLevel) issue a single key and have no second half, and refusing that
-  // path would break every connect and contradict the module's fail-safe design.
+  // path would break every connect (the api_key readers do not all decrypt yet).
   if (rawSecret && !isEncryptionConfigured()) {
+    // Wave 139E — the refusal is ACTIONABLE: platform staff get the incident (tenant from the
+    // session gate above; the secret itself is never passed). Gate first, then the service client.
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { raiseSecretStorageIncident } = await import("@/lib/security/credential-rotation")
+    await raiseSecretStorageIncident(createServiceClient(), { surface: `crm connect (${params.provider})`, brokerageId: member.brokerageId, code: "secrets_key_missing" })
     return {
       ok: false,
       error:

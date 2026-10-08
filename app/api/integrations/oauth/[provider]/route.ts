@@ -386,9 +386,9 @@ export async function GET(
         ...(realmId ? { account_id: realmId } : {}),
         ...(adAccountId ? { account_id: adAccountId } : {}),
         ...(zoomUserId ? { account_id: zoomUserId } : {}),
+        // Wave 139: the tokens live ONLY in the canonical columns — no second copy in `config` (a duplicate the
+        // column-level encryption would miss). Readers take the columns first; legacy rows keep their old config.
         config: {
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token,
           token_type: tokens.token_type,
           scope: tokens.scope,
           ...(connectedEmail ? { email: connectedEmail } : {}),

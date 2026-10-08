@@ -184,7 +184,8 @@ console.log("\n[(d) #187 closures — anonymous turns metered, history estimated
 
   const COST = read("lib/ai/cost-tracking.ts")
   const logStart = COST.indexOf("export async function logAIUsage")
-  const logEnd = COST.indexOf("export async function getCurrentMonthUsage")
+  // The body ends at the NEXT export (wave 139 inserted logAIImageUsage between logAIUsage and getCurrentMonthUsage).
+  const logEnd = logStart === -1 ? -1 : COST.indexOf("\nexport ", logStart + 1)
   const logBody = logStart !== -1 && logEnd > logStart ? COST.slice(logStart, logEnd) : ""
   check("logAIUsage accepts a null user — anonymous tenant traffic lands in the ledger, not on the floor",
     codeHits(logBody, "userId: string | null") === 1)

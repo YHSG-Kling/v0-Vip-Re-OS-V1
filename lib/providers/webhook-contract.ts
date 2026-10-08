@@ -292,6 +292,22 @@ export const WEBHOOK_CONTRACT: WebhookContractEntry[] = [
     failureVisibility: "the caller hears the honest call-back fallback and the agent a missed-bridge notification",
     notes: "404-silent on a missing/wrong token by design (the URL is ours; nothing else may drive it).",
   },
+  // Wave 139 (lane 139G, readiness R-4): the click-to-call whisper bridge was the one
+  // Twilio-called route with no row (it lives under /api/twiml, outside the derived
+  // app/api/voice/twilio/** population — the guard now derives app/api/twiml/** too).
+  {
+    provider: "twilio",
+    eventKind: "whisper-bridge-twiml",
+    path: "/api/twiml/whisper-bridge",
+    routeFile: "app/api/twiml/whisper-bridge/route.ts",
+    scheme: "twilio-url-hmac-sha1",
+    verificationHeaders: ["x-twilio-signature"],
+    secretEnv: ["TWILIO_AUTH_TOKEN"],
+    implementedIn: ["lib/voice/twilio-voice.ts"],
+    consoleField: "Not console-pasted — the Url placeCall (lib/providers/messaging/index.ts) passes when app/actions/voice-call-bridge.ts dials the agent",
+    failureVisibility: "voice_calls stays 'initiated' and call_whisper_logs.agent_heard unstamped for the bridged call",
+    notes: "Platform TWILIO_AUTH_TOKEN (placeCall dials from the platform account). Unset token, missing or wrong signature → 401 (fail closed).",
+  },
   {
     provider: "twilio",
     eventKind: "conversational-intelligence",

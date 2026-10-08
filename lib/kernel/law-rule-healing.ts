@@ -24,13 +24,15 @@ import {
   FEDERAL_JURISDICTION, type LawRule, type LawRuleDraft, type LawRuleFinding, type LawRuleResolution, type StateRuleRow,
 } from "@/lib/compliance-rules/law-rule-registry"
 import type { RegSearchFetcher } from "@/lib/kernel/regulatory-watcher"
+import { HEALING_POLICY_KEY } from "@/lib/kernel/healing-policy"
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Svc = any
 
-/** Per-tenant, per-pass research spend cap (USD) and call cap — the loop never runs unmetered or unbounded. */
-const LAW_RULE_RESEARCH_BUDGET_USD = 0.1
-const LAW_RULE_RESEARCH_MAX_CALLS = 6
+// TOMBSTONE (wave 139, lane 139F): the per-tenant, per-pass research spend cap (0.10 USD) and call cap (6) moved onto
+// the tenant / platform SELF-HEALING POLICY — lib/kernel/healing-policy.ts HEALING_POLICY_DEFAULTS
+// (law_rule_research_cap_usd / law_rule_research_max_calls) are the defaults; runLawRuleHealing reads the effective
+// caps through loadHealingPolicy (tenant policy under the platform ceiling). The loop is still never unmetered or unbounded.
 /** Assumed cost of one research call when the rail does not report one (Tavily advanced ≈ $0.01). */
 const RESEARCH_CALL_ESTIMATE_USD = 0.01
 
@@ -42,14 +44,18 @@ const LAW_RULE_ACTION = {
 
 const SYSTEM_SOURCE = "law_rule_healing"
 
-interface LedgerCtx { brokerageId: string; action: string; actor: { type: "manager"; managerKey: string }; subject: { type: string; id?: string | null; ref?: string | null }; reasonCode: string; reasonDetail: string; idempotencyKey: string; riskClass: string; systemSource: string; detail: Record<string, unknown> }
+interface LedgerCtx { brokerageId: string; policyKey: string; action: string; actor: { type: "manager"; managerKey: string }; subject: { type: string; id?: string | null; ref?: string | null }; reasonCode: string; reasonDetail: string; idempotencyKey: string; riskClass: string; systemSource: string; detail: Record<string, unknown> }
 type LedgerFn = <T>(ctx: LedgerCtx, run: () => Promise<T>, hooks: { settle: (r: T) => { status: "executed" | "failed" | "skipped"; outcome: string; costUsd?: number | null; provider?: string | null }; replay: () => T }, opts?: { client?: unknown }) => Promise<T>
 
 interface LawRuleHealingDeps {
   now?: Date
   search?: RegSearchFetcher
+  /** PROOF SEAMS ONLY (scripts/law-rule-healing-guard.ts). The one production caller (app/api/cron/regulatory-watcher)
+   *  passes none — scripts/healing-policy-guard.ts proves it — so production caps are always the policy's. */
   budgetUsd?: number
   maxCalls?: number
+  /** The resolved self-healing policy (default: loadHealingPolicy — the ONE reader). */
+  policy?: import("@/lib/kernel/healing-policy").HealingPolicy
   /** Entitlement (fail closed): default mayUseAndAfford app.access. */
   afford?: (brokerageId: string) => Promise<{ allowed: boolean; reason: string }>
   meter?: (input: { vendorName: string; usageType: string; cost: number; brokerageId: string; systemSource: string; metadata: Record<string, unknown> }) => Promise<boolean>
@@ -140,11 +146,15 @@ export async function runLawRuleHealing(svc: Svc, brokerageId: string, deps: Law
   const ledger: LedgerFn = deps.ledger ?? ((await import("@/lib/kernel/action-ledger")).withActionLedger as unknown as LedgerFn)
   const emit = deps.emit ?? (async (input) => (await import("@/lib/kernel/emit")).emitKernelEvent(input))
   const propose = deps.propose ?? (async (client, input) => (await import("@/lib/kernel/improvement-proposals")).proposeImprovement(client, input))
-  const budget = deps.budgetUsd ?? LAW_RULE_RESEARCH_BUDGET_USD
-  const maxCalls = deps.maxCalls ?? LAW_RULE_RESEARCH_MAX_CALLS
+  // Wave 139F — the research caps are the tenant's self-healing policy under the platform ceiling (ONE reader).
+  // Unreadable → nothing is researched (fail closed).
+  const policy = deps.policy ?? await (await import("@/lib/kernel/healing-policy")).loadHealingPolicy(svc, brokerageId)
+  if (!policy.readable) { out.status = `self-healing policy unreadable (${policy.note ?? "no detail"}) — ${out.findings.length} finding(s) reported, nothing researched (fail closed)`; return out }
+  const budget = deps.budgetUsd ?? policy.lawRuleResearchCapUsd
+  const maxCalls = deps.maxCalls ?? policy.lawRuleResearchMaxCalls
   const week = now.toISOString().slice(0, 10)
   const ctx = (action: string, ref: string, reasonDetail: string, detail: Record<string, unknown>): LedgerCtx => ({
-    brokerageId, action, actor: { type: "manager", managerKey: "compliance_officer" }, subject: { type: "law_rule", ref },
+    brokerageId, policyKey: HEALING_POLICY_KEY, action, actor: { type: "manager", managerKey: "compliance_officer" }, subject: { type: "law_rule", ref },
     reasonCode: "COMPLIANCE_NOTICE", reasonDetail: reasonDetail.slice(0, 500), idempotencyKey: `${action}:${brokerageId}:${ref}:${week}`,
     riskClass: "LOW_RISK_WRITE", systemSource: SYSTEM_SOURCE, detail,
   })

@@ -28,9 +28,10 @@ function rpcError(id: unknown, code: number, message: string, status = 200) {
 // scope-gated by the caller's token below, and every call audit-logs. All vendor egress here goes
 // through the connector-gateway (web search, RentCast, PeopleData) — never a bespoke fetch.
 const READ_EXECUTORS: Record<string, (args: any, ctx: { brokerageId: string }) => Promise<unknown>> = {
-  web_research: async (args) => {
+  web_research: async (args, ctx) => {
     const { webSearch } = await import("@/lib/ai/web-search")
-    return webSearch({ query: String(args.query ?? ""), maxResults: 6 })
+    // Wave 139 (139C): the search's spend books under the CALLER's tenant (was unbooked).
+    return webSearch({ query: String(args.query ?? ""), maxResults: 6, spend: { brokerageId: ctx.brokerageId || null, systemSource: "agentic_mcp" } })
   },
   property_valuation: async (args, ctx) => {
     const { getCurrentAvm } = await import("@/lib/avm/provider-chain")

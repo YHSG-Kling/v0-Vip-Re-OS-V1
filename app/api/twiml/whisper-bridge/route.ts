@@ -1,44 +1,63 @@
 import { NextRequest, NextResponse } from "next/server"
-import crypto from "crypto"
+import { validateTwilioSignature } from "@/lib/voice/twilio-voice"
 import { updateWhisperBridgeStatus } from "@/lib/voice/whisper-bridge-status"
 
 /**
  * TwiML Whisper Bridge Endpoint
  * Handles Twilio call flow: Whisper context to agent, then connect to contact.
- * Both GET (TwiML generation) and POST (status callback) are Twilio-signed requests.
+ * Every request is Twilio-signed (WEBHOOK_CONTRACT row `whisper-bridge-twiml`,
+ * lib/providers/webhook-contract.ts).
+ *
+ * WAVE 139 (lane 139G — closure audit R-4, plus a door with no backend):
+ *   · The local signature check this file carried DUPLICATED the canonical
+ *     verifier, and worse: `timingSafeEqual` on buffers of unequal length
+ *     THROWS, so a short/forged X-Twilio-Signature answered 500, not 401.
+ *     Tombstone — survivor `lib/voice/twilio-voice.ts:32` validateTwilioSignature
+ *     (length-checked, timing-safe).
+ *   · Its GET variant appended the query params to a URL that already carries
+ *     them; Twilio signs a GET as the full URL alone, so a GET could never
+ *     verify. GET is now signed with no params.
+ *   · placeCall (lib/providers/messaging/index.ts) passes `Url` with NO
+ *     `Method`, and Twilio's default is POST — so the answered agent leg asked
+ *     POST for its TwiML and got an empty <Response/>: the whisper was never
+ *     spoken and the contact never dialed. POST now answers the same TwiML when
+ *     the OS-authored query (contactPhone + whisper) is present.
  */
 
-function verifyTwilioSignature(
-  req: NextRequest,
-  params: Record<string, string>
-): boolean {
+/** The URL Twilio signed: the app URL this OS authored into placeCall + this path + the query. */
+function signedUrl(req: NextRequest): string {
+  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+  if (!appUrl) return req.url
+  const u = new URL(req.url)
+  return `${appUrl}${u.pathname}${u.search}`
+}
+
+/** Fail closed: no TWILIO_AUTH_TOKEN, no signature, or a mismatch → false (the caller answers 401). */
+function verifyTwilioRequest(req: NextRequest, postParams: Record<string, string>): boolean {
   const secret = process.env.TWILIO_AUTH_TOKEN
   if (!secret) {
     console.error("[whisper-bridge] TWILIO_AUTH_TOKEN not set — rejecting")
     return false
   }
-  const sig = req.headers.get("x-twilio-signature") ?? ""
-  if (!sig) return false
+  return validateTwilioSignature(secret, signedUrl(req), postParams, req.headers.get("x-twilio-signature"))
+}
 
-  const url = req.url
-  const sortedKeys = Object.keys(params).sort()
-  let str = url
-  for (const key of sortedKeys) {
-    str += key + (params[key] ?? "")
-  }
-  const expected = crypto
-    .createHmac("sha1", secret)
-    .update(Buffer.from(str, "utf-8"))
-    .digest("base64")
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig))
+/** The bridge TwiML: whisper to the agent, then dial the contact (both XML-escaped). */
+function bridgeTwiml(contactPhone: string, whisper: string): NextResponse {
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">${escapeXml(whisper)}</Say>
+  <Dial>
+    ${escapeXml(contactPhone)}
+  </Dial>
+</Response>`
+  return new NextResponse(twiml, { headers: { "Content-Type": "text/xml" } })
 }
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
-  const params: Record<string, string> = {}
-  searchParams.forEach((v, k) => { params[k] = v })
-
-  if (!verifyTwilioSignature(req, params)) {
+  // A GET is signed over the full URL alone (the query is already in it).
+  if (!verifyTwilioRequest(req, {})) {
     return new NextResponse("Unauthorized", { status: 401 })
   }
 
@@ -49,17 +68,7 @@ export async function GET(req: NextRequest) {
     return new NextResponse("Missing required parameters", { status: 400 })
   }
 
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="alice">${escapeXml(whisper)}</Say>
-  <Dial>
-    ${contactPhone}
-  </Dial>
-</Response>`
-
-  return new NextResponse(twiml, {
-    headers: { "Content-Type": "text/xml" },
-  })
+  return bridgeTwiml(contactPhone, whisper)
 }
 
 export async function POST(req: NextRequest) {
@@ -67,7 +76,7 @@ export async function POST(req: NextRequest) {
   const params: Record<string, string> = {}
   formData.forEach((v, k) => { params[k] = String(v) })
 
-  if (!verifyTwilioSignature(req, params)) {
+  if (!verifyTwilioRequest(req, params)) {
     return new NextResponse("<Response></Response>", {
       headers: { "Content-Type": "text/xml" },
       status: 401,
@@ -150,6 +159,13 @@ export async function POST(req: NextRequest) {
       }
     }
   }
+
+  // Twilio's default Url method is POST: the answered agent leg fetches its
+  // TwiML here. The OS-authored query (app/actions/voice-call-bridge.ts) marks that fetch.
+  const { searchParams } = new URL(req.url)
+  const contactPhone = searchParams.get("contactPhone")
+  const whisper = searchParams.get("whisper")
+  if (contactPhone && whisper) return bridgeTwiml(contactPhone, whisper)
 
   return new NextResponse("<Response></Response>", {
     headers: { "Content-Type": "text/xml" },

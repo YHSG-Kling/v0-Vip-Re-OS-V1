@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 727 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 728 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-07
+ * generated: 2026-10-08
  * source: public.live_schema_json()
- * body-sha256: e5cc49c65bb8d85d6861c2fecde665218e6af13524b394945f30f43c9ab2d0cc
+ * body-sha256: e5b7dbfed7937bb25def25e1c616604347911389a4fe450f30f071d0ca781777
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -137,6 +137,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   blog_post_share_clicks: ["blog_post_id", "brokerage_id", "clicked_at", "id", "share_channel", "viewer_contact_id", "viewer_persona_snapshot"],
   blog_post_views: ["blog_post_id", "brokerage_id", "id", "referrer", "source", "viewed_at", "viewer_contact_id", "viewer_ip_hash", "viewer_persona_snapshot"],
   blog_posts: ["agent_user_id", "approval_status", "brokerage_id", "call_to_action", "category", "content", "created_at", "created_by", "excerpt", "featured_image_url", "id", "is_ai_generated", "marketing_campaign_id", "publish_status", "publish_target", "published_at", "seo_score", "share_count_total", "slug", "team_id", "title", "updated_at", "view_count_total", "visibility_scope", "wordpress_post_id"],
+  brand_mentions: ["author", "brokerage_id", "captured_at", "competitors_named", "compliance_flag", "compliance_reason", "excerpt", "id", "names_us", "provider", "published_at", "reach_estimate", "scored_at", "sentiment", "sentiment_score", "source", "subject_id", "subject_kind", "subject_label", "title", "topics", "url", "url_key"],
   brand_templates: ["brokerage_id", "content_html", "created_at", "id", "is_active", "template_name", "template_type"],
   brand_voice_profile: ["agent_id", "brand_personality", "brokerage_id", "content_guidelines", "created_at", "custom_instructions", "distilled_at", "distilled_from_asset_ids", "formality_level", "id", "is_active", "key_brand_messages", "mission_statement", "preferred_words", "prohibited_words", "style", "tagline", "target_audience", "team_id", "tone", "tone_examples", "updated_at", "writing_style_notes"],
   brokerage_brand_settings: ["accent_color", "body_text_size", "brokerage_id", "created_at", "email_signature_html", "facebook_url", "heading_size", "id", "instagram_url", "letterhead_html", "linkedin_url", "tagline", "updated_at", "website_url", "wizard_completed_at", "wizard_step_reached"],
@@ -510,7 +511,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   platform_reception_calls: ["call_sid", "ended_at", "id", "outcome", "phone_from", "phone_to", "prospect_id", "started_at", "status", "transcript"],
   platform_role_capability_overrides: ["access", "allowed", "capability", "id", "role", "updated_at", "updated_by"],
   platform_sentinel_actions: ["acted_at", "acted_by", "brokerage_id", "created_at", "dedupe_key", "detail", "draft_channel", "draft_text", "id", "kind", "severity", "status", "title"],
-  platform_settings: ["ai_enabled", "collect_tax", "created_at", "emergency_mode", "global_rate_limit_per_minute", "id", "product_brand", "referral_fee_basis", "referral_fee_duration_months", "referral_fee_flat_cents", "referral_fee_percent", "retention_offer", "show_brokerage_budget_warning", "status_notice", "tos_version", "updated_at"],
+  platform_settings: ["ai_enabled", "collect_tax", "created_at", "emergency_mode", "global_rate_limit_per_minute", "id", "product_brand", "referral_fee_basis", "referral_fee_duration_months", "referral_fee_flat_cents", "referral_fee_percent", "retention_offer", "self_healing_ceilings", "show_brokerage_budget_warning", "status_notice", "tos_version", "updated_at"],
   platform_social_accounts: ["account_name", "connected_at", "connected_by", "created_at", "credential_ref", "id", "last_verified_at", "platform", "status", "updated_at"],
   platform_social_drafts: ["angle", "channel", "content", "created_at", "created_by", "format", "hashtags", "id", "media_type", "permalink", "scheduled_for", "script", "status", "updated_at", "video_url"],
   platform_staff_profiles: ["agreement_acknowledged_at", "created_at", "created_by", "employment_agreement_text", "notes", "start_date", "title", "updated_at", "user_id"],

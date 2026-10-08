@@ -25,6 +25,32 @@ export async function getOsHealthLine(): Promise<{ success: true; health: OsHeal
 }
 
 /**
+ * WAVE 139 (139F) — the tenant's OWN healing incidents (the healing console, tenant-scoped) + the effective
+ * self-healing policy (the tenant's `self_healing` key under the platform ceiling). Tenant-admin roster; the
+ * tenant is the SESSION's (tenantScope — a missing id refuses, never widens to every tenant).
+ */
+export async function getMyHealingIncidentsAction(): Promise<
+  | { success: true; incidents: import("@/lib/kernel/self-heal-ledger").HealingIncident[]; windowDays: number; policy: import("@/lib/kernel/healing-policy").HealingPolicy }
+  | { success: false; error: string }
+> {
+  const caller = await requireCallerTenant()
+  if (!caller.ok) return { success: false, error: caller.error }
+  const admin = await resolveTenantAdmin(caller.supabase, caller.userId, { user_type: caller.userType, brokerage_id: caller.brokerageId })
+  if (!admin.ok) return { success: false, error: `Could not resolve your permissions: ${admin.error}` }
+  if (!admin.isTenantAdmin) return { success: false, error: "Only a broker or a brokerage admin can read the healing incidents." }
+  const svc = createServiceClient()
+  const { loadHealingIncidents } = await import("@/lib/kernel/self-heal-ledger")
+  const { tenantScope } = await import("@/lib/kernel/tenant-scope")
+  const { loadHealingPolicy } = await import("@/lib/kernel/healing-policy")
+  const [inc, policy] = await Promise.all([
+    loadHealingIncidents(svc, tenantScope(caller.brokerageId, "getMyHealingIncidentsAction")),
+    loadHealingPolicy(svc, caller.brokerageId),
+  ])
+  if (!inc.ok) return { success: false, error: inc.error }
+  return { success: true, incidents: inc.incidents, windowDays: inc.windowDays, policy }
+}
+
+/**
  * Release a financial writer the OS health supervisor HALTED. Finance-admin only (the brokerage's
  * books — BROKERAGE_FINANCE_ADMIN_USER_TYPES via resolveBrokerageFinanceAdmin), a reason is REQUIRED,
  * and the release is a versioned tenant-policy change attributed to the session user (LAW 5).

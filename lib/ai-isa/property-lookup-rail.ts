@@ -342,6 +342,10 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
   // cheapest-first holds and table order breaks the tie) and absent from property_valuation, whose
   // owner order (RentCast primary, BatchData backup) is not reordered. Same transport constant the
   // Versium adapter books (VERSIUM_MATCH_CREDIT_USD; a no-match is free).
+  // Wave 139 (lane 139D): WALKED by lib/avm/provider-chain.ts fillPropertyFactGaps — GAP-ONLY, after
+  // the RentCast → BatchData record (BatchData excluded from that walk: its one door already ran).
+  // Versium's documented property facts are year built / dwelling type / purchase date only
+  // (versium-client.ts appendVersiumPropertyFacts); its value RANGES never feed property_valuation.
   property_facts: [
     { provider: "batchdata", unitCostUsd: MCP_TOOL_CALL_COST_USD, keyedBy: "property_address" },
     { provider: "versium", unitCostUsd: VERSIUM_MATCH_CREDIT_USD, keyedBy: "property_address" },

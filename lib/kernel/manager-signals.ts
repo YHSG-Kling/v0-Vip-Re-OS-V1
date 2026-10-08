@@ -20,6 +20,7 @@
 
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
 // Pure predicate only (the engine itself stays a lazy import in the handler below, as before).
 import { isDeliberativeDomain } from "@/lib/managers/deliberation"
@@ -3475,7 +3476,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   // agent_crushed_cap / agent_stalling's broker/admin rail above.
   "campaign_orchestrator:competitor_content_alerted": async (signal, ctx) => {
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", [...TENANT_ADMIN_USER_TYPES]).limit(10)
     const ids = ((mgrs ?? []) as { id: string }[]).map((m) => m.id)
     if (ids.length === 0) return "a competitor content alert fired but no broker/admin seat to notify"
     const rows = ids.map((id) => ({

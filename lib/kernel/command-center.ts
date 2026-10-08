@@ -387,6 +387,20 @@ async function resolveScopedEntities(
   return { contactIds: [], listingIds: [] }
 }
 
+/**
+ * THE ONE BUILDER of the brokerage twin snapshot (brokerage-twin guard M2). Loads the twin's seam modules
+ * first (104F: the economic graph and the mission runtime register their seams at module load), then
+ * builds and PERSISTS. Callers: loadCommandCenter (every Command Center view) and the self-healing
+ * rebuild_cache executor (lib/kernel/self-healing.ts — wave 139A), which rebuilds a stale snapshot.
+ */
+export async function buildAndPersistBrokerageTwin(brokerageId: string, at: Date, opts: { svc: any; teamId?: string | null }) {
+  await Promise.allSettled([import("@/lib/kernel/economic-graph"), import("@/lib/kernel/missions")]).then((rs) => {
+    rs.forEach((r, i) => { if (r.status === "rejected") console.error(`[command-center] twin seam module ${i === 0 ? "economic-graph" : "missions"} did not load:`, r.reason) })
+  })
+  const { buildBrokerageTwin } = await import("@/lib/kernel/brokerage-twin")
+  return buildBrokerageTwin(brokerageId, at, { svc: opts.svc, teamId: opts.teamId ?? null, persist: true })
+}
+
 export async function loadCommandCenter(params: CommandCenterParams = {}): Promise<CommandCenterData> {
   const supabase = createServiceClient()
   const limit = params.limit ?? 50
@@ -853,13 +867,9 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     // Loading them here, lazily, before the build is what makes the twin's economic.contributionMargin
     // and objectives.missions read "present"; a module that fails to load leaves its seam absent and
     // the twin degrades on its own ("unavailable" / "none"), never a fake number.
-    await Promise.allSettled([import("@/lib/kernel/economic-graph"), import("@/lib/kernel/missions")]).then((rs) => {
-      rs.forEach((r, i) => { if (r.status === "rejected") console.error(`[command-center] twin seam module ${i === 0 ? "economic-graph" : "missions"} did not load:`, r.reason) })
-    })
     try {
-      const { buildBrokerageTwin } = await import("@/lib/kernel/brokerage-twin")
-      const built = await buildBrokerageTwin(brokerageId, new Date(), {
-        svc: supabase, teamId: scope?.kind === "team" ? scope.teamId ?? null : null, persist: true,
+      const built = await buildAndPersistBrokerageTwin(brokerageId, new Date(), {
+        svc: supabase, teamId: scope?.kind === "team" ? scope.teamId ?? null : null,
       })
       brokerageTwin = built.twin
       if (built.persist.error) console.error(`[command-center] twin snapshot not persisted: ${built.persist.error}`)

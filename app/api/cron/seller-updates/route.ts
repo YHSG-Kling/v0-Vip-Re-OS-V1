@@ -6,7 +6,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
-import { buildShowingSentimentSummary } from "@/app/actions/seller-showing-sentiment"
+import { buildShowingSentimentSummary } from "@/lib/listings/showing-sentiment"
 import { verifyCronAuth } from "@/lib/cron-auth"
 
 export async function GET(req: NextRequest) {

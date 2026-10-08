@@ -22,6 +22,7 @@
 
 import "server-only"
 import { exaSearch, type ExaSearchResult } from "@/lib/content-intel/exa-scraper"
+import { sourceFromUrl as platformFromUrl } from "@/lib/competitive-intel/brand-listening"
 
 type Svc = { from: (table: string) => any }
 
@@ -91,15 +92,10 @@ function classifyEmotionalTone(text: string): string {
   return "informative"
 }
 
-function platformFromUrl(url: string): string {
-  if (url.includes("facebook.com/ads/library")) return "facebook"
-  if (url.includes("facebook.com")) return "facebook"
-  if (url.includes("instagram.com")) return "instagram"
-  if (url.includes("linkedin.com")) return "linkedin"
-  if (url.includes("tiktok.com")) return "tiktok"
-  if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube"
-  return "web"
-}
+// TOMBSTONE (§6, wave 139H): the private `platformFromUrl` that stood here was merged onto ONE
+// spelling — survivor lib/competitive-intel/brand-listening.ts::sourceFromUrl (imported above as
+// platformFromUrl). Same outputs for every URL this scan can produce (it only searches
+// facebook.com / instagram.com); brand listening needed the same question answered for x / reddit.
 
 /** Ensure the watchlist entry has its competitor_profiles twin (the reader's
  *  inner-join target). No unique index exists → check-then-insert. */

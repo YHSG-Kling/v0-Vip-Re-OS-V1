@@ -45,7 +45,7 @@ export async function searchStockImagesAction(query: string): Promise<
       .eq("platform", "pexels").eq("is_active", true).maybeSingle()
     tenantKey = (cred as any)?.api_key ?? null
   }
-  return searchPexels(query, 12, tenantKey)
+  return searchPexels(query, 12, tenantKey, ctx?.isAuthenticated ? ctx.brokerageId ?? null : null)
 }
 
 // ─── Tenant stock-provider key (Settings → Stock Library) ────────────────────

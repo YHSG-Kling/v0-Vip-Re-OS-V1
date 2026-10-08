@@ -123,16 +123,28 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
         import("@/lib/avm/provider-chain"),
         import("@/lib/property/rentcast"),
       ])
-      const { record, note, backupCostUsd } = await getPropertyRecordWithFallback({
+      // Wave 139 (lane 139D): the deal brief NEEDS year built / property type / last sale date — when
+      // the answering record (RentCast, or the BatchData backup) left one empty, ONLY that gap walks the
+      // property_facts capability route (Versium, gap-only, within what is left of this run's cap).
+      const { record, note, backupCostUsd, gapFill } = await getPropertyRecordWithFallback({
         brokerageId: contact.brokerage_id,
         address,
         systemSource: "deal_investigator",
         contactId: contact.id,
+        gapFields: ["yearBuilt", "propertyType", "lastSaleDate"],
+        gapFillMaxUsd: Math.max(0, cap - result.cost - RENTCAST_USD_PER_REQUEST),
       })
-      result.cost += RENTCAST_USD_PER_REQUEST + backupCostUsd
-      result.sources.property = record ? ((record.rentcastDetail ?? record) as unknown as Record<string, unknown>) : null
+      result.cost += RENTCAST_USD_PER_REQUEST + backupCostUsd + (gapFill?.costUsd ?? 0)
+      const filled = gapFill ? (Object.keys(gapFill.filled) as Array<"yearBuilt" | "propertyType" | "lastSaleDate">) : []
+      result.sources.property = record
+        ? ({
+            ...((record.rentcastDetail ?? record) as unknown as Record<string, unknown>),
+            ...(filled.length ? { ...Object.fromEntries(filled.map((f) => [f, record[f]])), gap_filled_by: gapFill?.filled, gap_fill_provenance: gapFill?.provenance ?? null } : {}),
+          } as Record<string, unknown>)
+        : null
       if (!record) result.warnings.push(`property record: none (${note})`)
       else if (record.provider === "batchdata") result.warnings.push(`property record: ${note}`)
+      if (gapFill && gapFill.asked.length > filled.length) result.warnings.push(`property facts still empty after the gap fill (${gapFill.asked.filter((f) => !gapFill.filled[f]).join(", ")}): ${gapFill.skipped.map((s) => `${s.provider} — ${s.reason}`).join("; ") || "no provider answered"}`)
     } else if (address) {
       result.warnings.push("rentcast: contact has no brokerage_id to meter the property record against")
     }

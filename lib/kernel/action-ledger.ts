@@ -40,6 +40,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { currentCausation } from "@/lib/kernel/causation"
 import { getIsaSystemUserIdCached } from "@/lib/auth/isa-actor"
 import { formatPolicyRef, resolvePolicyRef } from "@/lib/kernel/tenant-policy"
+import { redactSecretValues } from "@/lib/security/export-credential-scan"
 
 
 /** agent_action_ledger.status — m687 CHECK agent_action_ledger_status_check. */
@@ -378,7 +379,8 @@ async function insertLedgerRow(
     correlation_id: ctx.correlationId ?? scope.correlationId,
     // Before m700 the column is absent (PGRST204 / 42703): the row is re-written WITHOUT it and the
     // ref rides detail.policy_ref — the action stays ledgered, the evidence stays.
-    detail: withPolicyColumn || !policyRef ? (ctx.detail ?? {}) : { ...(ctx.detail ?? {}), policy_ref: policyRef },
+    // Audit sink: a secret by name or shape never lands in the ledger detail (wave 139E).
+    detail: redactSecretValues(withPolicyColumn || !policyRef ? (ctx.detail ?? {}) : { ...(ctx.detail ?? {}), policy_ref: policyRef }),
     ...(withPolicyColumn ? { policy_ref: policyRef } : {}),
     ...extra,
     }).select("id").single()

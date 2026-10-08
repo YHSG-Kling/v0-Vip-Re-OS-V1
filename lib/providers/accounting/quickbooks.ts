@@ -10,6 +10,7 @@
 
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { QBO_MINOR_VERSION } from "@/lib/agentic-os/connector-registry"
 
 // KEPT ON REST (wave 71A): no official Intuit Node SDK exists for the QBO
 // business-object surface (customer/invoice/purchase/journal-entry/company
@@ -116,7 +117,7 @@ export class QuickBooksProvider implements IAccountingProvider {
   async getCompanyInfo(): Promise<CompanyInfo> {
     const data = await this.request<{ CompanyInfo: { CompanyName: string; LegalName?: string; Country?: string } }>(
       "GET",
-      `companyinfo/${this.creds.realmId}?minorversion=73`,
+      `companyinfo/${this.creds.realmId}?minorversion=${QBO_MINOR_VERSION}`,
     )
     const c = data.CompanyInfo
     return { companyName: c.CompanyName, legalName: c.LegalName ?? null, country: c.Country ?? null }
@@ -136,7 +137,7 @@ export class QuickBooksProvider implements IAccountingProvider {
         ],
         ...(params.currency ? { CurrencyRef: { value: params.currency } } : {}),
       }
-      const data = await this.request<{ Invoice: { Id: string } }>("POST", "invoice?minorversion=73", payload)
+      const data = await this.request<{ Invoice: { Id: string } }>("POST", `invoice?minorversion=${QBO_MINOR_VERSION}`, payload)
       return { success: true, externalId: data.Invoice.Id }
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
@@ -168,7 +169,7 @@ export class QuickBooksProvider implements IAccountingProvider {
           },
         ],
       }
-      const data = await this.request<{ Purchase: { Id: string } }>("POST", "purchase?minorversion=73", payload)
+      const data = await this.request<{ Purchase: { Id: string } }>("POST", `purchase?minorversion=${QBO_MINOR_VERSION}`, payload)
       return { success: true, externalId: data.Purchase.Id }
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
@@ -185,7 +186,7 @@ export class QuickBooksProvider implements IAccountingProvider {
           JournalEntryLineDetail: { PostingType: l.postingType, AccountRef: { value: l.accountRef } },
         })),
       }
-      const data = await this.request<{ JournalEntry: { Id: string } }>("POST", "journalentry?minorversion=73", payload)
+      const data = await this.request<{ JournalEntry: { Id: string } }>("POST", `journalentry?minorversion=${QBO_MINOR_VERSION}`, payload)
       return { success: true, externalId: data.JournalEntry.Id }
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }

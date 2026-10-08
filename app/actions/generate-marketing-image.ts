@@ -218,6 +218,8 @@ export async function generateMarketingImage(
           bathrooms: (listingResult as any).data.bathrooms,
         }
       : undefined,
+    // Wave 139 (139C): the image's spend lands on ai_tool_usage under the SESSION tenant.
+    spend: { brokerageId: ctx.brokerageId, userId: ctx.userId ?? null, feature: "marketing_image", manager: "asset_manager" },
   })
 
   if (!genResult.success || !genResult.imageUrl) {

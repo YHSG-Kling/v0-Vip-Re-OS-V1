@@ -6,9 +6,9 @@
  * that file's OSINT → BatchData → ai_estimate ladder merged onto
  * lib/ai-isa/property-lookup-rail.ts (the `listing_intake` path) and the file
  * was deleted (CLAUDE.md §1.1 — survivor named in that rail's header). These
- * two helpers were never part of the ladder: they build a URL, make no
- * request, and book no spend (the Static Street View API charges per image
- * fetched by the browser, not here).
+ * two helpers were never part of the ladder: they build a URL and make no
+ * request (the Static APIs charge per image FETCHED). Wave 139 (139C): the
+ * server callers that mint a URL now book it through bookMapsImageSpend below.
  *
  * Callers: lib/workflow/intelligence/listing-presentation-builder.ts (cover
  * photo) and app/actions/lead-intelligence.ts (the vision-property image).
@@ -20,7 +20,9 @@
  * agent-uploaded photo or a generic placeholder.
  */
 
+import { createHash } from "node:crypto"
 import { googleMapsBrowserKey } from "@/lib/env/aliases"
+import { GOOGLE_MAPS_SKU_USD, type GoogleMapsSku } from "@/lib/vendor-governance/cost-normalizer"
 
 export interface StreetViewImage {
   url:       string
@@ -88,4 +90,30 @@ export function getStaticMapImageUrl(opts: {
     source:      "google_street_view",
     attribution: "Google Maps Satellite",
   }
+}
+
+// ─── THE SPEND (wave 139, lane 139C) ─────────────────────────────────────────
+// These helpers mint a keyed URL; Google bills each image FETCH on the platform Google Cloud
+// account (Maps usage was neither priced nor booked). A server caller that mints a URL its own
+// pipeline fetches or persists books it here — ONCE per tenant · SKU · location · day (the key), at
+// the published entry-band list price with price_state 'variable' (the first 10,000 / SKU / month
+// are free and volume bands step down, so the booking is an UPPER-BOUND estimate, reconciled
+// against the invoice). PLATFORM-COVERED (owner, wave 139). Browser-only loads (the team heatmap's
+// Maps JS, the tour tab's client static map) have no server rail — published on the adapter.
+export async function bookMapsImageSpend(input: {
+  brokerageId: string | null
+  sku: GoogleMapsSku
+  url: string
+  systemSource: string
+}, deps: { meter?: (i: import("@/lib/vendor-governance/meter-vendor").MeterVendorInput) => Promise<boolean> } = {}): Promise<boolean> {
+  const meterVendorSpend = deps.meter ?? (await import("@/lib/vendor-governance/meter-vendor")).meterVendorSpend
+  let location = input.url
+  try { const u = new URL(input.url); u.searchParams.delete("key"); location = u.toString() } catch { /* keep the raw string */ }
+  const day = new Date().toISOString().slice(0, 10)
+  return meterVendorSpend({
+    vendorName: "google_maps", usageType: input.sku, cost: GOOGLE_MAPS_SKU_USD[input.sku], unitCount: 1,
+    brokerageId: input.brokerageId, systemSource: input.systemSource,
+    priceState: "variable", costBasis: "estimated", coverage: "platform_covered",
+    idempotencyKey: `gmaps:${input.sku}:${createHash("sha256").update(location).digest("hex").slice(0, 24)}:${day}`,
+  })
 }

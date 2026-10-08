@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1841 of 1905 pairs) — storing them would be
+ * overwhelming majority (1842 of 1906 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1988 edges across 730 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1905 unordered
+ * MEASURED AT GENERATION: 1989 edges across 731 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1906 unordered
  * table pairs carry at least one FK; 64
  * carry more than one and are listed below. 15 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-07
+ * generated: 2026-10-08
  * source: public.live_foreign_keys_json()
- * body-sha256: e9de7bee41d754a2604cf33a83982621dbe1d2c4206a8b50ee54e83e2794bd6d
+ * body-sha256: b2c3bc036b6f83e97a0d3722d7257ed3c037be3ef9c278a729c4ed762371917b
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -214,6 +214,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "blog_post_share_clicks": { "blog_post_id": "blog_posts", "brokerage_id": "brokerages", "viewer_contact_id": "contacts" },
   "blog_post_views": { "blog_post_id": "blog_posts", "brokerage_id": "brokerages", "viewer_contact_id": "contacts" },
   "blog_posts": { "agent_user_id": "users", "brokerage_id": "brokerages", "created_by": "users", "marketing_campaign_id": "marketing_campaigns", "team_id": "teams" },
+  "brand_mentions": { "brokerage_id": "brokerages" },
   "brand_templates": { "brokerage_id": "brokerages" },
   "brand_voice_profile": { "agent_id": "agents", "brokerage_id": "brokerages", "team_id": "teams" },
   "brokerage_brand_settings": { "brokerage_id": "brokerages" },

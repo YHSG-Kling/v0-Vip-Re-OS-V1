@@ -278,3 +278,13 @@ npx tsx scripts/cron-cost-census.ts --write-baseline  # deliberately raise/lower
 `npm run test:cron-cost` runs the ratchet check (no `--list`) as part of the
 guard chain (once registered — see the integrator note in the wave 62 lane
 report).
+
+## 7. Ratchet raises (each named, per CLAUDE.md §1)
+
+- **2026-10-08, wave 139 (lane 139H) — `/api/cron/brand-listening`, `23 9,13,17,21 * * *` (+4 invocations/day,
+  the census reports +3.3/day net after calendar weighting).** Owner ruling (wave 139): bring Brand24-style
+  social/brand listening into the OS as a platform-covered SaaS capability. No existing cron owns listening
+  (the citation monitor is weekly and AI-answer-only; content-intel scans topics, not mentions), so a new route
+  was the smallest correct change. Each tenant listens ONCE per UTC day — the action ledger replays later
+  ticks for free — so the four ticks only spread the fleet across the bounded daily budget; owner
+  campaign_orchestrator (lib/kernel/cron-dispatch.ts). Raised with `--write-baseline` by the integrator.

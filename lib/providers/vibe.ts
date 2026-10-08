@@ -17,6 +17,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveConnectionResult, type ResolvedConnection } from "@/lib/integrations/connection-manager"
+import { callConnector, type GatewayRequest, type GatewayResponse } from "@/lib/agentic-os/connector-gateway"
 
 export const VIBE_PROVIDER = "vibe"
 export const VIBE_HOME_URL = "https://vibe.co"
@@ -30,7 +31,11 @@ const VIBE_REVISION = "2026-06-01"
 
 /** The four credential fields every Vibe call needs. `ResolvedConnection`
  *  satisfies it; so does the connector-registry credential projection. */
-export type VibeCredential = Pick<ResolvedConnection, "apiKey" | "apiSecret" | "accountId" | "config">
+export type VibeCredential = Pick<ResolvedConnection, "apiKey" | "apiSecret" | "accountId" | "config"> & {
+  /** Wave 139 (139B): the brokerage the credential was resolved FOR — every egress below carries it
+   *  onto the gateway's api_response_logs row (tenant-scoped usage + health). */
+  brokerageId?: string | null
+}
 
 export type VibeCredentialResolution =
   | { status: "connected"; conn: VibeCredential }
@@ -57,7 +62,7 @@ export async function resolveVibeCredential(brokerageId: string): Promise<VibeCr
   }
   const conn = resolved.status === "connected" ? resolved.connection : null
   if (!conn || !conn.apiKey || !conn.apiSecret) return { status: "not_connected", reason: "vibe_not_connected" }
-  return { status: "connected", conn }
+  return { status: "connected", conn: { ...conn, brokerageId } }
 }
 
 /**
@@ -123,52 +128,59 @@ function vibeErrorMessage(status: number, body: any): string {
   return `Vibe ${status}`
 }
 
+/** The bearer token + the tenant every call is made for (wave 139, 139B: the tenant rides each
+ *  gateway call onto api_response_logs). */
+type VibeAuth = { token: string; brokerageId: string | null }
+
+/** EVERY Vibe egress — the API, the presigned S3 hand-off and the report download — leaves through
+ *  the ONE connector gateway (wave 139, lane 139B: was four raw fetches). The gateway adds the
+ *  timeout, the GET transient retry, the api_response_logs outcome row (health state for
+ *  routeAround / the os-health detector) and the applied declared alternate; this client keeps its
+ *  own contract (VibeError with Vibe's own envelope, dispatched only on a confirmed publish). */
+function vibeEgress<T = any>(req: Omit<GatewayRequest, "connector">, brokerageId: string | null): Promise<GatewayResponse<T>> {
+  return callConnector<T>({ ...req, connector: "vibe", brokerageId }) // == VIBE_PROVIDER, literal for the provider census
+}
+
 /** Client-credentials token exchange (HTTP Basic client_id:client_secret).
  *  Scope is omitted → the token is issued with all scopes the client has. */
-async function getAccessToken(conn: VibeCredential): Promise<string> {
+async function getAccessToken(conn: VibeCredential): Promise<VibeAuth> {
   const clientId = conn.apiKey
   const clientSecret = conn.apiSecret
   if (!clientId || !clientSecret) throw new VibeError(401, "Vibe client_id/client_secret not configured")
   const basic = Buffer.from(`${clientId}:${clientSecret}`).toString("base64")
-  const res = await fetch(`${VIBE_API_BASE}/oauth2/token`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${basic}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({ grant_type: "client_credentials" }).toString(),
-  })
-  const body = await res.json().catch(() => ({}))
-  if (!res.ok) throw new VibeError(res.status, `Vibe token exchange failed: ${body?.error_description ?? body?.error ?? res.status}`)
-  const token = body?.access_token as string | undefined
+  const brokerageId = conn.brokerageId ?? null
+  const res = await vibeEgress<{ access_token?: string }>({
+    baseUrl: VIBE_API_BASE, path: "/oauth2/token", method: "POST",
+    auth: { style: "header", name: "Authorization", value: `Basic ${basic}` },
+    bodyType: "form", body: { grant_type: "client_credentials" },
+  }, brokerageId)
+  const errBody = (res.errorBody ?? {}) as { error_description?: string; error?: string }
+  if (!res.ok) throw new VibeError(res.status ?? 0, `Vibe token exchange failed: ${errBody.error_description ?? errBody.error ?? res.error ?? res.status}`)
+  const token = res.data?.access_token
   if (!token) throw new VibeError(500, "Vibe token response missing access_token")
-  return token
+  return { token, brokerageId }
 }
 
 /** Authenticated JSON call against api.vibe.co with the required headers. */
 async function vibeFetch<T = any>(
-  token: string,
+  auth: VibeAuth,
   method: string,
   path: string,
   jsonBody?: unknown,
 ): Promise<T> {
-  const res = await fetch(`${VIBE_API_BASE}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "X-Vibe-Revision": VIBE_REVISION,
-      ...(jsonBody !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    body: jsonBody !== undefined ? JSON.stringify(jsonBody) : undefined,
-  })
-  const body = res.status === 204 ? {} : await res.json().catch(() => ({}))
-  if (!res.ok) throw new VibeError(res.status, vibeErrorMessage(res.status, body))
-  return body as T
+  const res = await vibeEgress<T>({
+    baseUrl: VIBE_API_BASE, path, method: method as GatewayRequest["method"],
+    auth: { style: "bearer", token: auth.token },
+    headers: { "X-Vibe-Revision": VIBE_REVISION },
+    ...(jsonBody !== undefined ? { body: jsonBody } : {}),
+  }, auth.brokerageId)
+  if (!res.ok) throw new VibeError(res.status ?? 0, res.errorBody !== undefined ? vibeErrorMessage(res.status ?? 0, res.errorBody) : `Vibe ${res.status ?? "unreachable"}: ${res.error ?? ""}`.trim())
+  return (res.data ?? {}) as T
 }
 
 /** Resolve the advertiser to launch under: explicit config, then the account's
  *  first advertiser. */
-async function resolveAdvertiserId(token: string, conn: VibeCredential): Promise<string> {
+async function resolveAdvertiserId(token: VibeAuth, conn: VibeCredential): Promise<string> {
   const configured = (conn.config?.advertiser_id as string | undefined) ?? conn.accountId ?? undefined
   if (configured) return configured
   const list = await vibeFetch<{ data?: Array<{ id: string }> } | Array<{ id: string }>>(token, "GET", "/advertisers")
@@ -180,7 +192,7 @@ async function resolveAdvertiserId(token: string, conn: VibeCredential): Promise
 /** Upload a hosted video to Vibe (presigned S3 POST) and register the creative.
  *  Returns the creative id. */
 async function uploadVideoCreative(
-  token: string,
+  token: VibeAuth,
   advertiserId: string,
   videoUrl: string,
   creativeName: string,
@@ -191,16 +203,17 @@ async function uploadVideoCreative(
     "GET",
     `/creatives/upload-url?advertiser_id=${encodeURIComponent(advertiserId)}`,
   )
-  // 2 — pull the rendered video bytes
-  const videoRes = await fetch(videoUrl)
-  if (!videoRes.ok) throw new VibeError(videoRes.status, `Could not fetch the rendered video (${videoRes.status})`)
-  const bytes = new Uint8Array(await videoRes.arrayBuffer())
-  // 3 — multipart POST to S3 with every presigned field + the file last
+  // 2 — pull the rendered video bytes (our own hosted render — a signed asset URL, gateway `url` mode)
+  const videoRes = await vibeEgress<Buffer>({ url: videoUrl, method: "GET", responseType: "arraybuffer", timeoutMs: 60_000 }, token.brokerageId)
+  if (!videoRes.ok || !videoRes.data) throw new VibeError(videoRes.status ?? 0, `Could not fetch the rendered video (${videoRes.status ?? videoRes.error})`)
+  const bytes = new Uint8Array(videoRes.data)
+  // 3 — multipart POST to S3 with every presigned field + the file last (the presigned URL Vibe
+  //     handed back — gateway `url` + multipart mode; the signed query never reaches the log row)
   const form = new FormData()
   for (const [k, v] of Object.entries(presigned.fields ?? {})) form.append(k, v)
   form.append("file", new Blob([bytes], { type: "video/mp4" }), "creative.mp4")
-  const s3 = await fetch(presigned.upload_url, { method: "POST", body: form })
-  if (!s3.ok) throw new VibeError(s3.status, `Video upload to Vibe storage failed (${s3.status})`)
+  const s3 = await vibeEgress({ url: presigned.upload_url, method: "POST", bodyType: "multipart", body: form, responseType: "text", timeoutMs: 120_000 }, token.brokerageId)
+  if (!s3.ok) throw new VibeError(s3.status ?? 0, `Video upload to Vibe storage failed (${s3.status ?? s3.error})`)
   // 4 — register the creative against the uploaded asset
   const creative = await vibeFetch<{ id: string }>(token, "POST", "/creatives/video", {
     advertiser_id: advertiserId,
@@ -409,10 +422,11 @@ export async function readVibeCampaignReport(
   if (status !== "READY" || !report.download_url) {
     return { kind: "failed", reason: `Vibe report ${reportId} is ${status || "unknown"} with no download_url` }
   }
-  const res = await fetch(report.download_url)
-  if (!res.ok) return { kind: "failed", reason: `Vibe report download failed (${res.status})` }
+  // The report file is a signed download URL Vibe hands back — gateway `url` mode (wave 139, 139B).
+  const res = await vibeEgress<unknown>({ url: report.download_url, method: "GET", timeoutMs: 60_000 }, token.brokerageId)
+  if (!res.ok) return { kind: "failed", reason: `Vibe report download failed (${res.status ?? res.error})` }
   // (not `.catch(() => null)` — that spelling is the two-facts null test:credential-cascade-refusal bans from this module)
-  const body = await res.json().catch(() => ({})) as unknown
+  const body = (res.data ?? {}) as unknown
   const rows: Array<Record<string, unknown>> = Array.isArray(body)
     ? body as Array<Record<string, unknown>>
     : Array.isArray((body as { data?: unknown })?.data) ? (body as { data: Array<Record<string, unknown>> }).data

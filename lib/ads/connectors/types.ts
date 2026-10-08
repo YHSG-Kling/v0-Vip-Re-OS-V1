@@ -12,6 +12,10 @@ export interface ConnectorCredential {
   accessToken: string
   accountId:   string | null            // Meta ad-account id / Google customer id
   config:      Record<string, unknown>  // platform-specific extras (e.g. login_customer_id, developer_token)
+  /** Wave 139 (139B): the brokerage the credential was loaded FOR (loadConnectorCredential sets it
+   *  from its tenant argument) — every connector egress carries it onto the gateway's
+   *  api_response_logs row. Never taken from a request body. */
+  brokerageId?: string | null
 }
 
 export interface AudiencePushArgs {

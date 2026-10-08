@@ -709,8 +709,15 @@ export function validateProviderAdapterExtension(d: unknown): SkillValidation {
   for (const e of validateProviderAdapter(a)) errors.push(`adapter:${e}`)
   if (!routedProviders().includes(a.provider)) errors.push(`unrouted_provider:${a.provider}`)
   else {
-    const routed = new Set(adapterFor(a.provider)?.capabilities ?? [])
+    const registered = adapterFor(a.provider)
+    const routed = new Set(registered?.capabilities ?? [])
     for (const c of a.capabilities) if (!routed.has(c)) errors.push(`capability_not_routed_to_provider:${c}`)
+    // CREDENTIAL BOUNDARY (wave 139E): an extension may NARROW the provider's declared credential, never
+    // reach a secret the kernel did not declare for it (SUPABASE_SERVICE_ROLE_KEY, SECRETS_ENCRYPTION_KEY,
+    // another provider's key). Before this, any extra env var name passed validation.
+    const declaredEnv = new Set(registered?.credential.envVars ?? [])
+    for (const v of a.credential.envVars) if (!declaredEnv.has(v)) errors.push(`undeclared_credential:${v}`)
+    if (registered && a.credential.survivor !== registered.credential.survivor) errors.push(`credential_survivor_changed:${a.credential.survivor}`)
   }
   return { ok: errors.length === 0, errors }
 }

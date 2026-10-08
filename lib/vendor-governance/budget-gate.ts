@@ -123,7 +123,7 @@ export async function checkVendorBudget(params: {
 
     const { data: rows, error } = await supabase
       .from("vendor_usage_tracking")
-      .select("total_cost")
+      .select("total_cost, request_metadata")
       .eq("brokerage_id", params.brokerageId)
       .gte("created_at", startOfMonthIso())
 
@@ -138,7 +138,10 @@ export async function checkVendorBudget(params: {
       }
     }
 
-    const spent = (rows ?? []).reduce((s, r: any) => s + (Number(r.total_cost) || 0), 0)
+    // Owner (wave 139): platform-covered operational spend (scraping, behaviour monitoring, brand listening,
+    // research) is part of the SaaS — attributed to the tenant on the ledger but never the tenant's cost, so
+    // it never consumes the tenant's ceiling (a platform scrape must not pause the tenant's own sends).
+    const spent = (rows ?? []).reduce((s, r: any) => s + (r?.request_metadata?.platform_paid === true ? 0 : (Number(r.total_cost) || 0)), 0)
     return { ...evaluateVendorBudget(spent, budget, params.addCost ?? 0), planTier, degradedTier: tierAssumed }
   } catch {
     // Same fail-open contract for a thrown failure (client construction, network).

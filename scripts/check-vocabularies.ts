@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 455 tables, 820 columns.
+ * MEASURED AT GENERATION: 456 tables, 822 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-07
+ * generated: 2026-10-08
  * source: public.live_check_constraints_json()
- * body-sha256: bb1f0b7f6d5cb5dc7c4c85a6d114197335be3d44479f31305f173fba2524319f
+ * body-sha256: 7790a596f29a034349000ab3af44cdbfaf7302c402294ec05b2a3eca8501e7f2
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -304,6 +304,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     publish_status: ["approved", "archived", "draft", "pending_review", "published", "rejected", "scheduled"],
     publish_target: ["both", "embed", "hosted", "wordpress"],
     visibility_scope: ["agent", "brokerage", "multi_location", "platform", "team"],
+  },
+  brand_mentions: {
+    sentiment: ["mixed", "negative", "neutral", "positive"],
+    subject_kind: ["agent", "brokerage", "competitor", "keyword", "listing", "team"],
   },
   brand_templates: {
     template_type: ["business_card", "custom", "email_signature", "letterhead"],

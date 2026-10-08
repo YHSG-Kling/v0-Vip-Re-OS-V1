@@ -433,7 +433,7 @@ export async function buildListingPresentation(
     //     Falls back to satellite. Null when GOOGLE_MAPS_API_KEY is unset.
     let coverPhotoUrl: string | null = null
     try {
-      const { getStreetViewImageUrl, getStaticMapImageUrl } =
+      const { getStreetViewImageUrl, getStaticMapImageUrl, bookMapsImageSpend } =
         await import("@/lib/property/street-view")
       const street = getStreetViewImageUrl({
         address: input.propertyAddress,
@@ -444,6 +444,8 @@ export async function buildListingPresentation(
         ?? (lat != null && lon != null
             ? getStaticMapImageUrl({ lat, lon })?.url ?? null
             : null)
+      // The persisted cover is FETCHED wherever the deck renders — Google bills it (wave 139, 139C).
+      if (coverPhotoUrl) await bookMapsImageSpend({ brokerageId: input.brokerageId, sku: street?.url ? "street_view_static" : "static_map", url: coverPhotoUrl, systemSource: "listing_presentation" })
     } catch { /* cover photo is best-effort */ }
 
     // Effective property fields — input wins, enrichment fills gaps

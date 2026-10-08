@@ -308,7 +308,7 @@ async function editImageWithAI(params: {
   prompt: string
   /** gpt-image-1 edit sizes; picked from the source aspect when omitted. */
   size?: "1024x1024" | "1536x1024" | "1024x1536"
-}): Promise<{ imageBytes: Buffer | null; error: string | null }> {
+}): Promise<{ imageBytes: Buffer | null; error: string | null; served?: { label: string; usage: unknown; size: string } }> {
   let size = params.size
   let pngBytes: Buffer
   try {
@@ -348,13 +348,13 @@ async function editImageWithAI(params: {
   if (gatewayKey) {
     const res = await attempt("https://ai-gateway.vercel.sh", "openai/gpt-image-1", gatewayKey)
     const b64 = res.ok ? (res.data?.data?.[0]?.b64_json as string | undefined) : undefined
-    if (b64) return { imageBytes: Buffer.from(b64, "base64"), error: null }
+    if (b64) return { imageBytes: Buffer.from(b64, "base64"), error: null, served: { label: "openai/gpt-image-1 edit (AI Gateway)", usage: res.data?.usage ?? null, size: size as string } }
   }
   const openaiKey = process.env.OPENAI_API_KEY
   if (openaiKey) {
     const res = await attempt("https://api.openai.com", "gpt-image-1", openaiKey)
     const b64 = res.ok ? (res.data?.data?.[0]?.b64_json as string | undefined) : undefined
-    if (b64) return { imageBytes: Buffer.from(b64, "base64"), error: null }
+    if (b64) return { imageBytes: Buffer.from(b64, "base64"), error: null, served: { label: "gpt-image-1 edit (direct OpenAI key)", usage: res.data?.usage ?? null, size: size as string } }
     if (!res.ok) return { imageBytes: null, error: res.error ?? `edit call failed (${res.status})` }
   }
   return { imageBytes: null, error: "no image-edit provider available (AI_GATEWAY_API_KEY / OPENAI_API_KEY)" }
@@ -456,6 +456,20 @@ async function runPhotoEdit(
 
   const edited = await editImageWithAI({ imageBytes: original, prompt: params.prompt })
   if (!edited.imageBytes) return fail(edited.error ?? "image edit produced no output")
+
+  // THE SPEND (wave 139, 139C) — the edit was unbooked. Booked the moment the provider returned
+  // bytes (it has charged), once per photo-edit job (the job id is the charge's identity).
+  {
+    const { imageUsageFrom, priceImageGeneration } = await import("@/lib/vendor-governance/cost-normalizer")
+    const { logAIImageUsage } = await import("@/lib/ai/cost-tracking")
+    const price = priceImageGeneration({ model: "gpt-image-1", quality: "standard", size: edited.served?.size ?? "1024x1024", usage: imageUsageFrom(edited.served?.usage) })
+    const booking = await logAIImageUsage({
+      brokerageId: params.brokerageId, userId: params.agentUserId ?? null, feature: `photo_${params.kind}`, manager: "asset_manager",
+      model: edited.served?.label ?? "gpt-image-1 edit", costUsd: price.costUsd, priceState: price.priceState, costBasis: price.costBasis,
+      idempotencyKey: `photo_edit:${jobId}`, contextExtra: { listing_id: params.listingId ?? null, photo_id: params.photoId ?? null, price_source: price.priceSource },
+    })
+    if (booking.error) console.error("[photo-intelligence] edit spend NOT booked:", booking.error)
+  }
 
   const jpeg = await sharp(edited.imageBytes).jpeg({ quality: 92, mozjpeg: true }).toBuffer()
   const stagedUrl = await hostRenderedMedia(

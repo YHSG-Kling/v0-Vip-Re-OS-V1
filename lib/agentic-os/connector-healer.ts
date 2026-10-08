@@ -26,6 +26,7 @@ import { applyDeclaredAlternate } from "./connector-auto-applier"
 import { withActionLedger } from "@/lib/kernel/action-ledger"
 import { adapterFor, decideProviderHeal, bookAdapterUsage, type HealDecision, type HealSignals, type ProbeVerdict, type ProviderAdapter } from "@/lib/kernel/provider-adapters"
 import { runBoundedModel, type BoundedModelDeps } from "@/lib/kernel/self-healing"
+import { HEALING_POLICY_DEFAULTS, HEALING_POLICY_KEY } from "@/lib/kernel/healing-policy"
 import { z } from "zod"
 import type { MeterVendorInput } from "@/lib/vendor-governance/meter-vendor"
 
@@ -271,8 +272,11 @@ type HealLedgerClient = { from: (table: string) => any }
 // re-validates against the declaration). Everything else is a proposal for platform staff.
 
 const RESEARCH_RESULTS_PER_QUERY = 4
-/** Default per-heal research ceiling (USD) — searches + the extraction call. */
-export const PROVIDER_RESEARCH_CAP_USD = 0.06
+/** DEFAULT per-heal research ceiling (USD) — searches + the extraction call. The effective cap is the tenant's
+ *  self-healing policy under the platform ceiling (lib/kernel/healing-policy.ts loadHealingPolicy, wave 139F) —
+ *  every caller (app/api/cron/connector-health, lib/kernel/os-health.ts failover) passes THAT, never this.
+ *  @proofSeam scripts/healing-policy-guard.ts asserts the legacy constant is exactly the policy default. */
+export const PROVIDER_RESEARCH_CAP_USD = HEALING_POLICY_DEFAULTS.provider_research_cap_usd
 
 const FindingSchema = z.object({
   change: z.enum(["version_change", "endpoint_change", "auth_change", "shape_change", "outage", "none"]),
@@ -365,7 +369,12 @@ interface ProviderHealInput {
   /** The ONE retry after an applied alternate. Absent → no retry is made (and nothing is booked). */
   retry?: () => Promise<{ ok: boolean; units?: number }>
   /** Wave 138B — research budget for a provider that is UP but failing / drifting. Absent → no research. */
-  research?: { capUsd: number }
+  research?: {
+    capUsd: number
+    /** Wave 139F — the policy's auto-fix-vs-approval threshold: a researched config alternate whose finding is
+     *  LESS confident than this is proposed (a human approves), never auto-applied. Absent → 0 (138B behaviour). */
+    autoApplyMinConfidence?: number
+  }
 }
 
 interface ProviderHealDeps {
@@ -414,6 +423,8 @@ export async function healProviderFailure(input: ProviderHealInput, deps: Provid
         idempotencyKey: `provider_heal:${input.brokerageId}:${input.connector}:${step}:${input.cycle}`,
         riskClass: "LOW_RISK_WRITE",
         systemSource: "provider_self_heal",
+        // LAW 5 (139F): a heal that carries a research budget ran under the self-healing policy — stamp which.
+        ...(input.research ? { policyKey: HEALING_POLICY_KEY } : {}),
         detail,
       },
       run,
@@ -486,7 +497,7 @@ export async function healProviderFailure(input: ProviderHealInput, deps: Provid
       report.research = { finding: rs.finding, citations: rs.citations, costUsd: rs.costUsd }
       const researched = { finding: rs.finding, citations: rs.citations }
       const alt = matchDeclaredConfigAlternate(adapter, rs.finding, s.appliedAlternateId)
-      if (alt) return applyAndRetry(alt, `researched ${rs.finding.change} (${rs.finding.newVersion ?? rs.finding.newBaseUrl}) matches declared config alternate ${alt.id}`, { researched })
+      if (alt && rs.finding.confidence >= (input.research.autoApplyMinConfidence ?? 0)) return applyAndRetry(alt, `researched ${rs.finding.change} (${rs.finding.newVersion ?? rs.finding.newBaseUrl}) matches declared config alternate ${alt.id}`, { researched })
       if (rs.finding.change !== "outage") {
         const proposalKind = rs.finding.change === "auth_change" ? "auth_change" : rs.finding.change === "shape_change" ? "shape_update" : "endpoint_change"
         const r = await ledger("propose", { reason: `researched code-level ${rs.finding.change} — a proposal carrying ${rs.citations.length} citation(s)`, ...evidence, researched },

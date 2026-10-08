@@ -111,18 +111,16 @@ export async function harvestCompetitorTopicsAction(): Promise<{ ok: true; added
   const svc = createServiceClient()
   let added = 0
   try {
-    const res = await fetch("https://api.tavily.com/search", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        api_key: key,
-        query: "real estate AI software news MoxiWorks Rave OR Lofty OR RealScout OR \"AI real estate platform\"",
-        max_results: 6, days: 14, topic: "news",
-      }),
+    // Wave 139 (139B) — this was a SECOND, raw Tavily client (api_key in the body, no gateway, no
+    // outcome row). Merged onto the survivor lib/external/tavily-client.ts tavilySearch (which gained
+    // `topic`), so the call leaves through the ONE connector gateway like every other Tavily search.
+    const { tavilySearch } = await import("@/lib/external/tavily-client")
+    const body = await tavilySearch({
+      query: "real estate AI software news MoxiWorks Rave OR Lofty OR RealScout OR \"AI real estate platform\"",
+      maxResults: 6, days: 14, topic: "news", includeAnswer: false,
     })
-    if (!res.ok) return { ok: false, error: `Search failed (${res.status})` }
-    const body = await res.json()
-    for (const r of (body?.results ?? []).slice(0, 6)) {
+    if (!body.results.length) return { ok: false, error: "Search returned no results (or the search provider refused — see api_response_logs service_key tavily)" }
+    for (const r of body.results.slice(0, 6)) {
       const title = String(r?.title ?? "").trim()
       if (title.length < 8) continue
       const { count } = await svc.from("platform_content_topics").select("id", { count: "exact", head: true }).eq("topic", title.slice(0, 240))

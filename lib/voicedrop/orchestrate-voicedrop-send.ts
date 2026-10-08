@@ -297,8 +297,25 @@ export async function orchestrateVoicedropSend(
     },
   })
 
+  // THE SPEND (wave 139, 139C) — a delivered drop on the PLATFORM key was neither priced nor booked.
+  // Slybroadcast's API price is UNKNOWN (no primary source — cost-normalizer VENDOR_PRICING.voicedrop),
+  // so the drop books its ONE unit with price_state 'unknown' — counted, never a guessed dollar. The
+  // provider's job id is the charge's identity (a re-booked job is skipped). Never fails the send.
+  const delivered = res.ok && !!res.data?.success
+  if (delivered) {
+    const { meterVendorSpend } = await import("@/lib/vendor-governance/meter-vendor")
+    const booked = await meterVendorSpend({
+      vendorName: "voicedrop", usageType: "voicemail_drop", cost: 0, priceState: "unknown", unitCount: 1,
+      brokerageId: args.brokerageId, systemSource: args.systemSource ?? "voicedrop", coverage: "platform_covered",
+      idempotencyKey: res.data?.job_id ? `voicedrop:${providerKey}:${res.data.job_id}` : null,
+      attribution: { leadId: args.leadId ?? null, contactId: args.contactId ?? null },
+      metadata: { provider: providerKey, preset_id: preset.id },
+    })
+    if (!booked) console.error("[voicedrop] delivered drop NOT booked on vendor_usage_tracking")
+  }
+
   return {
-    success:     res.ok && !!res.data?.success,
+    success:     delivered,
     providerKey,
     jobId:       res.data?.job_id ?? undefined,
     audioUrl,

@@ -5,6 +5,7 @@ import { OsSentinelBoard } from "./os-sentinel-board"
 import { SentinelActionQueue } from "./sentinel-action-queue"
 import { SaasOperationsBoard } from "./saas-operations-board"
 import { FinancialHaltsBoard } from "./financial-halts-board"
+import { HealingConsole } from "./healing-console"
 
 export const dynamic = "force-dynamic"
 
@@ -95,6 +96,8 @@ export default async function OsSentinelPage() {
       <SaasOperationsBoard />
       {/* Wave 137: halted financial writers across tenants — platform release with evidence */}
       <FinancialHaltsBoard />
+      {/* Wave 139F: the healing console — per-incident self-healing evidence + the platform policy ceiling */}
+      <HealingConsole />
       {/* Platform-rail bus signals — feed-only manager_signals staff must see */}
       <section className="rounded-lg border p-4 space-y-3">
         <div>

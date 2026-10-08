@@ -27,6 +27,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveConnectionResult, type ResolvedConnection } from "@/lib/integrations/connection-manager"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export const OPENAI_ADS_PROVIDER = "openai_ads"
 const OPENAI_ADS_API_BASE = "https://api.ads.openai.com/v1"
@@ -36,7 +37,11 @@ const OPENAI_ADS_API_BASE = "https://api.ads.openai.com/v1"
 const OPENAI_ADS_FLIGHT_DAYS = 30
 const MICROS = 1_000_000
 
-export type OpenaiAdsCredential = Pick<ResolvedConnection, "apiKey" | "accountId" | "config">
+export type OpenaiAdsCredential = Pick<ResolvedConnection, "apiKey" | "accountId" | "config"> & {
+  /** Wave 139 (139B): the brokerage the key was resolved FOR — rides every gateway call onto its
+   *  api_response_logs row (tenant-scoped usage + health). */
+  brokerageId?: string | null
+}
 
 export type OpenaiAdsCredentialResolution =
   | { status: "connected"; conn: OpenaiAdsCredential }
@@ -58,7 +63,7 @@ export async function resolveOpenaiAdsCredential(brokerageId: string): Promise<O
   }
   const conn = resolved.status === "connected" ? resolved.connection : null
   if (!conn || !conn.apiKey) return { status: "not_connected", reason: "openai_ads_not_connected" }
-  return { status: "connected", conn }
+  return { status: "connected", conn: { ...conn, brokerageId } }
 }
 
 /** Boolean posture for the lane UI (offer the in-app Launch button or not);
@@ -81,21 +86,25 @@ function errorMessage(status: number, body: any): string {
   return `OpenAI Ads ${status}`
 }
 
+/** The ONE OpenAI Ads egress — through the connector gateway (wave 139, lane 139B: was a raw
+ *  fetch). The gateway adds the timeout, the GET transient retry (POSTs stay single-shot — a
+ *  replayed campaign create would duplicate spend; the Idempotency-Key still rides each create),
+ *  the tenant-scoped api_response_logs outcome row (health state) and the applied declared
+ *  alternate. The vendor's error envelope comes back as errorBody, so errorMessage is unchanged. */
 async function adsFetch<T = any>(conn: OpenaiAdsCredential, method: string, path: string, jsonBody?: unknown, idempotencyKey?: string): Promise<T> {
   if (!conn.apiKey) throw new OpenaiAdsError(401, "OpenAI Ads API key not configured")
-  const res = await fetch(`${OPENAI_ADS_API_BASE}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${conn.apiKey}`,
-      Accept: "application/json",
-      ...(jsonBody !== undefined ? { "Content-Type": "application/json" } : {}),
-      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
-    },
-    body: jsonBody !== undefined ? JSON.stringify(jsonBody) : undefined,
+  const res = await callConnector<T>({
+    connector: "openai_ads", // == OPENAI_ADS_PROVIDER, spelled literally so the provider census sees the site
+    brokerageId: conn.brokerageId ?? null,
+    baseUrl: OPENAI_ADS_API_BASE,
+    path,
+    method: method as "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    auth: { style: "bearer", token: conn.apiKey },
+    ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
+    ...(jsonBody !== undefined ? { body: jsonBody } : {}),
   })
-  const body = res.status === 204 ? {} : await res.json().catch(() => ({}))
-  if (!res.ok) throw new OpenaiAdsError(res.status, errorMessage(res.status, body))
-  return body as T
+  if (!res.ok) throw new OpenaiAdsError(res.status ?? 0, res.errorBody !== undefined ? errorMessage(res.status ?? 0, res.errorBody) : `OpenAI Ads ${res.status ?? "unreachable"}: ${res.error ?? ""}`.trim())
+  return (res.data ?? {}) as T
 }
 
 interface OpenaiAdAccount { id: string; name: string | null; status: string | null; currency_code: string | null; review?: { status?: string | null } | null }

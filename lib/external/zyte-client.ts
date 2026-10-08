@@ -22,6 +22,8 @@
  * plain HTML string. Real REST API; no stubs — never throws (callConnector never throws),
  * returns a failure shape instead so callers can fall through cleanly.
  */
+import { ZYTE_REQUEST_COST_USD } from "@/lib/vendor-governance/cost-normalizer"
+
 const ZYTE_BASE = "https://api.zyte.com/v1"
 
 export interface ZyteResponse {
@@ -110,5 +112,6 @@ export function decodeBase64Body(b64: string | undefined | null): string {
  * its flat $0.01/call estimate.
  */
 export function estimateZyteCost(mode: "browserHtml" | "httpResponseBody"): number {
-  return mode === "browserHtml" ? 0.004 : 0.00044 // Tier 3 PAYG: $4.02/1k rendered, $0.44/1k HTTP
+  // Wave 139 (139C): the literal moved to the ONE price table (VARIABLE — per-domain tier); same numbers.
+  return ZYTE_REQUEST_COST_USD[mode]
 }

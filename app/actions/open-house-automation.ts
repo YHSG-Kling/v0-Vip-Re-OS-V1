@@ -1205,19 +1205,24 @@ export async function fetchWeatherForEvent(eventId: string) {
     // the property's coordinates. Honest failure when the date is outside the
     // provider's ~16-day forecast window or the fetch fails — never mock data.
     const eventDate = String(event.event_date ?? new Date().toISOString()).slice(0, 10)
-    const url =
-      `https://api.open-meteo.com/v1/forecast` +
-      `?latitude=${encodeURIComponent(event.property.latitude)}` +
-      `&longitude=${encodeURIComponent(event.property.longitude)}` +
-      `&daily=weather_code,temperature_2m_max,precipitation_probability_max,wind_speed_10m_max` +
-      `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto` +
-      `&start_date=${eventDate}&end_date=${eventDate}`
-
-    const res = await fetch(url, { cache: "no-store" })
+    // Through the ONE egress (wave 139, lane 139B: was a raw fetch — a provider no census saw because
+    // it needs no key). Keyless + free; the gateway's outcome row is the usage + health record, and
+    // the tenant is the RLS-read event row's brokerage (never the caller's input).
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    const res = await callConnector<any>({
+      connector: "open_meteo", brokerageId: (event as { brokerage_id?: string | null }).brokerage_id ?? null,
+      baseUrl: "https://api.open-meteo.com/v1", path: "forecast",
+      query: {
+        latitude: String(event.property.latitude), longitude: String(event.property.longitude),
+        daily: "weather_code,temperature_2m_max,precipitation_probability_max,wind_speed_10m_max",
+        temperature_unit: "fahrenheit", wind_speed_unit: "mph", timezone: "auto",
+        start_date: eventDate, end_date: eventDate,
+      },
+    })
     if (!res.ok) {
-      return { error: `Weather provider error (${res.status}) — forecast unavailable for ${eventDate}` }
+      return { error: `Weather provider error (${res.status ?? res.error}) — forecast unavailable for ${eventDate}` }
     }
-    const forecast = await res.json()
+    const forecast = res.data
     const daily = forecast?.daily
     const temperature = Number(daily?.temperature_2m_max?.[0])
     if (!daily || !Number.isFinite(temperature)) {

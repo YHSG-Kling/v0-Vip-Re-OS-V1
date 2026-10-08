@@ -19,7 +19,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { credentialRotationStatus } from "@/lib/security/credential-rotation"
-import { encryptSecret, decryptSecret } from "@/lib/security/secret-crypto"
+import { encryptSecret, decryptSecret, isEncryptionConfigured, isSecretStorageRefused } from "@/lib/security/secret-crypto"
 import { googleOAuthClient, microsoftOAuthClient } from "@/lib/env/aliases"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -50,7 +50,7 @@ export function resolveProviderOAuth(provider: string | null): ProviderOAuth | n
   }
 }
 
-export interface RefreshOutcome { id: string; provider: string | null; result: "refreshed" | "skipped_unconfigured" | "skipped_unsupported" | "failed" }
+export interface RefreshOutcome { id: string; provider: string | null; result: "refreshed" | "skipped_unconfigured" | "skipped_unsupported" | "refused_secret_storage" | "failed" }
 
 /** Refresh one credential row (from platform_credentials / agent_api_credentials). Provider-gated. */
 // Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
@@ -61,6 +61,10 @@ async function refreshCredential(
   const oauth = resolveProviderOAuth(row.provider)
   if (!oauth) return { id: row.id, provider: row.provider, result: "skipped_unsupported" }
   if (!oauth.clientId || !oauth.clientSecret) return { id: row.id, provider: row.provider, result: "skipped_unconfigured" }
+  // FAIL CLOSED BEFORE THE EXCHANGE (wave 139E). encryptSecret refuses with no key; asking only at
+  // the write would already have spent the refresh token — a provider that rotates refresh tokens
+  // (Microsoft) invalidates the old one, and the new pair could not be stored. Refuse first.
+  if (!isEncryptionConfigured()) return { id: row.id, provider: row.provider, result: "refused_secret_storage" }
   const refreshToken = decryptSecret(row.refresh_token) // decrypt in case the refresh_token is already encrypted
   if (!refreshToken) return { id: row.id, provider: row.provider, result: "failed" }
 
@@ -72,16 +76,19 @@ async function refreshCredential(
     if (!json.access_token) return { id: row.id, provider: row.provider, result: "failed" }
 
     const expiresAt = new Date(Date.now() + (json.expires_in ?? 3600) * 1000).toISOString()
-    await svc.from(row.table).update({
+    const { data: written, error: writeErr } = await svc.from(row.table).update({
       // ENCRYPT-ON-WRITE — safe because the readers use decryptSecret (backward-compatible).
       access_token: encryptSecret(json.access_token),
       ...(json.refresh_token ? { refresh_token: encryptSecret(json.refresh_token) } : {}),
       token_expires_at: expiresAt,
       updated_at: new Date().toISOString(),
-    }).eq("id", row.id)
+    }).eq("id", row.id).select("id")
+    // supabase-js RESOLVES a refusal — an unread error reported "refreshed" for a token never stored; an
+    // update that matched NO row also resolves (CLAUDE.md §3), so count what was written too.
+    if (writeErr || !Array.isArray(written) || written.length !== 1) return { id: row.id, provider: row.provider, result: "failed" }
     return { id: row.id, provider: row.provider, result: "refreshed" }
-  } catch {
-    return { id: row.id, provider: row.provider, result: "failed" }
+  } catch (e) {
+    return { id: row.id, provider: row.provider, result: isSecretStorageRefused(e) ? "refused_secret_storage" : "failed" }
   }
 }
 
@@ -119,11 +126,18 @@ export async function runCredentialRefresh(client?: Svc, now: Date = new Date())
     }
   }
 
+  // A refused secret write is a FAILED refresh (never "skipped" — nobody may read it as fine) and it
+  // raises the actionable platform incident (wave 139E). No token reaches the incident.
+  const refused = outcomes.filter((o) => o.result === "refused_secret_storage").length
+  if (refused > 0) {
+    const { raiseSecretStorageIncident } = await import("@/lib/security/credential-rotation")
+    await raiseSecretStorageIncident(svc, { surface: `OAuth token refresh sweep (${refused} credential${refused === 1 ? "" : "s"} not refreshed)`, brokerageId: null, code: "secrets_key_missing", now })
+  }
   return {
     attempted: outcomes.length,
     refreshed: outcomes.filter((o) => o.result === "refreshed").length,
     skipped: outcomes.filter((o) => o.result.startsWith("skipped")).length,
-    failed: outcomes.filter((o) => o.result === "failed").length,
+    failed: outcomes.filter((o) => o.result === "failed").length + refused,
     outcomes,
   }
 }

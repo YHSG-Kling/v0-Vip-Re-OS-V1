@@ -363,8 +363,11 @@ export async function runOsSentinelSweep(client?: any, now: Date = new Date()): 
 
   let rotationEscalated = false
   try {
-    const { escalateRotationRisks } = await import("@/lib/security/credential-rotation")
+    const { escalateRotationRisks, reportSecretStoragePosture } = await import("@/lib/security/credential-rotation")
     rotationEscalated = (await escalateRotationRisks(svc, now)).escalated
+    // Wave 139E — secrets fail closed: a missing SECRETS_ENCRYPTION_KEY or remaining legacy plaintext
+    // raises the platform incident on the same daily heartbeat (counts only; never a secret value).
+    await reportSecretStoragePosture(svc, now)
   } catch { /* best-effort */ }
 
   let health: OsHealth

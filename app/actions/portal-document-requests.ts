@@ -16,6 +16,9 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireContactAccess } from "@/lib/portal/require-contact-access"
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** all_parties is written as data.signers (Array<{email,name,role}>) — strip
  *  the email before it ever reaches a client render. */
@@ -45,10 +48,20 @@ export async function loadActiveSignaturePacket(input: {
   contactId: string
   documentId: string
 }): Promise<ActiveSignaturePacket | null> {
+  // Wave 139 (139G, P0): a "use server" export is a public endpoint, and this one returned a
+  // live e-signature invite (signing_url) to anyone naming a contactId — the party check below
+  // compares BODY-supplied ids, with the service client, across every tenant. The two ids were
+  // also interpolated into a PostgREST `.or()` filter unvalidated. Now: ids must be uuids, the
+  // SESSION must hold the contact (self, accepted invitee, or staff of its brokerage —
+  // requireContactAccess), and the packet read is pinned to that brokerage.
+  if (!UUID_RE.test(input.contactId) || !UUID_RE.test(input.documentId)) return null
+  const access = await requireContactAccess(input.contactId)
+  if (!access.ok) return null
   const svc = createServiceClient()
 
   const { data: rows } = await svc.from("signature_requests")
     .select("id, document_id, contact_id, transaction_id, request_status, completed_at, expires_at, sent_at, signing_url, all_parties, signing_order")
+    .eq("brokerage_id", access.brokerageId)
     .or(`document_id.eq.${input.documentId},and(document_id.is.null,contact_id.eq.${input.contactId})`)
     .in("request_status", ["pending", "sent"])
     .is("completed_at", null)

@@ -65,6 +65,19 @@ export interface ConnectorAlternate {
   reason: string
 }
 
+/**
+ * THE QuickBooks Online Accounting API minor version every QBO request carries — ONE constant
+ * (wave 139, lane 139D; owner "approve all" (3)). Evidence (researched 2026-10-08, no newer version
+ * found): Intuit's QBO release notes added minor versions 74 and 75 (Jan 2025) and deprecated 1–74
+ * from 2025-08-01 — a request below 75, or with none, is served as 75
+ * (developer.intuit.com/app/developer/qbo/docs/release-notes/general-release-notes; blogs.intuit.com
+ * ?p=34635; Codat 250219/250401 qbo-minor-versions-update; MuleSoft QBO connector 2.0.18, 2026-05-15,
+ * "QuickBooks API 75"). A leaf constant: this module is the gateway's leaf metadata, so every client,
+ * the probe and the adapter declaration read it without pulling a client graph.
+ * scripts/provider-adapter-guard.ts (section H) refuses any other `minorversion=<digits>` literal.
+ */
+export const QBO_MINOR_VERSION = "75"
+
 export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Object.freeze({
   // ── Enrichment ─────────────────────────────────────────────────────────
   peopledata: {
@@ -123,7 +136,8 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     baseUrl:   "https://api.batchdata.com/api/v1",
     auth:      "bearer",
     envKey:    "BATCHDATA_API_KEY",
-    docsUrl:   "https://docs.batchdata.com/",
+    // Wave 139 (139D): docs.batchdata.com could not be loaded (2026-10-08); the developer site below was.
+    docsUrl:   "https://developer.batchdata.com/docs/batchdata/welcome-to-batchdata",
     githubUrl: "https://github.com/batchdataco",
     // BatchData publishes an MCP server (also a Vercel AI SDK demo) — agentic callers can use the
     // MCP for richer tool surfaces than the raw REST API. Recorded so the healer can suggest
@@ -167,7 +181,8 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     baseUrl:   "https://api.zyte.com/v1",
     auth:      "basic", // Zyte API uses HTTP Basic with the API key as username, empty password
     envKey:    "ZYTE_API_KEY",
-    docsUrl:   "https://docs.zyte.com/zyte-api/",
+    // Wave 139 (139D): /zyte-api/ answered not-found (2026-10-08); the get-started page below is live.
+    docsUrl:   "https://docs.zyte.com/zyte-api/get-started.html",
     githubUrl: "https://github.com/zytedata",
     tags:      ["buyer-intent", "seller-intent", "real-estate", "fallback-scraper"],
   },
@@ -248,7 +263,15 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     githubUrl: "https://github.com/google",
     tags:      ["llm", "gemini"],
   },
-  // ── Accounting (tenant OAuth) — registered wave 137 (lane 137C) for its DECLARED version alternate ──
+  // ── Accounting (tenant OAuth) — registered wave 137 (lane 137C) ──
+  // Wave 139 (lane 139D, owner "approve all" (3): QuickBooks minorversion = 75): every QBO path now
+  // speaks QBO_MINOR_VERSION (below) — the ONE pin. TOMBSTONE: the config alternate
+  // `qbo_minorversion_75` and `deprecatedAfter: "2025-08-01"` (wave 137, 137C) are retired — they
+  // patched the old pin (73) at egress; the pin itself is now 75, so the alternate would change
+  // nothing and the declared version is no longer past its deprecation. Survivor: QBO_MINOR_VERSION
+  // (this file) read by lib/providers/accounting/quickbooks.ts, lib/connections/accounting-scopes.ts,
+  // lib/connections/vendor-quickbooks.ts, lib/finance/scoped-accounting-export.ts,
+  // lib/agentic-os/connector-probe.ts and lib/kernel/provider-adapters.ts.
   quickbooks: {
     connector: "quickbooks",
     category:  "other",
@@ -257,9 +280,6 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     envKey:    "QUICKBOOKS_CLIENT_ID",
     docsUrl:   "https://developer.intuit.com/app/developer/qbo/docs/develop",
     tags:      ["accounting", "tenant-oauth"],
-    deprecatedAfter: "2025-08-01",
-    alternates: [{ id: "qbo_minorversion_75", level: "config", version: "v3 minorversion=75", query: { minorversion: "75" }, supersedesCurrent: true,
-      reason: "Intuit retired QBO Accounting API minor versions 1–74 (effective 2025-08-01; requests are served as 75). The code pins 73 in its paths (lib/providers/accounting/quickbooks.ts) — a query override is config-level" }],
   },
   // ── Public city / county open data (Socrata) — permits, code violations, probate filings ──
   socrata: {

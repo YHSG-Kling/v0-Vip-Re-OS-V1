@@ -13,6 +13,15 @@
 
 import crypto from "crypto"
 
+/** Constant-time compare that answers FALSE on a length mismatch. crypto.timingSafeEqual THROWS a
+ *  RangeError on unequal lengths, so a short/forged SendGrid, Postmark or Mailgun signature made
+ *  this canonical ingress answer 500 instead of 401 (wave 139, 139G — the R-4 defect class). */
+function sameBytes(a: string, b: string): boolean {
+  const x = Buffer.from(a)
+  const y = Buffer.from(b)
+  return x.length === y.length && crypto.timingSafeEqual(x, y)
+}
+
 // ─── CANONICAL PAYLOAD ────────────────────────────────────────────────────────
 
 export type InboundProviderType =
@@ -68,7 +77,7 @@ function verifySendGrid(body: string, headers: Headers): boolean {
     .createHmac("sha256", secret)
     .update(payload)
     .digest("base64")
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))
+  return sameBytes(expected, signature)
 }
 
 /**
@@ -78,7 +87,7 @@ function verifyPostmark(headers: Headers): boolean {
   const secret = process.env.POSTMARK_WEBHOOK_SECRET
   if (!secret) return false
   const token = headers.get("x-postmark-signature") ?? headers.get("x-postmark-token") ?? ""
-  return crypto.timingSafeEqual(Buffer.from(secret), Buffer.from(token))
+  return sameBytes(secret, token)
 }
 
 /**
@@ -96,7 +105,7 @@ function verifyMailgun(body: Record<string, unknown>): boolean {
     .createHmac("sha256", secret)
     .update(timestamp + token)
     .digest("hex")
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))
+  return sameBytes(expected, signature)
 }
 
 /**
