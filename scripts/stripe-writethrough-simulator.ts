@@ -59,8 +59,21 @@ function sourceLayer() {
   check("new primitives: extendTrialAction + pauseSubscriptionAction", /export async function extendTrialAction/.test(bm) && /export async function pauseSubscriptionAction/.test(bm))
   const ops = src("lib/billing/stripe-subscription-ops.ts")
   check("Stripe ops call the SDK when configured, skip cleanly otherwise", /isStripeConfigured\(\)/.test(ops) && /stripe\.subscriptions\.update/.test(ops))
+  // The tolerance layer has ONE home: lib/kernel/override-vocab.ts (isTrialOverride /
+  // isDisableOverride, proved tolerant of both spellings in pureLayer above — that is
+  // this check's positive control). lib/entitlements/resolve.ts used to re-declare a
+  // local isTrial/isDisable pair; 2026-09-03 (lane L6) it was deleted onto the
+  // survivor, so the resolver must IMPORT the tolerance, not re-spell it, and the
+  // resolution order must apply the imported predicates.
+  const res = src("lib/entitlements/resolve.ts")
+  check("the entitlement resolver READS the one tolerant-of-both vocabulary (override-vocab)",
+    /import\s*\{[^}]*isTrialOverride[^}]*isDisableOverride[^}]*\}\s*from\s*"@\/lib\/kernel\/override-vocab"/.test(res) &&
+    !/const isTrial = /.test(res) && !/const isDisable = /.test(res))
+  check("and the resolution order actually applies the override",
+    /if \(isTrialOverride\(i\.override\?\.type\)\)/.test(res) && /if \(isDisableOverride\(i\.override\?\.type\)\)/.test(res))
   const fa = src("lib/kernel/0.1-feature-access.ts")
-  check("the entitlement engine READS tolerant-of-both spellings", /isTrialOverride\(override\?\.override_type\)/.test(fa) && /isDisableOverride\(override\?\.override_type\)/.test(fa))
+  check("feature-access hands the override to that one resolver",
+    /resolveEntitlement\(\{/.test(fa) && /\n\s*override,/.test(fa))
   check("the entitlement engine WRITES the canonical DB-valid values", /override_type:\s*"grant_trial"/.test(fa) && /override_type:\s*"disable"/.test(fa) && !/override_type:\s*"disabled"/.test(fa) && !/override_type:\s*"trial"/.test(fa))
   const ui = src("app/dashboard/superadmin/brokerages/[id]/brokerage-actions.tsx")
   check("the tenant actions card has extend-trial + pause controls", /extendTrialAction/.test(ui) && /pauseSubscriptionAction/.test(ui))

@@ -40,15 +40,39 @@ async function main() {
     agentInputs: {},
   })
 
-  console.log("\n[pure: buildCdaFillValues]")
+  console.log("\n[pure: MONEY IS NEVER AUTOFILLED onto a CDA]")
+  // resolveCdaTemplateFields deliberately refuses to pre-fill a waterfall field:
+  // "the agent must type it in, and the computed value is retained only as the
+  // EXPECTED baseline the AI audits the entry against". A CDA is a disbursement
+  // authorization — the figures on it have to be the agent's own entry, not a
+  // number the system quietly wrote for them. Objective transaction facts
+  // (address, dates) and static template constants still pre-fill.
+  //
+  // This file used to assert the OPPOSITE — that agent_net auto-filled as
+  // "$14,000.00" — and had been failing 6/13 ever since the rule landed. It now
+  // guards the rule instead of the behaviour the rule replaced.
   const plan = buildCdaFillValues(resolution.fields)
   const byName = (n: string) => plan.values.find((v) => v.name === n)
-  check("agent commission written as formatted currency", byName("Agent Commission $")?.value === "$14,000.00")
-  check("split written as percent", byName("Agent Split %")?.value === "70%")
-  check("property written as text", byName("Property Address")?.value === "123 Oak St, Austin, TX")
+  const byKey = (k: string) => resolution.fields.find((f) => f.field_key === k)
+  check("a waterfall money field is NOT pre-filled", !byName("Agent Commission $") && plan.unmapped.includes("agent_comm"))
+  check("a waterfall percent field is NOT pre-filled", !byName("Agent Split %") && plan.unmapped.includes("split"))
+  check("but the computed baseline is retained for the audit hint",
+    byKey("agent_comm")?.expectedFormatted === "$14,000.00" && byKey("split")?.expectedFormatted === "70%")
+  check("an objective transaction fact still pre-fills", byName("Property Address")?.value === "123 Oak St, Austin, TX")
   check("empty agent input → NOT written, listed unmapped", !byName("Special Instructions") && plan.unmapped.includes("notes"))
   check("binding with no AcroForm target → NOT written, listed unmapped", plan.unmapped.includes("no_target"))
-  check("only the 3 fillable fields are written", plan.values.length === 3)
+  check("only the pre-fillable field is written", plan.values.length === 1)
+
+  // The agent's OWN entry is what reaches the PDF — same bindings, values typed in.
+  const entered = resolveCdaTemplateFields(defs, {
+    waterfall: wf,
+    transaction: { property_address: "123 Oak St, Austin, TX" },
+    agentInputs: { agent_comm: "14000", split: "70" },
+  })
+  const enteredPlan = buildCdaFillValues(entered.fields)
+  const enteredBy = (n: string) => enteredPlan.values.find((v) => v.name === n)
+  check("agent-entered commission IS written, formatted as currency", enteredBy("Agent Commission $")?.value === "$14,000.00")
+  check("agent-entered split IS written, formatted as percent", enteredBy("Agent Split %")?.value === "70%")
 
   console.log("\n[live: fill a genuine AcroForm PDF and read it back]")
   const doc = await PDFDocument.create()
@@ -60,8 +84,10 @@ async function main() {
   }
   const blankBytes = await doc.save()
 
-  const result = await fillPdfForm(blankBytes, plan.values, { flatten: false })
-  check("all 3 mapped values were filled onto the PDF", result.filled.length === 3)
+  // Fill from the AGENT-ENTERED plan — an empty CDA is the correct output of the
+  // un-entered one, which the pure section above already proves.
+  const result = await fillPdfForm(blankBytes, enteredPlan.values, { flatten: false })
+  check("all 3 entered values were filled onto the PDF", result.filled.length === 3)
   check("no requested field was skipped (all targets exist)", result.skipped.length === 0)
 
   // Read the values back out of the filled PDF — the real round-trip.
@@ -81,6 +107,6 @@ async function main() {
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ CDA_PDF_FILL_FAIL"); process.exit(1) }
-  console.log(" ✅ CDA_PDF_FILL_PASS — the waterfall fills the brokerage's actual CDA PDF, values round-trip")
+  console.log(" ✅ CDA_PDF_FILL_PASS — money is never autofilled; the agent's own entry fills the real CDA PDF and round-trips")
 }
 main()

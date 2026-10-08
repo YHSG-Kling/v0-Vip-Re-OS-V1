@@ -53,6 +53,7 @@ import {
   MEETING_RECAP_TAG, MEETING_RECAP_ENTITY_TYPE, MAX_RECAP_POINTS, MEETING_EVENT_TYPES,
 } from "../lib/ai-isa/meeting-recap"
 import { followthroughTag, MEETING_FOLLOWTHROUGH_TAG } from "../lib/ai-isa/meeting-followthrough"
+import { stripComments } from "./strip-comments"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -311,7 +312,7 @@ const feedSrc = src("app/portal/[contactId]/components/RecentUpdatesFeed.tsx")
 check("portal feed renders the distinct 'Meeting recap' card",
   feedSrc.includes('"meeting_recap"') && feedSrc.includes("Meeting recap"))
 check("TRANSCRIPT-NEVER-EXPOSED: the portal feed CODE has no transcript reference (comments stripped)",
-  !/transcript/i.test(feedSrc.replace(/\/\/[^\n]*/g, "")))
+  !/transcript/i.test(stripComments(feedSrc)))
 check("portal feed reads only the transparency card columns (no voice_calls / call_analyses)",
   !feedSrc.includes("voice_calls") && !feedSrc.includes("call_analyses"))
 

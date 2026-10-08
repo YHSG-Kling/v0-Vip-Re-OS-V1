@@ -1,28 +1,37 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
-import { getListingsService as getListings, createListingService as createListing } from "@/lib/application/listings"
 import {
   scheduleListingAppointmentService,
-  updateListingStageService,
   advanceListingStageService,
   getListingTimelineService,
   getListingTasksService,
   completeListingTaskService,
-  handleListingAppointmentBookedService,
-  handleListingAgreementSignedService,
-  handleListingLiveService,
-  handlePriceReductionService,
-  handleOfferReceivedService,
-  handleContingencyClearedService,
-  handleClosingApproachingService,
-  triggerReviewSequenceService,
   sendReviewRequestService,
-  scheduleClosingGift,
 } from "@/lib/application/listing-lifecycle"
 
-// Re-exports moved to direct imports from listings.ts
-export { getListings, createListing }
+// TOMBSTONE — `export { getListings, createListing }` was REMOVED here.
+//
+// This file is `"use server"`, so those two lines were not re-exports: they were
+// PUBLIC HTTP ENDPOINTS. And they aliased the RAW lib-layer services
+// (`getListingsService` / `createListingService`), which take their tenant from a
+// PARAMETER — so a browser could POST `{ brokerageId: "<any uuid>" }` and name the
+// tenant it wanted, the IDOR shape CLAUDE.md §4 names. The gated survivors had
+// already been built and this door bypassed both of them:
+//
+//   getListings   → app/actions/listings.ts:62 — session-derived tenant via
+//                   getAgentContext, agent id may only NARROW, and only for a
+//                   broker/admin inside their own tenant
+//   createListing → app/actions/listings.ts:134 — stamps the session's brokerage
+//                   on the row (the adjacent fix noted in
+//                   lib/dashboard/data-survivors.ts:103, which recorded the same
+//                   defect as already merged onto that survivor)
+//
+// the actions barrel (app/actions/index, deleted this wave):106-113 already exports BOTH names from "./listings", so
+// nothing imported them from here and no caller changes. The comment these lines
+// carried — "Re-exports moved to direct imports from listings.ts" — says the move
+// happened; only the deletion was missed.
 
 // =====================================================
 // LISTING LIFECYCLE SERVER ACTIONS
@@ -50,46 +59,32 @@ export async function scheduleListingAppointment(params: {
 
   const result = await scheduleListingAppointmentService(params, user.id, profile.brokerage_id)
 
-  // Fire the listing-appt-prep chain so the LISTING-side appointment ALSO runs the full managed
-  // prep (CMA → presentation built from it → per-chapter videos → pre-appointment drip → pre-listing
-  // postcard/letter), exactly like the contact-side bookSellerListingAppointment path. The service
-  // emits 'listing_appointment_scheduled' which matched NO chain/handler, so listing-side
-  // appointments silently skipped the entire prep. Chains trigger via triggerChainsForEvent (an
-  // app/ action — can't be imported from the lib/ service), so it's wired here. Best-effort — the
-  // appointment is already booked even if the chain trigger fails.
+  // THE BOOKING STARTS THE SELLER'S LISTING-PRESENTATION PREP (lane 87B, owner wave 87:
+  // "listing presentation prep which inlcudes the cma needs to be for a seller as this is
+  // started from the listing appointmtent booking"). The service just wrote the consult's
+  // calendar_events row (appointmentEventId); the listing-appt-prep chain's own trigger
+  // (fireListingAppointmentSetForBooking — the original chain is the survivor, lane 88D)
+  // reads THAT row, proves the contact is the seller (the listing's seller, or a
+  // seller-typed contact), takes the property from the listing row and the agent's
+  // users.id from the row, all inside the row's tenant — which must be this SESSION's —
+  // and records ONE listing.appointment_set event per booking, so the stage pipeline and
+  // the cron safety net collapse onto the same event and the same run. Best-effort — the
+  // appointment is already booked even if the prep cannot start.
   try {
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("address, city, state, zip, bedrooms, bathrooms, sqft, lot_size, year_built, property_type")
-      .eq("id", params.listing_id)
-      .maybeSingle()
-    const appointmentAt =
-      (result as { listing?: { appointment_at?: string } } | null)?.listing?.appointment_at ??
-      new Date(`${params.appointment_date}T${params.appointment_time}`).toISOString()
-    const { triggerChainsForEvent } = await import("@/app/actions/workflow-orchestrator")
-    const { listingApptPrepDedupeKey } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
-    await triggerChainsForEvent({
-      eventType: "listing.appointment_set",
-      // Per-listing dedupe key — collapses this with the stage-pipeline + calendar paths into ONE prep.
-      triggerEventId: listingApptPrepDedupeKey(params.listing_id),
-      brokerageId: profile.brokerage_id,
-      contactId: params.contact_id,
-      agentUserId: user.id,
-      listingId: params.listing_id,
-      metadata: {
-        appointment_date: appointmentAt,
-        property_data: listing
-          ? {
-              address: listing.address, city: listing.city, state: listing.state, zip: listing.zip,
-              bedrooms: listing.bedrooms, bathrooms: listing.bathrooms, sqft: listing.sqft,
-              lotSize: listing.lot_size, yearBuilt: listing.year_built,
-              propertyType: listing.property_type ?? "single_family",
-            }
-          : {},
-      },
-    })
+    const appointmentEventId = (result as { appointmentEventId?: string } | null)?.appointmentEventId ?? null
+    if (appointmentEventId) {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { fireListingAppointmentSetForBooking } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
+      const prep = await fireListingAppointmentSetForBooking(createServiceClient(), {
+        calendarEventId: appointmentEventId,
+        expectedBrokerageId: profile.brokerage_id,
+        listingId: params.listing_id,
+        origin: "listing_consult",
+      })
+      if (prep.status === "error") console.error("[scheduleListingAppointment] listing prep did not start:", prep.reason)
+    }
   } catch (err) {
-    console.error("[scheduleListingAppointment] listing-appt-prep chain trigger failed:", err)
+    console.error("[scheduleListingAppointment] listing prep start threw:", err)
   }
 
   return result
@@ -99,19 +94,10 @@ export async function scheduleListingAppointment(params: {
 // advanceListingStage (triggerStageActions owns those stage cases + the MLS packet queue). These
 // duplicated that with orphaned-event side effects that never fired.
 
-export async function updateListingStage(params: {
-  listing_id: string
-  stage: string
-  notes?: string
-}) {
-  if (!params.listing_id || !params.stage) throw new Error("listing_id and stage are required")
-
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  return updateListingStageService(params)
-}
+// updateListingStage RETIRED (2026-09-09, wave 46) — a THIRD writer of listings.lifecycle_stage with no
+// UI caller. Survivor: advanceListingStage below → lib/application/listing-lifecycle.ts::advanceListingStageService,
+// which runs the same gate, keeps listings.status in lockstep, writes stage history, emits the kernel events and
+// fires the seller-to-lifetime transition. The service half (updateListingStageService) was deleted with it.
 
 export async function advanceListingStage(
   listingId: string,
@@ -160,12 +146,12 @@ export async function advanceListingStage(
     if (updateErr) throw updateErr
 
     // Audit trail
-    await svc.from("lifecycle_events").insert({
-      brokerage_id:  overrideCtx.brokerageId,
-      entity_type:   "listing",
-      entity_id:     listingId,
-      event_type:    "listing.stage_overridden",
-      actor_user_id: overrideCtx.userId,
+    await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId:  overrideCtx.brokerageId,
+      entityType:   "listing",
+      entityId:     listingId,
+      event:    "listing.stage_overridden",
+      actorUserId: overrideCtx.userId,
       metadata: {
         from_stage:           listing.lifecycle_stage,
         to_stage:             toStage,
@@ -174,8 +160,8 @@ export async function advanceListingStage(
         override_user_type:   overrideCtx.userType,
         notes:                notes ?? null,
       },
-      created_at: new Date().toISOString(),
-    })
+      createdAt: new Date().toISOString(),
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // A manual override still RUNS the stage's automations — the listing IS now at this stage, so its
     // managers must act (prep chain, packet, …). The override only bypassed the PREREQUISITE gates.
@@ -185,6 +171,13 @@ export async function advanceListingStage(
   }
 
   const result = await advanceListingStageService(listingId, toStage, agentId, notes)
+
+  // AUTOMATIONS FOLLOW A REAL ADVANCE, NEVER A REFUSED ONE. The service now
+  // gates on the stage table (readiness / role / allowedFrom) and reports a
+  // refusal by RETURNING { success: false } rather than throwing — firing the
+  // prep chain or queueing the MLS packet after a refusal would act on a stage
+  // the listing is not in.
+  if (!result?.success) return result
 
   // Run the canonical-stage automations (prep chain, packet) — see fireStageAutomations.
   await fireStageAutomations(listingId, toStage, user.id)
@@ -213,53 +206,76 @@ async function fireStageAutomations(listingId: string, toStage: string, actorUse
     const svc = createServiceClient()
 
     if (automation === "listing_appt_prep") {
-      // Flagship pre-listing prep: CMA → presentation → chapter videos → pre-appointment drip →
-      // pre-listing postcard. Deterministic per-listing key collapses with the calendar + AI-ISA
-      // booking paths into ONE prep run (no double CMA/postcard).
-      const { data: listing } = await svc
+      // Flagship pre-listing prep, STARTED FROM THE BOOKING (lane 87B, owner wave 87).
+      // A stage flip to APPOINTMENT_SET is not itself a booking: the prep starts
+      // from the listing's calendar_events row (listings.appointment_event_id, written
+      // by scheduleListingAppointmentService) through the chain's own trigger
+      // (fireListingAppointmentSetForBooking), which proves the seller, resolves the
+      // seller's property and the agent's users.id inside the row's tenant, and records
+      // ONE listing.appointment_set event per booking — so this path, the consult
+      // booking itself and the cron safety net collapse onto ONE run. With no booking
+      // row there is no appointment date for the drip to count down to (enroll_drip
+      // refused "Missing appointment_date" on every such run), so nothing is started
+      // and the reason is logged — book the consult to start the prep.
+      const { data: listing, error: listingErr } = await svc
         .from("listings")
-        .select("brokerage_id, contact_id, seller_contact_id, appointment_at, address, city, state, zip, bedrooms, bathrooms, sqft, lot_size, year_built, property_type")
+        .select("brokerage_id, appointment_event_id")
         .eq("id", listingId)
         .maybeSingle()
-      if (listing?.brokerage_id) {
-        const { triggerChainsForEvent } = await import("@/app/actions/workflow-orchestrator")
-        const { listingApptPrepDedupeKey } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
-        await triggerChainsForEvent({
-          eventType: "listing.appointment_set",
-          triggerEventId: listingApptPrepDedupeKey(listingId),
-          brokerageId: listing.brokerage_id,
-          contactId: listing.contact_id ?? listing.seller_contact_id ?? null,
-          agentUserId: actorUserId,
+      if (listingErr) {
+        console.error(`[fireStageAutomations] listing ${listingId} read refused — listing prep not started: ${listingErr.message}`)
+      } else if (!listing?.appointment_event_id) {
+        console.warn(`[fireStageAutomations] listing ${listingId} reached APPOINTMENT_SET with no booked appointment — listing prep starts from the booking`)
+      } else {
+        const { fireListingAppointmentSetForBooking } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
+        const prep = await fireListingAppointmentSetForBooking(svc, {
+          calendarEventId: listing.appointment_event_id,
+          expectedBrokerageId: listing.brokerage_id ?? null,
           listingId,
-          metadata: {
-            appointment_date: listing.appointment_at ?? null,
-            property_data: {
-              address: listing.address, city: listing.city, state: listing.state, zip: listing.zip,
-              bedrooms: listing.bedrooms, bathrooms: listing.bathrooms, sqft: listing.sqft,
-              lotSize: listing.lot_size, yearBuilt: listing.year_built,
-              propertyType: listing.property_type ?? "single_family",
-            },
-          },
+          origin: "listing_stage_pipeline",
         })
+        if (prep.status === "error") console.error(`[fireStageAutomations] listing prep did not start: ${prep.reason}`)
       }
     } else if (automation === "mls_packet") {
-      // Queue the MLS listing packet on go-live (idempotent — skip if one already exists). Restored
-      // here on the canonical stage after the retired markListingLiveService (the legacy
-      // triggerStageActions "mls_active" case is dead).
-      const { data: existing } = await svc
+      // TOMBSTONE — the bare `listing_packet_jobs` INSERT (job_type 'mls_packet',
+      // status 'pending', config of include* flags, NO content) that used to live
+      // here is GONE. Nothing in the tree ever processed a 'pending' packet job,
+      // so every row this queued was permanently stuck: never generated, never
+      // rendered, never downloadable. The survivor is the REAL generator —
+      // autoGeneratePacketOnLive → generateListingPacket
+      // (app/actions/ai-listing-packet.ts), the same one launchListingAction
+      // dispatches at go-live (app/actions/listings-kernel.ts:697-698). This is
+      // NOT a duplicate of that kernel dispatch: the stage pipeline
+      // (stage-pipeline.tsx → advanceListingStage → here) reaches MLS_ACTIVE
+      // without ever passing through launchListingAction, so this path must fire
+      // the generator itself. The two paths are idempotent against each other via
+      // the same existing-full_packet guard the kernel uses; generateListingPacket's
+      // own MLS-live gate passes because advanceListingStageService writes
+      // status='active' for MLS_ACTIVE in the same update (statusForStage,
+      // lib/application/listing-lifecycle.ts:470). Tenant comes from the SESSION
+      // inside generateListingPacket (requireCaller + listing-ownership check) —
+      // no tenant stamping needed here anymore.
+      const { data: existing, error: existingError } = await svc
         .from("listing_packet_jobs")
         .select("id")
         .eq("listing_id", listingId)
-        .eq("job_type", "mls_packet")
+        .eq("job_type", "full_packet")
         .limit(1)
         .maybeSingle()
+      // A refused read is not "no packet yet" — treating it as one re-spends six
+      // GPT-4o generations.
+      if (existingError) {
+        console.error("[fireStageAutomations] could not check for an existing listing packet:", existingError.message)
+        return
+      }
       if (!existing) {
-        await svc.from("listing_packet_jobs").insert({
-          listing_id: listingId,
-          agent_user_id: actorUserId, // FK → users.id
-          job_type: "mls_packet",
-          status: "pending",
-          config: { includeFlyer: true, includeDisclosures: true, includePropertyReports: true, includeBinderCopies: true },
+        // DISPATCHED, not awaited — same pattern as the kernel's go-live call:
+        // the stage advance must not wait on six document generations.
+        const { autoGeneratePacketOnLive } = await import("@/app/actions/ai-listing-packet")
+        void autoGeneratePacketOnLive(listingId, actorUserId).then((r) => {
+          if (!r?.success) {
+            console.error("[fireStageAutomations] listing packet NOT generated:", r?.error)
+          }
         })
       }
     }
@@ -268,6 +284,10 @@ async function fireStageAutomations(listingId: string, toStage: string, actorUse
   }
 }
 
+// The session check and the brokerage ownership gate live in the service (which
+// is now the ONE timeline read — app/actions/listings.ts used to hold a second
+// copy that embedded a `profiles` table the database does not have). Do not
+// re-inline the query here.
 export async function getListingTimeline(listingId: string) {
   if (!listingId) throw new Error("listingId is required")
   return getListingTimelineService(listingId)
@@ -288,49 +308,90 @@ export async function completeListingTask(taskId: string) {
   return completeListingTaskService(taskId)
 }
 
-// =====================================================
-// EVENT HANDLERS - Called by orchestrator
-// =====================================================
+// TOMBSTONE (lane 86F, orphan doctrine §1.1) — the eight "EVENT HANDLERS -
+// Called by orchestrator" wrappers LIVED HERE and are gone:
+// handleListingAppointmentBooked, handleListingAgreementSigned,
+// handleListingLive, handlePriceReduction, handleOfferReceived,
+// handleContingencyCleared, handleClosingApproaching, triggerReviewSequence.
+// Each was a "use server" export — a PUBLIC HTTP endpoint with no gate at all —
+// that forwarded a caller's payload to a lib service on the COOKIE client; the
+// one real caller (lib/orchestrator/internal.ts EVENT_HANDLERS, dispatched
+// from cron and webhooks) has no cookie, so every one of them read nothing.
+// SURVIVOR: lib/listing-lifecycle/lifecycle-event-tasks.ts (server-only; the
+// service client with the EVENT row's tenant), which the orchestrator now calls
+// directly. Seven had no browser caller, so no public door was kept for them;
+// handlePriceReduction DOES (app/dashboard/listings/[id]/components/
+// price-reduction-sheet.tsx), so it stays — below — as a SESSION door onto the
+// same core.
 
-export async function handleListingAppointmentBooked(payload: any) {
-  return handleListingAppointmentBookedService(payload)
+/**
+ * The price-reduction sheet's "marketing follow-up task" — the SESSION door onto
+ * lib/listing-lifecycle/lifecycle-event-tasks.ts::priceReductionTasks (the same
+ * core the orchestrator's listing.price_reduction event runs). Gated here (it was
+ * an ungated public endpoint), the tenant is the SESSION's and the core refuses
+ * a listing outside it; only `listing_id` is read from the payload — the sheet's
+ * agentId / brokerageId fields are ignored (CLAUDE.md §4).
+ */
+export async function handlePriceReduction(payload: { listing_id?: string } & Record<string, unknown>) {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { priceReductionTasks } = await import("@/lib/listing-lifecycle/lifecycle-event-tasks")
+  return priceReductionTasks(createServiceClient(), ctx.brokerageId, { listing_id: payload?.listing_id ?? null })
 }
 
-export async function handleListingAgreementSigned(payload: any) {
-  return handleListingAgreementSignedService(payload)
-}
-
-export async function handleListingLive(payload: any) {
-  return handleListingLiveService(payload)
-}
-
-export async function handlePriceReduction(payload: any) {
-  return handlePriceReductionService(payload)
-}
-
-export async function handleOfferReceived(payload: any) {
-  return handleOfferReceivedService(payload)
-}
-
-export async function handleContingencyCleared(payload: any) {
-  return handleContingencyClearedService(payload)
-}
-
-export async function handleClosingApproaching(payload: any) {
-  return handleClosingApproachingService(payload)
-}
-
-export async function triggerReviewSequence(payload: any) {
-  return triggerReviewSequenceService(payload)
-}
-
+/**
+ * 🚨 THIS SENDS AN SMS, AND IT WAS AN ANONYMOUS ENDPOINT.
+ *
+ * `"use server"` export → public HTTP endpoint. Neither this wrapper nor
+ * `lib/application/listing-lifecycle.ts:sendReviewRequestService` had any auth
+ * gate. The service reads `review_requests` by a caller-supplied uuid joined to
+ * `contact:contacts(*)` — the FULL contact record, phone number included — and
+ * then dispatches an SMS to that number. So a bare request uuid was enough to
+ * (a) read another brokerage's client PII and (b) make the platform text that
+ * client. `dispatchSms` still applies consent/DNC/quiet-hours, which bounds the
+ * abuse but does not authorize the caller.
+ *
+ * `completeListingTask` immediately above already does `auth.getUser()`, and
+ * `getListingTasks`'s service carries its own `callerBrokerageId` gate — the file
+ * header's contract is "validate → authenticate → delegate". This one skipped the
+ * middle step. Gated here, at the endpoint, and scoped: the request must belong to
+ * the caller's brokerage before the service is allowed to touch it.
+ */
 export async function sendReviewRequest(requestId: string, platform: string) {
   if (!requestId || !platform) throw new Error("requestId and platform are required")
+
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  const supabase = await createClient()
+  const { data: reviewRequest, error: readError } = await supabase
+    .from("review_requests")
+    .select("id, brokerage_id")
+    .eq("id", requestId)
+    .maybeSingle()
+
+  // A refused read is not "no rows" — both fail closed, before anything is sent.
+  if (readError) return { success: false, error: "Could not load that review request" }
+  // review_requests.brokerage_id is nullable, so compare explicitly and refuse an
+  // untenanted row: an unprovable owner must not authorize an outbound message.
+  if (!reviewRequest || reviewRequest.brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Review request not found" }
+  }
+
   return sendReviewRequestService(requestId, platform)
 }
 
-// Export for orchestrator
-export { scheduleClosingGift }
+// TOMBSTONE (lane 63B, CLAUDE.md §1) — `export { scheduleClosingGift }` was REMOVED
+// here. This file is `"use server"`, so a bare re-export was itself a §4 hazard
+// (every export is a public HTTP endpoint and must be async). Its only consumer,
+// lib/orchestrator/internal.ts, now imports the survivor directly — since lane
+// 86F lib/listing-lifecycle/lifecycle-event-tasks.ts::scheduleClosingGiftForListing
+// (the lib/application copy was cookie-bound and refused every event dispatch).
 
 // ─── Portal Visibility ────────────────────────────────────────────────────────
 
@@ -364,11 +425,30 @@ export async function setMilestonePortalVisibility(
     return { success: false, error: "Forbidden" }
   }
 
-  // Find the most recent event for this stage — scoped to caller's brokerage
+  // Find the most recent event for this stage — scoped to caller's brokerage.
+  //
+  // THIS READ COULD NEVER MATCH. It filtered entity_type = "listing", but a
+  // STAGE is not what that entity type records. ENTITY_MAP in
+  // lib/kernel/lifecycle.ts is explicit — and carries its own warning not to
+  // merge the two:
+  //   listing               -> listings.status          (MLS status only)
+  //   listing_stage_machine -> listings.lifecycle_stage  (the stage machine)
+  // This function's `stage` argument is a lifecycle_stage, so every event it
+  // wanted was written under listing_stage_machine and it was looking at the
+  // MLS-status stream instead. Result: EVERY portal-visibility toggle returned
+  // "Event not found" and the milestone silently never became visible to the
+  // client — a control that reports a specific, plausible failure while being
+  // structurally incapable of succeeding.
+  //
+  // Both entity types are read rather than swapping to one, matching the
+  // precedent set when loadListingWorkspace hit this same split: the two
+  // streams have DIFFERENT producers, and to_state disambiguates them anyway
+  // (an MLS status can never equal a lifecycle stage), so reading both cannot
+  // mismatch and cannot miss a producer added later.
   const { data: evt, error: fetchError } = await supabase
     .from("lifecycle_events")
     .select("id, metadata")
-    .eq("entity_type", "listing")
+    .in("entity_type", ["listing_stage_machine", "listing"])
     .eq("entity_id", listingId)
     .eq("brokerage_id", callerRow.brokerage_id)
     .eq("metadata->>to_state", stage)
@@ -376,8 +456,15 @@ export async function setMilestonePortalVisibility(
     .limit(1)
     .maybeSingle()
 
-  if (fetchError || !evt) {
-    return { success: false, error: fetchError?.message ?? "Event not found" }
+  if (fetchError) {
+    // A refused read is not "no such milestone" — say which it was.
+    return { success: false, error: `Could not load the stage event: ${fetchError.message}` }
+  }
+  if (!evt) {
+    return {
+      success: false,
+      error: `No recorded transition into "${stage}" for this listing, so there is no milestone to show or hide yet.`,
+    }
   }
 
   const updatedMetadata = { ...(evt.metadata ?? {}), portal_visible: visible }

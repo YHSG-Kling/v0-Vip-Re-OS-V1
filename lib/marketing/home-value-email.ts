@@ -12,7 +12,7 @@
  * dispatchEmail() handles the actual TCPA / opt-out compliance gate.
  */
 
-import type { AnnualHomeValueReport } from "@/app/actions/annual-home-value-report"
+import type { AnnualHomeValueReport } from "@/lib/marketing/annual-home-value-report"
 
 export interface HomeValueEmailContext {
   report:           AnnualHomeValueReport

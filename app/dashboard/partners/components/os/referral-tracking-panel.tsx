@@ -4,7 +4,7 @@ import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Users, ArrowRight, TrendingUp } from "lucide-react"
+import { ArrowRight, TrendingUp } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import Link from "next/link"
 

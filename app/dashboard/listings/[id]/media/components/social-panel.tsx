@@ -14,7 +14,10 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
-import { createSocialPost, approveSocialPost, deleteSocialPost } from "@/app/actions/listing-media"
+import { approveSocialPost, deleteSocialPost } from "@/app/actions/listing-media"
+// createSocialPost moved to the compliance-gated survivor (wave 56, lane OC,
+// Task C duplicates sweep) — see tombstone at app/actions/listing-media.ts.
+import { createSocialPost } from "@/app/actions/social-publishing"
 import { generateSocialPostContent } from "@/app/actions/social/generate-social-post"
 import { shareSocialPostWithSeller } from "@/app/actions/portal-messages"
 import {
@@ -84,7 +87,15 @@ const APPROVAL_BADGE: Record<string, string> = {
   rejected: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
 }
 
-/** Map postType → human-readable brief for AI generation */
+/**
+ * Map platform + postType → human-readable brief for AI generation.
+ *
+ * `platform` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24, on the one
+ * dropdown in this dialog whose entire purpose is choosing where the post goes. The
+ * brief handed to the generator was identical for a 280-character X post and a
+ * long-form LinkedIn one, so the platform selection changed only WHERE the copy was
+ * published, never how it was written.
+ */
 function buildBrief(platform: string, postType: string): string {
   const typeMap: Record<string, string> = {
     listing_announcement:    "Announce this listing to potential buyers",
@@ -94,7 +105,20 @@ function buildBrief(platform: string, postType: string): string {
     just_sold:               "Celebrate a successful sale and thank everyone involved",
     custom:                  "Write a compelling post about this property",
   }
-  return typeMap[postType] ?? "Write a compelling real estate post"
+  // Shape, not tone rules: the full per-platform guideline table lives with the
+  // generator (lib/services/content-generation.service.ts buildSocialPrompt), and a
+  // second copy of it here is how two vocabularies for one idea start (§6). This
+  // names the surface so the brief and the guidelines agree about which one it is.
+  const platformMap: Record<string, string> = {
+    instagram: "for Instagram — visual-first, short hook, hashtags at the end",
+    facebook:  "for Facebook — conversational, community-minded",
+    linkedin:  "for LinkedIn — professional, insight-led, no hashtag stuffing",
+    twitter:   "for X/Twitter — one tight thought, well under 280 characters",
+    tiktok:    "for TikTok — casual and spoken, written to be read aloud",
+  }
+  const base = typeMap[postType] ?? "Write a compelling real estate post"
+  const where = platformMap[platform.toLowerCase()]
+  return where ? `${base}, ${where}` : base
 }
 
 export function SocialPanel({ listingId, brokerageId, agentId, sellerContactId, posts, accounts, canApprove, onPostsChange }: SocialPanelProps) {
@@ -115,23 +139,38 @@ export function SocialPanel({ listingId, brokerageId, agentId, sellerContactId, 
   const handleCreate = () => {
     if (!form.content.trim()) return
     startTransition(async () => {
-      const result = await createSocialPost({
-        listingId,
-        brokerageId,
-        platform:        form.platform,
-        postType:        form.postType,
+      // The compliance-gated survivor takes multi-platform + a scheduledFor
+      // that defaults server-side to "now" is NOT assumed here — it requires
+      // one, same as the retired duplicate's optional field meant "draft".
+      // A thrown error and a returned { success:false } are the SAME outcome to
+      // this screen — both are read below before anything claims "Post created".
+      const result: any = await createSocialPost({
+        linkedListingId: listingId,
+        platforms:       [form.platform],
+        contentType:     form.postType,
         content:         form.content.trim(),
         hashtags:        form.hashtags.split(",").map(h => h.trim()).filter(Boolean),
         mediaUrls:       form.mediaUrls.split(",").map(u => u.trim()).filter(Boolean),
-        scheduledFor:    form.scheduledFor || undefined,
+        scheduledFor:    form.scheduledFor || new Date().toISOString(),
         socialAccountId: form.socialAccountId || undefined,
-      })
-      if (result.error) {
-        toast({ title: "Error creating post", description: result.error, variant: "destructive" })
+      }).catch((e: any) => ({ success: false, error: e?.message ?? String(e) }))
+      if (result?.complianceBlocked) {
+        toast({ title: "Held for compliance review", description: result.message ?? "This post needs a human look before it can go out.", variant: "destructive" })
+        return
+      }
+      // The survivor answers success:false for a refused insert / missing tenant
+      // too — a screen must never claim "Post created" over a refusal (§3).
+      if (!result?.success) {
+        toast({ title: "Error creating post", description: result?.error ?? result?.message ?? "The post was not created.", variant: "destructive" })
         return
       }
       if (pushToSellerPortal && sellerContactId) {
-        await shareSocialPostWithSeller(sellerContactId).catch(() => null)
+        // The user ticked "push to seller portal", so a silent failure here means
+        // the seller never sees a post the agent believes they were sent.
+        const shared = await shareSocialPostWithSeller(sellerContactId).catch(() => null)
+        if (!shared?.success) {
+          toast({ title: "Post created, but not shared to the seller portal", description: (shared as any)?.error ?? "Share it again from the seller's portal view.", variant: "destructive" })
+        }
       }
       const updated = await import("@/app/actions/listing-media").then(m => m.getSocialPosts(listingId))
       onPostsChange(updated.data ?? [])

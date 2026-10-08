@@ -160,14 +160,16 @@ export async function runTeamPlays(
     // Supersede the absorbed fragments — auditable, never a forged human approval.
     for (const f of conf.fragments) {
       if (f.kind === "proposal") {
-        const { data: sup } = await supabase.from("agent_client_messages")
+        const { data: sup, error: supersedeErr } = await supabase.from("agent_client_messages")
           .update({ status: "rejected", send_error: `superseded by team play ${res.id}` })
           .eq("id", f.id).eq("status", "proposed").select("id").maybeSingle()
+        if (supersedeErr) console.error(`[team-plays] absorbed proposal NOT superseded: ${supersedeErr.message}`)
         if (sup) fragmentsSuperseded += 1
       } else {
-        const { data: sup } = await supabase.from("manager_signals")
+        const { data: sup, error: foldErr } = await supabase.from("manager_signals")
           .update({ status: "consumed", consumed_at: new Date().toISOString(), consumed_action: `folded into team play ${res.id}` })
           .eq("id", f.id).eq("status", "open").select("id").maybeSingle()
+        if (foldErr) console.error(`[team-plays] absorbed signal NOT marked consumed: ${foldErr.message}`)
         if (sup) fragmentsSuperseded += 1
       }
     }

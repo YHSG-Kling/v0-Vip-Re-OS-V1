@@ -133,6 +133,25 @@ export function generateMatchExplanation(
 }
 
 /**
+ * SAY THE PLACE THE BUYER SAID.
+ *
+ * This module's own stated constraint at the top of the file is "Reference what the
+ * buyer said or implied" — and until 2026-08-24 all three headline generators
+ * ACCEPTED `intent` and read nothing out of it, falling back to the anonymous
+ * "this area" whenever the listing row had no city. The buyer had typed a
+ * neighbourhood or a city into the query; the parser had captured it; the headline
+ * then refused to use it.
+ */
+function describeLocation(listing: ListingProfile, intent: ParsedBuyerIntent): string {
+  return (
+    listing.city ||
+    intent.neighborhoods?.[0] ||
+    intent.cities?.[0] ||
+    'this area'
+  )
+}
+
+/**
  * Generate strong match headlines (80+ score)
  */
 function generateStrongMatchHeadline(
@@ -140,7 +159,7 @@ function generateStrongMatchHeadline(
   intent: ParsedBuyerIntent,
   persona: PersonaProfile
 ): string {
-  const location = listing.city || 'this area'
+  const location = describeLocation(listing, intent)
 
   switch (persona.persona) {
     case 'first_time_buyer':
@@ -172,6 +191,7 @@ function generateGoodMatchHeadline(
 ): string {
   const beds = listing.bedrooms ? `${listing.bedrooms}-bedroom ` : ''
   const type = formatPropertyType(listing.property_type)
+  const location = describeLocation(listing, intent)
 
   switch (persona.persona) {
     case 'first_time_buyer':
@@ -187,21 +207,46 @@ function generateGoodMatchHeadline(
     case 'move_up_buyer':
       return `Spacious ${beds}${type} for your next chapter`
     case 'bargain_hunter':
-      return `Good value ${beds}${type}`
+      return `Good value ${beds}${type} in ${location}`
     default:
-      return `Nice ${beds}${type} matching your criteria`
+      return `Nice ${beds}${type} in ${location} matching your criteria`
   }
 }
 
 /**
  * Generate viable match headlines (45-59 score)
+ *
+ * `intent` and `persona` were both accepted here and read by NOTHING — this was the
+ * one headline of the three that told the buyer nothing at all, on the very matches
+ * that most need a reason to be looked at. The weaker the match, the more the
+ * headline has to earn: it now names the ONE thing that does line up (the buyer's
+ * own place, their budget, or the persona's stated emphasis) instead of a bare
+ * property type.
  */
 function generateViableMatchHeadline(
   listing: ListingProfile,
   intent: ParsedBuyerIntent,
   persona: PersonaProfile
 ): string {
-  return `${formatPropertyType(listing.property_type)} worth considering`
+  const type = formatPropertyType(listing.property_type)
+  const location = describeLocation(listing, intent)
+
+  if (intent.maxPrice && listing.price && listing.price <= intent.maxPrice) {
+    return `${type} in ${location}, within your budget`
+  }
+
+  switch (persona.persona) {
+    case 'investor':
+      return `${type} in ${location} worth running the numbers on`
+    case 'bargain_hunter':
+      return `${type} in ${location} worth a closer look at the price`
+    case 'downsizer':
+      return `Low-maintenance ${type} in ${location} worth considering`
+    case 'first_time_buyer':
+      return `${type} in ${location} worth touring as you compare`
+    default:
+      return `${type} in ${location} worth considering`
+  }
 }
 
 /**
@@ -270,7 +315,22 @@ function generateNarrative(
       closing = `It's worth exploring further.`
   }
 
-  return intro + connection + closing
+  // `bullets` WAS PASSED IN AND READ BY NOTHING. The bullets are the evidence this
+  // narrative is supposed to be narrating; without them the closing sentence made a
+  // claim the paragraph never supported. The strongest bullet is named so the prose
+  // and the list agree — and when there are no bullets at all, the narrative stops
+  // asserting rather than asserting on nothing.
+  if (bullets.length === 0) {
+    return `${intro}${connection}`
+  }
+  const evidence = ` The biggest reason: ${lowerFirst(bullets[0])}.`
+
+  return intro + connection + closing + evidence
+}
+
+/** Lower-cases the first character only, so a bullet reads as clause. */
+function lowerFirst(text: string): string {
+  return text.length > 0 ? text.charAt(0).toLowerCase() + text.slice(1) : text
 }
 
 /**

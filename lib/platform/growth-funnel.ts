@@ -7,7 +7,11 @@
 // might sign up. Pure funnel math + the platform's own pitch composer; the DB
 // writes live in app/actions/superadmin/platform-growth.ts.
 
-export const PROSPECT_STATUSES = ["new", "contacted", "trial", "converted", "lost"] as const
+// 'demo_scheduled' (lane 76B, m654 — WRITTEN, NOT APPLIED until the integrator
+// runs it): a demo is booked on a platform sales rep's calendar. Sits between
+// contacted and trial; the cold follow-up sweep (prospect-followup.ts) reads
+// only new|contacted and so never touches it.
+export const PROSPECT_STATUSES = ["new", "contacted", "demo_scheduled", "trial", "converted", "lost"] as const
 export type ProspectStatus = (typeof PROSPECT_STATUSES)[number]
 
 export const PROSPECT_ROLES = ["solo_agent", "team", "brokerage", "multi_location", "unknown"] as const
@@ -64,7 +68,7 @@ export interface GrowthFunnel {
 
 /** PURE: roll a prospect list up to the self-marketing funnel. */
 export function rollupGrowthFunnel(prospects: Array<{ status: string | null }>): GrowthFunnel {
-  const byStatus: Record<ProspectStatus, number> = { new: 0, contacted: 0, trial: 0, converted: 0, lost: 0 }
+  const byStatus: Record<ProspectStatus, number> = { new: 0, contacted: 0, demo_scheduled: 0, trial: 0, converted: 0, lost: 0 }
   for (const p of prospects) {
     const s = (p.status ?? "new") as ProspectStatus
     if (s in byStatus) byStatus[s]++
@@ -74,6 +78,62 @@ export function rollupGrowthFunnel(prospects: Array<{ status: string | null }>):
   const conversionRate = qualified > 0 ? byStatus.converted / qualified : 0
   const activationRate = total > 0 ? (byStatus.trial + byStatus.converted) / total : 0
   return { total, byStatus, conversionRate, activationRate }
+}
+
+// ── What happens NEXT to a prospect (lane 76B — the board's honest answer) ──
+// Mirrors lib/platform/prospect-followup.ts's ladder + the three AI-agent
+// exits (lib/platform/prospect-capture.ts stamps). PURE: reads the row only.
+
+export interface ProspectNextTouchInput {
+  status: string | null
+  followup_count?: number | null
+  last_followup_at?: string | null
+  created_at?: string | null
+  email?: string | null
+  details?: Record<string, unknown> | null
+}
+
+export interface ProspectNextTouch {
+  /** One line for the board. */
+  label: string
+  /** ISO when known (demo start, next auto touch), else null. */
+  at: string | null
+  /** The demo's start when one is booked (pending or confirmed). */
+  demoAt: string | null
+  demoState: "pending_rep_confirmation" | "confirmed" | null
+  handoffOpen: boolean
+}
+
+export function describeProspectNextTouch(p: ProspectNextTouchInput): ProspectNextTouch {
+  const demo = (p.details?.demo_appointment ?? null) as { start_at?: string; status?: string } | null
+  const handoff = (p.details?.human_handoff ?? null) as { status?: string; best_time?: string | null } | null
+  const handoffOpen = handoff?.status === "open"
+  const demoAt = demo?.start_at ?? null
+  const demoState = demo?.status === "confirmed" ? "confirmed" : demo?.status === "pending_rep_confirmation" ? "pending_rep_confirmation" : null
+
+  if (demoAt && demoState) {
+    return {
+      label: demoState === "confirmed" ? "Demo confirmed — reminders 5d/2d/morning-of" : "Demo booked — awaiting rep confirmation",
+      at: demoAt, demoAt, demoState, handoffOpen,
+    }
+  }
+  if (handoffOpen) {
+    return { label: `Human follow-up requested${handoff?.best_time ? ` (${handoff.best_time})` : ""} — auto ladder paused`, at: null, demoAt: null, demoState: null, handoffOpen }
+  }
+  const status = p.status ?? "new"
+  if (status === "trial" || status === "converted" || status === "lost") {
+    return { label: "No automated touches", at: null, demoAt: null, demoState: null, handoffOpen }
+  }
+  if (!p.email) return { label: "Phone-only — no automated email; call them", at: null, demoAt: null, demoState: null, handoffOpen }
+  if (status === "new" && (p.followup_count ?? 0) === 0) {
+    const at = p.created_at ? new Date(new Date(p.created_at).getTime() + 60 * 60 * 1000).toISOString() : null
+    return { label: "Intro email (auto, ≥1h after capture)", at, demoAt: null, demoState: null, handoffOpen }
+  }
+  if (status === "contacted" && p.followup_count === 1) {
+    const at = p.last_followup_at ? new Date(new Date(p.last_followup_at).getTime() + 3 * 24 * 60 * 60 * 1000).toISOString() : null
+    return { label: "One nudge (auto, 3 quiet days after the intro)", at, demoAt: null, demoState: null, handoffOpen }
+  }
+  return { label: "Ladder complete — human decides", at: null, demoAt: null, demoState: null, handoffOpen }
 }
 
 // ── The platform's OWN pitch (self-marketing copy) ────────────────────────────

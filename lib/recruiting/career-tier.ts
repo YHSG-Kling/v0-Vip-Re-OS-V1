@@ -115,6 +115,7 @@ export function tierProgress(current: CareerTier, s: AgentTierStats): TierProgre
 function pct(have: number, need: number): number { return need <= 0 ? 100 : Math.min(100, (have / need) * 100) }
 
 // ─── Service layer: evaluate real stats, auto-upgrade, approach nudge ──────────
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { createServiceClient } from "@/lib/supabase/service"
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -139,7 +140,11 @@ export async function gatherTierStats(svc: Svc, agent: { id: string; created_at?
   }
 }
 
-export interface TierEvalResult { scanned: number; upgraded: number; approachNudges: number }
+export interface TierEvalResult {
+  scanned: number; upgraded: number; approachNudges: number
+  /** Agents whose approach nudge stood down because the retention radar has them under strain (wave 103). */
+  strainSkipped: number
+}
 
 /**
  * Evaluate a brokerage's active agents: AUTO-UPGRADE career_tier when a higher AUTO tier is earned (never
@@ -147,9 +152,15 @@ export interface TierEvalResult { scanned: number; upgraded: number; approachNud
  * >=80% toward the next tier (deduped per agent+nextTier+ISO-2-week). Best-effort.
  */
 export async function runCareerTierEvaluation(svc: Svc, params: { brokerageId: string; now?: Date }): Promise<TierEvalResult> {
-  const out: TierEvalResult = { scanned: 0, upgraded: 0, approachNudges: 0 }
+  const out: TierEvalResult = { scanned: 0, upgraded: 0, approachNudges: 0, strainSkipped: 0 }
   const now = params.now ?? new Date()
   const { data: agents } = await svc.from("agents").select("id, user_id, created_at, team_id, career_tier").eq("brokerage_id", params.brokerageId).eq("is_active", true).limit(2000)
+  // FATIGUE-AWARE (wave 103, lane 103C): an agent the retention radar has under
+  // strain gets no "you're 80% of the way, push harder" nudge this run. Upgrades
+  // still land and are still celebrated — recognition is not pressure. Read, not
+  // re-derived (lib/gamification/strain.ts over agent_retention_scores).
+  const { strainedAgentIds } = await import("@/lib/gamification/strain")
+  const strained = await strainedAgentIds(svc, params.brokerageId)
   const biweek = `${now.getUTCFullYear()}-${Math.floor((now.getTime() - Date.UTC(now.getUTCFullYear(), 0, 1)) / (14 * 86_400_000))}`
 
   for (const a of (agents ?? []) as any[]) {
@@ -161,15 +172,18 @@ export async function runCareerTierEvaluation(svc: Svc, params: { brokerageId: s
 
       // AUTO-UPGRADE (never downgrade).
       if (tierRank(earned) > tierRank(current)) {
-        await svc.from("agents").update({ career_tier: earned, tier_updated_at: now.toISOString() }).eq("id", a.id)
+        const { error: tierErr } = await svc.from("agents").update({ career_tier: earned, tier_updated_at: now.toISOString() }).eq("id", a.id)
+        // Never congratulate an upgrade that did not land.
+        if (tierErr) { console.error(`[career-tier] upgrade to ${earned} REFUSED for agent ${a.id}: ${tierErr.message}`); continue }
         out.upgraded++
         if (a.user_id) {
-          await svc.from("notifications").insert({ user_id: a.user_id, brokerage_id: params.brokerageId, type: "career_tier_upgrade", title: `You reached ${TIER_GATES[earned].label}!`, body: `Congratulations — your production moved you up to the ${TIER_GATES[earned].label} tier.`, entity_type: "agent", entity_id: a.id, priority: "medium", is_read: false })
+          await sentinelWrite(svc, svc.from("notifications").insert({ user_id: a.user_id, brokerage_id: params.brokerageId, type: "career_tier_upgrade", title: `You reached ${TIER_GATES[earned].label}!`, body: `Congratulations — your production moved you up to the ${TIER_GATES[earned].label} tier.`, entity_type: "agent", entity_id: a.id, priority: "medium", is_read: false }), { table: "notifications", flow: "career_tier_notify", brokerageId: params.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
         }
         continue // don't also nudge in the same run
       }
 
-      // APPROACH NUDGE — >=80% toward the next tier.
+      // APPROACH NUDGE — >=80% toward the next tier. Never for a strained agent.
+      if (strained.has(a.id)) { out.strainSkipped++; continue }
       const prog = tierProgress(current, stats)
       if (prog.nextTier && prog.pctToNext >= 80 && prog.pctToNext < 100 && prog.gap) {
         const dedupeTag = `CAREER TIER — agent:${a.id} ${prog.nextTier} ${biweek}`

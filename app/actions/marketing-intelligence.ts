@@ -33,6 +33,10 @@ export interface TrendingKeyword {
 export interface CompetitorPost {
   id: string
   competitorName: string
+  /** competitor_profiles.competitor_type — 'brokerage' from the watchlist scan
+   *  (lib/competitive-intel/content-intel-scan.ts:114); other values when a
+   *  profile is added by hand. Lets the panel say what KIND of rival this is. */
+  competitorType: string | null
   platform: string
   contentType: string
   caption: string | null
@@ -40,10 +44,29 @@ export interface CompetitorPost {
   mediaUrl: string | null
   postedAt: string | null
   likesCount: number | null
+  commentsCount: number | null
+  sharesCount: number | null
+  viewsCount: number | null
+  /** likes + comments + shares + views over whichever hard counts exist.
+   *  NULL — not 0 — when every count is NULL, which is every row the Exa scan
+   *  writes (hard counts need platform auth; content-intel-scan.ts:165 keeps
+   *  them honest-NULL). A 0 here would read as "nobody interacted". */
+  interactionsTotal: number | null
   engagementRate: number | null
+  /** Provenance of engagementRate, from raw_engagement_data.source: 'exa' means
+   *  a citation-weighted PROXY (0-100), not a platform metric. A UI that shows
+   *  the number without this label presents a proxy as a fact. */
+  engagementSource: string | null
   detectedTopics: string[]
   detectedKeywords: string[]
   hookType: string | null
+  ctaPresent: boolean | null
+}
+
+/** Sum the hard interaction counts; null when none is known (see interactionsTotal). */
+function sumInteractions(counts: Array<number | null | undefined>): number | null {
+  const known = counts.filter((c): c is number => typeof c === "number")
+  return known.length === 0 ? null : known.reduce((s, c) => s + c, 0)
 }
 
 /**
@@ -125,8 +148,9 @@ export async function getCompetitorHighPerformers(params: {
     .from("competitor_content")
     .select(
       "id, platform, content_type, caption, content_url, media_url, posted_at, " +
-        "likes_count, engagement_rate, detected_topics, detected_keywords, hook_type, " +
-        "competitor_id, competitor_profiles!inner(competitor_name)"
+        "likes_count, comments_count, shares_count, views_count, engagement_rate, raw_engagement_data, " +
+        "detected_topics, detected_keywords, hook_type, cta_present, " +
+        "competitor_id, competitor_profiles!inner(competitor_name, competitor_type)"
     )
     .eq("brokerage_id", ctx.brokerageId)
     .eq("is_high_performing", true)
@@ -150,28 +174,44 @@ export async function getCompetitorHighPerformers(params: {
     media_url: string | null
     posted_at: string | null
     likes_count: number | null
+    comments_count: number | null
+    shares_count: number | null
+    views_count: number | null
     engagement_rate: number | null
+    raw_engagement_data: { source?: string | null } | null
     detected_topics: string[] | null
     detected_keywords: string[] | null
     hook_type: string | null
-    competitor_profiles: { competitor_name: string } | { competitor_name: string }[] | null
-  }>).map((row) => ({
-    id: row.id,
-    competitorName: Array.isArray(row.competitor_profiles)
-      ? row.competitor_profiles[0]?.competitor_name ?? "Unknown"
-      : row.competitor_profiles?.competitor_name ?? "Unknown",
-    platform: row.platform,
-    contentType: row.content_type,
-    caption: row.caption,
-    contentUrl: row.content_url,
-    mediaUrl: row.media_url,
-    postedAt: row.posted_at,
-    likesCount: row.likes_count,
-    engagementRate: row.engagement_rate,
-    detectedTopics: row.detected_topics ?? [],
-    detectedKeywords: row.detected_keywords ?? [],
-    hookType: row.hook_type,
-  }))
+    cta_present: boolean | null
+    competitor_profiles:
+      | { competitor_name: string; competitor_type: string | null }
+      | { competitor_name: string; competitor_type: string | null }[]
+      | null
+  }>).map((row) => {
+    const profile = Array.isArray(row.competitor_profiles) ? row.competitor_profiles[0] : row.competitor_profiles
+    return {
+      id: row.id,
+      competitorName: profile?.competitor_name ?? "Unknown",
+      competitorType: profile?.competitor_type ?? null,
+      platform: row.platform,
+      contentType: row.content_type,
+      caption: row.caption,
+      contentUrl: row.content_url,
+      mediaUrl: row.media_url,
+      postedAt: row.posted_at,
+      likesCount: row.likes_count,
+      commentsCount: row.comments_count,
+      sharesCount: row.shares_count,
+      viewsCount: row.views_count,
+      interactionsTotal: sumInteractions([row.likes_count, row.comments_count, row.shares_count, row.views_count]),
+      engagementRate: row.engagement_rate,
+      engagementSource: row.raw_engagement_data?.source ?? null,
+      detectedTopics: row.detected_topics ?? [],
+      detectedKeywords: row.detected_keywords ?? [],
+      hookType: row.hook_type,
+      ctaPresent: row.cta_present,
+    }
+  })
 }
 
 /**
@@ -199,7 +239,7 @@ export async function getCompetitorPostInspiration(
   const supabase = await createClient()
   const { data, error } = await supabase
     .from("competitor_content")
-    .select("detected_topics, detected_keywords, hook_type, emotional_tone, content_type, platform")
+    .select("detected_topics, detected_keywords, hook_type, emotional_tone, cta_present, content_type, platform")
     .eq("id", competitorPostId)
     .eq("brokerage_id", ctx.brokerageId)
     .maybeSingle()
@@ -211,15 +251,27 @@ export async function getCompetitorPostInspiration(
     detected_keywords: string[] | null
     hook_type: string | null
     emotional_tone: string | null
+    cta_present: boolean | null
     content_type: string
     platform: string
   }
+
+  // cta_present is the third leg of the brief beside hook_type and
+  // emotional_tone: the scan classifies whether the rival's post asked for
+  // anything (content-intel-scan.ts:177) and until now the repurpose prompt
+  // never heard the answer. A post that won WITHOUT a CTA is a value play
+  // worth keeping that way; one that won WITH a CTA earned its ask.
+  const ctaDirective =
+    row.cta_present === true  ? "The original closed with a call to action and still performed — keep a clear, low-pressure CTA. " :
+    row.cta_present === false ? "The original had NO call to action — it won on value alone; lead with value and keep any CTA soft. " :
+                                ""
 
   const inspirationPrompt =
     `Create a ${row.platform} ${row.content_type} on the topic of ` +
     `"${(row.detected_topics ?? []).join(", ")}" using a ${row.hook_type ?? "story"} hook. ` +
     `Emotional tone: ${row.emotional_tone ?? "warm and informative"}. ` +
     `Target keywords: ${(row.detected_keywords ?? []).join(", ")}. ` +
+    ctaDirective +
     `Apply MY brand voice — do not copy the original. Lead with audience value (Them First).`
 
   return {

@@ -46,7 +46,17 @@ export const listingLandingPageAdapter: ChannelAdapter = {
       .insert({
         brokerage_id: brokerageId,
         contact_id: contact?.id ?? null,
-        template_id: step.listing_page_template_id ?? null,
+        // The FALLBACK path — reached only when generateListingLandingPage is not
+        // exported (see the try above). It cannot resolve a template, because the
+        // resolver lives with the generator; storing the REQUESTED id here would
+        // claim a provenance nothing verified, and m606's FK would refuse an id
+        // that names no content_templates row — losing the whole placeholder row
+        // (PGRST/23503 refuses the row, not the column — CLAUDE.md §3).
+        //
+        // So the placeholder records NO template. That is honest: this row exists
+        // precisely because the real generator did not run, and it carries a
+        // "backend not yet configured" note for the same reason.
+        template_id: null,
         slug: pageSlug,
         status: "pending",
         created_at: new Date().toISOString(),

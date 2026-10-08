@@ -1,6 +1,8 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateObject } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// ROUTED, was raw — see lib/ai/models.ts:feedback_theme_analysis. The key is
+// pinned to claude-sonnet, the model this call site already passed, so only the
+// ledger changes.
+import { generateObjectRouted } from "@/lib/ai/models"
 import { z } from "zod"
 import { KernelEvent } from "@/lib/kernel/events"
 
@@ -60,7 +62,7 @@ export async function computeWeeklyMetrics(
     if (negativeCount >= 2) {
       const { data: negativeFeedback } = await supabase
         .from("ai_feedback_log")
-        .select("feedback_text")
+        .select("feedback_text, ai_output_snapshot")
         .eq("brokerage_id", brokerageId)
         .eq("source_system", sourceSystem)
         .eq("rating", -1)
@@ -69,19 +71,28 @@ export async function computeWeeklyMetrics(
         .not("feedback_text", "is", null)
         .limit(20)
 
-      const feedbackTexts = negativeFeedback
-        ?.map((f) => f.feedback_text)
-        .filter(Boolean)
+      // Pair each complaint with the AI OUTPUT it was rated against — the
+      // theme detector reasons about actual failure modes ("cited a wrong
+      // price") instead of only the complaint's own wording ("was wrong"),
+      // which was previously the entire signal.
+      const feedbackEntries = (negativeFeedback ?? [])
+        .filter((f) => f.feedback_text)
+        .map((f) =>
+          f.ai_output_snapshot
+            ? `Complaint: ${f.feedback_text}\nAI said: ${f.ai_output_snapshot}`
+            : `Complaint: ${f.feedback_text}`,
+        )
 
-      if (feedbackTexts && feedbackTexts.length > 0) {
+      if (feedbackEntries.length > 0) {
         try {
-          const { object } = await generateObject({
-            model: resolveModel("anthropic/claude-sonnet-4-20250514"),
+          const { object } = await generateObjectRouted({
+            feature: "feedback_theme_analysis",
+            brokerageId,
             schema: ThemesSchema,
             system:
-              "Identify the top 3 themes in negative feedback. Return JSON: {themes: string[]}",
-            prompt: feedbackTexts.join("\n---\n"),
-            maxOutputTokens: 150,
+              "Identify the top 3 themes in negative feedback. Each entry pairs the complaint with the AI output it was rated against, when available. Return JSON: {themes: string[]}",
+            prompt: feedbackEntries.join("\n---\n"),
+            maxTokens: 150,
           })
           topNegativeThemes = object.themes
         } catch (error) {
@@ -120,15 +131,25 @@ export async function computeWeeklyMetrics(
     systemsProcessed++
   }
 
-  // Emit kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    event_type: KernelEvent.AI_METRICS_COMPUTED,
-    payload: {
+  // Emit kernel event — audit row + reactor. The bare insert it replaces carried NO
+  // entity_type / entity_id (both NOT NULL on the live table) and wrote `payload`
+  // instead of `metadata`, so it was refused on every run and no AI_METRICS_COMPUTED
+  // row has ever landed. The entity is the brokerage whose week was computed.
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  const { error: metricsEventError } = await emitKernelEvent({
+    brokerageId,
+    event: KernelEvent.AI_METRICS_COMPUTED,
+    entityType: "brokerage",
+    entityId: brokerageId,
+    source: "cron",
+    metadata: {
       week_start: weekStart.toISOString(),
       systems_processed: systemsProcessed,
     },
   })
+  if (metricsEventError) {
+    console.error(`[FeedbackAggregator] AI_METRICS_COMPUTED row refused for ${brokerageId}: ${metricsEventError}`)
+  }
 
   return { systemsProcessed }
 }
@@ -162,32 +183,23 @@ export async function getWeeklyMetrics(
   return data || []
 }
 
-export async function getLastTwoWeeksMetrics(
-  brokerageId: string
-): Promise<
-  Array<{
-    source_system: string
-    week_start: string
-    approval_rate: number
-    top_negative_themes: string[]
-  }>
-> {
-  const supabase = createServiceClient()
-
-  const twoWeeksAgo = new Date()
-  twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14)
-
-  const { data, error } = await supabase
-    .from("ai_improvement_metrics")
-    .select("source_system, week_start, approval_rate, top_negative_themes")
-    .eq("brokerage_id", brokerageId)
-    .gte("week_start", twoWeeksAgo.toISOString().split("T")[0])
-    .order("week_start", { ascending: false })
-
-  if (error) {
-    console.error("[FeedbackAggregator] Error fetching last 2 weeks metrics:", error)
-    return []
-  }
-
-  return data || []
-}
+// TOMBSTONE: `getLastTwoWeeksMetrics(brokerageId)` — DELETED as a duplicate.
+// SURVIVOR: getWeeklyMetrics, lib/intelligence/feedback-aggregator.ts:136.
+//
+// Same table (`ai_improvement_metrics`), same tenant filter, and the survivor
+// selects `*` where this one hand-listed four of those columns — so the survivor
+// is a strict SUPERSET of the projection, not a different read.
+//
+// NOTHING WAS LOST IN THE MERGE. The only behavioural difference was the window:
+// this took a ROLLING 14 days, which straddles two or three `week_start` values
+// depending on the day it runs, while the one live caller — the AI-quality
+// dashboard, app/dashboard/ai-quality/page.tsx:63-64 — asks for the two exact
+// Mondays it renders and hands them to the client as `thisWeekMetrics` /
+// `lastWeekMetrics`. The client then computes its own per-system trend from that
+// pair (ai-quality-dashboard-client.tsx:119-124). A rolling window feeding the
+// same trend would have produced a third week's rows the comparison has no slot
+// for — a second, less precise opinion about the same numbers, which is the
+// defect CLAUDE.md §6 exists to prevent, not a capability.
+//
+// It was also the only reader in this module whose error path returned `[]`
+// while claiming a shape the caller would have charted as "0% approval".

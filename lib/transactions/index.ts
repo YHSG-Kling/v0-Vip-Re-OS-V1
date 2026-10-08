@@ -9,10 +9,10 @@ export {
   MILESTONE_STATUS,
   CLIENT_VISIBLE_MILESTONES,
   ROLES,
-  STAGE_TRANSITION_ROLES,
+  // STAGE_TRANSITION_ROLES / MARK_LOST_ROLES removed (lane 93A) — survivor
+  // lib/transactions/role-guard.ts stageTransitionTier / canTransitionStage.
   MILESTONE_OVERRIDE_ROLES,
   MILESTONE_EDIT_ROLES,
-  MARK_LOST_ROLES,
 } from './transaction-stages'
 export type {
   TransactionStage,
@@ -36,8 +36,9 @@ export {
   canOverrideMilestone,
   canEditMilestoneDate,
   canViewFinancials,
-  canActAsExternalParty,
-  assertUserHasRole,
+  // canActAsExternalParty removed — see the tombstone at
+  // lib/transactions/role-guard.ts:145. The external-party gate is
+  // lib/kernel/portal-auth.ts:61 requireLenderVendorActor / :111 requireTitleActor.
 } from './role-guard'
 export type { UserRole, RoleContext } from './role-guard'
 
@@ -56,7 +57,10 @@ export type {
 } from './milestone-service'
 
 // ─── CDA WORKFLOW ─────────────────────────────────────────────────────────────
-export { generateCDAPreview, submitCDA, approveCDA } from './cda-workflow'
+// CDA workflow: ONE rail — app/actions/cda-portal.ts. cda-workflow.ts was a second
+// implementation over the same table with weaker gates and a broken create path; its
+// unique capabilities (the final document-compliance gate, the kernel lifecycle events,
+// the discrepancy activity) were folded into the portal rail and the file deleted.
 
 // ─── VENDOR QUOTE WORKFLOW ────────────────────────────────────────────────────
 export { requestQuoteApproval, approveQuote, declineQuote } from './vendor-quote-workflow'

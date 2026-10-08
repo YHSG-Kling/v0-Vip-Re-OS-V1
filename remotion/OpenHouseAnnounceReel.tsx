@@ -18,16 +18,17 @@
  *     before the 4th frame.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  Sequence,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
-import { ContextCueRow } from "./_BrollLayer"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { SafeImg } from "./components/SafeImg"
+import { ContextCueRow, PlannedBrollLayer, type BrollClip } from "./_BrollLayer"
+import { brollMountWindows, fitBodyVisualPlan, photoSpansAround, type BodyVisualPlan } from "../lib/video/body-visual-model"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
+import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
 
 export interface OpenHouseAnnounceReelProps {
   /** Property address line. */
@@ -59,6 +60,15 @@ export interface OpenHouseAnnounceReelProps {
   qrCodeDataUrl?: string | null
   /** Caption under the outro QR, e.g. "Scan to RSVP". */
   qrCaption?:    string
+  /** SOUND-OFF CAPTIONS (additive + default-off, wave 61). Precomputed word-accurate
+   *  cues built upstream from REAL alignment — preferred. render-just-listed already
+   *  stages both into input_props for every promo composition it selects
+   *  (buildCaptionPlan against voiceoverAlignment/script); this composition simply
+   *  had nowhere to draw them until now. See CaptionLayer. */
+  captionsCues?: CaptionCue[] | null
+  /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
+   *  timing in-composition when no cues are supplied. Absent → no captions. */
+  captionScript?: string | null
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -67,25 +77,40 @@ export interface OpenHouseAnnounceReelProps {
     showEhoMark?:    boolean
     licenseLine?:    string
   }
+  /** WAVE 92 (lane 92E) — cutaway footage for the narration gaps a photo-scarce open house leaves
+   *  (brollBenefit, lib/video/body-visual-model.ts); played only where the staged plan cut it. */
+  brollClips?: BrollClip[]
+  bodyVisualPlan?: BodyVisualPlan | null
 }
 
 const FPS    = 30
-const COVER  = 3 * FPS
-const BODY   = 7 * FPS
-const CTA    = 2 * FPS
-const TOTAL  = COVER + BODY + CTA  // 360 frames = 12s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `BODY = 7 * FPS` stood here. Bookends come from the ONE registry; the body
+// is whatever the render's durationInFrames leaves between them.
+const BOOKENDS = compositionBookends("OpenHouseAnnounceReel")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
+void FPS
 
 export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
   address, cityState, dateLabel, timeLabel, imageUrls, bodyLine,
   ctaLabel, agentName, agentPhone, voiceoverUrl, contextCues,
-  qrCodeDataUrl, qrCaption, brand,
+  qrCodeDataUrl, qrCaption, brand, captionsCues, captionScript, brollClips, bodyVisualPlan,
 }) => {
   const frame    = useCurrentFrame()
   const showEho  = brand.showEhoMark ?? true
   const finalCta = ctaLabel ?? "Save the date"
   const heroImg  = imageUrls[0] ?? null
   const restImgs = imageUrls.slice(1, 4)
-  const perPhoto = restImgs.length > 0 ? BODY / restImgs.length : BODY
+  const { durationInFrames, width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const BODY     = timeline.body.durationInFrames
+  // WAVE 92 (lane 92E): footage only in the plan's narration gaps; the body photos tile the
+  // frames the footage leaves (photoSpansAround — no photo repeats).
+  const footage   = brollClips ?? []
+  const brollWins = footage.length > 0 ? brollMountWindows(fitBodyVisualPlan(bodyVisualPlan, "OpenHouseAnnounceReel", durationInFrames), { within: timeline.body }) : []
+  const photoSpans = photoSpansAround(BODY, brollWins.map((w) => ({ from: w.from - COVER, durationInFrames: w.durationInFrames })), restImgs.length)
   const cues     = contextCues ?? []
 
   return (
@@ -103,7 +128,7 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
         }}>
           {heroImg && (
             <AbsoluteFill>
-              <Img src={heroImg} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              <SafeImg src={heroImg} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               {/* Tint so the headline reads */}
               <AbsoluteFill style={{ backgroundColor: `${brand.primaryColor}D9` }} />
             </AbsoluteFill>
@@ -113,26 +138,27 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
               display: "inline-block", padding: "10px 24px", borderRadius: 6,
               backgroundColor: brand.accentColor, color: brand.primaryColor,
               fontSize: 26, fontWeight: 900, letterSpacing: 6, textTransform: "uppercase",
-              marginBottom: 36, opacity: interpolate(frame, [0, 14], [0, 1]),
+              marginBottom: 36, opacity: interpolate(frame, [0, 14], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }}>
               Open House
             </div>
             <div style={{
               fontSize: 96, fontWeight: 900, color: "#fff", lineHeight: 0.95,
-              marginBottom: 16, opacity: interpolate(frame, [10, 32], [0, 1]),
+              marginBottom: 16, opacity: interpolate(frame, [10, 32], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }}>
               {dateLabel}
             </div>
             <div style={{
               fontSize: 48, color: brand.accentColor, fontWeight: 800,
-              opacity: interpolate(frame, [20, 42], [0, 1]),
+              opacity: interpolate(frame, [20, 42], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }}>
               {timeLabel}
             </div>
           </div>
           {brand.logoUrl && (
-            <div style={{ position: "absolute", top: 32, left: 32 }}>
-              <Img src={brand.logoUrl} style={{
+            /* Wave 89 — inside the safe insets (it was a typed 32 px corner). */
+            <div style={{ position: "absolute", top: safe.top, left: safe.left }}>
+              <SafeImg src={brand.logoUrl} style={{
                 height: 48, objectFit: "contain", opacity: 0.85,
               }} />
             </div>
@@ -145,20 +171,22 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
         <AbsoluteFill>
           {/* Background — cycling photos when supplied */}
           {restImgs.length > 0 ? (
-            restImgs.map((url, idx) => (
-              <Sequence key={idx} from={idx * perPhoto} durationInFrames={perPhoto}>
+            photoSpans.map((p, idx) => (
+              <Sequence key={idx} from={p.from} durationInFrames={p.durationInFrames}>
                 <AbsoluteFill>
-                  <Img src={url} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  <SafeImg src={restImgs[p.photoIndex]} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                   <AbsoluteFill style={{ backgroundColor: `${brand.primaryColor}B3` }} />
                 </AbsoluteFill>
               </Sequence>
             ))
           ) : heroImg ? (
             <AbsoluteFill>
-              <Img src={heroImg} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              <SafeImg src={heroImg} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               <AbsoluteFill style={{ backgroundColor: `${brand.primaryColor}B3` }} />
             </AbsoluteFill>
           ) : null}
+          <PlannedBrollLayer clips={footage} windows={brollWins} offset={COVER}
+            overlayColor={`${brand.primaryColor}B3`} clipCaptions={false} filmGrain />
 
           <AbsoluteFill style={{
             display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
@@ -183,7 +211,10 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
               </div>
             )}
           </AbsoluteFill>
-          <ContextCueRow cues={cues} accentColor={brand.accentColor} position="bottom" />
+          {/* Wave 91 (lane 91E — the real render): in the BODY the bottom band belongs to the
+              captions and the badge slot above it to this scene's own title block, so the cue
+              chips stand on the safe TOP inset (as NeighborhoodSpotlightReel's do). */}
+          <ContextCueRow cues={cues} accentColor={brand.accentColor} position="top" />
         </AbsoluteFill>
       </Sequence>
 
@@ -200,10 +231,9 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
           {agentPhone && (
             <div style={{ fontSize: 24, color: "#fff", opacity: 0.85, marginTop: 12 }}>{agentPhone}</div>
           )}
-          <div style={{
-            position: "absolute", bottom: 24, left: 0, right: 0,
-            textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5,
-          }}>
+          {/* Wave 89 — the disclosure on the safe bottom inset at the caption
+              step (cinemaDisclosureStyle); it was 24 px from the edge in 14 px type. */}
+          <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height) }}>
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
             {brand.licenseLine && (
               <>
@@ -221,9 +251,18 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
+
+      {/* NO CAPTION OVER BRANDING/CTA (wave 61, mirrors JustListedReel.tsx) —
+          clip before the CTA tile at COVER + BODY. */}
+      <CaptionLayer
+        cues={captionsCues}
+        script={captionScript}
+        accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + BODY}
+      />
     </AbsoluteFill>
   )
 }

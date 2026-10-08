@@ -10,7 +10,7 @@
  *   • do-not-contact + opt-out flags (so the caller doesn't violate consent)
  *
  * Used by:
- *   • VapiCallPanel  — shown when a contact is selected
+ *   • AiOutboundCallPanel  — shown when a contact is selected
  *   • D-ID streaming avatar widget — passed via session context
  *   • Quick-actions on contact cards
  */
@@ -51,6 +51,29 @@ export interface ContactBrief {
   /** THE LIFETIME VALUE RECEIPT — how the OS found them, every touch since,
    *  and the GCI it earned. One honest sentence from the real ledgers. */
   provenanceLine: string | null
+  /** IDENTITY EVIDENCE (wave 102, lane 102A; m697) — how we know this contact is the same person
+   *  as the records behind it: confidence, which chokepoints judged it, what is linked, and the
+   *  human lines. Agents see contacts only and never lead cost: the summary carries NO cost key
+   *  (lib/kernel/person-identity.ts::summarizePersonEvidence strips every one). null when no
+   *  evidence names this contact or m697 is not applied. */
+  identityEvidence: {
+    personId: string
+    confidence: number
+    evidenceCount: number
+    sources: string[]
+    linked: Partial<Record<string, number>>
+    how: string[]
+    convertedAt: string | null
+  } | null
+  /** RELATIONSHIPS (wave 102, lane 102B) — one line per graph edge touching this contact
+   *  (lib/kernel/relationship-graph.ts describeEdge): spouse / household, the home they own or
+   *  sold, who represents them, who referred them, their lender and vendors. Empty before m698. */
+  relationships: string[]
+  /** VENDOR SEAT (wave 103, lane 103D) — this contact HOLDS a vendor seat (contacts.vendor_id,
+   *  written at seat activation by lib/kernel/vendor-seat-contact.ts): the vendor's category and
+   *  name, and how many of the tenant's contacts its own vendor_for edges say it served
+   *  (lib/kernel/relationship-graph.ts vendorSeatCorroboration). null when the contact is no vendor. */
+  vendorSeat: { vendorId: string; category: string | null; name: string | null; servedContacts: number; corroborated: boolean } | null
 }
 
 /**
@@ -58,7 +81,8 @@ export interface ContactBrief {
  * raw engagement_score and the contact's recent activity cadence. Pure
  * function — no side effects, can also be reused by deal-card badges.
  */
-export function computeMomentum(input: {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function computeMomentum(input: {
   engagementScore: number | null
   lastContactedAt: string | null
   recentActivityCount: number
@@ -92,9 +116,9 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
   const { data: contact } = await supabase
     .from("contacts")
     .select(
-      `id, first_name, last_name, preferred_name, name_pronunciation, salutation_style,
+      `id, brokerage_id, first_name, last_name, preferred_name, name_pronunciation, salutation_style,
        legal_first_name, legal_last_name, legal_name_source,
-       contact_type, contact_persona, buyer_stage, city, state,
+       contact_type, contact_persona, buyer_stage, city, state, vendor_id,
        engagement_score, last_contacted_at,
        dnc_status, email_opt_out, sms_opt_out, phone_opt_out`,
     )
@@ -232,6 +256,55 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
     provenanceLine = composeLifetimeValueReceipt(facts).line
   } catch { /* additive — the brief stands without it */ }
 
+  // IDENTITY EVIDENCE (wave 102) — read through the SESSION client (m697's tenant-scoped SELECT
+  // policy), pinned to the contact's own brokerage; the pure summary carries no cost key.
+  let identityEvidence: ContactBrief["identityEvidence"] = null
+  try {
+    const { personForContact, summarizePersonEvidence } = await import("@/lib/kernel/person-identity")
+    const view = await personForContact(supabase, { brokerageId: (contact as any).brokerage_id ?? null, contactId })
+    if (view.ok && view.view) {
+      identityEvidence = summarizePersonEvidence(view.view)
+      if (identityEvidence.evidenceCount > 1) {
+        talkingPoints.push(`Identity: ${identityEvidence.evidenceCount} records resolved to this person (${Math.round(identityEvidence.confidence * 100)}% confidence).`)
+      }
+    }
+  } catch { /* additive — the brief stands without it */ }
+  // RELATIONSHIPS (wave 102, lane 102B) — the graph's edges on this contact, read through the
+  // session client (relationship_edges RLS: the caller's own tenant), tenant from the contact's row.
+  // An outside-agent representation leads the talking points: never touch another brokerage's client.
+  const relationships: string[] = []
+  try {
+    const { neighbors, describeEdge, representedByOutsideAgent, agentVisibleEdges } = await import("@/lib/kernel/relationship-graph")
+    const brokerageId = (contact as any).brokerage_id as string | null
+    if (brokerageId) {
+      const graph = await neighbors(supabase as any, { brokerageId, entity: { type: "contact", id: contactId } })
+      if (!graph.ok && graph.error) console.warn("[contact-brief] relationship read refused:", graph.error)
+      // WAVE 105 (105D): the brief is an AGENT surface — no lead endpoint reaches it (§5: agents see
+      // contacts only; has_opportunity points at a lead row and stays on the lead desk).
+      const visible = agentVisibleEdges(graph.edges)
+      for (const e of visible) relationships.push(describeEdge(e, contactId))
+      if (representedByOutsideAgent(visible, contactId)) talkingPoints.push("⚠ Represented by an outside agent — go through their agent, never direct.")
+      else if (relationships.length > 0) talkingPoints.push(`Relationships: ${relationships.slice(0, 3).join("; ")}.`)
+    }
+  } catch { /* additive — the brief stands without the graph */ }
+  // VENDOR SEAT (wave 103, lane 103D) — contacts.vendor_id says this contact HOLDS a vendor seat.
+  // The vendor row is read in the contact's own tenant through the session client; the seat's own
+  // vendor_for edges (the vendor entity's neighbors) corroborate it. "Is a vendor: <category>".
+  let vendorSeat: ContactBrief["vendorSeat"] = null
+  try {
+    const vendorId = (contact as any).vendor_id as string | null
+    const brokerageId = (contact as any).brokerage_id as string | null
+    if (vendorId && brokerageId) {
+      const { data: vendor, error: vendorErr } = await supabase.from("vendors").select("id, name, category").eq("id", vendorId).eq("brokerage_id", brokerageId).maybeSingle()
+      if (vendorErr) console.warn("[contact-brief] vendor seat read refused:", vendorErr.message)
+      const { neighbors, vendorSeatCorroboration } = await import("@/lib/kernel/relationship-graph")
+      const own = await neighbors(supabase as any, { brokerageId, entity: { type: "vendor", id: vendorId }, types: ["vendor_for"], direction: "out" })
+      const corroboration = vendorSeatCorroboration(own.edges, vendorId)
+      vendorSeat = { vendorId, category: (vendor as any)?.category ?? null, name: (vendor as any)?.name ?? null, servedContacts: corroboration.served.length, corroborated: corroboration.corroborated }
+      talkingPoints.push(`Is a vendor: ${vendorSeat.category ?? "category unknown"}${vendorSeat.name ? ` (${vendorSeat.name})` : ""}${corroboration.corroborated ? ` — served ${corroboration.served.length} of your contacts.` : "."}`)
+    }
+  } catch { /* additive — the brief stands without the seat */ }
+
   return {
     contactId: contact.id,
     fullName,
@@ -256,5 +329,8 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
     recentActivities,
     talkingPoints,
     provenanceLine,
+    identityEvidence,
+    relationships,
+    vendorSeat,
   }
 }

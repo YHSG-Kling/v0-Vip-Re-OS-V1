@@ -21,16 +21,21 @@ interface ImpactMetrics {
     avg_response_ms: number
     total_incidents: number
   }>
+  /** The server's verdict on whether service health was measurable at all. */
+  serviceReadStatus: 'ok' | 'empty' | 'unavailable'
+  serviceReadDetail: string | null
 }
 
 export function OperationalImpactPanel({ brokerageId }: OperationalImpactPanelProps) {
   const [loading, setLoading] = useState(true)
   const [metrics, setMetrics] = useState<ImpactMetrics | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     const loadData = async () => {
       try {
         setLoading(true)
+        setLoadError(null)
 
         const [serviceData, errorData, slaData] = await Promise.all([
           getServiceStatuses(),
@@ -68,10 +73,14 @@ export function OperationalImpactPanel({ brokerageId }: OperationalImpactPanelPr
           affectedWorkflows,
           affectedRoles,
           criticalServices: serviceData.criticalIssues,
-          slaSummary: slaData.slice(0, 5) // Show worst performing services
+          slaSummary: slaData.slice(0, 5), // Show worst performing services
+          serviceReadStatus: serviceData.readStatus,
+          serviceReadDetail: serviceData.readDetail,
         })
       } catch (error) {
         console.error('Error loading operational impact:', error)
+        setMetrics(null)
+        setLoadError(error instanceof Error ? error.message : 'Operational impact could not be read.')
       } finally {
         setLoading(false)
       }
@@ -89,10 +98,16 @@ export function OperationalImpactPanel({ brokerageId }: OperationalImpactPanelPr
     )
   }
 
-  const hasImpact = 
+  const hasImpact =
     (metrics?.affectedWorkflows.length || 0) > 0 ||
     (metrics?.affectedRoles.length || 0) > 0 ||
     (metrics?.criticalServices.length || 0) > 0
+
+  // "No impact" is only a claim we may make when service health was actually
+  // read. An empty or refused read means impact is UNKNOWN.
+  const serviceHealthMeasured = metrics !== null && metrics.serviceReadStatus === 'ok'
+  const unmeasuredDetail =
+    loadError ?? metrics?.serviceReadDetail ?? 'Service health could not be read.'
 
   return (
     <Card className="border-border bg-card">
@@ -103,7 +118,15 @@ export function OperationalImpactPanel({ brokerageId }: OperationalImpactPanelPr
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {!hasImpact ? (
+        {!serviceHealthMeasured ? (
+          <div className="flex items-center gap-2 rounded-lg border border-dashed border-border bg-muted/40 p-4">
+            <AlertCircle className="h-5 w-5 text-muted-foreground" />
+            <div>
+              <p className="font-medium">Operational Impact UNKNOWN</p>
+              <p className="text-sm text-muted-foreground">{unmeasuredDetail}</p>
+            </div>
+          </div>
+        ) : !hasImpact ? (
           <div className="flex items-center gap-2 text-green-600 rounded-lg bg-green-50 dark:bg-green-950/20 p-4">
             <CheckCircle className="h-5 w-5" />
             <div>

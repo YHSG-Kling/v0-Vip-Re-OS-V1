@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import useSWR, { mutate } from "swr"
 import { 
@@ -11,7 +11,6 @@ import {
   AlertTriangle,
   TrendingUp,
   TrendingDown,
-  Minus,
   Clock,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"

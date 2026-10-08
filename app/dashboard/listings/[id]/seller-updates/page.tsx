@@ -19,7 +19,6 @@ import {
   MessageSquare,
   CheckCircle,
   Clock,
-  AlertTriangle,
   Lightbulb,
 } from "lucide-react"
 import { SellerUpdateComposer } from "@/app/components/listings/SellerUpdateComposer"
@@ -48,7 +47,7 @@ export default async function SellerUpdatesPage({ params }: PageProps) {
   try {
     agentContext = await getAgentContext()
   } catch {
-    redirect("/auth/login")
+    redirect("/login")
   }
 
   const { agentId, brokerageId } = agentContext

@@ -15,8 +15,11 @@
  * is what we own and test.
  */
 import { createServiceClient } from "@/lib/supabase/service"
-import { loadBuyerCriteria, scoreCriteriaFit, MATCH_FIT_THRESHOLD, type BuyerCriteria } from "./market-watch"
+import { loadBuyerCriteria, scoreCriteriaFit, MATCH_FIT_THRESHOLD } from "./market-watch"
 import type { ExternalListing } from "@/lib/property/external-listings-search"
+// Wave 68 — the SAME active-listing source order resolver market-watch.ts consults, so the
+// regular-buyer IDX/RentCast lane and the on-market BatchData lane agree on one brokerage setting.
+import { resolveActiveListingSources } from "./listing-source-order"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -65,10 +68,11 @@ async function writeExternalMatchReference(
     .eq("notes", MARKET_WATCH_REF_MARKER).maybeSingle()
   if (existing) {
     const id = (existing as { id: string }).id
-    await svc.from("saved_properties").update({
+    const { error: savedRefreshErr } = await svc.from("saved_properties").update({
       property_address: row.property_address, list_price: row.list_price,
       bedrooms: row.bedrooms, bathrooms: row.bathrooms, ai_match_score: row.ai_match_score, saved_at: new Date().toISOString(),
     }).eq("id", id)
+    if (savedRefreshErr) console.error(`[external-match] saved property refresh NOT saved: ${savedRefreshErr.message}`)
     return id
   }
   const { data, error } = await svc.from("saved_properties").insert({ ...row, saved_at: new Date().toISOString() }).select("id").maybeSingle()
@@ -86,6 +90,17 @@ export async function runExternalMarketWatchForBuyer(
   svc: Svc, brokerageId: string, contactId: string,
 ): Promise<ExternalMatchResult> {
   if (!brokerageId || !contactId) return { external: 0, source: "none", reason: "missing ids" }
+
+  // ORDER GATE (wave 68, owner: "is the rentcast with optional idx broker a better
+  // implementation…"). resolveActiveListingSources is the SAME resolver market-watch.ts's
+  // BatchData on-market gate consults — a brokerage that narrowed its list to exclude BOTH idx
+  // and rentcast wants neither external tier for regular-buyer smart search (e.g. an
+  // all-BatchData-on-market shop), so this lane no-ops rather than spend either provider.
+  const sources = await resolveActiveListingSources(brokerageId)
+  if (!sources.includes("idx") && !sources.includes("rentcast")) {
+    return { external: 0, source: "none", reason: "idx_and_rentcast_excluded_by_setting" }
+  }
+
   const criteria = await loadBuyerCriteria(svc, contactId)
   if (!criteria) return { external: 0, source: "none", reason: "no criteria" }
 
@@ -106,6 +121,17 @@ export async function runExternalMarketWatchForBuyer(
     priceMax: criteria.maxPrice ?? undefined, limit: MAX_EXTERNAL,
   })
   if (result.source === "none" || result.listings.length === 0) return { external: 0, source: result.source }
+
+  // searchExternalListings picks IDX-vs-RentCast by CONNECTION (owner ruling: RentCast is never
+  // spent on a tenant who owns an IDX feed — lib/property/listing-source.ts) — that precedence is
+  // NEVER overridden here. This setting only narrows WHICH tier this brokerage's regular-buyer
+  // smart search lane is allowed to use at all; a tier the connection chose that this brokerage
+  // excluded from active_listing_sources is refused rather than written.
+  // `result.source` is already narrowed to "idx" | "rentcast" here — the early return above
+  // covers "none" on one arm of its `||`, so TS's control-flow analysis has ruled it out.
+  if (!sources.includes(result.source)) {
+    return { external: 0, source: "none", reason: `${result.source}_excluded_by_setting` }
+  }
 
   let external = 0
   for (const ext of result.listings.slice(0, MAX_EXTERNAL)) {
@@ -153,7 +179,11 @@ export async function purgeStaleExternalReferences(svc: Svc, ttlDays = EXTERNAL_
   // Skip any row the buyer engaged with — a saved/toured home is never a "stale suggestion".
   const ids = rows.filter((r) => !isDurableBuyerInterest(r.interest_level, r.added_to_tour)).map((r) => r.id)
   if (ids.length === 0) return { purged: 0 }
-  try { await svc.from("property_matches").delete().in("property_id", ids) } catch {}
-  await svc.from("saved_properties").delete().in("id", ids)
+  try {
+    const { error: matchPurgeErr } = await svc.from("property_matches").delete().in("property_id", ids)
+    if (matchPurgeErr) console.error(`[external-match] stale property matches NOT purged: ${matchPurgeErr.message}`)
+  } catch {}
+  const { error: purgeErr } = await svc.from("saved_properties").delete().in("id", ids)
+  if (purgeErr) console.error(`[external-match] stale saved properties NOT purged: ${purgeErr.message}`)
   return { purged: ids.length }
 }

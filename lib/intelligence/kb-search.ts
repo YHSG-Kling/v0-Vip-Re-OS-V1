@@ -1,7 +1,7 @@
-import OpenAI from 'openai'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
 import { emitKernelEvent } from '@/lib/kernel/emit'
+import { generateEmbedding, updateHelpTopicEmbedding } from '@/lib/knowledge/embedding-service'
 
 export interface KBResult {
   id: string
@@ -12,42 +12,38 @@ export interface KBResult {
   tags?: string[]
 }
 
-// Lazy initialization to avoid build-time errors when OPENAI_API_KEY is not set
-let _openai: OpenAI | null = null
-function getOpenAI(): OpenAI {
-  if (!_openai) {
-    _openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    })
-  }
-  return _openai
-}
-
 /**
- * Search the knowledge base using vector similarity with ILIKE fallback
+ * Search the knowledge base using vector similarity with ILIKE fallback.
+ * The query embedding + the stored embeddings both go through the ONE canonical
+ * embedder (lib/knowledge/embedding-service, the AI gateway) — the raw-OpenAI
+ * second pipeline was retired; this module keeps only its distinct value (the
+ * 0.55 threshold, the ILIKE fallback, and the KBResult shape its callers read).
+ *
+ * `brokerageId: null` (lane 73E) — a TENANT-FREE search. The RPC's own WHERE
+ * clause (`h.brokerage_id IS NULL OR h.brokerage_id = p_brokerage_id`) already
+ * degrades to "only platform-wide rows" when `p_brokerage_id` is NULL — no new
+ * predicate needed here, just letting a caller with no tenant context (the
+ * platform's own reception line, lib/voice/platform-reception.ts) pass one.
+ * This can never leak a BROKERAGE's private help content: a null id matches
+ * nothing but rows that are ALREADY brokerage_id IS NULL in the table.
  */
 export async function searchKB(
   query: string,
-  brokerageId: string,
+  brokerageId: string | null,
   limit = 5
 ): Promise<KBResult[]> {
   const supabase = createServiceClient()
 
   try {
-    // Step 1: Generate embedding for query
-    const embeddingResponse = await getOpenAI().embeddings.create({
-      model: 'text-embedding-3-small',
-      input: query,
-    })
+    // Step 1: Generate embedding for query (canonical gateway embedder)
+    const queryEmbedding = await generateEmbedding(query)
 
-    const queryEmbedding = embeddingResponse.data[0].embedding
-
-    // Step 2: Vector similarity search
-    // Using raw SQL for pgvector cosine distance operator
+    // Step 2: Vector similarity search — pass the pgvector string literal, the
+    // format the canonical pipeline uses.
     const { data: vectorResults, error: vectorError } = await supabase.rpc(
       'match_help_topics',
       {
-        query_embedding: queryEmbedding,
+        query_embedding: `[${queryEmbedding.join(',')}]`,
         p_brokerage_id: brokerageId,
         match_threshold: 0.55,
         match_count: limit,
@@ -84,18 +80,25 @@ export async function searchKB(
  */
 async function searchKBFallback(
   query: string,
-  brokerageId: string,
+  brokerageId: string | null,
   limit: number
 ): Promise<KBResult[]> {
   const supabase = createServiceClient()
 
-  const { data, error } = await supabase
+  // brokerageId === null → tenant-free caller: only platform-wide rows ever
+  // match (`.eq(brokerage_id, <string>)` would be a type error and
+  // `.or('brokerage_id.eq.null,...')` is not valid PostgREST syntax for a
+  // real NULL, so this is a SEPARATE filter, not a string-interpolated OR).
+  let q = supabase
     .from('help_topics_kb')
     .select('id, title, content, topic_category:category, tags')
-    .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
     .eq('is_active', true)
     .or(`title.ilike.%${query}%,content.ilike.%${query}%`)
     .limit(limit)
+  q = brokerageId
+    ? q.or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
+    : q.is('brokerage_id', null)
+  const { data, error } = await q
 
   if (error) {
     console.error('[kb-search] ILIKE fallback error:', error.message)
@@ -117,10 +120,10 @@ async function searchKBFallback(
 export async function embedAndStore(topicId: string): Promise<void> {
   const supabase = createServiceClient()
 
-  // Fetch the article content
+  // Fetch metadata for the kernel event (title + brokerage scope).
   const { data: topic, error: fetchError } = await supabase
     .from('help_topics_kb')
-    .select('id, content, title, brokerage_id')
+    .select('id, title, brokerage_id')
     .eq('id', topicId)
     .single()
 
@@ -128,23 +131,9 @@ export async function embedAndStore(topicId: string): Promise<void> {
     throw new Error(`Topic not found: ${topicId}`)
   }
 
-  // Generate embedding
-  const embeddingResponse = await getOpenAI().embeddings.create({
-    model: 'text-embedding-3-small',
-    input: `${topic.title}\n\n${topic.content}`,
-  })
-
-  const embedding = embeddingResponse.data[0].embedding
-
-  // Store embedding
-  const { error: updateError } = await supabase
-    .from('help_topics_kb')
-    .update({ content_embedding: embedding })
-    .eq('id', topicId)
-
-  if (updateError) {
-    throw new Error(`Failed to store embedding: ${updateError.message}`)
-  }
+  // Embed + store through the ONE canonical pipeline (AI gateway, pgvector
+  // literal storage) — no second raw-OpenAI path.
+  await updateHelpTopicEmbedding(topicId)
 
   // Emit through the canonical emitter — INSERT + reactor fan-out in one call.
   await emitKernelEvent({
@@ -154,7 +143,7 @@ export async function embedAndStore(topicId: string): Promise<void> {
     entityId:    topicId,
     metadata: {
       title:           topic.title,
-      embedding_model: 'text-embedding-3-small',
+      embedding_model: 'openai/text-embedding-3-small',
       timestamp:       new Date().toISOString(),
     },
   })

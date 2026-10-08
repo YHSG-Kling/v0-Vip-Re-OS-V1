@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { createServiceClient } from "@/lib/supabase/service"
-import { loadPublicTiers, formatTierPrice } from "@/lib/platform/public-tiers"
+import { loadPublicTiers, formatTierPrice, tierPriceLabel, tierCallToAction } from "@/lib/platform/public-tiers"
 import { loadProductBrand } from "@/lib/platform/product-brand"
 import { serializeJsonLd } from "@/lib/geo/video-landing"
 import { siteUrl } from "@/lib/platform/site-url"
@@ -103,7 +103,7 @@ export default async function PricingPage({ searchParams }: { searchParams: Prom
         <div className="text-center mb-10">
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight">Pricing</h1>
           <p className="text-muted-foreground mt-3 max-w-2xl mx-auto">
-            {brand.name} — {brand.tagline}. Every plan starts with a 14-day free trial, no credit card required.
+            {brand.name} — {brand.tagline}. Every self-serve plan starts with a 14-day free trial, no credit card required; custom-priced plans are quoted by a person.
             Change tiers any time; your price is set by the plan, not by add-ons.
           </p>
         </div>
@@ -120,10 +120,16 @@ export default async function PricingPage({ searchParams }: { searchParams: Prom
                 {t.featured && <Badge className="absolute -top-2 right-3 bg-amber-100 text-amber-800">Most popular</Badge>}
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base">{t.displayName}</CardTitle>
+                  {/* A custom-priced tier (multi-location) is QUOTED by a person —
+                      the loader zeroed its catalogue placeholder, so the card
+                      says so and opens the sales door (wave 87C). */}
                   <div className="flex items-baseline gap-1">
-                    <span className="text-3xl font-bold">{formatTierPrice(t.monthlyCents)}</span>
-                    <span className="text-xs text-muted-foreground">/ month</span>
+                    <span className={t.customPriced ? "text-2xl font-bold" : "text-3xl font-bold"}>{tierPriceLabel(t)}</span>
+                    {!t.customPriced && <span className="text-xs text-muted-foreground">/ month</span>}
                   </div>
+                  {t.customPriced && (
+                    <p className="text-[11px] text-muted-foreground">Priced per location and seat — a person quotes it; nothing is charged until you agree a number.</p>
+                  )}
                   {t.annualCents > 0 && (
                     <p className="text-[11px] text-muted-foreground">{formatTierPrice(t.annualCents)} / year billed annually</p>
                   )}
@@ -142,7 +148,7 @@ export default async function PricingPage({ searchParams }: { searchParams: Prom
                     ))}
                   </ul>
                   <Button asChild className="mt-4 w-full" variant={t.featured ? "default" : "outline"}>
-                    <Link href={`/signup?tier=${encodeURIComponent(t.tierName)}`}>Start free trial</Link>
+                    <Link href={tierCallToAction(t).href}>{tierCallToAction(t).label}</Link>
                   </Button>
                 </CardContent>
               </Card>

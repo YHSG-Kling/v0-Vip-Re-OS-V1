@@ -7,13 +7,37 @@
 // alone. Idempotent; best-effort; never throws. The third reaper (signals, video, now chains) that
 // guarantees every manager workflow has an owner.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyStaleWorkflowRun, WORKFLOW_RUN_STALE_HOURS } from "./stale-run-policy"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-export interface WorkflowRunReaperResult { scanned: number; escalated: number }
+export interface WorkflowRunReaperResult {
+  scanned: number
+  escalated: number
+  /** WAVE 104 (lane 104D): the mission pass on the SAME tick — deadlines passed and blockers left
+   *  72h are ESCALATED, escalations unanswered past a passed deadline are FAILED
+   *  (lib/kernel/missions.ts sweepMissionDeadlines). No second reaper. */
+  missions?: {
+    scanned: number; escalated: number; failed?: number; readRefused: string | null
+    /** WAVE 105 (lane 105B): the EXECUTIVE MISSION CONTROLLER on the SAME tick, right after the
+     *  deadline sweep — ownership / participation / progress / dependencies / disagreement / budget /
+     *  authority / human-intervention verdicts per mission (lib/kernel/mission-controller.ts
+     *  controlMissions). One loop, bounded batch, one summary ledger row. */
+    control?: { scanned: number; transitions: number; enlisted: number; verdictsRecorded: number; unchanged: number; humanNeeded: number; delegationsUnreadable: number; readRefused: string | null }
+  }
+  /** Lane 104F: stalled runs that served a mission — the mission is ESCALATED (escalateMission),
+   *  its owner manager signalled; the run's failure is the evidence. */
+  missionsEscalatedByStalledRun?: number
+  /** WAVE 105A: the delegation pass on the SAME tick — a manager-to-manager delegation past its
+   *  deadline with no return is ESCALATED (lib/kernel/manager-delegation.ts sweepDelegationDeadlines).
+   *  No second reaper. */
+  delegations?: { scanned: number; escalated: number; readRefused: string | null }
+  /** WAVE 105A: stalled runs that served a delegation — the delegation is ESCALATED (settleDelegationForRun). */
+  delegationsEscalatedByStalledRun?: number
+}
 
 export async function reapStaleWorkflowRuns(
   brokerageId: string, client?: Svc, opts?: { now?: Date; limit?: number },
@@ -23,28 +47,82 @@ export async function reapStaleWorkflowRuns(
   const result: WorkflowRunReaperResult = { scanned: 0, escalated: 0 }
   if (!brokerageId) return result
 
+  // Missions first (the objectives the chains serve): a mission past its deadline or blocked with
+  // nobody unblocking it gets its owner manager signalled. Best-effort; a refused read is PUBLISHED.
+  try {
+    const { sweepMissionDeadlines } = await import("@/lib/kernel/missions")
+    const m = await sweepMissionDeadlines(brokerageId, svc as any, { now })
+    result.missions = m
+    result.scanned += m.scanned
+    result.escalated += m.escalated
+  } catch (e) {
+    result.missions = { scanned: 0, escalated: 0, readRefused: e instanceof Error ? e.message : String(e) }
+  }
+  // Then the controller judges what the sweep does not (lane 105B): who owns / participates, is it
+  // progressing, dependencies, disagreement, budget, authority, does a human need to step in. Same
+  // tick, same tenant, bounded batch; a refused read is PUBLISHED on the result, never an all-clear.
+  try {
+    const { controlMissions } = await import("@/lib/kernel/mission-controller")
+    const { verdicts: _lines, ...summary } = await controlMissions(brokerageId, svc as any, { now })
+    result.missions.control = summary
+  } catch (e) {
+    result.missions.control = { scanned: 0, transitions: 0, enlisted: 0, verdictsRecorded: 0, unchanged: 0, humanNeeded: 0, delegationsUnreadable: 0, readRefused: e instanceof Error ? e.message : String(e) }
+  }
+  // Delegations next (wave 105A): a manager asked another for a capability by a deadline that passed
+  // with nothing returned — ESCALATED to the mission's owner (and the mission to its human). Same
+  // tick, same posture: best-effort, a refused read PUBLISHED.
+  try {
+    const { sweepDelegationDeadlines } = await import("@/lib/kernel/manager-delegation")
+    const dl = await sweepDelegationDeadlines(brokerageId, svc as any, { now })
+    result.delegations = dl
+  } catch (e) {
+    result.delegations = { scanned: 0, escalated: 0, readRefused: e instanceof Error ? e.message : String(e) }
+  }
+
   const { data: rows } = await svc.from("workflow_runs")
-    .select("id, chain_key, agent_user_id, status, started_at, updated_at")
+    .select("id, chain_key, agent_user_id, status, started_at, updated_at, mission_id")
     .eq("brokerage_id", brokerageId)
     .in("status", Object.keys(WORKFLOW_RUN_STALE_HOURS))
     .limit(opts?.limit ?? 100)
 
-  for (const r of (rows ?? []) as Array<{ id: string; chain_key: string | null; agent_user_id: string | null; status: string; started_at: string | null; updated_at: string | null }>) {
+  for (const r of (rows ?? []) as Array<{ id: string; chain_key: string | null; agent_user_id: string | null; status: string; started_at: string | null; updated_at: string | null; mission_id?: string | null }>) {
     result.scanned++
     const anchor = r.updated_at ?? r.started_at ?? now.toISOString()
     const ageHours = (now.getTime() - new Date(anchor).getTime()) / 3_600_000
     if (classifyStaleWorkflowRun({ status: r.status, ageHours }) !== "escalate") continue
     try {
-      await svc.from("workflow_runs")
+      const { error: reapErr } = await svc.from("workflow_runs")
         .update({ status: "failed", failed_at: now.toISOString(), error_message: `stalled in '${r.status}' for ${Math.round(ageHours)}h — reaped by the Campaign Orchestrator`, updated_at: now.toISOString() })
         .eq("id", r.id)
+      if (reapErr) console.error(`[stale-run-reaper] stalled run NOT marked failed: ${reapErr.message}`)
+      // The mission this run served (m710 workflow_runs.mission_id) is ESCALATED to its owner
+      // manager — the chain the objective relied on stalled; a human or the manager decides whether
+      // to re-run it. Lane 104F wire of lib/kernel/missions.ts escalateMission. Best-effort.
+      if (r.mission_id && !reapErr) {
+        try {
+          const { escalateMission } = await import("@/lib/kernel/missions")
+          const e = await escalateMission({ brokerageId, missionId: r.mission_id, reason: `workflow run ${r.id} (${r.chain_key ?? "automation"}) stalled in '${r.status}' for ${Math.round(ageHours)}h and was reaped`, actor: { type: "manager", id: "cron_manager" } }, svc as any)
+          if (e.ok) result.missionsEscalatedByStalledRun = (result.missionsEscalatedByStalledRun ?? 0) + 1
+          else if (!e.reason.startsWith("invalid_transition")) console.error(`[stale-run-reaper] mission ${r.mission_id} NOT escalated for stalled run ${r.id}: ${e.reason}`)
+        } catch (e) { console.error(`[stale-run-reaper] mission escalation failed: ${e instanceof Error ? e.message : String(e)}`) }
+      }
+      // WAVE 105A: the delegation this run served (input_entities.workflow_run_id) is ESCALATED — the
+      // requesting manager is told the capability it asked for stalled. Best-effort.
+      if (!reapErr) {
+        try {
+          const { settleDelegationForRun } = await import("@/lib/kernel/manager-delegation")
+          const s = await settleDelegationForRun({ runId: r.id, outcome: "stalled", detail: `stalled in '${r.status}' for ${Math.round(ageHours)}h and was reaped`, actor: { type: "manager", id: "cron_manager" } }, svc as any)
+          if (s?.ok) result.delegationsEscalatedByStalledRun = (result.delegationsEscalatedByStalledRun ?? 0) + 1
+          else if (s && !s.reason.startsWith("invalid_transition")) console.error(`[stale-run-reaper] delegation for run ${r.id} NOT escalated: ${s.reason}`)
+        } catch (e) { console.error(`[stale-run-reaper] delegation escalation failed: ${e instanceof Error ? e.message : String(e)}`) }
+      }
       if (r.agent_user_id) {
-        await svc.from("notifications").insert({
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: r.agent_user_id, brokerage_id: brokerageId, type: "workflow_stalled",
           title: "An automation stalled and was flagged",
           body: `The "${r.chain_key ?? "automation"}" workflow got stuck and your AI team flagged it so it doesn't sit unfinished. You can re-trigger it if it's still needed.`,
           entity_type: "workflow_run", entity_id: r.id, priority: "medium", is_read: false,
-        })
+        }), { table: "notifications", flow: "stale_run_reaper_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
       }
       result.escalated++
     } catch { /* best-effort per run */ }

@@ -91,5 +91,27 @@ export async function captureRenderAsMarketingAsset(
     .select("id")
     .single()
   if (error || !inserted) return { ok: false, skipped: `insert failed: ${error?.message ?? "unknown"}` }
-  return { ok: true, assetId: (inserted as { id: string }).id }
+  const assetId = (inserted as { id: string }).id
+
+  // Wave 106 (106C) — CREATIVE LINEAGE: a captured render names the library assets it was built from.
+  // The sources are what the Director's bucket-first readiness ladder REUSED for this video
+  // (ai_video_projects.video_metadata.asset_readiness.ledger[].assetIds — marketing_assets ids, the
+  // same tenant) plus any `media_source_assets` the composition's props carried. Recorded through the
+  // ONE lineage writer (tenant-pinned, counted); a missing stamp is simply no lineage, never a guess.
+  try {
+    const sources = new Set<string>()
+    for (const s of (Array.isArray(props.media_source_assets) ? (props.media_source_assets as unknown[]) : [])) if (typeof s === "string") sources.add(s)
+    if (render.entity_type === "ai_video_project" && render.entity_id) {
+      const { data: vp } = await supabase.from("ai_video_projects").select("video_metadata")
+        .eq("id", render.entity_id).eq("brokerage_id", render.brokerage_id).maybeSingle()
+      const ledger = (((vp as { video_metadata?: Record<string, unknown> } | null)?.video_metadata?.asset_readiness as { ledger?: Array<{ status?: string; source?: string; assetIds?: string[] }> } | undefined)?.ledger ?? [])
+      for (const e of ledger) if (e.status === "reused" && e.source === "marketing_assets") for (const id of e.assetIds ?? []) sources.add(id)
+    }
+    if (sources.size > 0) {
+      const { recordAssetLineage } = await import("@/lib/kernel/media-intelligence")
+      const lin = await recordAssetLineage(supabase, { brokerageId: render.brokerage_id, assetId, sourceAssetIds: [...sources] })
+      if (!lin.ok) console.error("[capture-render-asset] lineage not recorded:", lin.error)
+    }
+  } catch (e) { console.error("[capture-render-asset] lineage failed:", (e as Error).message) }
+  return { ok: true, assetId }
 }

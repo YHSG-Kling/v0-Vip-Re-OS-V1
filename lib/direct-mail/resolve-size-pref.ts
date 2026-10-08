@@ -36,6 +36,9 @@ export type PostcardSize = "4x6" | "6x9"
 // Platform-default recommendations. The Settings UI surfaces these
 // next to the per-cell input as "Recommended: <size>".
 const PLATFORM_RECOMMENDATIONS: Record<DirectMailUseKind, Partial<Record<Persona, PostcardSize>>> = {
+  // `investor` entries added 2026-08-31 when the owner restored the persona
+  // ("investor is a persona and not a contact type", m589) — the header's own
+  // bias already grouped it with the cost-conscious 4×6 cohort.
   farm_mail: {
     luxury:      "6x9",
     upsize:      "6x9",
@@ -49,6 +52,7 @@ const PLATFORM_RECOMMENDATIONS: Record<DirectMailUseKind, Partial<Record<Persona
     senior:      "4x6",
     expired:     "4x6",
     foreclosure: "4x6",
+    investor:    "4x6",
     other:       "4x6",
   },
   welcome_kit: {
@@ -57,6 +61,7 @@ const PLATFORM_RECOMMENDATIONS: Record<DirectMailUseKind, Partial<Record<Persona
     first_time:  "4x6",
     downsize:    "4x6",
     fsbo:        "6x9",
+    investor:    "4x6",
     other:       "4x6",
   },
   sphere_outreach: {
@@ -66,6 +71,7 @@ const PLATFORM_RECOMMENDATIONS: Record<DirectMailUseKind, Partial<Record<Persona
     senior:      "6x9",
     relocated:   "6x9",
     first_time:  "4x6",
+    investor:    "4x6",
     other:       "6x9",
   },
 }

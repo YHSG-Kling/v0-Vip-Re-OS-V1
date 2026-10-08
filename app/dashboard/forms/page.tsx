@@ -10,6 +10,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { FormsLibraryClient } from "./FormsLibraryClient"
 import type { Metadata } from "next"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const metadata: Metadata = {
   title: "Forms Library",
@@ -24,6 +25,13 @@ export default async function FormsLibraryPage() {
   const { data: { user }, error: authErr } = await supabase.auth.getUser()
   if (authErr || !user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Resolve actor identity (kernel pattern: agents table is source of truth for role-scoped data)
   const { data: agentRow } = await supabase
     .from("agents")
@@ -73,7 +81,9 @@ export default async function FormsLibraryPage() {
     .limit(50)
 
   // Agent sees own submissions only; broker/admin sees all
-  const isAdminOrBroker = ["admin", "broker", "superadmin", "managing_broker", "broker_owner"].includes(role)
+  // SCOPE LADDER (kept inline — team_leader has its own tier below):
+  // 'superadmin' removed — dead as users.user_type (0 live rows store it).
+  const isAdminOrBroker = ["admin", "broker", "broker_owner", "broker_admin"].includes(role)
   const isTeamLeader    = role === "team_leader" || role === "teamleader"
 
   if (!isAdminOrBroker && !isTeamLeader && agentId) {
@@ -100,7 +110,14 @@ export default async function FormsLibraryPage() {
   // 5. Listing agreements — to show signed listing forms
   let listingAgreementsQuery = supabase
     .from("listing_agreements")
-    .select("id, listing_id, agreement_type, esign_status, seller_signed_at, agent_signed_at, fully_executed_at, provider_name, brokerage_id, agent_user_id")
+    // upload_mode says HOW the executed agreement got here — 'manual_upload' (the
+    // agent uploaded a signed PDF; document_url carries it) or 'provider_pull'
+    // (an e-sign provider produced it; provider_ref is the envelope). Live CHECK:
+    // scripts/check-vocabularies.ts:856. It was written on every agreement
+    // (app/actions/seller-listing/execution-engine.ts:874) and read by nothing, so
+    // the e-sign history listed hand-uploaded agreements under a provider column
+    // and offered no link to the PDF that IS the agreement.
+    .select("id, listing_id, agreement_type, esign_status, seller_signed_at, agent_signed_at, fully_executed_at, provider_name, upload_mode, document_url, brokerage_id, agent_user_id")
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
     .limit(50)

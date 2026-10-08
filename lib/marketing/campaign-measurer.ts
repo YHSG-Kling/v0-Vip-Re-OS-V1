@@ -37,11 +37,21 @@ export async function syncCampaignMetricsSafe(campaignId: string): Promise<Campa
     .select("id, publish_status")
     .eq("marketing_campaign_id", campaignId)
 
-  // QR rollup: scan_count + lead_count
-  const { data: qrs } = await svc
+  // QR rollup: scan_count + lead_count.
+  //
+  // TWO LINKAGES, ONE ROLLUP. `qr_codes.marketing_campaign_id` is the FORWARD
+  // link and was the only one this rollup read — which measured zero for every
+  // campaign for as long as no minter wrote that column. The other link, the one
+  // that has carried data all along, is the reverse one,
+  // `direct_mail_campaigns.qr_code_id`: the mail piece names the code it prints,
+  // and that campaign row carries the marketing_campaign_id. Codes reached that
+  // way are folded in below, DEDUPED BY QR ID so a code that is linked both ways
+  // is counted once.
+  const { data: qrs, error: qrsError } = await svc
     .from("qr_codes")
     .select("id, scan_count, lead_count")
     .eq("marketing_campaign_id", campaignId)
+  if (qrsError) console.error("[campaign-measurer] QR rollup read failed:", qrsError.message)
 
   // Social rollup: published posts engagement_data jsonb
   const { data: social } = await svc
@@ -52,10 +62,31 @@ export async function syncCampaignMetricsSafe(campaignId: string): Promise<Campa
   // Direct mail rollup: pieces_mailed (impressions) + estimated_response_rate
   // applied to pieces_mailed for an estimated-conversions proxy until we have
   // first-class delivery tracking.
-  const { data: dm } = await svc
+  const { data: dm, error: dmError } = await svc
     .from("direct_mail_campaigns")
-    .select("id, status, pieces_mailed, estimated_response_rate")
+    .select("id, status, pieces_mailed, estimated_response_rate, qr_code_id")
     .eq("marketing_campaign_id", campaignId)
+  if (dmError) console.error("[campaign-measurer] direct-mail rollup read failed:", dmError.message)
+
+  // The reverse-linked codes (see the QR rollup note above), minus anything the
+  // forward link already returned.
+  const forwardQrIds = new Set(((qrs ?? []) as Array<{ id: string }>).map((q) => q.id))
+  const reverseQrIds = [...new Set(
+    ((dm ?? []) as Array<{ qr_code_id: string | null }>)
+      .map((d) => d.qr_code_id)
+      .filter((id): id is string => !!id && !forwardQrIds.has(id)),
+  )]
+  let reverseQrs: Array<{ scan_count: number | null; lead_count: number | null }> = []
+  if (reverseQrIds.length > 0) {
+    const { data: reverse, error: reverseError } = await svc
+      .from("qr_codes")
+      .select("id, scan_count, lead_count")
+      .in("id", reverseQrIds)
+    if (reverseError) {
+      console.error("[campaign-measurer] mail-linked QR rollup read failed:", reverseError.message)
+    }
+    reverseQrs = (reverse ?? []) as Array<{ scan_count: number | null; lead_count: number | null }>
+  }
 
   let impressions = 0
   let engagements = 0
@@ -74,7 +105,10 @@ export async function syncCampaignMetricsSafe(campaignId: string): Promise<Campa
     if (b.publish_status === "published") impressions += 1
   }
 
-  for (const q of (qrs ?? []) as Array<{ scan_count: number | null; lead_count: number | null }>) {
+  for (const q of [
+    ...((qrs ?? []) as Array<{ scan_count: number | null; lead_count: number | null }>),
+    ...reverseQrs,
+  ]) {
     impressions += q.scan_count ?? 0
     conversions += q.lead_count ?? 0
   }

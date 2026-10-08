@@ -2,7 +2,7 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { AlertTriangle, CheckCircle2, Clock, Banknote, FileSearch, User } from "lucide-react"
+import { AlertTriangle, Clock, Banknote, FileSearch, User } from "lucide-react"
 
 interface TimelineRiskCardProps {
   offer: {

@@ -1,6 +1,7 @@
 "use client"
 
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts"
+import { usd } from "@/lib/format/money"
 
 interface ExpensesDonutChartProps {
   data: Record<string, number>
@@ -26,14 +27,10 @@ export function ExpensesDonutChart({ data }: ExpensesDonutChartProps) {
 
   const total = chartData.reduce((sum, item) => sum + item.value, 0)
 
-  const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(value)
-  }
+  // `formatCurrency` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical (in effect) to lib/format/money.ts `usd`
+  // (imported above).
+  const formatCurrency = usd
 
   return (
     <div className="h-[250px]">

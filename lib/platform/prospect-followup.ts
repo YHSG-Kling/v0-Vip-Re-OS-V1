@@ -53,10 +53,21 @@ export async function runProspectFollowupSweep(svc: any): Promise<ProspectFollow
 
   // ── RUNG 1: INTRO for aged 'new' prospects ─────────────────────────────────
   const introCutoff = new Date(Date.now() - INTRO_MIN_AGE_MS).toISOString()
+  // Lane 76B — the three AI-agent exits change what "cold" means: a
+  // 'demo_scheduled' row (m654) never matches either rung's status filter, and
+  // an OPEN human handoff (details.human_handoff, written by
+  // lib/platform/prospect-capture.ts::markProspectHandoff) is excluded in the
+  // QUERY so a person who asked for a person never gets the automated ladder
+  // while staff are working them.
   const { data: fresh } = await svc.from("platform_prospects")
     .select("id, name, email, company, role_interest")
     .eq("status", "new")
     .not("email", "is", null)
+    .is("details->human_handoff", null)
+    // Lane 79B — a prospect who asked to be called back when THEY are ready
+    // (details.callback, written by prospect-agent-tools.ts::schedule_prospect_
+    // callback) is scheduled, never chased: the ladder stands down for them.
+    .is("details->callback", null)
     .lt("created_at", introCutoff)
     .eq("followup_count", 0)
     .order("created_at", { ascending: true })
@@ -67,9 +78,10 @@ export async function runProspectFollowupSweep(svc: any): Promise<ProspectFollow
     const draft = composeProspectOutreach({ name: p.name, roleInterest: p.role_interest, company: p.company, brandName: brand.name })
     const sent = await sendEmail({ to: p.email, subject: draft.subject, html: `<p>${draft.body.replace(/\n/g, "<br>")}</p>`, text: draft.body })
     if (!sent.success) { out.sendFailures++; continue } // stays 'new' — retried next run, never a fake stamp
-    await svc.from("platform_prospects")
+    const { error: contactedStampErr } = await svc.from("platform_prospects")
       .update({ status: "contacted", contacted_at: nowIso, followup_count: 1, last_followup_at: nowIso, updated_at: nowIso })
       .eq("id", p.id)
+    if (contactedStampErr) console.error(`[prospect-followup] intro sent but prospect NOT marked contacted (may be re-sent): ${contactedStampErr.message}`)
     await audit("platform_prospect.intro_sent", p.id, { subject: draft.subject, provider: sent.provider ?? null })
     out.introsSent++
   }
@@ -81,6 +93,8 @@ export async function runProspectFollowupSweep(svc: any): Promise<ProspectFollow
     .eq("status", "contacted")
     .eq("followup_count", 1)
     .not("email", "is", null)
+    .is("details->human_handoff", null)
+    .is("details->callback", null)
     .lt("last_followup_at", nudgeCutoff)
     .order("last_followup_at", { ascending: true })
     .limit(BATCH)
@@ -90,9 +104,10 @@ export async function runProspectFollowupSweep(svc: any): Promise<ProspectFollow
     const draft = composeProspectNudge({ name: p.name, roleInterest: p.role_interest, brandName: brand.name })
     const sent = await sendEmail({ to: p.email, subject: draft.subject, html: `<p>${draft.body.replace(/\n/g, "<br>")}</p>`, text: draft.body })
     if (!sent.success) { out.sendFailures++; continue }
-    await svc.from("platform_prospects")
+    const { error: nudgeStampErr } = await svc.from("platform_prospects")
       .update({ followup_count: 2, last_followup_at: nowIso, updated_at: nowIso })
       .eq("id", p.id)
+    if (nudgeStampErr) console.error(`[prospect-followup] nudge sent but NOT recorded (may be re-sent): ${nudgeStampErr.message}`)
     await audit("platform_prospect.nudge_sent", p.id, { subject: draft.subject, provider: sent.provider ?? null })
     out.nudgesSent++
   }

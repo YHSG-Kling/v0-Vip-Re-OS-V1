@@ -14,7 +14,7 @@ const USE_KINDS: DirectMailUseKind[] = ["farm_mail", "welcome_kit", "sphere_outr
 const PERSONAS:  Persona[] = [
   "first_time", "relocated", "luxury", "fsbo", "probate",
   "upsize", "downsize", "military", "divorce", "senior",
-  "expired", "foreclosure", "other",
+  "expired", "foreclosure", "investor", "other",
 ]
 
 const USE_KIND_LABEL: Record<DirectMailUseKind, string> = {
@@ -36,6 +36,8 @@ const PERSONA_LABEL: Record<Persona, string> = {
   senior:     "Senior",
   expired:    "Expired Listing",
   foreclosure:"Foreclosure",
+  // Owner ruling 2026-08-31: investor is a persona (m589).
+  investor:   "Investor",
   other:      "Other",
 }
 

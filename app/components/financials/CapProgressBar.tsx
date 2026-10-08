@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Target, Award, AlertCircle } from "lucide-react"
+import { usd } from "@/lib/format/money"
 
 interface CapProgressBarProps {
   capAmount: number | null
@@ -27,14 +28,10 @@ export function CapProgressBar({
   anniversaryStart,
   anniversaryEnd,
 }: CapProgressBarProps) {
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(amount)
-  }
+  // `formatCurrency` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical (in effect) to lib/format/money.ts `usd`
+  // (imported above).
+  const formatCurrency = usd
 
   // Determine cap status — agent_cap_tracking.is_capped is authoritative
   const getCapStatus = () => {

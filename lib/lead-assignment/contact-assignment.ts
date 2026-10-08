@@ -30,8 +30,17 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { teamScopeAllows } from "./rule-matcher"
+import { teamScopeAllows, pickAgentForRule } from "./rule-matcher"
 import { selectAgentByCapacity, resolveBrokerageMaxLoad } from "./capacity-pick"
+// TOMBSTONE (orphan doctrine §1.3 — functionality already lives elsewhere).
+// `toRoutingProfiles`, `ROUTING_PROFILE_COLUMNS` and the type `AgentProfileForRouting`
+// were imported here and read by NOTHING in this file. The one shared profile loader,
+// lib/lead-assignment/routing-profiles.ts:19 (loadRoutingProfiles), owns all three and
+// is the survivor; this file calls it below. Deleting the leftover binding loses nothing.
+import { loadRoutingProfiles } from "./routing-profiles"
+import { assignByDefaultMethod } from "./default-assignment"
+import { resolveSoloAgentOwner } from "./solo-agent"
+import { resolvePlanTier } from "@/lib/billing/plan-tier"
 
 export interface ResolveAgentForContactInput {
   brokerageId: string
@@ -53,10 +62,12 @@ export interface ResolveAgentForContactResult {
     | "team_load_balance"
     | "team_lead"
     | "load_balance"
+    | "manual_hold"
     | "none"
   ruleId?: string | null
   teamId?: string | null
 }
+
 
 const RULE_FIELDS =
   "id, brokerage_id, rule_type, conditions, agent_ids, team_id, priority, is_active, times_triggered"
@@ -84,30 +95,20 @@ export async function resolveAgentForContact(
     if (ownerAgent?.team_id && !teamHint) teamHint = ownerAgent.team_id
   }
 
-  // 2. Solo-agent brokerage — single-agent shortcut.
-  const { data: brokerage } = await supabase
-    .from("brokerages")
-    .select("plan_tier")
-    .eq("id", brokerageId)
-    .maybeSingle()
-
-  if (brokerage?.plan_tier === "solo_agent") {
-    const { data: soloAgent } = await supabase
-      .from("agents")
-      .select("id")
-      .eq("brokerage_id", brokerageId)
-      .eq("is_active", true)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle()
-    if (soloAgent?.id) {
-      return { agentId: soloAgent.id, method: "solo_agent" }
-    }
+  // 2. SOLO TENANT — the one agent owns everything, ahead of rules and ahead of
+  //    the brokerage default. Shared with Engine 2 so the guarantee holds on the
+  //    lead side too; see lib/lead-assignment/solo-agent.ts.
+  const soloOwner = await resolveSoloAgentOwner(supabase, brokerageId)
+  if (soloOwner) {
+    return { agentId: soloOwner, method: "solo_agent" }
   }
+
+  // The tier is still needed below for the single-team shortcut.
+  const planTier = await resolvePlanTier(supabase, brokerageId)
 
   // 2b. Team tier — a single-team brokerage gives every contact that team's
   //     affinity (rules + fallback then stay within the team).
-  if (!teamHint && brokerage?.plan_tier === "team") {
+  if (!teamHint && planTier === "team") {
     const { data: onlyTeam } = await supabase
       .from("teams")
       .select("id")
@@ -160,9 +161,28 @@ export async function resolveAgentForContact(
     }
     if (pool.length === 0) continue
 
-    const idx =
-      rule.rule_type === "round_robin" ? (rule.times_triggered ?? 0) % pool.length : 0
-    const candidate = pool[idx]
+    // Same fix as Engine 2: every method other than round_robin used to be
+    // pool[0]. At contact-creation time the only hints available are source and
+    // ZIP (no score or persona yet), so an expertise rule will usually find no
+    // match and fall back to capacity — which is the honest outcome, and still
+    // far better than always handing the contact to the first agent listed.
+    const pick = pickAgentForRule(
+      rule as never,
+      pool,
+      { source, property_zip_code: propertyZipCode },
+      await loadRoutingProfiles(supabase, brokerageId, pool),
+    )
+
+    if (pick.kind === "manual") {
+      return { agentId: null, method: "manual_hold", ruleId: rule.id, teamId: rule.team_id ?? teamHint }
+    }
+
+    const candidate = pick.kind === "agent"
+      ? pick.agentId
+      : await selectAgentByCapacity(
+          supabase, brokerageId, pick.candidates,
+          await resolveBrokerageMaxLoad(supabase, brokerageId),
+        )
     if (!candidate) continue
 
     // Verify the candidate is an active agent in the brokerage.
@@ -179,10 +199,10 @@ export async function resolveAgentForContact(
   }
 
   // CAPACITY CEILING — derived from the brokerage's active-agent headcount, the SAME tier
-  // ceiling the Capacity Guardian enforces. The load-balance steps below prefer an agent with
-  // HEADROOM so a fresh contact never piles onto someone already at/over capacity (the
-  // guardian becomes PREVENTIVE, not just reactive). Never strands a contact.
-  const maxLoad = await resolveBrokerageMaxLoad(supabase, brokerageId)
+  // ceiling the Capacity Guardian enforces, so a fresh contact never piles onto someone
+  // already at/over capacity (the guardian becomes PREVENTIVE, not just reactive). It is
+  // resolved inside assignByDefaultMethod now, alongside the method itself, rather than
+  // read here and passed down — the two belong together.
 
   // 3b. Team fallback — the contact has a team affinity: stay within the team.
   //     Capacity-aware load-balance among team members; if the team has no routable
@@ -196,9 +216,19 @@ export async function resolveAgentForContact(
       .eq("is_active", true)
 
     if (teamAgents?.length) {
-      const bestTeamAgent = await selectAgentByCapacity(supabase, brokerageId, teamAgents.map((a) => a.id), maxLoad)
-      if (bestTeamAgent) {
-        return { agentId: bestTeamAgent, method: "team_load_balance", teamId: teamHint }
+      // The brokerage's configured default method, applied WITHIN the team —
+      // a brokerage on round-robin rotates inside the team rather than
+      // silently switching to load balancing just because the contact has a
+      // team affinity.
+      const teamPick = await assignByDefaultMethod(
+        supabase, brokerageId, { source, property_zip_code: propertyZipCode },
+        teamAgents.map((a) => a.id),
+      )
+      if (teamPick.held) {
+        return { agentId: null, method: "manual_hold", teamId: teamHint }
+      }
+      if (teamPick.agentId) {
+        return { agentId: teamPick.agentId, method: "team_load_balance", teamId: teamHint }
       }
     }
 
@@ -223,20 +253,24 @@ export async function resolveAgentForContact(
     // Team has nobody routable — fall through to brokerage-wide load balance.
   }
 
-  // 4. Load-balance fallback — capacity-aware: prefer the agent with the most HEADROOM
-  //    under the tier ceiling (least working load), never just the fewest contacts.
-  const { data: agents } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("brokerage_id", brokerageId)
-    .eq("is_active", true)
+  // 4. THE DEFAULT — brokerages.default_assignment_method (m305). This step used
+  //    to be hardcoded capacity-based load balancing, which meant the method
+  //    deciding MOST assignments (every contact no rule matched) was the one the
+  //    admin could not configure. It still defaults to load_balance, so
+  //    behaviour is unchanged until someone chooses otherwise in Settings.
+  const fallback = await assignByDefaultMethod(
+    supabase, brokerageId, { source, property_zip_code: propertyZipCode },
+  )
 
-  if (!agents?.length) return { agentId: null, method: "none" }
+  if (fallback.held) {
+    // The admin chose 'manual': hold for a person. This deliberately breaks the
+    // old "no contact is ever left unrouted" invariant — it is a policy, so it
+    // is reported as one rather than as a routing failure.
+    return { agentId: null, method: "manual_hold" }
+  }
 
-  const bestAgent = await selectAgentByCapacity(supabase, brokerageId, agents.map((a) => a.id), maxLoad)
-
-  return bestAgent
-    ? { agentId: bestAgent, method: "load_balance" }
+  return fallback.agentId
+    ? { agentId: fallback.agentId, method: "load_balance" }
     : { agentId: null, method: "none" }
 }
 

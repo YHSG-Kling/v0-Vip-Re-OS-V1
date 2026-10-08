@@ -26,17 +26,25 @@ interface ExceptionPattern {
   affectedEntity: string
   affectedEntityId: string
   entityType: string
-  status: "active" | "acknowledged" | "resolved"
+  // "resolved" removed (2026-09-10, wave 50): pattern_detections.status's real
+  // CHECK vocabulary is acknowledged/acted_on/active/dismissed/expired
+  // (scripts/check-vocabularies.ts) — "resolved" could never round-trip
+  // through updatePatternStatus, and this panel's one caller cast its input
+  // `as any` specifically to paper over the mismatch (CLAUDE.md §6).
+  status: "active" | "acknowledged" | "dismissed"
 }
 
 interface ExceptionPatternsPanelProps {
   exceptions: ExceptionPattern[]
-  onResolve?: (exceptionId: string) => void
+  // TOMBSTONE (orphan doctrine §1.2, hidden-wire census category c, wave 50):
+  // `onResolve?: (exceptionId) => void` declared, destructured, never called
+  // here or by the one caller — this panel already resolves exceptions itself
+  // via handleDismiss below (dismissPattern, the same action
+  // BehaviorPatternsPanel's sibling Dismiss button now also calls).
 }
 
 export function ExceptionPatternsPanel({
   exceptions,
-  onResolve,
 }: ExceptionPatternsPanelProps) {
   const router = useRouter()
   const activeExceptions = exceptions.filter(e => e.status === "active")

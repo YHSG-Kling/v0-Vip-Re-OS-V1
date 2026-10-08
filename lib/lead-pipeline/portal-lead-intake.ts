@@ -130,12 +130,13 @@ export async function ingestPortalLead(
 
     // The agent's heads-up — speed-to-lead engages, but the human should KNOW now.
     if (receivingAgentUserId) {
-      await svc.from("notifications").insert({
+      const { error: notifyError } = await svc.from("notifications").insert({
         user_id: receivingAgentUserId, brokerage_id: brokerageId, type: "portal_lead_received",
         title: `New ${lead.portal} lead: ${[lead.firstName, lead.lastName].filter(Boolean).join(" ") || "unnamed"}`,
         body: `${lead.propertyAddress ? `Asking about ${lead.propertyAddress}. ` : ""}${lead.message ? `"${lead.message.slice(0, 160)}" ` : ""}They're in your contacts — the AI team is engaging.`,
         entity_type: "contact", entity_id: r.contactId, priority: "high", channel: "in_app", is_read: false,
       }).then(undefined, () => {})
+      if (notifyError) console.warn("[portal-lead-intake.ts] notifications insert refused — the bell will not ring:", notifyError.message)
     }
     return { ok: true, contactId: r.contactId, action: r.action }
   } catch (e) {

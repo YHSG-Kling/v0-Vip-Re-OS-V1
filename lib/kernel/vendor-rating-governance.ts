@@ -1,7 +1,7 @@
 // lib/kernel/vendor-rating-governance.ts
 //
 // VENDOR RATING GOVERNANCE (deal_coordinator) — the marketplace's QUALITY gate, the VendorInsightManager
-// concept. The bench already rolls up ratings (recalculateVendorRatings → vendor_ratings), but NOTHING
+// concept. The bench already rolls up ratings (recalculateVendorRatingsCore → vendor_ratings), but NOTHING
 // consumed them: a vendor could slide to two stars and still be auto-proposed to agents and clients. This
 // turns the rollup into governance:
 //   · a vendor averaging below SUPPRESS_BELOW (with enough sample) is SUPPRESSED — never auto-picked by the
@@ -18,17 +18,24 @@ type Svc = ReturnType<typeof createServiceClient>
 /** Below this many rated bookings, a vendor has no rating verdict (honest — thin data isn't a signal). */
 export const MIN_SAMPLE = 3
 /** Average below this (with sample) → suppressed from auto-surfacing. */
-export const SUPPRESS_BELOW = 3.0
+const SUPPRESS_BELOW = 3.0
 /** Average below this (with FLAG_MIN_SAMPLE) → flagged for admin review. */
-export const FLAG_BELOW = 3.5
-export const FLAG_MIN_SAMPLE = 5
+const FLAG_BELOW = 3.5
+const FLAG_MIN_SAMPLE = 5
 /** Repeated one-star ratings → flag for admin review regardless of average. */
-export const ONE_STAR_ALERT = 3
+const ONE_STAR_ALERT = 3
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: TOP_RATED_MIN, TOP_RATED_SAMPLE.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Badge thresholds. */
-export const TOP_RATED_MIN = 4.5
-export const TOP_RATED_SAMPLE = 10
-export const HIGHLY_RECOMMENDED_MIN = 4.8
-export const HIGHLY_RECOMMENDED_SAMPLE = 20
+const TOP_RATED_MIN = 4.5
+const TOP_RATED_SAMPLE = 10
+const HIGHLY_RECOMMENDED_MIN = 4.8
+const HIGHLY_RECOMMENDED_SAMPLE = 20
 
 export type RatingTier = "unrated" | "ok" | "flagged" | "suppressed"
 export type VendorBadge = "top_rated" | "highly_recommended"

@@ -346,7 +346,7 @@ export async function standDownDealSaveHuddle(
   client?: Svc,
 ): Promise<DealSaveStandDownResult> {
   const supabase: Svc = client ?? createServiceClient()
-  const { data: expired } = await supabase
+  const { data: expired, error: standDownErr } = await supabase
     .from("manager_signals")
     .update({ status: "expired", consumed_at: new Date().toISOString(), consumed_action: `stood down — deal recovered to ${params.newRiskLevel}` })
     .eq("brokerage_id", params.brokerageId)
@@ -354,6 +354,7 @@ export async function standDownDealSaveHuddle(
     .eq("entity_id", params.transactionId)
     .eq("status", "open")
     .select("id")
+  if (standDownErr) console.error(`[deal-save-huddle] stand-down refused (huddle signals stay open): ${standDownErr.message}`)
   const stoodDown = (expired ?? []).length
   if (stoodDown === 0) return { stoodDown: 0, notifiedUsers: 0 }
 

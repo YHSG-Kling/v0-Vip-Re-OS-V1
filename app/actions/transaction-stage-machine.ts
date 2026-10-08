@@ -1,6 +1,8 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import { TransactionOrchestrator } from "@/lib/transactions/transaction-orchestrator"
 import { TransactionStage, TRANSACTION_STAGES, STAGE_TO_STATUS_MAP } from "@/lib/transactions/transaction-stages"
@@ -8,34 +10,22 @@ import { calculateDealHealth } from "@/lib/deal-health/health-scorer"
 import { closeNegotiationStrategyForOffer } from "@/lib/strategy-learning/close-strategy-loop"
 import { requireOverrideActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 import { revalidatePath } from "next/cache"
+import { isTransactionStatus } from "@/lib/transactions/transaction-status"
 
-// Helper: resolve session user + caller brokerage; verifies the
-// caller-supplied brokerageId matches the session brokerage. The
-// orchestrator uses brokerageId to find/update the transaction, so
-// without this check a caller could advance/lose/inspect any
-// brokerage's transactions by passing its id.
-async function requireCallerForBrokerage(
-  claimedBrokerageId: string,
-): Promise<
-  | { ok: true; userId: string; brokerageId: string; userRole: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Not authenticated" }
-  const { data: profile } = await supabase
-    .from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
-  if (!profile?.brokerage_id) return { ok: false, error: "Not authenticated" }
-  if (profile.brokerage_id !== claimedBrokerageId) {
-    return { ok: false, error: "Cannot act on transactions outside your brokerage" }
-  }
-  return {
-    ok: true,
-    userId: user.id,
-    brokerageId: profile.brokerage_id,
-    userRole: profile.role ?? profile.user_type ?? "agent",
-  }
-}
+// TOMBSTONE (lane 93A, §1/§6): requireCallerForBrokerage — DELETED, MERGED ONTO
+// THE SURVIVOR lib/auth/require-caller.ts requireCallerTenant (the body-tenant
+// rule, which composes lib/platform/acting-context.ts decideClaimedTenant). It
+// was the THIRD file-local copy of the claimed-brokerage ≠ session comparison
+// (its twins in transaction-inspections / transaction-hazard-insurance merged in
+// lane 92A). What it carried beyond the survivor was its role: `users.role ??
+// users.user_type ?? "agent"` — the LEGACY free-form role column read first, and
+// a missing seat defaulted to "agent" (fail OPEN, §4). That role fed the
+// orchestrator's literal ["admin","broker","tc","agent"] gate, which refused
+// team_lead and compliance_officer and admitted any agent to any deal. Both are
+// replaced: the role is the session's users.user_type exactly as stored (null
+// stays null and is refused), and the gate is lib/transactions/role-guard.ts
+// canTransitionStage (tenant-admin roster via isAdminOrBroker; agents and team
+// leads on their own / their led team's deals — egress-scope's TEAM tier).
 
 // ─── THIN WRAPPERS AROUND TransactionOrchestrator ─────────────────────────────
 
@@ -48,14 +38,14 @@ export async function checkStageAdvancement(params: {
   brokerageId: string
   targetStage: TransactionStage
 }): Promise<{ allowed: boolean; blockers: string[] }> {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { allowed: false, blockers: [auth.error] }
 
   const orchestrator = new TransactionOrchestrator({
     transactionId: params.transactionId,
     brokerageId:   auth.brokerageId,
     userId:        auth.userId,
-    userRole:      auth.userRole,
+    userRole:      auth.userType ?? "",
   })
 
   return orchestrator.checkAdvancement(params.targetStage)
@@ -90,9 +80,14 @@ export async function advanceTransactionStage(params: {
       if (err instanceof PortalAuthError) return { success: false, error: err.message }
       throw err
     }
-    if (overrideCtx.brokerageId !== params.brokerageId) {
+    // The body tenant is checked by the ONE decision table (lane 93A — this was
+    // the file's second hand-rolled copy of it); every write below uses the
+    // SESSION's brokerage, never the parameter.
+    const claim = decideClaimedTenant({ actingBrokerageId: overrideCtx.brokerageId, claimedBrokerageId: params.brokerageId })
+    if (!claim.ok) {
       return { success: false, error: "Cannot override transaction outside your brokerage" }
     }
+    const brokerageId = claim.brokerageId
 
     const svc = createServiceClient()
 
@@ -101,9 +96,19 @@ export async function advanceTransactionStage(params: {
       .from("transactions")
       .select("stage")
       .eq("id", params.transactionId)
-      .eq("brokerage_id", params.brokerageId)
+      .eq("brokerage_id", brokerageId)
       .maybeSingle()
     if (!current) return { success: false, error: "Transaction not found in your brokerage" }
+
+    // FAIL CLOSED (§4) — STAGE_TO_STATUS_MAP lives in transaction-stages.ts, a SEPARATE
+    // vocabulary file from transaction-status.ts's TRANSACTION_STATUSES (§6: two files
+    // naming one column). Nothing previously cross-checked that every mapped value is
+    // still a value the CHECK constraint admits; a drift here would have reached the
+    // database as an opaque constraint violation instead of a named, actionable refusal.
+    const mappedStatus = STAGE_TO_STATUS_MAP[params.targetStage]
+    if (!isTransactionStatus(mappedStatus)) {
+      return { success: false, error: `Stage "${params.targetStage}" maps to an unrecognized transaction status "${mappedStatus}" — refusing the override rather than writing an invalid status` }
+    }
 
     // Force the transition. Keep status (lowercase coarse state) in lockstep with stage — the
     // override previously wrote only stage, leaving status stale (e.g. stage CLOSING_PREP while
@@ -112,20 +117,20 @@ export async function advanceTransactionStage(params: {
       .from("transactions")
       .update({
         stage: params.targetStage,
-        status: STAGE_TO_STATUS_MAP[params.targetStage],
+        status: mappedStatus,
         updated_at: new Date().toISOString(),
       })
       .eq("id", params.transactionId)
-      .eq("brokerage_id", params.brokerageId)
+      .eq("brokerage_id", brokerageId)
     if (updateErr) return { success: false, error: updateErr.message }
 
     // Audit trail — explicit override event with reason + actor role in metadata
-    await svc.from("lifecycle_events").insert({
-      brokerage_id:  params.brokerageId,
-      entity_type:   "transaction",
-      entity_id:     params.transactionId,
-      event_type:    "transaction.stage_overridden",
-      actor_user_id: overrideCtx.userId,
+    await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId:  brokerageId,
+      entityType:   "transaction",
+      entityId:     params.transactionId,
+      event:    "transaction.stage_overridden",
+      actorUserId: overrideCtx.userId,
       metadata: {
         from_stage:           current.stage,
         to_stage:             params.targetStage,
@@ -134,8 +139,8 @@ export async function advanceTransactionStage(params: {
         override_user_type:   overrideCtx.userType,
         original_reason:      params.reason ?? null,
       },
-      created_at: new Date().toISOString(),
-    })
+      createdAt: new Date().toISOString(),
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     revalidatePath(`/dashboard/transactions/${params.transactionId}`)
     revalidatePath(`/dashboard/coordinator`)
@@ -143,7 +148,7 @@ export async function advanceTransactionStage(params: {
 
     calculateDealHealth({
       transactionId: params.transactionId,
-      brokerageId:   params.brokerageId,
+      brokerageId:   brokerageId,
     }).catch((error) => {
       console.error("[transaction-stage-machine] calculateDealHealth failed:", error)
     })
@@ -152,17 +157,17 @@ export async function advanceTransactionStage(params: {
   }
 
   // ── Standard path ──────────────────────────────────────────────────────────
-  // Verify the caller actually belongs to params.brokerageId — without
-  // this the orchestrator would happily look up + advance a transaction
-  // in another tenant.
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  // The session's tenant, with a body brokerageId that names another one
+  // refused (requireCallerTenant). The orchestrator then asks
+  // canTransitionStage whether THIS seat may move THIS deal.
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   const orchestrator = new TransactionOrchestrator({
     transactionId: params.transactionId,
     brokerageId:   auth.brokerageId,
     userId:        auth.userId,
-    userRole:      auth.userRole,
+    userRole:      auth.userType ?? "",
   })
 
   const result = await orchestrator.advanceToStage(params.targetStage, params.reason)
@@ -174,10 +179,33 @@ export async function advanceTransactionStage(params: {
 
     calculateDealHealth({
       transactionId: params.transactionId,
-      brokerageId:   params.brokerageId,
+      brokerageId:   auth.brokerageId,
     }).catch((error) => {
       console.error("[transaction-stage-machine] calculateDealHealth failed:", error)
     })
+
+    // LIFECYCLE RE-SCRAPE SIGNAL — a deal going under contract is one of the
+    // named moments contact-signal-rescrape exists for (refresh the property's
+    // AVM now that a price is real, instead of waiting for the daily sweep).
+    // Best-effort + fire-and-forget: enrichment cost/failure never touches the
+    // stage transition. Contact resolved from the transaction row, never params.
+    if (params.targetStage === TRANSACTION_STAGES.UNDER_CONTRACT) {
+      void (async () => {
+        try {
+          const svcClient = createServiceClient()
+          const { data: txn } = await svcClient.from("transactions")
+            .select("contact_id, buyer_contact_id, seller_contact_id")
+            .eq("id", params.transactionId).eq("brokerage_id", auth.brokerageId).maybeSingle()
+          const contactId = (txn as any)?.seller_contact_id ?? (txn as any)?.contact_id ?? (txn as any)?.buyer_contact_id ?? null
+          if (contactId) {
+            const { triggerSignalRescrape } = await import("@/lib/lead-pipeline/contact-signal-rescrape")
+            await triggerSignalRescrape({ contactId, signal: "deal_under_contract" })
+          }
+        } catch (err) {
+          console.error("[transaction-stage-machine] under-contract rescrape failed (non-fatal):", err)
+        }
+      })()
+    }
 
     // SPHERE MANAGER referral closing loop — when the deal CLOSES, close any matching
     // open referral, credit the partner, and propose a partner thank-you into the gate.
@@ -281,14 +309,14 @@ export async function markTransactionLost(params: {
   category: string
   earnestMoneyOutcome: "returned" | "forfeited"
 }): Promise<{ success: boolean; error?: string }> {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   const orchestrator = new TransactionOrchestrator({
     transactionId: params.transactionId,
     brokerageId:   auth.brokerageId,
     userId:        auth.userId,
-    userRole:      auth.userRole,
+    userRole:      auth.userType ?? "",
   })
 
   // First advance to LOST stage
@@ -342,34 +370,10 @@ export async function markTransactionLost(params: {
 /**
  * Get the current stage and allowed next stages for a transaction.
  */
-export async function getTransactionStageInfo(params: {
-  transactionId: string
-  brokerageId: string
-}): Promise<{
-  currentStage: TransactionStage | null
-  allowedNextStages: TransactionStage[]
-  status: string | null
-} | null> {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
-  if (!auth.ok) return null
-
-  const orchestrator = new TransactionOrchestrator({
-    transactionId: params.transactionId,
-    brokerageId:   auth.brokerageId,
-    userId:        auth.userId,
-    userRole:      auth.userRole,
-  })
-
-  const current = await orchestrator.getCurrentStage()
-  if (!current) return null
-
-  // Import allowed transitions
-  const { STAGE_TRANSITIONS } = await import("@/lib/transactions/transaction-stages")
-  const allowedNextStages = STAGE_TRANSITIONS[current.stage] || []
-
-  return {
-    currentStage:      current.stage,
-    allowedNextStages: allowedNextStages as TransactionStage[],
-    status:            current.status,
-  }
-}
+// TOMBSTONE (orphan tranche 3): getTransactionStageInfo deleted — a read
+// combination no surface called. The live survivor is the transaction detail
+// surface itself: app/dashboard/transactions/[id]/transaction-detail-client.tsx
+// derives allowedNextStages from lib/transactions/transaction-stages.ts:
+// STAGE_TRANSITIONS over the stage it already renders, and asks the server the
+// stronger question through checkStageAdvancement above (which validates
+// blockers, not just the transition table) before advanceTransactionStage.

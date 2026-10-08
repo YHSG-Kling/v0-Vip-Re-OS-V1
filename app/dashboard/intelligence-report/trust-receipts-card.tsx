@@ -30,7 +30,8 @@ interface DealReceiptRow {
 }
 
 /** PURE: the honest rollup line over the shown receipts. */
-export function composeTrustRollup(receipts: Array<Pick<ContinuityReceipt, "status" | "repairedLast30d">>): string {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function composeTrustRollup(receipts: Array<Pick<ContinuityReceipt, "status" | "repairedLast30d">>): string {
   if (receipts.length === 0) {
     return "No active deals right now — trust receipts appear here the moment a deal is under way."
   }

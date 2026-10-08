@@ -13,12 +13,14 @@
  * producer supply it). Charts are deterministic SVG (lib/charts/geometry).
  */
 import React from "react"
-import { AbsoluteFill, Sequence, useCurrentFrame, interpolate, Audio } from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, Sequence, useCurrentFrame, interpolate, useVideoConfig } from "remotion"
 import { PriceTrendLine } from "./charts/PriceTrendLine"
 import { CompsBar, type CompRow } from "./charts/CompsBar"
 import { DaysOnMarketBars } from "./charts/DaysOnMarketBars"
 import { AffordabilityDonut, type DonutSegmentInput } from "./charts/AffordabilityDonut"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { cinemaDisclosureStyle, slideDisclosureText } from "../lib/video/cinema-finish"
 
 interface Brand {
   primaryColor:  string
@@ -26,6 +28,8 @@ interface Brand {
   brokerageName?: string
   agentName?:    string
   showEhoMark?:  boolean
+  /** Wave 91: the licence line joins the ONE composed disclosure (slideDisclosureText). */
+  licenseLine?:  string
 }
 
 export interface CMAReelProps {
@@ -42,6 +46,25 @@ export interface CMAReelProps {
   qrCodeDataUrl?: string | null
   qrCaption?:     string
   mlsClean?:      boolean
+  /** LANE 74D — legal attribution line(s) for the comps this reel displays
+   *  (e.g. "Listing data provided by RentCast"), lib/listings/attribution.ts
+   *  ::listingAttributionLine, joined by the caller when comps mix providers.
+   *  "" / absent → nothing renders (the platform's own comps need no credit). */
+  attribution?:   string
+  // NO CAPTIONS (wave 62 — decided with the code, not invented here).
+  // captionsCues/captionScript were declared and mounted here since wave 61
+  // but NEVER fed: cma-reel-orchestrator.ts stages a voiceoverUrl AUDIO track
+  // but explicitly "holds charts, not narration: no script passes through
+  // here" (its own comment, same file, beside the share-card skip it mirrors)
+  // — its only live caller (section-render.ts:179) also always passes
+  // voiceoverUrl null. A declared-but-never-read caption prop is exactly the
+  // "declared-only prop is a promise the render does not keep" shape
+  // scripts/remotion-setup-guard.ts already refuses (test:remotion-setup),
+  // so the props are removed rather than left idle — genuinely silent data
+  // reel, finish-spec.ts now says captions:false. The CaptionLayer component
+  // itself is untouched (remotion/components/CaptionLayer.tsx) — every other
+  // narrated reel still mounts it; this file simply stops being one of them
+  // until a producer sizes a real CMA script.
 }
 
 const Slide: React.FC<{ from: number; durationInFrames: number; title: string; accent: string; children: React.ReactNode }> = ({
@@ -58,7 +81,7 @@ const SlideBody: React.FC<{ title: string; accent: string; children: React.React
   const op = interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ padding: 70, justifyContent: "flex-start" }}>
-      <div style={{ transform: `translateY(${titleY}px)`, opacity: op, marginBottom: 24 }}>
+      <div style={{ translate: `0 ${titleY}px`, opacity: op, marginBottom: 24 }}>
         <div style={{ width: 56, height: 6, background: accent, borderRadius: 3, marginBottom: 16 }} />
         <div style={{ color: "#fff", fontSize: 40, fontWeight: 800, fontFamily: "system-ui", letterSpacing: -0.5 }}>{title}</div>
       </div>
@@ -69,6 +92,8 @@ const SlideBody: React.FC<{ title: string; accent: string; children: React.React
 
 export const CMAReel: React.FC<CMAReelProps> = (props) => {
   const { brand } = props
+  const { width, height } = useVideoConfig()
+  const disclosure = slideDisclosureText({ brokerageName: brand.brokerageName, showEhoMark: brand.showEhoMark, licenseLine: brand.licenseLine })
   return (
     <AbsoluteFill style={{ background: `radial-gradient(circle at 30% 0%, ${brand.primaryColor} 0%, #0b1220 80%)` }}>
       {props.voiceoverUrl ? <Audio src={props.voiceoverUrl} /> : null}
@@ -108,13 +133,31 @@ export const CMAReel: React.FC<CMAReelProps> = (props) => {
         </AbsoluteFill>
       </Sequence>
 
-      {/* Persistent brand footer */}
-      <AbsoluteFill style={{ justifyContent: "flex-end", padding: 36, pointerEvents: "none" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "rgba(255,255,255,0.55)", fontSize: 18, fontFamily: "system-ui" }}>
-          <span>{brand.brokerageName ?? ""}</span>
-          {brand.showEhoMark && <span>Equal Housing Opportunity</span>}
-        </div>
-      </AbsoluteFill>
+      {/* Persistent brand footer.
+          WAVE 91 (lane 91E — the first real render of this reel): the footer was a flex row
+          36 px from the frame's edges in 18 px type at 55 % — the brokerage name in the
+          bottom-left corner and the Equal Housing mark in the bottom-right, both inside the
+          player's own bottom UI (safe 97 px on 1:1) and too small to read on a phone; 89F's
+          fleet fix never saw it (a padded flex row, not a typed corner). It is now the ONE
+          disclosure line on the safe inset at the caption step (cinemaDisclosureStyle), composed
+          once (slideDisclosureText — the mark shows unless the brand opts out), with the data
+          attribution one line above it. */}
+      <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), color: "#fff", fontFamily: "system-ui", pointerEvents: "none" }}>
+        {/* LANE 74D — the comps this reel displays (price trend / comps-bar /
+            affordability) are RentCast/BatchData/IDX-fed data, same legal
+            obligation as every other listing-display surface
+            (lib/listings/attribution.ts's own header). Its own line, one above
+            the disclosure — never competing with it for the same reading line. */}
+        {props.attribution && (
+          <div style={{ opacity: 0.6, fontSize: Math.round(cinemaDisclosureStyle(width, height).fontSize * 0.6), marginBottom: 6 }}>
+            {props.attribution}
+          </div>
+        )}
+        {disclosure}
+      </div>
+
+      {/* NO CAPTION LAYER (wave 62) — see the CMAReelProps note above:
+          genuinely silent data reel, no narration script exists upstream. */}
     </AbsoluteFill>
   )
 }

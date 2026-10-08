@@ -2,15 +2,26 @@
 // tcpa_consent = TRUE (form fill = digital opt-in)
 // No lead created. No lead_id set anywhere in this flow.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
 import { captureContact } from '@/lib/contact-pipeline/contact-capture'
 import { KernelEvent } from '@/lib/kernel/events'
+import { emitKernelEvent } from '@/lib/kernel/emit'
 import { persistContactConsent } from '@/lib/kernel/compliance/require-contact-consent'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1): an unauthenticated
+  // contact-creating write. Same keep-one limiter + idiom as
+  // app/api/track/visitor/route.ts (lib/security/public-rate-limit.ts).
+  const rateIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown"
+  const rateVerdict = checkPublicRateLimit("forms-submit", rateIp, { limit: 20, windowMs: 10 * 60_000 })
+  if (!rateVerdict.allowed) {
+    return NextResponse.json({ error: "Too many submissions from this connection — try again shortly." }, { status: 429, headers: { "Retry-After": String(rateVerdict.retryAfterSeconds) } })
+  }
   try {
     const body = await req.json() as { slug: string; data: Record<string, unknown>; tcpaConsent?: boolean; tcpaConsentText?: string }
     const { slug, data, tcpaConsent, tcpaConsentText } = body
@@ -24,6 +35,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const consentGiven = tcpaConsent === true
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
     const userAgent = req.headers.get('user-agent') ?? null
+
+    // ── Tier 3 of resolveContactLanguage: intake-time locale ──────────────────
+    // THE ONE resolver (§6) — lib/contact-pipeline/contact-capture.ts
+    // resolveCapturedLanguage, now shared by every public intake door instead
+    // of each one re-deriving "form field vs. Accept-Language, which wins".
+    const { resolveCapturedLanguage } = await import('@/lib/contact-pipeline/contact-capture')
+    const formLocale = (data['language'] ?? data['locale'] ?? '') as string
+    const capturedLanguage = resolveCapturedLanguage(formLocale, req.headers.get('accept-language'))
 
     const supabase = createServiceClient()
 
@@ -68,9 +87,31 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const email = (data['email'] ?? '') as string
     const phone = (data['phone'] ?? '') as string
 
+    // ── Step 4b: form-declared persona (BUILD, wave 51) ───────────────────────
+    // `lead_capture_forms` carries no dedicated persona column, and this route's
+    // fields are entirely admin-defined free text — there is no field this door
+    // can safely READ as "buyer" or "seller" without guessing (CLAUDE.md §1: write
+    // "unresolved" rather than invent). What CAN be built without a migration is
+    // letting the admin who BUILT the form declare its persona up front, in the
+    // `settings` jsonb column this table already has. Only a value already in the
+    // live `contacts_contact_type_check` vocabulary is forwarded — an unrecognised
+    // string is worse than none, because captureContact would carry it straight
+    // into an INSERT the CHECK constraint refuses (PGRST/23514) and the whole
+    // submission would fail closed on a typo. When absent (every form that
+    // predates this wave), contact_type stays null and resolveWelcomeManagers
+    // legitimately returns no manager for it — see the FORM_SUBMISSION_RECEIVED
+    // reader in lib/kernel/event-reactor.ts for what that means for the welcome.
+    const FORM_DECLARABLE_CONTACT_TYPES = new Set(['buyer', 'seller', 'both'])
+    const declaredContactType = (() => {
+      const raw = (form as { settings?: { default_contact_type?: string | null } | null }).settings
+        ?.default_contact_type
+      const v = (raw ?? '').toString().trim().toLowerCase()
+      return FORM_DECLARABLE_CONTACT_TYPES.has(v) ? v : null
+    })()
+
     // ── Step 5: captureContact ────────────────────────────────────────────────
     const consentNow = new Date().toISOString()
-    const { contactId, action } = await captureContact({
+    const { contactId, action, personId: capturedPersonId, personIdentity } = await captureContact({
       brokerageId: form.brokerage_id,
       // Use agent from form record; captureContact will fallback to brokerage primary if null
       agentUserId: form.agent_id ?? null,
@@ -83,7 +124,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       preferred_channel: consentGiven ? 'phone' : 'email',
       tcpa_consent: consentGiven,
       tcpa_consent_date: consentGiven ? consentNow : null,
+      contact_type: declaredContactType,
       rawPayload: data,
+      ...(capturedLanguage ? { language: capturedLanguage } : {}),
     })
 
     // ── Persist consent audit event ────────────────────────────────────────
@@ -100,19 +143,49 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }).catch(() => {})
 
     // ── Step 6: Link submission to contact ────────────────────────────────────
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from('form_submissions')
       .update({ contact_id: contactId })
-      .eq('id', submission.id)
+      .eq('id', submission.id), { table: "form_submissions", flow: "form_submissions_write", reason: "submission→contact link; the contact is already captured" })
+
+    // ── Step 6b: PERSON IDENTITY (wave 102, lane 102A; m697 · wave 102.1, lane 102E) ──────────
+    // captureContact resolved the person and linked the CONTACT itself (capture_match, inside
+    // lib/contact-pipeline/contact-capture.ts — ONE path for every capture door). This route adds
+    // only what it alone knows: the SUBMISSION row, on the same person. The contact is never re-linked
+    // here (one path; the UNIQUE link would make a second call a no-op anyway, but one writer is the
+    // rule). Tenant = the form's brokerage the route already resolved from the slug (never the body).
+    // The FORM_SUBMISSION_RECEIVED event below carries person_id, so no second event. Best-effort.
+    const personId: string | null = capturedPersonId ?? null
+    if (personId) {
+      try {
+        const { linkPersonEvidence } = await import('@/lib/kernel/person-identity')
+        const b = await linkPersonEvidence(supabase, {
+          brokerageId: form.brokerage_id, personId, source: 'form_submit',
+          actor: { type: 'system' as const, userId: null }, identity: personIdentity ?? null,
+          existingEvent: KernelEvent.FORM_SUBMISSION_RECEIVED,
+          entityType: 'form_submission', entityId: submission.id, matchMethod: 'capture_match', matchScore: 1,
+          detail: { form_id: form.id, contact_id: contactId, capture_action: action },
+        })
+        if (!b.ok) console.warn('[forms/submit] person evidence not recorded:', b.reason)
+      } catch (err) {
+        console.warn('[forms/submit] person identity threw (submission unaffected):', err instanceof Error ? err.message : String(err))
+      }
+    }
 
     // ── Step 7: Emit lifecycle event ──────────────────────────────────────────
-    await supabase.from('lifecycle_events').insert({
-      brokerage_id: form.brokerage_id,
-      entity_type: 'contact',
-      entity_id: contactId,
-      event_type: KernelEvent.FORM_SUBMISSION_RECEIVED,
-      metadata: { formId: form.id, action },
-    })
+    // Was a direct lifecycle_events insert — audit-only, no reactor fan-out, so
+    // notification_rules' live form_submission_received row never fired. Real
+    // moment: right after captureContact + consent land, tenant/contact from
+    // the rows already loaded above. void/catch so the emit never fails the
+    // 200 the form's caller is waiting on.
+    void emitKernelEvent({
+      event:       KernelEvent.FORM_SUBMISSION_RECEIVED,
+      brokerageId: form.brokerage_id,
+      entityType:  'contact',
+      entityId:    contactId,
+      contactId,
+      metadata:    { formId: form.id, action, person_id: personId },
+    }).catch((err) => console.error('[forms/submit] FORM_SUBMISSION_RECEIVED emit failed:', err))
 
     // ── Step 8: Return ────────────────────────────────────────────────────────
     return NextResponse.json({

@@ -14,6 +14,7 @@
 import type { Metadata } from "next"
 import { notFound } from "next/navigation"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { assembleSocialDisclosures } from "@/lib/social/assemble-disclosures"
 import {
   buildVideoObjectJsonLd,
@@ -21,6 +22,8 @@ import {
   buildBreadcrumbJsonLd,
   serializeJsonLd,
   framesToSeconds,
+  seoHintFromRenderProps,
+  describeVideoForSearch,
 } from "@/lib/geo/video-landing"
 
 export const dynamic = "force-dynamic"
@@ -28,6 +31,37 @@ export const revalidate = 300
 
 import { siteUrl } from "@/lib/platform/site-url"
 import { loadProductBrand } from "@/lib/platform/product-brand"
+import { VideoPlayer } from "./video-player"
+import { usdOrNull } from "@/lib/format/money"
+import { renderQrPng, normalizeOrigin } from "@/lib/marketing/tracked-qr"
+import { videoLandingQrLabel } from "@/lib/geo/publish-video-landing"
+
+/**
+ * THE PAGE'S QR + LEAD CAPTURE (wave 81D — owner: "automatic video landing
+ * pages for when a new video is created"). The tracked QR is the one the
+ * publish helper REGISTERED for this page (qr_codes, label
+ * video_landing:<rail>:<id>) — read back here, never minted by a page view;
+ * its PNG encodes the tracked /api/qr/scan link. The lead CTA points at the
+ * listing's own public page (its showing-request form and session capture)
+ * when the reel is listing-tied, else the brokerage storefront (its site chat
+ * + lead magnets) — both existing capture rails, no second form.
+ */
+async function loadLandingExtras(svc: ReturnType<typeof createServiceClient>, data: PageData): Promise<{ qrDataUrl: string | null; ctaHref: string | null; ctaLabel: string; brokeragePhone: string | null }> {
+  const rail = data.projectId ? "project" : "render"
+  const [{ data: qr }, { data: b }, listingRow] = await Promise.all([
+    svc.from("qr_codes").select("slug").eq("brokerage_id", data.render.brokerage_id).eq("label", videoLandingQrLabel(rail, data.render.id)).eq("is_active", true).maybeSingle(),
+    svc.from("brokerages").select("slug, phone").eq("id", data.render.brokerage_id).maybeSingle(),
+    data.render.entity_type === "listing" && data.render.entity_id
+      ? svc.from("listings").select("slug").eq("id", data.render.entity_id).eq("brokerage_id", data.render.brokerage_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ])
+  const slug = (qr as { slug?: string } | null)?.slug ?? null
+  const qrDataUrl = slug ? await renderQrPng(`${normalizeOrigin()}/api/qr/scan?slug=${slug}`, 240).catch(() => null) : null
+  const listingSlug = (listingRow as { data?: { slug?: string | null } | null }).data?.slug ?? null
+  const brokerage = b as { slug?: string | null; phone?: string | null } | null
+  const ctaHref = listingSlug ? `/listing/${listingSlug}` : brokerage?.slug ? `/site/${brokerage.slug}` : null
+  return { qrDataUrl, ctaHref, ctaLabel: listingSlug ? "Request a showing" : "Talk to us", brokeragePhone: brokerage?.phone ?? null }
+}
 
 interface RenderRow {
   id:             string
@@ -39,6 +73,11 @@ interface RenderRow {
   output_url:     string | null
   thumbnail_url:  string | null
   published_at:   string | null
+  /** The staged props. Read ONLY for the seoHint the producer cut verbatim from
+   *  the compliance-gated narration (thumbnail_props.seoHint, or the top-level
+   *  key when the render IS a VideoCoverThumb) — never rendered as page copy.
+   *  Null on the ai_video_projects rail, which stages no Remotion props. */
+  input_props:    Record<string, unknown> | null
 }
 
 interface CompositionRow {
@@ -63,12 +102,19 @@ interface PageData {
     price: number | null; bedrooms: number | null; bathrooms: number | null; sqft: number | null
   } | null
   disclosures: string
+  /**
+   * The ai_video_projects id when this page is serving a reel from the canonical
+   * project rail (null for a Remotion composition render). trackVideoView keys
+   * on that table, so only the project path can record a view — the Remotion
+   * rail has no view counter of its own and must not be given a fabricated one.
+   */
+  projectId: string | null
 }
 
 async function loadPage(slug: string): Promise<PageData | null> {
   const svc = createServiceClient()
   const { data: r } = await svc.from("remotion_composition_renders")
-    .select("id, brokerage_id, composition_id, agent_user_id, entity_type, entity_id, output_url, thumbnail_url, published_at")
+    .select("id, brokerage_id, composition_id, agent_user_id, entity_type, entity_id, output_url, thumbnail_url, published_at, input_props")
     .eq("public_slug", slug)
     .eq("is_published", true)
     .maybeSingle()
@@ -113,15 +159,36 @@ async function loadPage(slug: string): Promise<PageData | null> {
   }
 
   const title = composition.seo_title || composition.display_name
-  const descBase = composition.seo_description || `${composition.display_name} produced by ${brokerageName ?? (await loadProductBrand(svc)).name}.`
-  const description = agentName ? `${descBase} Presented by ${agentName}.` : descBase
+  // THE SEO HINT, READ BACK (2026-09-03). The producer
+  // (app/api/internal/remotion/render-just-listed/route.ts) cuts `seoHint`
+  // VERBATIM from the narration that already cleared the compliance gate and
+  // files it under input_props.thumbnail_props — the text an AI search engine
+  // reads to describe a video it cannot watch. Until now this page built its
+  // description from the REGISTRY's seo_description alone, which is per
+  // COMPOSITION, not per render: every just-listed reel in the library
+  // published the same generic sentence to the exact surface the GEO work is
+  // trying to win, and the per-render hint had a writer and no reader.
+  // The preference order lives in ONE place (lib/geo/video-landing.ts
+  // describeVideoForSearch), so the page and the guard cannot disagree.
+  const seoHint = seoHintFromRenderProps(render.input_props)
+  const hasRegistryCopy = !!(composition.seo_description && composition.seo_description.trim())
+  const description = describeVideoForSearch({
+    seoHint,
+    seoDescription: composition.seo_description,
+    displayName:    composition.display_name,
+    // Only the GENERIC arm needs the platform name, so the platform_settings
+    // singleton read stays behind the same short-circuit the inline `||` chain
+    // gave it — a hint or registry copy means it is never queried.
+    producerName:   brokerageName ?? (seoHint || hasRegistryCopy ? "" : (await loadProductBrand(svc)).name),
+    agentName,
+  })
 
   const disclosures = await assembleSocialDisclosures(svc as never, {
     brokerageId: render.brokerage_id,
     userId:      render.agent_user_id,
   })
 
-  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures }
+  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures, projectId: null }
 }
 
 /** Load a published reel from the canonical ai_video_projects rail and shape it
@@ -146,17 +213,22 @@ async function loadProjectPage(
   } | null
   if (!proj || !proj.video_url) return null
 
-  // Agent attribution.
+  // Agent attribution. ai_video_projects.agent_id is agents-class since m366, so
+  // the photo comes off that agents row directly and the NAME (which lives on
+  // users) needs the resolve across. Client-agnostic resolver — this is a page,
+  // and the server-only one cannot be reachable from a page bundle.
   let agentName: string | null = null
   let agentPhoto: string | null = null
+  let projAgentUserId: string | null = null
   if (proj.agent_id) {
-    const [{ data: u }, { data: a }] = await Promise.all([
-      svc.from("users").select("first_name, last_name").eq("id", proj.agent_id).maybeSingle(),
-      svc.from("agents").select("photo_url").eq("user_id", proj.agent_id).eq("brokerage_id", proj.brokerage_id).maybeSingle(),
-    ])
-    const ur = u as { first_name: string | null; last_name: string | null } | null
-    agentName = ur ? [ur.first_name, ur.last_name].filter(Boolean).join(" ") || null : null
+    projAgentUserId = await resolveUserIdForAgentRecord(svc, proj.agent_id)
+    const { data: a } = await svc.from("agents").select("photo_url").eq("id", proj.agent_id).maybeSingle()
     agentPhoto = (a as { photo_url: string | null } | null)?.photo_url ?? null
+    if (projAgentUserId) {
+      const { data: u } = await svc.from("users").select("first_name, last_name").eq("id", projAgentUserId).maybeSingle()
+      const ur = u as { first_name: string | null; last_name: string | null } | null
+      agentName = ur ? [ur.first_name, ur.last_name].filter(Boolean).join(" ") || null : null
+    }
   }
 
   const { data: b } = await svc.from("brokerages").select("name").eq("id", proj.brokerage_id).maybeSingle()
@@ -175,13 +247,21 @@ async function loadProjectPage(
   }
 
   const title = proj.title || `${(proj.video_type ?? "video").replace(/_/g, " ")} reel`
-  const descBase = (proj.script_content && proj.script_content.trim())
-    || `${title} produced by ${brokerageName ?? (await loadProductBrand(svc)).name}.`
-  const description = agentName ? `${descBase} Presented by ${agentName}.` : descBase
+  // Same ONE rule as the render rail above (§6). This rail stages no Remotion
+  // input_props, so it has no per-render seoHint — its own gated script IS the
+  // description, and it takes the seoDescription slot.
+  const hasScript = !!(proj.script_content && proj.script_content.trim())
+  const description = describeVideoForSearch({
+    seoHint:        null,
+    seoDescription: proj.script_content,
+    displayName:    title,
+    producerName:   brokerageName ?? (hasScript ? "" : (await loadProductBrand(svc)).name),
+    agentName,
+  })
 
   const disclosures = await assembleSocialDisclosures(svc as never, {
     brokerageId: proj.brokerage_id,
-    userId:      proj.agent_id,
+    userId:      projAgentUserId,
   })
 
   // Shape a synthetic composition so the shared body + JSON-LD builders work.
@@ -192,12 +272,17 @@ async function loadProjectPage(
   }
   const render: RenderRow = {
     id: proj.id, brokerage_id: proj.brokerage_id, composition_id: proj.video_type ?? "video",
-    agent_user_id: proj.agent_id, entity_type: proj.listing_id ? "listing" : null,
+    // RenderRow.agent_user_id mirrors remotion_composition_renders.agent_user_id,
+    // which is users-class — the resolved id, not the project's agents id.
+    agent_user_id: projAgentUserId, entity_type: proj.listing_id ? "listing" : null,
     entity_id: proj.listing_id, output_url: proj.video_url, thumbnail_url: proj.thumbnail_url,
     published_at: proj.published_at,
+    // No Remotion props on this rail — seoHintFromRenderProps(null) is null, so
+    // the description above already took the script arm.
+    input_props: null,
   }
 
-  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures }
+  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures, projectId: proj.id }
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
@@ -219,9 +304,8 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   }
 }
 
-function usd(n: number | null): string | null {
-  return n != null ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n) : null
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usdOrNull
+const usd = usdOrNull
 
 export default async function VideoLandingPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params
@@ -230,6 +314,7 @@ export default async function VideoLandingPage({ params }: { params: Promise<{ s
 
   const url = `${siteUrl()}/v/${slug}`
   const priceStr = data.listing ? usd(data.listing.price) : null
+  const extras = await loadLandingExtras(createServiceClient(), data)
 
   const videoLd = buildVideoObjectJsonLd({
     name:          data.title,
@@ -269,12 +354,10 @@ export default async function VideoLandingPage({ params }: { params: Promise<{ s
       <article>
         <h1 style={{ fontSize: 28, fontWeight: 700, lineHeight: 1.2, margin: "0 0 12px" }}>{data.title}</h1>
         <div style={{ borderRadius: 12, overflow: "hidden", background: "#000", aspectRatio: "16 / 9" }}>
-          <video
-            controls
-            playsInline
-            poster={data.render.thumbnail_url ?? undefined}
+          <VideoPlayer
             src={data.render.output_url!}
-            style={{ width: "100%", height: "100%", objectFit: "contain", background: "#000" }}
+            poster={data.render.thumbnail_url}
+            projectId={data.projectId}
           />
         </div>
 
@@ -286,6 +369,29 @@ export default async function VideoLandingPage({ params }: { params: Promise<{ s
               <li key={f} style={{ background: "#f1f5f9", borderRadius: 999, padding: "4px 12px", fontSize: 14, color: "#0f172a" }}>{f}</li>
             ))}
           </ul>
+        )}
+
+        {(extras.ctaHref || extras.brokeragePhone || extras.qrDataUrl) && (
+          <section aria-label="Next step" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, padding: "16px", margin: "0 0 16px", borderRadius: 12, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
+            <div style={{ flex: "1 1 240px" }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Interested in this home?</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {extras.ctaHref && (
+                  <a href={extras.ctaHref} style={{ background: "#0f172a", color: "#fff", borderRadius: 8, padding: "8px 14px", fontSize: 14, textDecoration: "none" }}>{extras.ctaLabel}</a>
+                )}
+                {extras.brokeragePhone && (
+                  <a href={`tel:${extras.brokeragePhone.replace(/[^\d+]/g, "")}`} style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 14px", fontSize: 14, color: "#0f172a", textDecoration: "none" }}>Call {extras.brokeragePhone}</a>
+                )}
+              </div>
+            </div>
+            {extras.qrDataUrl && (
+              <figure style={{ margin: 0, textAlign: "center" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={extras.qrDataUrl} alt="Scan to open this video page" width={96} height={96} />
+                <figcaption style={{ fontSize: 11, color: "#64748b" }}>Scan to share</figcaption>
+              </figure>
+            )}
+          </section>
         )}
 
         {(data.agentName || data.brokerageName) && (

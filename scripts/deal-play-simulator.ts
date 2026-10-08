@@ -184,7 +184,8 @@ async function live() {
       await svc.from("ad_campaigns").delete().eq("id", c.id)
     }
     await svc.from("social_posts").delete().eq("listing_id", lId).then(undefined, () => {})
-    await svc.from("open_houses").delete().eq("listing_id", lId).then(undefined, () => {})
+    // open_house_events is the survivor (`open_houses` retired by m543).
+    await svc.from("open_house_events").delete().eq("listing_id", lId).then(undefined, () => {})
     await svc.from("ai_video_projects").delete().eq("listing_id", lId).then(undefined, () => {})
     await svc.from("listings").delete().eq("id", lId)
     const { count } = await svc.from("listings").select("id", { count: "exact", head: true }).eq("id", lId)

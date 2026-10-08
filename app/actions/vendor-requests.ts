@@ -14,6 +14,7 @@
  * a vendor can never message a client directly.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { requireVendorActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 import {
   validateVendorRequest,
@@ -71,14 +72,14 @@ export async function submitVendorTransactionRequest(input: {
   const details = input.details.trim()
 
   // 1) The ledger — who asked, for what, on which deal.
-  await svc.from("lifecycle_events").insert({
-    brokerage_id: (tx as any).brokerage_id ?? actor.brokerageId,
-    entity_type: "transaction",
-    entity_id: input.transactionId,
-    event_type: "vendor_request",
-    actor_user_id: actor.userId,
+  await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: (tx as any).brokerage_id ?? actor.brokerageId,
+    entityType: "transaction",
+    entityId: input.transactionId,
+    event: "vendor_request",
+    actorUserId: actor.userId,
     metadata: { vendor: vendorName, vendor_id: actor.vendorId, category: vendorCategory, request_type: valid.requestType, details, needed_by: neededBy },
-  }).then(() => {}, () => {})
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // 2) The agent's task (assignee NOT-NULL contract honored — honest refusal if unresolvable).
   const assignee = (tx as any).agent_id ?? null

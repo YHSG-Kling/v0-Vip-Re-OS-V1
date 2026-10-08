@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect, useRef, useTransition, useCallback } from "react"
+import { bestEffort } from "@/lib/db/best-effort"
+import { useState, useEffect, useRef, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { Button }    from "@/components/ui/button"
@@ -8,7 +9,11 @@ import { Input }     from "@/components/ui/input"
 import { Badge }     from "@/components/ui/badge"
 import { cn }        from "@/lib/utils"
 import { searchProperties, smartSearch } from "@/app/actions/idx-search"
-import { isTourAllowed }                 from "@/lib/buyer-lifecycle/gating-helpers"
+// The gate runs on the SERVER. Importing gating-helpers directly into this client
+// component pulled the kernel (and the service-role client) into the browser bundle and
+// broke the production build; canBuyerScheduleTours is the server action that already
+// wraps exactly this check, with UUID validation in front of it.
+import { canBuyerScheduleTours }          from "@/app/actions/buyer-lifecycle-core"
 import { requestShowing }                from "@/app/actions/showings"
 import { createClient }                  from "@/lib/supabase/client"
 import { useToast }                      from "@/hooks/use-toast"
@@ -111,7 +116,7 @@ function PropertyCard({
         timer = setTimeout(async () => {
           viewedRef.current = true
           const supabase = createClient()
-          await supabase.from("buyer_behavior_log").insert({
+          await bestEffort(supabase.from("buyer_behavior_log").insert({
             brokerage_id:     brokerageId,
             contact_id:       buyerId,
             signal_type:      "property_viewed",
@@ -123,7 +128,7 @@ function PropertyCard({
             city:             property.city      ?? null,
             signal_value:     1,
             source:           "agent_dashboard",
-          })
+          }), "buyer behavior signal for matching")
         }, 2000)
       } else {
         clearTimeout(timer)
@@ -317,7 +322,7 @@ export function SearchClient({
       resolvedListingId = brokerageListing?.id ?? null
     }
 
-    await supabase.from("saved_properties").insert({
+    await bestEffort(supabase.from("saved_properties").insert({
       contact_id:        buyerId,
       brokerage_id:      brokerageId,
       user_id:           user.id,
@@ -335,8 +340,8 @@ export function SearchClient({
       state:             property.state ?? null,
       property_type:     property.property_type ?? null,
       primary_photo_url: property.primary_photo_url ?? null,
-    })
-    await supabase.from("buyer_behavior_log").insert({
+    }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
+    await bestEffort(supabase.from("buyer_behavior_log").insert({
       brokerage_id:     brokerageId,
       contact_id:       buyerId,
       signal_type:      "property_saved",
@@ -344,26 +349,26 @@ export function SearchClient({
       property_address: property.address    ?? null,
       list_price:       property.list_price ?? null,
       source:           "agent_dashboard",
-    })
+    }), "buyer behavior signal for matching")
     setSavedIds(prev => new Set([...prev, key]))
     toast({ title: "Property saved" })
   }
 
   async function handleDismissProperty(property: Property) {
     const supabase = createClient()
-    await supabase.from("buyer_behavior_log").insert({
+    await bestEffort(supabase.from("buyer_behavior_log").insert({
       brokerage_id:     brokerageId,
       contact_id:       buyerId,
       signal_type:      "property_dismissed",
       mls_number:       property.mls_number ?? null,
       property_address: property.address    ?? null,
       source:           "agent_dashboard",
-    })
+    }), "buyer behavior signal for matching")
     setProperties(prev => prev.filter(p => (p.mls_number ?? p.id) !== (property.mls_number ?? property.id)))
   }
 
   async function handleScheduleShowing(property: Property) {
-    const gateResult = await isTourAllowed(buyerId)
+    const gateResult = await canBuyerScheduleTours(buyerId)
     if (!gateResult.allowed) {
       setShowGate(true)
       return
@@ -818,7 +823,7 @@ export function SearchClient({
 
   async function handleRemove(id: string) {
     const supabase = createClient()
-    await supabase.from("saved_properties").update({ dismissed: true }).eq("id", id)
+    await bestEffort(supabase.from("saved_properties").update({ dismissed: true }).eq("id", id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     setSaved(prev => prev.filter(s => s.id !== id))
     toast({ title: "Removed from saved" })
   }

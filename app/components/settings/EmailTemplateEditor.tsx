@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { createEmailTemplate } from '@/app/actions/settings/create-email-template';
 import { updateEmailTemplate } from '@/app/actions/settings/update-email-template';
 import { SettingsCard } from './SettingsCard';
+import { useFormChange } from '@/hooks/use-form-change';
 
 interface EmailTemplateEditorProps {
   template?: any;
@@ -20,13 +21,10 @@ export function EmailTemplateEditor({ template, onSuccess }: EmailTemplateEditor
     template_type: template?.template_type || 'welcome',
   });
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  };
+  // `handleChange` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical to hooks/use-form-change.ts `useFormChange`
+  // (used below).
+  const handleChange = useFormChange(setFormData);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

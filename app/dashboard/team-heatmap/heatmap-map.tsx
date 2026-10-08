@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import type { HeatmapSnapshot, OpportunityZone } from "@/app/actions/team-heatmap"
+import { googleMapsBrowserKey } from "@/lib/env/aliases"
 
 interface HeatmapMapProps {
   snapshots: HeatmapSnapshot[]
@@ -202,13 +203,28 @@ export function HeatmapMap({
 
   return (
     <>
-      {/* Load Google Maps Script */}
+      {/* Load Google Maps Script. ONE SPELLING (§6, 2026-09-03): this was the
+          only reader of NEXT_PUBLIC_GOOGLE_MAPS_KEY — every other map reads
+          NEXT_PUBLIC_GOOGLE_MAPS_API_KEY — so the heatmap was dark unless BOTH
+          were set. lib/env/aliases.ts resolves the survivor with the old
+          spelling as a one-release fallback (literal reads, so Next inlines). */}
       <script
-        src={`https://maps.googleapis.com/maps/api/js?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY}&libraries=places`}
+        src={`https://maps.googleapis.com/maps/api/js?key=${googleMapsBrowserKey() ?? ""}&libraries=places`}
         async
         defer
       />
-      <div ref={mapRef} className="h-full w-full" />
+      <div className="relative h-full w-full">
+        <div ref={mapRef} className="h-full w-full" />
+        {/* Lane 90D (test:rendered-empty-states): with no snapshots the map
+            was a blank tile. The overlay says so; it never blocks the map. */}
+        {snapshots.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <p className="rounded-md bg-background/90 px-3 py-2 text-sm text-muted-foreground shadow-sm">
+              No activity recorded yet — the heatmap fills in as listings, buyers and closings land.
+            </p>
+          </div>
+        )}
+      </div>
     </>
   )
 }

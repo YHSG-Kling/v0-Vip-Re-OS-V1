@@ -12,13 +12,14 @@ import {
   Clock,
   CheckCircle2,
   AlertCircle,
-  Upload,
   Calendar,
   User,
   Phone,
   Mail,
 } from "lucide-react"
 import { LenderDocumentUpload } from "./document-upload"
+import { usdOrNA } from "@/lib/format/money"
+import { formatDateOrTBDWithWeekday } from "@/lib/format/dates"
 import { LenderActions } from "./lender-actions"
 import { LenderConditionsPanel } from "./lender-conditions-panel"
 import { Progress } from "@/components/ui/progress"
@@ -39,26 +40,36 @@ const MILESTONE_STATUS_CONFIG: Record<string, { icon: any; color: string }> = {
   in_progress: { icon: Clock, color: "text-blue-600" },
   pending: { icon: Clock, color: "text-muted-foreground" },
   overdue: { icon: AlertCircle, color: "text-red-600" },
+  // A milestone the transaction has no row for yet. Distinct from "pending",
+  // which means the row exists and is waiting.
+  not_started: { icon: Clock, color: "text-muted-foreground" },
 }
 
-function formatCurrency(amount: number | null | undefined): string {
-  if (!amount) return "N/A"
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(amount)
-}
-
-function formatDate(date: string | null | undefined): string {
-  if (!date) return "TBD"
-  return new Date(date).toLocaleDateString("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
+/**
+ * The five lender-visible milestones, each either its real row or a NOT-STARTED
+ * placeholder.
+ *
+ * This card used to render `milestones` — the rows that happen to exist — so a
+ * lender saw a partial list and could not tell an outstanding step from one
+ * nobody had recorded. `LENDER_VISIBLE_MILESTONES` (app/actions/lender-portal.ts:4)
+ * is the same list the server action filters the query by
+ * (app/actions/lender-portal-actions.ts:73), so the entitlement and the display
+ * are now driven by ONE vocabulary rather than two — and a milestone added to
+ * that list shows up here as an outstanding step instead of silently not
+ * existing.
+ */
+function mergeLenderMilestones(rows: any[]) {
+  const byName = new Map<string, any>()
+  for (const r of rows) if (r?.milestone_name && !byName.has(r.milestone_name)) byName.set(r.milestone_name, r)
+  return LENDER_VISIBLE_MILESTONES.map((name) => {
+    const row = byName.get(name)
+    return row ?? { id: `not-started:${name}`, milestone_name: name, status: "not_started", target_date: null }
   })
 }
+
+// `formatCurrency`/`formatDate` — same-body census, round 4 (2026-09-09, lane
+// FC): DELETED, byte-identical to lib/format/money.ts `usdOrNA` and
+// lib/format/dates.ts `formatDateOrTBDWithWeekday` (both imported above).
 
 export default async function LenderTransactionDetailPage({
   params,
@@ -165,7 +176,7 @@ export default async function LenderTransactionDetailPage({
                         : `${Math.abs(daysUntilClose)} days past scheduled close`}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    Scheduled: {formatDate(transaction.close_date)}
+                    Scheduled: {formatDateOrTBDWithWeekday(transaction.close_date)}
                   </p>
                 </div>
               </div>
@@ -189,19 +200,19 @@ export default async function LenderTransactionDetailPage({
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <p className="text-sm text-muted-foreground">Loan Amount</p>
-                  <p className="font-semibold text-lg">{formatCurrency(transaction.loan_amount || transaction.purchase_price)}</p>
+                  <p className="font-semibold text-lg">{usdOrNA(transaction.loan_amount || transaction.purchase_price)}</p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Purchase Price</p>
-                  <p className="font-semibold text-lg">{formatCurrency(transaction.purchase_price)}</p>
+                  <p className="font-semibold text-lg">{usdOrNA(transaction.purchase_price)}</p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Contract Date</p>
-                  <p className="font-medium">{formatDate(transaction.contract_date)}</p>
+                  <p className="font-medium">{formatDateOrTBDWithWeekday(transaction.contract_date)}</p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Closing Date</p>
-                  <p className="font-medium">{formatDate(transaction.close_date)}</p>
+                  <p className="font-medium">{formatDateOrTBDWithWeekday(transaction.close_date)}</p>
                 </div>
               </div>
             </CardContent>
@@ -235,11 +246,11 @@ export default async function LenderTransactionDetailPage({
               <CardDescription>Key milestones for this loan</CardDescription>
             </CardHeader>
             <CardContent>
-              {milestones.length === 0 ? (
+              {mergeLenderMilestones(milestones).length === 0 ? (
                 <p className="text-muted-foreground text-center py-4">No milestones set yet</p>
               ) : (
                 <div className="space-y-3">
-                  {milestones.map((milestone: any) => {
+                  {mergeLenderMilestones(milestones).map((milestone: any) => {
                     const statusCfg = MILESTONE_STATUS_CONFIG[milestone.status] || MILESTONE_STATUS_CONFIG.pending
                     const StatusIcon = statusCfg.icon
 
@@ -256,7 +267,7 @@ export default async function LenderTransactionDetailPage({
                             </p>
                             {milestone.target_date && (
                               <p className="text-sm text-muted-foreground">
-                                {formatDate(milestone.target_date)}
+                                {formatDateOrTBDWithWeekday(milestone.target_date)}
                               </p>
                             )}
                           </div>
@@ -264,7 +275,7 @@ export default async function LenderTransactionDetailPage({
                         <Badge
                           variant={milestone.status === "completed" ? "default" : "secondary"}
                         >
-                          {milestone.status}
+                          {String(milestone.status).replace(/_/g, " ")}
                         </Badge>
                       </div>
                     )

@@ -200,7 +200,7 @@ async function main() {
     const benchIds: string[] = []
     for (const n of [1, 2]) {
       const { data: v } = await svc.from("vendors").insert({
-        brokerage_id: brokerageId, name: `${TAG} Bench Lender ${n}`, category: "Lender",
+        brokerage_id: brokerageId, name: `${TAG} Bench Lender ${n}`, category: "lender",
         email: `${TAG.toLowerCase()}.lender${n}@example.com`, rating: 4 + n * 0.1,
       }).select("id").single()
       cleanup.push({ table: "vendors", id: (v as any).id })

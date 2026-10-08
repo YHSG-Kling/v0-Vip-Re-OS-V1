@@ -12,29 +12,78 @@ import { Textarea } from "@/components/ui/textarea"
 import { Loader2, ArrowLeft, User } from "lucide-react"
 import Link from "next/link"
 import { createContact } from "@/app/actions/contacts"
+import { CONTACT_TYPES as CANONICAL_CONTACT_TYPES, type ContactType } from "@/lib/contact-types"
+import { LEAD_SOURCES, LEAD_SOURCE_LABELS } from "@/lib/constants"
 
-const CONTACT_TYPES = [
-  { value: "buyer", label: "Buyer" },
-  { value: "seller", label: "Seller" },
-  { value: "both", label: "Buyer & Seller" },
-  { value: "investor", label: "Investor" },
-  { value: "tenant", label: "Tenant" },
-  { value: "landlord", label: "Landlord" },
-  { value: "referral", label: "Referral Partner" },
-  { value: "vendor", label: "Vendor" },
+// Exactly the values contacts.contact_type accepts. The form used to offer
+// "tenant", "landlord" and "referral"; the column has never accepted any of
+// them, so choosing one made the INSERT fail and the agent saw only a generic
+// create error. Tenant/landlord are deliberately NOT added to the column —
+// this OS is not a property-management product — and "referral" was simply
+// the wrong word for referral_partner.
+//
+// IT HAPPENED AGAIN, and this time the hand-kept list was the reason. The menu
+// still offered "past_client", which m539 retired from the CHECK in favour of
+// `lifetime_customer` — so the same generic create error was one click away for
+// every agent filing a past client. The OFFERED SET IS NOW DERIVED from
+// lib/contact-types.ts:CONTACT_TYPES rather than retyped, so the menu cannot
+// offer a value the column refuses; only the LABELS live here.
+//
+// AND THE DERIVATION EARNED ITS KEEP AGAIN AT m563, which removed 'client' from
+// the CHECK (owner: "client isn't a type"). Because both structures below are
+// keyed/typed by `ContactType`, dropping the member made the stale entries a
+// COMPILE ERROR rather than a menu item that fails on submit — which is the whole
+// point of typing them off the vocabulary instead of retyping it.
+const CONTACT_TYPE_LABELS: Record<ContactType, string> = {
+  lead:              "Lead",
+  prospect:          "Prospect",
+  // TOMBSTONE (§1): `client: "Client"` stood here. Removed by m563 — a represented
+  // client picks the side they are on (Buyer / Seller / Buyer & Seller / Investor);
+  // the representation itself is contacts.status, not a contact_type.
+  lifetime_customer: "Lifetime Customer (past client)",
+  sphere:            "Sphere",
+  vendor:            "Vendor",
+  referral_partner:  "Referral Partner",
+  // TOMBSTONE (§1): `investor: "Investor"` stood here. Removed with m593 — the
+  // owner ruled investor a PERSONA, not a contact type; the persona picker on
+  // this same form carries it now (survivor: PERSONA_LABELS.investor,
+  // constants/crm-standards.ts), and the tombstone one comment up already
+  // listed "Investor" among the sides a client picks — that sentence aged out
+  // with the ruling too.
+  buyer:             "Buyer",
+  seller:            "Seller",
+  both:              "Buyer & Seller",
+  other:             "Other",
+}
+
+// The order agents actually pick in, filtered to what the column admits.
+// `investor` is deliberately NOT offered (owner ruling 2026-08-31: "investor is
+// a persona and not a contact type") even while the live CHECK still admits it —
+// an investor is filed as a Buyer with contact_persona='investor' (m589). Once
+// m593 retires the value and lib/contact-types.ts drops it, the label entry
+// above becomes a compile error and goes too.
+const CONTACT_TYPE_ORDER: readonly ContactType[] = [
+  "buyer", "seller", "both", "lead", "prospect",
+  "referral_partner", "vendor", "sphere", "lifetime_customer", "other",
 ]
 
-const LEAD_SOURCES = [
-  { value: "website", label: "Website" },
-  { value: "referral", label: "Referral" },
-  { value: "open_house", label: "Open House" },
-  { value: "social_media", label: "Social Media" },
-  { value: "zillow", label: "Zillow" },
-  { value: "realtor_com", label: "Realtor.com" },
-  { value: "cold_call", label: "Cold Call" },
-  { value: "door_knock", label: "Door Knock" },
-  { value: "other", label: "Other" },
-]
+const CONTACT_TYPES = CONTACT_TYPE_ORDER
+  .filter((v) => (CANONICAL_CONTACT_TYPES as readonly string[]).includes(v))
+  .map((value) => ({ value, label: CONTACT_TYPE_LABELS[value] }))
+
+// TOMBSTONE (§1.1 / §6): the private `LEAD_SOURCES` value/label array that stood
+// here is DELETED. SURVIVOR: lib/constants/index.ts:101 LEAD_SOURCES +
+// LEAD_SOURCE_LABELS, which this list was merged ONTO first — zillow,
+// realtor_com, cold_call and door_knock were unique to this copy and are now in
+// the survivor, so nothing was lost. The survivor also carries "manual", the
+// value lib/kernel/crm.ts:396 writes by default and which this list could never
+// produce. Enforcement of the same vocabulary now runs server-side in
+// app/actions/contacts.ts createContact, because contacts.source has NO CHECK
+// constraint and a TS array cannot bind an HTTP request.
+const LEAD_SOURCE_OPTIONS = LEAD_SOURCES.map((value) => ({
+  value,
+  label: LEAD_SOURCE_LABELS[value],
+}))
 
 export default function NewContactPage() {
   const router = useRouter()
@@ -55,7 +104,11 @@ export default function NewContactPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!userContext?.agentId) {
-      setError("You must be logged in to create a contact")
+      // This tests for an AGENT PROFILE, not for a session. It used to say "You
+      // must be logged in", which is a fix the reader cannot perform: they ARE
+      // logged in, and logging in again will never produce the agents row this
+      // needs. Name the thing that is actually missing, and where to get it.
+      setError("Your account has no agent profile yet — finish setup in Settings → Profile, then create the contact.")
       return
     }
 
@@ -91,7 +144,7 @@ export default function NewContactPage() {
       <div className="border-b border-border bg-card">
         <div className="max-w-3xl mx-auto px-6 py-4">
           <div className="flex items-center gap-4">
-            <Link href="/crm/contacts">
+            <Link href="/crm">
               <Button variant="ghost" size="sm">
                 <ArrowLeft className="h-4 w-4 mr-2" />
                 Back to Contacts
@@ -199,7 +252,7 @@ export default function NewContactPage() {
                       <SelectValue placeholder="Select source" />
                     </SelectTrigger>
                     <SelectContent>
-                      {LEAD_SOURCES.map((source) => (
+                      {LEAD_SOURCE_OPTIONS.map((source) => (
                         <SelectItem key={source.value} value={source.value}>
                           {source.label}
                         </SelectItem>
@@ -224,7 +277,7 @@ export default function NewContactPage() {
 
           {/* Actions */}
           <div className="flex items-center justify-end gap-4">
-            <Link href="/crm/contacts">
+            <Link href="/crm">
               <Button variant="outline" type="button">Cancel</Button>
             </Link>
             <Button type="submit" disabled={isSubmitting}>

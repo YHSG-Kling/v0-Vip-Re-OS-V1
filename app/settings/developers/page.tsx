@@ -1,6 +1,7 @@
 import {
   listWebhookSubscriptions,
   listWebhookDeliveries,
+  listInboundWorkflowEvents,
   getDeveloperTokenState,
   getDevelopersDocsData,
 } from "@/app/actions/tenant-webhooks"
@@ -22,9 +23,10 @@ export const metadata = {
  * just renders the honest result.
  */
 export default async function DevelopersPage() {
-  const [subs, deliveries, tokenState, docs] = await Promise.all([
+  const [subs, deliveries, inboundEvents, tokenState, docs] = await Promise.all([
     listWebhookSubscriptions(),
     listWebhookDeliveries(50),
+    listInboundWorkflowEvents(50),
     getDeveloperTokenState(),
     getDevelopersDocsData(),
   ])
@@ -53,6 +55,8 @@ export default async function DevelopersPage() {
       initialSubscriptions={subs.rows}
       initialDeliveries={deliveries.ok ? deliveries.rows : []}
       deliveriesError={deliveries.ok ? null : deliveries.error}
+      initialInboundEvents={inboundEvents.ok ? inboundEvents.rows : []}
+      inboundEventsError={inboundEvents.ok ? null : inboundEvents.error}
       tokenState={tokenState.ok ? tokenState.state : null}
       tokenStateError={tokenState.ok ? null : tokenState.error}
       docs={docs}

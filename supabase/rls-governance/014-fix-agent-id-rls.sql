@@ -1,3 +1,33 @@
+-- ⚠ m440 — THE ROLE-GATED SELECT POLICIES IN THIS FILE HAVE BEEN REPAIRED.
+--
+-- The team-lead / TC / compliance-officer SELECT policies below were installed on
+-- the live database (through scripts/111-fix-agent-id-rls-policies.sql, which
+-- inlines the auth.* helper bodies from 000-helper-functions.sql) gating on
+-- 'team_leader', 'transaction_coordinator' and 'compliance_manager' — three
+-- user_type values users_user_type_check CANNOT store. Every one of those
+-- policies was therefore false for every user who will ever exist, and the tc,
+-- compliance-officer and team-lead surfaces read ZERO rows.
+--
+-- m440 repaired them on the database: the role comes from the built public.*
+-- helper (is_tc_role / is_compliance_officer_role / is_team_lead_role, each a
+-- POSITIVE roster naming both spellings), the tenant from has_brokerage_access(),
+-- and the TEAM from m431's public.current_user_team_id() / public.agent_team_id()
+-- rather than users.team_id — which is NULL for every live user and is only one of
+-- the four places a team is recorded. m440 also removed the whole-brokerage
+-- disjunct that sat beside the team clause and contradicted the owner's ruling
+-- that "teams should only see their own board".
+--
+-- THE BLOCKS BELOW NOW MATCH THAT, so re-running this file reinstalls the repair
+-- instead of reinstating the defect. Annotating the risk was not enough: a warning
+-- header does not stop a bootstrap script, and this file's own CREATE POLICY text
+-- is what actually decides what exists after it runs. m441 asserts the repair on
+-- the database and goes red if any of it is undone.
+--
+-- The public.* helpers are the ones to use in anything added here. The auth.*
+-- family in 000-helper-functions.sql has never been installed on this database —
+-- that file needs a dashboard superuser connection and was never run — which is
+-- precisely how a spelling nothing could store ended up deciding live access.
+
 -- =====================================================
 -- MIGRATION 014: FIX AGENT_ID RLS ROOT BUG
 -- =====================================================
@@ -108,18 +138,28 @@ DROP POLICY IF EXISTS "agent_update_own_contacts"        ON contacts;
 -- DROP IF EXISTS is safe even if no policy exists.
 DROP POLICY IF EXISTS "agent_manage_interaction_history" ON interaction_history;
 
--- Team Leader: join agents -> users for correct team resolution
+-- Team Lead: read the contacts owned by the agents on THEIR team.
+--
+-- NOTE, because this one is not just a spelling repair: the live database already
+-- carries a repaired policy for this capability under a DIFFERENT NAME —
+-- `contacts.team_lead_read_team_contacts` (no "er"), which names both spellings
+-- and anchors on current_user_brokerage_id(). Creating this one as it stood would
+-- have added a SECOND, wider policy beside it rather than replacing it, and
+-- permissive policies OR together — so the looser of the two would have decided
+-- access. It is repaired here to the same rule so the two cannot disagree, and the
+-- DROP above still removes any older copy of this name.
+--
+-- `contacts.team_id` is read directly and NOT through agent_team_id(): it is the
+-- TEAM THE CONTACT BELONGS TO, a property of the row, not a person's membership —
+-- so it is compared against the caller's resolved team rather than re-resolved.
 CREATE POLICY "team_leader_read_team_contacts"
-  ON contacts FOR SELECT
+  ON contacts FOR SELECT TO authenticated
   USING (
-    auth.is_team_leader()
+    public.current_user_led_team_id() IS NOT NULL
+    AND public.has_brokerage_access(brokerage_id)
     AND (
-      team_id = auth.user_team_id() OR
-      agent_id IN (
-        SELECT a.id FROM agents a
-        JOIN users u ON a.user_id = u.id
-        WHERE u.team_id = auth.user_team_id()
-      )
+      team_id = public.current_user_led_team_id()
+      OR public.agent_team_id(agent_id) = public.current_user_led_team_id()
     )
   );
 
@@ -173,21 +213,18 @@ CREATE POLICY "agent_read_own_transactions"
     )
   );
 
--- Team Leader: join agents -> users for team resolution on all agent columns
+-- Team Lead (m440, corrected by m444). No role test: leading a team is the FACT
+-- teams.team_lead_id records, read by public.current_user_led_team_id(); the row's
+-- team comes from m431's public.agent_team_id().
 CREATE POLICY "team_leader_read_team_transactions"
-  ON transactions FOR SELECT
+  ON transactions FOR SELECT TO authenticated
   USING (
-    auth.is_team_leader()
+    public.current_user_led_team_id() IS NOT NULL
+    AND public.has_brokerage_access(brokerage_id)
     AND (
-      agent_id IN (
-        SELECT a.id FROM agents a JOIN users u ON a.user_id = u.id WHERE u.team_id = auth.user_team_id()
-      ) OR
-      seller_agent_id IN (
-        SELECT a.id FROM agents a JOIN users u ON a.user_id = u.id WHERE u.team_id = auth.user_team_id()
-      ) OR
-      buyer_agent_id IN (
-        SELECT a.id FROM agents a JOIN users u ON a.user_id = u.id WHERE u.team_id = auth.user_team_id()
-      )
+      public.agent_team_id(agent_id)        = public.current_user_led_team_id()
+      OR public.agent_team_id(seller_agent_id) = public.current_user_led_team_id()
+      OR public.agent_team_id(buyer_agent_id)  = public.current_user_led_team_id()
     )
   );
 
@@ -304,12 +341,12 @@ CREATE POLICY "broker_delete_brokerage_listings"
 -- Compliance
 CREATE POLICY "compliance_read_brokerage_listings"
   ON listings FOR SELECT
-  USING (auth.is_compliance_manager() AND auth.has_brokerage_access(brokerage_id));
+  USING (public.is_compliance_officer_role() AND public.has_brokerage_access(brokerage_id));
 
 -- TC
 CREATE POLICY "tc_read_brokerage_listings"
   ON listings FOR SELECT
-  USING (auth.is_tc() AND auth.has_brokerage_access(brokerage_id));
+  USING (public.is_tc_role() AND public.has_brokerage_access(brokerage_id));
 
 -- Agent SELECT: brokerage-scoped (agents need to see all brokerage listings for MLS)
 CREATE POLICY "agent_read_own_listings"
@@ -331,19 +368,17 @@ CREATE POLICY "agent_update_own_listings"
   USING (auth.is_agent() AND agent_id = auth.agent_id())
   WITH CHECK (auth.is_agent() AND agent_id = auth.agent_id() AND auth.has_brokerage_access(brokerage_id));
 
--- Team Leader: join agents -> users for correct team resolution
+-- Team Lead (m440). Same repair as 005-listings-policies.sql, including the one
+-- that is not a spelling: the `auth.has_brokerage_access(brokerage_id) OR …`
+-- disjunct granted the WHOLE BROKERAGE and made the team clause beside it
+-- decoration. Owner ruling: "teams should only see their own board." The tenant
+-- test is an AND here, and the team is m431's ONE rule.
 CREATE POLICY "team_leader_read_team_listings"
-  ON listings FOR SELECT
+  ON listings FOR SELECT TO authenticated
   USING (
-    auth.is_team_leader()
-    AND (
-      auth.has_brokerage_access(brokerage_id) OR
-      agent_id IN (
-        SELECT a.id FROM agents a
-        JOIN users u ON a.user_id = u.id
-        WHERE u.team_id = auth.user_team_id()
-      )
-    )
+    public.current_user_led_team_id() IS NOT NULL
+    AND public.has_brokerage_access(brokerage_id)
+    AND public.agent_team_id(agent_id) = public.current_user_led_team_id()
   );
 
 -- ─────────────────────────────────────────────────────────────────────────────

@@ -26,6 +26,7 @@ import { createAndSendVendorClientInvoice } from "@/app/actions/vendor-payments"
 import {
   acceptVendorBookingAction,
   declineVendorBookingAction,
+  submitVendorQuoteAction,
 } from "@/app/actions/vendor-portal"
 import { markBookingComplete } from "@/app/actions/vendor-marketplace"
 
@@ -43,13 +44,25 @@ interface Booking {
   transactions?: { id: string; property_address?: string } | null
 }
 
+interface QuoteRequest {
+  vendorId: string
+  id: string
+  service_type: string
+  needed_by: string | null
+  myQuote: { amount: number; available_on: string | null; status: string } | null
+}
+
 interface Props {
   bookings: Booking[]
+  /** Wave 107B — procurement requests this vendor may quote on (lib/kernel/procurement.ts). */
+  quoteRequests?: QuoteRequest[]
+  quoteError?: string | null
 }
 
 // LIVE vocabulary (vendor_bookings.status CHECK): booked → awaiting the vendor's
 // accept; confirmed → accepted; completed/cancelled/no_show terminal.
 const STATUS_COLOR: Record<string, string> = {
+  requested: "bg-blue-100 text-blue-700",
   booked: "bg-yellow-100 text-yellow-700",
   confirmed: "bg-indigo-100 text-indigo-700",
   completed: "bg-green-100 text-green-700",
@@ -57,8 +70,9 @@ const STATUS_COLOR: Record<string, string> = {
   no_show: "bg-gray-200 text-gray-600",
 }
 
-export function JobsClient({ bookings: initial }: Props) {
+export function JobsClient({ bookings: initial, quoteRequests: initialQuotes = [], quoteError = null }: Props) {
   const [bookings, setBookings] = useState(initial)
+  const [quoteRequests, setQuoteRequests] = useState(initialQuotes)
   const [invoiceFor, setInvoiceFor] = useState<Booking | null>(null)
   const [requestFor, setRequestFor] = useState<Booking | null>(null)
   const [invoiced, setInvoiced] = useState<Set<string>>(new Set())
@@ -79,6 +93,26 @@ export function JobsClient({ bookings: initial }: Props) {
         setBookings((prev) => prev.map((x) => (x.id === b.id ? { ...x, status: "confirmed" } : x)))
       } else {
         setErrorMsg(res.error ?? "Failed to accept")
+      }
+      setActingOn(null)
+    })
+  }
+
+  // Wave 107B — quote on an open procurement request (own quote only; the kernel checks candidacy).
+  function handleQuote(q: QuoteRequest) {
+    const raw = window.prompt(`Your price (USD) for ${q.service_type}${q.needed_by ? `, needed by ${q.needed_by}` : ""}:`, q.myQuote ? String(q.myQuote.amount) : "")
+    if (raw == null) return
+    const amount = Number(raw)
+    if (!Number.isFinite(amount) || amount < 0) { setErrorMsg("Enter a valid amount"); return }
+    const availableOn = window.prompt("Earliest date you can do it (YYYY-MM-DD, optional):", q.myQuote?.available_on ?? "") || null
+    setActingOn(q.id)
+    setErrorMsg(null)
+    startAction(async () => {
+      const res = await submitVendorQuoteAction({ vendorId: q.vendorId, bookingId: q.id, amount, availableOn })
+      if (res.success) {
+        setQuoteRequests((prev) => prev.map((x) => (x.id === q.id && x.vendorId === q.vendorId ? { ...x, myQuote: { amount, available_on: availableOn, status: "submitted" } } : x)))
+      } else {
+        setErrorMsg(res.error ?? "Failed to send quote")
       }
       setActingOn(null)
     })
@@ -118,18 +152,46 @@ export function JobsClient({ bookings: initial }: Props) {
     })
   }
 
+  // Wave 107B — open procurement requests to quote on, rendered above the job book.
+  const quotePanel = (quoteRequests.length > 0 || quoteError) ? (
+    <div className="space-y-2 mb-4">
+      <p className="text-sm font-medium">Open quote requests</p>
+      {quoteError && <p className="text-sm text-red-600">{quoteError}</p>}
+      {quoteRequests.map((q) => (
+        <Card key={`${q.vendorId}:${q.id}`}>
+          <CardContent className="p-3 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-medium text-sm">{q.service_type}</p>
+              <p className="text-xs text-gray-500">
+                {q.needed_by ? `Needed by ${new Date(q.needed_by).toLocaleDateString()}` : "No deadline given"}
+                {q.myQuote ? ` · your quote $${q.myQuote.amount} (${q.myQuote.status})` : ""}
+              </p>
+            </div>
+            <Button size="sm" variant="outline" className="text-xs" onClick={() => handleQuote(q)} disabled={actionPending && actingOn === q.id}>
+              {actionPending && actingOn === q.id ? <Loader2 className="h-3 w-3 animate-spin" /> : q.myQuote ? "Update quote" : "Send quote"}
+            </Button>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  ) : null
+
   if (bookings.length === 0) {
     return (
+      <>
+      {quotePanel}
       <Card>
         <CardContent className="text-center py-12 text-gray-500">
           No jobs found. Jobs assigned to you will appear here.
         </CardContent>
       </Card>
+      </>
     )
   }
 
   return (
     <>
+      {quotePanel}
       {errorMsg && (
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 mb-3">
           {errorMsg}

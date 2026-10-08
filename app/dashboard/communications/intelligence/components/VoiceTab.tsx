@@ -9,17 +9,42 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts"
+import { recordingPlaybackPath } from "@/lib/voice/recording-playback-path"
 
+/**
+ * ONE ANALYSED CALL. Sourced from `voice_calls` + `call_analyses` — the dialled
+ * -call ledger — not from `conversation_insights`, which analyses TEXT threads
+ * and stamps `is_voice_conversation: false` on every row it writes.
+ *
+ * THREE FIELDS WENT AWAY WITH THAT SWITCH, and none of them is a rename:
+ *
+ *   voice_quality_score (0-1)  → `coaching_score` (0-100). The old column had no
+ *     writer anywhere; the new one is written on every analysed call
+ *     (lib/voice/call-analysis.ts:97) and measures whether the conversation
+ *     served the caller. It is a different, honest number — so the label
+ *     changed with it rather than quietly re-pointing "Voice Quality" at it.
+ *
+ *   interruption_count, silence_duration_seconds → GONE. Both need
+ *     per-utterance timestamps and nothing in this system records them
+ *     (call_transcriptions.speaker_turns is written as `[]`). They rendered "—"
+ *     for every call and averaged to "—" across all of them; a metric that can
+ *     only ever be a dash is not a metric.
+ *
+ *   conversation_id → GONE. There is no conversations row for a dialled call;
+ *     it was only ever the conversation_insights row's own thread id, and
+ *     nothing on this tab used it.
+ */
 interface VoiceInsight {
+  /** voice_calls.id — also the key the authenticated playback proxy takes. */
   id: string
-  conversation_id: string
   contact_name: string
   agent_name: string
-  voice_quality_score: number | null     // 0-1
-  interruption_count: number | null
-  silence_duration_seconds: number | null
+  /** call_analyses.coaching_score, 0-100. */
+  coaching_score: number | null
+  /** voice_calls.outcome, falling back to voice_calls.status. */
   call_completion_status: string | null
   overall_sentiment: string | null
+  voice_call_id: string | null
   recording_url: string | null
   transcript: string | null
   updated_at: string
@@ -74,21 +99,17 @@ export default function VoiceTab({ voiceInsights }: VoiceTabProps) {
     )
   }
 
-  // Compute aggregate gauge values
-  const withQuality = voiceInsights.filter(r => r.voice_quality_score != null)
+  // Aggregate gauges — each one states its denominator, because an average over
+  // 2 of 50 calls and an average over all 50 are not the same claim.
+  const withQuality = voiceInsights.filter(r => r.coaching_score != null)
   const avgQuality = withQuality.length > 0
-    ? Math.round((withQuality.reduce((s, r) => s + (r.voice_quality_score! * 100), 0) / withQuality.length))
-    : 0
+    ? Math.round(withQuality.reduce((s, r) => s + r.coaching_score!, 0) / withQuality.length)
+    : null
 
-  const withInterruptions = voiceInsights.filter(r => r.interruption_count != null)
-  const avgInterruptions = withInterruptions.length > 0
-    ? (withInterruptions.reduce((s, r) => s + r.interruption_count!, 0) / withInterruptions.length).toFixed(1)
-    : "—"
-
-  const withSilence = voiceInsights.filter(r => r.silence_duration_seconds != null)
-  const avgSilence = withSilence.length > 0
-    ? (withSilence.reduce((s, r) => s + r.silence_duration_seconds!, 0) / withSilence.length).toFixed(0)
-    : "—"
+  const withSentiment = voiceInsights.filter(r => r.overall_sentiment != null)
+  const positiveShare = withSentiment.length > 0
+    ? Math.round((withSentiment.filter(r => r.overall_sentiment === "positive").length / withSentiment.length) * 100)
+    : null
 
   // Completion status distribution
   const completionMap: Record<string, number> = {}
@@ -103,20 +124,24 @@ export default function VoiceTab({ voiceInsights }: VoiceTabProps) {
       {/* Gauge cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <GaugeCard
-          label="Avg Voice Quality"
-          value={`${avgQuality}%`}
-          sub="Based on voice_quality_score"
-          color={avgQuality >= 70 ? "text-green-700" : avgQuality >= 50 ? "text-yellow-700" : "text-red-700"}
+          label="Avg Call Quality"
+          value={avgQuality == null ? "—" : `${avgQuality}`}
+          sub={avgQuality == null
+            ? "No scored calls yet"
+            : `Out of 100, over ${withQuality.length} scored call${withQuality.length === 1 ? "" : "s"}`}
+          color={avgQuality == null ? "text-muted-foreground" : avgQuality >= 70 ? "text-green-700" : avgQuality >= 50 ? "text-yellow-700" : "text-red-700"}
         />
         <GaugeCard
-          label="Avg Interruptions"
-          value={avgInterruptions}
-          sub="Per call"
+          label="Positive Calls"
+          value={positiveShare == null ? "—" : `${positiveShare}%`}
+          sub={positiveShare == null
+            ? "No sentiment readings yet"
+            : `Of ${withSentiment.length} analysed call${withSentiment.length === 1 ? "" : "s"}`}
         />
         <GaugeCard
-          label="Avg Silence Duration"
-          value={avgSilence === "—" ? "—" : `${avgSilence}s`}
-          sub="Per call"
+          label="Analysed Calls"
+          value={voiceInsights.length}
+          sub="Most recent 50"
         />
       </div>
 
@@ -158,14 +183,16 @@ export default function VoiceTab({ voiceInsights }: VoiceTabProps) {
           <table className="w-full text-sm">
             <thead className="bg-muted text-muted-foreground">
               <tr>
-                {["Contact","Agent","Quality","Interruptions","Silence (s)","Completion","Sentiment","Recording"].map(h => (
+                {["Contact","Agent","Quality","Completion","Sentiment","Recording"].map(h => (
                   <th key={h} className="px-3 py-2 text-left text-xs font-medium whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-border bg-card">
               {voiceInsights.map(row => {
-                const qPct = row.voice_quality_score != null ? Math.round(row.voice_quality_score * 100) : null
+                // Already a percentage — coaching_score is 0-100. The old
+                // voice_quality_score was 0-1, which is why this used to multiply.
+                const qPct = row.coaching_score != null ? Math.round(row.coaching_score) : null
                 const isExpanded = expandedId === row.id
                 return (
                   <>
@@ -186,17 +213,9 @@ export default function VoiceTab({ voiceInsights }: VoiceTabProps) {
                           </div>
                         ) : <span className="text-muted-foreground text-xs">—</span>}
                       </td>
-                      <td className="px-3 py-2 text-center">
-                        {row.interruption_count ?? <span className="text-muted-foreground">—</span>}
-                      </td>
-                      <td className="px-3 py-2 text-center">
-                        {row.silence_duration_seconds != null
-                          ? `${Math.round(row.silence_duration_seconds)}s`
-                          : <span className="text-muted-foreground">—</span>}
-                      </td>
                       <td className="px-3 py-2">
                         <span className="inline-block px-2 py-0.5 rounded-full text-xs capitalize bg-muted text-muted-foreground">
-                          {row.call_completion_status ?? "—"}
+                          {row.call_completion_status?.replace(/_/g, " ") ?? "—"}
                         </span>
                       </td>
                       <td className="px-3 py-2">
@@ -205,9 +224,14 @@ export default function VoiceTab({ voiceInsights }: VoiceTabProps) {
                         </span>
                       </td>
                       <td className="px-3 py-2">
-                        {row.recording_url ? (
+                        {/* recording_url holds the api.twilio.com media URL,
+                            which is behind HTTP Basic auth — linking to it
+                            directly gives the user a 401. Playback goes through
+                            the authenticated same-origin proxy, keyed by
+                            voice_calls.id. */}
+                        {row.recording_url && row.voice_call_id ? (
                           <a
-                            href={row.recording_url}
+                            href={recordingPlaybackPath(row.voice_call_id)}
                             target="_blank"
                             rel="noopener noreferrer"
                             onClick={e => e.stopPropagation()}
@@ -222,7 +246,7 @@ export default function VoiceTab({ voiceInsights }: VoiceTabProps) {
                     </tr>
                     {isExpanded && row.transcript && (
                       <tr key={`${row.id}-transcript`}>
-                        <td colSpan={8} className="px-4 py-3 bg-muted/30">
+                        <td colSpan={6} className="px-4 py-3 bg-muted/30">
                           <p className="text-xs font-semibold text-muted-foreground mb-1">Transcript</p>
                           <p className="text-xs text-foreground whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
                             {row.transcript}
@@ -232,7 +256,7 @@ export default function VoiceTab({ voiceInsights }: VoiceTabProps) {
                     )}
                     {isExpanded && !row.transcript && (
                       <tr key={`${row.id}-no-transcript`}>
-                        <td colSpan={8} className="px-4 py-3 bg-muted/30">
+                        <td colSpan={6} className="px-4 py-3 bg-muted/30">
                           <p className="text-xs text-muted-foreground italic">No transcript available.</p>
                         </td>
                       </tr>

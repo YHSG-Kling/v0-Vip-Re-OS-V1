@@ -10,6 +10,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
   ArrowLeft,
+  ChevronLeft,
   ChevronRight,
   Play,
   Pause,
@@ -98,6 +99,7 @@ export function VideoPlayerClient({
   video,
   completion,
   nextVideo,
+  prevVideo,
   allRequiredComplete: initialAllRequiredComplete,
 }: VideoPlayerClientProps) {
   const router = useRouter()
@@ -505,6 +507,35 @@ export function VideoPlayerClient({
                 )}
               </div>
             </div>
+
+            {/* Previous Video — declared on VideoPlayerClientProps since the
+                initial build (both prevVideo and nextVideo come from the same
+                server-side sequence lookup) but never rendered until now. */}
+            {prevVideo && (
+              <div className="bg-card border rounded-xl p-6 space-y-4">
+                <h2 className="font-semibold text-foreground">Previous Video</h2>
+                <div className="space-y-3">
+                  <p className="text-sm font-medium text-foreground">{prevVideo.title}</p>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Clock className="h-3 w-3" />
+                    <span>{formatDuration(prevVideo.duration_seconds)}</span>
+                    {prevVideo.is_required && (
+                      <Badge variant="outline" className="bg-orange-100 text-orange-800 border-orange-200 text-xs">
+                        Required
+                      </Badge>
+                    )}
+                  </div>
+                  <Button
+                    variant="outline"
+                    className="w-full gap-2"
+                    onClick={() => router.push(`/dashboard/onboarding/training/${prevVideo.id}`)}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    <span>Previous Video</span>
+                  </Button>
+                </div>
+              </div>
+            )}
 
             {/* Next Video */}
             {nextVideo && (

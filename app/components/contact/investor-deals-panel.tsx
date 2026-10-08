@@ -4,14 +4,15 @@
 // buyers get MLS matches (the retail matchers); investors get OFF-MARKET: this matches the investor's
 // buy-box against our scraped motivated-seller inventory and ranks the deals by geography + distress +
 // equity. On-demand (runs when the agent clicks); the ranked list persists across loads. Nothing
-// auto-sends — the agent reviews before acting. Renders only for contact_type='investor'.
+// auto-sends — the agent reviews before acting. Renders only for contact_persona='investor'
+// (owner ruling 2026-08-31: "investor is a persona and not a contact type").
 
 import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Building2, Loader2, TrendingUp } from "lucide-react"
-import { findInvestorDealsAction, getInvestorDealMatchAction } from "@/app/actions/investor-deals"
+import { findInvestorDealsAction, getInvestorDealMatchAction, dismissInvestorOffMarketCandidateAction } from "@/app/actions/investor-deals"
 
 interface OffMarketMatch {
   recordId: string
@@ -24,10 +25,33 @@ interface OffMarketMatch {
   matchScore: number
   reasons: string[]
 }
+interface OffMarketCandidate {
+  id: string
+  property_address: string
+  city: string | null
+  zip: string | null
+  quicklists: string[]
+  estimated_value: number | null
+  equity_percent: number | null
+  fit_score: number
+  delivered_at: string | null
+  /** OPTIONAL BatchRank band (wave 68) — investor-facing surfaces get the band only, never
+   *  the raw score, matching the same redaction posture as owner_name below. */
+  batchrank_band?: "high" | "medium" | "low" | null
+  /** Present ONLY when the server action resolved this session as tenant staff/agent
+   *  (app/actions/investor-deals.ts::resolveActorAudience → audience:"brokerage"). Wave 68
+   *  owner ruling: "these investors should not get the owners information" — this panel is
+   *  mounted exclusively under app/crm/contacts/[contactId]/page.tsx (the agent CRM
+   *  dashboard, gated by assertCanActOnContact → getAgentContext), which is the ONE
+   *  brokerage-side surface this column still has a reader on. */
+  owner_name?: string | null
+}
 interface Match {
   candidate_count: number
   candidates: OffMarketMatch[]
   last_matched_at: string | null
+  // BatchData off-market rail (wave 67) — riding alongside the scraped-inventory candidates above.
+  offMarketCandidates?: OffMarketCandidate[]
 }
 
 function scoreStyle(s: number): string {
@@ -69,6 +93,15 @@ export function InvestorDealsPanel({ contactId }: { contactId: string }) {
   }
 
   const deals = (match?.candidates ?? []).slice(0, 10)
+  const batchDataDeals = (match?.offMarketCandidates ?? []).slice(0, 10)
+  const [dismissing, setDismissing] = useState<string | null>(null)
+  async function dismiss(candidateId: string) {
+    setDismissing(candidateId)
+    const res = await dismissInvestorOffMarketCandidateAction({ contactId, candidateId })
+    setDismissing(null)
+    if (!res.success) { setError(res.error ?? "Could not dismiss this property"); return }
+    setMatch((m) => m ? { ...m, offMarketCandidates: (m.offMarketCandidates ?? []).filter((c) => c.id !== candidateId) } : m)
+  }
 
   return (
     <Card>
@@ -104,6 +137,40 @@ export function InvestorDealsPanel({ contactId }: { contactId: string }) {
                     <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
                       <TrendingUp className="h-3 w-3" />{d.reasons.slice(0, 2).join(" · ")}
                     </p>
+                  )}
+                </div>
+              ))}
+            </>
+          )}
+          {batchDataDeals.length > 0 && (
+            <>
+              <p className="text-xs text-muted-foreground pt-2">{batchDataDeals.length} additional off-market propert{batchDataDeals.length === 1 ? "y" : "ies"} from BatchData (absentee / high-equity / tired-landlord / vacant / pre-foreclosure / probate) — never on-market.</p>
+              {batchDataDeals.map((d) => (
+                <div key={d.id} className="p-3 rounded-lg border">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium">{d.property_address}{d.city ? `, ${d.city}` : ""}{d.zip ? ` ${d.zip}` : ""}</span>
+                    <Badge className={scoreStyle(d.fit_score)}>{Math.round(d.fit_score * 100)}% fit</Badge>
+                    {d.batchrank_band && (
+                      <Badge variant="outline" className="text-[10px] capitalize">BatchRank: {d.batchrank_band}</Badge>
+                    )}
+                    {d.quicklists.slice(0, 2).map((q) => (
+                      <Badge key={q} variant="outline" className="text-[10px] capitalize">{q.replace(/-/g, " ")}</Badge>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-1">
+                    <p className="text-xs text-muted-foreground">
+                      {d.estimated_value != null && `~$${Math.round(d.estimated_value).toLocaleString()} est. value`}
+                      {d.equity_percent != null && ` · ${Math.round(d.equity_percent)}% equity`}
+                      {!d.delivered_at && " · new"}
+                    </p>
+                    <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={dismissing === d.id} onClick={() => dismiss(d.id)}>
+                      {dismissing === d.id ? "…" : "Dismiss"}
+                    </Button>
+                  </div>
+                  {/* AGENT-ONLY (audience:"brokerage" — see the OffMarketCandidate.owner_name
+                      doc comment above): owner contact info to work the off-market deal. */}
+                  {d.owner_name && (
+                    <p className="text-xs text-muted-foreground mt-1">Owner: {d.owner_name}</p>
                   )}
                 </div>
               ))}

@@ -109,13 +109,19 @@ async function main() {
       if (rtN) cleanup.push({ table: "notifications", id: (rtN as any).id })
     }
 
-    const { data: eq } = await svc.from("contact_enrichment_queue")
-      .select("id, status, source").eq("contact_id", (b as any).id).eq("source", "consent_recovery").maybeSingle()
-    if (eq) cleanup.push({ table: "contact_enrichment_queue", id: (eq as any).id })
-    check("B: enrichment re-run queued BEFORE any withdraw", (eq as any)?.status === "pending")
+    // §1.1 (2026-09-04) — the chain's enrich step was re-pointed off
+    // `contact_enrichment_queue` (which no drain in the tree ever processed)
+    // onto the SURVIVOR `lead_enrichment_queue`, written through
+    // lib/enrichment/contact-enrichment-core.ts :: queueContactEnrichment.
+    // Provenance moved from `source` to `trigger_type`.
+    const { data: eq } = await svc.from("lead_enrichment_queue")
+      .select("id, status, trigger_type").eq("contact_id", (b as any).id).eq("trigger_type", "consent_recovery").maybeSingle()
+    if (eq) cleanup.push({ table: "lead_enrichment_queue", id: (eq as any).id })
+    check("B: enrichment re-run queued BEFORE any withdraw, on the queue that is actually drained",
+      (eq as any)?.status === "pending")
 
     // Enrichment comes back empty → run 2 must signal the withdraw (and only then).
-    await svc.from("contact_enrichment_queue").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", (eq as any).id)
+    await svc.from("lead_enrichment_queue").update({ status: "completed", completed_at: new Date().toISOString() }).eq("id", (eq as any).id)
     const r2 = await runConsentRecovery(brokerageId, {}, svc)
     check("run 2: withdraw signaled only after enrichment came back empty", r2.withdrawsSignaled >= 1)
     const { data: sig } = await svc.from("manager_signals").select("id, status")

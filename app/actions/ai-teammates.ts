@@ -64,12 +64,13 @@ async function requireTeammatePrincipal(): Promise<Principal | { error: string }
   if (!user) return { error: "Not authenticated" }
   const { data: me } = await supabase
     .from("users")
-    .select("brokerage_id, role, user_type")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
   const brokerageId = (me as any)?.brokerage_id as string | null
   if (!brokerageId) return { error: "No brokerage on your account — contact your admin" }
-  const role = String((me as any)?.role ?? (me as any)?.user_type ?? "")
+  // user_type, never legacy users.role — PRINCIPAL_ROLES is user_type vocabulary.
+  const role = String((me as any)?.user_type ?? "")
   const svc = createServiceClient()
   const principal = await isTenancyPrincipal(svc, { userId: user.id, brokerageId, role })
   if (!principal) return { error: "Only the tenancy principal (broker/admin, solo agent, or team lead) can manage AI teammates" }
@@ -140,6 +141,12 @@ export async function listAiTeammatesAction(): Promise<
   ])
   const autonomousUnlocked: string[] = []
   if (dealGrants.size > 0) autonomousUnlocked.push("deal_coordinator")
+  // "marketing_agent" kept alongside its survivor "campaign_orchestrator" (m618: retired
+  // ManagerKey) so a tenant's PRE-EXISTING custom teammate row still stored with
+  // base_manager_key='marketing_agent' (tenant_ai_teammates has no live CHECK on that
+  // column — free text, unbackfilled by the migration) still shows its correct unlocked
+  // badge; new teammates can no longer be CREATED with that key (ManagerKey no longer
+  // admits it — see the panel's EMPTY_FORM default).
   if (mktGrants.size > 0) autonomousUnlocked.push("campaign_orchestrator", "marketing_agent")
 
   return {

@@ -54,7 +54,8 @@ export interface Finding {
   }
 }
 
-export interface CheckResult {
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+interface CheckResult {
   passed:   boolean
   findings: Finding[]
   blockers: Finding[]                 // findings with severity === 'blocker'
@@ -64,7 +65,7 @@ export interface CheckResult {
 // 1. MLS-aware validation
 // ──────────────────────────────────────────────────────────────────────────
 
-export async function mlsValidationCheck(input: {
+async function mlsValidationCheck(input: {
   intake:      OfferIntake
   listingId?:  string | null
 }): Promise<CheckResult> {
@@ -152,7 +153,7 @@ export interface AddendumSuggestion {
   required:    boolean
 }
 
-export async function addendumAutoDetect(input: {
+async function addendumAutoDetect(input: {
   intake:     OfferIntake
   listingId?: string | null
 }): Promise<CheckResult & { suggested: AddendumSuggestion[] }> {
@@ -262,7 +263,7 @@ export async function addendumAutoDetect(input: {
 // 3. Buyer financing pre-flight
 // ──────────────────────────────────────────────────────────────────────────
 
-export async function buyerFinancingPreflight(input: {
+async function buyerFinancingPreflight(input: {
   intake:    OfferIntake
   contactId: string | null
 }): Promise<CheckResult> {
@@ -389,7 +390,7 @@ export async function scanContingenciesNearingDeadline(input: {
     let query = svc
       .from("transactions")
       .select("id, contact_id, agent_id, property_address, status, inspection_deadline, appraisal_deadline, financing_deadline, inspection_contingency_removed_at, appraisal_contingency_removed_at, financing_contingency_removed_at")
-      .in("status", ["under_contract", "pending"])
+      .in("status", ["under_contract"])
 
     if (input.brokerageId) query = query.eq("brokerage_id", input.brokerageId)
 
@@ -433,7 +434,7 @@ export async function scanContingenciesNearingDeadline(input: {
 // 5. Completeness / compliance gate
 // ──────────────────────────────────────────────────────────────────────────
 
-export async function completenessGate(input: {
+async function completenessGate(input: {
   intake:       OfferIntake
   contactId:    string | null
   agentUserId:  string | null
@@ -464,10 +465,10 @@ export async function completenessGate(input: {
           ethicsDueDate: (agent as any).ethics_due_date ?? null,
         })
         for (const b of readiness.blockers) {
-          blockers.push({ severity: "blocker", category: "compliance", title: b.title, detail: b.detail, action: { label: "Update license & CE", href: "/dashboard/settings/profile" } })
+          blockers.push({ severity: "blocker", category: "compliance", title: b.title, detail: b.detail, action: { label: "Update license & CE", href: "/dashboard/settings/license-ce" } })
         }
         for (const w of readiness.warnings) {
-          findings.push({ severity: "warning", category: "compliance", title: w.title, detail: w.detail, recommendation: "Handle before it blocks a transaction.", action: { label: "Update license & CE", href: "/dashboard/settings/profile" } })
+          findings.push({ severity: "warning", category: "compliance", title: w.title, detail: w.detail, recommendation: "Handle before it blocks a transaction.", action: { label: "Update license & CE", href: "/dashboard/settings/license-ce" } })
         }
       }
     } catch { /* best-effort */ }

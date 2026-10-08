@@ -5,7 +5,15 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import Link from "next/link"
-import { Trophy, Medal, Award, ArrowRight, TrendingUp, Star } from "lucide-react"
+// TOMBSTONE (orphan doctrine §1.3): `TrendingUp` and `Star` were imported here and
+// rendered NOWHERE. Both questions they could have answered are already answered on
+// this panel by SURVIVORS: rank is carried by the medal set at leaderboard-panel.tsx:39-41
+// (Trophy / Medal / Award) and tier by the Badge at :101 — so a star or a trend arrow
+// would be a third and fourth spelling of "how is this agent doing" (§6). This panel
+// renders a RANKED SNAPSHOT and holds no previous-period value, so there is no trend
+// for TrendingUp to point up or down at.
+import { Trophy, Medal, Award, ArrowRight } from "lucide-react"
+import { METRIC_LABEL, type LeaderboardMetric } from "@/lib/gamification/leaderboard-vocabulary"
 
 interface LeaderboardEntry {
   rank: number
@@ -21,7 +29,10 @@ interface LeaderboardEntry {
 interface LeaderboardPanelProps {
   rankings: LeaderboardEntry[]
   currentUserRank?: LeaderboardEntry | null
-  metricType: "points" | "revenue" | "transactions" | "referrals"
+  // THE ONE LEADERBOARD VOCABULARY. This union carried "revenue", which nothing has
+  // ever written to leaderboard_rankings and which a peer-visible board must not
+  // carry anyway (#185, #57 — commission is off agent-facing display).
+  metricType: LeaderboardMetric
   periodLabel: string
 }
 
@@ -48,10 +59,9 @@ export function LeaderboardPanel({
     }
   }
 
-  const formatMetric = (value: number, type: string) => {
-    if (type === "revenue") return `$${(value / 1000).toFixed(0)}k`
+  const formatMetric = (value: number, type: LeaderboardMetric) => {
     if (type === "points") return `${value.toLocaleString()} pts`
-    return value.toString()
+    return `${value.toLocaleString()} ${METRIC_LABEL[type].toLowerCase()}`
   }
 
   const getInitials = (name: string) => {
@@ -141,7 +151,7 @@ export function LeaderboardPanel({
           </>
         )}
 
-        <Link href="/dashboard/leaderboard">
+        <Link href="/dashboard/motivation">
           <Button variant="outline" size="sm" className="w-full gap-2">
             View Full Leaderboard
             <ArrowRight className="h-4 w-4" />

@@ -6,7 +6,10 @@
 //
 // Kernel Ownership Rules:
 //   - `vendors`         = marketplace table (global + brokerage-specific)
-//   - `vendor_directory`= brokerage curated preferred list (separate table)
+//   - curation/placement (preferred, display_priority, visible_in_portal,
+//     audience_tags, stage_tags, team_id) are COLUMNS on `vendors` since m355.
+//     They were a separate `vendor_directory` table; two rows per vendor is
+//     what the drift was.
 //   - `vendor_bookings` = listing-level and contact-level assignments
 //   - `vendor_assignments` + `vendor_jobs` = transaction-level assignments
 //   - Every state transition emits a KernelEvent via lifecycle_events
@@ -24,7 +27,8 @@
 //
 // Explicit Rules:
 //   - vendor_bookings.status transitions: booked→confirmed→completed | any→cancelled|no_show
-//   - vendor_directory is READ-ONLY from this kernel (managed via settings)
+//   - the placement flags are written ONLY by lib/vendors/premium-placement.ts
+//     (sold + paid) — never as a side effect of ordinary vendor edits here
 //   - vendor_assignments.assigned_by_agent_id is FK to agents.id (not users.id)
 //   - attachVendorDeliverable requires the booking to exist and belong to the brokerage
 //   - createVendorRecord enforces case-insensitive name uniqueness per brokerage
@@ -34,19 +38,31 @@
 //   client_documents, lifecycle_events
 //
 // Tables read (read-only):
-//   vendors, vendor_directory, vendor_bookings, vendor_assignments,
+//   vendors, vendor_bookings, vendor_assignments,
 //   vendor_ratings, referral_partners, listings, transactions
+
+// contacts.vendor_id (a contact that HOLDS a vendor seat) is written at seat activation by
+// lib/kernel/vendor-seat-contact.ts (wave 103, lane 103D) from app/actions/vendor-invite.ts
+// acceptVendorInviteAction — the vendor commands here create vendors, never contacts.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { sendEmail } from "@/lib/providers/messaging"
+import {
+  toVendorCategory,
+  VENDOR_CATEGORIES,
+  VENDOR_CATEGORY_LABELS,
+} from "@/lib/kernel/vendor-categories"
 
 // ─── STATUS TRANSITION GRAPH ─────────────────────────────────────────────────
 // Allowed booking status transitions. Any→cancelled and any→no_show are always
 // permitted. Forward-only transitions are enforced for the lifecycle path.
 
 const BOOKING_STATUS_TRANSITIONS: Record<string, string[]> = {
-  booked:    ["confirmed", "cancelled", "no_show"],
+  // m723 (wave 107B): a PROCUREMENT request awaiting approval — the approval (human, or the tenant's
+  // procurement_autonomy policy) books it; anything else cancels it. lib/kernel/procurement.ts.
+  requested: ["booked", "cancelled"],
+  booked:   ["confirmed", "cancelled", "no_show"],
   confirmed: ["completed", "cancelled", "no_show"],
   completed: [],                          // terminal — no further transitions
   cancelled: [],                          // terminal
@@ -191,9 +207,15 @@ export interface AssignVendorToTransactionInput {
 export interface UpdateVendorBookingStatusInput {
   bookingId:    string
   brokerageId:  string
-  agentUserId:  string
+  /** users.id of the human acting; NULL = no human (a procurement booking the tenant's
+   *  procurement_autonomy policy authorised — lib/kernel/procurement.ts; never a borrowed id). */
+  agentUserId:  string | null
   toStatus:     "booked" | "confirmed" | "completed" | "cancelled" | "no_show"
   notes?:       string
+  /** Extra columns stamped in the SAME update as the transition (procurement approval stamps). */
+  extra?:       Record<string, unknown>
+  /** Client seam (wave 107B): the caller's verified service client / an in-memory proof client. */
+  client?:      ReturnType<typeof createServiceClient>
 }
 
 export interface AttachVendorDeliverableInput {
@@ -246,27 +268,35 @@ async function resolveAgentId(
   return data?.id ?? null
 }
 
-/** Write a lifecycle_events row for the given event */
+/** Write a lifecycle_events row for the given event AND fan it out.
+ *  ONE VOCABULARY (2026-09-03): routes through emitKernelEvent — the bare insert
+ *  it replaces never reached the reactor, so VENDOR_* notification rules never
+ *  fired. Same columns; a refused row is logged instead of resolving silently. */
 async function emitLifecycleEvent(
   supabase: ReturnType<typeof createServiceClient>,
   params: {
     brokerageId:  string
-    actorUserId:  string
+    actorUserId:  string | null
     entityType:   string
     entityId:     string
     event:        KernelEvent
     metadata?:    Record<string, unknown>
   }
 ) {
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  params.brokerageId,
-    actor_user_id: params.actorUserId,
-    entity_type:   params.entityType,
-    entity_id:     params.entityId,
-    event_type:    params.event,
-    metadata:      params.metadata ?? {},
-    created_at:    new Date().toISOString(),
+  const { emitKernelEvent } = await import("./emit")
+  const r = await emitKernelEvent({
+    event:       params.event,
+    brokerageId: params.brokerageId,
+    actorUserId: params.actorUserId,
+    entityType:  params.entityType,
+    entityId:    params.entityId,
+    metadata:    params.metadata ?? {},
+    // The audit row lands on the same client as the write it records (emit.ts client seam).
+    client:      supabase,
   })
+  if (r.error) {
+    console.error(`[kernel/vendors] lifecycle_events row refused for ${params.event} on ${params.entityType}:${params.entityId}: ${r.error}`)
+  }
 }
 
 // ─── COMMAND 1: loadVendorWorkspace ──────────────────────────────────────────
@@ -319,7 +349,7 @@ export async function loadVendorWorkspace(
       .eq("brokerage_id", brokerageId)
       .order("booked_at", { ascending: false })
       .limit(50),
-    // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
+    // ONE vendor table since m355 — curation lives on these rows.
     supabase
       .from("vendors")
       .select("id, name, category, phone, email, website, notes, rating, brokerage_id")
@@ -385,12 +415,25 @@ export async function createVendorRecord(
     }
   }
 
+  // vendors.category is CHECK-constrained. Normalising here — rather than letting
+  // the raw string reach the INSERT — is what turns "violates check constraint
+  // vendors_category_check" into a sentence a broker can act on. toVendorCategory
+  // accepts the legacy Title-Case spellings and the space/hyphen forms an import
+  // or an AI extraction produces, and returns null rather than guessing.
+  const resolvedCategory = category?.trim() ? toVendorCategory(category) : null
+  if (category?.trim() && !resolvedCategory) {
+    return {
+      success: false,
+      error: `"${category.trim()}" is not a service type we recognise. Choose one of: ${VENDOR_CATEGORIES.map((c) => VENDOR_CATEGORY_LABELS[c]).join(", ")}.`,
+    }
+  }
+
   const { data: vendor, error: insertError } = await supabase
     .from("vendors")
     .insert({
       brokerage_id: brokerageId,
       name:         name.trim(),
-      category:     category?.trim() ?? null,
+      category:     resolvedCategory,
       phone:        phone?.trim() ?? null,
       email:        email?.trim() ?? null,
       website:      website?.trim() ?? null,
@@ -442,9 +485,23 @@ export async function updateVendorRecord(
     return { success: false, error: "Vendor not found or access denied." }
   }
 
+  // Same CHECK, same honest refusal as the create path — a blind spread would
+  // otherwise put any string a caller passed straight into a constrained column.
+  const nextPatch = { ...patch }
+  if (typeof nextPatch.category === "string") {
+    const resolved = toVendorCategory(nextPatch.category)
+    if (!resolved) {
+      return {
+        success: false,
+        error: `"${nextPatch.category}" is not a service type we recognise. Choose one of: ${VENDOR_CATEGORIES.map((c) => VENDOR_CATEGORY_LABELS[c]).join(", ")}.`,
+      }
+    }
+    nextPatch.category = resolved
+  }
+
   const { error } = await supabase
     .from("vendors")
-    .update({ ...patch })
+    .update(nextPatch)
     .eq("id", vendorId)
     .eq("brokerage_id", brokerageId)
 
@@ -644,6 +701,16 @@ export async function assignVendorToTransaction(
       assignment_id:  assignment.id,
       vendor_id:      vendorId,
       transaction_id: transactionId,
+      // TENANT STAMP — the sibling vendor_assignments insert above always
+      // carried it, this one never did. vendor_jobs.brokerage_id is NULLABLE
+      // and vendor_jobs_tenant reads
+      //   ((brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id()))
+      // so an untenanted job row satisfies the predicate for EVERY brokerage on
+      // the platform — job title, notes and the vendor relationship included.
+      // Verified live. This went unnoticed because nothing could reach this
+      // function; wiring assignVendorToTransactionAction made it reachable, so
+      // the stamp had to land in the same change that opened the door.
+      brokerage_id:   brokerageId,
       status:         "pending",
       job_title:      `${assignmentType} — ${transaction.property_address}`,
       agent_notes:    notes ?? null,
@@ -743,7 +810,7 @@ export async function updateVendorBookingStatus(
   input: UpdateVendorBookingStatusInput
 ): Promise<KernelVendorResult> {
   const { bookingId, brokerageId, agentUserId, toStatus, notes } = input
-  const supabase = createServiceClient()
+  const supabase = input.client ?? createServiceClient()
 
   const { data: booking } = await supabase
     .from("vendor_bookings")
@@ -765,17 +832,22 @@ export async function updateVendorBookingStatus(
     }
   }
 
-  const updatePayload: Record<string, unknown> = { status: toStatus }
+  const updatePayload: Record<string, unknown> = { ...(input.extra ?? {}), status: toStatus }
   if (notes) updatePayload.notes = notes
   if (toStatus === "completed") updatePayload.completed_at = new Date().toISOString()
 
-  const { error } = await supabase
+  // Compare-and-set on the status read above, and COUNT what came back (CLAUDE.md §3): a racing
+  // transition matches nothing and must not report success.
+  const { data: moved, error } = await supabase
     .from("vendor_bookings")
     .update(updatePayload)
     .eq("id", bookingId)
     .eq("brokerage_id", brokerageId)
+    .eq("status", booking.status)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!moved || (moved as unknown[]).length === 0) return { success: false, error: `Booking moved before the ${booking.status} → ${toStatus} transition landed.` }
 
   const event = toStatus === "completed"
     ? KernelEvent.VENDOR_BOOKING_COMPLETED
@@ -873,7 +945,7 @@ export async function loadPartnerDirectory(
   const supabase = createServiceClient()
 
   const [directoryRes, preferredRes, referralRes] = await Promise.all([
-    // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
+    // ONE vendor table since m355 — curation lives on these rows.
     supabase
       .from("vendors")
       .select("id, name, category, phone, email, website, notes, rating, brokerage_id")

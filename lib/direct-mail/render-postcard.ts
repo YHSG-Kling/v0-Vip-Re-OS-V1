@@ -20,38 +20,21 @@
  * pre-uploaded Lob template id.
  */
 import "server-only"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia → Supabase `media`, the bucket
+// lib/storage/document-buckets.ts designates for assets a delivery vendor
+// fetches unauthenticated — Lob pulls these panel PNGs by URL at print time.
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
+import { createServiceClient } from "@/lib/supabase/service"
 import QRCode from "qrcode"
 import { selectComposition, renderStill } from "@remotion/renderer"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { resolveBrandContext } from "@/lib/branding/resolve-brand-context"
 import { draftPostcardCopy, type DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
+import { buildMailOptOutAffordance, mailOptOutProps } from "@/lib/direct-mail/mail-opt-out-affordance"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
-
-export interface RenderPostcardArgs {
-  brokerageId: string
-  copyCtx:     DirectMailCopyContext
-  /** The QR scan URL the postcard's QR encodes. Caller is responsible
-   *  for creating the qr_codes row + slug; we just encode the slug
-   *  redirector URL into the PNG so scanning lands at /api/qr/scan
-   *  which records the event + redirects to the destination. */
-  qrScanUrl:   string | null
-}
-
-export interface RenderPostcardResult {
-  ok:       boolean
-  url?:     string
-  width?:   number
-  height?:  number
-  copy?:    { headline: string; body: string; cta: string }
-  /** Wave 36 m156 — id of the compliance_events row the gate emitted. */
-  complianceEventId?: string | null
-  error?:   string
-  /** Compliance violations when ok=false because the copy gate failed. */
-  violations?: string[]
-}
 
 /** Both-sides render result. Front + back URLs ready to drop into
  *  lob.postcards.create({ front: frontUrl, back: backUrl }). */
@@ -65,94 +48,11 @@ export interface RenderPostcardBothSidesResult {
   violations?: string[]
 }
 
-export async function renderPostcardFront4x6(
-  args: RenderPostcardArgs,
-): Promise<RenderPostcardResult> {
-  // 1. Brand context — primary/accent color, logo, license, Fair Housing line.
-  const brand = await resolveBrandContext({
-    brokerageId: args.brokerageId,
-    teamId:      args.copyCtx.teamId ?? null,
-    agentUserId: args.copyCtx.agentUserId ?? null,
-  })
-
-  // 2. AI-drafted copy with compliance redraft loop. Fail closed if
-  //    both attempts violate — dispatchDirectMail caller will fall
-  //    back to a static Lob template rather than mail copy the gate
-  //    rejected.
-  const copyResult = await draftPostcardCopy(args.copyCtx)
-  if (!copyResult.ok) {
-    return { ok: false, error: "compliance_gate_failed", violations: copyResult.violations, complianceEventId: copyResult.complianceEventId }
-  }
-
-  // 3. QR PNG. qrcode renders to a data URL we can drop straight into
-  //    the Remotion composition's <Img>.
-  let qrCodeDataUrl: string | null = null
-  if (args.qrScanUrl) {
-    qrCodeDataUrl = await QRCode.toDataURL(args.qrScanUrl, {
-      width: 600,
-      margin: 1,
-      errorCorrectionLevel: "M",
-      color: { dark: "#000000", light: "#ffffff" },
-    })
-  }
-
-  // 4. Bundle + select + renderStill. Bundle is module-cached so
-  //    subsequent renders in the same warm function reuse it.
-  const entry = path.join(process.cwd(), "remotion", "Root.tsx")
-  const serveUrl = await getBundle(entry)
-
-  const inputProps = {
-    headline: copyResult.copy.headline,
-    body:     copyResult.copy.body,
-    cta:      copyResult.copy.cta,
-    qrCodeDataUrl,
-    brand: {
-      primaryColor:    brand.visual.primaryColor,
-      accentColor:     brand.visual.accentColor,
-      logoUrl:         brand.visual.logoUrl,
-      // displayName cascades team > brokerage so a team's piece shows
-      // the team's name + logo + colors, not the parent brokerage's.
-      brokerageName:   brand.displayName,
-      websiteWordmark: brand.display.websiteWordmark,
-      phone:           brand.display.phone,
-      licenseLine:     brand.display.licenseLine,
-      shortDisclosure: brand.fairHousing.shortDisclosure,
-    },
-  }
-
-  const composition = await selectComposition({
-    serveUrl,
-    id: "PostcardFront4x6",
-    inputProps,
-  })
-
-  const outPath = path.join(tmpdir(), `postcard-${Date.now()}.png`)
-  await renderStill({
-    composition,
-    serveUrl,
-    output: outPath,
-    inputProps,
-    imageFormat: "png",
-  })
-
-  // 5. Upload to Vercel Blob — Lob will fetch from this URL.
-  const buf = await fs.readFile(outPath)
-  await fs.unlink(outPath).catch(() => {})
-  const uploaded = await put(
-    `direct-mail/postcard-4x6/${args.brokerageId}/${Date.now()}.png`,
-    buf,
-    { access: "public", contentType: "image/png" },
-  )
-
-  return {
-    ok:     true,
-    url:    uploaded.url,
-    width:  composition.width,
-    height: composition.height,
-    copy:   copyResult.copy,
-    complianceEventId: copyResult.complianceEventId,
-  }
-}
+// TOMBSTONE (orphan tranche 4): renderPostcardFront4x6 deleted. The survivor is
+// renderPostcardBothSides4x6 below — same brand context, same compliance-gated
+// copy draft, same QR + renderStill + Blob upload, and it renders the BACK the
+// front-only path never produced (Lob postcards require both sides). Wired live
+// from lib/direct-mail/orchestrate-send.ts and app/actions/direct-mail-preview.ts.
 
 /**
  * renderPostcardBothSides4x6
@@ -171,9 +71,27 @@ export async function renderPostcardFront4x6(
 export async function renderPostcardBothSides4x6(args: {
   brokerageId: string
   copyCtx:     DirectMailCopyContext
+  /** CAMPAIGN-level response QR (a qr_codes slug shared by every recipient of
+   *  this campaign). Front panel only. NOT the opt-out — see below. */
   qrScanUrl:   string | null
   agentName:   string | null
   agentPhotoUrl: string | null
+  /**
+   * THIS RECIPIENT's `direct_mail_recipients.unsubscribe_token`, read straight
+   * off the row the drain just inserted. PER-RECIPIENT and never shared: it is
+   * the only credential the public opt-out surface accepts, and it names one
+   * person on one campaign.
+   *
+   * Deliberately a TOKEN and not a URL: taking a URL here would let a caller
+   * hand this argument the campaign's `qrScanUrl` by mistake, and the two
+   * arguments would then be interchangeable at the type level. A token can only
+   * come from a recipient row.
+   *
+   * Null (no row, or the insert was refused) prints no opt-out row, which the
+   * content contract classifies as an unsatisfied REQUIRED prop rather than a
+   * quietly opt-out-less card.
+   */
+  unsubscribeToken?: string | null
 }): Promise<RenderPostcardBothSidesResult> {
   const brand = await resolveBrandContext({
     brokerageId: args.brokerageId,
@@ -224,12 +142,22 @@ export async function renderPostcardBothSides4x6(args: {
     output: frontPath, inputProps: frontInput, imageFormat: "png",
   })
 
+  // ── THE OPT-OUT ON THE PIECE ────────────────────────────────────────────
+  // Built from the RECIPIENT's token, on the BACK, and structurally separate
+  // from the campaign QR above: that one came from `args.qrScanUrl` (a qr_codes
+  // slug every recipient of this campaign shares) and goes on the FRONT; this
+  // one encodes /unsubscribe/<this recipient's token> and never reads, writes
+  // or counts against the qr_codes table. Collapsing the two would print one
+  // shared code on every card, so the first scan would suppress a stranger.
+  const optOut = mailOptOutProps(await buildMailOptOutAffordance(args.unsubscribeToken))
+
   // Render back
   const backInput = {
     body:    copyResult.copy.body,
     signoff: args.agentName ? `— ${args.agentName.split(" ")[0] ?? args.agentName}` : null,
     agentPhotoUrl: args.agentPhotoUrl,
     agentName: args.agentName,
+    ...optOut,
     brand: brandProp,
   }
   const backComp = await selectComposition({ serveUrl, id: "PostcardBack4x6", inputProps: backInput })
@@ -247,19 +175,16 @@ export async function renderPostcardBothSides4x6(args: {
   await Promise.all([fs.unlink(frontPath).catch(() => {}), fs.unlink(backPath).catch(() => {})])
 
   const stamp = Date.now()
+  const svc = createServiceClient()
   const [frontUp, backUp] = await Promise.all([
-    put(`direct-mail/postcard-4x6/${args.brokerageId}/${stamp}-front.png`, frontBuf, {
-      access: "public", contentType: "image/png",
-    }),
-    put(`direct-mail/postcard-4x6/${args.brokerageId}/${stamp}-back.png`, backBuf, {
-      access: "public", contentType: "image/png",
-    }),
+    hostRenderedMedia(svc, `direct-mail/postcard-4x6/${args.brokerageId}/${stamp}-front.png`, frontBuf, "image/png", "media"),
+    hostRenderedMedia(svc, `direct-mail/postcard-4x6/${args.brokerageId}/${stamp}-back.png`, backBuf, "image/png", "media"),
   ])
 
   return {
     ok:       true,
-    frontUrl: frontUp.url,
-    backUrl:  backUp.url,
+    frontUrl: frontUp,
+    backUrl:  backUp,
     copy:     copyResult.copy,
     complianceEventId: copyResult.complianceEventId,
   }
@@ -361,19 +286,16 @@ export async function renderPostcardBothSides6x9(args: {
   await Promise.all([fs.unlink(frontPath).catch(() => {}), fs.unlink(backPath).catch(() => {})])
 
   const stamp = Date.now()
+  const svc = createServiceClient()
   const [frontUp, backUp] = await Promise.all([
-    put(`direct-mail/postcard-6x9/${args.brokerageId}/${stamp}-front.png`, frontBuf, {
-      access: "public", contentType: "image/png",
-    }),
-    put(`direct-mail/postcard-6x9/${args.brokerageId}/${stamp}-back.png`, backBuf, {
-      access: "public", contentType: "image/png",
-    }),
+    hostRenderedMedia(svc, `direct-mail/postcard-6x9/${args.brokerageId}/${stamp}-front.png`, frontBuf, "image/png", "media"),
+    hostRenderedMedia(svc, `direct-mail/postcard-6x9/${args.brokerageId}/${stamp}-back.png`, backBuf, "image/png", "media"),
   ])
 
   return {
     ok:       true,
-    frontUrl: frontUp.url,
-    backUrl:  backUp.url,
+    frontUrl: frontUp,
+    backUrl:  backUp,
     copy:     copyResult.copy,
     complianceEventId: copyResult.complianceEventId,
   }

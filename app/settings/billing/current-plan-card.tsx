@@ -21,7 +21,9 @@ import {
   acceptCancellationSaveOfferAction,
 } from "@/app/actions/billing"
 import type { SaveOffer } from "@/lib/platform/save-offer"
+import { formatSeatLimit, formatTenantSeatLimit, normalizeCatalogSeatLimit } from "@/lib/kernel/tier-role-matrix"
 import { UpgradeModal } from "./upgrade-modal"
+import { isCustomPricedTier } from "@/lib/billing/plan-catalog"
 
 interface CurrentPlanCardProps {
   subscription: any
@@ -44,19 +46,29 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
   const [saveOffer, setSaveOffer] = useState<SaveOffer | null>(null)
   const [busy, setBusy] = useState(false)
 
+  // Did we read a catalogue tier at all? "no plan" and "unlimited plan" both
+  // arrive at max_agents === null/undefined; only this tells them apart.
+  const hasTier = Boolean(tier)
   const status = subscription?.status || "inactive"
   const renewalDate = subscription?.current_period_end
     ? new Date(subscription.current_period_end).toLocaleDateString()
     : "N/A"
 
-  const monthlyPrice = tier?.monthly_price_cents
-    ? `$${(tier.monthly_price_cents / 100).toFixed(2)}`
-    : "N/A"
-  const annualPrice = tier?.annual_price_cents
-    ? `$${(tier.annual_price_cents / 100).toFixed(2)}`
-    : "N/A"
+  // A custom-priced tier (multi-location) bills the QUOTED amount on the
+  // tenant's own Stripe price, never the catalogue placeholder (wave 87C).
+  const customPriced = isCustomPricedTier(tier?.tier_name)
+  const monthlyPrice = customPriced
+    ? "Custom pricing"
+    : tier?.monthly_price_cents
+      ? `$${(tier.monthly_price_cents / 100).toFixed(2)}`
+      : "N/A"
+  const annualPrice = customPriced
+    ? "Custom pricing"
+    : tier?.annual_price_cents
+      ? `$${(tier.annual_price_cents / 100).toFixed(2)}`
+      : "N/A"
 
-  const annualSavings = tier?.monthly_price_cents && tier?.annual_price_cents
+  const annualSavings = !customPriced && tier?.monthly_price_cents && tier?.annual_price_cents
     ? Math.round(100 - (tier.annual_price_cents / (tier.monthly_price_cents * 12)) * 100)
     : 0
 
@@ -141,16 +153,32 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
           <div className="flex items-center justify-between p-4 bg-muted rounded-lg">
             <div>
               <p className="text-2xl font-bold">{tier?.display_name || "No Plan"}</p>
+              {/* Unlimited is spelled NULL in subscription_tiers.max_agents (what
+                  the live multi_location row holds) and -1 in the older
+                  plan_limits convention. Testing only for -1 rendered the
+                  UNLIMITED plan as "null agents". One fold, shared with the
+                  seat gate — lib/kernel/tier-role-matrix.ts.
+
+                  AND THE OTHER DIRECTION: with NO subscription, `tier` is
+                  undefined, so `tier?.max_agents` reached that same fold as
+                  `undefined` and printed "Unlimited seats" directly beneath the
+                  words "No Plan". formatTenantSeatLimit takes the answer to
+                  "did we read a tier at all?" so absence can no longer borrow
+                  the unlimited label (§4 — fail closed). */}
               <p className="text-sm text-muted-foreground">
-                {tier?.max_agents === -1 ? "Unlimited" : tier?.max_agents} agent{tier?.max_agents !== 1 ? "s" : ""}
+                {hasTier
+                  ? `${formatSeatLimit(tier?.max_agents)} seat${normalizeCatalogSeatLimit(tier?.max_agents) === 1 ? "" : "s"}`
+                  : formatTenantSeatLimit(false, tier?.max_agents)}
               </p>
             </div>
             <div className="text-right">
               <p className="text-xl font-semibold">
                 {isAnnual ? annualPrice : monthlyPrice}
-                <span className="text-sm font-normal text-muted-foreground">
-                  /{isAnnual ? "year" : "month"}
-                </span>
+                {!customPriced && (
+                  <span className="text-sm font-normal text-muted-foreground">
+                    /{isAnnual ? "year" : "month"}
+                  </span>
+                )}
               </p>
               {annualSavings > 0 && isAnnual && (
                 <p className="text-xs text-green-600">Save {annualSavings}% annually</p>

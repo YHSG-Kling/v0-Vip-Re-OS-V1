@@ -29,19 +29,17 @@
  * status flag, or the Fair Housing compliance gate. All of those still
  * apply per-piece inside the orchestrator.
  *
- * Auth: CRON_SECRET. Same Bearer + ?secret= dual scheme as the other
- * marketing crons.
+ * Auth: verifyCronAuth (lib/cron-auth.ts) — Bearer CRON_SECRET, fail closed
+ * when unset; the old ?secret= query credential is retired (lane 88E).
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchFarmMail, type DispatchFarmMailResult } from "@/lib/farm-mail/dispatch-farm-mail"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
 
 const DEFAULT_MAX_PER_AGENT     = 50
 const DEFAULT_MAX_PER_BROKERAGE = 1000
@@ -54,12 +52,9 @@ interface AgentRow {
 }
 
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
   const url      = new URL(req.url)
-  const qs       = url.searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const dryRun         = url.searchParams.get("dry") === "1"
   const scopeBrokerage = url.searchParams.get("brokerage_id")  // dev-mode targeted run

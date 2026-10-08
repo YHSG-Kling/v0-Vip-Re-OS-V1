@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Video, Share2, Loader2, Check, X, ExternalLink, Link2 } from "lucide-react"
+import { Video, Share2, Loader2, Check, X, Link2, Globe } from "lucide-react"
 import { updateAgentSettings } from "@/app/actions/agent-settings"
+import { updateMyProfile } from "@/app/actions/user-profile"
 import { disconnectSocialAccount } from "@/app/actions/social-publishing"
 import { useToast } from "@/hooks/use-toast"
 
@@ -59,6 +60,61 @@ const SOCIAL_PLATFORMS = [
 interface SocialAccountsProps {
   userId: string
   initialAccounts: any[]
+}
+
+export function PersonalWebsiteCard({ initialUrl }: { initialUrl: string | null }) {
+  const [website, setWebsite] = useState(initialUrl ?? "")
+  const [saving, setSaving] = useState(false)
+  const { toast } = useToast()
+
+  async function handleSave() {
+    setSaving(true)
+    try {
+      const r = await updateMyProfile({ personalWebsiteUrl: website })
+      if (r.success) {
+        toast({ title: "Website saved", description: "Your personal website URL has been updated." })
+      } else {
+        toast({ title: "Save failed", description: r.error, variant: "destructive" })
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm font-medium flex items-center gap-2">
+          <Globe className="h-4 w-4" />
+          Personal Website
+        </CardTitle>
+        <CardDescription className="text-xs">
+          Your personal real-estate website (Realtor.com profile, Wix, Squarespace, custom domain).
+          When set, the platform uses it as the canonical embed origin for /embed/blog and as the
+          byline link on your blog landing pages.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="space-y-1.5">
+          <Label htmlFor="personalWebsite">Website URL</Label>
+          <Input
+            id="personalWebsite"
+            type="url"
+            inputMode="url"
+            placeholder="https://your-domain.com"
+            value={website}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWebsite(e.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            Must start with <code>http://</code> or <code>https://</code>. Leave blank to clear.
+          </p>
+        </div>
+        <Button size="sm" onClick={handleSave} disabled={saving}>
+          {saving ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Saving...</> : "Save Website"}
+        </Button>
+      </CardContent>
+    </Card>
+  )
 }
 
 export function VideoSettingsCard({ userId, initialAvatarId, initialVoiceId }: VideoSettingsProps) {
@@ -183,6 +239,9 @@ export function SocialAccountsCard({ userId, initialAccounts }: SocialAccountsPr
     if (!account) return
     setDisconnecting(platformKey)
     try {
+      // NOTE: this imports disconnectSocialAccount from social-publishing, which
+      // THROWS on failure — not the same-named action in social-media-automation,
+      // which returns { success:false }. The catch below is the correct handler.
       await disconnectSocialAccount(account.id, userId)
       setAccounts((prev) => prev.filter((a) => a.id !== account.id))
       toast({ title: `${platformKey} disconnected` })

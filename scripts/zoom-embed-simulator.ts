@@ -33,7 +33,8 @@
  * edits package.json).
  */
 
-import { readFileSync, readdirSync, statSync } from "fs"
+import { readFileSync } from "fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join, dirname, relative } from "path"
 import { fileURLToPath } from "url"
 import { createHmac } from "crypto"
@@ -187,24 +188,22 @@ console.log("\nLayer 5 — embedded-client-only lock")
   const scanRoots = ["app", "lib", "hooks", "services"]
   const offenders: string[] = []
   let embeddedImports = 0
-  const walk = (dir: string) => {
-    for (const name of readdirSync(dir)) {
-      if (name === "node_modules" || name.startsWith(".")) continue
-      const p = join(dir, name)
-      const st = statSync(p)
-      if (st.isDirectory()) { walk(p); continue }
-      if (!/\.(ts|tsx)$/.test(name)) continue
-      const text = readFileSync(p, "utf8")
-      if (!text.includes("@zoom/meetingsdk")) continue
-      // Every reference must carry the /embedded subpath — the package root /
-      // React wrappers peer-pin react 18 and must never load under React 19.
-      const bare = text.match(/@zoom\/meetingsdk(?!\/embedded)/g)
-      if (bare) offenders.push(`${relative(ROOT, p)} (${bare.length} bare ref${bare.length > 1 ? "s" : ""})`)
-      embeddedImports += (text.match(/@zoom\/meetingsdk\/embedded/g) ?? []).length
-    }
+  // TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+  // 82 copies of the same readdirSync walker. The survivor is
+  // scripts/runtime-roots.ts:61 (`walkTs`), imported above. It enumerated
+  // DIRECTORIES, and a root-level FILE is not a directory, so `proxy.ts` — the Next
+  // 16 edge middleware — was outside this guard's corpus. A file that is never
+  // opened reports green. `rootRuntimeFiles()` from the same survivor supplies it.
+  for (const p of [...scanRoots.flatMap((r) => walkTs(join(ROOT, r))), ...rootRuntimeFiles(ROOT)]) {
+    const text = readFileSync(p, "utf8")
+    if (!text.includes("@zoom/meetingsdk")) continue
+    // Every reference must carry the /embedded subpath — the package root /
+    // React wrappers peer-pin react 18 and must never load under React 19.
+    const bare = text.match(/@zoom\/meetingsdk(?!\/embedded)/g)
+    if (bare) offenders.push(`${relative(ROOT, p)} (${bare.length} bare ref${bare.length > 1 ? "s" : ""})`)
+    embeddedImports += (text.match(/@zoom\/meetingsdk\/embedded/g) ?? []).length
   }
-  for (const r of scanRoots) walk(join(ROOT, r))
-  check("no '@zoom/meetingsdk' reference WITHOUT '/embedded' in app/lib/hooks/services",
+  check("no '@zoom/meetingsdk' reference WITHOUT '/embedded' in app/lib/hooks/services or the repo root",
     offenders.length === 0, offenders.join("; "))
   check("the embedded Component-view client IS imported somewhere", embeddedImports > 0)
   const embed = src("app/dashboard/meetings/[eventId]/meeting-embed.tsx")

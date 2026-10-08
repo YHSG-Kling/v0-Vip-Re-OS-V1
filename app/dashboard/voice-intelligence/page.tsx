@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { VoiceIntelligenceClient, type CallRow } from "./voice-intelligence-client"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = "force-dynamic"
 
@@ -9,6 +10,13 @@ export default async function VoiceIntelligencePage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const { data: profile } = await supabase
     .from("users")
     .select("id, brokerage_id, user_type, role")
@@ -23,7 +31,16 @@ export default async function VoiceIntelligencePage() {
     .select("id")
     .eq("user_id", user.id)
     .maybeSingle()
-  const agentId = agentRow?.id ?? user.id
+  // NOT `?? user.id` (m348) — voice_calls.agent_id FKs agents, so the users id
+  // matched no calls and the page showed an empty call history as if it were real.
+  const agentId = agentRow?.id ?? ""
+  if (!agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your call intelligence.
+      </div>
+    )
+  }
 
   // Recent calls — joined with the latest call_analyses row per call so
   // the list can show sentiment, intent, and outcome at a glance.

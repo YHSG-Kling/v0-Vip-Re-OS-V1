@@ -1,5 +1,6 @@
 'use server'
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from '@/lib/supabase/service'
 import { createClient } from '@/lib/supabase/server'
 import { captureContact } from '@/lib/contact-pipeline/contact-capture'
@@ -7,6 +8,7 @@ import { routeUnknownToNotes, CANONICAL_CONTACT_FIELDS } from '@/lib/data-stewar
 import { normalizeRowEnums, NORMALIZABLE_ENUM_FIELDS } from '@/lib/data-steward/value-normalizer'
 import { aiMatchEnumValues, aiMatchKey } from '@/lib/data-steward/ai-value-matcher'
 import { KernelEvent } from '@/lib/kernel/events'
+import { emitKernelEvent } from '@/lib/kernel/emit'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
 // Common column names from other CRMs' exports (kvCORE, Follow Up Boss, Lofty/Chime,
@@ -39,8 +41,17 @@ const IMPORT_FIELD_ALIASES: Record<string, string> = {
 }
 
 // ─── processImportRows ────────────────────────────────────────────────────────
-
-export async function processImportRows(params: {
+//
+// ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ──────────────────────────────────
+// This file is `'use server'`, so an export here is a PUBLIC HTTP ENDPOINT. This
+// is the internal bulk worker, not a door: its ONE call site is :~275 in THIS
+// file, the gated import action that owns the auth check. Its own signature
+// still shows why it should never have been exported — `brokerageId` and
+// `agentUserId` are accepted and DELIBERATELY IGNORED because they used to be
+// trusted, which let any signed-in user bulk-create contacts in any brokerage
+// (§4: tenant from the SESSION). Lowered to module-private so the parameters
+// cannot be re-trusted by a future caller that is not this file.
+async function processImportRows(params: {
   brokerageId?: string  // ignored — derived from session
   agentUserId?: string | null  // ignored — derived from session
   importId: string
@@ -60,15 +71,24 @@ export async function processImportRows(params: {
 
   const supabase = createServiceClient()
 
-  // Verify the import row belongs to caller's brokerage
+  // Verify the import row belongs to caller's brokerage — and read what the tenant
+  // PAID for the list (m678 lead_imports.list_cost_usd, lane 89E) so each imported
+  // row carries its share as tenant-paid spend.
   const { data: importRow } = await supabase
     .from('lead_imports')
-    .select('brokerage_id')
+    .select('brokerage_id, total_rows, list_cost_usd')
     .eq('id', params.importId)
     .maybeSingle()
   if (!importRow || importRow.brokerage_id !== brokerageId) {
     return { created: 0, merged: 0, failed: params.rows.length }
   }
+  const { purchasedListShareUsd, stampPurchasedListCost } = await import('@/lib/lead-import/list-cost-stamp')
+  const listShareUsd = purchasedListShareUsd(
+    (importRow as { list_cost_usd?: number | string | null }).list_cost_usd == null
+      ? null
+      : Number((importRow as { list_cost_usd?: number | string | null }).list_cost_usd),
+    (importRow as { total_rows?: number | null }).total_rows ?? params.rows.length,
+  )
 
   let created = 0
   let merged = 0
@@ -127,7 +147,7 @@ export async function processImportRows(params: {
       const combinedNotes = [notes, ...auditLines].filter(Boolean).join('\n')
       const channel = enumValues.preferred_channel as 'phone' | 'email' | 'sms' | undefined
 
-      const { action } = await captureContact({
+      const { action, contactId } = await captureContact({
         brokerageId: brokerageId,
         ownerAgentId: importerAgentId,
         source: 'import',
@@ -155,6 +175,13 @@ export async function processImportRows(params: {
       })
       if (action === 'created') created++
       else merged++
+      // The tenant paid for this row: its share of the list price is TENANT spend
+      // (created → the figure; merged → added to what the contact already carries).
+      // A refused stamp is a per-row error the summary shows, never a silent $0.
+      const stamped = await stampPurchasedListCost(supabase, {
+        brokerageId, contactId, shareUsd: listShareUsd, merged: action !== 'created',
+      })
+      if (!stamped.ok) errorDetails.push({ row: i + 1, error: `contact ${action}; list cost not recorded: ${stamped.error}` })
     } catch (err) {
       failed++
       errorDetails.push({
@@ -164,7 +191,7 @@ export async function processImportRows(params: {
     }
   }
 
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from('lead_imports')
     .update({
       created_count: created,
@@ -175,14 +202,15 @@ export async function processImportRows(params: {
       completed_at: new Date().toISOString(),
     })
     .eq('id', params.importId)
-    .eq('brokerage_id', brokerageId)
+    .eq('brokerage_id', brokerageId), { table: "lead_imports", flow: "lead_imports_write", reason: "import summary counters; the counts are returned to the caller" })
 
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id: brokerageId,
-    entity_type: 'lead_import',
-    entity_id: params.importId,
-    event_type: KernelEvent.LEAD_IMPORT_COMPLETED,
-    actor_user_id: agentUserId,
+  // Audit row + reactor (was a bare insert nobody downstream heard).
+  await emitKernelEvent({
+    brokerageId,
+    entityType: 'lead_import',
+    entityId: params.importId,
+    event: KernelEvent.LEAD_IMPORT_COMPLETED,
+    actorUserId: agentUserId,
     metadata: {
       created,
       merged,
@@ -200,12 +228,19 @@ export async function createImportRecord(params: {
   fileName: string
   totalRows: number
   fieldMap: Record<string, string>
+  /** What the TENANT paid for this list (USD, whole file) — a purchased list's cost
+   *  becomes tenant-paid spend per imported row (m678, lane 89E). Omit / null when the
+   *  file is not a purchased list. Never negative. */
+  listCostUsd?: number | null
 }): Promise<{ importId: string }> {
   const supabase = await createClient()
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) throw new Error('Unauthorized')
 
   const { agentId, brokerageId } = await getAgentContext()
+
+  const listCost = typeof params.listCostUsd === 'number' && Number.isFinite(params.listCostUsd) ? params.listCostUsd : null
+  if (listCost !== null && listCost < 0) throw new Error('A purchased list cost cannot be negative')
 
   const serviceClient = createServiceClient()
   const { data, error } = await serviceClient
@@ -216,6 +251,7 @@ export async function createImportRecord(params: {
       file_name: params.fileName,
       total_rows: params.totalRows,
       field_map: params.fieldMap,
+      list_cost_usd: listCost === null ? null : Math.round(listCost * 100) / 100,
       created_count: 0,
       merged_count: 0,
       skipped_count: 0,
@@ -279,6 +315,8 @@ export async function listImports(): Promise<{
   created_count: number
   merged_count: number
   failed_count: number
+  /** m678 — what the tenant paid for the list (null = not a purchased list). */
+  list_cost_usd: number | null
   created_at: string
   completed_at: string | null
 }[]> {
@@ -290,7 +328,7 @@ export async function listImports(): Promise<{
 
   const { data, error } = await supabase
     .from('lead_imports')
-    .select('id, file_name, status, total_rows, created_count, merged_count, failed_count, created_at, completed_at')
+    .select('id, file_name, status, total_rows, created_count, merged_count, failed_count, list_cost_usd, created_at, completed_at')
     .eq('brokerage_id', brokerageId)
     .order('created_at', { ascending: false })
     .limit(50)

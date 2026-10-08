@@ -25,7 +25,8 @@ import { dispatchDirectMail, type DirectMailPieceType } from "@/lib/providers/di
 import { renderPostcardBothSides4x6, renderPostcardBothSides6x9 } from "@/lib/direct-mail/render-postcard"
 import { renderLetterHtml } from "@/lib/direct-mail/render-letter"
 import type { DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
-import { pickVariantArm, recordVariantSend } from "@/lib/direct-mail/variant-bandit"
+import { pickVariantArm, recordVariantSend, type BanditPickReason } from "@/lib/direct-mail/variant-bandit"
+import { experimentLedgerDetail } from "@/lib/kernel/experiments"
 import type { Persona } from "@/lib/kernel/types"
 
 export type PostcardSize = "4x6" | "6x9"
@@ -48,9 +49,21 @@ export interface OrchestrateSendArgs {
   zip:   string
   pieceType: DirectMailPieceType
   copyCtx:   DirectMailCopyContext
-  /** Optional QR scan URL (already minted by caller) embedded in the
-   *  postcard's QR. Letters typically don't carry QRs. */
+  /** Optional CAMPAIGN-level QR scan URL (already minted by caller, a
+   *  qr_codes slug shared by every recipient of the campaign) embedded in
+   *  the postcard FRONT's response QR. Letters typically don't carry QRs. */
   qrScanUrl?: string | null
+  /**
+   * THIS RECIPIENT's `direct_mail_recipients.unsubscribe_token` — the
+   * credential printed on the piece so the person holding it can stop the
+   * mail. PER-RECIPIENT; the campaign QR above is not.
+   *
+   * The caller that inserts the recipient row is the caller that has this
+   * (campaign-drain selects it back off the insert). Absent, the postcard back
+   * prints no opt-out row and the content contract's REQUIRED `optOutLine` is
+   * unsatisfied — a fact, surfaced, rather than a card with no way to say stop.
+   */
+  unsubscribeToken?: string | null
   /** Fall-back Lob template id when render/copy fails. Required for
    *  the fall-through path to work. */
   fallbackTemplateId: string
@@ -88,6 +101,8 @@ export interface OrchestrateSendResult {
     copyStyle:    string
     sampledProb:  number
     isExploration: boolean
+    /** R4 — why this arm (thompson_sample | frozen_exploit | frozen_all_cold_catalog_default). */
+    pickReason:   BanditPickReason
   } | null
   /** Wave 36 m156 — id of the compliance_events row the gate emitted.
    *  Caller stamps it on direct_mail_campaigns for per-piece audit. */
@@ -142,6 +157,7 @@ export async function orchestrateRenderAndSend(
           copyStyle:     pick.copyStyle,
           sampledProb:   pick.sampledProb,
           isExploration: pick.isExploration,
+          pickReason:    pick.pickReason,
         }
         // Wave 36 — stamp the bandit's copy_style into copyCtx so
         // draftPostcardCopy / draftLetterCopy actually swap in the
@@ -150,6 +166,21 @@ export async function orchestrateRenderAndSend(
         // structurally different creative.
         args.copyCtx.copyStyle = pick.copyStyle
       }
+    }
+    // KNOWN GAP, SAID OUT LOUD RATHER THAN DROPPED. remotion/PostcardBack6x9
+    // does not yet take the opt-out props, so a 6x9 piece mails with no printed
+    // way to say stop even when we hold this recipient's token. That is the same
+    // defect the 4x6 just closed, one composition over, and it is left visible
+    // here instead of silently discarding the token: the fix is to add
+    // optOutLine/optOutQrDataUrl to PostcardBack6x9 + its Root defaults + its
+    // content contract, then spread `mailOptOutProps(...)` into the 6x9
+    // backInput exactly as renderPostcardBothSides4x6 now does.
+    if (size === "6x9" && args.unsubscribeToken) {
+      console.error(
+        "[orchestrator] 6x9 postcard is mailing WITHOUT a printed opt-out: " +
+        "PostcardBack6x9 does not accept optOutLine/optOutQrDataUrl yet, so this " +
+        "recipient's unsubscribe token cannot reach the piece.",
+      )
     }
     const r = size === "6x9"
       ? await renderPostcardBothSides6x9({
@@ -169,6 +200,9 @@ export async function orchestrateRenderAndSend(
           agentName:     args.agentName ?? null,
           // Future: pull agent photo from agents.did_photo_url / users.avatar_url
           agentPhotoUrl: null,
+          // The per-recipient opt-out. Passed as a TOKEN, not a URL, so it can
+          // never be confused with the campaign-level qrScanUrl above.
+          unsubscribeToken: args.unsubscribeToken ?? null,
         })
     if (r.ok && r.frontUrl && r.backUrl) {
       templateForLob     = r.frontUrl
@@ -231,12 +265,20 @@ export async function orchestrateRenderAndSend(
     // actually order the larger card from Lob.
     size:           args.pieceType === "postcard" ? (args.postcardSize ?? "4x6") : undefined,
     systemSource:   args.systemSource ?? "orchestrated",
+    // Wave 101 (101B): the bandit's arm rides the send's ledger row as detail.experiment, so 100A
+    // attribution rolls outcomes up by arm beside the A/B arms (lib/kernel/experiments.ts). The
+    // Thompson sampler keeps choosing it — an adaptive allocator, not a fixed-weight split.
+    // 102D/102F: the send ran under the tenant's `direct_mail_exploration` policy (the bandit kill
+    // switch, lib/kernel/tenant-policy.ts) — named as policyKey so the ledger row reads
+    // `direct_mail_exploration@<version>` (LAW 5), with the bandit's pick reason beside the arm (R4).
+    ...(variantPick ? { ledger: { detail: { ...experimentLedgerDetail({ key: "direct_mail_variant", arm: variantPick.variantId }), bandit_pick_reason: variantPick.pickReason }, policyKey: "direct_mail_exploration" } } : {}),
     metadata: {
       rendered,
       fell_back_reason: fellBackReason,
       postcard_size:    args.pieceType === "postcard" ? (args.postcardSize ?? "4x6") : undefined,
       variant_id:       variantPick?.variantId ?? null,
       copy_style:       variantPick?.copyStyle ?? null,
+      bandit_pick_reason: variantPick?.pickReason ?? null,
     },
   })
 

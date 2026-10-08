@@ -1,4 +1,20 @@
-"use server"
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published getAgentProviderCredentials({ agentId, provider })
+// and hasProviderCredentials({ agentId, provider }) as public HTTP doors with no
+// gate: a service client RETURNING platform_credentials (an API key, an access
+// token, a refresh token) for any caller-supplied agentId — section 4's named
+// IDOR shape, on the one table whose rows are secrets. Every caller is
+// in-process server code (re-verified 2026-09-03):
+//   · lib/buyer-offer/index.ts:10-14 (the barrel), whose value importers are
+//     app/actions/buyer-offer/{submit-for-signature,respond-to-counter,
+//     convert-to-transaction}.ts — all "use server" — and NONE of which
+//     imports these two names; no other module in the tree calls them
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+// agentId is now an IN-PROCESS CONTRACT: with the door closed, the server
+// caller that supplies it is the gate.
+import "server-only"
 
 /**
  * System 7.1B - Provider Credentials Helper

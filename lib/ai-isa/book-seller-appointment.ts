@@ -27,13 +27,15 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scheduleISAAppointment } from "./appointment-scheduler"
 import { promoteLeadToContactService } from "@/lib/contact-promotion"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
-import { startRun } from "@/lib/workflow-orchestrator/engine"
+import { fireListingAppointmentSetForBooking } from "@/lib/workflow-orchestrator/chains/listing-appt-prep"
+import { CalendarEventType } from "@/lib/kernel/calendar-types"
 
 export interface BookSellerListingAppointmentParams {
   brokerageId: string
@@ -102,11 +104,12 @@ export async function bookSellerListingAppointment(
   // convert once qualified), so record the qualification the appointment
   // evidences before the safety-convert — same stamp acceptAIISAHandoff writes.
   if (!wasAlreadyConverted && (preLead as { lead_stage?: string | null } | null)?.lead_stage !== "qualified") {
-    await svc
+    const { error: qualifyErr } = await svc
       .from("leads")
       .update({ lead_stage: "qualified", ai_isa_owner: false, updated_at: new Date().toISOString() })
       .eq("id", params.leadId)
       .eq("brokerage_id", params.brokerageId)
+    if (qualifyErr) console.error(`[book-seller-appointment] lead NOT stamped qualified before the safety-convert: ${qualifyErr.message}`)
   }
 
   const promotion = await promoteLeadToContactService(params.leadId)
@@ -121,11 +124,10 @@ export async function bookSellerListingAppointment(
 
   // Link the lead → its contact on the canonical leads.contact_id column (best-effort).
   if (!alreadyConverted) {
-    await svc
+    await sentinelWrite(svc, svc
       .from("leads")
       .update({ contact_id: contactId })
-      .eq("id", params.leadId)
-      .then(() => null, () => null)
+      .eq("id", params.leadId), { table: "leads", flow: "lead_contact_link", reason: "canonical lead→contact link (best-effort by design)" })
   }
 
   // ── Step 2: WELCOME — fire CONTACT_AGENT_ASSIGNED ONLY on a fresh safety-convert ─
@@ -154,17 +156,34 @@ export async function bookSellerListingAppointment(
   // column (agent-coaching/no-show autopilot key on it, and the direct schedule
   // action passes users.id). params.agentId here is agents.id — resolve first.
   const agentUserId = await resolveAgentRecordToUserId(params.agentId)
+  // NOT `?? params.agentId` (m362). The comment above states the requirement —
+  // calendar_events.agent_user_id is USERS-class and params.agentId is
+  // agents.id — and the fallback then supplied exactly the agents id the
+  // resolve existed to convert. It fired only when the resolve failed, i.e.
+  // when there was no users id to be had, so it never rescued a working case:
+  // it put a wrong-class id on the appointment that agent-coaching and the
+  // no-show autopilot both key on.
+  if (!agentUserId) {
+    return {
+      success: false,
+      contactId,
+      alreadyConverted,
+      error: "Could not resolve the agent's user account — the appointment was not scheduled.",
+    }
+  }
   let calendarEventId: string
   try {
     calendarEventId = await scheduleISAAppointment({
       brokerageId: params.brokerageId,
       contactId,
-      agentId: agentUserId ?? params.agentId,
+      agentUserId,
       startAt: params.startAt,
       endAt: params.endAt,
       timezoneName: params.timezoneName,
       location: params.location,
       notes: params.notes,
+      // The ONE listing-appointment spelling (lane 87B2, §6) — this milestone IS one.
+      eventType: CalendarEventType.LISTING_APPOINTMENT,
     })
   } catch (err) {
     return {
@@ -177,33 +196,57 @@ export async function bookSellerListingAppointment(
 
   // ── Step 4: CHAIN — fire listing.appointment_set → listing-appt-prep ─────────
   // The contact exists, so the chain's prep_seller_portal + CMA steps have a target.
-  // The engine's run-dedupe keyed on (chain, entity, trigger) makes a rerun reuse the
-  // same run instead of double-rendering the (expensive) D-ID chapter videos.
+  // ONE listing.appointment_set event per booking, and the engine's run-dedupe on that
+  // event's id, make a rerun reuse the same run instead of double-rendering the
+  // (expensive) D-ID chapter videos.
   // (agentUserId resolved above, before the schedule step.)
   const propertyData =
     params.propertyData ??
     (params.location ? { address: params.location } : {})
 
+  // THROUGH THE CHAIN'S OWN TRIGGER (lane 88D — the original listing-appt-prep chain is
+  // the survivor; lane 87B's second starter is retired onto it). It reads the row just
+  // scheduled (its tenant is params.brokerageId, asserted), proves the contact is a
+  // SELLER (this milestone's converted contact carries contact_type='seller' from the
+  // lead's intent), takes the seller's property from what this call captured, and
+  // records ONE listing.appointment_set event per booking — the event the orchestrator
+  // starts the chain from. This file used to call startRun with triggerEventId =
+  // calendarEventId; workflow_runs.trigger_event_id FKs lifecycle_events(id), so that
+  // insert was a 23503 and no run was ever created here. The row is stored as
+  // 'listing_appointment' (lane 87B2 — the one spelling).
   let chainRunId: string | undefined
   let chainDeduped: boolean | undefined
-  try {
-    const run = await startRun({
-      chainKey: "listing-appt-prep",
-      brokerageId: params.brokerageId,
-      contactId,
-      agentUserId: agentUserId ?? undefined,
-      triggerEvent: "listing.appointment_set",
-      triggerEventId: calendarEventId, // stable per-appointment key → idempotent rerun
-      metadata: {
-        appointment_id: calendarEventId,
-        appointment_date: params.startAt.toISOString(),
-        property_data: propertyData,
-      },
-    })
-    chainRunId = run.runId
-    chainDeduped = run.deduped
-  } catch (err) {
-    console.error("[book-seller-appointment] listing-appt-prep chain start failed:", err)
+  // WAVE 105A: the ISA is a MANAGER asking another manager for a capability — the prep is REQUESTED
+  // from the Listing Concierge as a structured delegation (listing_appointment_prep), returned through
+  // it when the chain completes. The ISA never runs the Concierge's prep itself.
+  const prep = await fireListingAppointmentSetForBooking(svc, {
+    calendarEventId,
+    expectedBrokerageId: params.brokerageId,
+    propertyHint: propertyData,
+    origin: "ai_isa_seller_milestone",
+    delegate: { requestingManager: "ai_isa" },
+  })
+  if (prep.status === "started" || prep.status === "deduped") {
+    chainRunId = prep.runId ?? undefined
+    chainDeduped = prep.status === "deduped"
+  } else if ("reason" in prep) {
+    console.error(`[book-seller-appointment] listing prep not started (${prep.status}): ${prep.reason}`)
+  }
+
+  // THE ISA OUTCOME 'appointment_set' (wave 91 lane 91A) — a booked listing appointment is the
+  // outcome the radar / analytics / managers count; stamped through the ONE writer on the
+  // lead's latest qualification row (the contact side is filled in on the same row).
+  {
+    const { stampQualificationOutcome } = await import("@/lib/ai-isa/qualification-outcome-stamp")
+    const stamped = await stampQualificationOutcome(svc, { brokerageId: params.brokerageId, leadId: params.leadId, contactId, result: "appointment_set" })
+    if (!stamped.ok) {
+      console.error(`[book-seller-appointment] appointment_set NOT stamped on the ISA qualification: ${stamped.error}`)
+      // Lane 92A: surfaced where refusals are shown (self_heal_events → the repair digest /
+      // Exception Center), not only logged.
+      const { recordBestEffortLoss } = await import("@/lib/kernel/write-sentinel")
+      await recordBestEffortLoss(svc, { table: "ai_isa_qualifications", flow: "isa_outcome_stamp", brokerageId: params.brokerageId,
+        reason: "the booking itself stands; the ISA radar / analytics / managers' appointment_set count misses this person until the qualification row is re-stamped" }, stamped.error)
+    }
   }
 
   return {

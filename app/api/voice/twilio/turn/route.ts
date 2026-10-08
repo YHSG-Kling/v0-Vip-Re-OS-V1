@@ -1,8 +1,9 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveInboundContext, validateTwilioSignature, planReceptionTurn } from "@/lib/voice/twilio-voice"
 import { twimlGatherTurn, twimlTransfer, twimlHangup, appendTranscript } from "@/lib/voice/reception-brain"
-import { isPlatformNumber, resolvePlatformReceptionContext, planPlatformReceptionTurn, capturePhoneProspect } from "@/lib/voice/platform-reception"
+import { isPlatformNumber, resolvePlatformReceptionContext, capturePhoneProspect } from "@/lib/voice/platform-reception"
 
 export const dynamic = "force-dynamic"
 
@@ -45,9 +46,12 @@ export async function POST(request: NextRequest) {
       return xml(twimlHangup(closer))
     }
 
-    const plan = await planPlatformReceptionTurn(pctx, transcript, speech)
+    // Lane 76B — the prospect funnel bundle's identity is SERVER-resolved:
+    // Twilio's signed From and the ledger row found by CallSid, never a body.
+    const plan = await planReceptionTurn({ deployment: "platform", ctx: pctx, transcript, utterance: speech,
+      prospect: { phone: params.From ?? null, prospectId: (call as any)?.prospect_id ?? null, callId: (call as any)?.id ?? null } })
     const newTranscript = appendTranscript(transcript, speech, plan.say)
-    if (call) await svc.from("platform_reception_calls").update({ transcript: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
+    if (call) await sentinelWrite(svc, svc.from("platform_reception_calls").update({ transcript: newTranscript }).eq("id", (call as any).id), { table: "platform_reception_calls", flow: "reception_transcript", reason: "a live call must keep answering; a lost transcript write is ledgered" })
 
     if (plan.action.kind === "prospect") {
       const prospect = await capturePhoneProspect(svc, {
@@ -56,8 +60,8 @@ export async function POST(request: NextRequest) {
         company: plan.action.company, roleInterest: plan.action.roleInterest, note: plan.action.note,
       })
       if (call && prospect) {
-        await svc.from("platform_reception_calls").update({ prospect_id: prospect.id, outcome: "prospect_captured" })
-          .eq("id", (call as any).id).then(undefined, () => {})
+        await sentinelWrite(svc, svc.from("platform_reception_calls").update({ prospect_id: prospect.id, outcome: "prospect_captured" })
+          .eq("id", (call as any).id), { table: "platform_reception_calls", flow: "reception_prospect_link", reason: "the prospect row already landed; a lost call link is ledgered" })
       }
       return xml(twimlGatherTurn(plan.say, url))
     }
@@ -88,7 +92,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { data: call } = await svc.from("voice_calls").select("id, contact_id, lead_id, agent_id, transcription, ai_notes, direction")
-    .eq("vapi_call_id", callSid).maybeSingle()
+    .eq("vendor_call_id", callSid).maybeSingle()
   const transcript = (call as any)?.transcription ?? null
 
   // Silence (Gather timed out with nothing) → one gentle retry then goodbye.
@@ -96,7 +100,7 @@ export async function POST(request: NextRequest) {
     const closer = "No problem — call back any time. Goodbye!"
     if (call) {
       await finishCall(svc, (call as any).id, appendTranscript(transcript, null, closer))
-      await maybeRouteLeadIntent(svc, call)
+      await maybeRoutePostCall(svc, call)
     }
     return new NextResponse(twimlHangup(closer), { headers: { "Content-Type": "text/xml" } })
   }
@@ -131,19 +135,50 @@ export async function POST(request: NextRequest) {
     ? await (async () => {
         const { buildOutboundPrompt } = await import("@/lib/voice/reception-brain")
         const { planTurnWithPrompt } = await import("@/lib/voice/twilio-voice")
-        const { systemPrompt } = buildOutboundPrompt(ctx!.identity, {
+        // Lane 99B — the called CONTACT's memory (voice_calls.contact_id), scoped to
+        // the calling number's brokerage; a lead-only call has none (clean skip).
+        const { loadContactMemoryForPrompt, contactMemoryPromptSection } = await import("@/lib/kernel/conversation-memory")
+        const contactMemory = await loadContactMemoryForPrompt({ contactId: (call as any)?.contact_id ?? null, brokerageId: ctx!.brokerageId, client: svc })
+        const { systemPrompt: briefPrompt } = buildOutboundPrompt(ctx!.identity, {
           objective: brief.objective, contactName: brief.contactName, extraSystemPrompt: brief.systemPrompt,
-        })
-        return planTurnWithPrompt(systemPrompt, transcript, speech)
+        }, contactMemory ? { hasContactInfo: true, memory: contactMemory.spine } : undefined)
+        const memorySection = contactMemoryPromptSection(contactMemory)
+        const systemPrompt = memorySection ? `${briefPrompt}\n\n${memorySection}` : briefPrompt
+        // Lane 86D: the outbound-brief turn books on the calling tenant (it
+        // used to reach generateTextRouted with no brokerageId — unbooked).
+        return planTurnWithPrompt(systemPrompt, transcript, speech, undefined, {},
+          { brokerageId: ctx!.brokerageId, agentId: (call as any)?.agent_id ?? null })
       })()
-    : await planReceptionTurn(ctx, transcript, speech, svc)
+    : await planReceptionTurn({
+        deployment: "tenant", ctx, transcript, utterance: speech, svc,
+        // agentId = voice_calls.agent_id (agents.id) — never ctx.agentUserId (users.id). Lane 76A.
+        voiceToolCtx: call ? { callId: (call as any).id, contactId: (call as any).contact_id ?? null, leadId: (call as any).lead_id ?? null, agentId: (call as any).agent_id ?? null } : undefined,
+      })
   const newTranscript = appendTranscript(transcript, speech, plan.say)
   if (call) {
-    await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
+    await sentinelWrite(svc, svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id), { table: "voice_calls", flow: "voice_transcript", reason: "a live call must keep answering; a lost transcript write is ledgered" })
   }
 
   // ── Actions on the SAME rails as every other engine ────────────────────────
   if (plan.action.kind === "transfer" && ctx.forwardNumber) {
+    // WHY THE AI HANDED OFF. `inbound_call_classifications.transfer_reason` was
+    // READ BY CODE AND WRITTEN BY NOBODY (census 1b) — the contact timeline on
+    // the seller lifetime overview selects it
+    // (app/crm/contacts/[contactId]/seller-lifetime-overview.tsx:67), so every
+    // classified inbound call showed a handoff with no stated reason. The
+    // classification writer's own note anticipated this half and it was never
+    // built: "transfer_reason is enriched later if the turn route hands off to a
+    // human" (app/api/voice/twilio/inbound/route.ts:119-120). This IS that turn
+    // route, and this IS the hand-off, so the reason is written here.
+    //
+    // The reason is the caller's OWN last utterance — the sentence that made the
+    // AI transfer. Nothing is characterised on the caller's behalf.
+    //
+    // Keyed on the resolved contact within the tenant, newest classification
+    // first, because that table carries no voice_call_id: the inbound handler
+    // wrote its row seconds earlier for this same caller. Best-effort and
+    // never blocking the transfer — the caller is mid-sentence.
+    await stampTransferReason(svc, ctx.brokerageId, (call as any)?.contact_id ?? null, speech, ctx.agentUserId ?? null)
     // WARM BRIDGE first (brief-then-bridge): the caller holds while the
     // agent hears the settings-driven whisper and presses 1. Blind <Dial>
     // remains the honest fallback when the bridge can't start.
@@ -154,7 +189,7 @@ export async function POST(request: NextRequest) {
         topic: speech.slice(0, 90) || null, voiceCallId: (call as any).id,
       })
       if (bridged) {
-        await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
+        await sentinelWrite(svc, svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id), { table: "voice_calls", flow: "voice_transcript", reason: "a live call must keep answering; a lost transcript write is ledgered" })
         return xml(twimlHoldInConference(`${plan.say} One moment while I bring them in.`, conferenceNameFor(callSid)))
       }
     }
@@ -173,12 +208,16 @@ export async function POST(request: NextRequest) {
     const { proposeSellerLeadFromCall } = await import("@/lib/voice/twilio-voice")
     await proposeSellerLeadFromCall(svc, ctx, call as any, plan.action.address)
   }
+  if (plan.action.kind === "callback" && call) {
+    const { createCallbackTaskFromCall } = await import("@/lib/voice/twilio-voice")
+    await createCallbackTaskFromCall(svc, ctx, call as any, plan.action.phone, plan.action.whenPhrase, plan.action.reason)
+  }
   if (plan.action.kind === "hangup") {
     if (call) {
       await finishCall(svc, (call as any).id, newTranscript)
       // A LEAD's completed call routes through the inbound intent classifier —
       // positive direction converts the lead to a contact (canonical handoff).
-      await maybeRouteLeadIntent(svc, call)
+      await maybeRoutePostCall(svc, call)
     }
     return new NextResponse(twimlHangup(plan.say), { headers: { "Content-Type": "text/xml" } })
   }
@@ -186,13 +225,61 @@ export async function POST(request: NextRequest) {
   return new NextResponse(twimlGatherTurn(plan.say, url), { headers: { "Content-Type": "text/xml" } })
 }
 
-/** Lead call-ins: classify the closed call's transcript → convert / halt / nurture. */
-async function maybeRouteLeadIntent(svc: any, call: any): Promise<void> {
-  if (!call?.lead_id) return
+/** Post-call brain for a closed call: LEAD → classify transcript (convert / halt
+ *  / nurture); EVERY call → automatic outcome routing (contact DNC on negative,
+ *  agent notify + auto-drafted follow-up on positive, scoring + rolling
+ *  qualification). Best-effort — the voice webhook never 500s over post-call. */
+async function maybeRoutePostCall(svc: any, call: any): Promise<void> {
   try {
-    const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
-    await routeLeadCallIntent(svc, call.id)
-  } catch { /* best-effort — the voice webhook never 500s over classification */ }
+    if (call?.lead_id) {
+      const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
+      await routeLeadCallIntent(svc, call.id)
+    }
+    const { routePostCallOutcome } = await import("@/lib/ai-isa/post-call-outcome")
+    await routePostCallOutcome(svc, call.id)
+  } catch { /* best-effort — the voice webhook never 500s over post-call work */ }
+}
+
+/**
+ * Record WHY this call left the AI for a human, on the classification row the
+ * inbound handler wrote for this caller.
+ *
+ * `transferred_to_user_id` takes the line's OWN agent user id from the resolved
+ * tenant context — never anything the caller said, and never the forward number
+ * (that column is a users.id and the number is not one; this table carries no FK
+ * on it, so a wrong-class value would be stored happily and read back as a
+ * person who was never called).
+ */
+async function stampTransferReason(
+  svc: any,
+  brokerageId: string,
+  contactId: string | null,
+  callerSaid: string,
+  agentUserId: string | null,
+): Promise<void> {
+  if (!contactId) return // an unresolved caller has no classification row to enrich
+  try {
+    const { data: row } = await svc
+      .from("inbound_call_classifications")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .eq("resulting_contact_id", contactId)
+      .is("transfer_reason", null)
+      .order("classified_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (!row?.id) return
+    const reason = (callerSaid ?? "").trim().slice(0, 500) || "Caller asked for a human."
+    const { error } = await svc
+      .from("inbound_call_classifications")
+      .update({ transfer_reason: reason, transferred_to_user_id: agentUserId })
+      .eq("id", row.id)
+    if (error) {
+      console.error("[voice-turn] transfer_reason NOT stamped — the contact timeline shows a handoff with no reason:", error.message)
+    }
+  } catch {
+    /* best-effort — the transfer itself must never wait on the ledger */
+  }
 }
 
 async function finishCall(svc: any, callId: string, transcript: string, outcome = "completed"): Promise<void> {
@@ -205,7 +292,7 @@ async function finishCall(svc: any, callId: string, transcript: string, outcome 
 }
 
 async function finishPlatformCall(svc: any, callId: string, transcript: string, status: string, outcome: string): Promise<void> {
-  await svc.from("platform_reception_calls").update({
+  await sentinelWrite(svc, svc.from("platform_reception_calls").update({
     status, outcome, ended_at: new Date().toISOString(), transcript,
-  }).eq("id", callId).then(undefined, () => {})
+  }).eq("id", callId), { table: "platform_reception_calls", flow: "reception_call_close", reason: "a live call must keep answering; a lost close is ledgered" })
 }

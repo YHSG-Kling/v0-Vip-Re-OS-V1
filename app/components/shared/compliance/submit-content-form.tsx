@@ -18,7 +18,12 @@ import { useToast } from "@/hooks/use-toast"
 
 interface SubmitContentFormProps {
   userId: string
+  /** optional by design: submitContentForApproval only requires userId (app/actions/
+   *  compliance-monitoring.ts:139) — the one caller is the compliance page's own
+   *  submission form, not attributed to a specific agent. */
   agentId?: string
+  /** optional by design: the form already resets and shows a success toast on submit —
+   *  an extra hook for a future caller that wants to react further (e.g. close a modal). */
   onSuccess?: () => void
 }
 

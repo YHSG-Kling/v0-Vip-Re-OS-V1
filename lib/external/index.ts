@@ -4,7 +4,9 @@ export { ZenrowsClient, scrapeWithZenRows, retryWithApifyFallback, extractContac
 
 // ─── BATCHDATA (motivated seller / property data) ─────────────────────────────
 export type { BatchDataRecord } from "./batchdata-client"
-export { BatchDataClient, fetchMotivatedSellers, searchProperties, enrichPropertyWithBatchData, batchDataTriggersFor, BATCHDATA_MOTIVATION_TYPES } from "./batchdata-client"
+// Wave 92 (lane 92B): enrichPropertyWithBatchData left this re-export — deleted at its source
+// (survivor: lib/property/rentcast.ts::getRentcastAVM).
+export { BatchDataClient, fetchMotivatedSellers, searchProperties, batchDataTriggersFor, BATCHDATA_MOTIVATION_TYPES } from "./batchdata-client"
 
 // ─── PEOPLEDATA (skip trace / enrichment) ─────────────────────────────────────
 export type { PeopleDataEnrichment } from "./peopledata-client"

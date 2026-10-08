@@ -25,6 +25,7 @@
 import { readFileSync } from "fs"
 import { join, dirname } from "path"
 import { fileURLToPath } from "url"
+import { stripComments } from "./strip-comments"
 import {
   VENDOR_INVITE_ROLES,
   VENDOR_CHARGE_ADMIN_ROLES,
@@ -61,16 +62,30 @@ for (const role of ["vendor", "contact", "tc", "", null] as const) {
   check(`${String(role ?? "null")} cannot invite vendors`, !canInviteVendors(role as any))
 }
 
-// The invite action's own gate and the shared constant must not drift.
+// THE MIRROR IS GONE, AND THAT IS THE POINT.
+//
+// This used to regex a local `INVITE_ALLOWED_ROLES = new Set([...])` out of
+// app/actions/vendor-invite.ts and compare it, member by member, against
+// VENDOR_INVITE_ROLES — a "these two copies must not drift" assertion. Wave 6
+// removed the second copy: the action now calls the shared predicate
+// `canInviteVendors(caller.user_type)` directly, so there is exactly ONE role
+// list on the platform and drift is not possible rather than merely detected.
+//
+// Asserting the mirror still exists would have demanded the duplicate be
+// restored to keep a proof green — a guard forcing the anti-pattern it was
+// written to police. So assert the stronger, simpler property: the action holds
+// NO private role list, and it gates through the one shared door.
 const inviteSrc = src("app/actions/vendor-invite.ts")
 {
-  const m = inviteSrc.match(/INVITE_ALLOWED_ROLES = new Set\(\[([^\]]+)\]\)/)
-  const actionRoles = (m?.[1] ?? "").split(",").map((s) => s.trim().replace(/["']/g, "")).filter(Boolean)
-  check("invite action gate == VENDOR_INVITE_ROLES (mirror can't drift)",
-    actionRoles.length === VENDOR_INVITE_ROLES.size && actionRoles.every((r) => VENDOR_INVITE_ROLES.has(r)),
-    `action: [${actionRoles.join(", ")}]`)
-  check("invite action gate includes agent AND team_lead",
-    actionRoles.includes("agent") && actionRoles.includes("team_lead"))
+  check("the invite action keeps NO private copy of the role list — the mirror\n    was collapsed onto lib/vendors/vendor-scope.ts, so it cannot drift",
+    !/INVITE_ALLOWED_ROLES\s*=\s*new Set/.test(inviteSrc),
+    `local set present: ${/INVITE_ALLOWED_ROLES\s*=\s*new Set/.test(inviteSrc)}`)
+  check("...and it gates through the shared predicate canInviteVendors()",
+    /if \(!canInviteVendors\(caller\.user_type\)\)/.test(inviteSrc))
+  // The membership question the deleted assertion really cared about, asked of
+  // the surviving single source of truth instead of a copy of it.
+  check("the one surviving role list still admits agent AND team_lead",
+    VENDOR_INVITE_ROLES.has("agent") && VENDOR_INVITE_ROLES.has("team_lead"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -245,12 +260,24 @@ check("panel shows an honest empty state when the agent has no attributed vendor
 section("Layer 3d — premium placement: documented brokerage-level verdict (not faked team scope)")
 
 check("verdict constant: placement scope is 'brokerage'", PREMIUM_PLACEMENT_SCOPE === "brokerage")
-check("verdict documents WHY (brokerage-wide directory flags, no team-scoped surface)",
-  /brokerage-wide vendor_directory flags/.test(PREMIUM_PLACEMENT_SCOPE_VERDICT)
+check("verdict documents WHY (brokerage-wide placement flags, no team-scoped surface)",
+  /brokerage-wide vendor placement flags/.test(PREMIUM_PLACEMENT_SCOPE_VERDICT)
   && /no team- or agent-scoped directory/.test(PREMIUM_PLACEMENT_SCOPE_VERDICT))
-const placementSrc = src("lib/vendors/premium-placement.ts")
-check("premium-placement internals untouched: still flips brokerage-anchored vendor_directory flags",
-  placementSrc.includes('.from("vendor_directory")')
+// COMMENT-STRIPPED on purpose. `src` reads raw, and this asserts what the module
+// DOES, not what it says. The header legitimately narrates the m355 merge (and so
+// names the dropped table); reading prose as code made a truthful comment fail a
+// check about queries.
+const placementSrc = stripComments(src("lib/vendors/premium-placement.ts"))
+// The flags moved onto `vendors` in m355; the SCOPE claim is unchanged, and that
+// is what this asserts — a brokerage-anchored flip of the placement flags.
+//
+// The `team_id` clause is the load-bearing half: `vendors` now HAS a team_id
+// column, so this proves premium-placement never reads or writes it. A placement
+// that quietly narrowed to one team would contradict the verdict above while the
+// scope constant still said "brokerage".
+check("premium-placement flips brokerage-anchored placement flags, and nothing team-scoped",
+  placementSrc.includes('.from("vendors")')
+  && !placementSrc.includes("vendor_directory")
   && placementSrc.includes("preferred: true")
   && placementSrc.includes('.eq("brokerage_id", brokerageId)')
   && !placementSrc.includes("team_id"))

@@ -1,18 +1,48 @@
 "use client"
 
-import { useState, useEffect } from "react"
+// TOMBSTONE (orphan doctrine §1, wave 53): the sibling directory
+// app/dashboard/videos/components/business-context/ (index.ts,
+// video-business-purpose-picker.tsx, video-context-picker.tsx,
+// listing-video-mode-card.tsx, seller-update-video-mode-card.tsx) is DELETED.
+// It was UNREACHABLE — every `from "../components/business-context"` import
+// in the tree (app/dashboard/videos/create/video-create-client.tsx) resolves
+// to THIS file, not that directory's index.ts, by Node/webpack's
+// file-before-directory-index rule; its RepurposeDestinationsCard half was
+// already merged here in wave 52 (see that component's own header below).
+// This wave merges the rest:
+//   · VideoBusinessPurposePicker / VideoContextPicker / ListingVideoModeCard /
+//     SellerUpdateVideoModeCard below are the SURVIVORS — this file already
+//     had live, wired versions of all four (video-create-client.tsx imports
+//     them from "../components/business-context" and its purposeToVideoType
+//     map at video-create-client.tsx:944-953 matches this file's VIDEO_PURPOSES
+//     ids exactly; the duplicate directory's VideoPurpose vocabulary
+//     (buyer_education / referral_ask / social_cutdown / …) matched nothing
+//     downstream and was never wired).
+//   · The duplicate's VideoContextPicker had one real fix this file lacked:
+//     its homeowner search filtered contacts by the CANONICAL "past client"
+//     type (lib/contact-types.ts LIFETIME_CUSTOMER_TYPE = "lifetime_customer")
+//     instead of "seller". Merged onto handleSearch's homeowner branch below.
+//   · listingVideoMode / sellerUpdateMode were selected in the wizard but
+//     never reached the script description — merged into
+//     video-create-client.tsx handleGenerateScript so the chosen mode
+//     actually shapes the generated script.
+// Everything else in the duplicate directory (mode/purpose label sets) was a
+// second, never-live vocabulary with no downstream reader — nothing else to
+// carry over.
+
+import { useState } from "react"
+import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import {
   Home,
   TrendingUp,
-  Users,
   User,
-  Share2,
   Building2,
   MessageCircle,
   MapPin,
@@ -20,7 +50,6 @@ import {
   Sparkles,
   Loader2,
   CheckCircle2,
-  Play,
   BarChart3,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -285,7 +314,7 @@ export function VideoContextPicker({
           .select("id, address, city, state, list_price, bedrooms, bathrooms, sqft, status, listing_photos:photos")
           .eq("brokerage_id", brokerageId)
           .or(`address.ilike.%${value}%,city.ilike.%${value}%`)
-          .in("status", ["active", "pending", "under_contract"])
+          .in("status", ["active", "pending"])
           .order("created_at", { ascending: false })
           .limit(8)
 
@@ -295,7 +324,14 @@ export function VideoContextPicker({
           .from("contacts")
           .select("id, first_name, last_name, email, phone, contact_type, address")
           .eq("brokerage_id", brokerageId)
-          .eq("contact_type", "homeowner")
+          // contacts.contact_type has no "homeowner" — the canonical spelling
+          // for "already closed, now owns the home" is LIFETIME_CUSTOMER_TYPE
+          // (lib/contact-types.ts). Fixed wave 53 (orphan doctrine §1 merge
+          // from the deleted business-context/video-context-picker.tsx
+          // duplicate, which had this filter right); "seller" was wrong — a
+          // seller is mid-transaction, not a past client to send a homeowner
+          // equity/market update to.
+          .eq("contact_type", LIFETIME_CUSTOMER_TYPE)
           .or(`first_name.ilike.%${value}%,last_name.ilike.%${value}%,address.ilike.%${value}%`)
           .order("created_at", { ascending: false })
           .limit(8)
@@ -450,6 +486,20 @@ interface RepurposeDestinationsCardProps {
   selectedDestinations: RepurposeDestination[]
   onToggleDestination: (dest: RepurposeDestination) => void
   connectedPlatforms?: string[]
+  // BUILD (wave 52, hidden-wire-census category c passed-never-read): every
+  // caller passed these and nothing read them. "Client Portal" is the one
+  // destination in REPURPOSE_DESTINATIONS that names a SPECIFIC person's
+  // portal — it cannot be "connected" the way a social platform is, it needs
+  // to know WHOSE portal, so it is gated on contactId below the same way a
+  // disconnected social platform is gated on connectedPlatforms. listingId
+  // surfaces a quick jump to the listing this video is about, when there is
+  // one — this card otherwise has no way back to the context it was opened
+  // from. (The duplicate implementation this card's props were copied from,
+  // app/dashboard/videos/components/business-context/repurpose-destinations-card.tsx,
+  // is UNREACHABLE — nothing imports the `business-context/` directory path;
+  // `"../components/business-context"` resolves to THIS file, not that
+  // directory's index.ts, so its listing/contact gating never ran for anyone.
+  // Merged onto this survivor; the duplicate directory is deleted.)
   listingId?: string
   contactId?: string
 }
@@ -459,10 +509,12 @@ export function RepurposeDestinationsCard({
   selectedDestinations,
   onToggleDestination,
   connectedPlatforms = [],
+  listingId,
+  contactId,
 }: RepurposeDestinationsCardProps) {
   // Build a set of destinations that have an active social account
   const connectedDestinations = new Set<RepurposeDestination>([
-    ...ALWAYS_CONNECTED,
+    ...ALWAYS_CONNECTED.filter((d) => d !== "portal" || !!contactId),
     ...connectedPlatforms
       .map((p) => PLATFORM_TO_DESTINATION[p])
       .filter((d): d is RepurposeDestination => !!d),
@@ -470,22 +522,45 @@ export function RepurposeDestinationsCard({
 
   return (
     <div className="space-y-3">
-      <div>
-        <Label className="text-base">Where will you share this video?</Label>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Select all channels — we will format the output accordingly
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <Label className="text-base">Where will you share this video?</Label>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Select all channels — we will format the output accordingly
+          </p>
+        </div>
+        {(listingId || contactId) && (
+          <div className="flex flex-col items-end gap-0.5 text-xs shrink-0">
+            {listingId && (
+              <Link href={`/dashboard/listings/${listingId}`} target="_blank" className="text-primary hover:underline">
+                View listing
+              </Link>
+            )}
+            {contactId && (
+              <Link href={`/crm/contacts/${contactId}`} target="_blank" className="text-primary hover:underline">
+                View contact
+              </Link>
+            )}
+          </div>
+        )}
       </div>
       <div className="flex flex-wrap gap-2">
         {REPURPOSE_DESTINATIONS.map((dest) => {
           const selected = selectedDestinations.includes(dest.id)
           const isConnected = connectedDestinations.has(dest.id)
+          const needsContact = dest.id === "portal" && !contactId
           return (
             <button
               key={dest.id}
               type="button"
               onClick={() => onToggleDestination(dest.id)}
-              title={!isConnected ? `Connect ${dest.label} in Profile Settings to publish here` : undefined}
+              title={
+                needsContact
+                  ? "Open this from a contact's video request to publish to their portal"
+                  : !isConnected
+                    ? `Connect ${dest.label} in Profile Settings to publish here`
+                    : undefined
+              }
               className={cn(
                 "flex flex-col items-start px-3 py-1.5 rounded-full border text-sm transition-all",
                 selected
@@ -500,7 +575,9 @@ export function RepurposeDestinationsCard({
                 {dest.label}
               </span>
               {!isConnected && (
-                <span className="text-[10px] leading-none mt-0.5 opacity-70">Not connected</span>
+                <span className="text-[10px] leading-none mt-0.5 opacity-70">
+                  {needsContact ? "No contact selected" : "Not connected"}
+                </span>
               )}
             </button>
           )

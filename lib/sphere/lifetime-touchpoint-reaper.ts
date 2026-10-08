@@ -8,6 +8,7 @@
 // flipping them to 'skipped' makes re-runs no-ops). Best-effort; never throws. Mirrors the
 // signal / video / workflow-run / stranded-offer reapers.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyStuckTouchpoint, STALE_TOUCHPOINT_GRACE_DAYS } from "./lifetime-touchpoint-reaper-policy"
@@ -69,13 +70,13 @@ export async function reapStuckLifetimeTouchpoints(
         .eq("brokerage_id", brokerageId).eq("type", "lifetime_touchpoint_missed").eq("entity_id", row.contact_id)
         .limit(1).maybeSingle()
       if (prior) continue
-      await svc.from("notifications").insert({
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: agentUserId, brokerage_id: brokerageId, type: "lifetime_touchpoint_missed",
         title: "A past-client touch slipped — reach out",
         body: "A scheduled post-close touchpoint for one of your past clients passed without going out. Send them a quick, genuine personal note so the relationship stays warm.",
         // priority CHECK: low|medium|high|critical ('normal' is rejected)
         entity_type: "contact", entity_id: row.contact_id, priority: "medium", is_read: false,
-      })
+      }), { table: "notifications", flow: "lifetime_touchpoint_reaper_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
       result.escalated += 1
     } catch (e) {
       console.error("[lifetime-touchpoint-reaper] escalation failed:", e)

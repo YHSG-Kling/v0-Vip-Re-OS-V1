@@ -11,6 +11,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { compliancePreflight, type ReviewContext } from "@/lib/kernel/manager-dissent"
+import { applyTenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -167,10 +168,27 @@ export interface ComplianceLedgerView {
 /**
  * Load the compliance ledger for a window — the Compliance Officer's on-demand audit report.
  * The summary always reflects the FULL window (so the disposition totals are honest regardless of
- * the row-level severity filter); `rows` honor the filter. Brokerage-scoped unless null (superadmin).
+ * the row-level severity filter); `rows` honor the filter.
+ *
+ * ── SCOPE IS ASKED FOR, NEVER INFERRED FROM AN ABSENT ID ─────────────────────
+ * This function used to take `brokerageId: string | null` and read
+ *
+ *     if (brokerageId) q = q.eq("brokerage_id", brokerageId)
+ *
+ * on a SERVICE-ROLE client, so a null meant "no predicate at all" and the query
+ * returned every brokerage's Fair Housing and consent audit trail. Its caller
+ * computed that null as `isSuperadmin ? null : (userData?.brokerage_id ?? null)`,
+ * so the value also arrived for a NON-superadmin broker/admin whose
+ * users.brokerage_id happened to be NULL — the two cases were byte-identical.
+ * Not exploitable on today's data (0 of 23 live users rows have a NULL
+ * brokerage_id) and structurally reachable regardless, because the column is
+ * nullable.
+ *
+ * It now takes a TenantScope: `tenantScope(id, …)` refuses a null, and
+ * `platformScope(reason)` has to be written out. See lib/kernel/tenant-scope.ts.
  */
 export async function loadComplianceLedger(
-  brokerageId: string | null,
+  scope: TenantScope,
   opts: { sinceDays?: number; severity?: string; limit?: number } = {},
   client?: Svc,
 ): Promise<ComplianceLedgerView> {
@@ -179,11 +197,13 @@ export async function loadComplianceLedger(
   const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString()
   const severity = opts.severity && ["clear", "advisory", "blocked"].includes(opts.severity) ? opts.severity : null
 
-  let q = svc.from("compliance_events")
-    .select("id, created_at, entity_type, message_type, severity, allowed, violations, details, actor_user_id")
-    .eq("gate_name", PREFLIGHT_GATE).gte("created_at", since)
-    .order("created_at", { ascending: false }).limit(Math.min(2000, opts.limit ?? 1000))
-  if (brokerageId) q = q.eq("brokerage_id", brokerageId)
+  const q = applyTenantScope(
+    svc.from("compliance_events")
+      .select("id, created_at, entity_type, message_type, severity, allowed, violations, details, actor_user_id")
+      .eq("gate_name", PREFLIGHT_GATE).gte("created_at", since)
+      .order("created_at", { ascending: false }).limit(Math.min(2000, opts.limit ?? 1000)),
+    scope,
+  )
   const { data } = await q
   const all = (data ?? []) as Array<Record<string, unknown>>
 

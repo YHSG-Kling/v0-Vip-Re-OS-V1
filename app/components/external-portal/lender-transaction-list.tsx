@@ -95,14 +95,24 @@ export function LenderTransactionList({ transactions, lenderId }: Props) {
                   </div>
                 )}
 
+                {/* REPOINTED (dangling-link sweep, 2026-09-02): both buttons went to
+                    `/lender/transactions/${id}[/documents]` — this list IS the
+                    /lender/transactions page (app/(external-portal)/lender/transactions)
+                    and it has no [id] child. The lender-facing transaction detail is
+                    app/portal/lender/[transactionId]/page.tsx: it reads through
+                    getLenderTransactionDetail → requireLenderVendorActor(transactionId)
+                    (session lender vendor ASSIGNED to this deal — tighter than this
+                    page's role === "lender" gate, so no widening) and mounts
+                    LenderDocumentUpload on the same page, which is where "Upload
+                    Documents" lands. */}
                 <div className="flex items-center gap-2">
                   <Button asChild>
-                    <Link href={`/lender/transactions/${transaction.id}`}>
+                    <Link href={`/portal/lender/${transaction.id}`}>
                       View Details
                     </Link>
                   </Button>
                   <Button variant="outline" asChild>
-                    <Link href={`/lender/transactions/${transaction.id}/documents`}>
+                    <Link href={`/portal/lender/${transaction.id}`}>
                       Upload Documents
                     </Link>
                   </Button>

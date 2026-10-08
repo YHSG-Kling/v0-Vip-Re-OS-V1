@@ -16,6 +16,7 @@
 // This file is PURE (no I/O) so it is fully unit-testable; the generator (loadWeeklyExecPlan) feeds it real
 // board data and the Command Center renders it.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { generateManagerWeeklyPnl, type ManagerWeeklyScorecard } from "@/lib/intelligence/manager-weekly-pnl"
@@ -30,6 +31,7 @@ export type ExecSignalKind =
   | "enablement"           // AI-authored curriculum / skill refresh pending human publish
   | "flywheel"             // a growth lever (recruiting flywheel, revenue-share, marketplace take-rate)
   | "growth_opportunity"   // a manager's production surged — press the advantage
+  | "deal_risk"            // wave 104B: open deals the deal-health scorer marks critical (read from the twin)
 
 /** One executive-level signal, normalized from a board/scorecard. The generator fills real numbers. */
 export interface ExecSignal {
@@ -95,6 +97,7 @@ const KIND_DEFAULT_IMPACT: Record<ExecSignalKind, number> = {
   growth_opportunity: 45,
   approval_backlog: 50,
   enablement: 30,
+  deal_risk: 70,            // a critical deal is priced by its open commission when the twin carries one
 }
 
 /**
@@ -172,6 +175,10 @@ export interface ExecPlanInputs {
   /** Brokerage recruiting ROI (avg %) + the lifetime value the flywheel is compounding (cents), or null. */
   recruitingRoiPct: number | null
   recruitingLtvCents: number | null
+  /** WAVE 104B: the brokerage digital twin (lib/kernel/brokerage-twin.ts) — ONE read the Command
+   *  Center already made. The plan reads its risk list (deal health exposure, compliance) instead
+   *  of re-querying the scorers. Optional: pre-104 callers and the cron path are unchanged. */
+  twin?: import("@/lib/kernel/brokerage-twin").BrokerageTwin | null
 }
 
 /** PURE: assemble ExecSignals from the inputs, then rank. No I/O — fully unit-testable. */
@@ -278,6 +285,35 @@ export function buildWeeklyExecPlan(inputs: ExecPlanInputs, opts?: { weekLabel?:
     })
   }
 
+  // 6) THE TWIN'S RISK LIST (wave 104B) — read, not re-derived. Critical deal health is priced by the
+  //    open commission the twin carries (null when none — never a fabricated dollar); unresolved
+  //    compliance flags are exposure regardless of dollars.
+  const twin = inputs.twin ?? null
+  if (twin) {
+    const critDeals = twin.atRisk.find((r) => r.kind === "deal_health" && r.severity === "critical")
+    if (critDeals && critDeals.count > 0) {
+      signals.push({
+        kind: "deal_risk",
+        manager: "deal_coordinator",
+        title: `Rescue ${critDeals.count} critical deal${critDeals.count === 1 ? "" : "s"}`,
+        why: `${critDeals.headline} (${critDeals.evidence.table}: ${critDeals.evidence.via}).${critDeals.exposureCents ? ` ~$${Math.round(critDeals.exposureCents / 100).toLocaleString()} of open commission sits behind them.` : ""}`,
+        estimatedImpactCents: critDeals.exposureCents && critDeals.exposureCents > 0 ? critDeals.exposureCents : null,
+        urgency: 85, confidence: 85, effortHours: 1, needsHuman: true, ctaHref: CC_HREF,
+      })
+    }
+    const compliance = twin.atRisk.find((r) => r.kind === "compliance")
+    if (compliance && compliance.count > 0) {
+      signals.push({
+        kind: "compliance_exposure",
+        manager: "compliance_officer",
+        title: `Resolve ${compliance.count} open compliance flag${compliance.count === 1 ? "" : "s"}`,
+        why: `${compliance.headline} (${compliance.evidence.table}, ${compliance.severity}). Each one is exposure until a human closes it.`,
+        estimatedImpactCents: null,
+        urgency: compliance.severity === "critical" ? 90 : 60, confidence: 90, effortHours: 0.5, needsHuman: true, ctaHref: CC_HREF,
+      })
+    }
+  }
+
   return rankExecutiveMoves(signals, opts)
 }
 
@@ -294,6 +330,8 @@ export async function loadWeeklyExecPlan(
     retentionBoard?: RetentionBoard | null
     curriculumBoard?: CurriculumBoard | null
     managerBacklog?: Array<{ manager: ManagerKey; breached: number; pending: number }>
+    /** WAVE 104B: the twin the Command Center already built — one read, not six. */
+    twin?: import("@/lib/kernel/brokerage-twin").BrokerageTwin | null
     weekLabel?: string
     topN?: number
   },
@@ -335,6 +373,7 @@ export async function loadWeeklyExecPlan(
     weeklyPnl, retentionBoard, curriculumBoard,
     managerBacklog: opts?.managerBacklog ?? [],
     atRiskGciCents, recruitingRoiPct, recruitingLtvCents,
+    twin: opts?.twin ?? null,
   }, { weekLabel: opts?.weekLabel, topN: opts?.topN })
 }
 
@@ -366,11 +405,11 @@ export async function runWeeklyExecStandup(
   const priority = plan.oneAsk?.impactBand === "high" ? "high" : "medium"
   const body = `${plan.headline}${ask} Open the Command Center to action your ranked plan.`
   for (const uid of recipients) {
-    await supabase.from("notifications").insert({
+    await sentinelWrite(supabase, supabase.from("notifications").insert({
       user_id: uid, brokerage_id: brokerageId, type: "exec_standup",
       title: "🎯 Your AI Executive Standup is ready", body,
       entity_type: "brokerage", entity_id: brokerageId, priority, is_read: false,
-    }).then(undefined, () => {})
+    }), { table: "notifications", flow: "manager_weekly_exec_plan_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }
   return true
 }

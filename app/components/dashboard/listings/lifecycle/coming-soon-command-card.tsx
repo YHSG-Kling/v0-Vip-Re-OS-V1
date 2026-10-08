@@ -14,12 +14,14 @@ import { createListingPosts } from "@/app/actions/social-media-automation"
 import { prepareListingEmailCampaign } from "@/app/actions/email-campaigns"
 import { generateComingSoonContent } from "@/app/actions/coming-soon-content"
 import Link from "next/link"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 interface ComingSoonCommandCardProps {
   listingId: string
   userId: string
   brokerageId: string
-  role: "agent" | "team_lead" | "admin" | "broker"
+  /** users.user_type as stored — the tier is derived inside from the roster, never from a cast. */
+  role: string
   currentStage: string
   listingAddress: string
   listingStatus: string
@@ -70,8 +72,11 @@ export function ComingSoonCommandCard({
   launchDate.setDate(launchDate.getDate() + daysUntilLaunch)
   const launchDateStr = launchDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
 
-  const resolvedRole: "agent" | "team_lead" =
-    role === "admin" || role === "broker" ? "team_lead" : role
+  // Lane 90A: the capability tier is the ONE roster's answer — every tenant-admin
+  // seat (broker, owner, broker admin, admin, team lead, compliance officer) gets
+  // the team-lead tier; the `role === "admin" || role === "broker"` literal it
+  // replaces (plus the caller's four-role cast) sent a broker OWNER to the agent tier.
+  const resolvedRole: "agent" | "team_lead" = isAdminOrBroker({ user_type: role }) ? "team_lead" : "agent"
 
   function showToast(type: "success" | "error", text: string) {
     setToastMessage({ type, text })

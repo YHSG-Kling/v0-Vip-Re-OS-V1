@@ -30,14 +30,12 @@
  * Auth: CRON_SECRET (same pattern as the rest of the cron fleet).
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
 
 interface PendingRow {
   id:                          string
@@ -46,11 +44,8 @@ interface PendingRow {
 }
 
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
-  const qs       = new URL(req.url).searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
 
@@ -87,13 +82,14 @@ export async function GET(req: NextRequest) {
           plan_quality_score:         score,
         }).eq("id", row.id)
       // MANAGERS TALKING — a strong organic week (real engagement, not vanity): the
-      // Marketing Manager tells the Ads Manager to propose paid promotion while it's hot.
+      // Campaign Orchestrator (m618: survivor of the retired marketing_agent seat) tells
+      // the Ads Manager to propose paid promotion while it's hot.
       if (measured.campaigns_sent >= 1 && (measured.open_rate >= 40 || measured.click_rate >= 10)) {
         try {
           const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
           await publishManagerSignal({
             brokerageId: row.brokerage_id,
-            fromManager: "marketing_agent",
+            fromManager: "campaign_orchestrator",
             toManager: "ads_manager",
             signalType: "content_winner",
             message: `Week of ${row.week_start}: ${measured.open_rate.toFixed(0)}% open / ${measured.click_rate.toFixed(0)}% click across ${measured.campaigns_sent} campaign(s) — organic winner.`,
@@ -113,7 +109,7 @@ export async function GET(req: NextRequest) {
           const { raiseReferralDeduped } = await import("@/lib/managers/cross-referral")
           await raiseReferralDeduped({
             brokerageId: row.brokerage_id,
-            fromManager: "marketing_agent",
+            fromManager: "campaign_orchestrator", // m618: survivor of the retired marketing_agent seat
             toManager: "ads_manager",
             collabDomain: "organic_paid_content",
             ask: `Week of ${row.week_start} was an organic winner — ${measured.open_rate.toFixed(0)}% open / ${measured.click_rate.toFixed(0)}% click across ${measured.campaigns_sent} campaign(s). ` +

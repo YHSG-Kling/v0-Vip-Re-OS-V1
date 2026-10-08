@@ -12,6 +12,7 @@ import {
   retryWorkflowExecution,
   getWorkflowStats,
 } from "@/app/actions/workflow-monitoring"
+import { getRunDetail, approveChainStep } from "@/app/actions/workflow-orchestrator"
 import { CheckCircle2, XCircle, Loader2, Clock, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
 import {
@@ -88,9 +89,29 @@ export function WorkflowsContent() {
     setRetrying(null)
   }
 
+  // APPROVE is not RETRY. A run that stops on an approval gate parks its current
+  // step at `needs_approval`; only approveChainStep clears that step and advances.
+  // Re-driving the run instead (what this used to do) re-entered the same gated
+  // step and left it parked, so a gated workflow could never be released from here.
   const handleApprove = async (executionId: string) => {
-    // For now, approving is the same as retry for paused workflows
-    await handleOsRetry(executionId)
+    setRetrying(executionId)
+    const detail = await getRunDetail(executionId)
+    const gatedStep = (detail.steps as Array<{ step_key: string; status: string }>).find(
+      (s) => s.status === "needs_approval",
+    )
+    if (!gatedStep) {
+      toast.error("No step on this run is waiting for approval")
+      setRetrying(null)
+      return
+    }
+    const result = await approveChainStep({ runId: executionId, stepKey: gatedStep.step_key })
+    if (result.success) {
+      toast.success("Step approved — workflow resumed")
+      loadData()
+    } else {
+      toast.error(result.error || "Approval was refused")
+    }
+    setRetrying(null)
   }
 
   const handleClearSelection = () => {

@@ -8,6 +8,7 @@
  * kernel event → portal invite with magic link. Then hand the seller intent to the Listing Concierge.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
 
@@ -41,6 +42,22 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
   }
 
   const svc = createServiceClient()
+
+  // PUBLIC lane (lane 92A, CLAUDE.md §4): an unauthenticated homeowner submits this from
+  // /home-value/[agentSlug], so there is no session tenant to prefer — the three ids are
+  // the page's own agents row (app/home-value/[agentSlug]/page.tsx reads id, user_id,
+  // brokerage_id off ONE row). They are a CONSISTENCY KEY, not a grant: before any write
+  // they must still name ONE agent of ONE brokerage, or a forged body could file a contact
+  // into one tenant under another tenant's agent, or notify a user of a different tenant.
+  const { data: agentRow, error: agentErr } = await svc
+    .from("agents")
+    .select("id")
+    .eq("id", input.agentId)
+    .eq("brokerage_id", input.brokerageId)
+    .eq("user_id", input.agentUserId)
+    .maybeSingle()
+  if (agentErr) return { success: false, error: `Could not verify the agent for this home value request: ${agentErr.message}` }
+  if (!agentRow) return { success: false, error: "That agent is not part of that brokerage — the home value request was not recorded" }
 
   // Split name
   const nameParts = input.fullName.trim().split(/\s+/)
@@ -84,7 +101,9 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
   }
 
   // Log the home-value-specific activity (carries the AVM context the generic capture doesn't).
-  await svc.from("activities").insert({
+  // Read the result: this row is the only record that the valuation was what
+  // brought the lead in, and the follow-up copy keys off it.
+  const { error: avmActivityError } = await svc.from("activities").insert({
     contact_id: contactId,
     brokerage_id: input.brokerageId,
     agent_user_id: input.agentUserId,
@@ -96,8 +115,12 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
     metadata: { property: input.property },
   })
 
+  if (avmActivityError) {
+    console.error("[home-value-lead] AVM activity NOT recorded:", avmActivityError.message)
+  }
+
   // Notify the agent — surfaces in their morning brief with the AVM context.
-  await svc.from("notifications").insert({
+  await sentinelWrite(svc, svc.from("notifications").insert({
     user_id: input.agentUserId,
     brokerage_id: input.brokerageId,
     title: "🏠 New home value lead",
@@ -109,7 +132,7 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
     entity_id: contactId,
     priority: "high",
     is_read: false,
-  })
+  }), { table: "notifications", flow: "home_value_lead_notify", brokerageId: input.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
   // MANAGER-ORCHESTRATED — a "what's my home worth" request is the strongest inbound SELLER intent.
   // Hand it to the Listing Concierge over the bus so it responds like a human listing lead (a gated

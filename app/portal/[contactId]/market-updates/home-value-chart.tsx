@@ -79,6 +79,16 @@ export function HomeValueChart({
     return null
   }
 
+  // Lane 90D (test:rendered-empty-states): no estimates rendered an empty
+  // 300px box on the homeowner's market-updates page.
+  if (data.length === 0) {
+    return (
+      <div className="h-[300px] w-full flex items-center justify-center text-sm text-muted-foreground">
+        No home-value estimates yet — your first estimate appears with the next market update.
+      </div>
+    )
+  }
+
   return (
     <div className="h-[300px] w-full">
       <ResponsiveContainer width="100%" height="100%">

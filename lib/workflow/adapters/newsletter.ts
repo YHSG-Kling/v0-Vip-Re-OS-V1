@@ -5,7 +5,7 @@
  * Falls back to dispatching email with rendered HTML if not yet exported.
  */
 
-import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
+import { sequenceStepLedger, type ChannelAdapter, type StepContext, type StepResult } from "../channel-registry"
 
 export const newsletterAdapter: ChannelAdapter = {
   channel: "newsletter",
@@ -65,6 +65,7 @@ export const newsletterAdapter: ChannelAdapter = {
       to: contact.email,
       subject: step.subject ?? "Your Newsletter",
       html,
+      ledger: sequenceStepLedger(ctx),
     })
 
     return {

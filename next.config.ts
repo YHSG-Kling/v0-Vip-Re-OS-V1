@@ -81,6 +81,14 @@ const nextConfig: NextConfig = {
   },
   experimental: {
     optimizePackageImports: ['lucide-react', 'zustand'],
+    // Server Actions default to a 1MB request body — a base64-encoded PDF (~+33%)
+    // caps real uploads at ~750KB, so CDA templates + brokerage commission-agreement
+    // forms (uploadCdaTemplateFile / uploadCommissionAgreementFormAction, which send
+    // the PDF as base64 through a Server Action) would fail for ordinary multi-page
+    // documents. Raise the ceiling to cover typical real-estate paperwork.
+    serverActions: {
+      bodySizeLimit: '8mb',
+    },
     // Cap Turbopack's compile-time memory. `next build` uses Turbopack (Rust),
     // which holds compile state in NATIVE memory; on this large app it climbed
     // to the full 16 GB of a standard CI/build container and the VM was killed
@@ -100,12 +108,95 @@ const nextConfig: NextConfig = {
     // memory-predictable, and the mature path this app used before Next 16 made
     // Turbopack the default. These two flags are the memory levers:
     webpackMemoryOptimizations: true, // drop retained caches → lower peak heap
-    // webpackBuildWorker was tried but spawns one worker PER CORE; on a 16 GB CI
-    // runner their combined footprint OOMed the container ("external memory
-    // pressure" at ~6.7 GB heap, below the 8 GB V8 cap — i.e. total RSS, not the
-    // JS heap). A SINGLE-process build holds one module graph bounded by the heap
-    // cap (NODE_OPTIONS below) — the lowest-peak-memory config, which fits. Left
-    // OFF (default). Slower, but it completes on a constrained runner.
+    // ── webpackBuildWorker: ON, and the comment that used to sit here was wrong ──
+    //
+    // What stood here said: "webpackBuildWorker was tried but spawns one worker
+    // PER CORE; on a 16 GB CI runner their combined footprint OOMed the
+    // container." That is NOT what this flag does in the installed Next
+    // (16.2.7), and the mistake is worth naming because it is what kept the
+    // build in its single-heap configuration while compile demand grew into the
+    // ceiling documented in .github/workflows/build.yml.
+    //
+    // READ THE SOURCE, not the folklore — node_modules/next/dist/build/
+    // webpack-build/index.js, webpackBuildWithWorker():
+    //
+    //     const ORDERED_COMPILER_NAMES = ['server', 'edge-server', 'client']
+    //     for (const compilerName of compilerNames) {
+    //       const worker = new Worker(join(__dirname, 'impl.js'), {
+    //         numWorkers: 1, ...                     // ← ONE worker
+    //       })
+    //       const curResult = await worker.workerMain({ ... })   // ← awaited
+    //       await worker.end()   // "destroy worker so it's not sticking around
+    //                            //  using memory"  (their comment)
+    //     }
+    //
+    // One worker at a time, SEQUENTIALLY, per COMPILER — not per core. The
+    // per-core worker pool that really did OOM this runner is a different
+    // phase entirely: "Collecting page data", which is bounded by `cpus: 1`
+    // below and is untouched by this flag.
+    //
+    // WHY IT WAS OFF, AND WHY IT COULD NEVER HAVE TURNED ITSELF ON HERE.
+    // next/dist/build/index.js:850 —
+    //     const useBuildWorker = config.experimental.webpackBuildWorker
+    //       || (config.experimental.webpackBuildWorker === undefined && !config.webpack)
+    // The default is `undefined`, so the worker path is taken only when there is
+    // NO custom webpack function. This config has one (the sharp external + the
+    // @zoom/download-manager alias below) — and even if it did not, withWorkflow()
+    // installs its own: node_modules/@workflow/next/dist/index.js:321-338 assigns
+    // `nextConfig.webpack = (...)` unconditionally to add its loader. So
+    // `!config.webpack` is permanently false here and the flag can only ever be
+    // turned on EXPLICITLY, which is what this line does.
+    //
+    // THE GUARD THAT DEFAULT IS PROTECTING DOES NOT APPLY. It exists because a
+    // webpack function cannot be serialized across a process boundary — but the
+    // worker does not receive a serialized config. It re-reads next.config.ts
+    // from disk: webpack-build/impl.js, workerMain() —
+    //     /// load the config because it's not serializable
+    //     const config = NextBuildContext.config = await loadConfig(
+    //       PHASE_PRODUCTION_BUILD, NextBuildContext.dir, { ... })
+    // so the sharp external and the zoom alias are present in every worker.
+    //
+    // MEASURED, not argued (local repro on a 4-core/16 GB box, the ubuntu-latest
+    // shape, same NODE_OPTIONS and same placeholder env as the build workflow):
+    //   OFF — all three compilers share one heap:
+    //         peak 8413 MB heap used / 9356 MB committed / 13291 MB RSS,
+    //         killed at 8m08s by the cgroup OOM killer (exit 137).
+    //   ON  — one compiler per process, torn down between:
+    //         see .github/workflows/build.yml for the recorded figures.
+    // The reason it works is arithmetic: peak becomes the LARGEST single
+    // compiler instead of the SUM of three, and the ~4 GB of non-old-space RSS
+    // overhead is released with each worker rather than accumulating.
+    webpackBuildWorker: true,
+
+    // PAGE-DATA COLLECTION IS A SEPARATE PHASE WITH ITS OWN WORKER POOL, and
+    // turning webpackBuildWorker off does not touch it. That is why the build kept
+    // dying AFTER a clean compile: the log reads
+    //   ✓ Compiled with warnings in 8.6min
+    //   Collecting page data using 3 workers ...
+    //   ##[error]The runner has received a shutdown signal
+    // — a memory kill of the runner, seconds into the phase, with the compile
+    // already finished and successful.
+    //
+    // The arithmetic is the whole story. Those workers are child processes and
+    // they INHERIT the job's NODE_OPTIONS, which sets --max-old-space-size=12288
+    // for the benefit of the single compile process. So three page-data workers
+    // are each permitted a 12 GB old space on a 16 GB runner. That survives only
+    // while the module graph is small enough that they never actually claim it,
+    // which is exactly why this presented for a long time as an intermittent
+    // ~20-25% flake and then became 100% reproducible once the graph grew: it was
+    // never random, it was a threshold.
+    //
+    // cpus:1 collects page data in ONE worker, which is the same single-process
+    // strategy already chosen for compile above (and what the build workflow's own
+    // comment says it wants: "Single-process webpack build"). Serial is slower —
+    // page data for a large route tree — but the job's ceiling is 40 minutes and a
+    // build that finishes in 20 beats one that is killed at 9.
+    //
+    // Deliberately NOT fixed by lowering NODE_OPTIONS instead: the one compile
+    // process genuinely needs the large heap, and shrinking it to make three
+    // workers fit would trade a reliable page-data phase for an unreliable
+    // compile. Bound the parallelism, not the heap.
+    cpus: 1,
   },
   // Skip bundling for packages that ship platform-specific native binaries
   // or otherwise can't be analysed by Turbopack. They get plain Node
@@ -149,6 +240,57 @@ const nextConfig: NextConfig = {
     "esbuild",
     "@sparticuz/chromium-min",
     "ffmpeg-static",
+    // Wave 70 official-SDK adapters (lib/providers/{twilio,elevenlabs,apify,
+    // zenrows,exa}/client.ts). Server-only Node packages — bundling them into
+    // server chunks added ~130 MB of source to the webpack graph and pushed
+    // the CI compile past the heap ceiling twice in a row on the same commit
+    // (10466 MB used / 11209 committed under a 12288 cap, 2026-09-17), which
+    // §8 says is no longer a re-run case. Externalised, Next require()s them
+    // from node_modules at runtime — same behaviour, none of the compile cost.
+    "twilio",
+    "@elevenlabs/elevenlabs-js",
+    "apify-client",
+    "zenrows",
+    "exa-js",
+    // Wave 71A official-SDK adapters (lib/providers/{peopledata,meta,hubspot,
+    // quickbooks}/client.ts + lib/providers/dispatch.ts's existing `lob`
+    // usage, now also read by lib/providers/lob/client.ts). Same reasoning as
+    // the wave-70 packages above: server-only Node packages, externalised so
+    // the CI compile fits the heap ceiling instead of bundling their source
+    // into server chunks.
+    "peopledatalabs",
+    "facebook-nodejs-business-sdk",
+    "@hubspot/api-client",
+    "intuit-oauth",
+    "lob",
+    // Wave 105F (owner ruling 2026-10-06: split the CI build heap). The fourth
+    // deterministic 13312-cap abort (run 37404071865) is in the SERVER build
+    // worker, so the first lever is to stop webpack walking server-only
+    // packages it does not need to parse. Census (lane105F-census: packages
+    // reached from the 992 app entries, comment-blanked source, no 'use client'
+    // importer, not yet external — built .js MB on disk, the upper bound of
+    // what SWC/webpack parse per layer):
+    //   pdf-lib 5.73 MB (lib/documents/client-pdf, forms/pdf-form-fill,
+    //     kernel/board-packet-pdf, onboarding/certificate-pdf, video/persona-overlay)
+    //   puppeteer-core 2.23 MB (lib/assets/screenshot-capture.ts; the chromium
+    //     binary it drives is ALREADY external above)
+    //   @modelcontextprotocol/sdk 1.48 MB (lib/external/{rentcast,batchdata}-mcp.ts)
+    //   stripe 0.49 MB (lib/stripe.ts + the webhook/registration readers)
+    //   cheerio 0.32 MB (lib/lead-pipeline/scraper-parsers.ts, lib/osint-client.ts)
+    // ≈10.3 MB of built JS the server compiler no longer parses, against 58.3 MB
+    // of first-party TS it still must. The server compile parses shared modules
+    // in TWO layers (rsc + ssr), so the saving is bounded above by ~2× that.
+    // All five are direct dependencies with a CJS entry (package.json `main` or
+    // `exports.require`), so a runtime require() resolves under npm and pnpm.
+    // NOT externalised, with the reason: zod (also in the client graph and in
+    // the AI SDK's zod/v3-v4 dual handling — unmeasured instance risk for 2 MB),
+    // @zoom/meetingsdk (a client-side UMD bundle behind a dynamic import in a
+    // 'use client' component; the server never requires it).
+    "pdf-lib",
+    "puppeteer-core",
+    "@modelcontextprotocol/sdk",
+    "stripe",
+    "cheerio",
   ],
   reactStrictMode: true,
   poweredByHeader: false,
@@ -171,6 +313,29 @@ const nextConfig: NextConfig = {
     // a real package and is installed.
     config.resolve = config.resolve || {}
     config.resolve.alias = { ...(config.resolve.alias || {}), '@zoom/download-manager': false }
+    // DO NOT SET `config.cache.maxMemoryGenerations = 0` HERE. It is the obvious
+    // next idea after reading Next's webpack-config.js, which hardcodes
+    //     maxMemoryGenerations: dev ? 0 : Infinity
+    // for the filesystem cache — i.e. in a production build no cache entry is
+    // ever evicted from the heap. Since webpackBuildWorker puts each compiler in
+    // its OWN PROCESS, a memory cache one of them fills cannot be read by the
+    // next, so dropping it looks free.
+    //
+    // IT WAS MEASURED AND IT IS THE WORST OF THE THREE CONFIGURATIONS TRIED.
+    // Same box, same tree, same NODE_OPTIONS, caches dropped before each run:
+    //   webpackBuildWorker alone      → 7968 MB used / 8921 MB committed (87.1%
+    //                                   of the 10240 cap), died at 505s on the
+    //                                   local box's smaller ceiling.
+    //   webpackBuildWorker + this     → 9718 MB used / 10263 MB committed —
+    //                                   100.2% OF CAP — FATAL ERROR: Ineffective
+    //                                   mark-compacts, at 291s. Nearly TWICE the
+    //                                   heap and in HALF the time.
+    // The GC log says why: `average mu = 0.072`, so the process spent 93% of its
+    // wall time collecting. Evicting a pack-file-cache entry does not free it —
+    // it forces immediate serialization, and the serializer's buffers plus the
+    // garbage that churn creates cost far more than the records retained.
+    // Recorded rather than silently dropped, because the reasoning above is sound
+    // and someone will have it again.
     if (isServer) {
       // Force sharp to stay EXTERNAL on the server build: emit `require("sharp")`
       // at runtime (resolved from node_modules, where its native
@@ -192,6 +357,29 @@ const nextConfig: NextConfig = {
       config.externals = [
         ...(Array.isArray(existing) ? existing : [existing]),
         { sharp: 'commonjs sharp' },
+        // Same pin for the wave-70 SDKs — the Vercel modifyConfig rewrite that
+        // dropped serverExternalPackages for sharp would drop these too.
+        { twilio: 'commonjs twilio' },
+        { '@elevenlabs/elevenlabs-js': 'commonjs @elevenlabs/elevenlabs-js' },
+        { 'apify-client': 'commonjs apify-client' },
+        { zenrows: 'commonjs zenrows' },
+        { 'exa-js': 'commonjs exa-js' },
+        // Same pin for the wave-71A SDKs.
+        { peopledatalabs: 'commonjs peopledatalabs' },
+        { 'facebook-nodejs-business-sdk': 'commonjs facebook-nodejs-business-sdk' },
+        { '@hubspot/api-client': 'commonjs @hubspot/api-client' },
+        { 'intuit-oauth': 'commonjs intuit-oauth' },
+        { lob: 'commonjs lob' },
+        // Same pin for the wave-105F server-only packages (see the
+        // serverExternalPackages block). puppeteer-core is deliberately NOT
+        // pinned here: its `exports.require` resolves to an ESM file
+        // (package.json `type: module`), so a forced `commonjs` external would
+        // lean on Node's require(esm); Next's own external resolution picks the
+        // right module type for it from serverExternalPackages alone.
+        { 'pdf-lib': 'commonjs pdf-lib' },
+        { '@modelcontextprotocol/sdk': 'commonjs @modelcontextprotocol/sdk' },
+        { stripe: 'commonjs stripe' },
+        { cheerio: 'commonjs cheerio' },
       ]
     }
     // Reduce aggressive file watching to prevent duplicate dev server spawns

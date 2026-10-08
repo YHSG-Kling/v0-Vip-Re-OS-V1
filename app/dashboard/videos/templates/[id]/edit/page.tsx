@@ -2,6 +2,7 @@ import { redirect, notFound } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getVideoTemplateById } from "@/app/actions/video-generation"
 import { TemplateFormClient } from "../../template-form-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title: "Edit Video Template | Dashboard",
@@ -35,7 +36,7 @@ export default async function EditVideoTemplatePage({
   // Only the owning agent or broker/admin can edit
   const canEdit =
     template.agent_id === agentRow?.id ||
-    ["broker", "admin", "superadmin"].includes(userData?.user_type ?? "")
+    isAdminOrBroker({ user_type: userData?.user_type ?? "" })
 
   if (!canEdit) redirect("/dashboard/videos/templates")
 

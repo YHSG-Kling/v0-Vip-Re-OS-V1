@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef } from "react"
-import { Mail, Phone, MessageSquare, Radio } from "lucide-react"
+import { Mail, Phone, MessageSquare, Radio, AtSign } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 type Message = {
@@ -14,6 +14,8 @@ type Message = {
   created_at: string
   channel?: string
   type?: string
+  /** true for synthetic call-transcript rows folded into the thread (getMessageThread) */
+  is_call_transcript?: boolean
 }
 
 interface MessageThreadProps {
@@ -22,11 +24,15 @@ interface MessageThreadProps {
   loading: boolean
 }
 
-const CHANNEL_ICON: Record<string, React.ReactNode> = {
-  email:    <Mail size={12} />,
-  voice:    <Phone size={12} />,
-  sms:      <MessageSquare size={12} />,
-  "in-app": <Radio size={12} />,
+/** Per-message channel icon — folds social_dm_* and in_app/in-app spellings. */
+function channelIcon(channel?: string): React.ReactNode {
+  const c = (channel ?? "").toLowerCase()
+  if (c.startsWith("social")) return <AtSign size={12} />
+  if (c === "voice" || c === "call") return <Phone size={12} />
+  if (c === "sms") return <MessageSquare size={12} />
+  if (c === "in_app" || c === "in-app" || c === "chat") return <Radio size={12} />
+  if (c === "email") return <Mail size={12} />
+  return null
 }
 
 function formatTime(iso: string) {
@@ -91,6 +97,26 @@ export default function MessageThread({ messages, contactName, loading }: Messag
 
           <div className="space-y-2">
             {group.msgs.map(msg => {
+              // Call transcript — render as a distinct full-width call card, not a
+              // chat bubble, so the unified thread reads "here's the call" at a glance.
+              if (msg.is_call_transcript || msg.type === "voice") {
+                return (
+                  <div key={msg.id} className="my-1">
+                    <div className="rounded-lg border border-indigo-200 bg-indigo-50/60 px-3 py-2">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-indigo-700 mb-1">
+                        <Phone className="h-3.5 w-3.5" />
+                        Call transcript
+                        <span className="ml-auto font-normal text-[10px] text-muted-foreground">
+                          {formatTime(msg.created_at)}
+                        </span>
+                      </div>
+                      <p className="text-xs text-foreground whitespace-pre-wrap leading-relaxed">
+                        {msg.body ?? msg.content ?? ""}
+                      </p>
+                    </div>
+                  </div>
+                )
+              }
               const isOutbound = msg.direction === "outbound" || msg.sender_type === "agent" || msg.sender_type === "ai_assistant"
               // body is the primary column written by sendMessage; content/message_content are fallbacks
               const text = msg.body ?? msg.content ?? msg.message_content ?? ""
@@ -123,7 +149,7 @@ export default function MessageThread({ messages, contactName, loading }: Messag
                     <div className={cn("flex items-center gap-1 text-[10px] text-muted-foreground", isOutbound ? "flex-row-reverse" : "flex-row")}>
                       <span>{formatTime(msg.created_at)}</span>
                       {isAI && <span className="bg-indigo-100 text-indigo-700 px-1 rounded text-[9px] font-medium">AI</span>}
-                      {msgChannel && CHANNEL_ICON[msgChannel]}
+                      {channelIcon(msgChannel)}
                     </div>
                   </div>
                 </div>

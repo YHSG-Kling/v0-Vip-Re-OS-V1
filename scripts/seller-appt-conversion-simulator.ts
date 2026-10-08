@@ -55,8 +55,14 @@ function testPure() {
   console.log("\n[Layer 1 · pure — seller intent → contact_type]")
   check("a 'seller' motivation maps to contact_type='seller'",
     motivationToContactType("seller_motivated") === "seller", String(motivationToContactType("seller_motivated")))
-  check("an 'investor' motivation maps to 'investor' (not mis-bucketed as seller)",
-    motivationToContactType("investor") === "investor")
+  // Re-pinned 2026-08-31: the old expectation ('investor' stays a contact_type)
+  // was a §2 waypoint — m593 executed the owner ruling "investor is a persona
+  // and not a contact type", so the side is BUYER and the investing rides
+  // contact_persona='investor' (m589, set by the creator via
+  // resolveContactPersona). Still asserts the original defect can't return:
+  // never mis-bucketed as seller.
+  check("an 'investor' motivation maps to 'buyer' (persona carries the investing; never mis-bucketed as seller)",
+    motivationToContactType("investor") === "buyer", String(motivationToContactType("investor")))
   check("a 'both' motivation maps to 'buyer' (dual buyer/seller preserved; persona='both' set by creator)",
     motivationToContactType("both") === "buyer", String(motivationToContactType("both")))
   check("a null motivation maps to null (caller falls back to lead_type)",
@@ -193,7 +199,7 @@ async function testLive() {
 
     // (A) NO appointment fired, NO listing-appt-prep chain ran
     const { count: apptCountA } = await svc.from("calendar_events")
-      .select("id", { count: "exact", head: true }).eq("entity_id", contactId!).eq("event_type", "isa_appointment")
+      .select("id", { count: "exact", head: true }).eq("entity_id", contactId!).eq("event_type", "listing_appointment")
     check("(A) NO listing appointment was scheduled on intent-conversion", (apptCountA ?? 0) === 0, `got ${apptCountA}`)
     const { count: chainCountA } = await svc.from("workflow_runs")
       .select("id", { count: "exact", head: true }).eq("contact_id", contactId!).eq("chain_key", "listing-appt-prep")
@@ -239,7 +245,7 @@ async function testLive() {
     const { data: cal } = await svc.from("calendar_events")
       .select("id, entity_type, entity_id, event_type").eq("id", b.calendarEventId ?? "").maybeSingle()
     check("(B) ISA appointment row exists on the contact",
-      (cal as any)?.entity_type === "contact" && (cal as any)?.entity_id === contactId && (cal as any)?.event_type === "isa_appointment",
+      (cal as any)?.entity_type === "contact" && (cal as any)?.entity_id === contactId && (cal as any)?.event_type === "listing_appointment",
       JSON.stringify(cal))
 
     check("(B) listing-appt-prep chain run started", !!b.chainRunId, "no chainRunId")

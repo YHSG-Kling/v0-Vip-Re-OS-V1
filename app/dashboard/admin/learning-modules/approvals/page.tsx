@@ -1,8 +1,10 @@
 import { Suspense } from "react"
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { listPendingApprovalModulesAction } from "@/app/actions/learning-modules-approvals"
+import { listPendingApprovalModulesAction, listRecentModuleDecisionsAction } from "@/app/actions/learning-modules-approvals"
 import { ApprovalsClient } from "./approvals-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -12,7 +14,10 @@ export const metadata = {
 }
 
 async function ApprovalsData() {
-  const result = await listPendingApprovalModulesAction()
+  const [result, decisions] = await Promise.all([
+    listPendingApprovalModulesAction(),
+    listRecentModuleDecisionsAction(),
+  ])
   if (!result.ok) {
     return (
       <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
@@ -20,7 +25,12 @@ async function ApprovalsData() {
       </div>
     )
   }
-  return <ApprovalsClient initialRows={result.rows} />
+  return (
+    <ApprovalsClient
+      initialRows={result.rows}
+      recentDecisions={decisions.ok ? decisions.rows : []}
+    />
+  )
 }
 
 export default async function ApprovalsPage() {
@@ -34,8 +44,8 @@ export default async function ApprovalsPage() {
     .eq("id", user.id)
     .maybeSingle()
   const t = (row?.user_type as string | undefined) ?? ""
-  if (!["broker", "broker_admin", "admin", "superadmin", "team_lead"].includes(t)) {
-    redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: t })) {
+    return <RoleGateNotice surface="Learning-module approvals" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   return (

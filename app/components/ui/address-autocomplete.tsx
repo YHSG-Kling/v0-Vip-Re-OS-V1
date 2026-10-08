@@ -1,7 +1,8 @@
 "use client"
 
-import { useState, useRef, useEffect, useCallback } from "react"
+import { useState, useRef, useCallback } from "react"
 import { Input } from "@/components/ui/input"
+import { useClickOutside } from "@/hooks/use-click-outside"
 
 interface AddressComponents {
   street: string
@@ -110,15 +111,10 @@ export function AddressAutocomplete({
     setOpen(false)
   }
 
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false)
-      }
-    }
-    document.addEventListener("mousedown", handler)
-    return () => document.removeEventListener("mousedown", handler)
-  }, [])
+  // Duplicate inline mousedown listener retired 2026-09-11 — survivor is
+  // hooks/use-click-outside.ts:19 (also covers touchstart, which this
+  // duplicate never did).
+  useClickOutside(containerRef, () => setOpen(false))
 
   return (
     <div ref={containerRef} className="relative">

@@ -5,6 +5,8 @@ import {
   attributeTransactionSafe,
   findTransactionsNeedingAttribution,
 } from "@/lib/marketing/attribution"
+import { resolveSequenceConversions } from "@/lib/campaign-sequences/sequence-conversion"
+import { rollupSequenceCounters, type SequenceCounterRollup } from "@/lib/campaign-sequences/sequence-counters"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import {
   createCronRunContextAction,
@@ -48,7 +50,7 @@ export async function GET(request: NextRequest) {
   await recordCronStartAction({ context_id: contextId })
 
   const svc = createServiceClient()
-  const results: Array<{ txnId: string; totalCredits?: number; error?: string }> = []
+  const results: Array<{ txnId: string; totalCredits?: number; enrollmentsConverted?: number; error?: string }> = []
 
   try {
     const candidates = await findTransactionsNeedingAttribution(svc, LOOKBACK_DAYS)
@@ -57,19 +59,49 @@ export async function GET(request: NextRequest) {
     for (const txnId of toProcess) {
       try {
         const r = await attributeTransactionSafe(svc, txnId)
+        // SEQUENCE-SIDE CONVERSION, same event, same pass. The campaign side
+        // splits GCI across touching campaigns; the sequence side answers the
+        // simpler question its own report asks — did a sequence that was
+        // working this contact end in a deal? Both were previously unanswered
+        // for sequences: status='converted', converted_at and conversions_total
+        // all existed with no writer, so the Workflow Reports conversion tiles
+        // showed a permanent zero. Failing here must not lose the attribution
+        // that already succeeded, so it is caught separately.
+        let enrollmentsConverted: number | undefined
+        try {
+          const c = await resolveSequenceConversions(svc, txnId)
+          enrollmentsConverted = c?.enrollmentsConverted
+        } catch (convErr) {
+          console.error(`[attribution] sequence conversion failed for ${txnId}:`, convErr)
+        }
         if (r) {
-          results.push({ txnId, totalCredits: r.totalCredits })
+          results.push({ txnId, totalCredits: r.totalCredits, enrollmentsConverted })
         }
       } catch (err) {
         results.push({ txnId, error: err instanceof Error ? err.message : String(err) })
       }
     }
 
+    // SEQUENCE COUNTERS, same daily pass (wave 84E). completions_total had no writer
+    // at all and enrollments_total was bumped by only three of seven enrollment writers,
+    // so the sequences list rendered "0 completed" and an under-count. Reconciled from
+    // sequence_enrollments here; a failure is reported by name and never loses the
+    // attribution above.
+    let sequenceCounters: SequenceCounterRollup | { error: string }
+    try {
+      sequenceCounters = await rollupSequenceCounters(svc)
+    } catch (counterErr) {
+      sequenceCounters = { error: counterErr instanceof Error ? counterErr.message : String(counterErr) }
+      console.error("[attribution] sequence counter rollup failed:", counterErr)
+    }
+
     const summary = {
+      sequence_counters: sequenceCounters,
       candidates_found: candidates.length,
       processed:        toProcess.length,
       attributed:       results.filter(r => !r.error).length,
       failed:           results.filter(r => r.error).length,
+      enrollments_converted: results.reduce((s, r) => s + (r.enrollmentsConverted ?? 0), 0),
     }
 
     await recordCronSuccessAction({

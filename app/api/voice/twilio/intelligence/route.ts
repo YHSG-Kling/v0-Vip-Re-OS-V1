@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -56,7 +57,7 @@ export async function POST(request: NextRequest) {
   if (!callSid) return NextResponse.json({ ok: true, unlinked: true })
 
   const { data: call } = await svc.from("voice_calls").select("id, summary, sentiment")
-    .eq("vapi_call_id", callSid).maybeSingle()
+    .eq("vendor_call_id", callSid).maybeSingle()
   if (!call) return NextResponse.json({ ok: true, unmatched: true })
 
   // 2. Operator results (summarization, sentiment, any custom operators).
@@ -81,7 +82,7 @@ export async function POST(request: NextRequest) {
   if (ciSummary && !(call as any).summary) patch.summary = ciSummary
   if (ciSentiment && !(call as any).sentiment) patch.sentiment = ciSentiment
   if (Object.keys(patch).length > 0) {
-    await svc.from("voice_calls").update(patch).eq("id", (call as any).id).then(undefined, () => {})
+    await sentinelWrite(svc, svc.from("voice_calls").update(patch).eq("id", (call as any).id), { table: "voice_calls", flow: "voice_ci_summary", reason: "webhook must ack; a lost summary/sentiment write is ledgered" })
   }
   let complianceEscalations = 0
   if (results.length > 0) {
@@ -90,10 +91,9 @@ export async function POST(request: NextRequest) {
       label: r?.predicted_label ?? null,
       probability: r?.predicted_probability ?? null,
     }))
-    await svc.from("call_analyses")
+    await sentinelWrite(svc, svc.from("call_analyses")
       .update({ intent_signals: { twilio_ci: compact, transcript_sid: transcriptSid } })
-      .eq("voice_call_id", (call as any).id)
-      .then(undefined, () => {})
+      .eq("voice_call_id", (call as any).id), { table: "call_analyses", flow: "call_analyses_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     // COMPLIANCE WATCH: custom operators named for regulatory risk (define
     // them in the Twilio console — fair-housing phrases, steering,
@@ -110,7 +110,11 @@ export async function POST(request: NextRequest) {
       const { data: fullCall } = await svc.from("voice_calls").select("brokerage_id, contact_id").eq("id", (call as any).id).maybeSingle()
       const brokerageId = (fullCall as any)?.brokerage_id
       if (brokerageId) {
-        await svc.from("compliance_events").insert({
+        // This row IS the escalation record — a call that tripped a
+        // fair-housing / steering / unlicensed-advice operator. It was written
+        // `.then(undefined, () => {})`, so a refusal left the reviewers notified
+        // about an event with no immutable ledger entry behind it.
+        const { error: ciLedgerError } = await svc.from("compliance_events").insert({
           brokerage_id: brokerageId,
           actor_role: "system",
           entity_type: "voice_call",
@@ -120,17 +124,23 @@ export async function POST(request: NextRequest) {
           allowed: true, // the call already happened — this is detection, not a block
           violations: hits.map((h) => `CI operator hit: ${h?.name ?? h?.operator_type}`),
           blocked_reason: null,
-        }).then(undefined, () => {})
+        })
+        if (ciLedgerError) {
+          console.error(
+            `[twilio-ci] compliance_events insert REFUSED for voice_call ${(call as any).id} — ${hits.length} compliance-watch hit(s) are UNRECORDED:`,
+            ciLedgerError.message,
+          )
+        }
         const { data: reviewers } = await svc.from("users").select("id")
           .eq("brokerage_id", brokerageId)
-          .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"]).limit(10)
+          .in("user_type", ["compliance_officer", "admin", "broker"]).limit(10)
         for (const r of (reviewers ?? []) as any[]) {
-          await svc.from("notifications").insert({
+          await sentinelWrite(svc, svc.from("notifications").insert({
             user_id: r.id, brokerage_id: brokerageId, type: "call_compliance_watch",
             title: "A call tripped a compliance watch operator",
             body: `Twilio Conversational Intelligence flagged: ${hits.map((h) => h?.name ?? h?.operator_type).join(", ")}. Review the call transcript.`,
             entity_type: "voice_call", entity_id: (call as any).id, priority: "high", channel: "in_app", is_read: false,
-          }).then(undefined, () => {})
+          }), { table: "notifications", flow: "route_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
         }
         complianceEscalations = hits.length
       }

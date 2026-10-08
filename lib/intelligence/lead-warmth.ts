@@ -8,6 +8,7 @@
 // Reuses the health band/priority so leads and contacts reprioritize on one scale. Pure (no I/O).
 
 import { bandForScore, healthPriority, type HealthBand } from "./relationship-health"
+import { clamp as mathClamp } from "@/lib/format/math"
 
 export interface LeadWarmthInput {
   daysSinceLastTouch: number | null
@@ -25,7 +26,10 @@ export interface LeadWarmth {
   drivers: string[]
 }
 
-function clamp(n: number, lo = 0, hi = 100): number { return Math.max(lo, Math.min(hi, n)) }
+// TOMBSTONE (§1.1, 2026-09-08): the clamp arithmetic lived here; survivor
+// lib/format/math.ts:clamp (0–100 defaults kept as a thin wrapper, same as
+// relationship-health.ts and lib/agent-action-queue/composer.ts's copies).
+function clamp(n: number, lo = 0, hi = 100): number { return mathClamp(n, lo, hi) }
 
 /** Score a lead's warmth (0–100) on the shared band scale. Pure. */
 export function scoreLeadWarmth(input: LeadWarmthInput): LeadWarmth {

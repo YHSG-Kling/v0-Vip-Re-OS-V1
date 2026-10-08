@@ -20,7 +20,6 @@ import type { LessonFeedItem } from "@/app/actions/portal-education"
 
 interface LessonCardProps {
   lesson: LessonFeedItem
-  isSpotlight?: boolean
   onClick?: () => void
 }
 
@@ -40,7 +39,16 @@ const FORMAT_COLORS: Record<string, string> = {
   quiz: "bg-amber-100 text-amber-800",
 }
 
-export function LessonCard({ lesson, isSpotlight = false, onClick }: LessonCardProps) {
+// TOMBSTONE (orphan doctrine §1.3, wave 53): this component's `isSpotlight`
+// prop is DELETED. It was declared-never-passed (hidden-wire-census category
+// c) — the only "spotlight" rendering the app actually does is
+// SpotlightLessonCard below (app/portal/[contactId]/learn/learn-client.tsx's
+// `currentFeed.spotlight` renders THAT component, not this one with
+// isSpotlight=true), which already has its own "Up Next" badge + larger
+// layout. `isSpotlight`'s ring/badge/text-size branches here were a second,
+// dead implementation of the same idea with no caller ever reaching them —
+// the functionality already lives at SpotlightLessonCard below.
+export function LessonCard({ lesson, onClick }: LessonCardProps) {
   const Icon = FORMAT_ICONS[lesson.format] || FileText
   const formatColor = FORMAT_COLORS[lesson.format] || "bg-muted text-muted-foreground"
 
@@ -48,7 +56,6 @@ export function LessonCard({ lesson, isSpotlight = false, onClick }: LessonCardP
     <Card
       className={cn(
         "cursor-pointer transition-all hover:shadow-md",
-        isSpotlight && "ring-2 ring-primary shadow-lg",
         lesson.isCompleted && "opacity-70",
         "min-h-[120px]"
       )}
@@ -77,11 +84,6 @@ export function LessonCard({ lesson, isSpotlight = false, onClick }: LessonCardP
                 Milestone
               </Badge>
             )}
-            {isSpotlight && !lesson.isCompleted && (
-              <Badge className="text-xs bg-primary text-primary-foreground">
-                Up Next
-              </Badge>
-            )}
           </div>
           {lesson.isCompleted && (
             <div className="flex items-center text-green-600" aria-label="Completed">
@@ -92,8 +94,7 @@ export function LessonCard({ lesson, isSpotlight = false, onClick }: LessonCardP
 
         {/* Title */}
         <h3 className={cn(
-          "font-semibold text-foreground line-clamp-2",
-          isSpotlight ? "text-lg" : "text-base",
+          "font-semibold text-foreground line-clamp-2 text-base",
           lesson.isCompleted && "text-muted-foreground"
         )}>
           {lesson.title}

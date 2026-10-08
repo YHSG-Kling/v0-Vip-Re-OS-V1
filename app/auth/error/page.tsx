@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation"
+import { toMagicLinkMessage } from "@/app/types/auth"
 
 // Superseded by the auth callback's error rail (/login?message=…, see
 // app/auth/callback/route.ts). Kept as a redirect stub instead of deleted:
@@ -11,5 +12,9 @@ export default async function LegacyAuthErrorPage({
   searchParams: Promise<{ error?: string }>
 }) {
   const { error } = await searchParams
-  redirect(`/login?message=${encodeURIComponent(error || "error")}`)
+  // Narrowed onto the one magic-link vocabulary (app/types/auth.ts) rather than
+  // forwarded raw: whatever the hosted auth config puts in `?error=` is a
+  // provider string, and /login now REFUSES anything outside the roster. Passing
+  // it through unnarrowed would land on the login page as silence.
+  redirect(`/login?message=${toMagicLinkMessage(error) ?? "error"}`)
 }

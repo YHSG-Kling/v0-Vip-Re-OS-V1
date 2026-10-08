@@ -8,6 +8,8 @@
 // (parsed body, no header access) can express — so it stays on raw fetch, documented inline.
 
 import { callConnector, type GatewayAuth } from "@/lib/agentic-os/connector-gateway"
+import { graphPost } from "@/lib/providers/meta/client"
+import { withActionLedger, type ActionReasonCode, type LedgerClient } from "@/lib/kernel/action-ledger"
 
 /** One social POST through the gateway. Returns the gateway result; callers map the provider shape. */
 function socialPost(connector: string, baseUrl: string, path: string, body: unknown, auth: GatewayAuth, headers?: Record<string, string>) {
@@ -33,11 +35,92 @@ export interface PublishResult {
  * Publish content to a social platform
  * Returns the external post ID on success, throws on failure
  */
+/** ACTION LEDGER context for a publish (wave 98). The tenant is required for a ledger row
+ *  (agent_action_ledger.brokerage_id NOT NULL); the platform's own posts carry none and publish
+ *  unledgered. `cycle` (e.g. `<social_posts.id>:<platform>`) makes the publish at-most-once. */
+export interface SocialPublishLedger {
+  brokerageId: string | null
+  postId?: string | null
+  cycle?: string | null
+  reasonCode?: ActionReasonCode | null
+  actorUserId?: string | null
+}
+
+const TIMEOUT_LIKE = /timed?[\s-]?out|ETIMEDOUT|ECONNRESET|504/i
+
 export async function publishToSocialPlatform(
+  platform: string,
+  params: PublishParams,
+  ledger?: SocialPublishLedger,
+): Promise<PublishResult> {
+  // ACTION LEDGER (wave 98, lane 98B) — this is the single door every social publish goes
+  // through (see the pre-flight note below), so it is where the publish is claimed and settled.
+  // A publish whose status flip failed is retried by the cron; with a cycle the retry REPLAYS
+  // the external post id instead of posting twice.
+  if (!ledger?.brokerageId) return publishToSocialPlatformUnledgered(platform, params)
+  return ledgerSocialPublish(platform, params, ledger as SocialPublishLedger & { brokerageId: string }, () => publishToSocialPlatformUnledgered(platform, params))
+}
+
+/**
+ * The ledger half of the social door — claim → `publish()` → settle.
+ * @proofSeam exported so scripts/action-ledger-guard.ts proves one publish = one ledger row and a retried post (status flip lost) publishes once.
+ */
+export function ledgerSocialPublish(
+  platform: string,
+  params: PublishParams,
+  ledger: SocialPublishLedger & { brokerageId: string },
+  publish: () => Promise<PublishResult>,
+  opts?: { client?: LedgerClient },
+): Promise<PublishResult> {
+  return withActionLedger<PublishResult>({
+    brokerageId: ledger.brokerageId,
+    action: "marketing.social.publish",
+    channel: "social",
+    actor: ledger.actorUserId ? { type: "user", userId: ledger.actorUserId } : { type: "system" },
+    subject: ledger.postId ? { type: "social_post", id: ledger.postId } : { type: "social_account", id: null, ref: params.accountId },
+    // m691: a scheduled social post has its own reason (it was UNSPECIFIED — no m687 code fit).
+    reasonCode: ledger.reasonCode ?? "SCHEDULED_CONTENT_PUBLISH",
+    reasonDetail: `publish to ${platform}`,
+    cycle: ledger.cycle ?? null,
+    riskClass: "COMMUNICATION",
+    systemSource: "social_publisher",
+  }, publish, {
+    settle: (r) => r.success
+      ? { status: "executed", outcome: "published", provider: platform, providerRef: r.externalPostId ?? null, costUsd: 0 }
+      : { status: TIMEOUT_LIKE.test(r.error ?? "") ? "unknown" : "failed", outcome: "publish_failed", provider: platform, error: r.error ?? null },
+    replay: (claim) => claim.kind === "replay"
+      ? { success: true, externalPostId: claim.entry.provider_ref ?? undefined, platform }
+      : { success: false, platform, error: claim.kind === "refused" ? claim.error : `publish ${claim.kind === "unknown" ? "outcome unknown — not re-posted; reconcile it first" : "already in flight"}` },
+  }, opts)
+}
+
+async function publishToSocialPlatformUnledgered(
   platform: string,
   params: PublishParams
 ): Promise<PublishResult> {
   try {
+    // ── PRE-FLIGHT (orphan burn-down, lane O — validateContentForPlatform WIRED) ──
+    // This function is the single door every social publish goes through
+    // (app/api/cron/publish-social-posts/route.ts:188 and :240,
+    // app/actions/superadmin/platform-social.ts:202), and until now it handed
+    // the provider whatever it was given. A 400-character caption on Twitter or
+    // an Instagram post with no media reached the network, failed there, and
+    // came back as an opaque provider error on a scheduled post nobody was
+    // watching. validateContentForPlatform (below in this file) held the exact
+    // per-platform limits needed to catch that locally and had no caller at all;
+    // this is the check it was written for. Its message names the limit that was
+    // actually exceeded, or the media that is actually required.
+    //
+    // The "unknown platform" verdict is deliberately NOT consumed here — the
+    // switch below owns that refusal, so adding a platform to the switch without
+    // adding it to the limits table degrades to today's behaviour (published,
+    // unchecked) instead of a false "unknown platform" on a platform that IS
+    // supported.
+    const preflight = validateContentForPlatform(platform, params.content, params.mediaUrls)
+    if (!preflight.valid && !preflight.error?.startsWith("Unknown platform")) {
+      return { success: false, error: preflight.error, platform }
+    }
+
     switch (platform.toLowerCase()) {
       case "facebook":
         return await publishToFacebook(params)
@@ -72,6 +155,10 @@ export async function publishToSocialPlatform(
   }
 }
 
+// Facebook + Instagram route through the official `facebook-nodejs-business-sdk`
+// adapter (lib/providers/meta/client.ts, wave 71A) instead of socialPost/the
+// connector gateway.
+
 async function publishToFacebook(params: PublishParams): Promise<PublishResult> {
   const hasMedia = params.mediaUrls && params.mediaUrls.length > 0
   const content = params.hashtags?.length
@@ -79,17 +166,13 @@ async function publishToFacebook(params: PublishParams): Promise<PublishResult> 
     : params.content
 
   if (hasMedia) {
-    // Photo/video post — Graph takes access_token as a query param (gateway "query" auth).
-    const res = await socialPost("facebook", "https://graph.facebook.com", `v18.0/${params.accountId}/photos`,
-      { url: params.mediaUrls![0], caption: content },
-      { style: "query", name: "access_token", value: params.accessToken })
+    // Photo/video post.
+    const res = await graphPost<any>(params.accessToken, [params.accountId, "photos"], { url: params.mediaUrls![0], caption: content })
     if (!res.ok) throw new Error(res.error || "Facebook API error")
     return { success: true, externalPostId: res.data?.id, platform: "facebook" }
   } else {
     // Text post
-    const res = await socialPost("facebook", "https://graph.facebook.com", `v18.0/${params.accountId}/feed`,
-      { message: content },
-      { style: "query", name: "access_token", value: params.accessToken })
+    const res = await graphPost<any>(params.accessToken, [params.accountId, "feed"], { message: content })
     if (!res.ok) throw new Error(res.error || "Facebook API error")
     return { success: true, externalPostId: res.data?.id, platform: "facebook" }
   }
@@ -104,16 +187,12 @@ async function publishToInstagram(params: PublishParams): Promise<PublishResult>
     ? `${params.content}\n\n${params.hashtags.map((h) => `#${h}`).join(" ")}`
     : params.content
 
-  const igAuth: GatewayAuth = { style: "query", name: "access_token", value: params.accessToken }
-
   // Step 1: Create media container
-  const containerRes = await socialPost("instagram", "https://graph.facebook.com", `v18.0/${params.accountId}/media`,
-    { image_url: params.mediaUrls[0], caption }, igAuth)
+  const containerRes = await graphPost<any>(params.accessToken, [params.accountId, "media"], { image_url: params.mediaUrls[0], caption })
   if (!containerRes.ok) throw new Error(containerRes.error || "Instagram container error")
 
   // Step 2: Publish container
-  const publishRes = await socialPost("instagram", "https://graph.facebook.com", `v18.0/${params.accountId}/media_publish`,
-    { creation_id: containerRes.data?.id }, igAuth)
+  const publishRes = await graphPost<any>(params.accessToken, [params.accountId, "media_publish"], { creation_id: containerRes.data?.id })
   if (!publishRes.ok) throw new Error(publishRes.error || "Instagram publish error")
   return { success: true, externalPostId: publishRes.data?.id, platform: "instagram" }
 }
@@ -304,7 +383,8 @@ async function publishToGoogleBusiness(params: PublishParams): Promise<PublishRe
 /**
  * Validate platform-specific content requirements
  */
-export function validateContentForPlatform(
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+function validateContentForPlatform(
   platform: string,
   content: string,
   mediaUrls?: string[]

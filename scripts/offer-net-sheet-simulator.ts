@@ -47,7 +47,7 @@ async function main() {
   console.log("\n[Layer 1 · net math + rank-by-net + compose]")
 
   // Shared seller-responsible costs.
-  const costs = { commissionRate: 0.06, mortgagePayoff: 300_000, countyCityTaxes: 4_000, hoaDuesProration: 1_200, otherProratedFees: 1_500 }
+  const costs = { commissionRate: 0.06, mortgagePayoff: 300_000, countyCityTaxes: 4_000, hoaDuesProration: 1_200, otherProratedFees: 1_500, transactionFee: 0 }
 
   // Offer A: higher price ($520k) but a big buyer credit ($18k).
   const netA = computeNetProceeds({ offerPrice: 520_000, buyerClosingCredit: 18_000 }, costs)
@@ -130,7 +130,7 @@ async function main() {
 
     // Known costs so the net assertions are deterministic (B nets more).
     const r1 = await runOfferNetSheets(brokerageId, {
-      costsResolver: () => ({ commissionRate: 0.06, mortgagePayoff: 300_000, countyCityTaxes: 4_000, hoaDuesProration: 1_200, otherProratedFees: 1_500 }),
+      costsResolver: () => ({ commissionRate: 0.06, mortgagePayoff: 300_000, countyCityTaxes: 4_000, hoaDuesProration: 1_200, otherProratedFees: 1_500, transactionFee: 0 }),
       copyGenerator: async () => null, // deterministic fallback (no token spend)
     }, svc)
 
@@ -167,7 +167,7 @@ async function main() {
 
     // Idempotency — second pass within 24h on the same offer-set is a no-op.
     const r2 = await runOfferNetSheets(brokerageId, {
-      costsResolver: () => ({ commissionRate: 0.06, mortgagePayoff: 300_000, countyCityTaxes: 4_000, hoaDuesProration: 1_200, otherProratedFees: 1_500 }),
+      costsResolver: () => ({ commissionRate: 0.06, mortgagePayoff: 300_000, countyCityTaxes: 4_000, hoaDuesProration: 1_200, otherProratedFees: 1_500, transactionFee: 0 }),
       copyGenerator: async () => null,
     }, svc)
     check("idempotency: second pass proposes nothing new (one comparison per offer-set/24h)",

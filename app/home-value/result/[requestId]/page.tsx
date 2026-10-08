@@ -1,5 +1,4 @@
 import { notFound } from "next/navigation"
-import { Suspense } from "react"
 import { getHomeValueResult } from "@/app/actions/home-value"
 import { ValuationResultCard } from "@/app/components/home-value/ValuationResultCard"
 import { CompsTable } from "@/app/components/home-value/CompsTable"
@@ -7,10 +6,9 @@ import { EquityCalculator } from "@/app/components/home-value/EquityCalculator"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Phone, Mail, TrendingUp, TrendingDown, Minus, MapPin } from "lucide-react"
+import { Phone, Mail, TrendingUp, TrendingDown, Minus } from "lucide-react"
 import Link from "next/link"
-import { AppointmentBookingCard } from "@/app/components/home-value/AppointmentBookingCard"
+import { ListingAppointmentCard } from "@/app/components/home-value/ListingAppointmentCard"
 
 export const dynamic = "force-dynamic"
 
@@ -36,6 +34,11 @@ export default async function HomeValueResultPage({ params }: PageProps) {
   }
 
   const { estimate, agent, brokerageId, contactId } = result
+  // THE HOMEOWNER, not the agent. The booking card stamps this onto the
+  // appointment and into the agent's notification ("<name> booked …"), and this
+  // slot used to be filled with the AGENT's name — so every booking told the
+  // agent they had booked with themselves.
+  const homeownerName = result.contactName ?? "Homeowner"
   const marketTrendIcon =
     estimate.marketTrend === "appreciating" ? (
       <TrendingUp className="h-4 w-4 text-green-600" />
@@ -97,10 +100,14 @@ export default async function HomeValueResultPage({ params }: PageProps) {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               Market Trend
+              {/* "unknown" is a real state: no market_data row covers this
+                  ZIP or city yet. Say so instead of labelling it Stable. */}
               <Badge className={marketTrendColor}>
                 <span className="flex items-center gap-1">
                   {marketTrendIcon}
-                  {estimate.marketTrend.charAt(0).toUpperCase() + estimate.marketTrend.slice(1)}
+                  {estimate.marketTrend === "unknown" || !estimate.marketTrend
+                    ? "Not yet available"
+                    : estimate.marketTrend.charAt(0).toUpperCase() + estimate.marketTrend.slice(1)}
                 </span>
               </Badge>
             </CardTitle>
@@ -115,9 +122,22 @@ export default async function HomeValueResultPage({ params }: PageProps) {
                     </p>
                     <p className="text-sm text-muted-foreground">Avg $/Sq Ft</p>
                   </div>
+                  {/* Average distance is only shown when the comps actually
+                      carry one. The comp finder searches within a radius but
+                      does not return per-comp distance, so summing nulls here
+                      produced NaN — and before that, a number no one measured. */}
                   <div className="p-4 rounded-lg bg-muted/50">
                     <p className="text-2xl font-bold text-foreground">
-                      {Math.round(estimate.comps.reduce((sum: number, c: any) => sum + c.distance_miles, 0) / estimate.comps.length * 10) / 10} mi
+                      {(() => {
+                        const withDistance = estimate.comps.filter(
+                          (c: any) => typeof c.distance_miles === "number"
+                        )
+                        if (withDistance.length === 0) return "—"
+                        const avg =
+                          withDistance.reduce((sum: number, c: any) => sum + c.distance_miles, 0) /
+                          withDistance.length
+                        return `${Math.round(avg * 10) / 10} mi`
+                      })()}
                     </p>
                     <p className="text-sm text-muted-foreground">Avg Distance</p>
                   </div>
@@ -135,17 +155,19 @@ export default async function HomeValueResultPage({ params }: PageProps) {
           </CardContent>
         </Card>
 
-        {/* Section 6: Schedule a Valuation Appointment */}
+        {/* Section 6: THE APPOINTMENT — the ONE meeting this lane books.
+            "the 7 day floor is only for listing appointments (also called home
+            value appointments)": the seller's home-value appointment IS the
+            listing appointment, so there is a single card here, with the ≥7-day
+            floor. It is also the target of the "Schedule a listing appointment"
+            button in the emailed report, which deep-links to
+            #listing-appointment on this page. */}
         {brokerageId && contactId ? (
-          <AppointmentBookingCard
+          <ListingAppointmentCard
             brokerageId={brokerageId}
             contactId={contactId}
             propertyAddress={estimate.propertyAddress}
-            contactName={
-              agent
-                ? `${agent.first_name} ${agent.last_name}`
-                : "Homeowner"
-            }
+            contactName={homeownerName}
           />
         ) : (
           /* Fallback: agent contact card when no brokerage context */

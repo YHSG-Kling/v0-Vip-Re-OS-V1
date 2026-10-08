@@ -73,8 +73,48 @@ export async function socrataQuery<T = Record<string, unknown>>(params: {
   return { ok: true, status: res.status, data: Array.isArray(res.data) ? res.data : [], error: null }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SoQL INTERPOLATION GUARD
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `recentPermits` builds its $where by string concatenation. That is not injectable TODAY —
+// `permitDateColumn` comes from a committed constant (socrata-market-registry.ts) and `sinceIso`
+// is computed by the cron from Date.now(). It becomes injectable the MOMENT market config is
+// operator-editable, which is the direction this lane is heading (see the registry header's
+// discovery note). A `$where` is not a parameterized query: Socrata has no bind placeholders, so
+// the only defence is refusing to build the clause at all when either half is not the shape it
+// claims to be.
+//
+// Both guards are WHITELISTS, not escapes. An escape function has to be right about every
+// metacharacter of a dialect we do not own; a whitelist has to be right about one shape we do.
+//
+/** A Socrata (SODA 2.x) field name: lowercase, starts with a letter, then letters/digits/`_`.
+ *  Trailing underscores are REAL and load-bearing here — Socrata renders a column labelled
+ *  "PERMIT#" as `permit_` and NYC's "JOB #" as `job__`. Anything with a space, quote, parenthesis,
+ *  comma or operator in it is not a field name and is refused rather than escaped. */
+const SOQL_FIELD_NAME = /^[a-z][a-z0-9_]{0,62}$/
+
+/** `YYYY-MM-DD`, the only date shape this lane ever bounds on. Rejects a full timestamp on
+ *  purpose: the callers all slice to a calendar day, and accepting more shapes widens what a
+ *  future operator-supplied value could be. */
+const ISO_CALENDAR_DAY = /^\d{4}-\d{2}-\d{2}$/
+
+/** PURE. True when `value` is a Socrata field name safe to interpolate into a SoQL clause. */
+export function isSoqlFieldName(value: unknown): value is string {
+  return typeof value === "string" && SOQL_FIELD_NAME.test(value)
+}
+
+/** PURE. True when `value` is a bare `YYYY-MM-DD` calendar day. */
+export function isIsoCalendarDay(value: unknown): value is string {
+  return typeof value === "string" && ISO_CALENDAR_DAY.test(value)
+}
+
 /** Convenience: scan a city's building-permits dataset for recent activity. The dataset id varies
- *  per city — keep a per-city map of "permit issued" datasets and call this with the right id. */
+ *  per city — keep a per-city map of "permit issued" datasets and call this with the right id.
+ *
+ *  REFUSES rather than escapes when either interpolated half is off-shape: the refusal is returned
+ *  in the adapter's own `{ ok:false, error }` envelope, so the sweep counts and reports it exactly
+ *  like a portal outage instead of throwing or — far worse — sending a clause it did not intend. */
 export async function recentPermits<T = Record<string, unknown>>(params: {
   host: string
   datasetId: string
@@ -82,6 +122,18 @@ export async function recentPermits<T = Record<string, unknown>>(params: {
   permitDateColumn: string
   limit?: number
 }): Promise<SocrataResult<T>> {
+  if (!isSoqlFieldName(params.permitDateColumn)) {
+    return {
+      ok: false, status: null, data: [],
+      error: `refused: "${String(params.permitDateColumn)}" is not a Socrata field name`,
+    }
+  }
+  if (!isIsoCalendarDay(params.sinceIso)) {
+    return {
+      ok: false, status: null, data: [],
+      error: `refused: sinceIso "${String(params.sinceIso)}" is not a YYYY-MM-DD calendar day`,
+    }
+  }
   return socrataQuery<T>({
     host: params.host,
     datasetId: params.datasetId,

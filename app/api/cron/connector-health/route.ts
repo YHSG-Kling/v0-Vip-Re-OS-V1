@@ -16,6 +16,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { scanConnectivity } from "@/lib/agentic-os/resolve-connectivity"
 import { resolveConnection } from "@/lib/integrations/connection-manager"
 import { probeConnector, PROBE_SPECS } from "@/lib/agentic-os/connector-probe"
+import { secretFromConfig } from "@/lib/connections/credential-secret"
 
 // Per-brokerage probes + per-provider AI healer call (Exa search + Anthropic) can take 60–120s
 // in aggregate. Without an explicit maxDuration the Vercel default (10–15s) would kill the route
@@ -107,7 +108,10 @@ export async function GET(req: Request) {
           apiKey: (r.api_key as string) ?? null,
           // The connect flow stores a provider secret under config.auth_token (e.g. Twilio auth
           // token); fall back to api_secret for any provider that uses that key.
-          apiSecret: ((r.config as any)?.auth_token as string) ?? ((r.config as any)?.api_secret as string) ?? null,
+          // ONE READING — this file's private two-key ladder was the THIRD spelling of
+          // it (resolve-sms-provider.ts:69 had its own, connection-manager.ts had none
+          // at all and read `null`). Merged onto lib/connections/credential-secret.ts.
+          apiSecret: secretFromConfig(r.config),
           accessToken: (r.access_token as string) ?? null,
           config: (r.config as Record<string, unknown>) ?? null,
         })
@@ -156,7 +160,7 @@ export async function GET(req: Request) {
         if (probe && probe.status !== "ok") {
           platformFailures++
           attention++
-          await svc.from("self_heal_events").insert({
+          const { error: probeLedgerErr } = await svc.from("self_heal_events").insert({
             brokerage_id: null,
             domain: "data_flow",
             subject: `platform_provider:${provider}`,
@@ -164,10 +168,11 @@ export async function GET(req: Request) {
             outcome: "failed",
             detail: { provider, status: probe.status, http_status: probe.httpStatus, drifted: probe.drifted, message: probe.error ?? probe.status },
           })
+          if (probeLedgerErr) console.error(`[connector-health] provider probe failure NOT ledgered: ${probeLedgerErr.message}`)
         }
       } catch (err) {
         platformFailures++
-        await svc.from("self_heal_events").insert({
+        const { error: probeLedgerErr } = await svc.from("self_heal_events").insert({
           brokerage_id: null,
           domain: "data_flow",
           subject: `platform_provider:${provider}`,
@@ -175,6 +180,7 @@ export async function GET(req: Request) {
           outcome: "failed",
           detail: { provider, status: "unreachable", message: err instanceof Error ? err.message : String(err) },
         })
+        if (probeLedgerErr) console.error(`[connector-health] provider probe failure NOT ledgered: ${probeLedgerErr.message}`)
       }
     }
   }
@@ -269,24 +275,49 @@ export async function GET(req: Request) {
         .maybeSingle()
       if (existing) { healingSkippedExisting++; continue }
       try {
-        const { proposeConnectorHealing } = await import('@/lib/agentic-os/connector-healer')
-        await proposeConnectorHealing({
+        // WAVE 137 (lane 137C) — PROVIDER SELF-HEALING: probe first (this tick's probe verdict + the
+        // gateway's derived health), then failover / apply a DECLARED config alternate + retry once /
+        // propose. A connector with no adapter declaration falls through to the same proposal as before.
+        const { healProviderFailure } = await import('@/lib/agentic-os/connector-healer')
+        const first = failures[0]
+        const brokerageId = (first.brokerage_id as string | null) ?? null
+        if (!brokerageId) { healingSkippedExisting++; continue } // no tenant → no ledger owner; never healed unattributed
+        // WAVE 139 (lane 139F) — the research budget + auto-apply threshold come from the ONE self-healing policy
+        // reader (the tenant's policy under the platform ceiling). Unreadable → cap 0 → nothing researched.
+        const { loadHealingPolicy } = await import('@/lib/kernel/healing-policy')
+        const healingPolicy = await loadHealingPolicy(svc, brokerageId)
+        const samples = failures.slice(0, 10).map((r): { status: number | null; path: string | null; error: string | null; at: string } => {
+          // For shape_drift the actual diff lives in detail.drift; without forwarding it the
+          // healer's LLM has no payload to reason on and produces generic guesses.
+          const driftDetail = (r.detail as any)?.drift
+          const errorText =
+            (r.error as string | null)
+            ?? (r.status === 'shape_drift' && driftDetail ? `shape_drift: ${JSON.stringify(driftDetail).slice(0, 500)}` : null)
+            ?? (r.status as string)
+          return {
+            status: (r.http_status as number | null) ?? null,
+            path:   null,
+            error:  errorText,
+            at:     (r.checked_at as string) ?? now.toISOString(),
+          }
+        })
+        await healProviderFailure({
           connector: provider,
-          failures: failures.slice(0, 10).map((r): { status: number | null; path: string | null; error: string | null; at: string } => {
-            // For shape_drift the actual diff lives in detail.drift; without forwarding it the
-            // healer's LLM has no payload to reason on and produces generic guesses.
-            const driftDetail = (r.detail as any)?.drift
-            const errorText =
-              (r.error as string | null)
-              ?? (r.status === 'shape_drift' && driftDetail ? `shape_drift: ${JSON.stringify(driftDetail).slice(0, 500)}` : null)
-              ?? (r.status as string)
-            return {
-              status: (r.http_status as number | null) ?? null,
-              path:   null,
-              error:  errorText,
-              at:     (r.checked_at as string) ?? now.toISOString(),
-            }
-          }),
+          brokerageId,
+          failures: samples,
+          cycle: now.toISOString().slice(0, 13),
+          // WAVE 138 (lane 138B) — UP but failing / drifting with no declared remedy → research the
+          // provider's current setup on the web (cited, metered, cost-capped) before proposing.
+          research: { capUsd: healingPolicy.providerResearchCapUsd, autoApplyMinConfidence: healingPolicy.autoFixMinConfidence },
+          // The one retry: the same live probe again, now that the applied alternate rides egress.
+          retry: async () => {
+            const conn = await resolveConnection({ brokerageId, provider })
+            const again = conn ? await probeConnector(provider, { apiKey: conn.apiKey, apiSecret: conn.apiSecret, accessToken: conn.accessToken, config: conn.config }) : null
+            return { ok: again?.status === 'ok' }
+          },
+        }, {
+          // This tick's live probe verdict IS the first probe (only auth_failed / shape_drift rows reach here).
+          probe: async () => (first.status === 'auth_failed' || first.status === 'shape_drift' ? first.status : null),
         })
         healingProposed++
       } catch (err) {
@@ -306,6 +337,33 @@ export async function GET(req: Request) {
     nudged = (await runConnectionNudgeAll(svc)).notified
   } catch (e) { console.error("[connector-health] tenant nudge:", e) }
 
+  // ── CLOSE THE LOOP: A DARK CAPABILITY REACHES ITS MANAGER ──────────────────
+  // The probes above establish WHAT is down. This turns that into a DECISION
+  // someone owns: each capability that cannot run routes to the manager
+  // accountable for it (lib/agentic-os/capability-ownership.ts) — except one the
+  // self-healer already has an open proposal for, which raises nothing, because a
+  // workaround decided mid-repair is wrong by the time it lands.
+  //
+  // Deliberately on THIS cron and not a new one: the Cron Manager owns loop
+  // health, and a second heartbeat asking the same question is the drift this
+  // codebase keeps paying for. Never throws — a readiness sweep must not take the
+  // connector-health run down with it.
+  let capabilitiesEscalated = 0
+  let capabilitiesHeldForHealer = 0
+  let capabilityDarkTotal = 0
+  // Surfaced, never swallowed: a publish failure must not read as "nothing dark".
+  let capabilityEscalationsFailed = 0
+  try {
+    const { escalateDarkCapabilities } = await import("@/lib/agentic-os/escalate-dark-capabilities")
+    for (const b of brokerages ?? []) {
+      const r = await escalateDarkCapabilities((b as { id: string }).id)
+      capabilitiesEscalated += r.escalated
+      capabilitiesHeldForHealer += r.heldForHealer
+      capabilityDarkTotal += r.dark
+      capabilityEscalationsFailed += r.failed
+    }
+  } catch (e) { console.error("[connector-health] capability escalation:", e) }
+
   return NextResponse.json({
     success: true,
     timestamp: now.toISOString(),
@@ -317,6 +375,10 @@ export async function GET(req: Request) {
       healingProposed,
       healingSkippedExisting,
       tenantNudged:      nudged,
+      capabilityDark:            capabilityDarkTotal,
+      capabilitiesEscalated,
+      capabilitiesHeldForHealer,
+      capabilityEscalationsFailed,
     },
   })
 }

@@ -5,12 +5,12 @@
 // booking sat 'confirmed' forever, silently dragging the deal and never denting the vendor's SLA. This
 // sweeps for probable no-shows (a booked/confirmed appointment past its scheduled_date + grace, never
 // completed), MARKS them no_show (the missing writer — which also feeds the SLA math), and PROPOSES a
-// gated backup: the best OTHER vendor of the same category (preference-first, via the vendor_directory
+// gated backup: the best OTHER vendor of the same category (preference-first, via the vendors.preferred
 // source of truth), so the agent can re-book with one tap. Nothing auto-books. No competitor's
 // marketplace heals a no-show.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { rankVendors, resolvePreferredVendorIds, type BenchVendor, type DirectoryPref } from "@/lib/kernel/vendor-orchestration"
+import { rankVendors, type BenchVendor } from "@/lib/kernel/vendor-orchestration"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -86,13 +86,17 @@ export async function runVendorNoShowAutopilot(
   if (noShows.length === 0) return out
   out.scanned = noShows.length
 
-  // Bench + preference source of truth (vendor_directory), loaded once for backup ranking.
-  const { data: benchRows } = await svc.from("vendors").select("id, name, category, email, rating").eq("brokerage_id", params.brokerageId).limit(500)
+  // Bench AND preference in one read — `preferred` is a column on the vendor row
+  // since m355. It used to be a second query against the same table standing in
+  // for a flag that lived on a different one, which meant every approved vendor
+  // counted as preferred and the backup pick was never actually preference-first.
+  const { data: benchRows } = await svc.from("vendors").select("id, name, category, email, rating, preferred").eq("brokerage_id", params.brokerageId).limit(500)
   const bench: BenchVendor[] = (benchRows ?? []) as BenchVendor[]
-  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
-  // vendors has no `preferred` flag; explicit broker approval (status='active', set only by approveVendor) is the closest real flag.
-  const { data: dirRows } = await svc.from("vendors").select("id").eq("brokerage_id", params.brokerageId).eq("status", "active").limit(500)
-  const preferredVendorIds = new Set<string>(((dirRows ?? []) as Array<{ id: string }>).map((r) => r.id))
+  const preferredVendorIds = new Set<string>(
+    ((benchRows ?? []) as Array<{ id: string; preferred?: boolean | null }>)
+      .filter((r) => r.preferred === true)
+      .map((r) => r.id),
+  )
   const vendorById = new Map(bench.map((v) => [v.id, v]))
 
   for (const b of noShows) {

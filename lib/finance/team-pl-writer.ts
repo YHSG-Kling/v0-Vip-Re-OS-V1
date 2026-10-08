@@ -8,11 +8,18 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { computeTeamPnl, monthLabel, type TeamCommissionRow } from "@/lib/finance/team-pl"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 type Svc = ReturnType<typeof createServiceClient>
 
+// TOMBSTONE (§1.1, 2026-09-08): a local OPEN_STATUSES lived here
+// (["active","under_contract","pending","contingent","in_progress"]) — "contingent" and
+// "in_progress" are not in the transactions_status_check vocabulary (see
+// lib/transactions/transaction-status.ts), so they never matched a row, and the list
+// omitted "clear_to_close", a real open state. Survivor:
+// lib/transactions/transaction-status.ts:TRANSACTION_STATUSES_OPEN.
 /** Deals still in flight (not a terminal state) — the denominator side of the conversion rate. */
-const OPEN_STATUSES = ["active", "under_contract", "pending", "contingent", "in_progress"]
+const OPEN_STATUSES: readonly string[] = TRANSACTION_STATUSES_OPEN
 
 export interface TeamPnlResult { teams: number; written: number; withProduction: number }
 
@@ -34,11 +41,11 @@ export async function runTeamPnl(svc: Svc, params: { brokerageId: string; now?: 
       const { data: members } = await svc.from("team_members")
         .select("agent_id").eq("team_id", t.id).eq("is_active", true).not("agent_id", "is", null).limit(500)
       const agentIds = Array.from(new Set(((members ?? []) as any[]).map((m) => m.agent_id).filter(Boolean)))
-      if (agentIds.length === 0) { await upsert(svc, params.brokerageId, t.id, period, now, empty(agentIds.length)); out.written++; continue }
+      if (agentIds.length === 0) { if (await upsert(svc, params.brokerageId, t.id, period, now, empty(agentIds.length))) out.written++; continue }
 
       // Canonical commissions closed this month for the team's members.
       const { data: comm } = await svc.from("agent_commissions")
-        .select("agent_id, gross_commission, agent_commission, transaction_id")
+        .select("agent_id, gross_commission, agent_commission, net_to_agent, transaction_id")
         .in("agent_id", agentIds).gte("close_date", monthStart).lte("close_date", monthEnd).limit(5000)
       const commissions = (comm ?? []) as TeamCommissionRow[]
 
@@ -56,8 +63,7 @@ export async function runTeamPnl(svc: Svc, params: { brokerageId: string; now?: 
 
       const pnl = computeTeamPnl({ commissions, activeAgentIds: agentIds, closedCycle, openDealCount: openDealCount ?? 0 })
       if (pnl.grossCommission > 0) out.withProduction++
-      await upsert(svc, params.brokerageId, t.id, period, now, pnl)
-      out.written++
+      if (await upsert(svc, params.brokerageId, t.id, period, now, pnl)) out.written++
     } catch { /* keep going to the next team */ }
   }
   return out
@@ -72,18 +78,22 @@ async function upsert(
   pnl: ReturnType<typeof computeTeamPnl>,
 ) {
   // period_type is CHECK-constrained to mtd/ytd/all_time; the monthly running total is month-to-date.
-  await svc.from("team_earnings").upsert({
+  // Both refusals are READ: `written` used to count a team whose rows never landed.
+  const { error: earnErr } = await svc.from("team_earnings").upsert({
     brokerage_id: brokerageId, team_id: teamId, period_type: "mtd", period_label: period,
     gross_commission: pnl.grossCommission, team_net: pnl.teamNet, agent_count: pnl.agentCount,
     transaction_count: pnl.transactionCount, top_agent_id: pnl.topAgentId, computed_at: now.toISOString(),
   }, { onConflict: "team_id,period_type,period_label" })
 
-  await svc.from("team_performance").upsert({
+  const { error: perfErr } = await svc.from("team_performance").upsert({
     brokerage_id: brokerageId, team_id: teamId, period_label: period,
     total_revenue: pnl.totalRevenue, avg_days_to_close: pnl.avgDaysToClose, conversion_rate: pnl.conversionRate,
     // goal_amount / goal_pct / agent_retention_pct: no per-team-period source yet — honest NULL, never fabricated.
     computed_at: now.toISOString(),
   }, { onConflict: "team_id,period_label" })
+  if (earnErr) console.error(`[team-pl] team_earnings upsert refused for team ${teamId}: ${earnErr.message}`)
+  if (perfErr) console.error(`[team-pl] team_performance upsert refused for team ${teamId}: ${perfErr.message}`)
+  return !earnErr && !perfErr
 }
 
 /** Autonomous: roll up every brokerage's team P&L (rides the nightly brokerage-pl-rollup cron). */

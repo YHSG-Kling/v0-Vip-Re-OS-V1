@@ -37,7 +37,7 @@ All properly configured in `app/api/`:
 - CRUD Operations: `/api/contacts/*`, `/api/listings/*`, `/api/transactions/*`
 - AI Features: `/api/ai/*` (8 AI endpoints)
 - Dashboard: `/api/dashboard/data` (unified data endpoint)
-- Webhooks: `/api/webhooks/*` (GHL, Zapier, Dotloop)
+- Webhooks: `/api/webhooks/*` (GHL, Dotloop) — the inbound Zapier route was retired in wave 87 (Zapier is outbound-only, via tenant outbound webhooks)
 - Cron Jobs: `/api/cron/*` (7 background jobs)
 
 ### Server Actions (82 files):

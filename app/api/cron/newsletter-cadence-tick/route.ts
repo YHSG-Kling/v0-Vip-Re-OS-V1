@@ -9,13 +9,11 @@
  * human just approves. Idempotent per (agent, day). Managed by the Campaign Orchestrator.
  */
 import { NextRequest, NextResponse } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { shouldFireCadenceToday } from "@/lib/marketing/cadence-policy"
 import { stageNewsletterFromCadence } from "@/lib/marketing/newsletter-cadence"
 
-function unauthorized() {
-  return NextResponse.json({ error: "unauthorized" }, { status: 401 })
-}
 
 interface PolicyRow {
   scope_type: "agent" | "team" | "brokerage"
@@ -29,11 +27,8 @@ interface PolicyRow {
 }
 
 export async function GET(req: NextRequest) {
-  const auth = req.headers.get("authorization")?.replace("Bearer ", "")
-  const qs = new URL(req.url).searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
   const now = new Date()

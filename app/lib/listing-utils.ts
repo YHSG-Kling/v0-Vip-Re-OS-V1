@@ -18,10 +18,6 @@ export function calculateDaysOnMarket(goLiveDate: string | null): number | null 
   return computeDaysOnMarket(goLiveDate)
 }
 
-export function formatPrice(price: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(price)
-}
+// formatPrice DELETED (duplicates round 5, lane 59C) — byte-identical to
+// lib/format/money.ts:69 `usd()`. Survivor: lib/format/money.ts:69. Callers
+// repointed to `import { usd as formatPrice } from "@/lib/format/money"`.

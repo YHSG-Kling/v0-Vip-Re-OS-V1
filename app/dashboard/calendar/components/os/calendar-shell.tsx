@@ -2,15 +2,22 @@
 
 import { useState, useEffect, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Card, CardContent } from "@/components/ui/card"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
 import { ChevronLeft, ChevronRight, RefreshCw, CalendarClock, Loader2, CheckCircle2 } from "lucide-react"
-import { scheduleSmartFollowUps } from "@/app/actions/ai-calendar-management"
+// KEEP-ONE (§1, lane E6 2026-08-28): three of this shell's eight sources now go
+// through the canonical session-scoped readers the dashboard-data lane recorded
+// as survivors (lib/dashboard/data-survivors.ts) — getAppointments, getTasks,
+// getTours — instead of inline browser-client duplicates of them. The window
+// filters those inline reads carried were merged onto the survivors first.
+import { scheduleSmartFollowUps, getAppointments } from "@/app/actions/ai-calendar-management"
+import { getTasks } from "@/app/actions/tasks"
+import { getTours } from "@/app/actions/ai-showing-management"
 import { milestoneCalendarCategory } from "@/lib/transactions/milestone-identity"
 import { CalendarRoleFilterBar, type CalendarRole } from "./calendar-role-filter-bar"
 import { CalendarTimelineView } from "./calendar-timeline-view"
@@ -25,7 +32,7 @@ export type UnifiedCalendarEvent = {
   title: string
   startAt: string
   endAt: string
-  eventType: "showing" | "tour" | "open_house" | "inspection" | "appraisal" | "closing" | "appointment" | "task" | "follow_up" | "isa_appointment" | "time_block"
+  eventType: "showing" | "tour" | "open_house" | "inspection" | "appraisal" | "closing" | "appointment" | "task" | "follow_up" | "isa_appointment" | "listing_appointment" | "time_block"
   source: "showings" | "calendar_events" | "open_houses" | "transactions" | "tasks" | "scheduled_touchpoints" | "buyer_tours" | "calendar_blocks"
   location?: string
   contactId?: string
@@ -39,7 +46,14 @@ export type UnifiedCalendarEvent = {
 }
 
 interface CalendarShellProps {
-  agentId: string
+  /**
+   * agents.id of the seat whose day this is — or NULL for a tenant-admin seat
+   * that holds no agents row (lane 90A, 89D P1-4): the shell then reads the
+   * BROKERAGE's calendar (tenant-pinned, RLS-held) and hides the per-agent
+   * writers (quick create, AI follow-ups, sync, optimisation, meeting brief),
+   * which all need an agent to act as.
+   */
+  agentId: string | null
   brokerageId: string
   defaultRole?: CalendarRole
 }
@@ -77,6 +91,10 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
     const { start, end } = getWeekBounds(viewDate)
     const startISO = start.toISOString()
     const endISO = end.toISOString()
+    // Lane 90A: `.match({})` is a no-op filter, so a brokerage-scope seat
+    // (agentId null) reads the whole tenant's lane while an agent keeps their
+    // own — one chain, no conditional branches for the drift guard to lose.
+    const agentScope = agentId ? { agent_id: agentId } : {}
 
     try {
       // Parallel fetch all calendar sources
@@ -99,18 +117,15 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
             contacts(first_name, last_name),
             listings(address, city)
           `)
-          .eq("agent_id", agentId)
+          .eq("brokerage_id", brokerageId)
+          .match(agentScope)
           .gte("scheduled_at", startISO)
           .lt("scheduled_at", endISO)
           .neq("status", "cancelled"),
 
-        // 2. Calendar events (ISA appointments, deadlines — filtered by brokerage)
-        supabase
-          .from("calendar_events")
-          .select("id, start_at, end_at, event_type, entity_type, entity_id, metadata, brokerage_id, timezone_name")
-          .eq("brokerage_id", brokerageId)
-          .gte("start_at", startISO)
-          .lt("start_at", endISO),
+        // 2. Calendar events (ISA appointments, deadlines) — the canonical
+        // reader derives the tenant from the SESSION and windows on start_at.
+        getAppointments({ startDate: startISO, endDate: endISO }),
 
         // 3. Open house events (correct table name)
         supabase
@@ -120,31 +135,45 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
             listing_id,
             listings(address, city)
           `)
-          .eq("agent_id", agentId)
+          .eq("brokerage_id", brokerageId)
+          .match(agentScope)
           .gte("event_date", startISO)
           .lt("event_date", endISO),
 
         // 4. Transaction milestones with target_dates (inspection, appraisal, closing, deadline)
+        //
+        // transactions <-> contacts is joined by THREE foreign keys (contact_id,
+        // buyer_contact_id, seller_contact_id), and "!inner" is a JOIN TYPE, not a
+        // disambiguation hint — so the nested contacts embed was PGRST201 and the
+        // milestone lane of this calendar has always come back empty. The named
+        // constraint picks contact_id: the party the brokerage represents, which is
+        // the name a deadline reminder should carry. Do not simplify the hint away.
+        //
+        // The note lives ABOVE the statement on purpose. Inside the select it would
+        // be literal text sent to PostgREST, and between two chained calls it would
+        // end the contiguous chain the drift guard walks, quietly dropping this
+        // query from filter checking.
         supabase
           .from("transaction_milestones")
           .select(`
             id, milestone_type, milestone_name, title, target_date, status, transaction_id,
-            transactions!inner(id, property_address, status, agent_id, contact_id, contacts(first_name, last_name))
+            transactions!inner(id, property_address, status, agent_id, contact_id, contacts!transactions_contact_id_fkey(first_name, last_name))
           `)
-          .eq("transactions.agent_id", agentId)
+          .match(agentId ? { "transactions.agent_id": agentId } : {})
           .eq("status", "pending")
           .not("target_date", "is", null)
           .gte("target_date", start.toISOString().split("T")[0])
           .lte("target_date", end.toISOString().split("T")[0]),
 
-        // 5. Tasks with due dates
-        supabase
-          .from("tasks")
-          .select("*")
-          .eq("assigned_to_agent_id", agentId)
-          .gte("due_date", start.toISOString().split("T")[0])
-          .lte("due_date", end.toISOString().split("T")[0])
-          .neq("status", "completed"),
+        // 5. Tasks with due dates — the canonical reader re-derives the
+        // assignee from the session for non-admins; for a broker/admin the
+        // prop only NARROWS inside their own tenant. Completed tasks are
+        // filtered in the transform below (the old inline read's .neq).
+        getTasks({
+          assignedTo: agentId ?? undefined,
+          dueDateFrom: start.toISOString().split("T")[0],
+          dueDateTo: end.toISOString().split("T")[0],
+        }),
 
         // 6. Scheduled touchpoints / follow-ups
         // Note: scheduled_touchpoints has touchpoint_type, message_template (no purpose/priority)
@@ -155,33 +184,38 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
             contact_id,
             contacts(first_name, last_name)
           `)
-          .eq("agent_id", agentId)
+          .eq("brokerage_id", brokerageId)
+          .match(agentScope)
           .eq("status", "scheduled")
           .gte("scheduled_date", startISO)
           .lt("scheduled_date", endISO),
 
-        // 7. Tours (correct table name is tours, not buyer_tours)
-        supabase
-          .from("tours")
-          .select(`
-            id, tour_date, scheduled_at, status, notes,
-            contact_id,
-            contacts(first_name, last_name)
-          `)
-          .eq("agent_id", agentId)
-          .gte("tour_date", start.toISOString().split("T")[0])
-          .lte("tour_date", end.toISOString().split("T")[0]),
+        // 7. Tours — the canonical reader (same session-scoping rule as tasks
+        // above; the contacts embed this view needs was merged onto it).
+        getTours(agentId ?? undefined, {
+          from: start.toISOString().split("T")[0],
+          to: end.toISOString().split("T")[0],
+        }),
 
         // 8. Calendar blocks (prospecting/admin/personal/buffer time blocked via blockCalendarTime)
         supabase
           .from("calendar_blocks")
           .select("id, agent_id, starts_at, ends_at, block_type, metadata")
-          .eq("agent_id", agentId)
+          .eq("brokerage_id", brokerageId)
+          .match(agentScope)
           .gte("starts_at", startISO)
           .lt("starts_at", endISO),
       ])
 
       const unified: UnifiedCalendarEvent[] = []
+
+      // The three action-backed sources report refusals explicitly (the inline
+      // reads they replaced dropped the error, so a refusal rendered as an
+      // empty lane). No error surface exists on this shell, so the refusal is
+      // at least no longer silent in the console.
+      if (!calendarEventsRes.success) console.error("[calendar] appointments read refused:", calendarEventsRes.error)
+      if (!tasksRes.success) console.error("[calendar] tasks read refused:", tasksRes.error)
+      if (!toursRes.success) console.error("[calendar] tours read refused:", toursRes.error)
 
       // Transform showings
       showingsRes.data?.forEach((s: any) => {
@@ -204,7 +238,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
       })
 
       // Transform calendar events (no title/location/agent_id columns — derive from metadata + event_type)
-      calendarEventsRes.data?.forEach((e: any) => {
+      ;(calendarEventsRes.success ? calendarEventsRes.appointments : [])?.forEach((e: any) => {
         const meta = (e.metadata as Record<string, unknown>) || {}
         const derivedTitle = (meta.title as string) || e.event_type?.replace(/_/g, " ") || "Calendar Event"
         unified.push({
@@ -212,7 +246,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           title: derivedTitle,
           startAt: e.start_at,
           endAt: e.end_at ?? new Date(new Date(e.start_at).getTime() + 30 * 60000).toISOString(),
-          eventType: e.event_type === "isa_appointment" ? "isa_appointment" : "appointment",
+          eventType: e.event_type === "isa_appointment" || e.event_type === "listing_appointment" ? e.event_type : "appointment",
           source: "calendar_events",
           contactId: e.entity_type === "contact" ? e.entity_id : undefined,
           metadata: meta,
@@ -266,8 +300,11 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         })
       })
 
-      // Transform tasks
-      tasksRes.data?.forEach((task: any) => {
+      // Transform tasks (completed excluded here — parity with the retired
+      // inline read's .neq("status", "completed"))
+      ;(tasksRes.success ? tasksRes.tasks : [])
+        ?.filter((task: any) => task.status !== "completed")
+        .forEach((task: any) => {
         unified.push({
           id: task.id,
           title: task.title,
@@ -301,7 +338,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
       })
 
       // Transform tours (real table: tours, uses tour_date + scheduled_at)
-      toursRes.data?.forEach((tour: any) => {
+      ;((toursRes.success ? toursRes.tours : []) as any[])?.forEach((tour: any) => {
         const tourStart = tour.scheduled_at || `${tour.tour_date}T10:00:00`
         const tourEnd = new Date(new Date(tourStart).getTime() + 2 * 60 * 60000).toISOString()
         unified.push({
@@ -341,7 +378,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
     } finally {
       setLoading(false)
     }
-  }, [supabase, agentId, viewDate, getWeekBounds])
+  }, [supabase, agentId, brokerageId, viewDate, getWeekBounds])
 
   useEffect(() => {
     loadUnifiedCalendar()
@@ -350,8 +387,10 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
   // Filter events by role
   const filteredEvents = events.filter((e) => {
     if (activeRole === "all") return true
-    if (activeRole === "isa") return e.eventType === "isa_appointment" || e.eventType === "follow_up"
-    if (activeRole === "listing") return ["showing", "open_house"].includes(e.eventType)
+    // Wave 87 (integrator): an ISA books listing appointments (lane 87B2 made listing_appointment the one
+    // spelling), so the ISA view and the listing view both show them — the ISA sees what it booked.
+    if (activeRole === "isa") return ["isa_appointment", "follow_up", "listing_appointment"].includes(e.eventType)
+    if (activeRole === "listing") return ["showing", "open_house", "listing_appointment"].includes(e.eventType)
     if (activeRole === "transaction") return ["inspection", "appraisal", "closing"].includes(e.eventType)
     if (activeRole === "buyer") return e.eventType === "tour"
     return true // agent sees all
@@ -378,21 +417,29 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
             <RefreshCw className="h-4 w-4 mr-1" />
             Refresh
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setFollowUpSheetOpen(true)
-              setFollowUpResult(null)
-              setFollowUpError(null)
-            }}
-          >
-            <CalendarClock className="h-4 w-4 mr-1" />
-            AI Follow-Ups
-          </Button>
-          <Button size="sm" onClick={() => setShowQuickCreate(true)}>
-            Quick Create
-          </Button>
+          {agentId ? (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setFollowUpSheetOpen(true)
+                  setFollowUpResult(null)
+                  setFollowUpError(null)
+                }}
+              >
+                <CalendarClock className="h-4 w-4 mr-1" />
+                AI Follow-Ups
+              </Button>
+              <Button size="sm" onClick={() => setShowQuickCreate(true)}>
+                Quick Create
+              </Button>
+            </>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              Brokerage calendar — your seat has no agent profile, so creating and scheduling happen on an agent&apos;s own calendar.
+            </span>
+          )}
         </div>
       </div>
 
@@ -448,13 +495,15 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
 
         {/* Right Sidebar (1 col) */}
         <div className="space-y-4">
-          <CalendarSyncStatusCard agentId={agentId} />
-          <CalendarOptimizationPanel
-            agentId={agentId}
-            date={viewDate.toISOString().split("T")[0]}
-            events={filteredEvents}
-          />
-          {selectedEvent && (
+          {agentId && <CalendarSyncStatusCard agentId={agentId} />}
+          {agentId && (
+            <CalendarOptimizationPanel
+              agentId={agentId}
+              date={viewDate.toISOString().split("T")[0]}
+              events={filteredEvents}
+            />
+          )}
+          {selectedEvent && agentId && (
             <MeetingBriefCard
               event={selectedEvent}
               agentId={agentId}
@@ -492,6 +541,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
             <Button
               className="w-full gap-2"
               onClick={async () => {
+                if (!agentId) return // the sheet is unreachable without an agent seat (button hidden)
                 setFollowUpLoading(true)
                 setFollowUpError(null)
                 setFollowUpResult(null)
@@ -594,7 +644,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
       </Sheet>
 
       {/* Quick Create Panel */}
-      {showQuickCreate && (
+      {showQuickCreate && agentId && (
         <CalendarQuickCreatePanel
           agentId={agentId}
           brokerageId={brokerageId}

@@ -10,6 +10,15 @@
 // exist (creds-gated, never faked). Nothing here suspends an account — the
 // paywall (billing-access) already gates access; dunning is the communication.
 
+import { TENANT_COMMERCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+// The grace length, the day count and the episode anchor are PURE and also read
+// by the paywall; they live in the leaf lib/billing/past-due-clock.ts so the
+// paywall (and through it proxy.ts) never imports this file's sweep — whose
+// lazy @/lib/providers/messaging import webpack compiles into every bundle that
+// reaches here. Re-exported so every existing importer keeps asking dunning.
+import { PAST_DUE_GRACE_DAYS, daysBetween, episodeAnchor } from "./past-due-clock"
+export { PAST_DUE_GRACE_DAYS, daysBetween, episodeAnchor }
+
 export interface DunningStep {
   step: number
   /** Days past due before this step fires. */
@@ -18,6 +27,9 @@ export interface DunningStep {
   /** Body template — {brokerage} and {amount} substituted. */
   body: string
 }
+
+// TOMBSTONE (wave 100D): PAST_DUE_GRACE_DAYS moved verbatim, doc included —
+// survivor lib/billing/past-due-clock.ts:36 (imported + re-exported above).
 
 // The ladder. Tone escalates but stays factual — no fabricated deadlines; the
 // day-14 step states the real consequence (access already restricted + Stripe
@@ -34,7 +46,7 @@ export const DUNNING_LADDER: DunningStep[] = [
     body: "We still couldn't collect payment for {brokerage}{amount}. Stripe retries automatically, but the fastest fix is updating the card on your billing page. If something looks wrong on our side, reply and platform support will dig in.",
   },
   {
-    step: 3, afterDays: 7,
+    step: 3, afterDays: PAST_DUE_GRACE_DAYS,
     subject: "One week past due — {brokerage} access is restricted",
     body: "It's been a week since the payment for {brokerage} failed{amount}. Sign-ins now route to the billing page until payment is restored. Everything — contacts, deals, history — is intact and waiting.",
   },
@@ -45,11 +57,8 @@ export const DUNNING_LADDER: DunningStep[] = [
   },
 ]
 
-/** PURE: whole days between two ISO timestamps (floored, never negative). */
-export function daysBetween(fromIso: string, nowIso: string): number {
-  const ms = new Date(nowIso).getTime() - new Date(fromIso).getTime()
-  return Math.max(0, Math.floor(ms / 86_400_000))
-}
+// TOMBSTONE (wave 100D): daysBetween moved verbatim — survivor
+// lib/billing/past-due-clock.ts:43 (imported + re-exported above).
 
 /**
  * PURE: given how many days a subscription has been past due and which steps
@@ -75,19 +84,8 @@ export function composeDunningMessage(
   return { subject: sub(step.subject), body: sub(step.body) }
 }
 
-/**
- * PURE: the anchor a past-due episode ages from — the oldest OPEN invoice's
- * date, else the subscription's own updated_at (status flip time). Events
- * older than the anchor belong to a PREVIOUS episode and don't dedupe this one.
- */
-export function episodeAnchor(
-  sub: { updated_at: string | null },
-  openInvoices: Array<{ invoice_date: string | null; due_date: string | null }>,
-): string | null {
-  const dates = openInvoices.map((i) => i.due_date ?? i.invoice_date).filter(Boolean) as string[]
-  if (dates.length > 0) return dates.sort()[0]
-  return sub.updated_at ?? null
-}
+// TOMBSTONE (wave 100D): episodeAnchor moved verbatim — survivor
+// lib/billing/past-due-clock.ts:52 (imported + re-exported above).
 
 export interface DunningSweepResult {
   pastDueCount: number
@@ -107,7 +105,12 @@ export async function runDunningSweep(svc: any, now: Date = new Date()): Promise
   const { data: subs } = await svc
     .from("subscriptions")
     .select("id, brokerage_id, status, updated_at")
-    .in("status", ["past_due", "unpaid"])
+    // 'unpaid' was a rider here: subscriptions.status admits
+    // active|past_due|cancelled|trialing|paused, and lib/billing/stripe-status.ts
+    // normalizes Stripe's 'unpaid' to 'past_due' before anything is stored — so no
+    // row has ever carried it. Harmless inside an .in(), and exactly the kind of
+    // dead literal that teaches the next reader a state exists when it cannot.
+    .eq("status", "past_due")
     .limit(500)
 
   for (const sub of (subs ?? []) as Array<{ id: string; brokerage_id: string; status: string; updated_at: string | null }>) {
@@ -136,19 +139,25 @@ export async function runDunningSweep(svc: any, now: Date = new Date()): Promise
       const amountCents = open[0]?.amount_cents ?? null
       const msg = composeDunningMessage(step, brokerageName, amountCents)
 
-      // In-app to the tenant's billing admins (broker/admin user types).
-      const { data: admins } = await svc
+      // In-app to the tenant's billing admins — THE roster of who may obligate the brokerage to pay
+      // (subscription, seats): TENANT_COMMERCE_ADMIN_USER_TYPES (lib/auth/resolve-user-role.ts, CLAUDE.md
+      // §4 — spread the Set, never retype it). Wave 100 (lane 100C, 99A open item 2): this was the literal
+      // ["broker","admin"], so a broker_owner / broker_admin / team_lead billing owner was never told the
+      // card failed. compliance_officer is excluded by the roster itself (reads the books, never pays).
+      const { data: admins, error: adminsError } = await svc
         .from("users").select("id, email")
         .eq("brokerage_id", sub.brokerage_id)
-        .in("user_type", ["broker", "broker_admin", "admin"]).limit(20)
+        .in("user_type", [...TENANT_COMMERCE_ADMIN_USER_TYPES]).limit(20)
+      if (adminsError) console.warn("[dunning.ts] billing-admin read refused — no in-app or email recipient:", adminsError.message)
       const adminRows = (admins ?? []) as Array<{ id: string; email: string | null }>
       if (adminRows.length > 0) {
-        await svc.from("notifications").insert(adminRows.map((a) => ({
+        const { error: notifyError } = await svc.from("notifications").insert(adminRows.map((a) => ({
           user_id: a.id, brokerage_id: sub.brokerage_id, type: "billing_dunning",
           title: msg.subject.slice(0, 200), body: msg.body.slice(0, 480),
           entity_type: "subscription", entity_id: sub.id, priority: "high",
           channel: "in_app", is_read: false,
         })))
+        if (notifyError) console.warn("[dunning.ts] notifications insert refused — the bell will not ring:", notifyError.message)
       }
 
       // Email best-effort — canonical provider sender, SendGrid-gated (honest no-op without creds).
@@ -165,10 +174,17 @@ export async function runDunningSweep(svc: any, now: Date = new Date()): Promise
         } catch { /* best-effort — the in-app notification already landed */ }
       }
 
-      await svc.from("platform_dunning_events").insert({
+      // The dunning event row is what marks this step SENT; a refused insert means
+      // the next run re-sends the same step. Count it as an error, never as sent.
+      const { error: dunningErr } = await svc.from("platform_dunning_events").insert({
         brokerage_id: sub.brokerage_id, subscription_id: sub.id,
         step: step.step, channel, detail: msg.subject.slice(0, 300),
       })
+      if (dunningErr) {
+        console.error(`[dunning] platform_dunning_events insert refused for subscription ${sub.id} step ${step.step}: ${dunningErr.message}`)
+        result.errors += 1
+        continue
+      }
       result.stepsSent += 1
     } catch {
       result.errors += 1

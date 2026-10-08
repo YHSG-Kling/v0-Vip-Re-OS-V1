@@ -14,6 +14,7 @@
 // Room (now listing-scoped) + produceListingAdCampaign; this module adds the
 // on-demand trigger and the four narrated handoffs. Idempotent per listing.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -120,9 +121,9 @@ export async function runDealPlay(
       entityType: "listing", entityId: listingId,
     }, svc)
     if (r.ok && r.signalId && !r.reason) {
-      await svc.from("manager_signals")
+      await sentinelWrite(svc, svc.from("manager_signals")
         .update({ status: "consumed", consumed_at: new Date().toISOString(), consumed_action: hop.consumedAction })
-        .eq("id", r.signalId)
+        .eq("id", r.signalId), { table: "manager_signals", flow: "deal_play_consume", reason: "consumes the handoff signal already acted on" })
       handoffs += 1
     }
   }

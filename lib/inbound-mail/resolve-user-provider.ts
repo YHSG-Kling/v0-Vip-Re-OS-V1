@@ -130,8 +130,13 @@ export async function resolveUserByInboundIdentifier(params: {
   outlookClientState?: string | null
   /** For transactional providers: the "To:" address from the inbound payload. */
   toAddress?:  string | null
+  /** Blind-spot burn-down (lane 75D) — injectable client so a fixture-driven
+   *  proof (scripts/lead-email-conversion-simulator.ts) can exercise this
+   *  lookup with an in-memory `platform_credentials` fixture, zero network,
+   *  no service key. Production callers omit it (real createServiceClient()). */
+  svc?: ReturnType<typeof createServiceClient>
 }): Promise<ResolvedInboundProvider | null> {
-  const supabase = createServiceClient()
+  const supabase = params.svc ?? createServiceClient()
 
   if ((params.platform === "gmail" || params.platform === "outlook")) {
     if (params.platform === "outlook" && params.outlookClientState) {

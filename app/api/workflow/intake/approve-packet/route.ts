@@ -63,7 +63,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // Flip status
   const newStatus =
     doc.status === "needs_agent_input" || doc.status === "draft" ? "draft_ready" : doc.status
-  await supabase.from("documents")
+  const { data: approveRows, error: approveErr } = await supabase.from("documents")
     .update({
       status: newStatus,
       metadata: {
@@ -74,7 +74,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       },
       updated_at: new Date().toISOString(),
     })
-    .eq("id", body.documentId)
+    .eq("id", body.documentId).select("id")
+  if (approveErr) return NextResponse.json({ error: `Could not approve the packet: ${approveErr.message}` }, { status: 500 })
+  if ((approveRows ?? []).length === 0) return NextResponse.json({ error: `Could not approve the packet: no row matched (not permitted from your account)` }, { status: 500 })
 
   return NextResponse.json({ success: true, status: newStatus })
 }

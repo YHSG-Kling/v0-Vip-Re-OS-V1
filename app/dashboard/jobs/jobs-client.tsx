@@ -34,6 +34,12 @@ export function JobsClient({
     })
   }
 
+  // Lane 90D (test:rendered-empty-states): an empty catalog rendered a bare
+  // grid. The catalog is static today; the sentence is for the day it is not.
+  if (catalog.length === 0) {
+    return <p className="mt-6 text-sm text-muted-foreground">No jobs are registered yet — jobs appear here as managers publish them.</p>
+  }
+
   return (
     <div className="mt-6 grid gap-6 md:grid-cols-3">
       {catalog.map((job) => {

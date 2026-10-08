@@ -1,7 +1,6 @@
 'use client'
 
 import React, { useCallback, useRef, useState, useTransition } from 'react'
-import { CrmPullCard } from "./crm-pull-card"
 import { createImportRecord, runImport, listImports } from '@/app/actions/lead-import/import-actions'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -18,6 +17,8 @@ type ImportRecord = {
   created_count: number
   merged_count: number
   failed_count: number
+  /** m678 — what the brokerage paid for the list (null = not a purchased list). */
+  list_cost_usd: number | null
   created_at: string
   completed_at: string | null
 }
@@ -100,6 +101,8 @@ export default function ImportPage() {
   const [rows, setRows] = useState<Record<string, string>[]>([])
   const [fileName, setFileName] = useState('')
   const [fieldMap, setFieldMap] = useState<Record<string, string>>({})
+  /** What the brokerage paid for this list, as typed (blank = not a purchased list). */
+  const [listCost, setListCost] = useState('')
   const [result, setResult] = useState<ImportResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [history, setHistory] = useState<ImportRecord[]>([])
@@ -152,10 +155,15 @@ export default function ImportPage() {
     startTransition(async () => {
       try {
         setStep('importing')
+        const listCostUsd = listCost.trim() === '' ? null : Number(listCost)
+        if (listCostUsd !== null && (!Number.isFinite(listCostUsd) || listCostUsd < 0)) {
+          throw new Error('List cost must be a dollar amount of 0 or more (leave it blank if you did not buy this list).')
+        }
         const { importId } = await createImportRecord({
           fileName,
           totalRows: rows.length,
           fieldMap,
+          listCostUsd,
         })
         const res = await runImport({ importId, rows, fieldMap })
         setResult(res)
@@ -175,6 +183,7 @@ export default function ImportPage() {
     setRows([])
     setFileName('')
     setFieldMap({})
+    setListCost('')
     setResult(null)
     setError(null)
   }
@@ -299,6 +308,38 @@ export default function ImportPage() {
             </div>
           </div>
 
+          {/* Purchased list cost (m678) — what the brokerage PAID for this file. Spread per row
+              onto each imported contact as tenant-paid spend, so source ROI and the lead page
+              show what the brokerage actually spent (owner, wave 88: "spend should be what the
+              tenant spent for that lead"). Blank = not a purchased list. */}
+          <div className="mb-6 max-w-md">
+            <label htmlFor="list-cost" className="block text-sm font-semibold text-foreground mb-1">
+              What did this list cost you? <span className="font-normal text-muted-foreground">(optional)</span>
+            </label>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">$</span>
+              <input
+                id="list-cost"
+                type="number"
+                inputMode="decimal"
+                min={0}
+                step="0.01"
+                value={listCost}
+                onChange={(e) => setListCost(e.target.value)}
+                placeholder="e.g. 250.00"
+                className="w-40 rounded-md border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+              {listCost.trim() !== '' && Number.isFinite(Number(listCost)) && Number(listCost) >= 0 && rows.length > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  ≈ ${(Number(listCost) / rows.length).toFixed(2)} per row, recorded on each imported contact as your spend
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Only for a list you bought. Leave blank for your own exports — raw sourcing and enrichment are platform-covered and never counted as your spend.
+            </p>
+          </div>
+
           <button
             onClick={handleImport}
             disabled={isPending}
@@ -338,7 +379,7 @@ export default function ImportPage() {
             <button onClick={reset} className="rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
               Import another file
             </button>
-            <a href="/crm/contacts" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+            <a href="/crm" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
               View contacts
             </a>
           </div>
@@ -363,6 +404,7 @@ export default function ImportPage() {
                   <th className="px-4 py-3 text-right font-medium text-muted-foreground">Created</th>
                   <th className="px-4 py-3 text-right font-medium text-muted-foreground">Merged</th>
                   <th className="px-4 py-3 text-right font-medium text-muted-foreground">Failed</th>
+                  <th className="px-4 py-3 text-right font-medium text-muted-foreground">List cost</th>
                   <th className="px-4 py-3 text-left font-medium text-muted-foreground">Date</th>
                 </tr>
               </thead>
@@ -385,6 +427,11 @@ export default function ImportPage() {
                     <td className="px-4 py-3 text-right text-green-600 dark:text-green-400 font-medium">{imp.created_count}</td>
                     <td className="px-4 py-3 text-right text-blue-600 dark:text-blue-400 font-medium">{imp.merged_count}</td>
                     <td className="px-4 py-3 text-right text-destructive font-medium">{imp.failed_count}</td>
+                    <td className="px-4 py-3 text-right text-foreground">
+                      {typeof imp.list_cost_usd === 'number' && Number.isFinite(imp.list_cost_usd)
+                        ? `$${imp.list_cost_usd.toFixed(2)}`
+                        : <span className="text-muted-foreground">—</span>}
+                    </td>
                     <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
                       {new Date(imp.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                     </td>
@@ -397,7 +444,17 @@ export default function ImportPage() {
       </section>
 
       {/* Bring your database with you — old-CRM pull through the SAME gate */}
-      <CrmPullCard />
+      {/* Pulling a book of business out of another CRM is a white-glove migration the
+          platform runs for a subscriber, not something a tenant points at itself — it
+          now lives on the subscriber's console. A tenant's own CRM link runs the other
+          way (sync-OUT only) and is on Connections. This page stays the tenant's own
+          CSV upload. */}
+      <p className="mt-6 text-xs text-muted-foreground">
+        Moving in from another CRM? Your onboarding contact can pull Follow Up Boss, Lofty,
+        HubSpot or GoHighLevel directly into your account — ask them to run the migration.
+        To keep an outside CRM in sync going forward, connect it on{' '}
+        <a href="/settings/connections" className="text-blue-600 hover:underline">Connections</a>.
+      </p>
     </main>
   )
 }

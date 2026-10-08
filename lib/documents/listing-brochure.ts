@@ -156,12 +156,13 @@ export async function runListingBrochures(svc: any): Promise<{ brochures: number
       })
       if (!produced.ok || !produced.pdfUrl) { out.brochureErrors += 1; continue }
 
-      await svc.from("notifications").insert({
+      const { error: notifyError } = await svc.from("notifications").insert({
         user_id: agentUserId, brokerage_id: l.brokerage_id, type: "listing_brochure_ready",
         title: `Brochure ready — ${listing.address}`,
         body: `The multi-page listing brochure (photo spreads, narrative, facts) is print-ready: ${produced.pdfUrl} [brochure:${l.id}]`,
         priority: "medium", channel: "in_app", is_read: false,
       }).then(undefined, () => {})
+      if (notifyError) console.warn("[listing-brochure.ts] notifications insert refused — the bell will not ring:", notifyError.message)
       out.brochures += 1
     } catch { out.brochureErrors += 1 }
   }

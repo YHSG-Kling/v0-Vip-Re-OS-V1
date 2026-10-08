@@ -87,6 +87,30 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // OS HEALTH & SELF-HEALING (wave 108, lane 108C) — the Cron Manager's health supervisor, the
+    // reaper net's "health" lane, on THIS tick over EVERY tenant (the loop above only visits tenants
+    // with bus traffic; a tenant whose provider is down or whose reconciler stopped may have none).
+    // Each tenant's sweep lands in reaper_runs (domain os_health) — the line the command center reads.
+    let healthRecovered = 0, healthEscalated = 0
+    try {
+      const { data: tenants, error: tenantsErr } = await supabase.from("brokerages").select("id").limit(2000)
+      if (tenantsErr) errors.push(`os-health tenants: ${tenantsErr.message}`)
+      const { runReaperNet } = await import("@/lib/intelligence/reaper-net")
+      for (const t of (tenants ?? []) as Array<{ id: string }>) {
+        try {
+          const h = await runReaperNet(t.id, supabase, { lane: "health" })
+          healthRecovered += h.totals.reaped
+          healthEscalated += h.totals.escalated
+        } catch (e: any) {
+          errors.push(`os-health ${t.id}: ${e?.message ?? String(e)}`)
+        }
+      }
+    } catch (e: any) {
+      errors.push(`os-health: ${e?.message ?? String(e)}`)
+    }
+    reaped += healthRecovered
+    escalated += healthEscalated
+
     // CROSS-MANAGEMENT (round 34; registry-driven since round 36) — the referral SWEEP
     // emitters run from the REFERRAL_EMITTERS registry: the Cron Manager's approval-SLA
     // sweep (approval_queue_slo), the AI ISA's lead-quality sweep (lead_quality_spend,
@@ -106,7 +130,7 @@ export async function GET(req: NextRequest) {
 
     await recordCronSuccessAction({
       context_id: contextId, records_processed: published + consumed,
-      metadata: { published, consumed, reaped, escalated, brokerages: brokerages.length, errors: errors.slice(0, 20) },
+      metadata: { published, consumed, reaped, escalated, health_recovered: healthRecovered, health_escalated: healthEscalated, brokerages: brokerages.length, errors: errors.slice(0, 20) },
     }).catch(() => {})
     return NextResponse.json({ ok: true, published, consumed, reaped, escalated, brokerages: brokerages.length, errors: errors.length })
   } catch (e: any) {

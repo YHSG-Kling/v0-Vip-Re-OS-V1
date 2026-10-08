@@ -37,7 +37,6 @@ import {
   generateSourceAISummaryForSource,
   getSourceDrilldown,
   type SourceFamily,
-  type SourceMetrics,
   type SourceDrilldownResult,
 } from "@/app/actions/source-analytics"
 
@@ -46,8 +45,8 @@ interface Props {
   sourceName: string
   sourceFamily: SourceFamily
   brokerageId: string
-  userId: string
-  userType: string
+  /** Lane 90A: the server-resolved scope (null = brokerage-wide) — the client never re-derives it from a role. */
+  scopeAgentIds: string[] | null
   initialData: SourceDrilldownResult
 }
 
@@ -136,7 +135,7 @@ function TimelineChart({ data }: { data: Array<{ month: string; contacts: number
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, userId, userType, initialData }: Props) {
+export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, scopeAgentIds, initialData }: Props) {
   const [data, setData] = useState<SourceDrilldownResult>(initialData)
   const [isRefreshing, startRefresh] = useTransition()
   const [isAILoading, startAILoading] = useTransition()
@@ -146,18 +145,16 @@ export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, user
   const info = FAMILY_INFO[sourceFamily]
   const s = data.source
 
-  const isBrokerOrAdmin = userType === "broker" || userType === "admin" || userType === "superadmin"
-
   const handleRefresh = useCallback(() => {
     startRefresh(async () => {
       const result = await getSourceDrilldown(
         brokerageId,
         `${sourceName}::${sourceFamily}`,
-        isBrokerOrAdmin ? undefined : userId,
+        scopeAgentIds,
       )
       setData(result)
     })
-  }, [brokerageId, sourceName, sourceFamily, userId, isBrokerOrAdmin])
+  }, [brokerageId, sourceName, sourceFamily, scopeAgentIds])
 
   const handleGenerateAI = useCallback(() => {
     if (!s) return
@@ -381,7 +378,12 @@ export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, user
                             {new Date(l.created_at).toLocaleDateString()}
                           </TableCell>
                           <TableCell>
-                            <Link href={`/dashboard/leads/${l.id}`}>
+                            {/* The lead detail route is app/leads/[leadId] — this
+                                linked to /dashboard/leads/, which has never existed,
+                                so every View button here 404'd. Invisible to the
+                                dangling-link sweep because the href is a template
+                                literal (recorded as a sweep blind spot, 2026-09-02). */}
+                            <Link href={`/leads/${l.id}`}>
                               <Button size="sm" variant="ghost" className="h-7 px-2 text-xs">View</Button>
                             </Link>
                           </TableCell>

@@ -1,13 +1,14 @@
 // lib/finance/commission-tracking-reaper.ts
 //
 // COMMISSION TRACKING-DRIFT REAPER (finance_manager) — the safety net for the two commission status
-// trackings. CLOSE now locks both the bridge (agent_commissions) and the ledger
-// (commissions/commission_distributions) in one step, but historical closed deals and the manual
-// mark-paid UI paths can still leave the two out of sync. This reaper finds transactions where the
-// trackings disagree and:
-//   • bridge paid, ledger lagging  → HEALS it (locks the ledger, reusing the canonical payment path).
-//   • ledger paid, bridge lagging  → ESCALATES to finance/broker (an anomaly a human must resolve —
-//                                     never force-finalizes an agent-earnings record the close didn't).
+// trackings. After the KEEP-ONE merge (m283/m284) the summary ledger and the agent-earnings bridge
+// are the SAME row (agent_commissions), so the drift surface that remains is the summary row vs its
+// per-line commission_distributions. Disbursement locks both in one step, but historical closed deals
+// and the manual mark-paid UI paths can still leave the two out of sync. This reaper finds
+// transactions where they disagree and:
+//   • summary paid, distributions lagging → HEALS it (reusing the canonical payment path).
+//   • distributions paid, summary lagging → ESCALATES to finance/broker (an anomaly a human must
+//                                            resolve — never force-finalizes an earnings record.)
 // Deduped, bounded, best-effort — one reaper failure never aborts the net.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -32,16 +33,17 @@ export async function reapCommissionTrackingDrift(
   const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
   const actorUserId = (await resolveOrgRecipients(svc, brokerageId, { limit: 1 }))[0] ?? ""
 
+  // The LEDGER side is now the per-line distributions — the summary row is the bridge.
   const ledgerStatusFor = async (transactionId: string): Promise<string | null> => {
     const { data } = await svc
-      .from("commissions")
-      .select("status")
+      .from("commission_distributions")
+      .select("status, distribution_type, entry_type, paid_at")
       .eq("transaction_id", transactionId)
       .eq("brokerage_id", brokerageId)
-    return aggregateLedgerStatus((data ?? []) as Array<{ status?: string | null }>)
+    return aggregateLedgerStatus((data ?? []) as Array<{ status?: string | null; distribution_type?: string | null }>)
   }
 
-  // ── Direction 1: bridge PAID, ledger lagging → HEAL ──────────────────────────
+  // ── Direction 1: summary PAID, distributions lagging → HEAL ──────────────────
   const { data: paidBridge } = await svc
     .from("agent_commissions")
     .select("transaction_id")
@@ -52,19 +54,34 @@ export async function reapCommissionTrackingDrift(
   const bridgeTxns = Array.from(new Set(((paidBridge ?? []) as Array<{ transaction_id: string | null }>)
     .map((r) => r.transaction_id).filter((x): x is string => !!x)))
 
+  // WAVE 108C — THE FINANCIAL-WRITER KILL SWITCH. This direction WRITES money (it locks the ledger to
+  // the summary). While the OS health supervisor holds a financial discrepancy open for this tenant the
+  // auto-heal is HALTED (Finance releases it); the drift is still COUNTED below, never corrected.
+  // Fails closed: an unreadable halt state does not heal.
+  const { loadFinancialWriterHalt } = await import("@/lib/kernel/os-health")
+  const healHalt = await loadFinancialWriterHalt(svc, brokerageId, "commission_tracking_heal")
+  if (healHalt.halted) console.warn(`[commission-tracking-reaper] ${brokerageId} auto-heal halted: ${healHalt.reason ?? "no reason recorded"}`)
+
   for (const txnId of bridgeTxns) {
     scanned++
     const ledgerStatus = await ledgerStatusFor(txnId)
     const { direction } = detectCommissionTrackingDrift({ bridgeStatus: "paid", ledgerStatus })
+    if (direction === "bridge_ahead" && healHalt.halted) {
+      escalated++ // seen, held for Finance — the halt is the escalation (os_health_escalated_financial)
+      continue
+    }
     if (direction === "bridge_ahead") {
       const r = await reconcileCommissionDisbursement(svc, { transactionId: txnId, brokerageId, actorUserId })
-      if (r.ledgerRowsLocked > 0) reaped++
+      // Orphan rows (referral fees and the legacy path — no commission_id) count as a heal.
+      // Counting only ledgerRowsLocked reported 'reaped: 0' on the exact drift this reaper
+      // exists to close, which reads identically to "nothing was wrong".
+      if (r.ledgerRowsLocked > 0 || r.orphanRowsLocked > 0) reaped++
     }
   }
 
-  // ── Direction 2: ledger PAID, bridge lagging → ESCALATE ──────────────────────
+  // ── Direction 2: distributions PAID, summary lagging → ESCALATE ──────────────
   const { data: paidLedger } = await svc
-    .from("commissions")
+    .from("commission_distributions")
     .select("transaction_id")
     .eq("brokerage_id", brokerageId)
     .eq("status", "paid")
@@ -103,7 +120,7 @@ export async function reapCommissionTrackingDrift(
 
     escalated++
     if (actorUserId) {
-      await svc.from("notifications").insert({
+      const { error: notifyError } = await svc.from("notifications").insert({
         user_id: actorUserId,
         brokerage_id: brokerageId,
         type: "commission_tracking_drift",
@@ -113,9 +130,59 @@ export async function reapCommissionTrackingDrift(
         entity_id: txnId,
         priority: "high",
         channel: "in_app",
-      }).then(() => {}, () => {})
+      })
+      if (notifyError) console.warn("[commission-tracking-reaper.ts] notifications insert refused — the bell will not ring:", notifyError.message)
     }
   }
 
   return { scanned, escalated, reaped }
+}
+
+/**
+ * AMOUNT-DRIFT REAPER (wave 104, lane 104A) — the ledger is authoritative, the
+ * summaries are projections. Recomputes each mutable money summary from the
+ * distributions / cost ledgers (reconcileSummariesAgainstLedger) and ESCALATES
+ * every drift to finance as a deduped notification. It NEVER rewrites money —
+ * `reaped` is structurally 0: the correction path is the existing one
+ * (lib/kernel/financial.ts correctCommissionDistribution, a new ledger row).
+ */
+export async function reapCommissionAmountDrift(
+  brokerageId: string,
+  svc: Svc,
+): Promise<{ scanned: number; escalated: number; reaped: number }> {
+  const { reconcileSummariesAgainstLedger } = await import("@/lib/commission/reconcile-tracking")
+  const rec = await reconcileSummariesAgainstLedger(svc, { brokerageId })
+  let escalated = 0
+  if (rec.drifts.length === 0) return { scanned: rec.checked, escalated, reaped: 0 }
+
+  const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
+  const actorUserId = (await resolveOrgRecipients(svc, brokerageId, { limit: 1 }))[0] ?? ""
+  const since = new Date(Date.now() - 7 * 86_400_000).toISOString()
+  for (const d of rec.drifts) {
+    // Dedup — one open alert per (projection, subject) in the last 7 days.
+    const { data: existing } = await svc
+      .from("notifications")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .eq("type", "commission_amount_drift")
+      .eq("entity_id", d.subjectId)
+      .gte("created_at", since)
+      .limit(1)
+    if (existing && existing.length > 0) continue
+    escalated++
+    if (!actorUserId) continue
+    const { error: notifyError } = await svc.from("notifications").insert({
+      user_id: actorUserId,
+      brokerage_id: brokerageId,
+      type: "commission_amount_drift",
+      title: "Money summary disagrees with the ledger",
+      body: `${d.projection} reads $${(d.projectedCents / 100).toFixed(2)} but the ledger adds up to $${(d.ledgerCents / 100).toFixed(2)} (${d.refs.length} ledger rows). Review and correct through the commission correction screen — nothing was rewritten.`,
+      entity_type: d.transactionId ? "transaction" : "summary",
+      entity_id: d.subjectId,
+      priority: "high",
+      channel: "in_app",
+    })
+    if (notifyError) console.warn("[commission-tracking-reaper.ts] amount-drift notification refused — the bell will not ring:", notifyError.message)
+  }
+  return { scanned: rec.checked, escalated, reaped: 0 }
 }

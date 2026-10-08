@@ -1,9 +1,11 @@
 // SYSTEM: QR Form Submit → Contact creation (Contact-first, Track B)
 // Form submission = TCPA consent. Creates contact via captureContact().
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { captureContact } from '@/lib/contact-pipeline/contact-capture'
+import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
+import { captureContact, resolveCapturedLanguage } from '@/lib/contact-pipeline/contact-capture'
 import { KernelEvent } from '@/lib/kernel/events'
 
 export const dynamic = 'force-dynamic'
@@ -19,6 +21,14 @@ interface QRSubmitBody {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1): unauthenticated
+  // lead capture from a printed QR code (venue wifi shares one address, so
+  // the ceiling is generous). Idiom: app/api/track/visitor/route.ts.
+  const rateIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown"
+  const rateVerdict = checkPublicRateLimit("qr-submit", rateIp, { limit: 60, windowMs: 10 * 60_000 })
+  if (!rateVerdict.allowed) {
+    return NextResponse.json({ error: "Too many submissions from this connection — try again shortly." }, { status: 429, headers: { "Retry-After": String(rateVerdict.retryAfterSeconds) } })
+  }
   try {
     const body = (await req.json()) as QRSubmitBody
     const { slug, qrCodeId, first_name, last_name, email, phone, tcpa_checked } = body
@@ -42,17 +52,42 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // migrations). Previously this select silently failed and agent_user_id
     // came back undefined, dropping the per-agent attribution on captured
     // leads.
+    //
+    // `is_active` is NOT part of the lookup, and `expires_at` is now read: a
+    // paused code, an expired code and an id that matches nothing are three
+    // different facts. THIS IS THE REFUSAL THAT MATTERS — /api/qr/scan can only
+    // speak for scans it routes, but this endpoint is reachable directly from a
+    // bookmarked landing page, and capturing a lead through a retired code
+    // writes a contact the tenant will read as coming from a live campaign.
     const { data: qr, error: qrError } = await supabase
       .from('qr_codes')
-      .select('id, brokerage_id, agent_id, lead_count')
+      .select('id, brokerage_id, agent_id, lead_count, is_active, expires_at, marketing_campaign_id')
       .eq('id', qrCodeId)
-      .eq('is_active', true)
-      .single()
+      .maybeSingle()
 
     if (qrError || !qr) {
       return NextResponse.json(
-        { success: false, error: 'QR code not found or inactive' },
+        { success: false, error: 'QR code not found' },
         { status: 404 },
+      )
+    }
+
+    if (!qr.is_active) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'This code is paused — the agent who created this QR code has paused it, so it is not accepting submissions right now.',
+        },
+        { status: 403 },
+      )
+    }
+    if (qr.expires_at && new Date(qr.expires_at).getTime() <= Date.now()) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'This code has expired — this QR code was set to expire and that date has passed, so it is no longer accepting submissions.',
+        },
+        { status: 410 },
       )
     }
 
@@ -76,14 +111,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       tcpa_consent: consentGiven,
       tcpa_consent_date: consentGiven ? now : null,
       rawPayload: { slug, qrCodeId, first_name, last_name, email, phone },
+      // TIER 3 OF resolveContactLanguage — THE ONE resolver (§6).
+      language: resolveCapturedLanguage(null, req.headers.get('accept-language')),
     })
 
     // ── Step 4: Increment lead_count only on new contact creation ─────────────
     if (action === 'created') {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from('qr_codes')
         .update({ lead_count: (qr.lead_count ?? 0) + 1 })
-        .eq('id', qr.id)
+        .eq('id', qr.id), { table: "qr_codes", flow: "qr_codes_write", reason: "QR lead counter (reporting)" })
 
       // Wave 36 — variant lead attribution. If this QR was attached to
       // a direct_mail_campaigns row that carried a variant_id, bump the
@@ -118,26 +155,62 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             .eq('brokerage_id', qr.brokerage_id)
             .maybeSingle()
           if (existingOutcomes) {
-            await supabase
+            await sentinelWrite(supabase, supabase
               .from('direct_mail_variant_outcomes')
               .update({
                 leads_count: ((existingOutcomes.leads_count as number) ?? 0) + 1,
                 updated_at:  new Date().toISOString(),
               })
-              .eq('id', existingOutcomes.id)
+              .eq('id', existingOutcomes.id), { table: "direct_mail_variant_outcomes", flow: "direct_mail_variant_outcomes_write", reason: "variant analytics counter; the lead itself is captured above" })
           } else {
-            await supabase.from('direct_mail_variant_outcomes').insert({
+            await sentinelWrite(supabase, supabase.from('direct_mail_variant_outcomes').insert({
               variant_id:   c.variant_id,
               brokerage_id: qr.brokerage_id,
               sends_count:  0,
               scans_count:  0,
               leads_count:  1,
               updated_at:   new Date().toISOString(),
-            })
+            }), { table: "direct_mail_variant_outcomes", flow: "direct_mail_variant_outcomes_write", reason: "variant analytics counter; the lead itself is captured above" })
           }
         }
       } catch (e) {
         console.error('[qr/submit] variant lead attribution failed:', e)
+      }
+    }
+
+    // ── Step 4b: Record the CAMPAIGN TOUCHPOINT ───────────────────────────────
+    // This is the moment a QR scan stops being anonymous: the code is known, the
+    // contact is now known, and if the code belongs to a marketing campaign then
+    // that campaign has just touched that person. marketing_campaign_touchpoints
+    // is the shared ledger de-confliction (the over-messaging frequency cap),
+    // attribution and the team bullpen all read — and 'qr_scan' is a channel its
+    // live CHECK admits that NOTHING was writing, so a QR-driven touch was
+    // invisible to every one of them.
+    //
+    // Only when the code carries a marketing_campaign_id: the table's
+    // origin CHECK requires campaign_id OR sequence_id, and a QR with no campaign
+    // has no campaign to credit. external_table/external_id point back at the QR
+    // itself so the touch is traceable to the exact code that produced it.
+    //
+    // Best-effort and non-blocking — recordCampaignTouchpointSafe never throws,
+    // and an attribution write must never fail the capture the prospect is
+    // waiting on.
+    if (qr.marketing_campaign_id) {
+      try {
+        const { recordCampaignTouchpointSafe } = await import('@/lib/marketing/touchpoint-recorder')
+        void recordCampaignTouchpointSafe({
+          brokerageId:   qr.brokerage_id as string,
+          campaignId:    qr.marketing_campaign_id as string,
+          contactId,
+          channel:       'qr_scan',
+          externalTable: 'qr_codes',
+          externalId:    qr.id as string,
+          source:        'trigger',
+          status:        'converted',
+          metadata:      { slug, action },
+        })
+      } catch (err) {
+        console.error('[qr/submit] touchpoint record failed:', err)
       }
     }
 
@@ -152,10 +225,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .maybeSingle()
 
     if (scanEvent) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from('qr_scan_events')
         .update({ contact_id: contactId })
-        .eq('id', scanEvent.id)
+        .eq('id', scanEvent.id), { table: "qr_scan_events", flow: "qr_scan_events_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
 
     // ── Step 6: Emit lifecycle event + fan out ────────────────────────────────
@@ -163,18 +236,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // campaign_sequences with trigger_event='contact_captured' (so e.g.
     // a "QR-captured lead" nurture drip starts immediately) AND emits a
     // welcome portal message for the new contact.
-    await supabase.from('lifecycle_events').insert({
+    await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
       brokerage_id: qr.brokerage_id,
       entity_type: 'contact',
       entity_id: contactId,
       event_type: KernelEvent.CONTACT_CAPTURED,
       metadata: { source: 'qr_scan', slug, qrCodeId, action },
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     if (action === 'created') {
       try {
-        const { fanOutKernelEvent } = await import('@/lib/kernel/event-fanout')
-        await fanOutKernelEvent({
+        // Row already written above → skipInsert (fan-out only).
+        const { emitKernelEvent } = await import('@/lib/kernel/emit')
+        await emitKernelEvent({
           event:       KernelEvent.CONTACT_CAPTURED,
           brokerageId: qr.brokerage_id,
           entityType:  'contact',
@@ -182,6 +256,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           contactId,
           agentUserId: undefined,
           metadata:    { source: 'qr_scan', slug, qrCodeId, ownerAgentId },
+          skipInsert:  true,
         })
       } catch { /* non-blocking */ }
     }

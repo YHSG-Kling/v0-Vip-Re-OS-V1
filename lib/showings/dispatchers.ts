@@ -22,6 +22,8 @@
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { sendViaTwilio } from "@/lib/providers/messaging/sms-adapters"
+import { escapeHtmlMinimal as escapeHtml } from "@/lib/format/html"
+import { formatTime24To12 as formatTimeShort } from "@/lib/format/dates"
 
 /**
  * Channels:
@@ -162,7 +164,8 @@ export async function dispatchViaShowingTime(
 /** Builds the SMS body the buyer agent sends to the listing agent. Kept
  *  short — under one SMS segment when possible. Buyer name used not full
  *  contact details. */
-export function buildSmsTemplate(ctx: DispatchContext): string {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function buildSmsTemplate(ctx: DispatchContext): string {
   const time = ctx.stop.suggested_time
     ? formatTimeShort(ctx.stop.suggested_time)
     : "TBD"
@@ -233,7 +236,8 @@ export async function dispatchViaSms(
 
 // ─── Email ───────────────────────────────────────────────────────────────────
 
-export function buildEmailTemplate(ctx: DispatchContext): { subject: string; body: string } {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function buildEmailTemplate(ctx: DispatchContext): { subject: string; body: string } {
   const time = ctx.stop.suggested_time ? formatTimeShort(ctx.stop.suggested_time) : "TBD"
   const dur  = ctx.stop.suggested_duration_minutes ?? 30
   const date = ctx.tour.tour_date
@@ -352,12 +356,9 @@ function bodyToHtml(text: string): string {
   return `<div>${text.split("\n").map(l => l.length === 0 ? "<br>" : escapeHtml(l)).join("<br>")}</div>`
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-}
+// TOMBSTONE: local escapeHtml merged onto lib/format/html.ts
+// escapeHtmlMinimal (imported above as `escapeHtml`) — §1/§6 SAME BODY
+// census round 3, 2026-09-09.
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -381,10 +382,6 @@ function buildShowingRequestBody(ctx: DispatchContext): string {
   ].join("\n")
 }
 
-function formatTimeShort(t: string): string {
-  const [hh, mm] = t.split(":").map(Number)
-  if (hh == null || mm == null) return t
-  const period = hh >= 12 ? "PM" : "AM"
-  const h12 = hh % 12 || 12
-  return `${h12}:${String(mm).padStart(2, "0")} ${period}`
-}
+// TOMBSTONE: local formatTimeShort merged onto lib/format/dates.ts
+// formatTime24To12 (imported above as `formatTimeShort`) — §1/§6 SAME BODY
+// census round 3, 2026-09-09.

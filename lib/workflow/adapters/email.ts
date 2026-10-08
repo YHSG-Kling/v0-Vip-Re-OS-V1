@@ -4,7 +4,7 @@
  * Runs render-step pipeline (token interpolation + brand voice + signature).
  */
 
-import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
+import { sequenceStepLedger, type ChannelAdapter, type StepContext, type StepResult } from "../channel-registry"
 import { dispatchEmail } from "@/lib/providers/dispatch"
 
 export const emailAdapter: ChannelAdapter = {
@@ -71,6 +71,7 @@ export const emailAdapter: ChannelAdapter = {
       to: contact.email,
       subject: rendered.subject ?? "(No Subject)",
       html: rendered.htmlBody,
+      ledger: sequenceStepLedger(ctx),
     })
 
     return {

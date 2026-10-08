@@ -3,6 +3,8 @@ import { Suspense } from "react"
 import { createClient } from "@/lib/supabase/server"
 import { listMarketingCampaignsAction } from "@/app/actions/marketing-campaigns-admin"
 import { MarketingCampaignsClient } from "./marketing-campaigns-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -34,8 +36,8 @@ export default async function MarketingCampaignsPage() {
     .eq("id", user.id)
     .maybeSingle()
   const t = (row?.user_type as string | undefined) ?? ""
-  if (!["broker", "broker_admin", "admin", "superadmin", "team_lead"].includes(t)) {
-    redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: t })) {
+    return <RoleGateNotice surface="Marketing campaigns" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   return (

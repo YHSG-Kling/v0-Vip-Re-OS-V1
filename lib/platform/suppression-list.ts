@@ -116,8 +116,12 @@ export async function addToSuppressionList(params: {
   }
 
   for (const row of inserts) {
-    await supabase.from("platform_suppression_list").insert(row).select().single()
-    // Ignore unique violation errors — already on list = success
+    const { error: suppressErr } = await supabase.from("platform_suppression_list").insert(row).select().single()
+    // A unique violation means already on the list = success. Anything else is a
+    // DNC that did NOT take — never report it as suppressed.
+    if (suppressErr && (suppressErr as { code?: string }).code !== "23505") {
+      return { added: false, reason: `suppression_refused: ${suppressErr.message}` }
+    }
   }
 
   return { added: true, reason: `suppressed_${params.reason}` }

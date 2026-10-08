@@ -26,6 +26,7 @@
 import { composeProductVideoSpec, videoProofBeats, VIDEO_FORMATS, PRODUCT_ANGLES } from "../lib/platform/product-content"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { geometryFor } from "../lib/remotion/composition-geometry"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -62,8 +63,14 @@ async function main() {
 
   console.log("\n[Layer 2 · registration + gated wiring]")
   const rootSrc = readFileSync(join(process.cwd(), "remotion/Root.tsx"), "utf8")
-  check("ProductPromoReel registered in Root.tsx with matching contract",
-    /id="ProductPromoReel"/.test(rootSrc) && /durationInFrames=\{450\}/.test(rootSrc.split('id="ProductPromoReel"')[1] ?? ""))
+  // Wave 78 (lane 78C): the mount's durationInFrames is the registered CAP
+  // (composition-geometry, m658) and the real length is computed by the ONE
+  // durationMetadata — never a pinned frame count (§2).
+  const promoMount = rootSrc.split('id="ProductPromoReel"')[1]?.split("/>")[0] ?? ""
+  const promoCap = /durationInFrames=\{(\d+)\}/.exec(promoMount)?.[1]
+  check("ProductPromoReel registered in Root.tsx with matching contract (cap = registered geometry, length from durationMetadata)",
+    /id="ProductPromoReel"/.test(rootSrc) && promoCap !== undefined && Number(promoCap) === geometryFor("ProductPromoReel")?.duration_frames
+    && /calculateMetadata=\{durationMetadata\("ProductPromoReel"\)\}/.test(promoMount))
   const actSrc = readFileSync(join(process.cwd(), "app/actions/superadmin/platform-content.ts"), "utf8")
   check("video draft + attach actions are marketing-gated + audited",
     /generateProductVideoDraftAction/.test(actSrc) && /attachProductVideoAction/.test(actSrc) && /platform_content\.video_draft/.test(actSrc))

@@ -79,7 +79,7 @@ async function main() {
     /loadProductBrand/.test(contentAct) && /platform_content_topics/.test(contentAct) && /status: "used"/.test(contentAct))
   const brandAct = readFileSync(join(process.cwd(), "app/actions/superadmin/platform-brand.ts"), "utf8")
   check("brand + topics actions marketing-gated + audited; harvest is creds-gated (honest not-configured)",
-    /platformStaffCan\(role, "marketing"\)/.test(brandAct) && /TAVILY_API_KEY/.test(brandAct) && /not configured/i.test(brandAct))
+    (/platformStaffCan\(role, "marketing"\)/.test(brandAct) || (/\brequireMarketing\(\)/.test(brandAct) && /requirePlatformCapability\("marketing"\)/.test(readFileSync(join(process.cwd(), "lib/auth/platform-guard.ts"), "utf8")))) && /TAVILY_API_KEY/.test(brandAct) && /not configured/i.test(brandAct))
   const gsSrc = readFileSync(join(process.cwd(), "app/get-started/page.tsx"), "utf8")
   check("get-started is brand-driven + captures UTMs into the prospect source",
     /loadProductBrand/.test(gsSrc) && /utm_source/.test(gsSrc) && /brand\.name/.test(gsSrc))

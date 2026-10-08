@@ -3,39 +3,37 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 import { scheduleInspection, updateInspection } from "@/lib/application/transactions"
 import { requestQuoteApproval, approveQuote, declineQuote } from "@/lib/transactions/vendor-quote-workflow"
 import { completeMilestone } from "@/lib/transactions/milestone-service"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 // ─── AUTH HELPERS ──────────────────────────────────────────────────────────────
-
-async function requireCallerForBrokerage(claimedBrokerageId?: string) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false as const, error: "Not authenticated" }
-  const { data: profile } = await supabase
-    .from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
-  if (!profile?.brokerage_id) return { ok: false as const, error: "Not authenticated" }
-  if (claimedBrokerageId && profile.brokerage_id !== claimedBrokerageId) {
-    return { ok: false as const, error: "Cannot act on transactions outside your brokerage" }
-  }
-  return {
-    ok: true as const,
-    userId: user.id,
-    brokerageId: profile.brokerage_id as string,
-    userRole: (profile.role ?? profile.user_type ?? "agent") as string,
-  }
-}
+//
+// TOMBSTONE (lane 92A): the file-local `requireCallerForBrokerage(claimed?)` —
+// DELETED as a duplicate. SURVIVOR: lib/auth/require-caller.ts:381 `requireCallerTenant`
+// (whose comparison is lib/platform/acting-context.ts:292 `decideClaimedTenant`,
+// the one decision table for a caller-supplied tenant). Nothing was lost:
+// the copy read the session user and the users row, refused a foreign claimed
+// brokerage, and returned userId/brokerageId — the survivor does all of that AND
+// reads the users-row error (the copy did not: an RLS refusal of the caller's own
+// row read as "Not authenticated"). The copy's `userRole` (`role ?? user_type ??
+// "agent"`) had no reader in this file, and its default-to-agent is the grading
+// defect require-caller.ts's header names.
 
 async function verifyTransactionInBrokerage(transactionId: string, brokerageId: string) {
   const svc = createServiceClient()
-  const { data: tx } = await svc
+  const { data: tx, error } = await svc
     .from("transactions")
     .select("brokerage_id")
     .eq("id", transactionId)
     .maybeSingle()
-  return !!tx && tx.brokerage_id === brokerageId
+  // §3: a refused read resolves. Fail closed (false), but say so in the log — a
+  // refusal must not be indistinguishable from "not in your brokerage".
+  if (error) console.error("[transaction-inspections] transaction tenant check refused:", error.message)
+  return !error && !!tx && tx.brokerage_id === brokerageId
 }
 
 // ─── SCHEDULE INSPECTION ───────────────────────────────────────────────────────
@@ -52,7 +50,7 @@ export async function scheduleInspectionAction(params: {
   cost?: number
   notes?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -112,12 +110,14 @@ export async function scheduleInspectionAction(params: {
       requestedBy:     auth.userId,
     })
 
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: auth.brokerageId,
-      entity_type:  "transaction",
-      entity_id:    params.transactionId,
-      event_type:   KernelEvent.INSPECTION_QUOTE_REQUESTED,
-      metadata:     { inspection_id: result.data.id, quote_amount: params.cost },
+    await emitKernelEvent({
+      brokerageId:   auth.brokerageId,
+      entityType:    "transaction",
+      entityId:      params.transactionId,
+      transactionId: params.transactionId,
+      event:         KernelEvent.INSPECTION_QUOTE_REQUESTED,
+      actorUserId:   auth.userId,
+      metadata:      { inspection_id: result.data.id, quote_amount: params.cost },
     })
   }
 
@@ -134,7 +134,7 @@ export async function approveInspectionQuoteAction(params: {
   vendorName: string
   notes?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -153,12 +153,14 @@ export async function approveInspectionQuoteAction(params: {
     notes:         params.notes,
   })
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: auth.brokerageId,
-    entity_type:  "transaction",
-    entity_id:    params.transactionId,
-    event_type:   KernelEvent.INSPECTION_QUOTE_APPROVED,
-    metadata:     { vendor_name: params.vendorName },
+  await emitKernelEvent({
+    brokerageId:   auth.brokerageId,
+    entityType:    "transaction",
+    entityId:      params.transactionId,
+    transactionId: params.transactionId,
+    event:         KernelEvent.INSPECTION_QUOTE_APPROVED,
+    actorUserId:   auth.userId,
+    metadata:      { vendor_name: params.vendorName },
   })
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
@@ -173,7 +175,7 @@ export async function declineInspectionQuoteAction(params: {
   brokerageId?: string
   reason?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -199,7 +201,7 @@ export async function markInspectionCompleteAction(params: {
   transactionId: string
   brokerageId?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -244,6 +246,27 @@ export async function markInspectionCompleteAction(params: {
     console.error("[markInspectionCompleteAction] fan-out failed (non-blocking)", err)
   }
 
+  // INSPECTION_COMPLETED — added to lib/kernel/events.ts beside INSPECTION_ORDERED
+  // (CLAUDE.md §1.2: BUILD the missing half — INSPECTION_ORDERED/INSPECTION_DUE are
+  // not completion, so the portal's "inspection.completed" card had no kernel moment
+  // it could alias to). This IS that completion moment. Kept separate from the
+  // generic MILESTONE_COMPLETED emit above so the portal alias fires on its own
+  // dedicated event rather than a same-spelling coincidence with other milestones.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       KernelEvent.INSPECTION_COMPLETED,
+      brokerageId: auth.brokerageId,
+      entityId:    params.transactionId,
+      actorUserId: auth.userId,
+      metadata: {
+        inspection_id: params.inspectionId,
+      },
+    })
+  } catch (err) {
+    console.error("[markInspectionCompleteAction] emitTransactionEvent(INSPECTION_COMPLETED) failed (non-blocking)", err)
+  }
+
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
   return { success: true }
 }
@@ -257,7 +280,7 @@ export async function uploadInspectionReportAction(params: {
   reportUrl: string
   fileName: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -284,7 +307,7 @@ export async function uploadInspectionReportAction(params: {
   })
 
   // Add as transaction document
-  await supabase.from("transaction_documents").insert({
+  const { error: inspectionDocErr } = await supabase.from("transaction_documents").insert({
     transaction_id: params.transactionId,
     brokerage_id:   auth.brokerageId,
     doc_type:       "inspection_report",
@@ -294,6 +317,7 @@ export async function uploadInspectionReportAction(params: {
     uploaded_by:    auth.userId,
     uploaded_at:    new Date().toISOString(),
   })
+  if (inspectionDocErr) return { success: false, error: `Inspection recorded, but the report was not added to the transaction documents: ${inspectionDocErr.message}` }
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
   return { success: true }
@@ -309,7 +333,7 @@ export async function requestInsuranceQuoteAction(params: {
   vendorPhone?: string
   notes?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -339,12 +363,14 @@ export async function requestInsuranceQuoteAction(params: {
     return { success: false, error: error.message }
   }
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: auth.brokerageId,
-    entity_type:  "transaction",
-    entity_id:    params.transactionId,
-    event_type:   KernelEvent.INSURANCE_QUOTE_REQUESTED,
-    metadata:     { vendor_name: params.vendorName, service_id: data?.id },
+  await emitKernelEvent({
+    brokerageId:   auth.brokerageId,
+    entityType:    "transaction",
+    entityId:      params.transactionId,
+    transactionId: params.transactionId,
+    event:         KernelEvent.INSURANCE_QUOTE_REQUESTED,
+    actorUserId:   auth.userId,
+    metadata:      { vendor_name: params.vendorName, service_id: data?.id },
   })
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
@@ -360,7 +386,7 @@ export async function submitInsuranceQuoteApprovalAction(params: {
   vendorName: string
   quoteAmount: number
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -415,7 +441,7 @@ export async function approveInsuranceQuoteAction(params: {
   vendorName: string
   notes?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -455,12 +481,14 @@ export async function approveInsuranceQuoteAction(params: {
     notes:         params.notes,
   })
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: auth.brokerageId,
-    entity_type:  "transaction",
-    entity_id:    params.transactionId,
-    event_type:   KernelEvent.INSURANCE_QUOTE_APPROVED,
-    metadata:     { vendor_name: params.vendorName },
+  await emitKernelEvent({
+    brokerageId:   auth.brokerageId,
+    entityType:    "transaction",
+    entityId:      params.transactionId,
+    transactionId: params.transactionId,
+    event:         KernelEvent.INSURANCE_QUOTE_APPROVED,
+    actorUserId:   auth.userId,
+    metadata:      { vendor_name: params.vendorName },
   })
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
@@ -477,7 +505,7 @@ export async function updateEarnestMoneyAction(params: {
   earnestMoneyHeldBy?: string
   earnestMoneyReceivedDate?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -538,14 +566,18 @@ export async function updateEarnestMoneyAction(params: {
     }
   }
 
-  // If earnest money received date is set, complete the milestone + emit event
+  // If earnest money received date is set, complete the milestone + emit event.
+  // EARNEST_MONEY_RECEIVED has a buyer/seller portal template ("Earnest money
+  // received") — the bare insert here meant the card never posted.
   if (params.earnestMoneyReceivedDate) {
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: auth.brokerageId,
-      entity_type:  "transaction",
-      entity_id:    params.transactionId,
-      event_type:   KernelEvent.EARNEST_MONEY_RECEIVED,
-      metadata:     {
+    await emitKernelEvent({
+      brokerageId:   auth.brokerageId,
+      entityType:    "transaction",
+      entityId:      params.transactionId,
+      transactionId: params.transactionId,
+      event:         KernelEvent.EARNEST_MONEY_RECEIVED,
+      actorUserId:   auth.userId,
+      metadata:      {
         amount:       params.earnestMoneyAmount ?? null,
         held_by:      params.earnestMoneyHeldBy ?? null,
         received_at:  params.earnestMoneyReceivedDate,
@@ -560,12 +592,14 @@ export async function updateEarnestMoneyAction(params: {
       completedBy:   auth.userId,
     })
 
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: auth.brokerageId,
-      entity_type:  "transaction",
-      entity_id:    params.transactionId,
-      event_type:   KernelEvent.EARNEST_MONEY_MILESTONE_COMPLETED,
-      metadata:     { milestone: "earnest_money_due" },
+    await emitKernelEvent({
+      brokerageId:   auth.brokerageId,
+      entityType:    "transaction",
+      entityId:      params.transactionId,
+      transactionId: params.transactionId,
+      event:         KernelEvent.EARNEST_MONEY_MILESTONE_COMPLETED,
+      actorUserId:   auth.userId,
+      metadata:      { milestone: "earnest_money_due" },
     })
   }
 
@@ -574,53 +608,51 @@ export async function updateEarnestMoneyAction(params: {
 }
 
 // ─── GET PENDING QUOTE APPROVALS ───────────────────────────────────────────────
-
-export async function getPendingQuoteApprovalsAction(transactionId: string) {
-  const auth = await requireCallerForBrokerage()
-  if (!auth.ok) return { success: false, error: auth.error, data: [] }
-
-  if (!(await verifyTransactionInBrokerage(transactionId, auth.brokerageId))) {
-    return { success: false, error: "Transaction not found in your brokerage", data: [] }
-  }
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("activities")
-    .select("*")
-    .eq("transaction_id", transactionId)
-    .eq("activity_type", "client_quote_approval_needed")
-    .eq("status", "pending")
-    .order("created_at", { ascending: false })
-
-  if (error) {
-    return { success: false, error: error.message, data: [] }
-  }
-
-  return { success: true, data: data ?? [] }
-}
+//
+// TOMBSTONE: `getPendingQuoteApprovalsAction(transactionId)` — DELETED as a
+// duplicate. SURVIVOR: app/dashboard/transactions/[id]/page.tsx:323 — the same
+// query, predicate for predicate (`activities` where transaction_id, activity_type
+// = 'client_quote_approval_needed', status = 'pending'), run in that page's
+// parallel fetch and handed to TransactionDetailClient as the
+// `pendingQuoteApprovals` prop that both the inspection tab and the insurance tab
+// already render.
+//
+// NOTHING WAS LOST IN THE MERGE. This export's only claim over the survivor was
+// its brokerage guard, and the survivor proves strictly more before it reads:
+// the page resolves the transaction under the caller's brokerage and 404s
+// otherwise, then requires the caller to be the owning agent or a
+// broker/admin/tc, and it reads on the RLS-scoped client rather than a service
+// client. It also had no caller: its one importer
+// (app/dashboard/transactions/[id]/page.tsx's client component) imported it and
+// never called it, because every mutation in this file ends in
+// `revalidatePath("/dashboard/transactions/{id}")` and the client follows with
+// `router.refresh()` — so the page re-runs its own read and the prop is already
+// the fresher of the two.
+//
+// It was also one more `"use server"` export, i.e. a public HTTP endpoint over
+// another tenant's pending vendor quotes and amounts, kept alive by an import
+// that never fired.
 
 // ─── GET INSPECTIONS ───────────────────────────────────────────────────────────
-
-export async function getInspectionsAction(transactionId: string) {
-  const auth = await requireCallerForBrokerage()
-  if (!auth.ok) return { success: false, error: auth.error, data: [] }
-
-  if (!(await verifyTransactionInBrokerage(transactionId, auth.brokerageId))) {
-    return { success: false, error: "Transaction not found in your brokerage", data: [] }
-  }
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("transaction_inspections")
-    .select("*")
-    .eq("transaction_id", transactionId)
-    .order("created_at", { ascending: false })
-
-  if (error) {
-    return { success: false, error: error.message, data: [] }
-  }
-
-  return { success: true, data: data ?? [] }
-}
+//
+// TOMBSTONE: `getInspectionsAction(transactionId)` — DELETED as a duplicate.
+// SURVIVOR: app/dashboard/transactions/[id]/page.tsx:298 — the same query, field
+// for field (`transaction_inspections` select * where transaction_id, ordered
+// created_at desc), run in the page's parallel data fetch and handed to
+// TransactionDetailClient as the `inspections` prop. That is the ONE surface
+// that renders inspections, and every mutation in this file ends in
+// `revalidatePath("/dashboard/transactions/{id}")` + a client `router.refresh()`,
+// so the page re-runs its own read — this export could never be the fresher one.
+//
+// NOTHING WAS LOST IN THE MERGE. The only thing this export carried that the
+// survivor lacks is its brokerage guard, and the survivor already proves strictly
+// more before it reads: page.tsx:89-90 fetches the transaction with
+// `.eq("brokerage_id", brokerageId)` and 404s otherwise, then page.tsx:108-111
+// additionally requires the caller to be the owning agent (resolved through
+// agents.id, not users.id) or broker/admin/tc. The reader also runs on the
+// RLS-scoped client rather than a service client.
+//
+// It was also one more ungated-by-nothing `"use server"` endpoint: a public HTTP
+// entry point over another tenant's inspection schedule, inspector contact
+// details and costs, reachable with only a transaction uuid had the guard ever
+// been weakened.

@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
 NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -136,10 +137,10 @@ export async function GET(request: NextRequest) {
 
         if (remainingChannels.length === 0) {
           // All channels already distributed — mark episode as published
-          await supabase
+          await sentinelWrite(supabase, supabase
             .from("podcast_episodes")
             .update({ published_at: new Date().toISOString() })
-            .eq("id", episode.id)
+            .eq("id", episode.id), { table: "podcast_episodes", flow: "podcast_episodes_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
           
           results.skipped++
           continue
@@ -196,7 +197,7 @@ export async function GET(request: NextRequest) {
             logId = logRow?.id
           } else {
             // Insert new log entry
-            const { data: newLog } = await supabase
+            const { data: newLog, error: distLogErr } = await supabase
               .from("podcast_distribution_log")
               .insert({
                 brokerage_id: brokerageId,
@@ -206,6 +207,7 @@ export async function GET(request: NextRequest) {
               })
               .select("id")
               .single()
+            if (distLogErr) console.error(`[distribute-podcast] distribution log row NOT created: ${distLogErr.message}`)
             logId = newLog?.id
           }
 
@@ -220,7 +222,7 @@ export async function GET(request: NextRequest) {
             )
 
             // Update log as published
-            await supabase
+            await sentinelWrite(supabase, supabase
               .from("podcast_distribution_log")
               .update({
                 distribution_status: "published",
@@ -228,7 +230,7 @@ export async function GET(request: NextRequest) {
                 external_episode_id: distributionResult.externalEpisodeId,
                 provider_response: distributionResult.providerResponse,
               })
-              .eq("id", logId)
+              .eq("id", logId), { table: "podcast_distribution_log", flow: "podcast_distribution_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
             anySucceeded = true
             results.distributed++
@@ -243,14 +245,14 @@ export async function GET(request: NextRequest) {
 
           } catch (distError: any) {
             // Update log as failed
-            await supabase
+            await sentinelWrite(supabase, supabase
               .from("podcast_distribution_log")
               .update({
                 distribution_status: "failed",
                 error_message: distError.message,
                 provider_response: { error: distError.message },
               })
-              .eq("id", logId)
+              .eq("id", logId), { table: "podcast_distribution_log", flow: "podcast_distribution_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
             allSucceeded = false
             results.failed++
@@ -272,13 +274,13 @@ export async function GET(request: NextRequest) {
         // STEP 6: Update episode status if all channels published
         // ══════════════════════════════════════════════════════════════════════
         if (anySucceeded && allSucceeded) {
-          await supabase
+          await sentinelWrite(supabase, supabase
             .from("podcast_episodes")
             .update({
               status: "published",
               published_at: new Date().toISOString(),
             })
-            .eq("id", episode.id)
+            .eq("id", episode.id), { table: "podcast_episodes", flow: "podcast_episodes_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         }
 
       } catch (episodeError: any) {
@@ -367,17 +369,21 @@ async function distributeToChannel(
   }
 
   const supabase = createServiceClient()
-  // Resolve the episode host's user for the ownership cascade (podcast_episodes
-  // .agent_id carries agents.id by FK convention; tolerate a users.id).
+  // Resolve the episode host's user for the ownership cascade. podcast_episodes
+  // .agent_id is agents-class, and resolveScopedConnection keys the agent tier by
+  // users.id — so one hop across. The old `?? episode.agent_id` fallback made a
+  // missing agents row look like a users id, which is the substitution this rail
+  // must never do; a null now stays null and the cascade falls to team/brokerage.
   let agentUserId: string | null = null
-  if (episode.agent_id) {
-    const { data: agentRow } = await supabase.from("agents").select("user_id").eq("id", episode.agent_id).maybeSingle()
-    agentUserId = ((agentRow as any)?.user_id as string | null) ?? (episode.agent_id as string)
-  }
   let teamId: string | null = null
-  if (agentUserId) {
-    const { data: a } = await supabase.from("agents").select("team_id").eq("user_id", agentUserId).maybeSingle()
-    teamId = ((a as any)?.team_id as string | null) ?? null
+  if (episode.agent_id) {
+    const { data: agentRow, error: agentErr } = await supabase
+      .from("agents").select("user_id, team_id").eq("id", episode.agent_id).maybeSingle()
+    if (agentErr) {
+      console.error(`[distribute-podcast-episodes] agents lookup failed for agents.id=${episode.agent_id}:`, agentErr.message)
+    }
+    agentUserId = ((agentRow as any)?.user_id as string | null) ?? null
+    teamId      = ((agentRow as any)?.team_id as string | null) ?? null
   }
 
   const { resolveScopedConnection } = await import("@/lib/connections/resolve-scoped")

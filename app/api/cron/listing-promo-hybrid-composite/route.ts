@@ -31,18 +31,20 @@
  * Auth: CRON_SECRET.
  */
 import { NextResponse, type NextRequest } from "next/server"
-import { put } from "@vercel/blob"
+import { verifyCronAuth } from "@/lib/cron-auth"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia — Supabase `video-assets`.
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
-import { concatIntroOutro } from "@/lib/video/composite-attribution"
+import { concatIntroOutro, probeRemoteVideoDurationSeconds } from "@/lib/video/composite-attribution"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 export const runtime = "nodejs"
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
 
 interface ProjectRow {
   id:              string
@@ -54,11 +56,8 @@ interface ProjectRow {
 }
 
 export async function GET(req: NextRequest) {
-  const headerSecret = req.headers.get("authorization")?.replace("Bearer ", "")
-  const querySecret  = new URL(req.url).searchParams.get("secret")
-  const expected     = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (headerSecret !== expected && querySecret !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
 
@@ -94,47 +93,80 @@ export async function GET(req: NextRequest) {
       continue
     }
 
+    // ai_video_projects.agent_id is agents-class since m366, while the persona
+    // post-pass and lifecycle_events.actor_user_id both want the owner's USERS
+    // id. One resolve for the row; null means the agents row is gone and those
+    // two hand-offs are skipped rather than handed the wrong id space.
+    const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+    const projAgentUserId = p.agent_id ? await resolveAgentRecordToUserId(p.agent_id) : null
+    if (p.agent_id && !projAgentUserId) {
+      console.error(`[listing-promo-hybrid-composite] no users row behind agents.id=${p.agent_id} (project ${p.id}) — persona post-pass + lifecycle actor skipped`)
+    }
+
     try {
       // Download the Remotion middle MP4 to a buffer (ffmpeg needs a local file).
       const mainResp = await fetch(p.video_url!)
       if (!mainResp.ok) throw new Error(`fetch middle failed: ${mainResp.status}`)
       const mainBuf = Buffer.from(await mainResp.arrayBuffer())
 
-      // Stitch via the canonical ffmpeg helper.
+      // Stitch via the canonical ffmpeg helper. The D-ID hook and CTA are the
+      // agent SPEAKING — "spoken" bookends are never trimmed (lane 86B: the
+      // brand-sting cap cut "Hi, I'm Jane Smith. Just listed at 1234 Oak…" to
+      // 2.5 s, mid-sentence), and each join is a dissolve on handles.
       const stitch = await concatIntroOutro({
         mainVideoBuffer: mainBuf,
         introVideoUrl:   introProj.video_url,
         outroVideoUrl:   outroProj.video_url,
+        bookendKind:     "spoken",
       })
+      // THE BED RUNS UNDER THE JOINS (lane 86B): render-just-listed defers the
+      // hybrid middle's music (musicAfterStitch) so ONE bed is mixed here over
+      // the whole stitched film — continuous across both dissolves, ducked
+      // under the agent's voice and the narration, then mastered. A skipped
+      // stitch still gets the bed it was promised (over the middle alone).
+      const deferredMusic = meta.hybrid_music_deferred === true
+      const finished = deferredMusic
+        ? await finishHybridSound(svc, p, stitch.overlayApplied ? stitch.outputBuffer : mainBuf, stitch.overlayApplied ? (stitch.totalSeconds ?? null) : null)
+        : { buffer: stitch.overlayApplied ? stitch.outputBuffer : mainBuf, note: "music already in the middle" }
       if (!stitch.overlayApplied) {
-        // ffmpeg missing or no bookends — keep the Remotion middle as final.
-        await svc.from("ai_video_projects").update({
+        // ffmpeg missing or no bookends — keep the Remotion middle as final
+        // (re-hosted only when the deferred bed was just mixed onto it).
+        const middleUrl = deferredMusic && finished.buffer !== mainBuf
+          ? await hostRenderedMedia(svc, `listing-promo/hybrid/${p.id}-middle.mp4`, finished.buffer, "video/mp4")
+          : null
+        await sentinelWrite(svc, svc.from("ai_video_projects").update({
           status: "completed",
-          video_metadata: { ...meta, hybrid_pending: false, hybrid_composited_at: new Date().toISOString(), hybrid_skip_reason: stitch.skippedReason ?? "no_overlay" },
-        }).eq("id", p.id)
+          ...(middleUrl ? { video_url: middleUrl } : {}),
+          video_metadata: { ...meta, hybrid_pending: false, hybrid_composited_at: new Date().toISOString(), hybrid_skip_reason: stitch.skippedReason ?? "no_overlay", hybrid_sound: finished.note },
+        }).eq("id", p.id), { table: "ai_video_projects", flow: "listing_promo_hybrid_complete", reason: "completion stamp; a refused stamp leaves hybrid_pending set, so the next tick re-composites" })
         results.push({ id: p.id, outcome: "completed_no_hybrid", reason: stitch.skippedReason })
         continue
       }
 
       // Upload stitched mp4.
-      const blob = await put(
+      const hybridUrl = await hostRenderedMedia(
+        svc,
         `listing-promo/hybrid/${p.id}.mp4`,
-        stitch.outputBuffer,
-        { access: "public", contentType: "video/mp4" },
+        finished.buffer,
+        "video/mp4",
       )
 
-      await svc.from("ai_video_projects").update({
+      await sentinelWrite(svc, svc.from("ai_video_projects").update({
         status:    "completed",
-        video_url: blob.url,
-        video_metadata: { ...meta, hybrid_pending: false, hybrid_composited_at: new Date().toISOString(), hybrid_url: blob.url },
-      }).eq("id", p.id)
+        video_url: hybridUrl,
+        video_metadata: {
+          ...meta, hybrid_pending: false, hybrid_composited_at: new Date().toISOString(), hybrid_url: hybridUrl,
+          // What the stitch actually did (the dissolve offsets) and what the sound pass landed.
+          hybrid_joins: stitch.joins ?? null, hybrid_sound: finished.note,
+        },
+      }).eq("id", p.id), { table: "ai_video_projects", flow: "listing_promo_hybrid_complete", reason: "completion stamp; a refused stamp leaves hybrid_pending set, so the next tick re-composites" })
 
       // Move the listing_promo_videos ledger to 'rendering' so the
       // social-publish cron picks it up.
       if (p.listing_id) {
-        await svc.from("listing_promo_videos")
+        await sentinelWrite(svc, svc.from("listing_promo_videos")
           .update({ status: "rendering" })
-          .eq("video_project_id", p.id)
+          .eq("video_project_id", p.id), { table: "listing_promo_videos", flow: "listing_promo_ledger_rendering", reason: "ledger advance to rendering; the social-publish cron re-reads the project status" })
 
         // Wave 28 — fire the per-persona post-pass against the final
         // composite. Listing-promo's audience is the brokerage's entire
@@ -145,6 +177,7 @@ export async function GET(req: NextRequest) {
         // post-pass logs failures per-persona without blocking the
         // social-publish handoff.
         try {
+          if (!projAgentUserId) throw new Error("agent owner unresolved — nothing to personalize under")
           const { runPersonaVariantPostPass } = await import("@/lib/video/persona-variant-post-pass")
           // Pull listing + brokerage display data for the still composition.
           const { data: listingRow } = await svc.from("listings")
@@ -152,25 +185,26 @@ export async function GET(req: NextRequest) {
             .eq("id", p.listing_id)
             .maybeSingle()
           const lr = listingRow as { address: string | null; city: string | null; state: string | null } | null
-          const { data: brokerage } = await svc.from("brokerages")
-            .select("name, logo_url, brand_primary_color:primary_color")
-            .eq("id", p.brokerage_id)
-            .maybeSingle()
-          const br = brokerage as { name: string | null; logo_url: string | null; brand_primary_color: string | null; brand_accent_color: string | null } | null
+          // THE ONE BRAND CASCADE (lane 76D, §1/§6) — was a private brokerages
+          // read that typed `brand_accent_color` without selecting it (accent
+          // always the default) and never saw the team tier. Survivor:
+          // lib/video/reel-brand.ts resolveReelBrand.
+          const { resolveReelBrand } = await import("@/lib/video/reel-brand")
+          const reelBrand = await resolveReelBrand(svc, p.brokerage_id, { agentUserId: projAgentUserId })
           const subject = [lr?.address, [lr?.city, lr?.state].filter(Boolean).join(", ")]
             .filter(Boolean).join(" — ") || "New listing"
           void runPersonaVariantPostPass({
             assetType:    "listing_promo",
             assetId:      p.listing_id,
             brokerageId:  p.brokerage_id,
-            agentUserId:  p.agent_id,
+            agentUserId:  projAgentUserId,
             brand: {
-              primaryColor:  br?.brand_primary_color ?? "#0F172A",
-              accentColor:   br?.brand_accent_color  ?? "#F59E0B",
-              logoUrl:       br?.logo_url            ?? undefined,
-              brokerageName: br?.name                ?? "Your Brokerage",
+              primaryColor:  reelBrand.primaryColor,
+              accentColor:   reelBrand.accentColor,
+              logoUrl:       reelBrand.logoUrl ?? undefined,
+              brokerageName: reelBrand.brokerageName,
             },
-            mainVideoUrl:    blob.url,
+            mainVideoUrl:    hybridUrl,
             subject,
             // bundleLoc omitted — composite cron has no Remotion bundle.
             // The post-pass module skips the still thumbnail and only runs
@@ -184,28 +218,37 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      await svc.from("lifecycle_events").insert({
-        brokerage_id:  p.brokerage_id,
-        actor_user_id: p.agent_id,
-        event_type:    KernelEvent.VIDEO_GENERATION_COMPLETED,
+      // Audit row + reactor (was a bare insert nobody downstream heard).
+      await emitKernelEvent({
+        brokerageId: p.brokerage_id,
+        actorUserId: projAgentUserId,  // FK users(id) — the resolved owner, not the project's agents id
+        event:       KernelEvent.VIDEO_GENERATION_COMPLETED,
         metadata: {
           ai_video_project_id: p.id,
           hybrid_composited:   true,
         },
-        entity_id:   p.id,
-        entity_type: "ai_video_project",
-        source:      "system",
-        processed:   false,
+        entityId:   p.id,
+        entityType: "ai_video_project",
+        source:     "system",
       })
 
       results.push({ id: p.id, outcome: "completed" })
     } catch (e) {
       const msg = (e as Error).message
-      await svc.from("ai_video_projects").update({
-        status:         "error",
+      // "failed", not "error". This block already reports outcome:"failed" two
+      // lines down, but it WROTE "error" — a token no failure handler in the
+      // codebase matches. The cost of that one word: listing-promo-social-publish
+      // (`projectStatus === "failed"`) never marked the promo row failed and
+      // retried the dead project every tick forever; video-coordination never
+      // published the failure signal, so no human heard about it; the reaper
+      // treated it as neither stale nor terminal and never escalated; the m365
+      // trigger left the queue row spinning; and the board's red failure UI never
+      // rendered, so a failed render sat in the "Queued" column.
+      await sentinelWrite(svc, svc.from("ai_video_projects").update({
+        status:         "failed",
         error_message:  msg.slice(0, 800),
         video_metadata: { ...meta, hybrid_pending: false, hybrid_error: msg.slice(0, 400) },
-      }).eq("id", p.id)
+      }).eq("id", p.id), { table: "ai_video_projects", flow: "listing_promo_hybrid_fail", reason: "failure stamp on the failure path; the watchdog reaps a row left in flight" })
       results.push({ id: p.id, outcome: "failed", reason: msg })
     }
   }
@@ -215,6 +258,54 @@ export async function GET(req: NextRequest) {
     processed: results.length,
     results,
   })
+}
+
+/**
+ * The deferred music bed + master over the stitched hybrid (lane 86B). Composed
+ * from the SAME survivors the render coordinator's finish uses — the one stock
+ * picker (lib/remotion/stock-pick.ts, the brokerage scope and "upbeat" mood the
+ * middle's render row carries) and the one mixer (lib/remotion/music-mixer.ts:
+ * sidechain duck under the speech on [0:a], -14 LUFS / -1 dBTP master). No bed
+ * in the library → the voice track is still mastered, so the finished file
+ * leaves at the same loudness either way. Never throws: a failed pass returns
+ * the bytes it was handed and says why.
+ */
+async function finishHybridSound(
+  svc: ReturnType<typeof createServiceClient>,
+  p: ProjectRow,
+  videoBuffer: Buffer,
+  /** The stitched film's exact length; null (a skipped stitch) → measured from the middle's URL. */
+  videoSeconds: number | null,
+): Promise<{ buffer: Buffer; note: string }> {
+  try {
+    const [{ pickStockAsset }, { mixBackgroundMusic, masterAudioLoudness }, { MUSIC_DUCK_VOLUME_PCT }] = await Promise.all([
+      import("@/lib/remotion/stock-pick"), import("@/lib/remotion/music-mixer"), import("@/lib/video/realism-profile"),
+    ])
+    const bed = await pickStockAsset(svc, { brokerageId: p.brokerage_id, scopeType: "brokerage", scopeId: p.brokerage_id }, "music", "upbeat")
+    if (bed?.video_url) {
+      const mixed = await mixBackgroundMusic({
+        videoBuffer,
+        musicUrl:        bed.video_url,
+        musicVolumePct:  bed.music_volume_pct ?? MUSIC_DUCK_VOLUME_PCT,
+        loop:            bed.music_loop ?? true,
+        // The fade-out lands on the film's real end (the stitch's exact total, or the
+        // middle measured); an unmeasurable length fades in only, never out against a guess.
+        videoSeconds:    videoSeconds ?? (p.video_url ? await probeRemoteVideoDurationSeconds(p.video_url) : null),
+        duckToNarration: true,
+        master:          true,
+      })
+      if (mixed.ok && mixed.outputBuffer.length > 0) {
+        return { buffer: mixed.outputBuffer, note: `bed ${bed.id} ${mixed.ducked ? "ducked" : "constant"}${mixed.mastered ? " + mastered" : ""}` }
+      }
+      console.warn("[listing-promo-hybrid-composite] deferred bed did not mix:", mixed.skippedReason ?? mixed.error)
+    }
+    const mastered = await masterAudioLoudness({ videoBuffer })
+    if (mastered.ok && mastered.outputBuffer.length > 0) return { buffer: mastered.outputBuffer, note: bed ? "bed failed; voice mastered" : "no bed in library; voice mastered" }
+    return { buffer: videoBuffer, note: `unmastered: ${mastered.skippedReason ?? mastered.error ?? "unknown"}` }
+  } catch (e) {
+    console.warn("[listing-promo-hybrid-composite] sound pass failed; shipping the stitch as-is:", (e as Error).message)
+    return { buffer: videoBuffer, note: `sound pass failed: ${(e as Error).message}` }
+  }
 }
 
 async function findProjectByProviderJob(

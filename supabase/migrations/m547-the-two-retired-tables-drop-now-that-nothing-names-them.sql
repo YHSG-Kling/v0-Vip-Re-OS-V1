@@ -1,0 +1,61 @@
+-- m547 — THE TWO RETIRED TABLES DROP, NOW THAT NOTHING NAMES THEM
+--
+-- APPLICATION STATUS: APPLIED 2026-08-23 hrvaqgvukzxfskkcrwbt
+--
+-- ── WHY THIS IS A SEPARATE MIGRATION FROM THE ONES THAT RETIRED THEM ────────
+-- m543 chose `open_house_events` as the survivor of the doubled open-house event
+-- and merged 13 columns onto it; it also resolved `demo_persona_contacts` under
+-- CLAUDE.md §1 branch 3 (the functionality already lives in
+-- lib/portal/persona-config.ts and scripts/demo-seed-and-run.ts). Neither table
+-- was DROPPED there, deliberately: `lib/kernel/listing-archive.ts` still
+-- enumerated `open_houses` in LISTING_CHILD_RULES, and that file was in flight in
+-- another lane at the time. Dropping first would have turned every listing
+-- archive into "relation does not exist" — a regression traded for a table count,
+-- which §1 forbids.
+--
+-- Between then and now both tables were REVOKE'd and left with a single deny-all
+-- policy, so neither could gain a row while the drop waited. That mattered more
+-- than it sounds: the first attempt at that lock DENIED NOTHING, because
+-- PostgreSQL PERMISSIVE policies are OR'd and the surviving tenant policies still
+-- admitted every seat. A table that reads as locked and is wide open is the shape
+-- lib/kernel/manager-registry.ts:1062 records this repo paying for once already.
+--
+-- ── THE ORDERING, WHICH IS THE WHOLE POINT ─────────────────────────────────
+-- The manifest entry for `open_houses` had to OUTLIVE THE TABLE BY ONE STEP.
+-- LISTING_CHILD_RULES checks itself against SCHEMA_FK_MAP, a generated cache, so:
+--
+--   1. move every reader/writer onto the survivor      (m543, 6 sites → 0)
+--   2. DROP the tables                                 (this migration)
+--   3. regenerate the caches from the live database    (§3, never hand-edited)
+--   4. only THEN remove the manifest entry
+--
+-- Removing the entry first fails the manifest's completeness check; dropping
+-- before step 1 breaks every archive. There is exactly one order that works.
+--
+-- ── MEASURED IMMEDIATELY BEFORE, NOT ASSUMED ───────────────────────────────
+--   open_houses ................. 0 rows, 0 inbound FKs, 0 dependent views
+--   demo_persona_contacts ....... 0 rows, 0 inbound FKs, 0 dependent views
+--
+-- POSITIVE CONTROL on that finder (§2 — a clean result and a broken query look
+-- identical): the same inbound-FK query run against `open_house_events` returns
+-- its five satellites — open_house_invitations, open_house_attendees,
+-- open_house_analytics, open_house_feedback, open_house_rsvp_tracking. So "no
+-- inbound FKs" is an observation, not a query that finds nothing.
+--
+-- ── RESTRICT, NOT CASCADE ──────────────────────────────────────────────────
+-- If anything still depended on either table this must FAIL rather than quietly
+-- removing the dependent object too. CASCADE here would turn a missed reader into
+-- silent collateral damage — the same failure mode as a delete that reports
+-- success while stranding rows. The measurements above say nothing depends on
+-- them; RESTRICT is what makes that a claim the database checks rather than one
+-- this comment merely asserts.
+
+drop table if exists public.open_houses restrict;
+drop table if exists public.demo_persona_contacts restrict;
+
+-- ── AFTER ──────────────────────────────────────────────────────────────────
+-- live relations 766 → 764. Four generated caches go stale on this and are
+-- regenerated ONCE for the whole wave, not once per migration: live-tables.ts,
+-- schema-snapshot.ts, schema-fk-map.ts, check-vocabularies.ts (the last because
+-- m543 widened a CHECK, and §3 requires the vocabulary cache to be regenerated
+-- after any applied migration that adds one).

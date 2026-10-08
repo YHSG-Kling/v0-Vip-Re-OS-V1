@@ -1,6 +1,5 @@
 "use client"
 
-import { useRouter, usePathname } from "next/navigation"
 import { useState, useTransition } from "react"
 import {
   upsertBlogCadencePolicy,
@@ -9,6 +8,7 @@ import {
 } from "@/app/actions/blog-cadence-policy"
 import { upsertMarketingCadencePolicy, type CadenceChannel } from "@/app/actions/marketing-cadence-policy"
 import type { PolicyScopeAccess } from "@/lib/identity/policy-scope"
+import { useGotoTab } from "@/hooks/use-goto-tab"
 
 type TabKey = "agent" | "team" | "brokerage"
 const TAB_LABEL: Record<TabKey, string> = {
@@ -53,8 +53,7 @@ export function BlogCadenceSettingsClient({
   activeTab?:    TabKey
   activeTeamId?: string | null
 }) {
-  const router = useRouter()
-  const pathname = usePathname()
+  const gotoTab = useGotoTab<TabKey>()
   const [cadence, setCadence] = useState<CadenceValue>((initialPolicy?.cadence as CadenceValue) ?? "off")
   const [fireDay, setFireDay] = useState<number>(initialPolicy?.fire_day ?? 0)
   const [categories, setCategories] = useState<string[]>(initialPolicy?.preferred_categories ?? [])
@@ -69,12 +68,8 @@ export function BlogCadenceSettingsClient({
     ...(access.canEditBrokerage ? ["brokerage"] as TabKey[] : []),
   ] : []
 
-  function gotoTab(tab: TabKey, team?: string) {
-    const url = new URL(pathname, "http://x")
-    url.searchParams.set("tab", tab)
-    if (team) url.searchParams.set("team", team)
-    router.push(url.pathname + url.search)
-  }
+  // `gotoTab` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+  // byte-identical to hooks/use-goto-tab.ts `useGotoTab` (used above).
 
   function toggleCategory(value: string) {
     setCategories((prev) => prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value])

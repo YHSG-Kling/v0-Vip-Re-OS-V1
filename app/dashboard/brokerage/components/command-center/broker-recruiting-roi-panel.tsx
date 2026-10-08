@@ -7,9 +7,7 @@ import Link from "next/link"
 import {
   TrendingUp,
   ArrowRight,
-  DollarSign,
   Users,
-  Target,
 } from "lucide-react"
 
 interface BrokerRecruitingROIPanelProps {

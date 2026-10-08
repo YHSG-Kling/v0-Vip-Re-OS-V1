@@ -1,11 +1,26 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
+import { requireCaller, requireCallerTenant } from "@/lib/auth/require-caller"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
+import { AGENT_GOAL_TYPES, isAgentGoalType, type AgentGoalType } from "@/lib/goals/goal-types"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_agent_goals")
+
+/**
+ * Tenant comes from the SESSION (CLAUDE.md §4). Every export here takes `brokerageId` from its caller;
+ * wave 98 found none checked it (the IDOR shape). The parameter is now only accepted when it IS the
+ * caller's own brokerage — a mismatch, no session or no brokerage refuses (fail closed).
+ */
+async function refuseForeignTenant(brokerageId: string): Promise<string | null> {
+  const caller = await requireCallerTenant(brokerageId)
+  return caller.ok ? null : caller.error
+}
 
 /**
  * AI Agent Goals System
@@ -26,6 +41,8 @@ export async function getAgentGoals(params: {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  const tenantRefusal = await refuseForeignTenant(params.brokerageId)
+  if (tenantRefusal) return { success: false, error: tenantRefusal }
 
   const supabase  = await createClient()
   const year      = params.year ?? new Date().getFullYear()
@@ -61,6 +78,20 @@ export async function upsertAgentGoal(params: {
 }) {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
+  }
+  // The same session-tenant rule as refuseForeignTenant, keeping the caller (the mission's created_by).
+  const caller = await requireCallerTenant(params.brokerageId)
+  if (!caller.ok) return { success: false, error: caller.error }
+
+  // GATE THE VOCABULARY BEFORE THE WRITE. goalType was typed `string` and passed
+  // straight through, so a caller — including the shipped goals page — could send
+  // a value agent_goals_goal_type_check refuses, turning a saved goal into a
+  // 23514 nobody surfaced. Refusing here names the problem instead.
+  if (!isAgentGoalType(params.goalType)) {
+    return {
+      success: false,
+      error: `Unknown goal type "${params.goalType}". Valid types: ${AGENT_GOAL_TYPES.join(", ")}`,
+    }
   }
 
   const supabase = await createClient()
@@ -98,6 +129,34 @@ export async function upsertAgentGoal(params: {
 
     if (error) throw error
 
+    // WAVE 104 (lane 104D): a NEW goal is the OBJECTIVE of a mission the OS owns from here on
+    // (lib/kernel/missions.ts; m710 agent_goals.mission_id). Tenant = the session's (checked
+    // above); owner manager = the recruiting manager (TABLE_MANAGER agent_goals); the success
+    // criterion is the goal itself, measured by syncGoalCurrentValues. Best-effort: a refused
+    // mission never un-saves the goal, and the refusal is logged.
+    if (!existing && data?.id) {
+      try {
+        const { createMission } = await import("@/lib/kernel/missions")
+        const { createServiceClient } = await import("@/lib/supabase/service")
+        const svc = createServiceClient()
+        const m = await createMission({
+          brokerageId: params.brokerageId,
+          objective: `${year} goal: ${params.goalType} → ${params.targetValue}`,
+          missionType: "agent_goal", ownerManager: "recruiting_manager", participatingManagers: ["ai_isa", "campaign_orchestrator"],
+          subject: { type: "agent_goal", id: data.id as string }, priority: "normal",
+          successCriteria: [{ metric: params.goalType, op: ">=", target: params.targetValue }],
+          deadline: new Date(Date.UTC(year, 11, 31, 23, 59, 59)).toISOString(),
+          createdBy: caller.userId,
+          initialState: "ACTIVE",
+        }, svc as any)
+        if (!m.ok) console.error(`[ai-agent-goals] mission NOT created for goal ${data.id}: ${m.reason}`)
+        else {
+          const { error: linkErr } = await svc.from("agent_goals").update({ mission_id: m.mission.id }).eq("id", data.id).eq("brokerage_id", params.brokerageId).select("id")
+          if (linkErr) console.error(`[ai-agent-goals] goal ${data.id} NOT linked to mission ${m.mission.id}: ${linkErr.message}`)
+        }
+      } catch (e) { console.error(`[ai-agent-goals] mission wiring failed: ${e instanceof Error ? e.message : String(e)}`) }
+    }
+
     revalidatePath("/dashboard")
     return { success: true, data }
   } catch (error) {
@@ -117,6 +176,8 @@ export async function updateGoalProgress(params: {
   if (!isValidUUID(params.goalId) || !isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.error }
 
   const supabase = await createClient()
 
@@ -129,16 +190,44 @@ export async function updateGoalProgress(params: {
       })
       .eq("id",       params.goalId)
       .eq("agent_id", params.agentId)
+      .eq("brokerage_id", caller.brokerageId)
       .select()
       .single()
 
     if (error) throw error
+
+    // Lane 104F: a hand-updated goal is measured progress for its mission too (reaching the target completes it).
+    await recordGoalMissionProgress(caller.brokerageId, [data as { id: string; goal_type: string; current_value: number | null; mission_id: string | null }])
 
     revalidatePath("/dashboard")
     return { success: true, data }
   } catch (error) {
     return handleError(error, "updateGoalProgress")
   }
+}
+
+/**
+ * The goal → mission progress wire (lane 104F; NOT an export — this is a "use server" file, every
+ * export is a public door). For each goal linked to a mission (m710 agent_goals.mission_id), record
+ * `{ [goal_type]: current_value }` on the mission through lib/kernel/missions.ts recordMissionProgress,
+ * which COMPLETES the mission when its criterion (goal_type >= target, written by upsertAgentGoal) is
+ * met. brokerageId is the SESSION's (both callers verified it). Best-effort: a refusal is logged.
+ */
+async function recordGoalMissionProgress(
+  brokerageId: string,
+  goals: Array<{ id: string; goal_type: string; current_value: number | null; mission_id: string | null }>,
+): Promise<void> {
+  const linked = goals.filter((g) => g.mission_id && typeof g.current_value === "number")
+  if (linked.length === 0) return
+  try {
+    const { recordMissionProgress } = await import("@/lib/kernel/missions")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+    for (const g of linked) {
+      const r = await recordMissionProgress({ brokerageId, missionId: g.mission_id as string, progress: { [g.goal_type]: Number(g.current_value) }, actor: { type: "system", id: "agent_goals_sync" } }, svc as any)
+      if (!r.ok && !r.reason.startsWith("terminal:")) console.error(`[ai-agent-goals] mission ${g.mission_id} progress NOT recorded for goal ${g.id}: ${r.reason}`)
+    }
+  } catch (e) { console.error(`[ai-agent-goals] mission progress wiring failed: ${e instanceof Error ? e.message : String(e)}`) }
 }
 
 // ============================================================================
@@ -153,6 +242,8 @@ export async function aiRecommendGoals(params: {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  const tenantRefusal = await refuseForeignTenant(params.brokerageId)
+  if (tenantRefusal) return { success: false, error: tenantRefusal }
 
   const supabase = await createClient()
   const year     = params.year ?? new Date().getFullYear()
@@ -245,6 +336,8 @@ export async function aiCoachGoalProgress(params: {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  const tenantRefusal = await refuseForeignTenant(params.brokerageId)
+  if (tenantRefusal) return { success: false, error: tenantRefusal }
 
   const supabase = await createClient()
   const year     = params.year ?? new Date().getFullYear()
@@ -311,6 +404,8 @@ export async function syncGoalCurrentValues(params: {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  const tenantRefusal = await refuseForeignTenant(params.brokerageId)
+  if (tenantRefusal) return { success: false, error: tenantRefusal }
 
   const supabase = await createClient()
   const year     = params.year ?? new Date().getFullYear()
@@ -318,6 +413,9 @@ export async function syncGoalCurrentValues(params: {
   const yearEnd   = `${year}-12-31`
 
   try {
+    // params.agentId is an AGENTS id (every caller passes ctx.agentId) and all
+    // five counters below are now agents-class, review_requests included — so
+    // the reverse users lookup this count used to need is gone.
     const [
       { count: transactionCount },
       { data: commissionData },
@@ -365,12 +463,17 @@ export async function syncGoalCurrentValues(params: {
 
     const totalGCI = commissionData?.reduce((sum, r) => sum + (r.agent_commission ?? 0), 0) ?? 0
 
-    const liveValues: Record<string, number> = {
-      transactions:      transactionCount   ?? 0,
-      gci:               totalGCI,
-      listings_taken:    listingCount       ?? 0,
+    // KEYED ON THE CANONICAL VOCABULARY. Two of these five used to be spelled
+    // `transactions` and `gci`, which agent_goals_goal_type_check does not
+    // admit — so those two updates matched zero rows on every run and the
+    // corresponding goals sat frozen at their initial value forever, looking
+    // like an agent who had closed nothing all year.
+    const liveValues: Partial<Record<AgentGoalType, number>> = {
+      transactions_closed: transactionCount ?? 0,
+      gross_commission:    totalGCI,
+      listings_taken:      listingCount     ?? 0,
       referrals_generated: referralCount    ?? 0,
-      reviews_requested: reviewCount        ?? 0,
+      reviews_requested:   reviewCount      ?? 0,
     }
 
     // Batch update current_value for each goal type that has live data
@@ -390,6 +493,15 @@ export async function syncGoalCurrentValues(params: {
     if (errors.length > 0) {
       console.error("[v0] syncGoalCurrentValues partial errors:", errors)
     }
+
+    // Lane 104F: the goal's mission learns the measured value (lib/kernel/missions.ts
+    // recordMissionProgress keyed on the goal type — the criterion upsertAgentGoal wrote). A goal
+    // that reaches its target COMPLETES its mission there, deterministically. Tenant = the session's
+    // (refuseForeignTenant above); the service client carries the write.
+    await recordGoalMissionProgress(params.brokerageId, (await supabase
+      .from("agent_goals").select("id, goal_type, current_value, mission_id")
+      .eq("agent_id", params.agentId).eq("brokerage_id", params.brokerageId).eq("year", year)
+      .not("mission_id", "is", null)).data ?? [])
 
     revalidatePath("/dashboard")
     return { success: true, data: liveValues }

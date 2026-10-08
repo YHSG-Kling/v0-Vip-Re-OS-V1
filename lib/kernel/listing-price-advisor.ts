@@ -24,6 +24,11 @@ export interface PriceDropRecommendation {
   currentPrice: number
   recommendedPrice: number | null
   dropAmount: number | null
+  /**
+   * PERCENT value, one decimal — 5.0 means a 5% cut. Matches the repo convention
+   * for stored rates (listing_agreements stores 3 for 3%). It previously returned
+   * the raw fraction under this name, so the first consumer rendered "0.05%".
+   */
   dropPct: number | null
   justification: string[]
   confidence: "low" | "medium" | "high"
@@ -86,7 +91,7 @@ export function computePriceDropRecommendation(input: PriceDropInput): PriceDrop
 
   return {
     recommend: true, currentPrice, recommendedPrice, dropAmount,
-    dropPct: dropAmount / currentPrice, justification, confidence,
+    dropPct: Math.round((dropAmount / currentPrice) * 1000) / 10, justification, confidence,
     reason: `Recommend reducing to $${recommendedPrice.toLocaleString()} (−$${dropAmount.toLocaleString()}) to reactivate buyer interest.`,
   }
 }

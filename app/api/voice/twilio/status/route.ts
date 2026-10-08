@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveInboundContext, validateTwilioSignature } from "@/lib/voice/twilio-voice"
@@ -36,10 +37,9 @@ export async function POST(request: NextRequest) {
     if (!token || !validateTwilioSignature(token, url, params, signature)) {
       return new NextResponse("invalid signature", { status: 403 })
     }
-    await svc.from("platform_reception_calls")
+    await sentinelWrite(svc, svc.from("platform_reception_calls")
       .update({ status: "completed", ended_at: new Date().toISOString(), outcome: callStatus === "completed" ? undefined : callStatus })
-      .eq("call_sid", callSid).eq("status", "in_progress")
-      .then(undefined, () => {})
+      .eq("call_sid", callSid).eq("status", "in_progress"), { table: "platform_reception_calls", flow: "reception_call_close", reason: "status webhook must ack; a lost close is ledgered" })
     return NextResponse.json({ ok: true })
   }
 
@@ -59,18 +59,59 @@ export async function POST(request: NextRequest) {
   // .select() returns the transitioned rows — the hook below fires ONLY when
   // THIS callback actually closed the row (no double-fire with the turn-route
   // hangup path, which closes the row first on a normal goodbye).
-  const { data: closed } = await svc.from("voice_calls").update(patch)
-    .eq("vapi_call_id", callSid).in("status", ["initiated", "in_progress"])
+  const { data: closed, error: closeErr } = await svc.from("voice_calls").update(patch)
+    .eq("vendor_call_id", callSid).in("status", ["initiated", "in_progress"])
     .select("id, lead_id")
-    .then((r: any) => r, () => ({ data: null }))
+    .then((r: any) => r, (e: unknown) => ({ data: null, error: { message: e instanceof Error ? e.message : String(e) } }))
+  // A refused close is not "someone else closed it" — the post-call brain below
+  // will not run for this call; say so instead of skipping silently.
+  if (closeErr) console.error(`[twilio-status] voice_calls close REFUSED for ${callSid} — post-call routing skipped: ${closeErr.message}`)
 
-  // A LEAD's call that ended mid-conversation still gets intent-classified:
-  // positive direction converts the lead to a contact (canonical handoff).
-  const leadRow = (closed ?? []).find((r: any) => r.lead_id)
-  if (leadRow && callStatus === "completed") {
+  // Post-call brain — fires ONLY when THIS callback actually closed the row (no
+  // double-fire with the turn route's goodbye path, which closes first). A LEAD
+  // gets intent-classified (positive → canonical handoff); EVERY completed call
+  // gets the automatic outcome routing (contact DNC on negative, agent notify +
+  // auto-drafted follow-up on positive, scoring + rolling qualification).
+  const closedRow = (closed ?? [])[0]
+  if (closedRow && callStatus === "completed") {
     try {
-      const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
-      await routeLeadCallIntent(svc, leadRow.id)
+      if (closedRow.lead_id) {
+        const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
+        await routeLeadCallIntent(svc, closedRow.id)
+      }
+      const { routePostCallOutcome } = await import("@/lib/ai-isa/post-call-outcome")
+      await routePostCallOutcome(svc, closedRow.id)
+    } catch { /* best-effort — never 500 a Twilio callback */ }
+  }
+
+  // ── BILLING — the canonical usage_logs rail ─────────────────────────────────
+  // Close the pre-existing metering gap: the Twilio-native lane wrote NO per-call
+  // billing row, so tenant voice minutes were invisible to the phone-settings card,
+  // the finance P&L, and the provisioning quota (all of which meter from usage_logs).
+  // Record ONE 'voice_call' row per completed tenant call, idempotent on the CallSid
+  // so a re-posted callback can never double-bill. Best-effort — never 500 Twilio.
+  if (callStatus === "completed" && Number.isFinite(duration) && duration > 0) {
+    try {
+      const { data: vc } = await svc.from("voice_calls").select("id, agent_id").eq("vendor_call_id", callSid).maybeSingle()
+      if (vc) {
+        const { data: already } = await svc.from("usage_logs").select("id")
+          .eq("brokerage_id", ctx.brokerageId).eq("usage_type", "voice_call")
+          .contains("metadata", { call_sid: callSid }).maybeSingle()
+        if (!already) {
+          const minutesBilled = Math.max(1, Math.ceil(duration / 60))
+          const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+          const costCents = Math.round(estimatePlatformVendorCost("twilio_voice", minutesBilled) * 100)
+          await sentinelWrite(svc, svc.from("usage_logs").insert({
+            brokerage_id: ctx.brokerageId,
+            agent_id: (vc as any).agent_id ?? null,
+            usage_type: "voice_call",
+            units_used: minutesBilled,
+            cost_cents: costCents,
+            recorded_at: new Date().toISOString(),
+            metadata: { call_sid: callSid, duration_seconds: duration, engine: "twilio", voice_call_id: (vc as any).id },
+          }), { table: "usage_logs", flow: "twilio_voice_usage", brokerageId: ctx.brokerageId, reason: "a status webhook must ack Twilio; a lost billed minute is ledgered for the repair digest (usage-metering reads usage_logs)" })
+        }
+      }
     } catch { /* best-effort — never 500 a Twilio callback */ }
   }
   return NextResponse.json({ ok: true })

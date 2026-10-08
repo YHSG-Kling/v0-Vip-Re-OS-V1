@@ -7,10 +7,14 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { approveAgentAction, rejectAgentAction } from "@/app/actions/command-center"
 import { generateStandupAudio } from "@/app/actions/standup-audio"
-import type { CommandCenterData, CommandCenterAction, CommandCenterSession } from "@/lib/kernel/command-center"
+import { getManagerSessionDetail } from "@/app/actions/admin/manager-evals"
+import type { CommandCenterData, CommandCenterAction, CommandCenterSession, ManagerSessionDetail } from "@/lib/kernel/command-center"
 import { MANAGERS } from "@/lib/kernel/manager-registry"
 import { ManagerTalkFeed } from "./manager-talk-feed"
+import { ManagerActivityFeed } from "./manager-activity-feed"
 import { CommandBar } from "./command-bar"
+import { TwinScenarioPanel } from "./twin-scenario-panel"
+import { NetworkBenchmarksCard } from "./network-benchmarks-card"
 
 const SESSION_BADGE: Record<string, string> = {
   running:    "bg-green-100 text-green-800",
@@ -172,8 +176,13 @@ export function CommandCenterClient({
 
       {/* Manager Daily Standup — the morning roll-call: what each Claude manager did in
           the last 24h and what is waiting on a human. The governed-autonomy report. */}
+      {/* WAVE 108D: with the exceptions-first panel leading the page, this per-manager roll-call is
+          "handled automatically" detail — collapsed (counts in the summary), never removed. */}
       {data.standup.length > 0 && (
-        <section className="space-y-2">
+        <details className="space-y-2" open={!data.exceptionsFirst}>
+          <summary className="cursor-pointer text-sm text-muted-foreground">
+            Handled automatically — {data.standup.reduce((s, l) => s + l.activity_24h, 0)} manager action{data.standup.reduce((s, l) => s + l.activity_24h, 0) === 1 ? "" : "s"} in 24h across {data.standup.length} manager{data.standup.length === 1 ? "" : "s"}
+          </summary>
           <div className="flex items-baseline justify-between gap-3">
             <h2 className="text-lg font-semibold">Manager standup — last 24 hours</h2>
             <div className="flex items-center gap-3">
@@ -217,7 +226,7 @@ export function CommandCenterClient({
               </Card>
             ))}
           </div>
-        </section>
+        </details>
       )}
 
       {/* AI ISA dial batches awaiting approval — "call my hottest N consented contacts". */}
@@ -248,6 +257,11 @@ export function CommandCenterClient({
           and what the addressed manager did about it. Registry-driven identity +
           coordination-kind vocabulary (see manager-talk-feed.tsx). */}
       <ManagerTalkFeed talk={data.managerTalk ?? []} />
+
+      {/* What the managers did — the completed-work ledger: the third manager story
+          (alongside the pending queue + the talking feed). One chronological,
+          manager-attributed timeline composed from the per-manager stores. */}
+      <ManagerActivityFeed activity={data.managerActivity ?? []} />
 
       {/* Unified governed-deliverables rail — every loop's gate proposals in one glance.
           The proof-of-system view: N AI deliverables this week, every one human-approved
@@ -318,6 +332,108 @@ export function CommandCenterClient({
         </section>
       )}
 
+      {/* Wave 106E — THE BROKERAGE TWIN's workforce line: the classified roster (lib/kernel/brokerage-twin.ts
+          workforce, evidence + policy threshold on every classification) and the territories whose seller
+          demand is rising — the recruiting needs the Missions card holds for approval. Admin-gated page. */}
+      {data.brokerageTwin?.workforce && (
+        <section className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold">Brokerage twin — workforce</h2>
+            <span className="text-xs text-muted-foreground">as of {data.brokerageTwin.at.slice(0, 16).replace("T", " ")} · thresholds from {data.brokerageTwin.workforce.thresholdsSource === "policy" ? "tenant policy" : "platform defaults"}</span>
+          </div>
+          <Card className="p-4 space-y-2">
+            <div className="text-sm">
+              {data.brokerageTwin.workforce.agents.length} agent{data.brokerageTwin.workforce.agents.length === 1 ? "" : "s"} profiled —{" "}
+              {(["strong_listing", "strong_buyer", "investor", "bilingual", "luxury_specialist", "overwhelmed", "underutilized", "in_development"] as const)
+                .filter((k) => (data.brokerageTwin!.workforce.totals[k] ?? 0) > 0)
+                .map((k) => `${data.brokerageTwin!.workforce.totals[k]} ${k.replace("_specialist", "").replace(/_/g, " ")}`)
+                .join(" · ") || "no classification met its threshold yet"}
+            </div>
+            {data.brokerageTwin.workforce.territories.filter((t) => t.trend === "up").length > 0 && (
+              <div className="text-xs text-muted-foreground">
+                Seller demand rising: {data.brokerageTwin.workforce.territories.filter((t) => t.trend === "up").map((t) => `${t.territory} (${t.sellerContactsPrev30d}→${t.sellerContacts30d} seller leads, ${t.agentsWithHeadroom} serving with headroom${t.luxuryShare30d >= 0.3 ? `, ${Math.round(t.luxuryShare30d * 100)}% luxury` : ""})`).join("; ")} — recruiting needs are held on the Missions card until you approve them.
+              </div>
+            )}
+            {data.brokerageTwin.blindSpots.length > 0 && (
+              <div className="text-xs text-muted-foreground">Blind spots: {data.brokerageTwin.blindSpots.slice(0, 3).join(" · ")}{data.brokerageTwin.blindSpots.length > 3 ? ` · +${data.brokerageTwin.blindSpots.length - 3}` : ""}</div>
+            )}
+            {/* Wave 107D — the what-if engine on this twin (app/actions/twin-scenario.ts; simulation only). */}
+            <TwinScenarioPanel territories={data.brokerageTwin.workforce.territories.map((t) => t.territory)} />
+          </Card>
+        </section>
+      )}
+
+      {/* Wave 104A — LEDGER TRUTH: the brokerage's contribution margin derived from the posted
+          commission ledger + cost ledgers only (lib/kernel/economic-graph.ts), and how many
+          money summaries have drifted from it. Admin-gated page; agents never see margin (§5). */}
+      {data.economicGraph && (
+        <section className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold">Ledger truth — contribution margin</h2>
+            <span className="text-xs text-muted-foreground">since {data.economicGraph.since.slice(0, 10)} · {data.economicGraph.closings} closings · from the ledgers{data.economicGraph.measured ? "" : " · a read was refused (floor)"}</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">Gross of record</div>
+              <div className="text-2xl font-semibold">${Math.round(data.economicGraph.grossCents / 100).toLocaleString()}</div>
+            </div>
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">Brokerage share</div>
+              <div className="text-2xl font-semibold">${Math.round(data.economicGraph.brokerageShareCents / 100).toLocaleString()}</div>
+              <div className="text-xs text-muted-foreground">costs + obligations ${Math.round(data.economicGraph.tenantCostCents / 100).toLocaleString()}</div>
+            </div>
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">Contribution margin</div>
+              <div className={`text-2xl font-semibold ${data.economicGraph.contributionMarginCents >= 0 ? "text-green-700" : "text-red-700"}`}>${Math.round(data.economicGraph.contributionMarginCents / 100).toLocaleString()}</div>
+            </div>
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">Summaries off the ledger</div>
+              <div className={`text-2xl font-semibold ${data.economicGraph.summaryDrifts > 0 ? "text-red-700" : ""}`}>{data.economicGraph.summaryDrifts}</div>
+              <div className="text-xs text-muted-foreground">{data.economicGraph.conservationFailures} closings where shares ≠ gross</div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Wave 100A — WHICH reason code / manager / playbook / campaign produced the revenue: closed GCI,
+          contracts, appointments and replies credited back to the action ledger (last-touch + all-touch,
+          deterministic; lib/intelligence/roi-ledger.ts loadLedgerAttribution). Trace one record in the
+          flight recorder (/dashboard/admin/ai-audit). */}
+      {data.roiLedger?.ledgerAttribution && data.roiLedger.ledgerAttribution.outcomes > 0 && (
+        <section className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-sm font-semibold">What produced the revenue</h2>
+            <span className="text-xs text-muted-foreground">
+              {data.roiLedger.ledgerAttribution.credited} of {data.roiLedger.ledgerAttribution.outcomes} outcomes credited to a preceding action · last {data.roiLedger.periodDays} days
+            </span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-6">
+            {([
+              ["Reason code", data.roiLedger.ledgerAttribution.byReasonCode],
+              ["Manager", data.roiLedger.ledgerAttribution.byManager],
+              ["Playbook", data.roiLedger.ledgerAttribution.byPlaybook],
+              ["Campaign", data.roiLedger.ledgerAttribution.byCampaign],
+              ["Experiment arm", data.roiLedger.ledgerAttribution.byExperimentArm ?? []],
+              // Wave 107F: strategy + version from ledger detail.strategy (107E activations).
+              ["Strategy", data.roiLedger.ledgerAttribution.byStrategy ?? []],
+            ] as const).map(([label, rows]) => (
+              <Card key={label} className="p-3">
+                <div className="text-xs text-muted-foreground mb-1">By {label.toLowerCase()} · last-touch / all-touch</div>
+                {rows.length === 0 ? <div className="text-xs text-muted-foreground">nothing credited</div> : rows.map((r) => (
+                  <div key={r.key} className="flex justify-between gap-2 text-xs">
+                    <span className="truncate" title={r.key}>{r.key}</span>
+                    <span className="tabular-nums">${Math.round(r.lastTouchCents / 100).toLocaleString()} / ${Math.round(r.allTouchCents / 100).toLocaleString()}</span>
+                  </div>
+                ))}
+              </Card>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Wave 107F — privacy-safe network benchmarks beside this brokerage's own numbers (k-anonymous, opt-in contribution). */}
+      {data.roiLedger && <NetworkBenchmarksCard />}
+
       {/* Retention board — the Recruiting Manager's daily flight-risk scores made visible.
           People health beside production: who's trending down and why, before they leave. */}
       {data.retentionBoard && data.retentionBoard.scored > 0 && (
@@ -344,6 +460,10 @@ export function CommandCenterClient({
                 <span className="text-green-700 font-medium">{data.retentionOutcomes.retained} retained</span>
                 <span className="text-red-700 font-medium">{data.retentionOutcomes.lost} lost</span>
                 <span className="text-muted-foreground">{data.retentionOutcomes.pending} pending</span>
+                {/* Unresolved past the settle window — still open, no longer "still working". */}
+                {data.retentionOutcomes.aging > 0 && (
+                  <span className="text-amber-700 font-medium">{data.retentionOutcomes.aging} aging</span>
+                )}
                 {data.retentionOutcomes.winRate !== null && (
                   <Badge className="bg-green-700 text-white">{Math.round(data.retentionOutcomes.winRate * 100)}% win rate</Badge>
                 )}
@@ -363,10 +483,30 @@ export function CommandCenterClient({
                         {a.trend && a.trend !== "stable" && (
                           <span className={"text-[11px] font-medium " + (a.trend === "declining" ? "text-red-700" : "text-green-700")}>
                             {a.trend === "declining" ? "▼ declining" : "▲ improving"}
+                            {/* HOW FAR, not only which way — agent_retention_scores.previous_score.
+                                A −2 drift and a −30 collapse both read as "declining" before this. */}
+                            {a.delta !== null ? ` ${a.delta > 0 ? "+" : ""}${a.delta}` : ""}
                           </span>
                         )}
                       </div>
-                      {a.drivers.length > 0 && <p className="text-xs text-muted-foreground truncate">{a.drivers.join(" · ")}</p>}
+                      {a.drivers.length > 0 && (
+                        <p className="text-xs text-muted-foreground truncate">
+                          {a.drivers.join(" · ")}
+                          {/* HOW WEAK — the radar's stored signal_breakdown, the only
+                              place the driver labels' magnitude lives. */}
+                          {a.weakestSignal ? ` · weakest ${a.weakestSignal.key} ${a.weakestSignal.score}/100` : ""}
+                        </p>
+                      )}
+                      {/* WAVE 89 (lane 89C) — SUPPORT SUGGESTED: what the broker can do about each
+                          driving signal (agent_retention_scores.support_suggested). Broker/team-lead
+                          facing only; the agent never sees this board. */}
+                      {a.supportSuggested.length > 0 && (
+                        <ul className="mt-1 space-y-0.5">
+                          {a.supportSuggested.slice(0, 3).map((s) => (
+                            <li key={s} className="text-xs text-amber-800">Support suggested — {s}</li>
+                          ))}
+                        </ul>
+                      )}
                     </div>
                     <span className="text-lg font-semibold shrink-0">{a.score}<span className="text-xs text-muted-foreground">/100</span></span>
                   </Card>
@@ -405,6 +545,25 @@ export function CommandCenterClient({
                 </Card>
               ))}
             </div>
+          )}
+          {/* Competency gaps (wave 103) — the evidence-scored read beside freshness: who scores at or
+              below the gap line, on what, so the manager's 1:1 and the curriculum target the same gap. */}
+          {data.skillBoard.competency && data.skillBoard.competency.scored > 0 && (
+            <Card className={"p-3 space-y-1.5 " + (data.skillBoard.competency.withGaps > 0 ? "border-amber-200" : "")}>
+              <div className="flex items-baseline justify-between">
+                <span className="text-sm font-medium">Competency gaps</span>
+                <span className="text-xs text-muted-foreground">
+                  {data.skillBoard.competency.withGaps} of {data.skillBoard.competency.scored} agents
+                  {data.skillBoard.competency.topGap ? ` · most common: ${data.skillBoard.competency.topGap}` : ""}
+                </span>
+              </div>
+              {data.skillBoard.competency.agents.map((a) => (
+                <div key={a.agentId} className="flex items-center justify-between gap-3 text-xs">
+                  <span className="font-medium truncate">{a.name}{a.overall != null ? ` · ${a.overall}/100` : ""}</span>
+                  <span className="text-muted-foreground truncate max-w-[22rem]">{a.gaps.join(" · ")}</span>
+                </div>
+              ))}
+            </Card>
           )}
         </section>
       )}
@@ -577,8 +736,30 @@ export function CommandCenterClient({
         </section>
       )}
 
+      {/* Heartbeat — every scheduled loop that ran is owned by an accountable manager
+          (resolveCronManager). The cron owner had no product reader before this. */}
+      {(data.cronOwners ?? []).length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold">Heartbeat — who runs each loop</h2>
+          <div className="flex flex-wrap gap-2">
+            {data.cronOwners.map((c) => (
+              <Card key={c.cronPath} className="px-3 py-2 flex items-center gap-2" title={`${c.cronPath} · ${MANAGERS[c.managerKey]?.domain ?? ""}`}>
+                <Badge className="bg-slate-900 text-white">{c.managerLabel}</Badge>
+                <span className="text-sm">{c.cronName}</span>
+                <Badge className={c.status === "failed" ? "bg-red-100 text-red-800" : c.status === "running" ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}>
+                  {c.status ?? "unknown"}
+                </Badge>
+                {c.startedAt && (
+                  <span className="text-xs text-muted-foreground">{new Date(c.startedAt).toLocaleString()}</span>
+                )}
+              </Card>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Approval queue */}
-      <section className="space-y-3">
+      <section id="approval-queue" className="space-y-3">
         <h2 className="text-lg font-semibold">Approval queue</h2>
         {actions.length === 0 ? (
           <Card className="p-6 text-sm text-muted-foreground">No actions awaiting approval.</Card>
@@ -591,15 +772,10 @@ export function CommandCenterClient({
         )}
       </section>
 
-      {/* Sessions */}
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold">Manager sessions</h2>
-        {data.sessions.length === 0 ? (
-          <Card className="p-6 text-sm text-muted-foreground">No managed-agent sessions yet.</Card>
-        ) : (
-          <div className="space-y-2">{data.sessions.map((s) => <SessionRow key={s.id} session={s} />)}</div>
-        )}
-      </section>
+      {/* Sessions — with the status filter + per-session drill-down merged from
+          the retired /api/admin/agents/sessions route (§1.1): last-message
+          preview on the row, and a click opens the rubric-evaluation drawer. */}
+      <SessionsSection sessions={data.sessions} />
     </div>
   )
 }
@@ -613,16 +789,167 @@ function Stat({ label, value, accent }: { label: string; value: number; accent: 
   )
 }
 
-function SessionRow({ session }: { session: CommandCenterSession }) {
+/** The status vocabulary offered as filters — "active" = running+idle (the
+ *  actionable pair the retired route defaulted to), "all" = everything. The
+ *  filter is over the loaded window (the page's limit), not a re-query. */
+const SESSION_FILTERS = ["all", "active", "running", "idle", "terminated", "error"] as const
+type SessionFilter = (typeof SESSION_FILTERS)[number]
+
+function SessionsSection({ sessions }: { sessions: CommandCenterSession[] }) {
+  const [filter, setFilter] = useState<SessionFilter>("all")
+  const filtered = sessions.filter((s) =>
+    filter === "all" ? true : filter === "active" ? s.status === "running" || s.status === "idle" : s.status === filter,
+  )
   return (
-    <Card className="p-4 flex items-center justify-between">
-      <div>
-        <div className="font-medium">{managerLabelForKind(session.agentKind)}</div>
-        <div className="text-xs text-muted-foreground">
-          {session.entityType} · {session.entityId.slice(0, 8)}… · last event {timeAgo(session.lastEventAt)}
+    <section className="space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-lg font-semibold">Manager sessions</h2>
+        <div className="flex flex-wrap gap-1.5">
+          {SESSION_FILTERS.map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setFilter(f)}
+              className={
+                "rounded-full border px-2.5 py-0.5 text-xs " +
+                (filter === f ? "bg-slate-900 text-white border-slate-900" : "text-muted-foreground hover:bg-muted")
+              }
+            >
+              {f}
+            </button>
+          ))}
         </div>
       </div>
-      <Badge className={SESSION_BADGE[session.status] ?? "bg-slate-100 text-slate-700"}>{session.status}</Badge>
+      {sessions.length === 0 ? (
+        <Card className="p-6 text-sm text-muted-foreground">No managed-agent sessions yet.</Card>
+      ) : filtered.length === 0 ? (
+        <Card className="p-6 text-sm text-muted-foreground">
+          No {filter} session in the loaded window ({sessions.length} loaded).
+        </Card>
+      ) : (
+        <div className="space-y-2">{filtered.map((s) => <SessionRow key={s.id} session={s} />)}</div>
+      )}
+    </section>
+  )
+}
+
+function SessionRow({ session }: { session: CommandCenterSession }) {
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [detail, setDetail] = useState<ManagerSessionDetail | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function toggle() {
+    const next = !open
+    setOpen(next)
+    if (next && !detail && !loading) {
+      setLoading(true)
+      setError(null)
+      try {
+        const res = await getManagerSessionDetail(session.id)
+        if (res.ok) setDetail(res.detail)
+        else setError(res.error)
+      } catch {
+        setError("The session detail read failed to run.")
+      } finally {
+        setLoading(false)
+      }
+    }
+  }
+
+  return (
+    <Card className="p-4">
+      <button type="button" onClick={toggle} className="w-full text-left flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-medium">{managerLabelForKind(session.agentKind)}</div>
+          <div className="text-xs text-muted-foreground">
+            {session.entityType} · {session.entityId.slice(0, 8)}… · last event {timeAgo(session.lastEventAt)}
+          </div>
+          {session.lastAgentMessage && (
+            <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
+              &ldquo;{session.lastAgentMessage}&rdquo;
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <Badge className={SESSION_BADGE[session.status] ?? "bg-slate-100 text-slate-700"}>{session.status}</Badge>
+          <span className="text-xs text-muted-foreground">{open ? "▲" : "▼"}</span>
+        </div>
+      </button>
+
+      {open && (
+        <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-3">
+          {loading && <p className="text-xs text-muted-foreground">Loading session detail…</p>}
+          {error && <p className="text-xs text-red-600">Could not load this session: {error}</p>}
+          {detail && (
+            <>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                {detail.model && <span>model: <span className="font-medium text-foreground">{detail.model}</span></span>}
+                {detail.agentKind && <span>kind: {detail.agentKind}</span>}
+                {detail.anthropicAgentId && <span>agent: {detail.anthropicAgentId.slice(0, 18)}…</span>}
+                {detail.stopReason && <span>stop reason: {detail.stopReason}</span>}
+                {detail.endedAt && <span>ended {timeAgo(detail.endedAt)}</span>}
+              </div>
+              {detail.lastAgentMessage && (
+                <p className="text-sm whitespace-pre-wrap max-h-40 overflow-auto">{detail.lastAgentMessage}</p>
+              )}
+              <div>
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-1">
+                  Rubric evaluations {detail.evaluations.length > 0 ? `(${detail.evaluations.length})` : ""}
+                </div>
+                {detail.evaluations.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No outcome evaluation has been recorded for this session yet.
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {detail.evaluations.map((e) => (
+                      <li key={e.iteration} className="rounded border bg-background p-2">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <Badge className={e.result === "pass" ? "bg-green-100 text-green-800" : e.result === "fail" ? "bg-red-100 text-red-800" : "bg-slate-100 text-slate-700"}>
+                            iter {e.iteration} · {e.result}
+                          </Badge>
+                          <span className="text-muted-foreground">
+                            {e.inputTokens.toLocaleString()} in / {e.outputTokens.toLocaleString()} out
+                            {e.cacheReadInputTokens > 0 ? ` (+${e.cacheReadInputTokens.toLocaleString()} cached)` : ""}
+                          </span>
+                          {e.evaluatedAt && <span className="text-muted-foreground">{timeAgo(e.evaluatedAt)}</span>}
+                        </div>
+                        {e.explanation && <p className="mt-1 text-xs text-muted-foreground">{e.explanation}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-1">
+                  Client messages drafted {detail.clientMessages.length > 0 ? `(${detail.clientMessages.length})` : ""}
+                </div>
+                {detail.clientMessages.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    This session has not drafted a client message.
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {detail.clientMessages.map((m) => (
+                      <li key={m.id} className="rounded border bg-background p-2 text-xs">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge className="bg-slate-100 text-slate-700">{m.status ?? "proposed"}</Badge>
+                          <span className="text-muted-foreground">
+                            {m.audience ?? "client"} · {m.channel ?? "portal"}
+                          </span>
+                          {m.proposedAt && <span className="text-muted-foreground">{timeAgo(m.proposedAt)}</span>}
+                        </div>
+                        {m.subject && <p className="mt-1 truncate">{m.subject}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </Card>
   )
 }
@@ -637,10 +964,15 @@ function DeliveryPreview({ input }: { input: Record<string, unknown> }) {
   const videos = Array.isArray(input.video_renders) ? (input.video_renders as Array<{ section_key: string; title: string; output_url: string; thumbnail_url: string | null }>) : []
   const email = (input.email ?? {}) as { subject?: string; preview_text?: string; preview_html?: string }
   const appt = input.appointment_at as string | null
+  // "audience" is the proposer's own key (lib/listing-presentation/prelisting-delivery.ts,
+  // same name the email composer takes). Rows proposed before the key existed have no
+  // `audience` and fall through to the seller wording — the pre-existing behaviour, so
+  // no back-fill migration is needed.
+  const buyer = input.audience === "buyer"
 
   return (
     <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-3">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Review before releasing to the seller</div>
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Review before releasing to the {buyer ? "buyer" : "seller"}</div>
 
       {videos.length > 0 && (
         <div>
@@ -679,7 +1011,7 @@ function DeliveryPreview({ input }: { input: Record<string, unknown> }) {
         </div>
       )}
 
-      {appt && <div className="text-[11px] text-muted-foreground">Seller appointment: {new Date(appt).toLocaleString()}</div>}
+      {appt && <div className="text-[11px] text-muted-foreground">{buyer ? "Buyer consultation" : "Seller appointment"}: {new Date(appt).toLocaleString()}</div>}
     </div>
   )
 }
@@ -898,6 +1230,41 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
   const isClientMsg = action.queue === "client_message"
   const [editedBody, setEditedBody] = useState<string>(isClientMsg ? String(action.actionInput.body ?? "") : "")
 
+  // The session that PROPOSED this action — an approver can open the reasoning
+  // transcript behind the proposal instead of approving a rationale blind.
+  const [sessionOpen, setSessionOpen] = useState(false)
+  const [sessionLoading, setSessionLoading] = useState(false)
+  const [sessionDetail, setSessionDetail] = useState<ManagerSessionDetail | null>(null)
+  const [sessionError, setSessionError] = useState<string | null>(null)
+
+  async function toggleSession() {
+    const next = !sessionOpen
+    setSessionOpen(next)
+    if (next && !sessionDetail && !sessionLoading && action.managedAgentSessionId) {
+      setSessionLoading(true)
+      setSessionError(null)
+      try {
+        const res = await getManagerSessionDetail(action.managedAgentSessionId)
+        if (res.ok) setSessionDetail(res.detail)
+        else setSessionError(res.error)
+      } catch {
+        setSessionError("The session detail read failed to run.")
+      } finally {
+        setSessionLoading(false)
+      }
+    }
+  }
+
+  // Display label for the action type (AdActionPreview precedent: a per-type label
+  // map). approve_prelisting_delivery is ONE action type serving two audiences —
+  // the label reads the proposer's `audience` key from action_input, never
+  // action.queue. A row without the key (proposed before the key existed) falls
+  // through to the seller wording, the pre-existing behaviour — no migration.
+  const actionTypeLabel =
+    action.actionType === "approve_prelisting_delivery"
+      ? (action.actionInput.audience === "buyer" ? "Release buyer-consultation deck" : "Release pre-listing presentation")
+      : action.actionType.replace(/_/g, " ")
+
   function run(kind: "approve" | "reject") {
     setError(null)
     startTransition(async () => {
@@ -920,7 +1287,7 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
             <Badge className={QUEUE_BADGE[action.queue] ?? "bg-slate-100 text-slate-700"}>
               {QUEUE_LABEL[action.queue] ?? action.queue}
             </Badge>
-            <span className="font-medium">{action.actionType.replace(/_/g, " ")}</span>
+            <span className="font-medium">{actionTypeLabel}</span>
             {action.slaLevel === "breached" && (
               <Badge className="bg-red-100 text-red-800">SLA breached · {Math.round(action.ageHours)}h</Badge>
             )}
@@ -947,6 +1314,35 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
                 <li key={i} className={`text-xs ${action.compliance!.status === "blocked" ? "text-red-700" : "text-amber-700"}`}>⚖️ {f}</li>
               ))}
             </ul>
+          )}
+          {action.managedAgentSessionId && (
+            <div className="mt-1">
+              <button
+                type="button"
+                onClick={toggleSession}
+                className="text-xs font-medium text-primary hover:underline"
+              >
+                {sessionOpen ? "Hide session ▲" : "View proposing session ▼"}
+              </button>
+              {sessionOpen && (
+                <div className="mt-1 rounded-md border bg-muted/30 p-2 text-xs">
+                  {sessionLoading && <p className="text-muted-foreground">Loading session detail…</p>}
+                  {sessionError && <p className="text-red-600">Could not load this session: {sessionError}</p>}
+                  {sessionDetail && (
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+                        {sessionDetail.model && <span>model: <span className="font-medium text-foreground">{sessionDetail.model}</span></span>}
+                        {sessionDetail.agentKind && <span>kind: {sessionDetail.agentKind}</span>}
+                        {sessionDetail.stopReason && <span>stop reason: {sessionDetail.stopReason}</span>}
+                      </div>
+                      {sessionDetail.lastAgentMessage && (
+                        <p className="whitespace-pre-wrap max-h-32 overflow-auto">{sessionDetail.lastAgentMessage}</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           )}
           {action.actionType === "approve_prelisting_delivery" && <DeliveryPreview input={action.actionInput} />}
           {action.queue === "social" && <SocialPreview input={action.actionInput} />}

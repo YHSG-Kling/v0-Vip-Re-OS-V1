@@ -1,0 +1,6 @@
+{
+  "_": "Ratchets for scripts/rendered-empty-states-guard.ts (lane 90D, measured 2026-09-29 on 433 mounted client list components / 543 pages). Each may only fall. no_sentence = client list components that render text on [] but never say the list is empty (a heading + zero rows, a form, a button); self_hiding = components that return nothing on [] (widgets whose parent surface answers for the gap); list_without_empty_state = pages whose whole import subtree maps over fetched data with no empty vocabulary anywhere (server-rendered half).",
+  "no_sentence": 122,
+  "self_hiding": 33,
+  "list_without_empty_state": 0
+}

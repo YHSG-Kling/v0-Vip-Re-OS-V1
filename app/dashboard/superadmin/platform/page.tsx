@@ -12,7 +12,7 @@ import {
   getCronHealthAction,
   getTenantSafetyFeedAction,
 } from "@/app/actions/superadmin/platform-overview"
-import { createClient } from "@/lib/supabase/server"
+import { requireSuperadmin } from "@/lib/auth/platform-guard"
 import { redirect } from "next/navigation"
 import { getBrokerageBudgetWarningEnabled } from "@/lib/vendor-governance/budget-gate"
 import { BudgetWarningToggle } from "./budget-warning-toggle"
@@ -89,17 +89,23 @@ function quotaBadge(s: string | null) {
 }
 
 export default async function SuperadminPlatformPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("user_type")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (profile?.user_type !== "superadmin") {
-    return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
+  // GATE. This page used to read `profile.user_type !== 'superadmin'` — a
+  // predicate NO live row satisfies (the one platform superadmin is
+  // platform_role='superadmin' with user_type='admin', because 'admin' is also
+  // a tenant user_type and the roster therefore lives on platform_role). So the
+  // god-switch board rendered "Forbidden" to everybody, the owner included, and
+  // the three actions it calls carried the same dead test underneath it.
+  //
+  // STAYS RAW SUPERADMIN. This board is deliberately NOT capability-widened —
+  // scripts/platform-controls-simulator.ts pins that decision, and it is the
+  // right one: it carries every tenant's MRR/margin, the tenant-isolation
+  // findings, and the emergency-mode god switches. requireSuperadmin
+  // (lib/auth/platform-guard.ts) is the shared gate that reads BOTH identity
+  // columns, so the rule is unchanged and now actually admits its one account.
+  const gate = await requireSuperadmin()
+  if (!gate.ok) {
+    if (gate.error === "Unauthenticated") redirect("/login")
+    return <div className="p-6 text-red-600">Forbidden: {gate.error}</div>
   }
 
   const [overviewRes, cronRes, safetyRes, budgetWarningEnabled, platformControls, statusNotice] = await Promise.all([
@@ -125,10 +131,16 @@ export default async function SuperadminPlatformPage() {
   // stance over the awaiting-subscriber population (leads.brokerage_id IS NULL):
   // tiered honest counts + the superadmin-only anonymized stale archival.
   const { loadParkedRetention } = await import("@/lib/lead-pipeline/parked-retention")
-  const [{ board: coverageBoard, error: coverageError }, { report: territoryRoi, error: territoryRoiError }, { report: parkedRetention, error: parkedRetentionError }] = await Promise.all([
+  // + DISTRIBUTION LEDGER — platform_lead_distributions read back: which lead
+  // Engine 1 handed to which subscriber, when, at which rotation slot, and the
+  // lead's source_family/motivation/urgency. Written on every placement; until
+  // this board nothing rendered it, so rotation fairness was unverifiable.
+  const { loadRecentPlatformDistributions } = await import("@/lib/platform/distribution-engine")
+  const [{ board: coverageBoard, error: coverageError }, { report: territoryRoi, error: territoryRoiError }, { report: parkedRetention, error: parkedRetentionError }, distributionLedger] = await Promise.all([
     loadCoverageBoard(createServiceClient() as any),
     loadTerritoryRoi(createServiceClient() as any),
     loadParkedRetention(createServiceClient() as any),
+    loadRecentPlatformDistributions(50),
   ])
 
   // PLATFORM BOOKS — the company's own accounting connection (exact owner match on
@@ -385,6 +397,59 @@ export default async function SuperadminPlatformPage() {
         retentionError={parkedRetentionError}
       />
 
+      {/* RECENT PLATFORM LEAD DISTRIBUTIONS — Engine 1's placement ledger,
+          rendered. Rotation position is the fairness proof: within one zip the
+          positions should walk the subscriber roster in order. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Activity className="h-4 w-4 text-primary" />
+            Recent platform lead distributions
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {!distributionLedger.ok ? (
+            <p className="text-xs text-red-600">Distribution ledger unavailable: {distributionLedger.error}</p>
+          ) : distributionLedger.entries.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No platform leads have been distributed yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-muted-foreground border-b">
+                    <th className="py-1.5 pr-3 font-medium">When</th>
+                    <th className="py-1.5 pr-3 font-medium">Zip</th>
+                    <th className="py-1.5 pr-3 font-medium">To subscriber</th>
+                    <th className="py-1.5 pr-3 font-medium">Rotation</th>
+                    <th className="py-1.5 pr-3 font-medium">Source family</th>
+                    <th className="py-1.5 pr-3 font-medium">Motivation</th>
+                    <th className="py-1.5 pr-3 font-medium">Urgency</th>
+                    <th className="py-1.5 font-medium">Lead</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {distributionLedger.entries.map((d) => (
+                    <tr key={d.id} className="border-b last:border-0">
+                      <td className="py-1.5 pr-3 whitespace-nowrap">{fmtAgo(d.distributed_at)}</td>
+                      <td className="py-1.5 pr-3 font-mono">{d.zip_code ?? "—"}</td>
+                      <td className="py-1.5 pr-3">{d.brokerage_name ?? d.brokerage_id}</td>
+                      <td className="py-1.5 pr-3">#{d.rotation_position ?? "—"}</td>
+                      <td className="py-1.5 pr-3">{d.source_family ?? "—"}</td>
+                      <td className="py-1.5 pr-3">{d.motivation_type ?? "—"}</td>
+                      <td className="py-1.5 pr-3">{d.urgency_level ?? "—"}</td>
+                      <td className="py-1.5 font-mono text-muted-foreground">
+                        {d.lead_id ? d.lead_id.slice(0, 8) : "—"}
+                        {d.raw_lead_id ? ` (raw ${d.raw_lead_id.slice(0, 8)})` : ""}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Losing money / margin-at-risk alert */}
       {losing_money.length > 0 && (
         <Card className="border-red-200 bg-red-50/30">
@@ -524,8 +589,22 @@ export default async function SuperadminPlatformPage() {
                         {r.is_stale && <Badge className="bg-amber-100 text-amber-800 text-xs">stale</Badge>}
                         {!r.is_stale && r.last_status === "success" && <Badge className="bg-emerald-100 text-emerald-800 text-xs">ok</Badge>}
                         {!r.is_stale && r.last_status === "failure" && <Badge className="bg-red-100 text-red-800 text-xs">failure</Badge>}
+                        {/* `running` is now REACHABLE. Nothing wrote the word until
+                            lib/kernel/cron-logging.ts:createCronRunContext began
+                            stamping it at the start choke, so this badge was
+                            unreachable markup for as long as it has existed.
+                            `is_stale` still outranks it, which is what keeps a
+                            hung run from showing a calm blue pill forever. */}
                         {!r.is_stale && r.last_status === "running" && <Badge className="bg-blue-100 text-blue-800 text-xs">running</Badge>}
-                        {!r.is_stale && r.last_status === "partial" && <Badge className="bg-amber-100 text-amber-800 text-xs">partial</Badge>}
+                        {/* TOMBSTONE: the `partial` badge that stood here is deleted.
+                            No survivor is needed because there was never a producer:
+                            cron_health_snapshot.last_status is written in exactly two
+                            places, lib/kernel/cron-logging.ts:319 ('success') and :415
+                            ('failure'), the terminal commands are binary, and the table
+                            carries no CHECK that ever admitted a third terminal word.
+                            The vocabulary that survives is CRON_SNAPSHOT_STATUSES in
+                            lib/kernel/cron-logging.ts:90. If a middle state is ever
+                            wanted it is written there first and rendered here second. */}
                       </td>
                       <td className="px-4 py-2.5 text-xs text-muted-foreground">{fmtAgo(r.last_run_at)}</td>
                       <td className="px-4 py-2.5 text-right text-xs">{fmtDuration(r.last_duration_ms)}</td>

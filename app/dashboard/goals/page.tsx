@@ -1,17 +1,18 @@
 import { redirect } from "next/navigation"
-import { getAgentContext } from "@/lib/identity"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { getAgentGoals } from "@/app/actions/ai-agent-goals"
 import { GoalsClient } from "./goals-client"
 
 export const dynamic = "force-dynamic"
 
 export default async function GoalsPage() {
-  const ctx = await getAgentContext()
+  // Heal an incomplete account IN PLACE (don't bounce off the page you're on).
+  const ctx = await ensureAgentContextInPlace()
   if (!ctx.isAuthenticated) redirect("/login")
   if (!ctx.agentId || !ctx.brokerageId) {
     return (
       <div className="p-8 text-center text-muted-foreground">
-        Agent profile not found. Contact your admin.
+        Finishing your account setup — refresh in a moment to view your goals.
       </div>
     )
   }

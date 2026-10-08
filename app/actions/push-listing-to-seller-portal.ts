@@ -15,6 +15,7 @@
  * live near them, generating built-in viral distribution.
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 
@@ -73,7 +74,7 @@ export async function pushListingToSellerPortal(
 
   // 3. Insert into seller_share_feed (best-effort — table may not exist yet)
   try {
-    await supabase.from("seller_share_feed").insert({
+    await bestEffort(supabase.from("seller_share_feed").insert({
       listing_id: l.id,
       contact_id: l.contact_id,
       brokerage_id: input.brokerageId,
@@ -82,7 +83,7 @@ export async function pushListingToSellerPortal(
       share_messages: messages,
       agent_note: input.message ?? null,
       pushed_at: new Date().toISOString(),
-    })
+    }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
   } catch {
     // Table doesn't exist yet — fall through and just notify the seller
   }
@@ -95,7 +96,7 @@ export async function pushListingToSellerPortal(
       .eq("id", l.contact_id)
       .maybeSingle()
     if (contactUser?.contact_user_id) {
-      await supabase.from("notifications").insert({
+      const { error: notifyError } = await supabase.from("notifications").insert({
         user_id: contactUser.contact_user_id,
         brokerage_id: input.brokerageId,
         type: "share_my_home",
@@ -107,6 +108,7 @@ export async function pushListingToSellerPortal(
         is_read: false,
         created_at: new Date().toISOString(),
       })
+      if (notifyError) console.warn("[push-listing-to-seller-portal.ts] notifications insert refused — the bell will not ring:", notifyError.message)
     }
   }
 

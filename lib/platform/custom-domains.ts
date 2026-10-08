@@ -118,7 +118,8 @@ export function platformReservedHosts(): string[] {
 }
 
 /** PURE: apex = exactly two labels (foo.com). Multi-label hosts get CNAME advice. */
-export function isApexDomain(domain: string): boolean {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function isApexDomain(domain: string): boolean {
   return domain.split(".").length === 2
 }
 
@@ -190,22 +191,25 @@ function vercelUrl(cfg: VercelDomainsConfig, path: string): string {
   return `${VERCEL_API}${path}${qs}`
 }
 
+/** The ONE Vercel control-plane egress — through the connector gateway (wave 139, lane 139B: was a
+ *  raw fetch published as "infrastructure, outside the rails"; being infrastructure is no technical
+ *  reason to skip the single egress). The gateway adds the timeout, the GET retry, and the outcome
+ *  row (Vercel's derived health; platform scope — the Vercel account is the platform's). A transport failure
+ *  (no status) still rejects, exactly as the bare fetch did, so callers' `.catch` paths hold. */
 async function vercelFetch(
   cfg: VercelDomainsConfig,
   path: string,
   init?: { method?: string; body?: unknown },
 ): Promise<{ status: number; json: any }> {
-  const res = await fetch(vercelUrl(cfg, path), {
-    method: init?.method ?? "GET",
-    headers: {
-      Authorization: `Bearer ${cfg.token}`,
-      ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
-    cache: "no-store",
+  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  const res = await callConnector({
+    connector: "vercel", url: vercelUrl(cfg, path),
+    method: (init?.method ?? "GET") as "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    auth: { style: "bearer", token: cfg.token ?? "" }, // callers gate on cfg.configured first
+    ...(init?.body !== undefined ? { body: init.body } : {}),
   })
-  const json = await res.json().catch(() => ({}))
-  return { status: res.status, json }
+  if (res.status == null) throw new Error(res.error ?? "Vercel API unreachable")
+  return { status: res.status, json: (res.ok ? res.data : res.errorBody) ?? {} }
 }
 
 function parseChallenges(raw: any): VercelVerificationChallenge[] {
@@ -343,7 +347,7 @@ export async function reportCustomDomainOutcome(params: {
       await publishManagerSignal({
         brokerageId: params.brokerageId,
         fromManager: "data_steward",
-        toManager: "marketing_agent",
+        toManager: "campaign_orchestrator", // m618: survivor of the retired marketing_agent seat
         signalType: params.outcome === "verified" ? "custom_domain_verified" : "custom_domain_error",
         message: params.outcome === "verified"
           ? `Custom domain ${params.domain} is verified and LIVE — the white-label site now serves on it.`

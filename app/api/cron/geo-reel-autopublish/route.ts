@@ -10,7 +10,7 @@
  * step.
  *
  * THE GATE (isAutoPublishEligible, enforced again inside publishVideoProjectLanding):
- *   ai_video_projects.status='completed'
+ *   ai_video_projects.status IN VIDEO_FINISHED_STATUSES  (completed | published)
  *     AND compliance_status='passed'      (Fair-Housing / EHO / license disclosures)
  *     AND approval_status='approved'      (broker sign-off — a public page is broadcast advertising)
  *     AND is_published=false              (idempotent — never double-publish)
@@ -25,23 +25,18 @@
  * Auth: CRON_SECRET. Registered in lib/kernel/cron-dispatch.ts (one heartbeat).
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { publishVideoProjectLanding } from "@/lib/geo/publish-video-landing"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 export const maxDuration = 120
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
-
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
-  const qs       = new URL(req.url).searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
 
@@ -51,7 +46,7 @@ export async function GET(req: NextRequest) {
   const { data, error } = await svc.from("ai_video_projects")
     .select("id, brokerage_id")
     .eq("is_published", false)
-    .eq("status", "completed")
+    .in("status", [...VIDEO_FINISHED_STATUSES])
     .eq("compliance_status", "passed")
     .eq("approval_status", "approved")
     .not("video_url", "is", null)
@@ -79,10 +74,18 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // THE LISTING-PAGE NET (wave 81D): every non-draft listing without a public
+  // slug gets its /listing/[slug] page here — the same GEO tick that publishes
+  // reels — so a listing created off the two hooked paths (intake, launch)
+  // still has a page. Bounded; refusals named in the JSON, never swallowed.
+  const { ensureMissingListingSlugs } = await import("@/lib/listings/listing-slug")
+  const listingPages = await ensureMissingListingSlugs(svc, 100).catch((e: unknown) => ({ scanned: 0, created: 0, errors: [(e as Error).message] }))
+
   return NextResponse.json({
     ran_at: new Date().toISOString(),
     scanned: reels.length,
     published,
     results,
+    listing_pages: listingPages,
   })
 }

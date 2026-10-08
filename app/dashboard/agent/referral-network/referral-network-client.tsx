@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useMemo, useState, useTransition } from "react"
+import { useMemo, useState, useTransition } from "react"
 import { createAgentReferralAction } from "@/app/actions/referrals/agent-referral-actions"
 import type { AgentDirectoryEntry, OutboundReferral } from "@/lib/referrals/agent-referral"
 

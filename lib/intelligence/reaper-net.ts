@@ -13,13 +13,16 @@
 // one registry, one runner, one ledger — instead of five copies hand-wired into
 // two crons. The crons now call runReaperNet() by lane.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-/** Which cron drives a reaper (its cadence) — keeps disjoint runs, no double-firing. */
-export type ReaperLane = "proactive" | "signals"
+/** Which cron drives a reaper (its cadence) — keeps disjoint runs, no double-firing.
+ *  "health" (wave 108C): the OS health supervisor, run by the manager-signals cron over EVERY tenant
+ *  (the signals lane only visits tenants with open bus traffic). */
+export type ReaperLane = "proactive" | "signals" | "health"
 
 export interface ReaperResult {
   domain: string
@@ -134,6 +137,20 @@ export const REAPER_NET: ReaperEntry[] = [
     },
   },
   {
+    // Wave 104, lane 104A — the AMOUNT sibling of commission_tracking_drift: every
+    // mutable money summary is a projection of the distributions ledger; this
+    // reaper recomputes each from the ledger and ESCALATES drift (never rewrites
+    // money — correction goes through correctCommissionDistribution).
+    domain: "commission_amount_drift",
+    manager: "finance_manager",
+    lane: "proactive",
+    protects: "money summaries (agent_commissions nets, transaction_commissions stamps, agents.ytd_gci, brokerage_earnings, meter_readings) that disagree with the distributions / cost ledgers",
+    run: async (b, svc) => {
+      const { reapCommissionAmountDrift } = await import("@/lib/finance/commission-tracking-reaper")
+      return norm(await reapCommissionAmountDrift(b, svc))
+    },
+  },
+  {
     domain: "compliance_flags_stuck",
     manager: "compliance_officer",
     lane: "proactive",
@@ -145,7 +162,7 @@ export const REAPER_NET: ReaperEntry[] = [
   },
   {
     domain: "stuck_social_posts",
-    manager: "marketing_agent",
+    manager: "campaign_orchestrator", // m618: survivor of the retired marketing_agent seat
     lane: "proactive",
     protects: "scheduled posts that hung publishing or missed their slot",
     run: async (b, svc) => {
@@ -193,6 +210,39 @@ export const REAPER_NET: ReaperEntry[] = [
       return norm(await reapStuckManagerSignals(b, svc))
     },
   },
+  {
+    // Wave 98 (lane 98B): agent_action_ledger rows stuck at 'unknown' (the provider never
+    // answered) are settled against outcome_reconciliations — the reconciler survivor
+    // (lib/outcomes/reconciliation-ledger.ts settleUnknownActions). data_steward observes
+    // provider truth. Signals lane = the 30-minute manager-signals cron; no new cron.
+    domain: "unknown_action_outcomes",
+    manager: "data_steward",
+    lane: "signals",
+    protects: "AI actions whose provider never answered, settled against the provider's own record",
+    run: async (b, svc) => {
+      const { settleUnknownActions } = await import("@/lib/outcomes/reconciliation-ledger")
+      const r = await settleUnknownActions(b, svc)
+      if (r.errors.length > 0) console.error(`[reaper-net] unknown_action_outcomes ${b}:`, r.errors.join("; "))
+      return norm(r)
+    },
+  },
+  {
+    // Wave 108 (lane 108C, owner: "Cron Manager = operational-health coordinator"). The ONE health
+    // supervisor rides the net as its own lane: detectors read the survivors (provider health, missions,
+    // workflow runs, webhook deliveries, reconcilers, meters, the bus, AI SLO, renders, compliance
+    // reaper), a pure recovery policy decides, and the recovery runs THROUGH the survivor that owns it
+    // (lib/kernel/os-health.ts). scanned = detectors run, reaped = recovered automatically, escalated =
+    // routed to a manager / Finance (+ writer HALT) / a human.
+    domain: "os_health",
+    manager: "cron_manager",
+    lane: "health",
+    protects: "the OS itself — provider failures, stale missions, stuck workflows, failed webhooks, missing reconciliations, usage / billing drift, event backlog, AI anomalies, media render failures",
+    run: async (b, svc) => {
+      const { runOsHealthSupervisor } = await import("@/lib/kernel/os-health")
+      const r = await runOsHealthSupervisor(b, svc)
+      return { scanned: r.detectorsRun, escalated: r.escalated, reaped: r.recovered }
+    },
+  },
 ]
 
 /** Persist one reaper's sweep to the accountability ledger (best-effort). */
@@ -201,7 +251,7 @@ export async function recordReaperRun(
   client?: Svc,
 ): Promise<void> {
   const svc = client ?? createServiceClient()
-  await svc.from("reaper_runs").insert({
+  await sentinelWrite(svc, svc.from("reaper_runs").insert({
     brokerage_id: row.brokerageId,
     domain: row.domain,
     manager: row.manager,
@@ -209,7 +259,7 @@ export async function recordReaperRun(
     escalated: row.escalated,
     reaped: row.reaped,
     detail: row.detail ?? null,
-  }).then(() => {}, () => {})
+  }), { table: "reaper_runs", flow: "reaper_runs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 }
 
 export interface ReaperNetReport {
@@ -266,7 +316,9 @@ export async function runReaperNet(
 }
 
 // ── COVERAGE MAP — honest "how much of the team is reaped" ────────────────────
-/** Managers that have at least one registered reaper in the net. */
+// Product reader: app/dashboard/admin/manager-trust/page.tsx (reaperCoverage → the
+// "Nothing falls through — reaper coverage" card). Proof: scripts/reaper-net-simulator.ts.
+/** Managers that have at least one registered reaper in the net (internal-live: reaperCoverage). */
 export function managersUnderReaperCoverage(): ManagerKey[] {
   return Array.from(new Set(REAPER_NET.map((e) => e.manager)))
 }

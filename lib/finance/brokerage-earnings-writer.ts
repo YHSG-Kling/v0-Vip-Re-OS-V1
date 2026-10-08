@@ -14,16 +14,19 @@
 // buckets by category (marketing/office/technology→tech, rest→operating) and
 // subtract from net_profit. Team expenses stay on the team's own book. When a
 // tenant has logged NOTHING, the buckets stay honest-NULL and net_profit
-// remains GCI minus splits — never a fabricated 0 pretending expenses were
-// tracked.
+// remains the brokerage's commission net (the net-preference fold below) —
+// never a fabricated 0 pretending expenses were tracked.
 
 import "server-only"
 
 type Svc = { from: (table: string) => any }
 
-interface CommissionRow {
+export interface CommissionRow {
   gross_commission: number | null
   agent_commission: number | null
+  brokerage_commission: number | null
+  net_to_agent: number | null
+  net_to_brokerage: number | null
   transaction_id: string | null
   agent_id: string
   close_date: string | null
@@ -31,13 +34,25 @@ interface CommissionRow {
 
 export interface BrokerageEarningsResult { brokerages: number; rowsWritten: number }
 
-function fold(rows: CommissionRow[]) {
+// THE NET-PREFERENCE RULE (owner ruling 2026-08-28, the cap ruling's rollup
+// sibling): agent_commission / brokerage_commission are GENERATED pre-cap
+// splits (gross × split% and its complement) — the waterfall's ACTUAL results
+// live in net_to_agent / net_to_brokerage (post-cap, post-fee; step 11 writes
+// them). On a post-cap deal the two DISAGREE ON PURPOSE (agent keeps 100%,
+// brokerage takes $0), so folding the generated column overstates the
+// brokerage and understates the agent on every capped deal. Prefer the stored
+// net when non-null; fall back to the generated split only for manually
+// entered rows that carry a split percent and no net.
+export function foldCommissionRows(rows: CommissionRow[]) {
   const gci = rows.reduce((s, r) => s + (Number(r.gross_commission) || 0), 0)
-  const splits = rows.reduce((s, r) => s + (Number(r.agent_commission) || 0), 0)
+  const splits = rows.reduce(
+    (s, r) => s + (r.net_to_agent != null ? Number(r.net_to_agent) || 0 : Number(r.agent_commission) || 0), 0)
+  const net = rows.reduce(
+    (s, r) => s + (r.net_to_brokerage != null ? Number(r.net_to_brokerage) || 0 : Number(r.brokerage_commission) || 0), 0)
   return {
     gci,
     splits,
-    net: gci - splits,
+    net,
     txCount: new Set(rows.map((r) => r.transaction_id).filter(Boolean)).size,
     agentCount: new Set(rows.map((r) => r.agent_id)).size,
   }
@@ -50,11 +65,19 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
   const monthLabel = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
 
   const { data: brokerages } = await svc.from("brokerages").select("id").limit(2000)
+  const { loadFinancialWriterHalt } = await import("@/lib/kernel/os-health")
   for (const b of ((brokerages ?? []) as Array<{ id: string }>)) {
     try {
+      // WAVE 108C — THE FINANCIAL-WRITER KILL SWITCH: a tenant whose earnings summary disagrees with the
+      // ledger is HALTED until Finance releases it (never re-projected over the discrepancy). Fails closed.
+      const halt = await loadFinancialWriterHalt(svc, b.id, "brokerage_earnings")
+      if (halt.halted) {
+        console.warn(`[brokerage-earnings] ${b.id} skipped — brokerage_earnings halted: ${halt.reason ?? "no reason recorded"}`)
+        continue
+      }
       const { data: ytdRows } = await svc
         .from("agent_commissions")
-        .select("gross_commission, agent_commission, transaction_id, agent_id, close_date")
+        .select("gross_commission, agent_commission, brokerage_commission, net_to_agent, net_to_brokerage, transaction_id, agent_id, close_date")
         .eq("brokerage_id", b.id)
         .gte("close_date", yearStart)
         .limit(5000)
@@ -63,16 +86,22 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
       out.brokerages++
 
       const mtd = ytd.filter((r) => (r.close_date ?? "") >= monthStart)
-      const periods: Array<{ period_type: string; period_label: string; f: ReturnType<typeof fold> }> = [
+      const periods: Array<{ period_type: string; period_label: string; f: ReturnType<typeof foldCommissionRows> }> = [
         // live CHECK vocabulary: monthly / quarterly / annual (caught by fire —
         // 'mtd'/'ytd' can never exist; the page reads were fixed to match)
-        { period_type: "monthly", period_label: monthLabel, f: fold(mtd) },
-        { period_type: "annual", period_label: String(now.getFullYear()), f: fold(ytd) },
+        { period_type: "monthly", period_label: monthLabel, f: foldCommissionRows(mtd) },
+        { period_type: "annual", period_label: String(now.getFullYear()), f: foldCommissionRows(ytd) },
       ]
 
       // No unique index exists on (brokerage_id, period_type) — pass-10 rule:
       // never point an onConflict at a unique that isn't there. Delete-then-insert.
-      await svc.from("brokerage_earnings").delete().eq("brokerage_id", b.id)
+      // A refused delete followed by the insert would DOUBLE this tenant's earnings
+      // rows (no unique to collapse them). Refused → skip, loudly.
+      const { error: earnClearErr } = await svc.from("brokerage_earnings").delete().eq("brokerage_id", b.id)
+      if (earnClearErr) {
+        console.error(`[brokerage-earnings] clear refused for ${b.id} — earnings NOT rewritten this run: ${earnClearErr.message}`)
+        continue
+      }
       const { error: earnErr } = await svc.from("brokerage_earnings").insert(periods.map((p) => ({
         brokerage_id: b.id,
         period_type: p.period_type,
@@ -85,6 +114,7 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
         computed_at: now.toISOString(),
       })))
       if (!earnErr) out.rowsWritten += periods.length
+      else console.error(`[brokerage-earnings] insert refused for ${b.id}: ${earnErr.message}`)
 
       // brokerage_p_l — one row per month. Fold ONLY brokerage-scoped expenses
       // (agent_id NULL AND team_id NULL — owner rule: team financials never
@@ -111,7 +141,11 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
       const totalExpenses = bucket.marketing + bucket.office + bucket.tech + bucket.operating
       const tracked = exp.length > 0
       const netProfit = m.net - (tracked ? totalExpenses : 0)
-      await svc.from("brokerage_p_l").delete().eq("brokerage_id", b.id).eq("period_label", monthLabel)
+      const { error: plClearErr } = await svc.from("brokerage_p_l").delete().eq("brokerage_id", b.id).eq("period_label", monthLabel)
+      if (plClearErr) {
+        console.error(`[brokerage-earnings] brokerage_p_l clear refused for ${b.id} — P&L NOT rewritten this run: ${plClearErr.message}`)
+        continue
+      }
       const { error: plErr } = await svc.from("brokerage_p_l").insert({
         brokerage_id: b.id,
         period_label: monthLabel,
@@ -126,6 +160,7 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
         computed_at: now.toISOString(),
       })
       if (!plErr) out.rowsWritten++
+      else console.error(`[brokerage-earnings] brokerage_p_l insert refused for ${b.id}: ${plErr.message}`)
     } catch { /* per-brokerage isolation — one tenant's failure never blocks the fleet */ }
   }
   return out

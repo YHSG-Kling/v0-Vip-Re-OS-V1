@@ -6,6 +6,7 @@ import { isValidUUID } from "@/lib/validations";
 import { getOfferLifecycleState } from "./track-offer-lifecycle";
 import { validateAcceptanceEligibility } from "@/lib/buyer-offer";
 import { createTransactionFromOffer } from "@/lib/transactions";
+import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 /**
  * System 7.1A Domain 4: Transition to Transaction
@@ -109,7 +110,7 @@ export async function convertOfferToTransaction(
       .select("created_at")
       .eq("entity_type", "offer")
       .eq("entity_id", offerId)
-      .eq("activity_type", "buyer.offer.compliance.passed")
+      .eq("activity_type", OFFER_AUDIT_EVENT.COMPLIANCE_PASSED)
       .order("created_at", { ascending: false })
       .limit(1)
       .single();

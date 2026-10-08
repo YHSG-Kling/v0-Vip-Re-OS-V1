@@ -42,6 +42,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { generateAgentScorecards, type AgentScorecard } from "@/lib/intelligence/agent-scorecard"
 import { isoWeekTag } from "@/lib/kernel/commission-forecaster"
 import { DEFAULT_STALE_DAYS } from "@/lib/ai-isa/stale-contact-detector"
+import { usd } from "@/lib/format/money"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -53,21 +54,30 @@ type Svc = ReturnType<typeof createServiceClient>
 
 /** A conversion/no-show metric needs at least this many events before it earns a verdict. */
 export const MIN_SAMPLE = 3
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: LEAK_PENALTY, STRONG_EDUCATION_PCT, STRONG_HEALTH, STRONG_TOUR_OFFER, WEAK_EDUCATION_PCT, WEAK_HEALTH, WEAK_TOUR_OFFER.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Tour→offer conversion at/above this is a STRENGTH (buyer-side: tours turning into offers). */
-export const STRONG_TOUR_OFFER = 0.5
+const STRONG_TOUR_OFFER = 0.5
 /** Tour→offer conversion at/below this is a LEAK (tours not converting to written offers). */
-export const WEAK_TOUR_OFFER = 0.2
+const WEAK_TOUR_OFFER = 0.2
 /** No-show RATE at/above this (of scheduled appointments) is a LEAK. */
 export const HIGH_NOSHOW_RATE = 0.25
 /** Avg deal health at/above this is a STRENGTH; at/below LOW is a LEAK. */
-export const STRONG_HEALTH = 80
-export const WEAK_HEALTH = 50
+const STRONG_HEALTH = 80
+const WEAK_HEALTH = 50
 /** This many+ stale (cold past DEFAULT_STALE_DAYS) contacts on the agent's book is a LEAK. */
 export const STALE_LEAK_COUNT = 5
+/** This many+ HIGH / CRITICAL fatigue contacts on the agent's book is a LEAK (wave 88). */
+export const FATIGUED_LEAK_COUNT = 3
 /** Education completion at/below this (with assignments on file) is a LEAK. */
-export const WEAK_EDUCATION_PCT = 50
+const WEAK_EDUCATION_PCT = 50
 /** Education completion at/above this is a STRENGTH. */
-export const STRONG_EDUCATION_PCT = 90
+const STRONG_EDUCATION_PCT = 90
 
 // ── The pure brief model ──────────────────────────────────────────────────────
 
@@ -90,10 +100,26 @@ export interface AgentCoachingStats {
   noShows: number
   /** Relationship hygiene: contacts on the book that have gone cold (stale). */
   staleContacts: number
+  /** Contacts on the book scored HIGH / CRITICAL fatigue (buyer_fatigue_scores.agent_id — wave 88,
+   *  lane 88A: unanswered follow-up, missed appointments, quiet unsigned sellers, search fatigue).
+   *  Optional: a stats row built before wave 88 has none, and none is not zero-faked. */
+  fatiguedContacts?: number
+  /** WAVE 89 (lane 89C) — the agent's own fatigue signals as the retention radar scored them today
+   *  (agent_retention_scores: tier + driving_signals + support_suggested, m674). BROKER-FACING ONLY:
+   *  rendered into the gated manager brief (renderCoachingMessage), never into the agent's dashboard
+   *  report (briefToWeeklyReport) — the owner's rule is support, not "you're at risk". Absent when
+   *  the radar has no row for the agent or the read was refused. */
+  retentionSupport?: { tier: string; signals: string[]; support: string[] }
   /** Education. */
   lessonsAssigned: number
   lessonsCompleted: number
   educationCompletionPct: number | null
+  /** WAVE 103 (lane 103A) — the ONE competency model's gaps for this agent (lib/education/
+   *  skill-freshness.ts:scoreCompetency, skills scoring ≤ COMPETENCY_GAP_SCORE, lowest first),
+   *  each with the evidence sentence behind the score. The brief CITES the gap and points the
+   *  focus at it. Optional: absent when the read was refused or the stats row predates wave 103 —
+   *  absent is not "no gaps". */
+  competencyGaps?: Array<{ skill: string; label: string; score: number; evidence: string }>
 }
 
 export interface CoachingBrief {
@@ -107,7 +133,7 @@ export interface CoachingBrief {
 }
 
 const pct = (n: number) => `${Math.round(n * 100)}%`
-const usd = (n: number) => `$${Math.round(n).toLocaleString()}`
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 /**
  * PURE + deterministic. Compose a coaching brief from REAL agent stats.
@@ -156,6 +182,16 @@ export function composeCoachingBrief(stats: AgentCoachingStats): CoachingBrief {
     leakFocus.push(`Re-engage your ${stats.staleContacts} cold contacts — leads going stale is lost pipeline you already paid for.`)
   }
 
+  // ── Fatigued book (wave 88, lane 88A — "Need fatigue also for agents") ──
+  // The AGENT-LEVEL read of contact fatigue: how many people on this agent's book the one fatigue
+  // calculator scores high/critical. A cold book is the agent not touching people; a fatigued book is
+  // people not answering (or being over-touched, or missing appointments) — the coaching differs.
+  const fatigued = stats.fatiguedContacts ?? 0
+  if (fatigued >= FATIGUED_LEAK_COUNT) {
+    leaks.push(`${fatigued} contacts on your book are showing high fatigue — unanswered follow-up, missed appointments or a quiet unsigned seller. More touches will not fix it; change the approach.`)
+    leakFocus.push(`Work your ${fatigued} fatigued contacts differently — pause the cadence, then one personal, useful touch each (the contact card shows what is driving it).`)
+  }
+
   // ── Deal health (active deals trending healthy vs at-risk) ──
   if (stats.activeDeals > 0 && stats.avgHealthScore != null) {
     if (stats.avgHealthScore >= STRONG_HEALTH) {
@@ -176,6 +212,17 @@ export function composeCoachingBrief(stats: AgentCoachingStats): CoachingBrief {
     }
   }
 
+  // ── Competency gap (wave 103, lane 103A) — the ONE model's lowest evidence-scored skill, CITED ──
+  // The brief names the gap, its score and the evidence sentence, so the broker's 1:1 and the
+  // curriculum the learning router assigns for the same gap tag point at the same thing.
+  const gaps = stats.competencyGaps ?? []
+  if (gaps.length > 0) {
+    const g = gaps[0]
+    const others = gaps.slice(1, 3).map((x) => `${x.label} ${x.score}/100`)
+    leaks.push(`Competency gap: ${g.label} scores ${g.score}/100 — ${g.evidence}.${others.length ? ` Also below the line: ${others.join(", ")}.` : ""} A module for this gap is queued in the Academy.`)
+    leakFocus.push(`Close the ${g.label.toLowerCase()} gap (${g.score}/100) — the Academy module assigned for it is the week's one rep.`)
+  }
+
   // ── Production (a genuine, earned strength — only when real GCI/closings exist) ──
   if (stats.closings > 0) {
     strengths.push(`${stats.closings} closing${stats.closings === 1 ? "" : "s"} booked${stats.ytdGci > 0 ? ` (${usd(stats.ytdGci)} GCI year-to-date)` : ""} — real production on the board.`)
@@ -186,9 +233,11 @@ export function composeCoachingBrief(stats: AgentCoachingStats): CoachingBrief {
     stats.appointments >= MIN_SAMPLE ||
     stats.tours >= MIN_SAMPLE ||
     stats.staleContacts >= STALE_LEAK_COUNT ||
+    (stats.fatiguedContacts ?? 0) >= FATIGUED_LEAK_COUNT ||
     (stats.activeDeals > 0 && stats.avgHealthScore != null) ||
     (stats.lessonsAssigned > 0 && stats.educationCompletionPct != null) ||
-    stats.closings > 0
+    stats.closings > 0 ||
+    gaps.length > 0
 
   if (!anySignal) {
     return {
@@ -214,7 +263,7 @@ export function composeCoachingBrief(stats: AgentCoachingStats): CoachingBrief {
 }
 
 /** PURE. Render the brief into the manager-facing message {subject, body}. */
-export function renderCoachingMessage(stats: AgentCoachingStats, brief: CoachingBrief): { subject: string; body: string } {
+function renderCoachingMessage(stats: AgentCoachingStats, brief: CoachingBrief): { subject: string; body: string } {
   if (brief.notEnoughData) {
     return {
       subject: `📋 Coaching brief: ${stats.name} — getting started`,
@@ -231,6 +280,14 @@ export function renderCoachingMessage(stats: AgentCoachingStats, brief: Coaching
     for (const l of brief.leaks) lines.push(`• ${l}`)
   }
   lines.push(`\n🎯 Focus this week: ${brief.focusThisWeek}`)
+  // WAVE 89 (lane 89C) — the broker's read of the AGENT's fatigue (the retention radar's signals) beside
+  // the coaching of the agent's book. This section exists ONLY in the manager-facing message.
+  const rs = stats.retentionSupport
+  if (rs && rs.signals.length > 0) {
+    lines.push(`\n🤝 Support suggested (for you, not the agent — ${rs.signals.length} fatigue signal${rs.signals.length === 1 ? "" : "s"} lit, retention tier ${rs.tier.replace(/_/g, " ")}):`)
+    for (const s of rs.signals) lines.push(`• ${s}`)
+    for (const s of rs.support) lines.push(`→ ${s}`)
+  }
   const subject = brief.leaks.length > 0
     ? `📋 Coaching brief: ${stats.name} — ${brief.leaks.length} thing${brief.leaks.length === 1 ? "" : "s"} to fix`
     : `📋 Coaching brief: ${stats.name} — on track`
@@ -268,7 +325,7 @@ export interface WeeklyCoachingReport {
 /** PURE + deterministic. A 0-100 coaching score from the brief — never a fabricated number:
  *  each real leak costs LEAK_PENALTY (capped), a clean brief with strengths sits high, and the
  *  honest not-enough-data case is a neutral 70 (a "we don't know yet" placeholder, not praise). */
-export const LEAK_PENALTY = 12
+const LEAK_PENALTY = 12
 export function coachingScore(brief: CoachingBrief): number {
   if (brief.notEnoughData) return 70
   const base = brief.strengths.length > 0 ? 92 : 80
@@ -276,7 +333,7 @@ export function coachingScore(brief: CoachingBrief): number {
 }
 
 /** PURE. Map a composed brief into the dashboard's WeeklyCoachingReport shape. */
-export function briefToWeeklyReport(stats: AgentCoachingStats, brief: CoachingBrief): WeeklyCoachingReport {
+function briefToWeeklyReport(stats: AgentCoachingStats, brief: CoachingBrief): WeeklyCoachingReport {
   if (brief.notEnoughData) {
     return {
       overall_score: coachingScore(brief),
@@ -349,7 +406,7 @@ const APPT_STATUSES = ["scheduled", "confirmed", "completed", "no_show"] as cons
  * the agent-scoped no-show / stale-book / tour→offer aggregates from the existing
  * conventions. Every number traces to a real row; missing data stays null/zero honestly.
  */
-export async function buildCoachingStats(
+async function buildCoachingStats(
   brokerageId: string, opts: { now?: Date; sinceIso?: string } = {}, client?: Svc,
 ): Promise<AgentCoachingStats[]> {
   const supabase = client ?? createServiceClient()
@@ -416,9 +473,61 @@ export async function buildCoachingStats(
     if (c.agent_id) staleCount.set(c.agent_id, (staleCount.get(c.agent_id) ?? 0) + 1)
   }
 
+  // Fatigued book (wave 88, lane 88A): contacts on the agent's book the one fatigue calculator
+  // scored high / critical — buyer_fatigue_scores.agent_id (agents.id, stamped by calculateFatigue).
+  // A refused read leaves the metric ABSENT (undefined), never zero.
+  const fatiguedCount = new Map<string, number>()
+  const { data: fatigued, error: fatiguedErr } = await supabase
+    .from("buyer_fatigue_scores").select("agent_id")
+    .eq("brokerage_id", brokerageId).in("agent_id", agentIds)
+    .in("risk_level", ["high", "critical"])
+    .limit(20000)
+  if (fatiguedErr) console.error("[agent-coaching] fatigue read refused:", fatiguedErr.message)
+  for (const f of (fatigued ?? []) as Array<{ agent_id: string | null }>) {
+    if (f.agent_id) fatiguedCount.set(f.agent_id, (fatiguedCount.get(f.agent_id) ?? 0) + 1)
+  }
+
+  // WAVE 89 (lane 89C): the agent's own fatigue signals — the retention radar's latest row per agent
+  // (support_suggested / driving_signals / tier). Read for the BROKER's brief only; a refused read
+  // leaves the field absent. Newest first, first-seen per agent = latest.
+  const retentionByAgent = new Map<string, { tier: string; signals: string[]; support: string[] }>()
+  const retentionSince = new Date(now.getTime() - 30 * 86_400_000).toISOString().slice(0, 10)
+  const { data: retentionRows, error: retentionErr } = await supabase
+    .from("agent_retention_scores").select("agent_id, tier, driving_signals, support_suggested, score_date")
+    .eq("brokerage_id", brokerageId).in("agent_id", agentIds).gte("score_date", retentionSince)
+    .order("score_date", { ascending: false }).limit(4000)
+  if (retentionErr) console.error("[agent-coaching] retention signal read refused:", retentionErr.message)
+  for (const r of (retentionRows ?? []) as Array<{ agent_id: string; tier: string | null; driving_signals: string[] | null; support_suggested: string[] | null }>) {
+    if (retentionByAgent.has(r.agent_id)) continue
+    retentionByAgent.set(r.agent_id, {
+      tier: r.tier ?? "healthy",
+      signals: Array.isArray(r.driving_signals) ? r.driving_signals : [],
+      support: Array.isArray(r.support_suggested) ? r.support_suggested : [],
+    })
+  }
+
+  // WAVE 103 (lane 103A): the ONE competency model per agent — the brief cites its lowest gap.
+  // Per-agent evidence reads, best-effort: a thrown read leaves `competencyGaps` ABSENT for that
+  // agent (never an empty list that reads as "no gaps").
+  const competencyByAgent = new Map<string, AgentCoachingStats["competencyGaps"]>()
+  try {
+    const { loadAgentCompetency } = await import("@/lib/education/skill-freshness-radar")
+    for (const a of agents) {
+      try {
+        const p = await loadAgentCompetency(supabase, { id: a.id, user_id: a.user_id, brokerage_id: brokerageId }, now)
+        competencyByAgent.set(a.id, p.gaps.map((g) => ({ skill: g.skill, label: g.label, score: g.score as number, evidence: g.evidence.join("; ") })))
+      } catch (e) {
+        console.error("[agent-coaching] competency read failed for agent", a.id, (e as Error).message)
+      }
+    }
+  } catch (e) {
+    console.error("[agent-coaching] competency model unavailable:", (e as Error).message)
+  }
+
   return agents.map((a) => {
     const card = cardById.get(a.id)
     return {
+      competencyGaps: competencyByAgent.get(a.id),
       agentId: a.id,
       name: card?.name ?? "Agent",
       ytdGci: card?.ytdGci ?? 0,
@@ -430,6 +539,8 @@ export async function buildCoachingStats(
       appointments: (a.user_id && apptCount.get(a.user_id)) || 0,
       noShows: (a.user_id && noShowCount.get(a.user_id)) || 0,
       staleContacts: staleCount.get(a.id) ?? 0,
+      fatiguedContacts: fatiguedErr ? undefined : (fatiguedCount.get(a.id) ?? 0),
+      retentionSupport: retentionErr ? undefined : retentionByAgent.get(a.id),
       lessonsAssigned: card?.lessonsAssigned ?? 0,
       lessonsCompleted: card?.lessonsCompleted ?? 0,
       educationCompletionPct: card?.educationCompletionPct ?? null,

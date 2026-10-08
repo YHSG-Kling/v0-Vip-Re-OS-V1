@@ -22,7 +22,7 @@ import {
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
 import { ContextualAiAssistBar } from "@/app/components/ai-copilot"
 import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
-import { sendThankYouNoteAction } from "@/app/actions/reputation-kernel"
+import { sendThankYouNoteAction, respondToReviewAction } from "@/app/actions/reputation-kernel"
 import { toast } from "sonner"
 
 interface RecentClosing {
@@ -85,9 +85,13 @@ export function ReviewRequestPanel({
       if (result.success && result.message) {
         setDraft(result.message)
         awardPointsForAction(agentId, "review_received").catch(() => {})
-        // Check compliance
+        // checkThemFirstCompliance returns { score, themFirstCount,
+        // agentFirstCount, feedback } — never an `isCompliant` flag. Reading one
+        // yielded undefined, and `complianceOk !== null` is TRUE for undefined,
+        // so the badge rendered on every draft and always said "Review Needed".
+        // Same threshold as the gifting and drafting panels.
         const compliance = await checkThemFirstCompliance(result.message)
-        setComplianceOk(compliance.isCompliant)
+        setComplianceOk(((compliance as any)?.score ?? 0) >= 50)
       }
     })
   }
@@ -106,6 +110,8 @@ export function ReviewRequestPanel({
 
   const handleGenerateResponse = (review: ExistingReview) => {
     setResponseId(review.id)
+    setResponseError(null)
+    setResponsePublished(null)
     startTransition(async () => {
       const result = await aiGenerateReviewResponse({
         reviewId: review.id,
@@ -117,8 +123,52 @@ export function ReviewRequestPanel({
       })
       if (result.success && (result as any).data?.publicResponse) {
         setResponseText((result as any).data?.publicResponse ?? "")
+      } else {
+        // The draft used to be dropped in silence when generation failed, so the
+        // button looked like it had simply done nothing.
+        setResponseError((result as any).error ?? "The AI could not draft a response to this review.")
       }
     })
+  }
+
+  // ── PUBLISHING THE RESPONSE ────────────────────────────────────────────────
+  //
+  // aiGenerateReviewResponse writes response_text on agent_reviews as a DRAFT
+  // and deliberately leaves is_published false — its own comment says the agent
+  // publishes "via respondToReview kernel command". That command existed, was
+  // complete, and had no caller: the draft rendered in a read-only grey box with
+  // no way to send it anywhere. This is that caller.
+  //
+  // respondToReview verifies the review belongs to the acting agent and stamps
+  // response_at; publishNow is what puts the response (and the review) on the
+  // public agent profile, so it is an explicit choice, not a default.
+  const [responseError, setResponseError] = useState<string | null>(null)
+  const [responsePublished, setResponsePublished] = useState<string | null>(null)
+  const [publishing, setPublishing] = useState(false)
+
+  const handleSaveResponse = async (reviewId: string, publishNow: boolean) => {
+    if (!responseText.trim()) {
+      setResponseError("Write a response first.")
+      return
+    }
+    setPublishing(true)
+    setResponseError(null)
+    setResponsePublished(null)
+    try {
+      const result = await respondToReviewAction({ reviewId, responseText, publishNow })
+      if (result.success) {
+        setResponsePublished(
+          publishNow ? "Response published to your public profile." : "Response saved to this review.",
+        )
+        toast.success(publishNow ? "Response published" : "Response saved")
+      } else {
+        // The SERVER's verdict, verbatim — never an optimistic success.
+        setResponseError((result as { error?: string }).error ?? "The response could not be saved.")
+        toast.error((result as { error?: string }).error ?? "The response could not be saved.")
+      }
+    } finally {
+      setPublishing(false)
+    }
   }
 
   const copyToClipboard = (text: string, id: string) => {
@@ -316,8 +366,45 @@ export function ReviewRequestPanel({
                   )}
                   <span className="ml-1 text-xs">Generate Response</span>
                 </Button>
-                {responseId === review.id && responseText && (
-                  <div className="mt-2 p-2 bg-muted rounded text-sm">{responseText}</div>
+                {responseId === review.id && (
+                  <div className="mt-2 space-y-2">
+                    <Textarea
+                      value={responseText}
+                      onChange={(e) => setResponseText(e.target.value)}
+                      rows={4}
+                      placeholder="Write your response, or generate a draft above…"
+                      className="text-sm"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={publishing || !responseText.trim()}
+                        onClick={() => handleSaveResponse(review.id, false)}
+                      >
+                        {publishing ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : null}
+                        <span className="text-xs">Save Response</span>
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={publishing || !responseText.trim()}
+                        onClick={() => handleSaveResponse(review.id, true)}
+                      >
+                        {publishing ? (
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                        ) : (
+                          <Send className="h-3 w-3 mr-1" />
+                        )}
+                        <span className="text-xs">Publish Response</span>
+                      </Button>
+                    </div>
+                    {responseError && (
+                      <p className="text-xs text-destructive">{responseError}</p>
+                    )}
+                    {responsePublished && (
+                      <p className="text-xs text-emerald-600">{responsePublished}</p>
+                    )}
+                  </div>
                 )}
               </div>
             ))}

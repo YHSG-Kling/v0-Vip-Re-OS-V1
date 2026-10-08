@@ -10,10 +10,17 @@
  *     podcast_show_settings.agent_id (semantic, no FK)
  *
  *   USERS-ID columns (FK → users.id):
- *     ai_video_projects.agent_id, podcast_episodes.agent_id,
- *     agent_intro_videos.agent_id (m121),
- *     listing_promo_videos.agent_id (m124),
- *     newsletter_video_renders.agent_id (m127)
+ *     the `*_user_id` family — listing_agreements.agent_user_id,
+ *     listing_presentations.agent_user_id, workflow_runs.agent_user_id, … —
+ *     plus two that do NOT read that way: contacts.source_agent_id and
+ *     closing_disclosure.title_agent_id
+ *
+ * m366 RE-POINTED 20 columns from users(id) to agents(id), including the five
+ * this header used to list as users-class: ai_video_projects, podcast_episodes,
+ * agent_intro_videos, listing_promo_videos and newsletter_video_renders. After
+ * that migration NO column spelled plainly `agent_id` is a users.id — the plain
+ * spelling means agents(id) everywhere. scripts/agent-fk-columns.ts holds the
+ * authoritative snapshot; this comment is a summary of it, not a second source.
  *
  * Wave 6, 9, 11, 14, 15 each caught FK violations from this confusion.
  * Wave 38 caught the agent_voice_profiles one — its agent_id FKs to
@@ -36,12 +43,26 @@ export type AgentRecordId = string & { readonly [AgentRecordIdBrand]: true }
 /** A row id in the `users` table (what ai_video_projects.agent_id stores). */
 export type UserAgentId   = string & { readonly [UserAgentIdBrand]: true }
 
-/** Brand a raw string as an AgentRecordId. Use only when the caller has
- *  verified the source (e.g., reading `contacts.agent_id`). */
-export function asAgentRecordId(s: string): AgentRecordId { return s as AgentRecordId }
-/** Brand a raw string as a UserAgentId. Use only when the caller has
- *  verified the source (e.g., reading `users.id`). */
-export function asUserAgentId(s: string):  UserAgentId   { return s as UserAgentId }
+// ─── REMOVED in the orphan burn-down (lane O) ────────────────────────────────
+//
+// `asAgentRecordId(s)` and `asUserAgentId(s)` — the two brand constructors —
+// DELETED.
+// SURVIVORS: `resolveAgentRecordToUserId` and `resolveUserIdToAgentRecord`
+// below, which are what actually prevents the id-space slip this file exists
+// for. They TRANSLATE at runtime; the constructors only re-labelled a string
+// the caller had already decided about, and a wrong decision branded as right
+// is worse than an unbranded string.
+//
+// The discipline they served was never adopted, and could not be: both resolver
+// signatures accept `AgentRecordId | string`, so every raw string is already
+// admitted and the brand is unenforceable at the boundary that matters. Sixteen
+// live call sites across app/actions pass plain `string` — e.g.
+// app/actions/listing-lifecycle-core.ts:481 declares
+// `const listingAgentRecordId: string` and hands it straight to the resolver —
+// and NOT ONE file in the repo imports the `AgentRecordId` / `UserAgentId`
+// types. Nothing was lost: the types stay (the resolvers still return them, so
+// a resolved id carries the brand forward exactly as the header describes), and
+// the only thing gone is the ability to assert a brand without checking it.
 
 /**
  * Resolve an agents.id to the canonical users.id via agents.user_id.
@@ -101,8 +122,47 @@ export async function resolveUserIdToAgentRecord(userAgentId: UserAgentId | stri
   }
 }
 
-/** For tests + cron resets — clears the in-process caches. */
-export function _resetAgentIdentityCaches(): void {
-  agentToUserCache.clear()
-  userToAgentCache.clear()
+/**
+ * ★ THE NEGATIVE-CACHE INVALIDATOR ★ — call this the moment an `agents` row is
+ * created, or its `user_id` / `brokerage_id` changes.
+ *
+ * THE DEFECT IT FIXES, precisely. Both caches above memoize NEGATIVE results
+ * (`cache.set(key, null)`) for the lifetime of the process, and a serverless
+ * instance stays warm across requests. So the sequence
+ *
+ *     request 1: resolveUserIdToAgentRecord(u, b) → no row yet → caches null
+ *     request 2: createAgent(u, b)                → the row now EXISTS
+ *     request 3: resolveUserIdToAgentRecord(u, b) → returns the CACHED null
+ *
+ * leaves a brand-new agent unresolvable on that instance until it recycles —
+ * minutes to hours, and only on some instances, which is the shape of bug that
+ * gets reported as "it works for me".
+ *
+ * PRECISE, NOT A FLUSH. Only the two keys that the new row can have poisoned are
+ * dropped: the agents.id key in `agentToUserCache`, and the composite
+ * `users.id::brokerage_id` key in `userToAgentCache`. Every other tenant's warm
+ * mapping survives, which matters because these caches exist to keep a read-heavy
+ * lookup off the database.
+ *
+ * ─── REMOVED in the orphan burn-down (lane L) ────────────────────────────────
+ * `_resetAgentIdentityCaches()` — MERGED-THEN-DELETED. SURVIVOR: this function.
+ * It cleared BOTH maps entirely and was described as being "for tests + cron
+ * resets". Neither half was reachable: it had no caller anywhere in the tree, and
+ * this module imports `server-only`, so the plain-tsx simulators that would have
+ * been the "tests" cannot import it at all. Nothing needed merging — a full flush
+ * is what this does, minus the collateral damage — and keeping a blunt flush
+ * beside a precise invalidator only invites the flush to be called instead.
+ */
+export function invalidateAgentIdentity(params: {
+  /** agents.id of the row that was created or changed, when known. */
+  agentRecordId?: string | null
+  /** users.id the row points at. */
+  userId?: string | null
+  /** The tenant the row belongs to — part of the reverse cache's composite key. */
+  brokerageId?: string | null
+}): void {
+  if (params.agentRecordId) agentToUserCache.delete(params.agentRecordId)
+  if (params.userId && params.brokerageId) {
+    userToAgentCache.delete(`${params.userId}::${params.brokerageId}`)
+  }
 }

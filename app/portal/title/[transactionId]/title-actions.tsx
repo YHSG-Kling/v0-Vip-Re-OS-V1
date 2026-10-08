@@ -31,11 +31,18 @@ export function TitleActions({
     setError(null)
 
     try {
-      await updateTitleStatus({
+      // updateTitleStatus reports failure BY RETURN, so the catch below never
+      // sees it: the title company picked a new status, the page refreshed, and
+      // the old status was still there with nothing said.
+      const r = await updateTitleStatus({
         transactionId,
         titleUserId,
         newStatus: newStatus as TitleStatus,
       })
+      if (!r?.success) {
+        setError((r as any)?.error ?? "The title status was not updated.")
+        return
+      }
       router.refresh()
     } catch (err: any) {
       setError(err.message || "Failed to update status")

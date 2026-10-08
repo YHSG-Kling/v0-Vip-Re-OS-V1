@@ -116,7 +116,11 @@ export async function upsertBlogCadencePolicy(input: {
   if (!scopeId) return { success: false, error: "Could not resolve scope id" }
 
   const svc = createServiceClient()
-  const { error } = await svc.from("blog_cadence_policy").upsert({
+  // 102D — a cadence row is tenant operating policy: the row it replaces is the version's `previous`.
+  const { data: before, error: beforeErr } = await svc.from("blog_cadence_policy")
+    .select("cadence, fire_day, preferred_categories, preferred_persona").eq("scope_type", scopeType).eq("scope_id", scopeId).maybeSingle()
+  if (beforeErr) return { success: false, error: `Current cadence could not be read: ${beforeErr.message}` }
+  const row = {
     scope_type:           scopeType,
     scope_id:             scopeId,
     cadence:              input.cadence,
@@ -125,8 +129,16 @@ export async function upsertBlogCadencePolicy(input: {
     preferred_persona:    input.preferredPersona,
     updated_at:           new Date().toISOString(),
     updated_by:           ctx.userId,
-  }, { onConflict: "scope_type,scope_id" })
+  }
+  const { error } = await svc.from("blog_cadence_policy").upsert(row, { onConflict: "scope_type,scope_id" })
   if (error) return { success: false, error: error.message }
+  const { appendTenantPolicyVersion, cadencePolicyKey, cadencePolicyValue } = await import("@/lib/kernel/tenant-policy")
+  const v = await appendTenantPolicyVersion(svc, {
+    brokerageId: ctx.brokerageId, policyKey: cadencePolicyKey("blog_cadence_policy", scopeType, scopeId),
+    value: cadencePolicyValue(row), previous: cadencePolicyValue(before as Record<string, unknown> | null),
+    actor: { type: "user", userId: ctx.userId, reason: "blog cadence saved" },
+  })
+  if (!v.ok) console.error(`[blog-cadence-policy] policy version not recorded: ${v.error}`)
   revalidatePath("/settings/blog-cadence")
   return { success: true }
 }

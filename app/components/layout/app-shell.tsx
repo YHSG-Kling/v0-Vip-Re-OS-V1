@@ -4,19 +4,19 @@ import React, { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import { useAuth } from '@/lib/auth/client'
+import { logUserActivity } from '@/app/actions/workflows'
 import { Sidebar } from './sidebar'
 import { Header } from './header'
 import { MobileBottomNav } from './mobile-bottom-nav'
-import { getNavigationForRole } from '@/app/config/navigation-config'
+import { getNavigationForRole, resolvePrimaryRole } from '@/app/config/navigation-config'
 import { Loader2, X } from 'lucide-react'
-import { InternalAIAssistant } from '@/app/components/shared/internal-ai-assistant'
 import { PageContextAssistant } from '@/app/components/shared/page-context-assistant'
 import { CommandPalette } from '@/app/components/command-palette'
 import { ShellProvider, useShell } from './shell-context'
 import { UnifiedInboxSlideOut } from './unified-inbox-slideout'
 import { ImpersonationBanner } from './impersonation-banner'
+import { TosReacceptanceBanner } from './tos-reacceptance-banner'
 import { FloatingVoiceFAB } from './floating-voice-fab'
-import { FloatingChatFAB } from './floating-chat-fab'
 import { VoiceAssistantOverlay } from '@/app/components/features/agent-assistant/voice-assistant-overlay'
 import type { BadgeCounts } from '@/app/types/navigation'
 import type { NavigationConfig } from '@/app/types/navigation'
@@ -81,6 +81,47 @@ export function AppShell({ children }: AppShellProps) {
     return () => clearTimeout(timer)
   }, [isLoading])
 
+  // SESSION-STARTED ACTIVITY LOG (carried note, lane FA wave 47 → wave 48).
+  // logUserActivity (app/actions/workflows.ts) has been the RULED survivor of
+  // three separate consolidations — services/supabaseService.ts's own
+  // logUserActivity (wave 47), logAuditEvent/logAuditEventService (lane E2)
+  // and the UserActivity type (lane CB) all carry tombstones naming it as
+  // "the one live, properly-scoped home for session-derived user activity" —
+  // but the wave-47 tombstone says outright that it "still awaits a real
+  // caller." Deleting it now would orphan three tombstones that already point
+  // at it as a survivor, so it is WIRED here rather than removed (§1: no
+  // duplicate exists, the capability is wanted, three lanes already said so).
+  // AppShell is the one mount point every authenticated dashboard route
+  // renders through, so it is the natural place for a GENERIC "a session
+  // started" audit row — distinct from the ~15 call sites that already write
+  // their own DOMAIN-specific audit_log rows inline (an offer accepted, a
+  // subscription changed, …), and distinct from the engagement/churn-risk
+  // radar's own choice to read auth.users.last_sign_in_at directly for ITS
+  // purpose (app/dashboard/superadmin/engagement/page.tsx) — this is a
+  // separate consumer (an investigable audit trail), not a duplicate signal.
+  // Fires once per browser session per signed-in user (sessionStorage guard,
+  // survives navigation across this same shell, resets on a fresh tab/reload
+  // or a different user signing in) — never on every route change, and never
+  // more than best-effort: logUserActivity itself already swallows its own
+  // failures rather than let a logging hiccup break navigation.
+  useEffect(() => {
+    if (!user?.id) return
+    try {
+      const key = `activity-logged:session-started:${user.id}`
+      if (sessionStorage.getItem(key)) return
+      sessionStorage.setItem(key, '1')
+      void logUserActivity(undefined, 'session_started', { path: pathname })
+    } catch {
+      // sessionStorage can throw in a locked-down browser context (private
+      // mode, storage disabled) — activity logging is best-effort, never
+      // worth surfacing to the user or retrying.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pathname is read
+    // once, at whatever route the session happened to start on; re-running
+    // this effect on every navigation would fight the sessionStorage guard
+    // above for no benefit.
+  }, [user?.id])
+
   // Handle redirect in useEffect to avoid setState during render
   const needsAuth = !isLoading && !user && !userContext && !shouldBypass && !pathname.startsWith('/login')
 
@@ -133,8 +174,20 @@ export function AppShell({ children }: AppShellProps) {
 
   // userContext should always be set when user is set (after useAuth fix).
   // Fallback to 'agent' role if it ever arrives null to prevent crash.
-  const primaryRole = userContext?.roles?.[0] ?? 'agent'
-  const navigation = getNavigationForRole(primaryRole)
+  // EVERY role this person holds, not the first one.
+  //
+  // This used to read `userContext?.roles?.[0]`. The roles array comes from
+  // user_role_assignments, which is UNIQUE on (user_id, role) and returns rows
+  // in no particular order — so `[0]` was an ARBITRARY pick, and the second seat
+  // of a solo tenant (the user carrying transactions, compliance, support, admin
+  // and marketing) saw exactly one of those surfaces, chosen by the planner.
+  // getNavigationForRole now merges them in a fixed precedence.
+  const heldRoles: UserContext['roles'] =
+    userContext?.roles?.length ? userContext.roles : (['agent'] as UserContext['roles'])
+  const navigation = getNavigationForRole(heldRoles)
+  // Where a surface genuinely needs ONE role name, it comes from the shared
+  // precedence — never from heldRoles[0], which is unordered.
+  const primaryRole = resolvePrimaryRole(heldRoles)
 
   // Build a safe userContext for components — if null, create a minimal one
   const safeUserContext = userContext ?? {
@@ -142,11 +195,14 @@ export function AppShell({ children }: AppShellProps) {
     email: user.email ?? '',
     firstName: '',
     lastName: '',
-    roles: [primaryRole],
+    roles: heldRoles,
   }
 
   // Only staff roles may see the Internal AI Assistant
-  const showAIAssistant = STAFF_AI_ROLES.has(primaryRole?.toLowerCase?.() ?? '')
+  // ANY staff role qualifies. Testing only the primary role hid the assistant
+  // from a multi-role user whose precedence-winning role happened not to be on
+  // the staff-AI list, even though another role they hold is.
+  const showAIAssistant = heldRoles.some((r) => STAFF_AI_ROLES.has(String(r).toLowerCase()))
 
   return (
     <ShellProvider>
@@ -161,6 +217,9 @@ export function AppShell({ children }: AppShellProps) {
 
           {/* Staff "act as tenant" banner — visible only during an active impersonation. */}
           <ImpersonationBanner />
+          {/* ToS re-acceptance gate — visible only when the signed-in user's
+              acceptance is behind the current platform_settings.tos_version. */}
+          <TosReacceptanceBanner />
 
           <main className="flex-1 overflow-auto pb-20 lg:pb-0 bg-white">
             <div className="h-full">{children}</div>
@@ -190,25 +249,28 @@ export function AppShell({ children }: AppShellProps) {
           />
         )}
 
-        {/* Cmd+K Command Palette — available to all authenticated users */}
+        {/* Cmd+K Command Palette — entries are role-filtered inside the
+            component via visiblePaletteItems (the same getNavigationForRole
+            the sidebar uses); it reads roles from useAuth itself and fails
+            closed to an empty list until they resolve. */}
         <CommandPalette />
 
         {/* Universal Shell — unified inbox slide-out (press U or click header inbox button) */}
         <ShellInboxOutlet />
 
-        {/* Floating voice mic on every staff page */}
+        {/* ONE floating assistant surface (consolidation 2026-07): the typed
+            InternalAIAssistant above IS the ask+voice brain (text chat + browser
+            STT), launched from its own FAB. The premium ElevenLabs voice is the
+            second, access-gated tier below. The redundant text-chat FAB
+            (FloatingChatFAB, which merely re-opened the assistant) was removed.
+            The visual D-ID avatar deliberately does NOT mount here — the agent
+            doesn't want to see/hear their own clone (uncanny valley); customers
+            see it in their portal via PortalChatLauncher. */}
+
+        {/* Premium voice tier — the ElevenLabs Conversational AI mic + overlay,
+            access-gated (getVoiceAssistantAccess); shows only when voice is enabled. */}
         {showAIAssistant && <FloatingVoiceFAB />}
-
-        {/* On-the-go ElevenLabs Conversational AI overlay (Track B) */}
         {showAIAssistant && <VoiceAssistantOverlay />}
-
-        {/* Text-only AI chat FAB (Track C).
-            The visual D-ID avatar widget intentionally does NOT mount here —
-            the agent doesn't want to see/hear their own clone (uncanny valley).
-            Customers see the avatar in their portal via PortalChatLauncher.
-            The agent-side FAB toggles the existing typed InternalAIAssistant
-            panel via a window event. */}
-        {showAIAssistant && <FloatingChatFAB />}
       </div>
     </ShellProvider>
   )

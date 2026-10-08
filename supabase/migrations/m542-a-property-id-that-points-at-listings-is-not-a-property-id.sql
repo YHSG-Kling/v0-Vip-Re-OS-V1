@@ -1,0 +1,136 @@
+-- m542 — A property_id THAT POINTS AT listings IS NOT A property_id
+--
+-- APPLIED 2026-08-23 hrvaqgvukzxfskkcrwbt.
+--
+-- (CLAUDE.md §3 requires this line to declare the application status truthfully,
+--  and it is the ONE such declaration in this file — the alternative wording is
+--  deliberately not written anywhere below, so a reader and a scanner both get a
+--  single unambiguous answer. This migration was applied to the live project by
+--  the lane that wrote it, under an explicit grant, with the before/after
+--  evidence and the positive control reproduced at the foot of this file.)
+--
+-- ══ THE RULING ═══════════════════════════════════════════════════════════════
+--
+--     "listings are in house properties and property ids are outside listings."
+--
+-- A `property_id` names something OUTSIDE `listings`. `open_houses.property_id`
+-- was a foreign key ONTO `listings`, which makes it a listing pointer wearing a
+-- property pointer's name — and the table already has a listing pointer that is
+-- spelled correctly.
+--
+-- ══ THE FINDING ══════════════════════════════════════════════════════════════
+--
+-- Measured live on hrvaqgvukzxfskkcrwbt, 2026-08-23:
+--
+--   SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+--    WHERE conrelid = 'public.open_houses'::regclass AND contype = 'f';
+--
+--     open_houses_agent_id_fkey      FK (agent_id)     → agents(id)   ON DELETE CASCADE
+--     open_houses_brokerage_id_fkey  FK (brokerage_id) → brokerages(id)
+--     open_houses_listing_id_fkey    FK (listing_id)   → listings(id) ON DELETE SET NULL
+--     open_houses_property_id_fkey   FK (property_id)  → listings(id) ON DELETE SET NULL
+--                                        ^^^^^^^^^^^      ^^^^^^^^
+--
+-- TWO foreign keys from ONE table to `listings`. That is also why a bare
+-- PostgREST embed between `open_houses` and `listings` dies with PGRST201
+-- (CLAUDE.md §3) — the ambiguity this migration removes is not only semantic.
+--
+--   SELECT count(*), count(property_id), count(listing_id) FROM public.open_houses;
+--     → total 0, property_id non-null 0, listing_id non-null 0
+--
+-- ══ IS THERE ANYTHING OUTSIDE listings FOR IT TO POINT AT? ═══════════════════
+--
+--   SELECT table_name FROM information_schema.tables
+--    WHERE table_schema = 'public' AND table_name ILIKE '%propert%';
+--
+-- 23 tables come back. NONE of them is a `properties` table: every one is a
+-- per-contact or per-listing satellite (property_alerts, property_feedback,
+-- property_upgrades, saved_properties, property_interactions, …). There is no
+-- external-property entity in this database, and nothing in the tree asks for
+-- one — no reader, no writer, no route, no cron. §1.2 ("build the missing half")
+-- applies when the capability is WANTED; this one is wanted by nobody. Building
+-- a `properties` table to give an unused column something correct to point at
+-- would be building both halves of an orphan.
+--
+-- ══ WHERE THE COLUMN CAME FROM, AND WHAT SURVIVES IT ═════════════════════════
+--
+--   scripts/525-create-open-house-automation-system.sql:20
+--       property_id UUID REFERENCES listings(id) ON DELETE SET NULL
+--       property_address TEXT NOT NULL
+--     — the FIRST open_houses creator. Its listing pointer was `property_id`.
+--
+--   scripts/994-create-open-houses-canonical.sql:8-9
+--       listing_id  uuid REFERENCES public.listings(id) ON DELETE SET NULL,
+--       property_id uuid REFERENCES public.listings(id) ON DELETE SET NULL,
+--     — the CANONICAL rewrite introduced `listing_id` and kept `property_id`
+--       beside it. It also indexes only `listing_id` (line 50), which is the
+--       rewrite admitting in DDL which of the two it meant.
+--
+-- So this is CLAUDE.md §1.1 exactly: a duplicate with a survivor already chosen
+-- by every reader and writer in the tree.
+--
+--   SURVIVOR: open_houses.listing_id
+--     · scripts/994-create-open-houses-canonical.sql:8 and its index at line 50
+--     · at the moment this was measured (start of wave, 2026-08-23) the readers
+--       and writers were lib/kernel/launch-war-room.ts (the only INSERT — it
+--       wrote listing_id and property_address and never named property_id),
+--       lib/video/director-content.ts (.eq("listing_id", …)),
+--       lib/kernel/campaign-center.ts, scripts/launch-war-room-simulator.ts and
+--       scripts/deal-play-simulator.ts. EVERY ONE of them keyed on listing_id.
+--
+--   open_houses.property_id readers: 0.  writers: 0.  non-null rows: 0.
+--   (The one `property_id` that appears near open-house code —
+--    lib/kernel/open-house.ts — is a key inside an `ai_autopilot_actions`
+--    METADATA json object, not a column on this table. Named here because it is
+--    exactly the kind of near-miss that makes a census read as non-zero.)
+--
+--   CONCURRENT, AND NOT THIS LANE'S: another lane is consolidating the
+--   open-house EVENT tables this same wave and has, mid-wave, moved every
+--   `.from("open_houses")` call in lib/ and app/ onto `open_house_events`
+--   ("open_house_events is the survivor; `open_houses` was a second spelling of
+--   it" — lib/kernel/launch-war-room.ts). That does not change this migration's
+--   finding or weaken it: `property_id` was readerless, writerless and 0-row
+--   BEFORE that move, the ruling is about the shape of the key rather than its
+--   traffic, and the pointer their consolidation carries forward is spelled
+--   `listing_id` — the same survivor named here. Whether the `open_houses` table
+--   itself should now be retired is THEIR call and is deliberately left
+--   UNRESOLVED here rather than guessed at.
+--
+-- ══ WHAT THIS DOES ═══════════════════════════════════════════════════════════
+--
+-- Drops the constraint and the column. Nothing reads it, nothing writes it, no
+-- row carries a value, and the second FK is the thing the ruling forbids. The
+-- index scripts/525 created on it (idx_open_houses_property_id) goes with the
+-- column, as Postgres drops dependent indexes automatically.
+--
+-- REVERSIBLE: re-adding a nullable uuid column costs one ALTER and restores a
+-- state in which zero rows carry data. Nothing is destroyed — 0 non-null values
+-- existed at the moment of application, which is the whole reason this is a
+-- column drop and not a data migration.
+--
+-- BLAST RADIUS: `scripts/schema-fk-map.ts` and `scripts/schema-snapshot.ts` are
+-- GENERATED caches (CLAUDE.md §3) and still list this pair until the integrator
+-- regenerates them. They are owned by another lane this wave and are deliberately
+-- NOT hand-edited here. The listing-archive simulator therefore names this pair
+-- in `RETIRED_BY_MIGRATION` with this migration's number, and FAILS once the
+-- cache is regenerated and the entry becomes unnecessary — so the exception
+-- cleans itself up instead of becoming permanent.
+
+BEGIN;
+
+ALTER TABLE public.open_houses DROP CONSTRAINT IF EXISTS open_houses_property_id_fkey;
+ALTER TABLE public.open_houses DROP COLUMN IF EXISTS property_id;
+
+COMMIT;
+
+-- ══ VERIFY (run after) ═══════════════════════════════════════════════════════
+--
+--   SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+--    WHERE conrelid = 'public.open_houses'::regclass AND contype = 'f' ORDER BY 1;
+--     → 3 keys; open_houses_listing_id_fkey PRESENT, open_houses_property_id_fkey GONE.
+--
+--   POSITIVE CONTROL for that verification (CLAUDE.md §2): the same query, same
+--   predicates, must still FIND a key that is known to exist. If it returns
+--   open_houses_listing_id_fkey it can see this table's foreign keys, so the
+--   absence of open_houses_property_id_fkey is a measured absence rather than a
+--   query that stopped working.

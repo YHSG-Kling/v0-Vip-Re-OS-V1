@@ -5,6 +5,7 @@
 // Scores posts based on SEO best practices checklist
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -118,12 +119,44 @@ const SEO_CHECKLIST: ChecklistItem[] = [
   },
 ]
 
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
+// NOT exported: this file carries "use server", so every export is an HTTP
+// endpoint. This stays module-private on purpose.
+//
+// Both exports below are reachable by anyone who can reach the app. They read
+// and WRITE `seo_optimization_log` / `blog_posts`, both of which carry an RLS
+// policy of `brokerage_id = current_user_brokerage_id()` (verified live) — so
+// RLS is the tenant boundary. But RLS alone turns an unauthenticated hit into a
+// silent empty/no-op rather than a refusal, and `analyzeSEO` accepted the
+// brokerageId straight from the client. This resolves the caller's REAL
+// brokerage from the session and fails CLOSED.
+async function resolveBlogTenant(): Promise<
+  { ok: true; brokerageId: string } | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { ok: false, error: "No brokerage on your account" }
+  return { ok: true, brokerageId: ctx.brokerageId }
+}
+
 // ─── analyzeSEO ───────────────────────────────────────────────────────────────
 
 export async function analyzeSEO(
   postId: string,
   brokerageId: string
 ): Promise<{ success: boolean; result?: SeoAnalysisResult; error?: string }> {
+  if (!postId) return { success: false, error: "Missing post id" }
+
+  const tenant = await resolveBlogTenant()
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  // The caller-supplied brokerageId is advisory only — the session's brokerage
+  // wins. A mismatch is refused rather than quietly re-scoped, so a wrong
+  // caller learns it is wrong instead of scoring somebody else's post.
+  if (brokerageId && brokerageId !== tenant.brokerageId) {
+    return { success: false, error: "Blog post not found" }
+  }
+  brokerageId = tenant.brokerageId
+
   const supabase = await createClient()
 
   // ── 1. Fetch blog post ──────────────────────────────────────────────────────
@@ -139,20 +172,30 @@ export async function analyzeSEO(
   }
 
   // ── 2. Fetch linked keywords via blog_post_keywords + seo_keywords ──────────
-  const { data: keywordLinks } = await supabase
+  // supabase-js RESOLVES a refused query, so a swallowed `error` here would read
+  // as "this post has no keywords" and silently cost the post 50 of 100 points.
+  const { data: keywordLinks, error: linkErr } = await supabase
     .from("blog_post_keywords")
     .select("is_primary, seo_keyword_id")
     .eq("blog_post_id", postId)
+
+  if (linkErr) {
+    return { success: false, error: `Could not read the post's keywords: ${linkErr.message}` }
+  }
 
   let primaryKeyword: string | null = null
   const secondaryKeywords: string[] = []
 
   if (keywordLinks?.length) {
     const keywordIds = keywordLinks.map((kl) => kl.seo_keyword_id)
-    const { data: keywords } = await supabase
+    const { data: keywords, error: kwErr } = await supabase
       .from("seo_keywords")
       .select("id, keyword")
       .in("id", keywordIds)
+
+    if (kwErr) {
+      return { success: false, error: `Could not read the post's keywords: ${kwErr.message}` }
+    }
 
     if (keywords) {
       for (const kw of keywords) {
@@ -191,6 +234,10 @@ export async function analyzeSEO(
   }
 
   // ── 4. Insert seo_optimization_log ──────────────────────────────────────────
+  // NOTE: these two writes used to be console.error'd and then reported
+  // `success: true` regardless. That is a control that reports success without
+  // doing the thing — the editor would show a fresh score that was never
+  // persisted, and the history panel below would silently disagree with it.
   const { error: logError } = await supabase.from("seo_optimization_log").insert({
     brokerage_id: brokerageId,
     blog_post_id: postId,
@@ -202,6 +249,7 @@ export async function analyzeSEO(
 
   if (logError) {
     console.error("[analyzeSEO] Log insert failed:", logError)
+    return { success: false, error: `Score computed but not recorded: ${logError.message}` }
   }
 
   // ── 5. Update blog_posts.seo_score ──────────────────────────────────────────
@@ -209,9 +257,11 @@ export async function analyzeSEO(
     .from("blog_posts")
     .update({ seo_score: score })
     .eq("id", postId)
+    .eq("brokerage_id", brokerageId)
 
   if (updateError) {
     console.error("[analyzeSEO] Score update failed:", updateError)
+    return { success: false, error: `Score recorded but not saved to the post: ${updateError.message}` }
   }
 
   return {
@@ -238,12 +288,21 @@ export async function getSeoScoreHistory(
   }>
   error?: string
 }> {
+  if (!postId) return { success: false, error: "Missing post id" }
+
+  const tenant = await resolveBlogTenant()
+  if (!tenant.ok) return { success: false, error: tenant.error }
+
   const supabase = await createClient()
 
   const { data, error } = await supabase
     .from("seo_optimization_log")
     .select("score, issues, recommendations, optimized_at")
     .eq("blog_post_id", postId)
+    // Belt AND braces: RLS already scopes this table to the caller's brokerage,
+    // but the explicit predicate means a future service-client refactor of this
+    // read cannot quietly become cross-tenant.
+    .eq("brokerage_id", tenant.brokerageId)
     .order("optimized_at", { ascending: false })
     .limit(10)
 

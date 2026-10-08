@@ -3,14 +3,11 @@
 import { useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import { 
   Zap,
   RefreshCw,
-  Settings,
   AlertTriangle,
-  CheckCircle2,
   Play 
 } from "lucide-react"
 

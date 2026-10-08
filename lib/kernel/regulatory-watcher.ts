@@ -31,7 +31,9 @@
 // (change-signature, period) via the m224 upsert. NOT server-only — the simulator
 // imports it directly.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isoWeekTag } from "@/lib/kernel/commission-forecaster"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -309,6 +311,8 @@ export interface RegSearchResult {
   answer: string | null
   hits: Array<{ title: string | null; url: string | null; snippet: string | null }>
   provider: string
+  /** USD the search rail reports for this call (wave 138C: the law-rule healing loop meters + caps it). */
+  cost?: number
 }
 
 /** Injectable seam: run ONE reg-scan query and return the answer/hits. Real default =
@@ -322,12 +326,14 @@ export type RegSearchFetcher = (params: { query: string; brokerageId: string }) 
  * and returns provider "none" with no hits when no creds are configured → the runner
  * records "search unavailable" and escalates nothing. No key is read or logged here.
  */
+// Wave 138C: exported — the ONE law-research rail; lib/kernel/law-rule-healing.ts researches missing / stale
+// law rules through it (metered + cost-capped there) instead of opening a second search path.
 export const realRegSearchFetcher: RegSearchFetcher = async (params) => {
   const { webSearch } = await import("@/lib/ai/web-search")
   const res = await webSearch({ query: params.query, maxResults: 8, mode: "research", deep: true }).catch(
     () => ({ answer: null, hits: [], provider: "none" as const, cost: 0 }),
   )
-  return { answer: res.answer, hits: res.hits, provider: res.provider }
+  return { answer: res.answer, hits: res.hits, provider: res.provider, cost: res.cost }
 }
 
 /** The default scan queries — named regulators × "recent change" so a real change
@@ -446,7 +452,7 @@ export async function runRegulatoryWatcher(
   const maxChanges = opts.maxChanges ?? 20
   // Idempotency PERIOD: ISO week (yyyy-Www) — weekly cadence; the same change in the
   // same week is recorded/escalated once, but a recurrence next week re-surfaces.
-  const period = isoWeek(now)
+  const period = isoWeekTag(now)
 
   const result: RegulatoryWatcherResult = {
     searchRan: false, provider: "none", changesScanned: 0, flagged: [], escalated: 0,
@@ -458,12 +464,18 @@ export async function runRegulatoryWatcher(
   const candidateChanges: RegulatoryChange[] = []
 
   for (const query of queries) {
-    const res = await fetcher({ query, brokerageId }).catch(
+    const res: RegSearchResult = await fetcher({ query, brokerageId }).catch(
       () => ({ answer: null, hits: [], provider: "none" as const }),
     )
     if (res.provider !== "none") {
       result.searchRan = true
       if (result.provider === "none") result.provider = res.provider
+      // Wave 139 (139C): the watcher's own pass was UNMETERED (only law-rule-healing metered the same
+      // rail). Monitoring is PLATFORM-COVERED — booked, tenant-attributed; a $0 / no-cost result books nothing.
+      if ((res.cost ?? 0) > 0) {
+        const { meterVendorSpend } = await import("@/lib/vendor-governance/meter-vendor")
+        await meterVendorSpend({ vendorName: res.provider, usageType: "web_search", cost: res.cost as number, brokerageId, systemSource: "regulatory_watcher", priceState: "variable", coverage: "platform_covered" })
+      }
     }
     for (const ch of parseChangesFromSearchResult(res, query)) {
       const sig = changeSignature(ch)
@@ -532,9 +544,9 @@ export async function runRegulatoryWatcher(
       if (escalated) {
         flagged.escalated = true
         result.escalated += 1
-        await supabase.from("reg_change_observations")
+        await sentinelWrite(supabase, supabase.from("reg_change_observations")
           .update({ escalated_at: now.toISOString() })
-          .eq("brokerage_id", brokerageId).eq("change_signature", sig).eq("period", period)
+          .eq("brokerage_id", brokerageId).eq("change_signature", sig).eq("period", period), { table: "reg_change_observations", flow: "reg_change_observations_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
         // REGULATORY → CURRICULUM AUTOPILOT — don't just warn, TRAIN: author a gated training module on
         // the change (idempotent per signature) so the learning-router pushes it to agents + brokers.
@@ -618,19 +630,9 @@ async function escalateBrief(
   return bus.ok
 }
 
-/** PURE: ISO week label yyyy-Www (the idempotency period). */
-export function isoWeek(d: Date): string {
-  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
-  const dayNum = (date.getUTCDay() + 6) % 7 // Mon=0..Sun=6
-  date.setUTCDate(date.getUTCDate() - dayNum + 3) // nearest Thursday
-  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4))
-  const week =
-    1 +
-    Math.round(
-      ((date.getTime() - firstThursday.getTime()) / 86_400_000 -
-        3 +
-        ((firstThursday.getUTCDay() + 6) % 7)) /
-        7,
-    )
-  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
-}
+// TOMBSTONE (orphan doctrine §1.1, lane R): this file's own isoWeek(d) — computing
+// the same ISO-8601 week label (yyyy-Www) as isoWeekTag() at
+// lib/kernel/commission-forecaster.ts:634 (re-exported by
+// lib/kernel/objection-library.ts:312) via a different but equivalent algorithm —
+// was deleted 2026-09-07. Callers use isoWeekTag from commission-forecaster; any
+// future change to the ISO-week rule needs to change only one place.

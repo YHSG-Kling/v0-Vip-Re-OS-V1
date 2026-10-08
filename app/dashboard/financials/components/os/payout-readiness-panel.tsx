@@ -37,6 +37,10 @@ interface PayoutReadinessPanelProps {
     totalReady: number
     totalBlocked: number
   }
+  /** optional by design: defaults to "/dashboard/transactions/", which IS the
+   *  live route (app/dashboard/transactions/[id]/page.tsx) — this panel's one
+   *  caller (app/dashboard/financials/payouts/page.tsx) builds transactionId
+   *  from the same `transactions.id` the default already points at. */
   transactionLinkPrefix?: string
 }
 

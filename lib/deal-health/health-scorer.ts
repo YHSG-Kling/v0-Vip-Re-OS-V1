@@ -36,6 +36,7 @@
  *   - participants → transaction_participants
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent }         from "@/lib/kernel/events"
 import { emitKernelEvent }     from "@/lib/kernel/emit"
@@ -43,17 +44,9 @@ import { gatewayChat }         from "@/lib/ai/gateway-chat"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type HealthCategory =
-  | "EARNEST_MONEY"
-  | "INSPECTION"
-  | "LENDER"
-  | "TITLE"
-  | "MILESTONES"
-  | "DEADLINES"
-  | "COMPLIANCE"
-  | "COMMUNICATION"
-  | "DOCUMENTS"
-  | "PARTICIPANTS"
+export type { HealthCategory } from "./category-weights"
+import { CATEGORY_WEIGHTS, type HealthCategory } from "./category-weights"
+import { resolveModel } from "@/lib/ai/resolve-model"
 
 export interface ComponentScore {
   category:    HealthCategory
@@ -93,18 +86,8 @@ export interface DealHealthResult {
 // ─── Category Weights (sum = 100) ─────────────────────────────────────────────
 
 // Weights adjusted to sum to 100 with 10 categories
-const CATEGORY_WEIGHTS: Record<HealthCategory, number> = {
-  EARNEST_MONEY:   14,
-  INSPECTION:      12,
-  LENDER:          14,
-  TITLE:           10,
-  MILESTONES:      10,
-  DEADLINES:       10,
-  COMPLIANCE:      10,
-  COMMUNICATION:    6,
-  DOCUMENTS:        8,
-  PARTICIPANTS:     6,
-}
+// Weights + vocabulary now live in the client-safe sibling so the UI can rank the
+// same shortfall without importing this server module. One source, no copy.
 
 // ─── Scorer Functions ─────────────────────────────────────────────────────────
 
@@ -503,6 +486,17 @@ async function scoreDeadlines(
 
 /**
  * COMPLIANCE: Maps to transaction_compliance_log and compliance_checklists
+ *
+ * ── `brokerageId` WAS ACCEPTED AND NEVER READ ───────────────────────────────
+ *
+ * This is the ONLY one of the ten category scorers calculateDealHealth hands a
+ * tenant to — the other nine take `transactionId` alone — so the argument was
+ * not decoration, it was a wire somebody started and did not finish. Both
+ * tables carry `brokerage_id` (scripts/schema-snapshot.ts), the client is
+ * `createServiceClient()` with RLS bypassed, and every read below was keyed on
+ * `transaction_id` alone: a transaction id from one tenant would have scored
+ * against whatever compliance rows any tenant had filed under it. The
+ * predicate is now applied, which is what the parameter was for.
  */
 async function scoreCompliance(
   supabase: ReturnType<typeof createServiceClient>,
@@ -516,6 +510,7 @@ async function scoreCompliance(
   const { data: complianceLog } = await supabase
     .from("transaction_compliance_log")
     .select("id, check_type, check_label, status, is_blocking, failure_reason, checked_at, resolved_at")
+    .eq("brokerage_id", brokerageId)
     .eq("transaction_id", transactionId)
 
   if (complianceLog && complianceLog.length > 0) {
@@ -549,6 +544,7 @@ async function scoreCompliance(
   const { data: checklists } = await supabase
     .from("compliance_checklists")
     .select("id, checklist_type, items, compliance_score, ai_recommendations")
+    .eq("brokerage_id", brokerageId)
     .eq("transaction_id", transactionId)
 
   if (checklists && checklists.length > 0) {
@@ -851,7 +847,7 @@ export async function calculateDealHealth(params: {
   // ═══════════════════════════════════════════════════════════════════════════
 
   // 1. deal_health_scores: UPSERT by transaction_id
-  await supabase.from("deal_health_scores").upsert(
+  await sentinelWrite(supabase, supabase.from("deal_health_scores").upsert(
     {
       transaction_id:   transactionId,
       brokerage_id:     brokerageId,
@@ -865,13 +861,14 @@ export async function calculateDealHealth(params: {
       scored_at:        calculatedAt,
     },
     { onConflict: "transaction_id" }
-  )
+  ), { table: "deal_health_scores", flow: "deal_health_scores_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // 2. transactions.health_score: UPDATE every run
-  await supabase
+  const { error: healthScoreErr } = await supabase
     .from("transactions")
     .update({ health_score: overallScore })
     .eq("id", transactionId)
+  if (healthScoreErr) console.error(`[health-scorer] transactions.health_score not updated: ${healthScoreErr.message}`)
 
   // 2b. WRITER-LESS BURN-DOWN: the deal-health PAGE renders per-factor rows and
   // a score time-series from deal_health_factors + deal_health_snapshots — both
@@ -883,6 +880,11 @@ export async function calculateDealHealth(params: {
     // component categories — map each component to its canonical factor kind
     // (caught by live-fire before this write ever shipped; detail keeps the
     // original category for fidelity).
+    // All TEN categories map now. deal_health_factors.factor_type already admitted
+    // communication_recency and party_responsiveness — COMMUNICATION (6),
+    // PARTICIPANTS (6) and DOCUMENTS (8) simply had no entry here, so 20 of the
+    // 100 weight was scored in memory and then dropped on the floor at persist
+    // time. Nothing about the constraint had to change.
     const FACTOR_TYPE: Record<string, string> = {
       EARNEST_MONEY: "financing_status",
       LENDER:        "financing_status",
@@ -891,10 +893,14 @@ export async function calculateDealHealth(params: {
       MILESTONES:    "timeline_adherence",
       TITLE:         "document_completeness",
       COMPLIANCE:    "document_completeness",
+      DOCUMENTS:     "document_completeness",
+      COMMUNICATION: "communication_recency",
+      PARTICIPANTS:  "party_responsiveness",
     }
-    await supabase.from("deal_health_factors").delete().eq("transaction_id", transactionId)
+    const { error: factorsClearErr } = await supabase.from("deal_health_factors").delete().eq("transaction_id", transactionId)
+    if (factorsClearErr) console.error(`[health-scorer] prior health factors NOT cleared (duplicates possible): ${factorsClearErr.message}`)
     if (components.length > 0) {
-      await supabase.from("deal_health_factors").insert(components.map((c) => ({
+      const { error: factorsInsErr } = await supabase.from("deal_health_factors").insert(components.map((c) => ({
         brokerage_id:      brokerageId,
         transaction_id:    transactionId,
         factor_type:       FACTOR_TYPE[c.category] ?? "timeline_adherence",
@@ -906,6 +912,7 @@ export async function calculateDealHealth(params: {
         detail:            JSON.stringify({ issues: c.issues, category: c.category }),
         scored_at:         calculatedAt,
       })))
+      if (factorsInsErr) console.error(`[health-scorer] health factors NOT saved: ${factorsInsErr.message}`)
     }
     // Snapshot the time-series point when the score moved or the last point is stale (>20h)
     const { data: lastSnap } = await supabase
@@ -918,13 +925,13 @@ export async function calculateDealHealth(params: {
     const lastAt = lastSnap?.created_at ? new Date(lastSnap.created_at as string).getTime() : 0
     const stale = Date.now() - lastAt > 20 * 60 * 60 * 1000
     if (stale || (lastSnap && lastSnap.score !== overallScore)) {
-      await supabase.from("deal_health_snapshots").insert({
+      await sentinelWrite(supabase, supabase.from("deal_health_snapshots").insert({
         brokerage_id:   brokerageId,
         transaction_id: transactionId,
         score:          overallScore,
         risk_level:     riskLevel,
         factors:        scoreComponents,
-      })
+      }), { table: "deal_health_snapshots", flow: "deal_health_snapshots_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
   } catch (err) {
     console.error("[health-scorer] factors/snapshot persist failed (non-blocking):", err)
@@ -935,10 +942,11 @@ export async function calculateDealHealth(params: {
   const scoreRunId = crypto.randomUUID()
 
   // Delete old components for this transaction
-  await supabase
+  const { error: componentsClearErr } = await supabase
     .from("deal_health_components")
     .delete()
     .eq("transaction_id", transactionId)
+  if (componentsClearErr) console.error(`[health-scorer] prior components NOT cleared (duplicates possible): ${componentsClearErr.message}`)
 
   // Insert new component rows with consistent score_run_id
   const componentRows = components.map(c => ({
@@ -954,12 +962,27 @@ export async function calculateDealHealth(params: {
     scored_at:          calculatedAt,
   }))
 
-  await supabase.from("deal_health_components").insert(componentRows)
+  const { error: componentsInsErr } = await supabase.from("deal_health_components").insert(componentRows)
+  if (componentsInsErr) console.error(`[health-scorer] health components NOT saved: ${componentsInsErr.message}`)
 
   // ─── Emit kernel event if risk level changed ──────────────────────────────
   // emitKernelEvent does BOTH the lifecycle_events insert AND fans into the reactor (staff
   // notifications + marketing-trigger enrollment + canonical campaign_sequences enrollment +
   // client-portal cards). Bare lifecycle_events inserts silently dropped all four channels.
+  //
+  // CADENCE vs DEAL_HEALTH_SCORE_UPDATED (census wave 48 — CLAUDE.md §6 review): these are
+  // TWO MOMENTS, not two spellings of one. DEAL_HEALTH_SCORE_UPDATED (app/actions/
+  // deal-health-actions.ts, app/api/cron/deal-health-scan/route.ts) fires on EVERY scan of
+  // THIS SAME calculateDealHealth run, unconditionally — a cadence pulse the reactor
+  // (D-octies) already gates to "not healthy" before signaling deal_coordinator.
+  // DEAL_HEALTH_CHANGED fires HERE ONLY, and only `if (tierChanged)` — an edge trigger on
+  // the risk TIER flipping in EITHER direction, including a RECOVERY (critical → healthy)
+  // that DEAL_HEALTH_SCORE_UPDATED's "not healthy" gate never reports and DEAL_AT_RISK_
+  // DETECTED (fired below, only on worsening INTO danger) never reports either. So the three
+  // together read as: SCORE_UPDATED = "a scan happened", AT_RISK_DETECTED = "still bad",
+  // CHANGED = "the tier just moved, any direction" — kept as three distinct signals rather
+  // than merged, because a reader that only wants the edge (this one) would otherwise have
+  // to re-derive it by diffing consecutive SCORE_UPDATED rows itself.
   if (tierChanged) {
     await emitKernelEvent({
       event:        KernelEvent.DEAL_HEALTH_CHANGED,
@@ -1059,7 +1082,7 @@ Write a concise, actionable summary for the agent/broker. Focus on what needs at
 
   try {
     const response = await gatewayChat({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("claude-sonnet") as string, // one alias table (lib/ai/resolve-model.ts), never a dated literal
       maxTokens: 200,
       temperature: 0.3,
       messages: [{ role: "user", content: prompt }],
