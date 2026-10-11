@@ -13,13 +13,28 @@
  * the same shape a fresh solo signup produces, so no legitimate agent is ever
  * left brokerage-less.
  *
+ * TOMBSTONE (wave 140, lane 140C — subscriber convergence): the brokerages
+ * insert, the hand-built slug (never checked for uniqueness), the subscriptions
+ * row (written WITHOUT trial_end, which lib/billing/billing-access.ts reads as a
+ * trial that never ends), the snapshot apply and the domain-record call that
+ * stood here were the FOURTH spelling of tenant creation — and the only one
+ * with no AI-ISA actor, no starter assistant, no SUBSCRIPTION_CREATED, no
+ * onboarding library, no evidence and no provisioning record. SURVIVOR:
+ * lib/kernel/tenant-creation.ts::createTenantCore, entered through
+ * `adoptExistingOwner` (the signed-in user is anchored to the minted tenant and
+ * gets tier-aware domain records with their REAL user_type — never re-typed
+ * admin, never re-invited). What stays here is this door's own: the session
+ * identity, the owner-role check, the pending-invite guard and the
+ * anchored-but-incomplete repair.
+ *
  * SAFETY:
  *   - Only agent / team_lead owners self-provision. Staff / vendor / contact get
  *     their brokerage from their org or an invite — never a solo tenant here.
  *   - Pending-invite guard: an agent invited to an existing brokerage must JOIN
  *     it; we never create a solo brokerage while an invitation is open (that
  *     would split them off their intended tenant).
- *   - Idempotent: an already-anchored user is a no-op.
+ *   - Idempotent: an already-anchored user is a no-op (and a half-provisioned
+ *     tenant of theirs is RESUMED by the core, never duplicated).
  *   - Reuses createOrRepairUserDomainRecords for the agents/commission/
  *     onboarding/RBAC rows, so there is zero drift from the signup path.
  */
@@ -27,6 +42,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createOrRepairUserDomainRecords } from "@/lib/kernel/users"
+import { createTenantCore } from "@/lib/kernel/tenant-creation"
 
 const SOLO_TRIAL_DAYS = 14
 
@@ -104,100 +120,28 @@ export async function ensureAgentBrokerage(): Promise<EnsureAgentBrokerageResult
     if (pending && pending.length > 0) return { ok: false, error: "A brokerage invitation is pending — accept it to join, instead of creating a solo account." }
   }
 
-  // 1. Personal brokerage-of-one — same shape a solo self-serve signup produces.
+  // THE ONE CORE — the same sequence a solo self-serve signup gets (unique
+  // slug'd website, trialing subscription WITH trial_end, the solo_agent
+  // funnel snapshot, ISA actor, starter assistant, SUBSCRIPTION_CREATED,
+  // onboarding library, operating baseline, ledger evidence, provisioning
+  // record), with THIS signed-in user adopted as the owner. The tenant comes
+  // from the session's own users row — nothing here arrives in a request body.
   const displayName = [u.first_name, u.last_name].filter(Boolean).join(" ").trim() || (email ? email.split("@")[0] : "Agent")
-  const name = `${displayName}'s Brokerage`
-  const slug = `${name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "brokerage"}-${Math.random().toString(36).slice(2, 6)}`
-  const trialEndsAt = new Date(Date.now() + SOLO_TRIAL_DAYS * 24 * 60 * 60 * 1000).toISOString()
-
-  const { data: brokerage, error: bErr } = await svc
-    .from("brokerages")
-    .insert({
-      name,
-      slug,
-      email: email || null,
-      plan_tier: "solo_agent",
-      brokerage_on_platform: false,
-      team_on_platform: false,
-      trial_ends_at: trialEndsAt,
-      // Not the column DEFAULT's bag, which says subscription_status "active" /
-      // trial_ends_at null on this TRIAL tenant (lane 92A — same rule as the core,
-      // lib/kernel/tenant-creation.ts: status and trial end live in subscriptions +
-      // brokerages.trial_ends_at, never in the bag).
-      billing_metadata: {},
-      // signup_source is CHECK-constrained to self_serve/superadmin/partner/import;
-      // this is a self-serve provision (auto-triggered), so 'self_serve' is correct.
-      signup_source: "self_serve",
-      onboarding_status: "pending",
-    })
-    .select("id")
-    .single()
-  if (bErr || !brokerage) return { ok: false, error: `Brokerage creation failed: ${bErr?.message ?? "unknown"}` }
-
-  // 2. Anchor the user to it.
-  const { error: anchorErr } = await svc.from("users").update({ brokerage_id: brokerage.id }).eq("id", u.id)
-  if (anchorErr) return { ok: false, error: `Brokerage ${brokerage.id} was created but your account could not be anchored to it: ${anchorErr.message}` }
-
-  // 3. Canonical domain records (agents + commission + onboarding + RBAC),
-  //    tier-aware — the SAME repair path signup + login-time repair use.
-  // Use the user's ACTUAL role (agent OR team_lead) — both are AGENT_ROLES so the
-  // agents row is still provisioned, and the RBAC row matches users.user_type.
-  // Hardcoding "agent" for a team_lead would write a divergent role="agent" row, and
-  // the login-time repairIncompleteAccountSetup (which reads the real user_type) would
-  // then upsert a SECOND role="team_lead" row on (user_id, role).
-  await createOrRepairUserDomainRecords({
-    userId: u.id,
-    userType: u.user_type,
-    brokerageId: brokerage.id,
-    teamId: null,
+  const created = await createTenantCore(svc, {
+    brokerageName: `${displayName}'s Brokerage`,
+    adminEmail: email,
+    adminFirstName: String(u.first_name ?? "") || displayName,
+    adminLastName: String(u.last_name ?? ""),
     tier: "solo_agent",
+    brokerageOnPlatform: false,
+    teamOnPlatform: false,
+    // signup_source is CHECK-constrained to self_serve/superadmin/partner/import;
+    // this is a self-serve provision (auto-triggered), so 'self_serve' is correct.
+    signupSource: "self_serve",
+    billing: { mode: "trial", trialDays: SOLO_TRIAL_DAYS },
     callerUserId: u.id,
-  } as any)
-
-  // 3b. CONFIG SNAPSHOT AT CREATION — every tenant-creation path snapshots
-  //     (owner ruling; the other paths are signupBrokerageAction and
-  //     createSubscriber). Same server-side resolution as the self-serve
-  //     funnel: the newest snapshot recommending this tier, applied through
-  //     THE one apply path (allow-listed layers only — never identity/billing
-  //     fields). Best-effort — a branding problem must never cost the heal,
-  //     but the loss is logged, never swallowed.
-  try {
-    const { snapshotForTier } = await import("@/lib/platform/trial-funnel")
-    const { applySnapshotPayload } = await import("@/lib/platform/config-snapshots")
-    const snap = await snapshotForTier("solo_agent", svc)
-    if (snap) await applySnapshotPayload(snap.payload, brokerage.id, u.id, svc)
-  } catch (err) {
-    console.warn("[ensure-agent-brokerage] config snapshot apply failed (non-fatal):", (err as any)?.message)
-  }
-
-  // 4. Trialing subscription so fair-use is correct on day one (best-effort).
-  try {
-    const { data: tierRow } = await svc
-      .from("subscription_tiers")
-      .select("id")
-      .eq("tier_name", "solo_agent")
-      .eq("is_active", true)
-      .maybeSingle()
-    if (tierRow) {
-      // The try/catch does NOT catch a refusal — supabase-js resolves one. This
-      // is the row that decides what the new tenant may do on day one; without
-      // it they have no subscription at all and every fair-use gate reads
-      // "no plan". Stays non-fatal to onboarding, but no longer inaudible.
-      const { error: subError } = await svc.from("subscriptions").insert({
-        brokerage_id: brokerage.id,
-        tier_id: tierRow.id,
-        status: "trialing",
-        current_period_start: new Date().toISOString(),
-        current_period_end: trialEndsAt,
-      })
-      if (subError) {
-        console.error(
-          `[ensure-agent-brokerage] subscriptions insert REFUSED for brokerage ${brokerage.id} — the new tenant has NO trialing subscription and fair-use will read as no plan:`,
-          subError.message,
-        )
-      }
-    }
-  } catch { /* non-fatal */ }
-
-  return { ok: true, brokerageId: brokerage.id as string, created: true }
+    adoptExistingOwner: { userId: u.id as string, userType: String(u.user_type) },
+  })
+  if (!created.ok || !created.brokerageId) return { ok: false, error: created.error ?? "Brokerage creation failed" }
+  return { ok: true, brokerageId: created.brokerageId, created: !created.resumed }
 }

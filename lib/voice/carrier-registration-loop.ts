@@ -38,14 +38,59 @@
 import {
   loadA2pState, runA2pRegistration, runTollfreeVerification, resolveA2pProfile, recordLoopPhase,
   assessPhoneTestReadiness, a2pCampaignApproved, isTollFreeNumber, describeA2pState, describeTollfreeState,
-  type A2pState, type CarrierRunDeps,
+  haltVerdict, profileFingerprint,
+  type A2pState, type CarrierRunDeps, type A2pFailureClass,
 } from "@/lib/voice/a2p-registration"
 import { pollPortIns, portInNeedsPolling, type PortInDeps, type PortInRecord } from "@/lib/voice/number-port-in"
 import { BUSINESS_REGISTRATION_SETTINGS_LABEL, BUSINESS_REGISTRATION_SETTINGS_PATH } from "@/lib/branding/business-registration"
 
 // ── The phase (PURE) ─────────────────────────────────────────────────────────
 
-export type CarrierPhase = "no_numbers" | "needs_input" | "filing" | "carrier_review" | "approved" | "rejected"
+/** THE ONE carrier-posture vocabulary (wave 83D; `halted` added by wave 140G —
+ *  a credential / compliance refusal the loop must not retry on its own). The
+ *  tenant's four UI states DERIVE from it (tenantA2pUiState) — never a second
+ *  stored status. It lives in platform_credentials 'twilio_a2p' config jsonb
+ *  (loop_phase), so no CHECK constrains it and no migration was needed. */
+export type CarrierPhase = "no_numbers" | "needs_input" | "filing" | "carrier_review" | "approved" | "rejected" | "halted"
+
+// ── Wave 140G: the TENANT's four states, derived from the phase (PURE) ───────
+// Owner (wave 140): "tenant UI shows AVAILABLE / PENDING REGISTRATION / ACTION
+// REQUIRED / RESTRICTED". One vocabulary, one derivation:
+//   AVAILABLE            — approved: every lane the numbers need is carrier-
+//                          registered; texting and the phone test are live
+//   PENDING_REGISTRATION — filed (or being filed) and waiting on Twilio / TCR /
+//                          the carriers; nothing for the tenant to do
+//   ACTION_REQUIRED      — someone must act before filing can continue: the
+//                          registration is missing fields (needs_input), a
+//                          carrier said no (rejected), or the provider refused
+//                          our request for a reason a retry cannot change
+//                          (halted — the provider's reason is shown verbatim)
+//   RESTRICTED           — texting is restricted and nothing is in flight:
+//                          no number yet, or a number whose registration has
+//                          not been filed (carriers filter unregistered
+//                          business traffic; filing starts automatically)
+
+export type TenantA2pUiState = "AVAILABLE" | "PENDING_REGISTRATION" | "ACTION_REQUIRED" | "RESTRICTED"
+
+const TENANT_A2P_UI_LABELS: Readonly<Record<TenantA2pUiState, string>> = {
+  AVAILABLE: "Available",
+  PENDING_REGISTRATION: "Pending registration",
+  ACTION_REQUIRED: "Action required",
+  RESTRICTED: "Restricted",
+}
+
+/** PURE: the phase → the tenant's state. Exhaustive over CarrierPhase. */
+function tenantA2pUiState(phase: CarrierPhase, state: A2pState): TenantA2pUiState {
+  switch (phase) {
+    case "approved": return "AVAILABLE"
+    case "carrier_review": return "PENDING_REGISTRATION"
+    case "filing": return state.customer_profile_sid || state.tollfree_verification_sid ? "PENDING_REGISTRATION" : "RESTRICTED"
+    case "needs_input":
+    case "rejected":
+    case "halted": return "ACTION_REQUIRED"
+    case "no_numbers": return "RESTRICTED"
+  }
+}
 
 export interface CarrierPhaseView {
   phase: CarrierPhase
@@ -80,6 +125,10 @@ export function carrierRegistrationPhase(
   if (!numbers.length) return { phase: "no_numbers", testUnlocked: false, needs: [], statusLines: ["No phone number yet — pick a local number or port yours."] }
   if (readiness.ready) return { phase: "approved", testUnlocked: true, needs: [], statusLines }
   if (profileMissing.length) return { phase: "needs_input", testUnlocked: false, needs: profileMissing.map((m) => `Business profile: ${m}`), statusLines }
+  // Wave 140G: a halted filing is a named needs-action (the provider's reason),
+  // never a silent hourly retry. haltVerdict with no fingerprint = "as stored".
+  const halt = haltVerdict(state, null)
+  if (halt.halted) return { phase: "halted", testUnlocked: false, needs: [halt.reason], statusLines }
   const brand = (state.brand_status ?? "").toUpperCase()
   const campaign = (state.campaign_status ?? "").toUpperCase()
   const tf = (state.tollfree_status ?? "").toUpperCase()
@@ -100,9 +149,13 @@ export function carrierRegistrationPhase(
   return { phase: localSubmitted && tfSubmitted ? "carrier_review" : "filing", testUnlocked: false, needs: errorNeeds, statusLines }
 }
 
-/** PURE: should the tick run the 10DLC / toll-free runner for this tenant? */
-export function carrierTickPlan(state: A2pState, numbers: ReadonlyArray<{ phone_number: string; twilio_number_sid?: string | null }>, profileOk: boolean): { run10dlc: boolean; runTollfree: boolean } {
+/** PURE: should the tick run the 10DLC / toll-free runner for this tenant?
+ *  Wave 140G: a HALTED tenant (credential / compliance refusal) is not run —
+ *  zero provider calls — unless the profile fingerprint shows the tenant
+ *  corrected the registration (compliance only; haltVerdict is the rule). */
+export function carrierTickPlan(state: A2pState, numbers: ReadonlyArray<{ phone_number: string; twilio_number_sid?: string | null }>, profileOk: boolean, fingerprint: string | null = null): { run10dlc: boolean; runTollfree: boolean } {
   if (!profileOk || !numbers.length) return { run10dlc: false, runTollfree: false }
+  if (haltVerdict(state, fingerprint).halted) return { run10dlc: false, runTollfree: false }
   const local = numbers.filter((n) => !isTollFreeNumber(n.phone_number))
   const unattached = local.some((n) => n.twilio_number_sid && !(state.attached_number_sids ?? []).includes(n.twilio_number_sid))
   const tfDone = ["TWILIO_APPROVED", "TWILIO_REJECTED"].includes((state.tollfree_status ?? "").toUpperCase())
@@ -120,12 +173,19 @@ export interface CarrierTickDeps {
   port?: PortInDeps
   /** Tenants per tick (default 50) — bounded so one tick never runs away. */
   limit?: number
+  /** Wave 140G (readiness): may this tenant's PLAN hold a phone number at all?
+   *  Default: lib/billing/phone-plan-resolve.ts evaluateTenantNumberProvisioning
+   *  (lazy — it is server-only). null = unknown (a refused read never reads as
+   *  "not applicable"). */
+  numbersAllowed?: (svc: any, brokerageId: string) => Promise<boolean | null>
 }
 
 export interface CarrierTickTenantResult {
   brokerageId: string
   before: CarrierPhase | null
   after: CarrierPhase
+  /** Wave 140G: the tenant's state, derived from `after` (one vocabulary). */
+  uiState: TenantA2pUiState
   ported: string[]
   ran: Array<"10dlc" | "tollfree">
   needs: string[]
@@ -147,24 +207,30 @@ async function ringAdmins(svc: any, brokerageId: string, title: string, body: st
   }
 }
 
-export async function advanceTenantCarrier(svc: any, brokerageId: string, deps: CarrierTickDeps = {}): Promise<CarrierTickTenantResult> {
+export async function advanceTenantCarrier(svc: any, brokerageId: string, deps: CarrierTickDeps = {}, opts: { resume?: boolean } = {}): Promise<CarrierTickTenantResult> {
   // 1. Ports first — a number that lands now is registered in this same pass.
   const port = await pollPortIns(svc, brokerageId, deps.port)
 
   const { data: nums, error: numErr } = await svc.from("tenant_phone_numbers")
     .select("phone_number, twilio_number_sid").eq("brokerage_id", brokerageId).eq("is_active", true).limit(20)
   const { state: before } = await loadA2pState(svc, brokerageId)
-  if (numErr) return { brokerageId, before: (before.loop_phase as CarrierPhase) ?? null, after: (before.loop_phase as CarrierPhase) ?? "no_numbers", ported: port.landed, ran: [], needs: [], testUnlocked: false, error: `numbers read refused: ${numErr.message}` }
+  if (numErr) {
+    const stale = (before.loop_phase as CarrierPhase) ?? null
+    return { brokerageId, before: stale, after: stale ?? "no_numbers", uiState: tenantA2pUiState(stale ?? "no_numbers", before), ported: port.landed, ran: [], needs: [], testUnlocked: false, error: `numbers read refused: ${numErr.message}` }
+  }
   const numbers = (nums ?? []) as Array<{ phone_number: string; twilio_number_sid: string | null }>
 
   // 2. The profile, derived from the brokerage's own record.
   const profile = numbers.length ? await resolveA2pProfile(svc, brokerageId) : { ok: false as const, missing: [] }
-  const plan = carrierTickPlan(before, numbers, profile.ok)
+  // Wave 140G: the fingerprint the halt rule compares (a corrected registration
+  // lifts a compliance halt); an explicit resume lifts any halt once.
+  const fingerprint = profile.ok ? profileFingerprint(profile.draft) : null
+  const plan = carrierTickPlan(opts.resume ? { ...before, halted_at: null } : before, numbers, profile.ok, fingerprint)
 
   // 3. Advance each lane the numbers need (resumable; idle = one poll).
   const ran: Array<"10dlc" | "tollfree"> = []
-  if (plan.run10dlc) { await runA2pRegistration(svc, brokerageId, { deps: deps.carrier }); ran.push("10dlc") }
-  if (plan.runTollfree) { await runTollfreeVerification(svc, brokerageId, { deps: deps.carrier }); ran.push("tollfree") }
+  if (plan.run10dlc) { await runA2pRegistration(svc, brokerageId, { deps: deps.carrier, resume: opts.resume }); ran.push("10dlc") }
+  if (plan.runTollfree) { await runTollfreeVerification(svc, brokerageId, { deps: deps.carrier, resume: opts.resume }); ran.push("tollfree") }
 
   // 4. One phase; a CHANGE is audited and rung.
   const { state: after } = await loadA2pState(svc, brokerageId)
@@ -182,8 +248,129 @@ export async function advanceTenantCarrier(svc: any, brokerageId: string, deps: 
     })
     if (view.phase === "approved") await ringAdmins(svc, brokerageId, "Business texting approved — phone test unlocked", `Carriers approved your business registration. ${view.statusLines.join(" ")} You can now run the phone test from Phone settings.`)
     else if (view.phase === "needs_input" || view.phase === "rejected") await ringAdmins(svc, brokerageId, "Business registration needs your input", `${view.needs.join(" · ")} — add it in ${BUSINESS_REGISTRATION_SETTINGS_LABEL} (${BUSINESS_REGISTRATION_SETTINGS_PATH}); filing resumes on its own within the hour.`)
+    // Wave 140G: a halt is rung ONCE with the provider's reason — it is never
+    // retried silently (a credential halt waits for platform support; the
+    // platform sentinel's A2P stall detector reads the same last_error).
+    else if (view.phase === "halted") await ringAdmins(svc, brokerageId, "Business texting registration needs attention", `${view.needs.join(" · ")} (Phone settings → Carrier registration).`)
   }
-  return { brokerageId, before: prev, after: view.phase, ported: port.landed, ran, needs: view.needs, testUnlocked: view.testUnlocked }
+  return { brokerageId, before: prev, after: view.phase, uiState: tenantA2pUiState(view.phase, after), ported: port.landed, ran, needs: view.needs, testUnlocked: view.testUnlocked }
+}
+
+// ── Wave 140G: THE ONE STATUS SYNC the readiness repair calls ────────────────
+// Owner (wave 140): "Self-healing may retry safe status-sync/reconciliation
+// (expose ONE syncA2pStatus(svc, brokerageId) the readiness repair can call);
+// credential/compliance failures never auto-heal — ACTION REQUIRED with the
+// provider's reason." There is no second reconciler: a sync IS one pass of
+// advanceTenantCarrier (resumable, idempotent — approved + pooled costs zero
+// provider calls; a review in flight costs one poll; nothing is ever filed
+// twice because every step keys on its persisted sid), REFUSED while the
+// tenant is halted (zero provider calls, the stored reason returned) unless
+// the caller is a human pressing resume. `probeOnly` evaluates without running
+// (the readiness contract's evaluate step; repair runs it for real).
+//
+// READINESS HOOK (integrator): lib/kernel/tenant-readiness.ts (lane 140B/K)
+// maps `readiness` below onto its `communications` ReadinessCheck — evaluate
+// with { probeOnly: true }, repair with no option, and never widen the halt.
+//
+// THE RULE FOR A TENANT WITH NO NUMBER YET (documented for lane 140B/K): the
+// communications check is WAITING_EXTERNAL (the tenant has not picked or
+// ported a number — their choice, outside the platform) or NOT_APPLICABLE
+// (the plan admits no number at all) — NEVER BLOCKED. Readiness does not fail
+// a tenant for not having chosen a phone number.
+
+export interface A2pSyncResult {
+  /** false when the sync did not run (halted — the stored reason is returned) or a read refused. */
+  ok: boolean
+  brokerageId: string
+  phase: CarrierPhase
+  uiState: TenantA2pUiState
+  uiLabel: string
+  /** One honest sentence — the provider's reason when halted / rejected. */
+  reason: string
+  needs: string[]
+  testUnlocked: boolean
+  ran: Array<"10dlc" | "tollfree">
+  halted: { class: A2pFailureClass; reason: string; since: string } | null
+  readiness: {
+    status: "PASS" | "REPAIRABLE" | "WAITING_EXTERNAL" | "BLOCKED" | "NOT_APPLICABLE"
+    required: boolean
+    reason: string
+    owner: "compliance_officer" | "platform"
+    /** How the repair runs when REPAIRABLE (this function, no option). */
+    repair: string | null
+  }
+  evidence: Record<string, unknown>
+}
+
+/** PURE: the readiness verdict for the communications check (see the rule above). */
+function a2pReadinessVerdict(phase: CarrierPhase, state: A2pState, numbersAllowed: boolean | null): A2pSyncResult["readiness"] {
+  const owner = state.last_error_class === "credential" ? "platform" : "compliance_officer"
+  switch (phase) {
+    case "approved": return { status: "PASS", required: true, reason: "every lane the tenant's numbers need is carrier-registered", owner: "compliance_officer", repair: null }
+    case "no_numbers":
+      if (numbersAllowed === false) return { status: "NOT_APPLICABLE", required: false, reason: "the plan admits no phone number — nothing to register", owner: "compliance_officer", repair: null }
+      return { status: "WAITING_EXTERNAL", required: true, reason: "no phone number yet — the tenant picks a local number or ports theirs; never a blocker", owner: "compliance_officer", repair: null }
+    case "carrier_review": return { status: "WAITING_EXTERNAL", required: true, reason: "filed — waiting on Twilio / TCR / carrier review", owner: "compliance_officer", repair: null }
+    case "filing": return { status: "REPAIRABLE", required: true, reason: "steps still to submit — the hourly loop or a sync files them", owner: "compliance_officer", repair: "lib/voice/carrier-registration-loop.ts syncA2pStatus(svc, brokerageId)" }
+    case "needs_input": return { status: "BLOCKED", required: true, reason: `the Business registration is missing fields (${BUSINESS_REGISTRATION_SETTINGS_PATH})`, owner: "compliance_officer", repair: null }
+    case "rejected": return { status: "BLOCKED", required: true, reason: `a carrier rejected the filing${state.last_error ? `: ${state.last_error}` : ""}`, owner: "compliance_officer", repair: null }
+    case "halted": {
+      const h = haltVerdict(state, null)
+      return { status: "BLOCKED", required: true, reason: h.halted ? h.reason : "filing halted", owner, repair: null }
+    }
+  }
+}
+
+async function defaultNumbersAllowed(svc: any, brokerageId: string): Promise<boolean | null> {
+  try {
+    const { evaluateTenantNumberProvisioning } = await import("@/lib/billing/phone-plan-resolve")
+    const v = await evaluateTenantNumberProvisioning(svc, brokerageId)
+    return v.allowed
+  } catch { return null }
+}
+
+export async function syncA2pStatus(svc: any, brokerageId: string, opts: { deps?: CarrierTickDeps; resume?: boolean; probeOnly?: boolean } = {}): Promise<A2pSyncResult> {
+  const deps = opts.deps ?? {}
+  const { state: stored } = await loadA2pState(svc, brokerageId)
+  // haltVerdict with resume=true is never halted — a human's resume runs once.
+  const halt = haltVerdict(stored, null, opts.resume)
+  let ran: Array<"10dlc" | "tollfree"> = []
+  let runError: string | null = null
+  if (!opts.probeOnly && !halt.halted) {
+    const r = await advanceTenantCarrier(svc, brokerageId, deps, { resume: opts.resume })
+    ran = r.ran
+    runError = r.error ?? null
+  }
+  // The view, from STORED state (what the tenant and the contract read).
+  const { state } = await loadA2pState(svc, brokerageId)
+  const { data: nums, error: numErr } = await svc.from("tenant_phone_numbers")
+    .select("phone_number, twilio_number_sid").eq("brokerage_id", brokerageId).eq("is_active", true).limit(20)
+  if (numErr) throw new Error(`tenant phone numbers could not be read (${numErr.message}) — the carrier status is unknown, not clear`)
+  const numbers = (nums ?? []) as Array<{ phone_number: string; twilio_number_sid: string | null }>
+  const profile = numbers.length ? await resolveA2pProfile(svc, brokerageId) : { ok: false as const, missing: [] as string[] }
+  const view = carrierRegistrationPhase(state, numbers, profile.ok ? [] : profile.missing)
+  const numbersAllowed = numbers.length ? true : await (deps.numbersAllowed ?? defaultNumbersAllowed)(svc, brokerageId)
+  const nowHalt = haltVerdict(state, null)
+  const uiState = tenantA2pUiState(view.phase, state)
+  return {
+    // ok = nothing needs a human right now (halted / rejected / missing input are not ok).
+    ok: !nowHalt.halted && !runError && view.phase !== "rejected" && view.phase !== "needs_input",
+    brokerageId,
+    phase: view.phase,
+    uiState,
+    uiLabel: TENANT_A2P_UI_LABELS[uiState],
+    reason: nowHalt.halted ? nowHalt.reason : (runError ?? view.needs[0] ?? view.statusLines.join(" ")),
+    needs: view.needs,
+    testUnlocked: view.testUnlocked,
+    ran,
+    halted: nowHalt.halted ? { class: nowHalt.class, reason: nowHalt.reason, since: state.halted_at ?? "" } : null,
+    readiness: a2pReadinessVerdict(view.phase, state, numbersAllowed),
+    evidence: {
+      numbers: numbers.length, brand_status: state.brand_status ?? null, campaign_status: state.campaign_status ?? null,
+      tollfree_status: state.tollfree_status ?? null, last_error: state.last_error ?? null, last_error_class: state.last_error_class ?? null,
+      halted_at: state.halted_at ?? null, updated_at: state.updated_at ?? null, probeOnly: !!opts.probeOnly,
+    },
+  }
 }
 
 /**

@@ -16,6 +16,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decryptSecret, decryptSecretFields } from "@/lib/security/secret-crypto"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
@@ -173,7 +174,8 @@ export async function GET(request: Request) {
             .select("platform, access_token, account_id")
             .eq("brokerage_id", post.brokerage_id)
             .eq("is_active", true)
-          const targets = (accounts ?? []) as Array<{ platform: string; access_token: string; account_id: string }>
+          // Stored tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt before use.
+          const targets = ((accounts ?? []) as Array<{ platform: string; access_token: string; account_id: string }>).map((a) => decryptSecretFields(a, ["access_token"]))
           if (targets.length === 0) {
             await sentinelWrite(supabase, supabase.from("social_posts").update({
               status: "failed", error_message: "platform=all but no connected social accounts", updated_at: new Date().toISOString(),
@@ -242,7 +244,7 @@ export async function GET(request: Request) {
         const publishResult = await publishToSocialPlatform(post.platform, {
           content: compliantContent,
           mediaUrls: post.media_urls || [],
-          accessToken: account.access_token,
+          accessToken: decryptSecret(account.access_token) as string, // enc:v1 envelope (legacy plaintext passes through)
           accountId: account.account_id,
           hashtags: post.hashtags || [],
         }, {

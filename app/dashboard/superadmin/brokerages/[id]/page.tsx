@@ -8,6 +8,7 @@ import { getBrokerageDetailAction } from "@/app/actions/superadmin/brokerage-man
 import { BrokerageActions } from "./brokerage-actions"
 import { TenantUsersPanel } from "./tenant-users-panel"
 import { TenantSetupPanel } from "./tenant-setup-panel"
+import { TenantReadinessPanel } from "./tenant-readiness-panel"
 import { EnterTenantButton } from "./enter-tenant-button"
 import { TenantEntitlementsPanel } from "./tenant-entitlements-panel"
 import { TenantAutonomyPanel } from "./tenant-autonomy-panel"
@@ -99,6 +100,9 @@ export default async function SuperadminBrokerageDetailPage(
 
       {/* Staff-assisted onboarding — the tenant's setup readiness, worked on their behalf */}
       <TenantSetupPanel brokerageId={brokerage.id} />
+
+      {/* The tenant readiness CONTRACT — provisioned and ready to operate? (wave 140B+K; repairs via self-healing) */}
+      <TenantReadinessPanel brokerageId={brokerage.id} />
 
       {/* Admin actions card */}
       <BrokerageActions brokerage={brokerage} />

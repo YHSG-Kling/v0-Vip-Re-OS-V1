@@ -6,18 +6,26 @@
 // (stripe_account_id), which flow the other way.
 //
 // Pure catalog + gating (testable); the Stripe billing calls live in app/actions/vendor-billing.ts and the
-// webhook route, both of which reuse the canonical lib/stripe proxy. HONEST: pricing/price-ids are config
-// (env / marketplace_settings), so the catalog carries display prices only — the source of truth for a
-// charge is always Stripe.
+// webhook route, both of which reuse the canonical lib/stripe proxy. HONEST: pricing is ADMINISTERED
+// (brokerage_settings.settings.vendor_tier_pricing, set in the admin vendor-approval queue), never a code
+// literal. Owner (wave 139 ECONOMICS / wave 140): "nothing may hard-code a tier price; unknown price stays
+// explicitly unknown, never fabricated" — so the catalog's monthlyPriceUsd is `null` (not configured) for
+// every tier, and a checkout with no administered price is the typed price_not_configured refusal
+// (lib/billing/plan-catalog.ts), never a $49/$149/$299/$599 invented at authoring time.
+// TOMBSTONE (wave 140J): those four literals lived on VENDOR_TIERS below; survivor = resolveTierPrice over
+// the administered override.
 
 import { normalizeStripeStatus } from "@/lib/billing/stripe-status"
+import { isConfiguredPriceCents } from "@/lib/billing/plan-catalog"
 
 export type VendorTier = "basic" | "standard" | "premium" | "preferred_network"
 export type SubscriptionStatus = "active" | "past_due" | "canceled" | "trialing"
 
 export interface TierCapabilities {
   tier: VendorTier
-  monthlyPriceUsd: number
+  /** USD/month. `null` = NOT CONFIGURED — the catalog never carries a price; resolveTierPrice
+   *  folds the administered override in, and a null there refuses the checkout. */
+  monthlyPriceUsd: number | null
   /** Eligible to be AI-surfaced to clients (basic is NOT — spec rule). */
   surfacingEligible: boolean
   /** Eligible to be added to a brokerage's preferred list (premium+). */
@@ -31,10 +39,10 @@ export interface TierCapabilities {
 }
 
 export const VENDOR_TIERS: Record<VendorTier, TierCapabilities> = {
-  basic:             { tier: "basic",             monthlyPriceUsd: 49,  surfacingEligible: false, preferredEligible: false, featuredEligible: false, serviceAreaZones: 1,   packageLimit: 3 },
-  standard:          { tier: "standard",          monthlyPriceUsd: 149, surfacingEligible: true,  preferredEligible: false, featuredEligible: false, serviceAreaZones: 3,   packageLimit: 10 },
-  premium:           { tier: "premium",           monthlyPriceUsd: 299, surfacingEligible: true,  preferredEligible: true,  featuredEligible: false, serviceAreaZones: 999, packageLimit: 999 },
-  preferred_network: { tier: "preferred_network", monthlyPriceUsd: 599, surfacingEligible: true,  preferredEligible: true,  featuredEligible: true,  serviceAreaZones: 999, packageLimit: 999 },
+  basic:             { tier: "basic",             monthlyPriceUsd: null, surfacingEligible: false, preferredEligible: false, featuredEligible: false, serviceAreaZones: 1,   packageLimit: 3 },
+  standard:          { tier: "standard",          monthlyPriceUsd: null, surfacingEligible: true,  preferredEligible: false, featuredEligible: false, serviceAreaZones: 3,   packageLimit: 10 },
+  premium:           { tier: "premium",           monthlyPriceUsd: null, surfacingEligible: true,  preferredEligible: true,  featuredEligible: false, serviceAreaZones: 999, packageLimit: 999 },
+  preferred_network: { tier: "preferred_network", monthlyPriceUsd: null, surfacingEligible: true,  preferredEligible: true,  featuredEligible: true,  serviceAreaZones: 999, packageLimit: 999 },
 }
 
 const TIER_ORDER: VendorTier[] = ["basic", "standard", "premium", "preferred_network"]
@@ -42,11 +50,12 @@ const TIER_ORDER: VendorTier[] = ["basic", "standard", "premium", "preferred_net
 /** Per-brokerage price overrides (USD/month) — a brokerage can set its own vendor tier pricing. */
 export type TierPriceOverrides = Partial<Record<VendorTier, number>>
 
-/** PURE: the effective monthly price for a tier — a brokerage override wins over the catalog default. */
-export function resolveTierPrice(tier: string | null | undefined, overrides?: TierPriceOverrides | null): number {
+/** PURE: the effective monthly price for a tier — the administered override (an explicit $0 is a
+ *  decision: free), else the catalog, which carries NO price → `null` = price_not_configured. */
+export function resolveTierPrice(tier: string | null | undefined, overrides?: TierPriceOverrides | null): number | null {
   const t = normalizeTier(tier)
   const o = overrides?.[t]
-  return typeof o === "number" && o >= 0 ? o : VENDOR_TIERS[t].monthlyPriceUsd
+  return isConfiguredPriceCents(o, { allowZero: true }) ? o : VENDOR_TIERS[t].monthlyPriceUsd
 }
 
 /** PURE: the tier catalog with prices resolved against a brokerage's overrides (capabilities unchanged). */

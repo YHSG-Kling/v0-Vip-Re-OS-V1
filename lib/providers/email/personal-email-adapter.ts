@@ -17,7 +17,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
-import { decryptSecret } from "@/lib/security/secret-crypto"
+import { decryptSecret, encryptSecret } from "@/lib/security/secret-crypto"
 import { googleOAuthClient, microsoftOAuthClient } from "@/lib/env/aliases"
 
 export type PersonalProvider = "gmail" | "outlook"
@@ -186,8 +186,9 @@ async function loadOwnerEmailCred(owner: EmailOwner): Promise<PersonalCred | nul
   return {
     id: c.id,
     service_name: c.platform,
-    access_token: c.access_token,
-    refresh_token: c.refresh_token,
+    // decryptSecret is backward-compatible (plaintext passes through) — same as the agent stage above.
+    access_token: decryptSecret(c.access_token),
+    refresh_token: decryptSecret(c.refresh_token),
     token_expires_at: c.token_expires_at,
     email: (c.config?.email as string) ?? null,
     scope: (c.config?.scope as string | undefined) ?? null,
@@ -221,7 +222,8 @@ async function ensureFreshAccessToken(cred: PersonalCred): Promise<string | null
   await svc
     .from(cred.source)
     .update({
-      access_token: refreshed.accessToken,
+      // ENCRYPT-ON-WRITE (wave 140H) — the readers above decrypt (backward-compatible).
+      access_token: encryptSecret(refreshed.accessToken),
       token_expires_at: new Date(Date.now() + refreshed.expiresInSec * 1000).toISOString(),
     })
     .eq("id", cred.id)

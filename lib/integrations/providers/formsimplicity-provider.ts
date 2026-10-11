@@ -7,13 +7,20 @@
  * provides e-signature via its Authentisign integration.
  *
  * Credentials shape (platform_credentials row):
- *   api_key         — Form Simplicity API token (Bearer).
+ *   api_key         — Form Simplicity OAuth2 access token (Bearer; client_credentials at /oauth/token).
  *   account_id      — Member / account id (passed as accountId, optional).
- *   config.base_uri — Required for production; the partner API host is provisioned
- *                     per integration. Defaults to https://api.formsimplicity.com/v1.
+ *   config.base_uri — Optional; the partner API host is provisioned per integration (the dev host
+ *                     is formsapidev.floridarealtors.org). Defaults to VENDOR_CONTRACTS.formsimplicity.baseUrl.
  *
- * Endpoint paths follow Form Simplicity's conventional REST shape; base_uri is
- * configurable so the exact partner host/version is set at connect time.
+ * WAVE 140 (lane 140I) — CONTRACT VERIFIED (api.formsimplicity.com/docs/{intro,fsforms,oauth},
+ * 2026-10-11): the host is https://api.formsimplicity.com with NO /v1 (the old default); the endpoints
+ * are RPC-style POSTs — /fsforms/listTrans, /fsforms/getTransById, /fsforms/addTrans (and
+ * /officeTransactions/*) — behind OAuth2 client_credentials. createTransaction now speaks
+ * /fsforms/addTrans with the documented body keys; the vendor requires stateID + agentNRDSID, which
+ * CreateTransactionRequest does not carry — the 400 "Missing Required Parameter" is surfaced, never
+ * hidden (open item: thread the agent's NRDS id + state through the request). The forms / signature /
+ * documents paths below are NOT in the published docs — kept as they were, published as unverified.
+ * The intro page also says the API "is setup for internal use only at this time" (account by request).
  */
 
 import type {
@@ -38,6 +45,7 @@ import type {
 } from "./transaction-provider.interface"
 import { mapProviderFormCategory } from "./transaction-provider.interface"
 import { callConnector, type GatewayResponse } from "@/lib/agentic-os/connector-gateway"
+import { VENDOR_CONTRACTS } from "@/lib/agentic-os/connector-registry"
 
 export class FormSimplicityProvider implements ITransactionProvider {
   readonly name = "formsimplicity"
@@ -50,7 +58,7 @@ export class FormSimplicityProvider implements ITransactionProvider {
     if (!credentials?.apiKey) throw new Error("Form Simplicity: api_key (Bearer token) required")
     this.accessToken = credentials.apiKey
     this.accountId   = credentials.profileId
-    this.baseUri     = (credentials.baseUri ?? "https://api.formsimplicity.com/v1").replace(/\/$/, "")
+    this.baseUri     = (credentials.baseUri ?? VENDOR_CONTRACTS.formsimplicity.baseUrl).replace(/\/$/, "")
   }
 
   /** Single egress choke point — every Form Simplicity API call leaves through the connector-gateway. */
@@ -71,18 +79,21 @@ export class FormSimplicityProvider implements ITransactionProvider {
 
   async createTransaction(request: CreateTransactionRequest): Promise<CreateTransactionResponse> {
     try {
-      const res = await this.request<{ id?: string; transactionId?: string }>("/transactions", {
+      // Documented: POST /fsforms/addTrans { userId, stateID, agentNRDSID, transName, streetAddress,
+      // propertyType, transactionType, propertyStatus } (api.formsimplicity.com/docs/fsforms).
+      const res = await this.request<{ id?: string; transactionId?: string; transId?: string }>("/fsforms/addTrans", {
         method: "POST",
         body: {
-          accountId:       this.accountId,
-          propertyAddress: request.propertyAddress,
+          userId:          this.accountId,
+          transName:       request.propertyAddress,
+          streetAddress:   request.propertyAddress,
           transactionType: request.transactionType === "purchase" ? "purchase" : "listing",
           price:           request.purchasePrice,
           closingDate:     request.estimatedCloseDate,
         },
       })
       if (!res.ok) return { success: false, error: `FormSimplicity createTransaction ${res.status}: ${res.error}` }
-      const id = res.data?.id ?? res.data?.transactionId
+      const id = res.data?.id ?? res.data?.transactionId ?? res.data?.transId
       if (!id) return { success: false, error: "FormSimplicity returned no transaction id" }
       return { success: true, externalTransactionId: String(id) }
     } catch (err: any) {

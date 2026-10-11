@@ -9,7 +9,7 @@
 // invitation across tenants. Every mutation is superadmin-gated and audited (IP/UA).
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { inviteTenantMember, type UserDomainRole } from "@/lib/kernel/users"
+import { inviteTenantMember, seatSubjectForEmail, type UserDomainRole } from "@/lib/kernel/users"
 // `roleConsumesSeat` and `SEAT_ROLES` were imported here to count seats inline.
 // This file now calls the shared `seatGate`, which does that counting itself, so
 // both became DEAD IMPORTS — a reader with no writer, in the census's category 2.
@@ -286,9 +286,13 @@ export async function createTenantUserAction(params: {
   // one seat resolver (both role sources), the limit from the PLAN CATALOGUE
   // (subscription_tiers.max_agents) with the staff override on top, and FAIL
   // CLOSED on an unreadable tenant / count / catalogue.
+  // RETRY IS NOT A SECOND SEAT (wave 140F): the subject is resolved on the
+  // TARGET tenant by email so a staff re-run for a member already seated on a
+  // full plan passes through `already_seated` instead of needing the override.
   let seatOverLimit = false
   {
-    const verdict = await seatGate(svc, params.brokerageId, params.userType, { produces: params.produces })
+    const subjectUserId = await seatSubjectForEmail(svc, params.brokerageId, email)
+    const verdict = await seatGate(svc, params.brokerageId, params.userType, { produces: params.produces, subjectUserId })
     seatOverLimit = !verdict.allowed
     if (seatOverLimit && !params.superadminOverride) {
       // The tenant-facing sentence carries the three paths (upgrade / downgrade

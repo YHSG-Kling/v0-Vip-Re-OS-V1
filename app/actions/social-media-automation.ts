@@ -21,6 +21,7 @@ import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
 // The ONE way a notifications row gets its tenant — the recipient's
 // users.brokerage_id, the exact value badge-counts compares against.
 import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
+import { encryptSecret } from "@/lib/security/secret-crypto"
 
 /**
  * Tenant guard — requires authenticated session with a brokerage.
@@ -155,8 +156,8 @@ export async function connectSocialAccount(params: {
         platform: params.platform,
         account_name: params.accountName,
         account_id: params.accountId || null,
-        access_token: params.accessToken,
-        refresh_token: params.refreshToken ?? null,
+        access_token: encryptSecret(params.accessToken),
+        refresh_token: encryptSecret(params.refreshToken ?? null),
         token_expires_at: params.expiresAt ?? null,
         scope: params.scope || "agent",
         is_active: true,

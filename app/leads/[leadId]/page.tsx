@@ -195,11 +195,12 @@ export default async function LeadDetailPage({ params }: PageProps) {
           </p>
           {/* Lane 88B — the TENANT's spend on this person: its own ad-campaign share
               (leads.acquisition_cost). Raw acquisition + enrichment are platform-covered
-              and are never shown as the tenant's lead cost. */}
+              (internal ledger term) and are never shown as the tenant's lead cost; the
+              tenant-facing copy says "included in your subscription" (wave 140 ruling). */}
           <p className="text-xs text-muted-foreground">
             {timeline.acquisitionCost != null && timeline.acquisitionCost > 0
               ? `Your spend on this lead: $${timeline.acquisitionCost.toFixed(2)} (your ad campaign share).`
-              : "Your spend on this lead: none recorded — raw sourcing and enrichment are platform-covered (included in your subscription), not your cost."}
+              : "Your spend on this lead: none recorded — raw sourcing and enrichment are included in your subscription and never counted as your spend."}
           </p>
           {platformView && (timeline.platformPaidSpend || timeline.platformPaidAcquisitionCost != null) && (
             // PLATFORM VIEW ONLY (vis.scope.kind === "platform"). Lane 87F's vendor-ledger line,

@@ -16,6 +16,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { encryptSecret } from "@/lib/security/secret-crypto"
 import { getAgentContext } from "@/lib/identity"
 import { revalidatePath } from "next/cache"
 import { requireVendorActor } from "@/lib/kernel/portal-auth"
@@ -310,7 +311,7 @@ export async function connectApiKeyProvider(params: {
     owner_id: actor.ownerId,
     platform: provider,
     scope: actor.scope === "agent" ? "agent" : actor.scope === "team" ? "team" : "brokerage",
-    api_key: write.api_key,
+    api_key: encryptSecret(write.api_key),
     account_id: write.account_id,
     config: write.config,
     is_active: true,

@@ -121,8 +121,15 @@ export default async function PhoneSettingsPage() {
                 <span className="font-bold tabular-nums">{phoneMeter.activeNumbers}</span>
                 <span className="text-muted-foreground"> / {phoneMeter.includedNumbers} numbers</span>
               </span>
-              {/* Honest zero: inside the bundle reads as "included", never as a blank. */}
-              {phoneMeter.overageTotalCents > 0 ? (
+              {/* Honest zero: inside the bundle reads as "included", never as a blank.
+                  Honest unknown (wave 140J): overage units whose rate is not yet
+                  published show the units and NO amount — never a guessed charge. */}
+              {phoneMeter.overageTotalCents === null ? (
+                <span className="font-bold text-amber-700">
+                  Over the included allowance
+                  <span className="text-xs font-normal text-muted-foreground"> — metered rate not yet published; nothing has been billed for it</span>
+                </span>
+              ) : phoneMeter.overageTotalCents > 0 ? (
                 <span className="font-bold tabular-nums text-amber-700">
                   +${(phoneMeter.overageTotalCents / 100).toFixed(2)}
                   <span className="text-xs font-normal text-muted-foreground"> overage</span>

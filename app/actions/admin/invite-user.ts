@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
-import { inviteTenantMember } from "@/lib/kernel/users"
+import { inviteTenantMember, seatSubjectForEmail } from "@/lib/kernel/users"
 import { emitUserProvisionedEvent } from "@/lib/kernel/users"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { UserDomainRole } from "@/lib/kernel/users"
@@ -175,8 +175,13 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   // PAST THE LIMIT IS A DOOR (wave 79A): the refusal carries every way through
   // — upgrade, downgrade when today's producers fit, buy a seat package — and
   // the full decision (`paths`) rides back so the UI renders each as a button.
+  //
+  // RETRY IS NOT A SECOND SEAT (wave 140F): the subject is resolved on THIS
+  // tenant by email, so re-inviting a member already seated on a full plan
+  // passes through `already_seated` instead of being refused the seat they hold.
   {
-    const verdict = await seatGate(service, resolvedBrokerageId, requestedRole, { produces: params.produces })
+    const subjectUserId = await seatSubjectForEmail(service, resolvedBrokerageId, params.email)
+    const verdict = await seatGate(service, resolvedBrokerageId, requestedRole, { produces: params.produces, subjectUserId })
     if (!verdict.allowed) {
       return {
         success: false,

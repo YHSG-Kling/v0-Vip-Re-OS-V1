@@ -100,7 +100,10 @@ export default function IDXBrokerSettingsPage() {
 
       if (existing) {
         setCred(existing)
-        setApiKey(existing.api_key ?? "")
+        // Wave 140H — a stored key is an enc:v1 envelope (sealed server-side); the browser never sees
+        // the plaintext. Leave the box empty: saving with it empty KEEPS the stored key (the server
+        // action omits api_key), typing a new one replaces it.
+        setApiKey(existing.api_key && !String(existing.api_key).startsWith("enc:v1:") ? existing.api_key : "")
         setPartnerKey((existing.config as any)?.partner_key ?? "")
         setAccountLabel(existing.account_name ?? "")
       }
@@ -217,26 +220,14 @@ export default function IDXBrokerSettingsPage() {
     // The save's refusal is READ (lane 87E, swallowed-refusal census). It used to
     // be dropped, so a refused credential (RLS, a CHECK, the pass-10 unique) left
     // the page looking saved while the alert engine kept reading nothing.
-    const { error: saveError } = await supabase.from("platform_credentials").upsert(
-      {
-        // pass 10: the live unique is (owner_id, owner_type, platform) — the
-        // legacy brokerage_id/scope columns had no matching unique, so this
-        // upsert errored on every save. owner_type/owner_id ARE the identity.
-        owner_type:   "brokerage",
-        owner_id:     brokerageId,
-        brokerage_id: brokerageId,
-        platform:     "idxbroker",
-        scope:        "brokerage",
-        api_key:      apiKey,
-        account_name: accountLabel || "IDX Broker",
-        config,
-        is_active:    true,
-        updated_at:   new Date().toISOString(),
-      },
-      { onConflict: "owner_id,owner_type,platform" }
-    )
+    // Wave 140H — the key is written by the SERVER action (encrypt-on-write through
+    // lib/security/secret-crypto.ts, owner-keyed update-or-insert on the same (owner_type, owner_id,
+    // platform) identity). A browser client has no encryption key and must never write a credential
+    // column in plaintext; the tenant comes from the action's session, never from this page.
+    const { upsertPlatformCredential } = await import("@/app/actions/settings/integrations")
+    const saved = await upsertPlatformCredential({ platform: "idxbroker", scope: "brokerage", ...(apiKey ? { api_key: apiKey } : {}), account_name: accountLabel || "IDX Broker", config })
     setSaving(false)
-    setTestResult(saveError ? { ok: false, message: `The IDX Broker credential was not saved: ${saveError.message}` } : null)
+    setTestResult(saved.success ? null : { ok: false, message: `The IDX Broker credential was not saved: ${saved.error ?? "refused"}` })
   }
 
   const handleTest = async () => {

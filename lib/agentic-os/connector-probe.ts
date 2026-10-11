@@ -32,6 +32,7 @@ export type AuthStyle =
   | "query_access_token"  // ?access_token=<accessToken>  (Meta Graph)
   | "query_api_key"       // ?apiKey=<apiKey>  (newsapi.ai / Event Registry)
   | "basic_sid_token"     // Authorization: Basic base64(apiKey:apiSecret)  (Twilio)
+  | "query_access_token_api_key" // ?access_token=<apiKey>  (Mapbox — the platform token IS the key; wave 140, 140I)
 
 export interface ResolvedConn {
   apiKey?: string | null
@@ -52,6 +53,15 @@ export interface ProbeSpec {
 /** Health-endpoint probes for the connectors with a known liveness call. Each shape lists
  *  the canonical identity fields + the aliases a vendor might rename them to. */
 export const PROBE_SPECS: Record<string, ProbeSpec> = {
+  // Mapbox (wave 140, lane 140I — the map_render primary): GET the classic style document the Static
+  // Images API renders (scope styles:read, a default public-token scope); the token rides as
+  // ?access_token= (docs.mapbox.com/api/maps/styles/). A 401 = token revoked / scope lost.
+  mapbox: {
+    provider: "mapbox",
+    url: "https://api.mapbox.com/styles/v1/mapbox/streets-v12",
+    auth: "query_access_token_api_key",
+    shape: { connector: "mapbox", fields: [{ canonical: "version", aliases: ["id", "name"], required: false }] },
+  },
   idxbroker: {
     provider: "idxbroker",
     url: "https://api.idxbroker.com/clients/accountinfo",
@@ -164,6 +174,9 @@ export const PLATFORM_PROVIDER_KEYS: Record<string, string> = {
   did: "DID_API_KEY",
   rentcast: "RENTCAST_API_KEY",
   newsapi_ai: "NEWSAPI_AI_KEY",
+  // Mapbox (wave 140, 140I): the server/probe token. MAPBOX_PUBLIC_TOKEN is the browser token the
+  // heatmap and static-image URLs carry (lib/property/street-view.ts) — set both (they may be equal).
+  mapbox: "MAPBOX_TOKEN",
   // web-push (VAPID browser push) has no GET-probeable endpoint — like the
   // Exa/BatchData POST-only exemption above, it is key-presence-audited only.
   web_push: "VAPID_PRIVATE_KEY",
@@ -250,6 +263,13 @@ function buildRequest(spec: ProbeSpec, conn: ResolvedConn, params?: Record<strin
       if (!conn.apiKey) return null
       const u = new URL(url)
       u.searchParams.set("apiKey", conn.apiKey)
+      url = u.toString()
+      break
+    }
+    case "query_access_token_api_key": {
+      if (!conn.apiKey) return null
+      const u = new URL(url)
+      u.searchParams.set("access_token", conn.apiKey)
       url = u.toString()
       break
     }

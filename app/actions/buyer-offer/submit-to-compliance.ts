@@ -35,6 +35,8 @@
 
 import { createHash }           from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireCallerTenant }  from "@/lib/auth/require-caller"
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import { isValidUUID }          from "@/lib/validations"
 import { OFFER_EVENT }          from "@/lib/buyer-offer/offer-lifecycle"
 import { emitCompliancePassed } from "@/lib/buyer-offer/compliance-gate"
@@ -63,6 +65,9 @@ export interface SubmitToComplianceParams {
   userId:  string
   /** Optional override for the contract date — defaults to today. */
   contractDate?: string
+  /** SESSIONLESS callers only (lib/transactions/auto-execute-offer.ts from a provider webhook /
+   *  cron): present CRON_SECRET. A browser never has it; a signed-in agent never needs it. */
+  internalSecret?: string
 }
 
 export interface SubmitToComplianceResult {
@@ -88,11 +93,32 @@ export interface SubmitToComplianceResult {
 export async function submitOfferToCompliance(
   params: SubmitToComplianceParams,
 ): Promise<SubmitToComplianceResult> {
-  const { offerId, userId, contractDate } = params
+  const { offerId, userId, contractDate, internalSecret } = params
 
   if (!isValidUUID(offerId) || !isValidUUID(userId)) {
     return { success: false, error: "Invalid IDs" }
   }
+
+  // GATE FIRST, SERVICE CLIENT SECOND (CLAUDE.md §4; wave 140H — wave-139 blocker
+  // submit-to-compliance.ts:88). This is a "use server" export, so `userId` arrives from a request
+  // body: before this gate any anonymous POST could run the compliance checkpoint — and create a
+  // TRANSACTION — against any tenant's offer, attributed to any user. Two admitted callers:
+  //   • a SIGNED-IN member — tenant from the session (requireCallerTenant); the offer must be in that
+  //     tenant (checked on the row below) and `userId` must be the session user unless the caller
+  //     is tenant admin staff acting for an agent (TENANT_ADMIN_USER_TYPES, never a retyped list);
+  //   • a SESSIONLESS automation (auto-execute-offer from a provider webhook) that PRESENTS
+  //     CRON_SECRET — the same posture as the ISA doors (accept-handoff.ts). Presence is not
+  //     a credential; the value must match.
+  const caller = await requireCallerTenant()
+  const cronSecret = process.env.CRON_SECRET
+  const presentedInternal = !!cronSecret && !!internalSecret && internalSecret === cronSecret
+  if (!caller.ok && !presentedInternal) {
+    return { success: false, error: "Unauthorized — submitting to compliance needs a signed-in member of the offer's brokerage" }
+  }
+  if (caller.ok && userId !== caller.userId && !TENANT_ADMIN_USER_TYPES.has(caller.userType ?? "")) {
+    return { success: false, error: "Forbidden — the submitting user must be the signed-in user" }
+  }
+  const sessionTenant = caller.ok ? caller.brokerageId : null
 
   const supabase = createServiceClient()
 
@@ -113,6 +139,10 @@ export async function submitOfferToCompliance(
     .maybeSingle()
   if (offerReadError) return { success: false, error: `Could not read the offer: ${offerReadError.message}` }
   if (!offer) return { success: false, error: "Offer not found" }
+  // The session's tenant must own the offer — a foreign offer id is refused, never processed.
+  if (sessionTenant && offer.brokerage_id !== sessionTenant) {
+    return { success: false, error: "Forbidden — that offer is not in your brokerage" }
+  }
 
   if (offer.transaction_id) {
     return { success: false, error: "Offer already converted to a transaction" }

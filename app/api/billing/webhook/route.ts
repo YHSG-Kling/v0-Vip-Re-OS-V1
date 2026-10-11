@@ -8,7 +8,7 @@ import { setStripeOnboardingByAccount } from "@/lib/connections/vendor-stripe"
 import { buildSubscriptionPatch, upsertBrokerageSubscription, type NormalizedStripeSub } from "@/lib/billing/subscription-activation"
 import { deriveSubscriptionSeatState, itemFactsOf, normalizeStripeSubscription, type TierSeatLink } from "@/lib/billing/seat-packages"
 import { TENANT_BILLING_WEBHOOK_EVENTS } from "@/lib/billing/stripe-account-scope"
-import { emitSubscriptionTransition, reminderCycle, sendSubscriptionReminder } from "@/lib/billing/stripe-subscription-ops"
+import { emitSubscriptionTransition, reminderCycle, sendSubscriptionReminder, resolveStripeEventTenant, withStripeEventLedger } from "@/lib/billing/stripe-subscription-ops"
 import Stripe from "stripe"
 
 /** Every status this webhook moves emits its kernel event (wave 99A, LAW 5) — from the
@@ -133,13 +133,21 @@ export async function POST(request: NextRequest) {
   // row). Use the service client.
   const supabase = createServiceClient()
 
+  // AT MOST ONCE PER EVENT ID (wave 140J). The tenant is resolved BEFORE the switch
+  // so the whole application of this event is one action-ledger claim keyed by the
+  // Stripe event id (lib/billing/stripe-subscription-ops.ts withStripeEventLedger):
+  // a redelivery replays the recorded outcome and inserts no second bell, emits no
+  // second transition, advances no prospect twice. The row writers inside stay
+  // idempotent by their own keys — this guards the side effects around them.
+  const eventTenant = await resolveStripeEventTenant(stripe, event)
+
   try {
+    const applied = await withStripeEventLedger({ eventId: event.id, eventType: event.type, brokerageId: eventTenant }, async () => {
     switch (event.type) {
       // ─── CHECKOUT COMPLETED → ACTIVATE + LINK (no duplicate row) ──────────────
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session
-        const brokerageId = session.metadata?.brokerage_id
-          || (session.subscription ? (await stripe.subscriptions.retrieve(session.subscription as string)).metadata?.brokerage_id : null)
+        const brokerageId = eventTenant
         if (!brokerageId) { console.error("[Billing Webhook] checkout.session.completed: no brokerage_id"); break }
 
         // Link the Stripe subscription to the brokerage's EXISTING (trialing) row —
@@ -170,6 +178,15 @@ export async function POST(request: NextRequest) {
               const { repairIncompleteAccountSetup } = await import("@/lib/kernel/users")
               await repairIncompleteAccountSetup(owner.id)
             }
+            // SUBSCRIBER CONVERGENCE (wave 140C): money landed — if the tenant's
+            // provisioning record (lib/kernel/tenant-creation.ts) still carries a
+            // failed or missing step, the ONE core re-runs ONLY that step. A
+            // complete record is a no-op, so a duplicate delivery of this event
+            // can never mint a second website, actor, assistant, event or row.
+            const { resumeTenantProvisioning } = await import("@/lib/kernel/tenant-creation")
+            const resumed = await resumeTenantProvisioning(supabase, brokerageId)
+            if (resumed.resumable && !resumed.result.ok) console.error("[Billing Webhook] provisioning resume refused:", resumed.result.error)
+            else if (resumed.resumable) console.log(`[Billing Webhook] provisioning resumed for ${brokerageId}: pending ${resumed.result.provisioning?.completed_at ? "none" : "still open"}`)
           } catch (err) { console.warn("[Billing Webhook] provisioning safety-repair failed:", (err as any)?.message) }
         }
         break
@@ -179,16 +196,9 @@ export async function POST(request: NextRequest) {
       case "invoice.paid": {
         const invoice = event.data.object as Stripe.Invoice
         const stripeInvoiceId = invoice.id
-        const invoiceAny = invoice as any
-        const subscriptionId = typeof invoiceAny.subscription === 'string' ? invoiceAny.subscription : invoiceAny.subscription?.id
 
-        // Get brokerage_id from subscription metadata
-        let brokerageId: string | null = null
-        if (subscriptionId) {
-          const subscription = await stripe.subscriptions.retrieve(subscriptionId)
-          brokerageId = subscription.metadata?.brokerage_id || null
-        }
-
+        // The tenant from the invoice's subscription metadata (resolved once, above).
+        const brokerageId = eventTenant
         if (!brokerageId) {
           console.error("[Billing Webhook] No brokerage_id in subscription metadata")
           break
@@ -219,16 +229,9 @@ export async function POST(request: NextRequest) {
       case "invoice.payment_failed": {
         const invoice = event.data.object as Stripe.Invoice
         const stripeInvoiceId = invoice.id
-        const invoiceAny2 = invoice as any
-        const subscriptionId = typeof invoiceAny2.subscription === 'string' ? invoiceAny2.subscription : invoiceAny2.subscription?.id
 
-        // Get brokerage_id from subscription metadata
-        let brokerageId: string | null = null
-        if (subscriptionId) {
-          const subscription = await stripe.subscriptions.retrieve(subscriptionId)
-          brokerageId = subscription.metadata?.brokerage_id || null
-        }
-
+        // The tenant from the invoice's subscription metadata (resolved once, above).
+        const brokerageId = eventTenant
         if (!brokerageId) {
           console.error("[Billing Webhook] No brokerage_id in subscription metadata")
           break
@@ -410,8 +413,26 @@ export async function POST(request: NextRequest) {
           console.log(`[Billing Webhook] Unhandled event type: ${event.type}`)
         }
     }
+    return "applied" as const
+    })
 
-    return NextResponse.json({ received: true })
+    switch (applied.kind) {
+      case "applied":
+        return NextResponse.json({ received: true, ledgered: applied.ledgered })
+      case "replay":
+        // The SAME event id was already applied — acknowledged, nothing re-ran.
+        console.log(`[Billing Webhook] replay of ${event.id} (${event.type}) — already applied, nothing re-ran`)
+        return NextResponse.json({ received: true, applied: false, replay: true })
+      case "in_flight":
+        return NextResponse.json({ received: true, applied: false, reason: "a concurrent delivery of this event is being applied" })
+      case "unknown":
+        console.error(`[Billing Webhook] ${event.id} (${event.type}): an earlier attempt's outcome is unknown — not re-run; the daily Stripe reconcile re-mirrors the subscription`)
+        return NextResponse.json({ received: true, applied: false, reason: "earlier attempt outcome unknown — reconcile will mirror Stripe" })
+      case "refused":
+        // Fail CLOSED and retryable: without the at-most-once claim this event is not applied.
+        console.error("[Billing Webhook] REFUSED — action ledger claim:", applied.error)
+        return NextResponse.json({ error: applied.error }, { status: 503 })
+    }
   } catch (err) {
     console.error("[Billing Webhook] Error processing event:", err)
     return NextResponse.json({ error: "Webhook handler failed" }, { status: 500 })

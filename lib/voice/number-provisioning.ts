@@ -219,7 +219,9 @@ export interface ProvisionNumberParams {
 
 export type ProvisionNumberResult =
   | { ok: true; phoneNumber: string; twilioSid: string | null; numberRowId: string | null; credTier: TwilioCreds["tier"]; bound: boolean; bindNote?: string; billing?: "included" | "overage"; monthlyOverageCents?: number; /** wave 81D: the automatic carrier-registration kickoff outcome (honest; may be "not kicked" with the reason). */ registration?: CarrierKickoffResult }
-  | { ok: false; error: string; notConfigured?: boolean; capReached?: boolean }
+  /** `priceNotConfigured` (wave 140J): the overage rate for this tier is not administered —
+   *  the purchase was refused BEFORE Twilio and the platform incident was raised. Not a cap. */
+  | { ok: false; error: string; notConfigured?: boolean; capReached?: boolean; priceNotConfigured?: boolean }
 
 /** The full purchase pipeline — the ONE implementation both the tenant action
  *  and the staff console run. Failures are honest: a purchase that lands but
@@ -234,10 +236,14 @@ export async function provisionNumber(svc: any, params: ProvisionNumberParams): 
     const { evaluateTenantNumberProvisioning } = await import("@/lib/billing/phone-plan-resolve")
     const verdict = await evaluateTenantNumberProvisioning(svc, params.brokerageId)
     if (!verdict.allowed) {
+      // Two refusals, told apart: the hard cap (upgrade), or an overage rate that
+      // is not configured (price_not_configured — the resolver already raised the
+      // platform incident; nothing is bought, nothing is guessed).
+      if (verdict.priceNotConfigured) return { ok: false, error: verdict.reason ?? verdict.priceNotConfigured.tenantMessage, priceNotConfigured: true }
       return { ok: false, error: verdict.reason ?? "Your plan's active-number limit has been reached", capReached: true }
     }
     billing = verdict.billing
-    monthlyOverageCents = verdict.monthlyOverageCents
+    monthlyOverageCents = verdict.monthlyOverageCents ?? 0
   }
 
   const creds = await resolveCreds(svc, params.brokerageId)

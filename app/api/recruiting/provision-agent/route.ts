@@ -12,6 +12,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 // team_lead / broker / broker_owner / broker_admin / admin unchanged.
 import { isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
 import { seatGate } from "@/lib/kernel/seat-usage"
+import { inviteTenantMember } from "@/lib/kernel/users"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 import { bestEffort } from "@/lib/db/best-effort"
 
@@ -107,8 +108,6 @@ export async function POST(req: Request) {
       }, { status: 409 })
     }
 
-    let newUserId: string | null = existingUser?.id ?? null
-
     // ── SEATS ─────────────────────────────────────────────────────────────────
     // A provisioned recruit becomes user_type 'agent' — a working seat — and this
     // route had no tier or seat check at all, so recruiting was a way past the
@@ -141,103 +140,52 @@ export async function POST(req: Request) {
       }
     }
 
-    if (!existingUser) {
-      // Send auth invite — creates auth.users record
-      const { data: inviteData, error: inviteError } = await service.auth.admin.inviteUserByEmail(recruit.email, {
-        data: {
-          first_name: recruit.first_name,
-          last_name: recruit.last_name,
-          user_type: "agent",
-          brokerage_id: recruit.brokerage_id,
-        },
-        redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding`,
-      })
-      if (inviteError) throw inviteError
-      newUserId = inviteData?.user?.id ?? null
+    // ── ONE PROVISIONER (wave 140F) ──────────────────────────────────────────
+    // TOMBSTONE (orphan doctrine §1.1): the hand-rolled chain that stood here —
+    // inviteUserByEmail → users.upsert(onConflict:"email") → agents.upsert →
+    // agent_commission_profiles → agent_onboarding — was a DUPLICATE of the
+    // survivor lib/kernel/users.ts:inviteTenantMember (→ createOrRepair-
+    // UserDomainRecords), and it drifted: it wrote NO user_role_assignments
+    // grant (the recruit had a seat, a tenant and an agents row but no RBAC
+    // role — "missing role", measured live as 10 tenant users with no grant),
+    // upserted users on the GLOBAL email key, and skipped the invitation
+    // ledger. The survivor does all of it, idempotently, keyed on the auth id
+    // (users.id === auth.users.id), with the cross-tenant capture guard the
+    // block above already enforces for this door. Recruit-specific facts the
+    // survivor does not carry (years_experience, license_state) are stamped on
+    // the survivor-created agents row below.
+    const provisioned = await inviteTenantMember({
+      brokerageId: recruit.brokerage_id as string,
+      email: recruit.email,
+      firstName: recruit.first_name ?? "",
+      lastName: recruit.last_name ?? "",
+      userType: "agent",
+      callerUserId: user.id,
+      redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding`,
+    })
+    if (!provisioned.success || !provisioned.userId) {
+      return NextResponse.json({ error: provisioned.error ?? "The recruit could not be provisioned." }, { status: 409 })
     }
+    const resolvedUserId: string = provisioned.userId
+    const agentId: string | null = provisioned.agentId
 
-    // Upsert users row (user_type is the canonical role column; the
-    // legacy `role` column is no longer written — migration 036+).
-    const { data: upsertedUser, error: userUpsertErr } = await service
-      .from("users")
-      .upsert(
-        {
-          email: recruit.email,
-          first_name: recruit.first_name,
-          last_name: recruit.last_name,
-          user_type: "agent",
-          brokerage_id: recruit.brokerage_id,
-          is_contact: false,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          ...(newUserId ? { id: newUserId } : {}),
-        },
-        { onConflict: "email" }
-      )
-      .select("id")
-      .maybeSingle()
-    // A refused seat used to fall through to "provisioned" with no users row
-    // (the invite's trigger row, if any, keeps the wrong tenant/type).
-    if (userUpsertErr) throw new Error(`users upsert refused: ${userUpsertErr.message}`)
-
-    const resolvedUserId = upsertedUser?.id ?? newUserId
-
-    // Create agents row
-    let agentId: string | null = null
-    if (resolvedUserId) {
-      const { data: agentRow, error: agentUpsertErr } = await service
+    if (agentId) {
+      // Recruit facts onto the canonical agents row — COUNTED (§3): an update
+      // that matches nothing resolves clean, and that would mean the survivor
+      // handed back an agents id that is not this tenant's.
+      const { data: stamped, error: stampErr } = await service
         .from("agents")
-        .upsert(
-          {
-            user_id: resolvedUserId,
-            brokerage_id: recruit.brokerage_id,
-            is_active: true,
-            years_experience: recruit.years_experience ?? 0,
-            license_state: recruit.license_state ?? null,
-            // agents.onboarding_status is (not_started|in_progress|completed|
-            // pending_review). A freshly provisioned recruit has not started.
-            onboarding_status: "not_started",
-            // agents.anniversary_date: the recruit's start date (wave 104, lane 104E) — read by work-anniversaries.
-            anniversary_date: new Date().toISOString().slice(0, 10),
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "user_id" }
-        )
+        .update({
+          years_experience: recruit.years_experience ?? 0,
+          license_state: recruit.license_state ?? null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", agentId)
+        .eq("brokerage_id", recruit.brokerage_id)
         .select("id")
-        .maybeSingle()
-      if (agentUpsertErr) throw new Error(`agents upsert refused: ${agentUpsertErr.message}`)
-      agentId = agentRow?.id ?? null
-
-      // Default commission profile
-      if (agentId) {
-        await sentinelWrite(service, service.from("agent_commission_profiles").upsert(
-          {
-            agent_id: agentId,
-            brokerage_id: recruit.brokerage_id,
-            split_percent: 70,
-            structure_type: "split",
-            is_active: true,
-            created_at: new Date().toISOString(),
-          },
-          { onConflict: "agent_id" }
-        ), { table: "agent_commission_profiles", flow: "recruit_default_commission_profile", brokerageId: recruit.brokerage_id, reason: "default split profile for a provisioned agent; a loss is ledgered so the broker sets it before the first commission" })
-
-        // Onboarding state — agent_onboarding is keyed on agent_id (NOT NULL).
-        const { error: onboardingSeedErr } = await service.from("agent_onboarding").upsert(
-          {
-            agent_id: agentId,
-            user_id: resolvedUserId,
-            brokerage_id: recruit.brokerage_id,
-            status: "in_progress",
-            completion_percentage: 0,
-            current_day: 1,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "agent_id" }
-        )
-        if (onboardingSeedErr) console.error(`[provision-agent] onboarding state NOT seeded for the provisioned agent: ${onboardingSeedErr.message}`)
+      if (stampErr || (stamped ?? []).length !== 1) {
+        console.error(`[provision-agent] recruit facts NOT stamped on agents ${agentId}: ${stampErr?.message ?? `${(stamped ?? []).length} rows matched`}`)
+      }
 
         // REVENUE-SHARE TREE (burn-down round 5, owner spec): when the recruit
         // was referred by a sponsoring agent, plant the downline edge — the
@@ -340,7 +288,6 @@ export async function POST(req: Request) {
             }
           }
         }
-      }
     }
 
     // Mark recruit as provisioned

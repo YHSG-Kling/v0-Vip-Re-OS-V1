@@ -78,7 +78,13 @@ export async function evaluateTenantNumberProvisioning(
   } catch {
     activeNumbers = 0
   }
-  const verdict = evaluateNumberProvisioning({ allowance, activeNumbers })
+  const verdict = evaluateNumberProvisioning({ allowance, activeNumbers, tier })
+  // price_not_configured (wave 140J): the money move is refused above; this is
+  // the platform incident that names the missing rate (once per day per surface).
+  if (verdict.priceNotConfigured) {
+    const { raisePriceNotConfiguredIncident } = await import("./price-not-configured")
+    await raisePriceNotConfiguredIncident(svc, verdict.priceNotConfigured, { brokerageId })
+  }
   return { ...verdict, tier, allowance }
 }
 
@@ -123,6 +129,12 @@ export async function loadTenantPhoneMeter(
     smsSegments = count ?? 0
   } catch { /* fail-safe zero */ }
 
-  const meter = evaluatePhoneMetering({ allowance, voiceMinutes, smsSegments, activeNumbers })
+  const meter = evaluatePhoneMetering({ allowance, voiceMinutes, smsSegments, activeNumbers, tier })
+  // Overage UNITS exist but their rate is not configured: the meter shows the
+  // units with no amount, and staff are told which rate is missing (deduped).
+  if (meter.priceNotConfigured.length > 0) {
+    const { raisePriceNotConfiguredIncident } = await import("./price-not-configured")
+    await raisePriceNotConfiguredIncident(svc, meter.priceNotConfigured[0], { brokerageId })
+  }
   return { tier, allowance, meter, month: m }
 }

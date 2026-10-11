@@ -51,6 +51,7 @@ import { BrokerRecruitingActionBar } from "./components/broker-recruiting-action
 import { BrokerProviderHealthActions } from "./components/broker-provider-health-actions"
 import { BrokerTeamAssignmentBar } from "./components/broker-team-assignment-bar"
 import { SetupReadinessCard } from "@/app/components/onboarding/setup-readiness-card"
+import { TenantReadinessCard } from "@/app/components/onboarding/tenant-readiness-card"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isPlatformStaffIdentity, isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
 import { resolveCallerIdentity } from "@/lib/auth/require-caller"
@@ -596,6 +597,9 @@ export default async function BrokerageDashboard({
 
       {/* Role-aware setup readiness — what the broker still needs to configure to run the brokerage */}
       <SetupReadinessCard />
+
+      {/* The tenant readiness CONTRACT — is the workspace itself provisioned and ready to operate (wave 140B+K) */}
+      <TenantReadinessCard />
 
       {/* Today's Focus — AI Brief synthesizing what matters today */}
       <TodaysFocusCard brief={brokerBrief} />

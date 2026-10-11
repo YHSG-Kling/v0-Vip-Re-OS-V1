@@ -15,11 +15,23 @@
 // reads the tenant's tier + Superadmin → Plans overrides lives in
 // lib/billing/phone-plan-resolve.ts.
 //
-// PRICING IS NOT FINAL (owner decision): the DEFAULTS below are the fallback the
-// gate uses until Superadmin → Plans writes per-tier numbers into
-// subscription_tiers.features.limits — those overrides always win (resolvePhoneAllowance).
+// PRICING IS NOT SET (owner, wave 139 ECONOMICS / wave 140): "nothing may
+// hard-code a tier price; unknown price stays explicitly unknown, never
+// fabricated." The BUNDLE SIZES below (included numbers / minutes / segments and
+// the runaway cap) are entitlements and stay as defaults; the OVERAGE RATES are
+// prices and have NO code default — they are `null` (not configured) until
+// Superadmin → Plans writes them into subscription_tiers.features.limits
+// (overage_number_cents / overage_voice_minute_cents / overage_sms_cents).
+// A `null` rate is the typed `price_not_configured` state
+// (lib/billing/plan-catalog.ts): the provisioning gate REFUSES an overage
+// number with a clear tenant message + a platform incident, and the meter
+// reports the overage units with NO amount — never a guessed charge.
+// TOMBSTONE (wave 140J): the twelve per-tier literals that sat here
+// (300/5/2, 250/4/2, 200/3/1, 150/3/1 cents) were fabricated prices; survivor =
+// the administered features.limits row, read by resolvePhoneAllowance below.
 
 import type { CanonicalTier } from "@/lib/kernel/users"
+import { isConfiguredPriceCents, priceNotConfiguredRefusal, type PriceNotConfiguredRefusal } from "./plan-catalog"
 
 export interface PhoneAllowance {
   /** Phone numbers included in the plan at no extra charge. */
@@ -28,57 +40,61 @@ export interface PhoneAllowance {
   includedVoiceMinutes: number
   /** SMS segments/month included. */
   includedSmsSegments: number
-  /** Monthly USD-cents charge per number PROVISIONED beyond includedNumbers. */
-  overageNumberCents: number
-  /** USD-cents per AI-voice minute beyond includedVoiceMinutes. */
-  overageVoiceMinuteCents: number
-  /** USD-cents per SMS segment beyond includedSmsSegments. */
-  overageSmsCents: number
+  /** Monthly USD-cents charge per number PROVISIONED beyond includedNumbers.
+   *  null = NOT CONFIGURED (no administered rate) — an overage number is refused. */
+  overageNumberCents: number | null
+  /** USD-cents per AI-voice minute beyond includedVoiceMinutes (null = not configured). */
+  overageVoiceMinuteCents: number | null
+  /** USD-cents per SMS segment beyond includedSmsSegments (null = not configured). */
+  overageSmsCents: number | null
   /** Runaway backstop: the MOST numbers a tenant may ever provision on this tier
    *  (null = unlimited, still metered as overage). NOT the included count — a
    *  tenant can provision past includedNumbers and pay overage up to this cap. */
   maxNumbers: number | null
 }
 
-// ── Per-tier DEFAULTS (owner-tunable via subscription_tiers.features.limits) ───
-// Generous inside-bundle so normal use is never billed twice; overage rates track
-// the platform's own metered cost (twilio_voice ≈ $0.02/min, local number ≈
-// $1.15/mo, SMS ≈ $0.008/segment — see PLATFORM_VENDOR_RATES) with margin.
+/** The surface name every phone price_not_configured refusal and incident carries. */
+export const PHONE_OVERAGE_PRICE_SURFACE = "phone_number_overage"
+
+// ── Per-tier BUNDLE DEFAULTS (owner-tunable via subscription_tiers.features.limits) ───
+// Generous inside-bundle so normal use is never billed twice. The overage
+// rates are deliberately `null` — see the header: a rate exists only when
+// administered.
 export const PHONE_ALLOWANCE_DEFAULTS: Record<CanonicalTier, PhoneAllowance> = {
   solo_agent: {
     includedNumbers: 1,
     includedVoiceMinutes: 250,
     includedSmsSegments: 500,
-    overageNumberCents: 300,        // $3.00 / extra number / mo
-    overageVoiceMinuteCents: 5,     // $0.05 / min
-    overageSmsCents: 2,             // $0.02 / segment
+    overageNumberCents: null,
+    overageVoiceMinuteCents: null,
+    overageSmsCents: null,
     maxNumbers: 3,
   },
   team: {
     includedNumbers: 5,
     includedVoiceMinutes: 1500,
     includedSmsSegments: 3000,
-    overageNumberCents: 250,
-    overageVoiceMinuteCents: 4,
-    overageSmsCents: 2,
+    overageNumberCents: null,
+    overageVoiceMinuteCents: null,
+    overageSmsCents: null,
     maxNumbers: 15,
   },
   brokerage: {
     includedNumbers: 25,
     includedVoiceMinutes: 10000,
     includedSmsSegments: 20000,
-    overageNumberCents: 200,
-    overageVoiceMinuteCents: 3,
-    overageSmsCents: 1,
+    overageNumberCents: null,
+    overageVoiceMinuteCents: null,
+    overageSmsCents: null,
     maxNumbers: 200,
   },
   multi_location: {
     includedNumbers: 100,
     includedVoiceMinutes: 50000,
     includedSmsSegments: 100000,
-    overageNumberCents: 150,
-    overageVoiceMinuteCents: 3,
-    overageSmsCents: 1,
+    overageNumberCents: null,
+    overageVoiceMinuteCents: null,
+    overageSmsCents: null,
     maxNumbers: null,               // unlimited (still metered as overage)
   },
 }
@@ -97,6 +113,13 @@ function isCanonicalTier(t: string | null | undefined): t is CanonicalTier {
 function overrideInt(limits: Record<string, unknown> | null | undefined, key: string, fallback: number): number {
   const raw = limits?.[key]
   return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : fallback
+}
+
+/** Read one administered RATE (integer cents, zero allowed = explicitly free) out of
+ *  features.limits; anything else is NOT CONFIGURED (null) — never a default. */
+function overrideRate(limits: Record<string, unknown> | null | undefined, key: string): number | null {
+  const raw = limits?.[key]
+  return isConfiguredPriceCents(raw, { allowZero: true }) ? raw : null
 }
 
 /**
@@ -125,11 +148,22 @@ export function resolvePhoneAllowance(
     includedNumbers: overrideInt(lim, "included_phone_numbers", base.includedNumbers),
     includedVoiceMinutes: overrideInt(lim, "included_voice_minutes", base.includedVoiceMinutes),
     includedSmsSegments: overrideInt(lim, "included_sms_segments", base.includedSmsSegments),
-    overageNumberCents: overrideInt(lim, "overage_number_cents", base.overageNumberCents),
-    overageVoiceMinuteCents: overrideInt(lim, "overage_voice_minute_cents", base.overageVoiceMinuteCents),
-    overageSmsCents: overrideInt(lim, "overage_sms_cents", base.overageSmsCents),
+    // Rates: administered or null. `base` holds null for every tier (see header),
+    // so the ONLY way a rate exists is the features.limits row.
+    overageNumberCents: overrideRate(lim, "overage_number_cents") ?? base.overageNumberCents,
+    overageVoiceMinuteCents: overrideRate(lim, "overage_voice_minute_cents") ?? base.overageVoiceMinuteCents,
+    overageSmsCents: overrideRate(lim, "overage_sms_cents") ?? base.overageSmsCents,
     maxNumbers,
   }
+}
+
+/** PURE: the typed refusal for one unset phone rate on one tier. */
+export function phoneRateNotConfigured(tier: string | null | undefined, rate: "overage_number_cents" | "overage_voice_minute_cents" | "overage_sms_cents", whatIsBlocked: string): PriceNotConfiguredRefusal {
+  return priceNotConfiguredRefusal({
+    surface: PHONE_OVERAGE_PRICE_SURFACE,
+    what: `${tier ?? "unknown"} tier ${rate} (subscription_tiers.features.limits)`,
+    whatIsBlocked,
+  })
 }
 
 // ── Provisioning gate ─────────────────────────────────────────────────────────
@@ -145,21 +179,30 @@ export interface NumberProvisioningVerdict {
   includedNumbers: number
   /** The hard cap (null = unlimited). */
   maxNumbers: number | null
-  /** Monthly USD-cents this number adds ONLY when billing === "overage" (else 0). */
-  monthlyOverageCents: number
-  /** Human-readable reason when !allowed (the upgrade pitch). */
+  /** Monthly USD-cents this number adds ONLY when billing === "overage" (else 0).
+   *  null = the overage rate is NOT CONFIGURED (then `allowed` is false and
+   *  `priceNotConfigured` says why — never a guessed amount). */
+  monthlyOverageCents: number | null
+  /** Human-readable reason when !allowed (the upgrade pitch, or the price gap). */
   reason?: string
+  /** Set when the refusal is the typed price_not_configured state (the caller
+   *  raises the platform incident); absent on an allow or a hard-cap refusal. */
+  priceNotConfigured?: PriceNotConfiguredRefusal
 }
 
 /**
  * PURE: decide whether one more number may be provisioned, and whether it lands
  * inside the bundle or as metered overage. The gate NEVER blocks a tenant who is
  * merely over their included count — that number is billable, not forbidden
- * (metered resale). It blocks ONLY at the runaway backstop (maxNumbers).
+ * (metered resale). It blocks at the runaway backstop (maxNumbers), and it
+ * REFUSES an overage number whose rate is not configured: a metered number with
+ * no administered price would be a charge invented in code (wave 140J).
  */
 export function evaluateNumberProvisioning(params: {
   allowance: PhoneAllowance
   activeNumbers: number
+  /** For the refusal's incident text only. */
+  tier?: string | null
 }): NumberProvisioningVerdict {
   const { allowance, activeNumbers } = params
   const nextCount = activeNumbers + 1
@@ -179,6 +222,19 @@ export function evaluateNumberProvisioning(params: {
   }
 
   const billing: "included" | "overage" = nextCount <= includedNumbers ? "included" : "overage"
+  if (billing === "overage" && allowance.overageNumberCents === null) {
+    const refusal = phoneRateNotConfigured(params.tier, "overage_number_cents", `this number was not added (numbers beyond the ${includedNumbers} included in your plan are metered)`)
+    return {
+      allowed: false,
+      billing,
+      activeNumbers,
+      includedNumbers,
+      maxNumbers,
+      monthlyOverageCents: null,
+      reason: refusal.tenantMessage,
+      priceNotConfigured: refusal,
+    }
+  }
   return {
     allowed: true,
     billing,
@@ -204,32 +260,52 @@ export interface PhoneMeter {
   overageVoiceMinutes: number
   overageSmsSegments: number
   overageNumbers: number
-  /** Billable overage cost in USD-cents (numbers × monthly + minutes + segments). */
-  overageVoiceCents: number
-  overageSmsCents: number
-  overageNumberCents: number
-  overageTotalCents: number
+  /** Billable overage cost in USD-cents (numbers × monthly + minutes + segments).
+   *  A line is `null` when overage units exist on it but its rate is NOT
+   *  CONFIGURED; the total is `null` when any priced line is. Zero units on an
+   *  unpriced line is an honest 0 — nothing is owed, nothing is unknown. */
+  overageVoiceCents: number | null
+  overageSmsCents: number | null
+  overageNumberCents: number | null
+  overageTotalCents: number | null
+  /** The unset rates that made a line `null` (empty when every amount is known). */
+  priceNotConfigured: PriceNotConfiguredRefusal[]
+}
+
+/** One meter line: units × rate, or null when units exist and the rate is unset. */
+function meterLine(units: number, rateCents: number | null): number | null {
+  if (units <= 0) return 0
+  return rateCents === null ? null : units * rateCents
 }
 
 /**
  * PURE: fold a period's phone usage against the bundle into an included-vs-overage
  * meter. This is what the finance P&L rollup bills and the tenant usage card shows —
  * "you used 340 of 250 included minutes (90 metered @ $0.05)". Never negative.
+ * An overage line whose rate is not configured reports its UNITS and no amount
+ * (price_not_configured) — the units are a fact, the amount would be a guess.
  */
 export function evaluatePhoneMetering(params: {
   allowance: PhoneAllowance
   voiceMinutes: number
   smsSegments: number
   activeNumbers: number
+  /** For the refusal's incident text only. */
+  tier?: string | null
 }): PhoneMeter {
   const { allowance, voiceMinutes, smsSegments, activeNumbers } = params
   const overageVoiceMinutes = Math.max(0, Math.ceil(voiceMinutes) - allowance.includedVoiceMinutes)
   const overageSmsSegments = Math.max(0, Math.ceil(smsSegments) - allowance.includedSmsSegments)
   const overageNumbers = Math.max(0, activeNumbers - allowance.includedNumbers)
 
-  const overageVoiceCents = overageVoiceMinutes * allowance.overageVoiceMinuteCents
-  const overageSmsCents = overageSmsSegments * allowance.overageSmsCents
-  const overageNumberCents = overageNumbers * allowance.overageNumberCents
+  const overageVoiceCents = meterLine(overageVoiceMinutes, allowance.overageVoiceMinuteCents)
+  const overageSmsCents = meterLine(overageSmsSegments, allowance.overageSmsCents)
+  const overageNumberCents = meterLine(overageNumbers, allowance.overageNumberCents)
+
+  const priceNotConfigured: PriceNotConfiguredRefusal[] = []
+  if (overageVoiceCents === null) priceNotConfigured.push(phoneRateNotConfigured(params.tier, "overage_voice_minute_cents", `${overageVoiceMinutes} metered voice minute(s) carry no amount`))
+  if (overageSmsCents === null) priceNotConfigured.push(phoneRateNotConfigured(params.tier, "overage_sms_cents", `${overageSmsSegments} metered SMS segment(s) carry no amount`))
+  if (overageNumberCents === null) priceNotConfigured.push(phoneRateNotConfigured(params.tier, "overage_number_cents", `${overageNumbers} metered number(s) carry no amount`))
 
   return {
     includedVoiceMinutes: allowance.includedVoiceMinutes,
@@ -244,6 +320,7 @@ export function evaluatePhoneMetering(params: {
     overageVoiceCents,
     overageSmsCents,
     overageNumberCents,
-    overageTotalCents: overageVoiceCents + overageSmsCents + overageNumberCents,
+    overageTotalCents: priceNotConfigured.length > 0 ? null : (overageVoiceCents ?? 0) + (overageSmsCents ?? 0) + (overageNumberCents ?? 0),
+    priceNotConfigured,
   }
 }

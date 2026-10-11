@@ -11,6 +11,7 @@ import { metaConnector } from "./meta"
 import { googleConnector } from "./google"
 import { vibeCtvConnector } from "./vibe-ctv"
 import { chatgptConnector } from "./chatgpt"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 const CONNECTORS: Record<string, AdConnector> = {
   facebook:  metaConnector,
@@ -68,5 +69,5 @@ export async function loadConnectorCredential(
   if (error) { console.error(`[ad-connectors] ${lookup} credential read refused:`, error.message); return null }
   const c = data as { access_token?: string; account_id?: string | null; config?: Record<string, unknown> | null; is_active?: boolean } | null
   if (!c?.access_token) return null
-  return { accessToken: c.access_token, accountId: c.account_id ?? null, config: c.config ?? {}, brokerageId }
+  return { accessToken: decryptSecret(c.access_token) as string, accountId: c.account_id ?? null, config: c.config ?? {}, brokerageId }
 }

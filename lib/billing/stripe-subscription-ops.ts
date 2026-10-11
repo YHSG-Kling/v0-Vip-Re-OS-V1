@@ -545,3 +545,94 @@ export async function runSubscriptionLifecycleSweep(svc: any, now: Date = new Da
   }
   return out
 }
+
+// ─── STRIPE EVENT IDEMPOTENCY (wave 140J) ─────────────────────────────────────
+//
+// What was missing: the tenant billing webhook's ROW writers are idempotent by key
+// (upsertBrokerageSubscription is brokerage-keyed, billing_invoices upserts on
+// stripe_invoice_id), but its SIDE EFFECTS were not — a redelivered
+// invoice.payment_failed inserted a second "Payment Failed" bell, a redelivered
+// customer.subscription.deleted re-emitted the cancellation transition and a second
+// alert. Stripe redelivers on any non-2xx and on its own retries, so a duplicate
+// event is routine, not hypothetical. No event ledger table exists live (checked
+// 2026-10-11: no *stripe*/*webhook* event table beyond the tenant-webhook and
+// workflow ones), and the ONE at-most-once mechanism the OS already has is
+// agent_action_ledger's UNIQUE idempotency_key (lib/kernel/action-ledger.ts
+// withActionLedger) — so the event rides it: subject = the Stripe event id, cycle =
+// the event id, action billing.stripe_event.apply. A replay returns the recorded
+// outcome without acting; a failed earlier attempt is re-claimed (Stripe's retry
+// re-runs it); an in-flight twin is told to stand down. LAW 5 for free: every
+// applied event is a ledger row naming the tenant, the event and what happened.
+//
+// Blind spot, published: an event whose tenant cannot be resolved BEFORE the
+// switch (account.updated has none) runs unledgered — its one write is a boolean
+// the applier derives from the event, so a replay re-derives the same value.
+
+/** Resolve the tenant a platform-signed Stripe event is about, from the OBJECT's
+ *  metadata first (sessions, subscriptions) and the subscription it names second
+ *  (invoices, a session without metadata). null = no tenant (account.updated),
+ *  or a refused retrieve — never a guess. */
+export async function resolveStripeEventTenant(
+  stripe: { subscriptions: { retrieve: (id: string) => Promise<{ metadata?: Record<string, string | undefined> | null }> } },
+  event: { type: string; data: { object: unknown } },
+): Promise<string | null> {
+  const obj = (event.data?.object ?? {}) as Record<string, any>
+  const direct = obj?.metadata?.brokerage_id
+  if (typeof direct === "string" && direct) return direct
+  if (String(event.type).startsWith("customer.subscription")) return null
+  const ref = typeof obj?.subscription === "string" ? obj.subscription : (obj?.subscription?.id ?? null)
+  if (!ref) return null
+  try {
+    const sub = await stripe.subscriptions.retrieve(ref)
+    const b = sub?.metadata?.brokerage_id
+    return typeof b === "string" && b ? b : null
+  } catch (err) {
+    console.error("[billing] Stripe event tenant could not be resolved from its subscription:", ref, (err as Error)?.message)
+    return null
+  }
+}
+
+export type StripeEventApplyOutcome<T> =
+  | { kind: "applied"; result: T; ledgered: boolean }
+  /** An earlier delivery of the SAME event id already executed — nothing re-ran. */
+  | { kind: "replay" }
+  /** The same event id is being applied by a concurrent delivery — this one stands down. */
+  | { kind: "in_flight" }
+  /** An earlier attempt's outcome is unknown (it threw a timeout-like error) — not re-run; the
+   *  daily reconcile (lib/billing/seat-sync.ts) re-mirrors Stripe's status. */
+  | { kind: "unknown" }
+  /** The ledger refused the claim — fail closed; the caller answers Stripe with a retryable 5xx. */
+  | { kind: "refused"; error: string }
+
+/**
+ * Apply one Stripe event AT MOST ONCE per event id for its tenant. `run` is the
+ * route's switch; it executes only for a fresh claim (or unledgered, when the
+ * event has no tenant). `client` is the proof's seam (default: the service client
+ * inside withActionLedger).
+ */
+export async function withStripeEventLedger<T>(
+  ev: { eventId: string; eventType: string; brokerageId: string | null },
+  run: () => Promise<T>,
+  opts: { client?: { from: (table: string) => any } } = {},
+): Promise<StripeEventApplyOutcome<T>> {
+  if (!ev.brokerageId) return { kind: "applied", result: await run(), ledgered: false }
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  type Boxed = { kind: "ran"; result: T } | { kind: "replay" | "in_flight" | "unknown" | "refused"; error?: string }
+  const boxed = await withActionLedger<Boxed>(
+    {
+      brokerageId: ev.brokerageId, action: "billing.stripe_event.apply", actor: { type: "system" },
+      subject: { type: "stripe_event", id: ev.eventId, ref: ev.eventType }, cycle: ev.eventId,
+      reasonCode: "SUBSCRIPTION_LIFECYCLE", reasonDetail: `Stripe ${ev.eventType}`, riskClass: "FINANCIAL",
+      systemSource: "billing_lifecycle", channel: "stripe_webhook", detail: { event_type: ev.eventType, event_id: ev.eventId },
+    },
+    async () => ({ kind: "ran" as const, result: await run() }),
+    {
+      settle: () => ({ status: "executed", outcome: "applied", provider: "stripe", providerRef: ev.eventId }),
+      replay: (claim) => claim.kind === "refused" ? { kind: "refused", error: claim.error } : { kind: claim.kind },
+    },
+    opts.client ? { client: opts.client } : undefined,
+  )
+  if (boxed.kind === "ran") return { kind: "applied", result: boxed.result, ledgered: true }
+  if (boxed.kind === "refused") return { kind: "refused", error: boxed.error ?? "action ledger refused the claim" }
+  return { kind: boxed.kind }
+}

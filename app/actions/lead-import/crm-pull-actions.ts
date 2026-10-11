@@ -30,6 +30,7 @@ import { pullCrmPage, CRM_IMPORT_PROVIDERS, type CrmImportProvider } from "@/lib
 import { parseContactRecords } from "@/lib/platform/tenant-import-parser"
 import { importParsedContacts } from "@/lib/platform/tenant-import"
 import { gateStaffAction, auditStaffAction } from "@/lib/platform/staff-action-gate"
+import { encryptSecret, decryptSecret } from "@/lib/security/secret-crypto"
 
 const MAX_PAGES_PER_RUN = 40 // 40 × 100 = 4,000 contacts per run; resumable, honestly reported
 
@@ -56,7 +57,7 @@ export async function setCrmImportCredentialAction(input: {
     .eq("brokerage_id", input.brokerageId).eq("platform", input.provider).maybeSingle()
   const row = {
     brokerage_id: input.brokerageId, platform: input.provider,
-    api_key: apiKey, api_url: input.apiUrl?.trim() || null,
+    api_key: encryptSecret(apiKey), api_url: input.apiUrl?.trim() || null,
     config: input.locationId ? { location_id: input.locationId.trim() } : {},
     // owner_type/owner_id now describe the SUBSCRIBER whose credential this is,
     // which is what they always claimed and only now reliably are.
@@ -108,7 +109,7 @@ export async function runCrmImportAction(input: {
 
   while (pages < MAX_PAGES_PER_RUN) {
     const page = await pullCrmPage(input.provider, {
-      apiKey: (cred as any).api_key,
+      apiKey: decryptSecret((cred as any).api_key) as string,
       apiUrl: (cred as any).api_url,
       locationId: (cred as any).config?.location_id ?? null,
     }, cursor)

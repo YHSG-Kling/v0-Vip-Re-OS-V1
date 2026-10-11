@@ -122,7 +122,7 @@ flowchart TB
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Read by the browser client (`lib/supabase/client.ts:10`) and the server client. Public by design: every row it can reach is RLS-bound. |
 | `SUPABASE_SERVICE_ROLE_KEY` | The service client throws "Missing Supabase service role environment variables" (`lib/supabase/service.ts:8`). |
 | `CRON_SECRET` | Unset returns 500 and a wrong or missing credential returns 401 (`lib/cron-auth.ts:44`, `lib/cron-auth.ts:49`). |
-| `SECRETS_ENCRYPTION_KEY` | Decrypting an envelope throws without it (`lib/security/secret-crypto.ts:61`). **Encrypting is a no-op without it** (`lib/security/secret-crypto.ts:12`), so new secrets are stored in plaintext. Open finding R-2. |
+| `SECRETS_ENCRYPTION_KEY` | **Required; fail closed** (wave 139E, owner "approve all"). Without it every NEW secret write is refused with the typed `SecretStorageRefusedError` (`encryptSecret`, `lib/security/secret-crypto.ts`), nothing is stored in plaintext, the OAuth refresh and the OAuth callbacks refuse BEFORE the provider exchange, and the platform incident `secret_storage_unconfigured` is raised (`raiseSecretStorageIncident`, `lib/security/credential-rotation.ts`). Decrypting an envelope throws without it. Legacy plaintext rows keep reading and are re-sealed by `migrateLegacyPlaintextSecrets` (`lib/security/secret-migration.ts`) once the key is set. Rotation: `SECRETS_ENCRYPTION_KEY_PREVIOUS` (read-only dual-key). R-2 CLOSED. |
 | `INTERNAL_API_SECRET` | Internal intelligence doors refuse 401 when it is unset or wrong (`app/api/intelligence/classify/route.ts:12`). |
 | `STRIPE_SECRET_KEY` | `getStripe` throws (`lib/stripe.ts:100`). |
 | `AI_GATEWAY_API_KEY` | The model factory throws (`lib/ai/models.ts:46`). |
@@ -148,7 +148,7 @@ Webhook secrets: each env name in `WEBHOOK_CONTRACT.secretEnv` is written in `.e
 - **Domain-API credentials** rotate and revoke through the tenant door with ledger evidence (`lib/kernel/domain-api.ts:154`).
 - **`CRON_SECRET`.** Set the new value in Vercel and redeploy. The dispatcher and every target read the same variable, so there is no overlap window. Expect one minute of 401s at most.
 - **`SUPABASE_SERVICE_ROLE_KEY`.** Roll the key in Supabase, update Vercel, then redeploy.
-- **`SECRETS_ENCRYPTION_KEY`.** **There is no rotation path.** Envelopes carry no key id (`lib/security/secret-crypto.ts:19`), so changing the key makes every existing `enc:v1` value undecryptable. Do not rotate until a key-id envelope ships (open finding R-2).
+- **`SECRETS_ENCRYPTION_KEY`.** Dual-key read (wave 139E): set the new key as `SECRETS_ENCRYPTION_KEY` and the old one as `SECRETS_ENCRYPTION_KEY_PREVIOUS`; existing `enc:v1` envelopes keep decrypting (the GCM auth tag tells the keys apart, never a garbled plaintext), new writes seal with the current key only. Re-seal everything under the new key by running the platform-staff "Re-seal legacy plaintext secrets" action (OS Sentinel board) — it only touches plaintext rows; envelopes under the previous key are re-sealed when their owner reconnects or the token refreshes. Remove the previous key once nothing is sealed with it.
 - **Provider OAuth expiry** is surfaced by `escalateRotationRisks` `lib/security/credential-rotation.ts:122`.
 
 **Migration application.**
@@ -169,7 +169,7 @@ See the lane notes for the full list. At this base:
 - **Fixed (P1):** six unauthenticated contact-creating intake doors had no throttle. They now call `checkPublicRateLimit`.
 - **Open:**
   - **R-1:** the RLS backstop exists only live.
-  - **R-2:** `SECRETS_ENCRYPTION_KEY` is fail-open on encrypt and has no rotation path.
+  - **R-2 (CLOSED, wave 139E + 140H):** `encryptSecret` fails closed (typed refusal, incident, never plaintext); dual-key rotation; every credential-store writer encrypts and every reader decrypts (`scripts/credential-migration-guard.ts` census); legacy plaintext rows are re-sealed verify-before-rewrite by `lib/security/secret-migration.ts` (platform-staff action + daily sentinel heartbeat).
   - **R-3:** QuickBooks still pins `minorversion=73`. Intuit serves 75 for any value below 75 as of 2025-08-01.
   - **R-4 (CLOSED, wave 139 / 139G):** `app/api/twiml/whisper-bridge/route.ts` now verifies through the canonical `validateTwilioSignature` `lib/voice/twilio-voice.ts:32` (401, never 500), has its `WEBHOOK_CONTRACT` row, and `app/api/twiml/**` joins the derived contract population in `scripts/webhook-contract-guard.ts`. Its POST also serves the bridge TwiML, because Twilio fetches a dial `Url` with POST by default.
   - **R-5:** no root global-error boundary (the App Router `global-error` file is absent), and no server `onRequestError` hook into `collectError`.
@@ -182,3 +182,10 @@ See the lane notes for the full list. At this base:
 - **M — migrations × runtime.** Every table created and every column added in `supabase/migrations` from m697 on (no upper bound) is named by runtime code. At this base: 15 tables, 53 columns, 0 unused.
 - **U — user doors.** Every table the window creates has a user door: a page-reachable `app/**` module that persists to it, or imports the module that does. At this base all 15 have one (missions, delegations, twin snapshots, proposals, strategy library and activations, benchmarks, skill listings, envelopes, procurement quotes, person identity, relationship edges).
 - **S — service client before a gate.** Published count of `"use server"` exports reaching `createServiceClient` before any gate-shaped call. The five doors closed in wave 139 are held gated.
+
+## 12. Readiness census matrix + tenant-facing vocabulary (wave 140, lane A+M)
+
+`READINESS-MATRIX.md` is the per-capability census (survivor `file:line`, every door that reaches it, STATUS, the missing edge, ACTION + owning lane) audited at the wave-140 base, with the release-blocker sweep beneath it. `scripts/production-readiness-guard.ts` holds it in agreement with the code:
+
+- **X — readiness matrix.** The file exists, every census capability has a row, every row carries a STATUS (BUILT / PARTIAL / DUPLICATED / UNWIRED / MISSING), an ACTION (KEEP / WIRE / FIX / CONSOLIDATE / BUILD) and an owning lane, and every `file:line` it cites exists.
+- **V — tenant-facing vocabulary.** No `app/**/*.tsx` module a tenant can read renders "platform-covered" (owner, wave 140: say "included in your subscription" / "never counted as your spend"; internal ledgers and comments keep the cost-bearing entity). Platform-staff surfaces (`app/dashboard/superadmin/**`) are out of the population by design. The sites the wave-140 ruling names are held as 140J-owned with a ratchet that must reach 0 before certification; any NEW site fails. Comments are stripped before the scan; strings and JSX text are the subject, so they are kept.

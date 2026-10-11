@@ -315,6 +315,70 @@ export interface A2pState {
    *  (lib/voice/carrier-registration-loop.ts carrierRegistrationPhase) — the
    *  loop rings the tenant only when this CHANGES. */
   loop_phase?: string
+  // ── Wave 140G: WHY the last filing failed, from the provider's answer
+  // (classifyCarrierFailure). A credential or compliance failure HALTS the
+  // automatic retry — the hourly loop and the readiness repair never re-send a
+  // request the provider refused for a reason a retry cannot change; the
+  // tenant sees ACTION REQUIRED with the provider's reason. halted_at is the
+  // halt; halted_profile_fingerprint is the business profile it halted on, so
+  // a compliance halt lifts the moment the tenant corrects the registration
+  // (the fingerprint changes) while a credential halt lifts only on an
+  // explicit resume (the Run / resume button, platform staff).
+  last_error_class?: A2pFailureClass
+  halted_at?: string | null
+  halted_profile_fingerprint?: string | null
+}
+
+// ── Wave 140G: failure classes + the halt rule (PURE) ────────────────────────
+
+/** What kind of refusal the provider gave — decides whether a retry is SAFE.
+ *   credential — 401/403, auth / "not configured": the platform's Twilio
+ *                credentials; a retry every hour would only repeat it
+ *   compliance — TrustHub evaluation "not compliant" or a 4xx validation
+ *                refusal (30796 / 30799 …): the SAME request will be refused
+ *                again until the business profile changes
+ *   input      — nothing filed because something is still missing on OUR side
+ *                (profile fields, no subaccount, no number) — resumes on its own
+ *   transient  — 408 / 429 / 5xx / network: the next tick retries safely */
+export type A2pFailureClass = "credential" | "compliance" | "input" | "transient"
+
+/** PURE: classify a filing failure from the provider's HTTP answer + our message. */
+export function classifyCarrierFailure(resp: { status?: number | null; error?: string | null }, message: string): A2pFailureClass {
+  if (/Business profile incomplete|no Twilio subaccount|No active (tenant|toll-free) number|Twilio not configured for this tenant/i.test(message)) return "input"
+  const text = `${message} ${resp.error ?? ""}`
+  if (resp.status === 401 || resp.status === 403) return "credential"
+  if (/not configured|authenticat|credential|\b2000[38]\b|invalid username|not authorized/i.test(text)) return "credential"
+  if (/not compliant|noncompliant/i.test(text)) return "compliance"
+  if (resp.status === 408 || resp.status === 429) return "transient"
+  if (typeof resp.status === "number" && resp.status >= 400 && resp.status < 500) return "compliance"
+  return "transient"
+}
+
+/** PURE: a stable fingerprint of the business profile the filing used (FNV-1a
+ *  over the sorted draft) — the halt rule compares it, never the fields. */
+export function profileFingerprint(draft: Record<string, string> | null | undefined): string {
+  const keys = Object.keys(draft ?? {}).sort()
+  const text = keys.map((k) => `${k}=${(draft as Record<string, string>)[k] ?? ""}`).join("\u0001")
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
+  return `${keys.length}:${h.toString(16).padStart(8, "0")}`
+}
+
+/** PURE: may the machine run for this tenant right now?
+ *  Not halted → yes. Halted + explicit resume → yes (the caller clears the
+ *  halt). A COMPLIANCE halt lifts when the profile fingerprint differs from the
+ *  one it halted on (the tenant corrected the registration). A CREDENTIAL halt
+ *  never lifts on its own — "credential failures never auto-heal". */
+export function haltVerdict(state: A2pState, fingerprint: string | null, resume?: boolean): { halted: false } | { halted: true; class: A2pFailureClass; reason: string } {
+  if (!state.halted_at) return { halted: false }
+  if (resume) return { halted: false }
+  const cls: A2pFailureClass = state.last_error_class ?? "compliance"
+  if (cls === "compliance" && fingerprint && state.halted_profile_fingerprint && fingerprint !== state.halted_profile_fingerprint) return { halted: false }
+  const why = state.last_error ?? "the provider refused the last request"
+  const next = cls === "credential"
+    ? "platform support must correct the carrier credentials, then press Run / resume registration"
+    : "correct the Business registration (the provider refused these facts); filing resumes on its own once it changes"
+  return { halted: true, class: cls, reason: `Automatic filing halted (${cls}): ${why} — ${next}` }
 }
 
 /** Wave 83D: persist the loop's announced phase on the same state row. Loads
@@ -484,12 +548,25 @@ export interface A2pRunResult {
  * (BrandRegistrations Mock=true) — the documented way to exercise the WHOLE
  * ISV chain end-to-end without a real TCR filing (pre-production verification).
  */
-export async function runA2pRegistration(svc: any, brokerageId: string, opts?: { mock?: boolean; deps?: CarrierRunDeps }): Promise<A2pRunResult> {
-  const twilio = bindTwilio(opts?.deps)
+export async function runA2pRegistration(svc: any, brokerageId: string, opts?: { mock?: boolean; deps?: CarrierRunDeps; resume?: boolean }): Promise<A2pRunResult> {
+  // Wave 140G: remember the provider's LAST answer so a failure is classified
+  // from what Twilio actually said (status + error), never from our prose alone.
+  const bound = bindTwilio(opts?.deps)
+  const last: { status: number | null; error: string | null } = { status: null, error: null }
+  const twilio = async <T = any>(creds: Creds, baseUrl: string, path: string, method: "GET" | "POST", body?: Record<string, unknown>) => {
+    const r = await bound<T>(creds, baseUrl, path, method, body)
+    last.status = r.status ?? null
+    last.error = r.error ?? null
+    return r
+  }
   const ref = await loadA2pState(svc, brokerageId)
   const state = ref.state
+  let fingerprint: string | null = null
   const fail = async (error: string): Promise<A2pRunResult> => {
-    const s = { ...state, last_error: error.slice(0, 400) }
+    const cls = classifyCarrierFailure(last, error)
+    const s: A2pState = { ...state, last_error: error.slice(0, 400), last_error_class: cls }
+    // A credential / compliance refusal HALTS the automatic retry (haltVerdict).
+    if (cls === "credential" || cls === "compliance") { s.halted_at = new Date().toISOString(); s.halted_profile_fingerprint = fingerprint }
     await saveA2pState(svc, brokerageId, ref, s)
     return { ok: false, state: s, advancedTo: nextA2pStep(s), error }
   }
@@ -499,6 +576,14 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
   const profileV = await resolveA2pProfile(svc, brokerageId)
   if (!profileV.ok) return fail(`Business profile incomplete — missing: ${profileV.missing.join(", ")}`)
   const profile = profileV.value
+  fingerprint = profileFingerprint(profileV.draft)
+
+  // Wave 140G: a halted tenant is NOT retried — no provider call, no save
+  // (idempotent); the stored reason is the answer. An explicit resume (the
+  // tenant's button / platform staff) or a corrected profile lifts it.
+  const halt = haltVerdict(state, fingerprint, opts?.resume)
+  if (halt.halted) return { ok: false, state, advancedTo: nextA2pStep(state), error: halt.reason }
+  if (state.halted_at) { state.halted_at = null; state.halted_profile_fingerprint = null; state.last_error_class = undefined }
 
   const master = masterCreds(opts?.deps)
   if (!master) return fail("Twilio master account not configured (TWILIO_ACCOUNT_SID/AUTH_TOKEN)")
@@ -990,12 +1075,24 @@ export interface TollfreeRunResult { ok: boolean; state: A2pState; status: strin
  * number(s). Idempotent: an existing verification sid is polled, never
  * re-filed. Needs the SAME complete business profile the 10DLC machine needs.
  */
-export async function runTollfreeVerification(svc: any, brokerageId: string, opts?: { mock?: boolean; deps?: CarrierRunDeps }): Promise<TollfreeRunResult> {
-  const twilio = bindTwilio(opts?.deps)
+export async function runTollfreeVerification(svc: any, brokerageId: string, opts?: { mock?: boolean; deps?: CarrierRunDeps; resume?: boolean }): Promise<TollfreeRunResult> {
+  // Wave 140G: same classification + halt rule as the 10DLC lane (one tenant,
+  // one halt — a credential refusal stops both lanes until a human resumes).
+  const bound = bindTwilio(opts?.deps)
+  const last: { status: number | null; error: string | null } = { status: null, error: null }
+  const twilio = async <T = any>(creds: Creds, baseUrl: string, path: string, method: "GET" | "POST", body?: Record<string, unknown>) => {
+    const r = await bound<T>(creds, baseUrl, path, method, body)
+    last.status = r.status ?? null
+    last.error = r.error ?? null
+    return r
+  }
   const ref = await loadA2pState(svc, brokerageId)
   const state = ref.state
+  let fingerprint: string | null = null
   const fail = async (error: string): Promise<TollfreeRunResult> => {
-    const s = { ...state, tollfree_error: error.slice(0, 400) }
+    const cls = classifyCarrierFailure(last, error)
+    const s: A2pState = { ...state, tollfree_error: error.slice(0, 400), last_error_class: cls }
+    if (cls === "credential" || cls === "compliance") { s.halted_at = new Date().toISOString(); s.halted_profile_fingerprint = fingerprint }
     await saveA2pState(svc, brokerageId, ref, s)
     return { ok: false, state: s, status: s.tollfree_status ?? null, error }
   }
@@ -1003,6 +1100,11 @@ export async function runTollfreeVerification(svc: any, brokerageId: string, opt
   const profileV = await resolveA2pProfile(svc, brokerageId)
   if (!profileV.ok) return fail(`Business profile incomplete — missing: ${profileV.missing.join(", ")}`)
   const profile = profileV.value
+  fingerprint = profileFingerprint(profileV.draft)
+
+  const halt = haltVerdict(state, fingerprint, opts?.resume)
+  if (halt.halted) return { ok: false, state, status: state.tollfree_status ?? null, error: halt.reason }
+  if (state.halted_at) { state.halted_at = null; state.halted_profile_fingerprint = null; state.last_error_class = undefined }
 
   const creds = await tenantCredsFor(svc, brokerageId, opts?.deps)
   if (!creds) return fail("Twilio not configured for this tenant — nothing was filed")

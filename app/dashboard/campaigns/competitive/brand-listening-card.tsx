@@ -28,7 +28,7 @@ export function BrandListeningCard({ reading }: { reading: BrandListeningReading
         </CardTitle>
         <CardDescription>
           Public mentions of your brokerage, agents, teams, listings, watched competitors and tracked keywords
-          over the last {reading.windowDays} days. Platform-covered — never billed to your account.
+          over the last {reading.windowDays} days. Included in your subscription — never counted as your spend.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">

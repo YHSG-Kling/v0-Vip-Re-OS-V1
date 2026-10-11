@@ -155,8 +155,10 @@ export async function escalateRotationRisks(client?: Svc, now: Date = new Date()
 // rotation escalation above uses. No incident ever carries a secret value — only the store, the
 // surface, the tenant id and the fix.
 
-/** The secret columns of the four credential stores (scripts/schema-snapshot.ts verified). */
-const SECRET_STORE_COLUMNS: ReadonlyArray<{ table: string; columns: readonly string[] }> = [
+/** The secret columns of the four credential stores (scripts/schema-snapshot.ts verified). ONE list:
+ *  the posture census (below), the re-seal migration job (lib/security/secret-migration.ts) and the
+ *  credential-migration proof all read it — a store added here is counted, migrated and proven. */
+export const SECRET_STORE_COLUMNS: ReadonlyArray<{ table: string; columns: readonly string[] }> = [
   { table: "agent_api_credentials", columns: ["api_key", "api_secret", "access_token", "refresh_token"] },
   { table: "integration_credentials", columns: ["api_key", "api_secret"] },
   { table: "platform_credentials", columns: ["api_key", "access_token", "refresh_token"] },

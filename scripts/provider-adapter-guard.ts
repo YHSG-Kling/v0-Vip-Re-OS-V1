@@ -30,6 +30,13 @@
  *      fills ONLY the caller's empty facts through routeCapability (BatchData excluded, budget-gated,
  *      health-aware, booked once); never asked without a named gap; never on property_valuation; the
  *      adapter maps no price / value range / person field.
+ *   Q. (wave 140, 140I) MAPBOX RESTORED + VENDOR CONTRACTS — mapbox is LIVE, routed FIRST on map_render,
+ *      walked (resolveMapProvider: both keys → Mapbox; Mapbox absent → Google with ITS key; neither →
+ *      null, never Google JS with an empty key; a secret sk. token is never minted; a failing Mapbox is
+ *      routed around), booked (image + map load, token redacted); every corrected base URL equals
+ *      VENDOR_CONTRACTS and cites ≥2 https sources (one spelling per vendor in runtime code, positive
+ *      control); Google Ads speaks ONE version whose published sunset is ahead of today (the healer
+ *      proposes the day after); Open-Meteo refuses in production without its commercial key and books.
  * BLIND SPOTS (published): the live probe and the derived health are injected (their own proofs are
  * test:connector-gateway / test:connector-healer); the census reads static + dynamic import specifiers
  * only (a provider reached through a re-export barrel is not seen); the cron route is checked by
@@ -51,9 +58,9 @@ import { buildAuthedRequest, applyAlternateToRequest, loadAppliedAlternate, fold
 import { CONTACT_PROVIDER_ROUTES, routeCapability } from "../lib/ai-isa/property-lookup-rail"
 import { runtimeFiles } from "./runtime-roots"
 import { existsSync } from "node:fs"
-import { VENDOR_PRICING, DIRECT_MAIL_PIECE_COST_USD } from "../lib/vendor-governance/cost-normalizer"
+import { VENDOR_PRICING, DIRECT_MAIL_PIECE_COST_USD, MAPBOX_SKU_USD } from "../lib/vendor-governance/cost-normalizer"
 import { PLATFORM_VENDOR_RATES } from "../lib/vendor-governance/meter-vendor"
-import { QBO_MINOR_VERSION } from "../lib/agentic-os/connector-registry"
+import { QBO_MINOR_VERSION, VENDOR_CONTRACTS, GOOGLE_ADS_API_VERSION, GOOGLE_ADS_API_SUNSET_AFTER } from "../lib/agentic-os/connector-registry"
 import { PROBE_SPECS } from "../lib/agentic-os/connector-probe"
 import { appendVersiumPropertyFacts } from "../lib/external/versium-client"
 
@@ -491,6 +498,76 @@ async function main() {
   const r3 = await appendVersiumPropertyFacts({ address: null, city: "Anytown", state: "ZZ", zip: "00001" }, { call: vCall(sample) })
   ok(r2.facts === null && r2.credits === 1 && r3.skipped === "no_address" && sent.length === 2,
     "POSITIVE CONTROLS: a month-only date is never padded and a malformed year is dropped (a billed match with no usable fact still reports its credit); no street address → nothing asked")
+
+  // ── Q. (wave 140, lane 140I) MAPBOX restored + VENDOR CONTRACTS cited ──
+  console.log("\nQ. Mapbox LIVE + routed + walked + booked; corrected base URLs carry their contract source; Google Ads version current")
+  const mapboxA = adapterFor("mapbox") as ProviderAdapter
+  ok(!!mapboxA && mapboxA.lifecycle === "live" && mapboxA.capabilities.includes("map_render") && mapboxA.cost.ledger === "vendor_usage_tracking" && mapboxA.cost.priceState === "variable" && mapboxA.cost.unitUsd === MAPBOX_SKU_USD.static_image && /VENDOR_PRICING\.mapbox/.test(mapboxA.cost.priceSource),
+    `mapbox is LIVE, routed on map_render, booked on vendor_usage_tracking at a VARIABLE cited price ($${mapboxA?.cost.unitUsd} — ${mapboxA?.cost.priceSource?.slice(0, 90)}…)`)
+  ok(CONTACT_PROVIDER_ROUTES.map_render[0].provider === "mapbox" && CONTACT_PROVIDER_ROUTES.map_render.some((e) => e.provider === "google_maps"), "the map_render route names Mapbox FIRST with Google Maps behind it (owner: Mapbox required; cheapest-first agrees)")
+  ok((mapboxA.fallback.map_render ?? []).join(",") === "google_maps" && (adapterFor("google_maps")?.fallback.map_render ?? []).join(",") === "mapbox" && adapterFor("google_maps")?.cost.priceState === "variable", "the derived map_render fallbacks are each other (mapbox → google_maps, google_maps → mapbox); both keep their VARIABLE price state (the route carries the number, VENDOR_PRICING the state)")
+  ok(!!PROBE_SPECS.mapbox && /api\.mapbox\.com/.test(String(PROBE_SPECS.mapbox.url)) && mapboxA.health.liveProbe === "mapbox", "mapbox has a live health probe (PROBE_SPECS.mapbox, MAPBOX_TOKEN) the adapter names")
+  const { resolveMapProvider, getMapImageUrl, bookMapsImageSpend, bookMapLoadSpend } = await import("../lib/property/street-view")
+  const envBoth = { MAPBOX_PUBLIC_TOKEN: "pk.test", NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: "g-browser", GOOGLE_MAPS_API_KEY: "g-server" }
+  const both = resolveMapProvider("browser_tiles", { env: envBoth })
+  ok(both?.provider === "mapbox" && both.key === "pk.test" && /^https:\/\/api\.mapbox\.com\/mapbox-gl-js\/v\d+\.\d+\.\d+\/mapbox-gl\.js$/.test(both.browser.script) && /mapbox-gl\.css$/.test(both.browser.css ?? ""), `both configured → Mapbox GL JS from the Mapbox CDN with the PUBLIC token (${both?.browser.script})`)
+  const googleOnly = resolveMapProvider("browser_tiles", { env: { NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: "g-browser" } })
+  ok(googleOnly?.provider === "google_maps" && googleOnly.key === "g-browser" && googleOnly.route.skipped.some((s) => s.provider === "mapbox" && /unconfigured: MAPBOX_PUBLIC_TOKEN/.test(s.reason)) && /key=g-browser/.test(googleOnly.browser.script), "Mapbox unconfigured → Google Maps with ITS key; Mapbox skipped WITH the reason (evidence)")
+  ok(resolveMapProvider("browser_tiles", { env: {} }) === null, "NEITHER configured → null: the heatmap renders its placeholder — never Google Maps JS with an empty key")
+  ok(resolveMapProvider("browser_tiles", { env: { GOOGLE_MAPS_API_KEY: "g-server" } }) === null && resolveMapProvider("static_image", { env: { GOOGLE_MAPS_API_KEY: "g-server" } })?.key === "g-server", "POSITIVE CONTROL: a SERVER-only Google key never reaches the browser (tiles need the NEXT_PUBLIC key) but does mint a server static image")
+  const secret = resolveMapProvider("static_image", { env: { MAPBOX_TOKEN: "sk.secret", GOOGLE_MAPS_API_KEY: "g-server" } })
+  ok(secret?.provider === "google_maps" && secret.route.skipped.some((s) => s.provider === "mapbox" && /sk\. token/.test(s.reason)), "a SECRET sk. Mapbox token is never minted into a URL — skipped with the reason, Google serves")
+  const failing = resolveMapProvider("browser_tiles", { env: envBoth, health: { mapbox: { state: "failing", routeAround: true, reason: "3 consecutive faults" } } })
+  ok(failing?.provider === "google_maps" && failing.route.skipped.some((s) => s.provider === "mapbox" && /provider_failing/.test(s.reason)), "Mapbox in a failing cool-down → routed around to Google Maps (health-aware), the skip cited")
+  const img = getMapImageUrl({ lat: 30.2672, lon: -97.7431, env: envBoth })
+  ok(img?.provider === "mapbox" && img.sku === "static_image" && /^https:\/\/api\.mapbox\.com\/styles\/v1\/mapbox\/[a-z0-9-]+\/static\/pin-s\+3b82f6\(-97\.7431,30\.2672\)\/-97\.7431,30\.2672,17,0,0\/800x600@2x\?access_token=pk\.test$/.test(img.url), `static image: the documented Static Images URL shape with the public token (${img?.url.replace("pk.test", "<pk>")})`)
+  const imgG = getMapImageUrl({ lat: 30.2672, lon: -97.7431, env: { GOOGLE_MAPS_API_KEY: "g-server" } })
+  ok(imgG?.provider === "google_maps" && imgG.sku === "static_map" && /maps\.googleapis\.com\/maps\/api\/staticmap/.test(imgG.url) && getMapImageUrl({ lat: 1, lon: 2, env: {} }) === null, "static image falls back to Google Static Maps when Mapbox is unconfigured; null when nothing is")
+  const mapBooked: any[] = []
+  const mapMeter = async (i: any) => { mapBooked.push(i); return true }
+  await bookMapsImageSpend({ brokerageId: A, provider: "mapbox", sku: "static_image", url: img!.url, systemSource: "guard" }, { meter: mapMeter })
+  await bookMapLoadSpend({ brokerageId: A, choice: both!, systemSource: "team_heatmap" }, { meter: mapMeter })
+  ok(mapBooked.length === 2 && mapBooked[0].vendorName === "mapbox" && mapBooked[0].cost === MAPBOX_SKU_USD.static_image && mapBooked[0].priceState === "variable" && mapBooked[0].coverage === "platform_covered" && !JSON.stringify(mapBooked[0]).includes("pk.test") && mapBooked[1].usageType === "map_load" && mapBooked[1].cost === MAPBOX_SKU_USD.map_load && mapBooked[1].metadata?.route?.order?.[0] === "mapbox" && mapBooked[1].brokerageId === A,
+    "a Mapbox image and a map load each book ONE vendor_usage_tracking unit (VARIABLE, platform-covered, the tenant's); the token never reaches the ledger; the map load carries the route walked as evidence")
+  const heatPage = stripComments(read("app/dashboard/team-heatmap/page.tsx"))
+  const heatMap = stripComments(read("app/dashboard/team-heatmap/heatmap-map.tsx"))
+  ok(/resolveMapProvider\("browser_tiles"/.test(heatPage) && /bookMapLoadSpend\(/.test(heatPage) && /loadProviderHealth\(/.test(heatPage) && !/process\.env\.MAPBOX_TOKEN/.test(heatPage) && !/googleMapsBrowserKey/.test(heatPage), "the heatmap page resolves its provider through the ONE walk (health-aware), books the map load, and no longer tests MAPBOX_TOKEN by presence")
+  ok(!/process\.env\./.test(heatMap) && !/googleMapsBrowserKey/.test(heatMap) && /isGoogle && provider && \(/.test(heatMap) && /mapboxgl/.test(heatMap) && /mb\.accessToken = provider\.key/.test(heatMap), "the client map reads NO env: Google Maps JS renders only for a server-chosen google_maps WITH a key; the Mapbox GL JS branch sets the public token it was handed")
+  const CORRECTED = ["lofty", "skyslope", "brokermint", "formsimplicity", "google_ads", "open_meteo", "mapbox"] as const
+  for (const p of CORRECTED) {
+    const a = adapterFor(p) as ProviderAdapter
+    const c = VENDOR_CONTRACTS[p === "open_meteo" ? "open_meteo_commercial" : p]
+    ok(!!a && a.api.contractSource.length >= 2 && a.api.contractSource.every((u) => /^https:\/\//.test(u)) && a.api.baseUrl === c.baseUrl && /^\d{4}-\d{2}-\d{2}$/.test(c.verifiedOn),
+      `${p}: declared base URL == VENDOR_CONTRACTS (${c.baseUrl}) with ${a?.api.contractSource.length ?? 0} cited https source(s), verified ${c.verifiedOn}`)
+  }
+  ok(validateProviderAdapter({ ...loftyA, api: { ...loftyA.api, contractSource: ["http://developer.lofty.com/x", "https://docs.example.com/api"] } }).filter((e) => /contractSource/.test(e)).length === 2, "POSITIVE CONTROL: a non-https or placeholder-host contract source is REFUSED")
+  const RETIRED_HOSTS: Array<[string, RegExp]> = [
+    ["lofty /v1 (unversioned)", /api\.lofty\.com\/v1(?!\.0)/],
+    ["api.skyslope.com", /api\.skyslope\.com/],
+    ["api.brokermint.com + brokermint.com/api", /api\.brokermint\.com|https:\/\/brokermint\.com\b/],
+    ["api.formsimplicity.com/v1", /api\.formsimplicity\.com\/v1/],
+    ["googleads /vNN literal", /googleads\.googleapis\.com\/v\d+/],
+    ["api.open-meteo.com literal", /https:\/\/api\.open-meteo\.com\/v1/],
+  ]
+  for (const [label, re] of RETIRED_HOSTS) {
+    const files = corpus.filter((f) => f.path !== "lib/agentic-os/connector-registry.ts" && re.test(stripComments(f.src))).map((f) => f.path)
+    ok(files.length === 0, `ONE base URL per vendor: no second spelling of ${label} in runtime code (VENDOR_CONTRACTS is the one)${files.length ? ": " + files.join(", ") : ""}`)
+  }
+  ok(RETIRED_HOSTS.every(([, re]) => re.test(`{ a: "https://api.lofty.com/v1", b: "https://api.skyslope.com", c: "https://api.brokermint.com/v1", d: "https://api.formsimplicity.com/v1", e: "https://googleads.googleapis.com/v17", f: "https://api.open-meteo.com/v1" }`)) && !RETIRED_HOSTS[0][1].test(`"https://api.lofty.com/v1.0"`),
+    "POSITIVE CONTROL: each retired spelling is recognised by its finder; the verified /v1.0 is not")
+  const adsSrc = stripComments(read("lib/ads/connectors/google.ts"))
+  const adsA = adapterFor("google_ads") as ProviderAdapter
+  ok(/VENDOR_CONTRACTS\.google_ads\.baseUrl/.test(adsSrc) && adsA.api.version === GOOGLE_ADS_API_VERSION && adsA.api.deprecatedAfter === GOOGLE_ADS_API_SUNSET_AFTER && /^v\d{2}$/.test(GOOGLE_ADS_API_VERSION) && adsA.api.baseUrl.endsWith(`/${GOOGLE_ADS_API_VERSION}`),
+    `Google Ads speaks ONE version (${GOOGLE_ADS_API_VERSION}) — the client reads VENDOR_CONTRACTS, the adapter declares it with its sunset (${GOOGLE_ADS_API_SUNSET_AFTER})`)
+  ok(new Date(GOOGLE_ADS_API_SUNSET_AFTER).getTime() > Date.now() && Number(GOOGLE_ADS_API_VERSION.slice(1)) >= 23,
+    `Google Ads ${GOOGLE_ADS_API_VERSION} is CURRENT: its published sunset (${GOOGLE_ADS_API_SUNSET_AFTER}) is ahead of today — when this goes red, re-read developers.google.com/google-ads/api/docs/sunset-dates and bump GOOGLE_ADS_API_VERSION + GOOGLE_ADS_API_SUNSET_AFTER together`)
+  ok(decideProviderHeal(adsA, { probe: "ok", derived: null, shapeChange: null, appliedAlternateId: null, now: new Date(new Date(GOOGLE_ADS_API_SUNSET_AFTER).getTime() + 86_400_000) }).step === "propose" && decideProviderHeal(adsA, { probe: "ok", derived: null, shapeChange: null, appliedAlternateId: null, now: NOW }).step === "none",
+    "POSITIVE CONTROL: the day after the sunset the healer PROPOSES an endpoint change for Google Ads; before it, nothing to heal (the declared deprecation is wired)")
+  const ohSrc = stripComments(read("app/actions/open-house-automation.ts"))
+  ok(/OPEN_METEO_API_KEY/.test(ohSrc) && /VENDOR_CONTRACTS\.open_meteo_commercial/.test(ohSrc) && /name: "apikey"/.test(ohSrc) && /NODE_ENV === "production"/.test(ohSrc) && /meterVendorSpend\(\{ vendorName: "open_meteo"/.test(ohSrc) && adapterFor("open_meteo")?.cost.priceState === "unknown",
+    "Open-Meteo: production REFUSES without OPEN_METEO_API_KEY; with it the commercial host + apikey are used and each forecast books its unit (price explicitly unknown)")
+  const loftySrc = stripComments(read("lib/crm/providers/lofty.ts"))
+  ok(/value: `token \$\{apiKey\}`/.test(loftySrc) && /path: "leads"/.test(loftySrc) && !/style: "bearer"/.test(loftySrc) && /loftyAuth\(apiKey\)/.test(stripComments(read("lib/crm/import-pull.ts"))), "Lofty: API keys authenticate with `token <key>` (not bearer) against the leads resource — sync-out AND pull")
 
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   process.exit(fail === 0 ? 0 : 1)

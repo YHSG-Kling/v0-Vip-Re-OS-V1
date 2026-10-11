@@ -33,6 +33,7 @@
 import { z } from "zod"
 import type { HealthDetector, HealthIncident } from "@/lib/kernel/os-health"
 import { HEALING_POLICY_DEFAULTS, HEALING_POLICY_KEY, type HealingPolicy } from "@/lib/kernel/healing-policy"
+import { SNAPSHOT_LAYERS, type SnapshotLayer } from "@/lib/kernel/tenant-readiness"
 
 type Svc = any
 
@@ -64,6 +65,13 @@ export const SELF_HEAL_PLAYBOOKS = {
   rebuild_cache:        { label: "Rebuild a derived cache from its authoritative tables", acts: true, runner: "owning_rail", rail: "REBUILD_CACHES (lib/kernel/command-center.ts buildAndPersistBrokerageTwin — the one twin builder)", params: { cache: { type: "string", max: 60 } } },
   re_enqueue_webhook:   { label: "Re-enqueue dead webhook deliveries once", acts: true, runner: "self", rail: "lib/platform/tenant-webhooks.ts drainTenantWebhookDeliveries (signed, idempotency-keyed)", params: { maxDeliveries: { type: "int", min: 1, max: 20 } } },
   reconcile_counts:     { label: "Recompute a derived count from its authoritative table", acts: true, runner: "owning_rail", rail: "RECONCILE_COUNTS (lib/documents/auto-filer.ts recomputeDocumentChecklist)", params: { counts: { type: "string", max: 40 } } },
+  // 140K — PROVISIONING RECONCILIATION: the tenant readiness contract's DECLARED repairs (lib/kernel/tenant-readiness.ts),
+  // each through the service that OWNS the rows and each filling ABSENT defaults only (never a tenant's own value).
+  fill_settings_defaults:    { label: "Fill absent operating defaults from the tier snapshot's global layer", acts: true, runner: "owning_rail", rail: "lib/kernel/tenant-readiness.ts applyAbsentSnapshotDefaults → lib/platform/config-snapshots.ts applySnapshotPayload (the ONE snapshot writer; absent keys only)", params: {} },
+  apply_snapshot_defaults:   { label: "Re-apply absent snapshot layers (brand / voice / features), absent keys only", acts: true, runner: "owning_rail", rail: "lib/kernel/tenant-readiness.ts applyAbsentSnapshotDefaults (SNAPSHOT_LAYERS) → applySnapshotPayload", params: { layers: { type: "string", max: 40 } } },
+  ensure_website_slug:       { label: "Mint the storefront slug a tenant never received", acts: true, runner: "owning_rail", rail: "lib/kernel/tenant-creation.ts resolveUniqueTenantSlug, written only where slug IS NULL (counted)", params: {} },
+  repair_user_records:       { label: "Repair the owner's tier-required domain records", acts: true, runner: "owning_rail", rail: "lib/kernel/users.ts repairIncompleteAccountSetup → createOrRepairUserDomainRecords (the one provisioning brain)", params: { userId: { type: "string", max: 36 } } },
+  sync_carrier_registration: { label: "Advance carrier registration through its own loop", acts: true, runner: "owning_rail", rail: "lib/voice/carrier-registration-loop.ts advanceTenantCarrier (never claims approval before the carrier confirms)", params: {} },
   notify_owner_manager: { label: "Hand the diagnosis to the owning manager's humans", acts: false, runner: "self", rail: "notifications (org recipients)", params: { message: { type: "string", max: 280 } } },
   read_only_diagnosis:  { label: "Attach a read-only diagnosis (no action)", acts: false, runner: "self", rail: "the Exception Center (self_heal_events)", params: {} },
 } as const satisfies Record<string, PlaybookSpec>
@@ -73,6 +81,7 @@ type PlaybookKey = keyof typeof SELF_HEAL_PLAYBOOKS
 export const PLAYBOOK_DOMAINS = [
   "provider", "sequences", "portal", "esign", "video_render", "direct_mail", "webhooks", "crons",
   "transactions", "accounting_sync", "enrichment", "scraping", "events", "ai", "workflows", "data",
+  "provisioning", // 140K — the tenant readiness contract's reconciliation domain
 ] as const
 type PlaybookDomain = (typeof PLAYBOOK_DOMAINS)[number]
 
@@ -96,6 +105,9 @@ export const DOMAIN_PLAYBOOKS: Readonly<Record<PlaybookDomain, readonly Playbook
   ai:              ["failover", "notify_owner_manager", "read_only_diagnosis"],
   workflows:       ["resume", "notify_owner_manager"],
   data:            ["reconcile_counts", "re_sync", "rebuild_cache", "notify_owner_manager"],
+  // money (subscription / plan / billing / seats), security and cross-tenant findings never reach this domain:
+  // the contract marks them BLOCKED with an owner; only ABSENT-DEFAULT fills are declared here.
+  provisioning:    ["fill_settings_defaults", "apply_snapshot_defaults", "ensure_website_slug", "repair_user_records", "sync_carrier_registration", "notify_owner_manager", "read_only_diagnosis"],
 }
 
 /** Every os-health detector's domain (typed over HEALTH_DETECTORS — a new detector must declare one). */
@@ -106,6 +118,7 @@ export const DETECTOR_DOMAIN: Readonly<Record<HealthDetector, PlaybookDomain>> =
   event_backlog: "events", ai_anomalies: "ai", media_render_failures: "video_render", compliance_flags: "transactions",
   portal_invites: "portal", esign_requests: "esign", direct_mail_returns: "direct_mail", sequence_send_failures: "sequences",
   transaction_deadlines: "transactions", payments_sync: "accounting_sync",
+  tenant_readiness: "provisioning",
 }
 
 // ── 2. The hard gate (runs FIRST) ────────────────────────────────────────────────────────────
@@ -294,6 +307,11 @@ interface RemediationServices {
   /** Proof seam — the rebuild set the executor validates before it runs (production: REBUILD_CACHES). */
   rebuildSet?: Readonly<Record<string, { table: string; rail: string }>>
   now?: () => Date
+  // 140K — the provisioning executors' owning services (each reaches env / auth / a carrier in production).
+  applyAbsentSnapshotDefaults?: (svc: Svc, brokerageId: string, layers: readonly SnapshotLayer[]) => Promise<{ ok: boolean; error: string | null; kept: Record<SnapshotLayer, string[]>; skipped: string[]; snapshot: { id: string; name: string } | null }>
+  resolveUniqueTenantSlug?: (svc: Svc, brokerageName: string) => Promise<{ ok: true; slug: string } | { ok: false; error: string }>
+  repairUserRecords?: (userId: string) => Promise<{ success: boolean; repaired: string[]; error?: string }>
+  advanceTenantCarrier?: (svc: Svc, brokerageId: string) => Promise<{ before: string | null; after: string; ran: string[]; needs: string[]; error?: string }>
 }
 
 export interface TroubleshootDeps extends BoundedModelDeps {
@@ -638,6 +656,103 @@ function owningRailExecutors(s: RemediationServices): Partial<Record<PlaybookKey
   }
 }
 
+// ── 4c. PROVISIONING EXECUTORS (wave 140K) ───────────────────────────────────────────────────
+// The tenant readiness contract's declared repairs. Each runs THROUGH the service that owns the rows,
+// fills ABSENT defaults only (fillAbsentDefaults is the rule — a tenant's own value is never replaced),
+// re-checks the tenant on every write, and VERIFIES by re-reading the owning rows. Money / security /
+// cross-tenant / destructive findings never reach these: the contract marks them BLOCKED (no playbook).
+
+function provisioningExecutors(s: RemediationServices): Partial<Record<PlaybookKey, PlaybookExecutor>> {
+  const now = s.now ?? (() => new Date())
+  const applyDefaults = s.applyAbsentSnapshotDefaults ?? (async (svc: Svc, b: string, layers: readonly SnapshotLayer[]) => (await import("@/lib/kernel/tenant-readiness")).applyAbsentSnapshotDefaults(svc, b, layers))
+  /** Does the layer's owning row exist for THIS tenant now? */
+  const layerPresent = async (svc: Svc, b: string, layer: SnapshotLayer): Promise<boolean> => {
+    if (layer === "global") { const { data, error } = await svc.from("global_settings").select("id").eq("brokerage_id", b).maybeSingle(); return !error && !!data }
+    if (layer === "brand") { const { data, error } = await svc.from("brokerage_brand_settings").select("id").eq("brokerage_id", b).maybeSingle(); return !error && !!data }
+    if (layer === "voice") { const { data, error } = await svc.from("brand_voice_profile").select("id").eq("brokerage_id", b).is("agent_id", null).is("team_id", null).eq("is_active", true).limit(1); return !error && ((data ?? []) as unknown[]).length > 0 }
+    const { error } = await svc.from("feature_access_overrides").select("id").eq("brokerage_id", b).is("user_id", null).is("team_id", null).limit(1)
+    return !error
+  }
+  const applyLayers = async (svc: Svc, i: HealthIncident, layers: readonly SnapshotLayer[]): Promise<ExecResult> => {
+    const r = await applyDefaults(svc, i.brokerageId, layers)
+    if (!r.ok) return { ok: false, outcome: `snapshot defaults not applied: ${r.error ?? "refused"}` }
+    const present = await Promise.all(layers.map((l) => layerPresent(svc, i.brokerageId, l)))
+    const missing = layers.filter((_, idx) => !present[idx])
+    const filled = layers.reduce((n, l) => n + r.kept[l].length, 0)
+    return {
+      ok: true, outcome: `${layers.join("+")} layer(s) of "${r.snapshot?.name ?? "snapshot"}" applied — ${filled} absent key(s) filled, ${r.skipped.length} tenant value(s) kept untouched`,
+      verification: { verified: missing.length === 0, detail: missing.length ? `${missing.join(", ")} still absent after apply` : `${layers.join(", ")} row(s) present for the tenant` },
+    }
+  }
+  return {
+    fill_settings_defaults: async (svc, i) => applyLayers(svc, i, ["global"]),
+
+    apply_snapshot_defaults: async (svc, i, p) => {
+      const layers = String(p.layers ?? "").split(",").map((x) => x.trim()).filter(Boolean)
+      const bad = layers.filter((l) => !(SNAPSHOT_LAYERS as readonly string[]).includes(l))
+      if (!layers.length || bad.length) return { ok: false, outcome: `layers must name declared snapshot layers (${SNAPSHOT_LAYERS.join(" / ")})${bad.length ? ` — not ${bad.join(",")}` : ""}` }
+      return applyLayers(svc, i, layers as SnapshotLayer[])
+    },
+
+    // The storefront slug — minted through the tenant-creation survivor, written ONLY where none exists (counted).
+    ensure_website_slug: async (svc, i) => {
+      const { data: row, error } = await svc.from("brokerages").select("id, name, slug").eq("id", i.brokerageId).maybeSingle()
+      if (error || !row) return { ok: false, outcome: `brokerage unreadable: ${error?.message ?? "no row"}` }
+      const cur = String((row as { slug?: string | null }).slug ?? "").trim()
+      if (cur) return { ok: true, outcome: `slug already present (${cur}) — nothing minted`, verification: { verified: true, detail: `slug ${cur}` } }
+      const resolve = s.resolveUniqueTenantSlug ?? (await import("@/lib/kernel/tenant-creation")).resolveUniqueTenantSlug
+      const slugRes = await resolve(svc, String((row as { name?: string | null }).name ?? "brokerage"))
+      if (!slugRes.ok) return { ok: false, outcome: slugRes.error }
+      const { data: up, error: upErr } = await svc.from("brokerages").update({ slug: slugRes.slug, updated_at: now().toISOString() }).eq("id", i.brokerageId).is("slug", null).select("id")
+      if (upErr) return { ok: false, outcome: `slug write refused: ${upErr.message}` }
+      const n = Array.isArray(up) ? up.length : 0
+      if (n !== 1) return { ok: false, outcome: `slug write matched ${n} row(s) — nothing minted (a slug landed concurrently or the tenant predicate refused)` }
+      const { data: after, error: afterErr } = await svc.from("brokerages").select("slug").eq("id", i.brokerageId).maybeSingle()
+      const verified = !afterErr && (after as { slug?: string } | null)?.slug === slugRes.slug
+      return { ok: true, outcome: `storefront slug minted: ${slugRes.slug}`, verification: { verified, detail: verified ? `brokerages.slug = ${slugRes.slug}` : `re-read disagrees (${afterErr?.message ?? (after as { slug?: string } | null)?.slug ?? "no slug"})` } }
+    },
+
+    // The owner's domain records — the ONE provisioning brain; a user outside this tenant is a boundary stop.
+    repair_user_records: async (svc, i, p) => {
+      const userId = uuidIn(p.userId)
+      if (!userId) return { ok: false, outcome: "userId must be a uuid" }
+      const { data: u, error } = await svc.from("users").select("id, user_type").eq("id", userId).eq("brokerage_id", i.brokerageId).is("deleted_at", null).maybeSingle()
+      if (error) return { ok: false, outcome: `user unreadable: ${error.message}` }
+      if (!u) return { ok: false, outcome: `user ${userId} is not this tenant's — nothing repaired`, hardStop: "tenant_boundary" }
+      const repair = s.repairUserRecords ?? (async (id: string) => (await import("@/lib/kernel/users")).repairIncompleteAccountSetup(id))
+      const r = await repair(userId)
+      if (!r.success) return { ok: false, outcome: `repair refused: ${r.error ?? "unknown"}` }
+      // VERIFY through the provisioning spec — the rows the tier requires now exist for this tenant.
+      const { data: brk } = await svc.from("brokerages").select("plan_tier").eq("id", i.brokerageId).maybeSingle()
+      const tier = (brk as { plan_tier?: string | null } | null)?.plan_tier ?? null
+      const { requiresAgentRow, ownerNeedsTeamRow } = await import("@/lib/kernel/tenant-provisioning-spec")
+      const detail: string[] = []
+      let verified = true
+      if (requiresAgentRow(String((u as { user_type?: string }).user_type ?? ""), tier)) {
+        const { data: a, error: aErr } = await svc.from("agents").select("id").eq("user_id", userId).eq("brokerage_id", i.brokerageId).limit(1)
+        const okA = !aErr && ((a ?? []) as unknown[]).length > 0; verified = verified && okA; detail.push(`agents row ${okA ? "present" : "ABSENT"}`)
+      }
+      if (tier && ownerNeedsTeamRow(tier)) {
+        const { data: t, error: tErr } = await svc.from("teams").select("id").eq("brokerage_id", i.brokerageId).is("deleted_at", null).limit(1)
+        const okT = !tErr && ((t ?? []) as unknown[]).length > 0; verified = verified && okT; detail.push(`teams row ${okT ? "present" : "ABSENT"}`)
+      }
+      return { ok: true, outcome: `domain records repaired: ${r.repaired.join(", ") || "nothing was missing"}`, verification: { verified, detail: detail.join("; ") || "no tier-required record" } }
+    },
+
+    // Carrier registration — the owning loop files what is left; approval is the carrier's word, never claimed.
+    sync_carrier_registration: async (svc, i) => {
+      const advance = s.advanceTenantCarrier ?? (async (c: Svc, b: string) => (await import("@/lib/voice/carrier-registration-loop")).advanceTenantCarrier(c, b))
+      const r = await advance(svc, i.brokerageId)
+      if (r.error) return { ok: false, outcome: `carrier loop refused: ${r.error}` }
+      const verified = r.after === "carrier_review" || r.after === "approved"
+      return {
+        ok: true, outcome: `carrier registration ${r.before ?? "new"} → ${r.after} (ran ${r.ran.join("+") || "poll only"})`,
+        verification: { verified, detail: verified ? `now ${r.after}${r.after === "approved" ? "" : " — waiting on the carrier (external)"}` : `still ${r.after}${r.needs.length ? ` — needs: ${r.needs.join("; ").slice(0, 200)}` : ""}` },
+      }
+    },
+  }
+}
+
 function incidentPrompt(i: HealthIncident, domain: PlaybookDomain, offered: PlaybookKey[]): { system: string; prompt: string } {
   const system =
     "You are the VIP Agents OS self-healing troubleshooter. Diagnose ONE operational incident from its evidence. " +
@@ -652,15 +767,11 @@ function incidentPrompt(i: HealthIncident, domain: PlaybookDomain, offered: Play
   return { system, prompt }
 }
 
-/**
- * Troubleshoot ONE incident decideRecovery sent to a human. Gate → bound → diagnose (bounded model) →
- * gate again on the model's own flags → validate the selection → run the declared playbook through its
- * executor. Every step is ledgered; a playbook run lands a self_heal_events row and an event. Anything
- * not run returns `escalate` with the reason (and the diagnosis) for the supervisor's escalation path.
- * Never throws.
- */
-export async function troubleshootIncident(svc: Svc, i: HealthIncident, ctx: { playbookAttempts24h: number; cycle: string; attempt: number }, deps: TroubleshootDeps = {}): Promise<TroubleshootResult> {
-  const domain = DETECTOR_DOMAIN[i.detector]
+// ── 5b. The engine's shared tools (ledger step, proposal writer, event emitter) ───────────────
+
+type EngineCtx = { playbookAttempts24h: number; cycle: string; attempt: number }
+
+async function engineTools(svc: Svc, i: HealthIncident, ctx: EngineCtx, deps: TroubleshootDeps, domain: PlaybookDomain) {
   const subject = `os_health:${i.detector}:${i.subjectKey}`
   const ledger = deps.ledger ?? (await import("@/lib/kernel/action-ledger")).withActionLedger
   const emit = deps.emit ?? (async (input: Record<string, unknown>) => (await import("@/lib/kernel/emit")).emitKernelEvent(input as any))
@@ -689,16 +800,6 @@ export async function troubleshootIncident(svc: Svc, i: HealthIncident, ctx: { p
       },
       { client: svc },
     )
-
-  // 1. THE HARD GATE (before any model or playbook).
-  const gate0 = classifyForbidden(i)
-
-  // 1b. THE POLICY (wave 139F) — tenant self-healing policy under the platform ceiling, through the ONE reader.
-  //     Unreadable → nothing autonomous runs: the incident goes to a human with the reason (fail closed).
-  const policy = deps.policy ?? await (await import("@/lib/kernel/healing-policy")).loadHealingPolicy(svc, i.brokerageId)
-  if (!policy.readable) return { kind: "escalate", reason: `self-healing policy unreadable (${policy.note ?? "no detail"}) — a human decides`, diagnosis: null, gate: gate0.forbidden ? gate0.class : null, proposalId: null, costUsd: 0 }
-  const attemptCap = policy.maxAttemptsPerDay
-
   /** The ONE healing-proposal writer; the proposal carries the incident's evidence (+ the failed attempt's). */
   const proposeToHuman = async (reason: string, failedAttempt: Record<string, unknown> | null) => {
     const propose = deps.propose ?? (async (p) => {
@@ -709,46 +810,31 @@ export async function troubleshootIncident(svc: Svc, i: HealthIncident, ctx: { p
       (x) => ({ ok: !!x?.id, note: x?.id ? `proposal ${x.id}` : `proposal not written: ${x?.error ?? "no result"}` }))
     return r?.id ?? null
   }
+  return { subject, keyFor, step, emit, proposeToHuman }
+}
 
-  // 2. THE BOUND — exhausted playbooks become a proposal + a human, never a loop.
-  if (!gate0.forbidden && ctx.playbookAttempts24h >= attemptCap) {
-    const reason = `self-healing playbooks exhausted (${ctx.playbookAttempts24h}/${attemptCap} in 24h, policy) — a healing proposal for platform staff + a human, not another loop`
-    return { kind: "escalate", reason, diagnosis: null, gate: null, proposalId: await proposeToHuman(reason, null), costUsd: 0 }
-  }
+type EngineTools = Awaited<ReturnType<typeof engineTools>>
 
-  // 3. DIAGNOSE (bounded) — offered playbooks are the domain's declared ones that can run this tick
-  //    (none for a forbidden incident: the diagnosis is for the human).
-  const executors: Partial<Record<PlaybookKey, PlaybookExecutor>> = { ...selfExecutors(deps), ...owningRailExecutors(deps.services ?? {}), ...(deps.executors ?? {}) }
-  //    The policy's allowed remediation classes govern ACTING playbooks; a hand-off (acts: false) is always offered.
-  const allowed = policy.allowedRemediationClasses
-  const offered = gate0.forbidden ? [] : DOMAIN_PLAYBOOKS[domain].filter((k) => !!executors[k] && (!SELF_HEAL_PLAYBOOKS[k].acts || allowed === null || allowed.includes(k)))
-  const { system, prompt } = incidentPrompt(i, domain, offered)
-  const capUsd = Math.min(deps.capUsd ?? policy.diagnosisCapUsd, policy.diagnosisCapUsd)
-  const dx = await step("diagnose", { reason: `bounded AI diagnosis (cap $${capUsd})`, offered, gate: gate0.forbidden ? gate0.class : null },
-    () => runBoundedModel({ brokerageId: i.brokerageId, feature: "os_self_heal_diagnosis", system, prompt, schema: DiagnosisSchema, capUsd }, deps),
-    (x) => x && x.ok ? { ok: true, note: `${x.object.rootCause} → ${x.object.playbook} (${Math.round(x.object.confidence * 100)}%)`, costUsd: x.costUsd } : { ok: false, note: x ? x.reason : "no result", costUsd: x?.costUsd ?? 0 })
-  const costUsd = dx?.costUsd ?? 0
-  const diagnosis = dx && dx.ok ? dx.object : null
-  const attach = diagnosis ? ` · AI diagnosis (${diagnosis.rootCause}, ${Math.round(diagnosis.confidence * 100)}%): ${diagnosis.diagnosis.slice(0, 300)}` : ""
+/** Every executor this tick can run: the module's own, the owning rails', the provisioning ones, and the caller's seams. */
+function allExecutors(deps: TroubleshootDeps): Partial<Record<PlaybookKey, PlaybookExecutor>> {
+  return { ...selfExecutors(deps), ...owningRailExecutors(deps.services ?? {}), ...provisioningExecutors(deps.services ?? {}), ...(deps.executors ?? {}) }
+}
 
-  if (gate0.forbidden) return { kind: "escalate", reason: `${gate0.reason}${attach}`, diagnosis, gate: gate0.class, proposalId: null, costUsd }
-  if (!diagnosis) return { kind: "escalate", reason: `AI diagnosis unavailable (${dx && !dx.ok ? dx.reason : "no result"}) — a human decides`, diagnosis: null, gate: null, proposalId: null, costUsd }
-  const gate1 = classifyForbidden(i, diagnosis.touches)
-  if (gate1.forbidden) return { kind: "escalate", reason: `${gate1.reason} (flagged by the diagnosis)${attach}`, diagnosis, gate: gate1.class, proposalId: null, costUsd }
-  if (diagnosis.confidence < policy.autoFixMinConfidence) return { kind: "escalate", reason: `diagnosis confidence ${Math.round(diagnosis.confidence * 100)}% below the auto-fix threshold ${Math.round(policy.autoFixMinConfidence * 100)}% (policy) — a human approves${attach}`, diagnosis, gate: null, proposalId: null, costUsd }
-
-  // 4. VALIDATE — the model selected; the library decides.
-  const sel = validatePlaybookSelection(domain, { playbook: diagnosis.playbook, params: diagnosis.params ?? {} }, new Set(offered))
-  if (!sel.ok) {
-    await step("playbook_refused", { reason: sel.reason, selected: diagnosis.playbook }, async () => sel, () => ({ ok: false, note: sel.reason }))
-    return { kind: "escalate", reason: `model selection refused: ${sel.reason}${attach}`, diagnosis, gate: null, proposalId: null, costUsd }
-  }
-
-  // 5. RUN the declared playbook through its executor.
+/**
+ * Steps 5–6 of the engine, shared by the model-selected path (troubleshootIncident) and the declared path
+ * (runDeclaredPlaybook): RUN the validated playbook through its executor, land the Exception-Center row +
+ * the event (incident ↔ evidence ↔ action ↔ attempt ↔ outcome + verification), then a hard stop escalates
+ * at once and a failure on the LAST allowed attempt becomes a proposal + a human.
+ */
+async function runSelectedPlaybook(
+  svc: Svc, i: HealthIncident, sel: Extract<SelectionVerdict, { ok: true }>, diagnosis: Diagnosis, costUsd: number, attach: string,
+  bounds: { attemptNo: number; attemptCap: number }, ctx: EngineCtx, executors: Partial<Record<PlaybookKey, PlaybookExecutor>>, tools: EngineTools,
+): Promise<TroubleshootResult> {
+  const { step, keyFor, subject, emit, proposeToHuman } = tools
   const spec = SELF_HEAL_PLAYBOOKS[sel.playbook]
   //    139A: an owning-rail playbook counts as done only when its executor VERIFIED the outcome by
   //    re-reading the survivor; a hard stop is never "done".
-  const attemptNo = ctx.playbookAttempts24h + 1
+  const { attemptNo, attemptCap } = bounds
   const verifyRequired = spec.runner === "owning_rail"
   const run = await step(`playbook_${sel.playbook}`, { reason: `${spec.label} — ${diagnosis.diagnosis.slice(0, 200)}`, playbook: sel.playbook, params: sel.params, rail: spec.rail, diagnosis },
     () => executors[sel.playbook]!(svc, i, sel.params, { cycle: ctx.cycle, attempt: attemptNo }).catch((e: Error): ExecResult => ({ ok: false, outcome: `executor threw: ${e.message}` })),
@@ -785,4 +871,107 @@ export async function troubleshootIncident(svc: Svc, i: HealthIncident, ctx: { p
     }
   }
   return { kind: "playbook", playbook: sel.playbook, acts: spec.acts, ok, outcome, diagnosis, costUsd }
+}
+
+/**
+ * Troubleshoot ONE incident decideRecovery sent to a human. Gate → bound → diagnose (bounded model) →
+ * gate again on the model's own flags → validate the selection → run the declared playbook through its
+ * executor. Every step is ledgered; a playbook run lands a self_heal_events row and an event. Anything
+ * not run returns `escalate` with the reason (and the diagnosis) for the supervisor's escalation path.
+ * Never throws.
+ */
+export async function troubleshootIncident(svc: Svc, i: HealthIncident, ctx: EngineCtx, deps: TroubleshootDeps = {}): Promise<TroubleshootResult> {
+  const domain = DETECTOR_DOMAIN[i.detector]
+  const tools = await engineTools(svc, i, ctx, deps, domain)
+  const { step, proposeToHuman } = tools
+
+  // 1. THE HARD GATE (before any model or playbook).
+  const gate0 = classifyForbidden(i)
+
+  // 1b. THE POLICY (wave 139F) — tenant self-healing policy under the platform ceiling, through the ONE reader.
+  //     Unreadable → nothing autonomous runs: the incident goes to a human with the reason (fail closed).
+  const policy = deps.policy ?? await (await import("@/lib/kernel/healing-policy")).loadHealingPolicy(svc, i.brokerageId)
+  if (!policy.readable) return { kind: "escalate", reason: `self-healing policy unreadable (${policy.note ?? "no detail"}) — a human decides`, diagnosis: null, gate: gate0.forbidden ? gate0.class : null, proposalId: null, costUsd: 0 }
+  const attemptCap = policy.maxAttemptsPerDay
+
+  // 2. THE BOUND — exhausted playbooks become a proposal + a human, never a loop.
+  if (!gate0.forbidden && ctx.playbookAttempts24h >= attemptCap) {
+    const reason = `self-healing playbooks exhausted (${ctx.playbookAttempts24h}/${attemptCap} in 24h, policy) — a healing proposal for platform staff + a human, not another loop`
+    return { kind: "escalate", reason, diagnosis: null, gate: null, proposalId: await proposeToHuman(reason, null), costUsd: 0 }
+  }
+
+  // 3. DIAGNOSE (bounded) — offered playbooks are the domain's declared ones that can run this tick
+  //    (none for a forbidden incident: the diagnosis is for the human).
+  const executors = allExecutors(deps)
+  //    The policy's allowed remediation classes govern ACTING playbooks; a hand-off (acts: false) is always offered.
+  const allowed = policy.allowedRemediationClasses
+  const offered = gate0.forbidden ? [] : DOMAIN_PLAYBOOKS[domain].filter((k) => !!executors[k] && (!SELF_HEAL_PLAYBOOKS[k].acts || allowed === null || allowed.includes(k)))
+  const { system, prompt } = incidentPrompt(i, domain, offered)
+  const capUsd = Math.min(deps.capUsd ?? policy.diagnosisCapUsd, policy.diagnosisCapUsd)
+  const dx = await step("diagnose", { reason: `bounded AI diagnosis (cap $${capUsd})`, offered, gate: gate0.forbidden ? gate0.class : null },
+    () => runBoundedModel({ brokerageId: i.brokerageId, feature: "os_self_heal_diagnosis", system, prompt, schema: DiagnosisSchema, capUsd }, deps),
+    (x) => x && x.ok ? { ok: true, note: `${x.object.rootCause} → ${x.object.playbook} (${Math.round(x.object.confidence * 100)}%)`, costUsd: x.costUsd } : { ok: false, note: x ? x.reason : "no result", costUsd: x?.costUsd ?? 0 })
+  const costUsd = dx?.costUsd ?? 0
+  const diagnosis = dx && dx.ok ? dx.object : null
+  const attach = diagnosis ? ` · AI diagnosis (${diagnosis.rootCause}, ${Math.round(diagnosis.confidence * 100)}%): ${diagnosis.diagnosis.slice(0, 300)}` : ""
+
+  if (gate0.forbidden) return { kind: "escalate", reason: `${gate0.reason}${attach}`, diagnosis, gate: gate0.class, proposalId: null, costUsd }
+  if (!diagnosis) return { kind: "escalate", reason: `AI diagnosis unavailable (${dx && !dx.ok ? dx.reason : "no result"}) — a human decides`, diagnosis: null, gate: null, proposalId: null, costUsd }
+  const gate1 = classifyForbidden(i, diagnosis.touches)
+  if (gate1.forbidden) return { kind: "escalate", reason: `${gate1.reason} (flagged by the diagnosis)${attach}`, diagnosis, gate: gate1.class, proposalId: null, costUsd }
+  if (diagnosis.confidence < policy.autoFixMinConfidence) return { kind: "escalate", reason: `diagnosis confidence ${Math.round(diagnosis.confidence * 100)}% below the auto-fix threshold ${Math.round(policy.autoFixMinConfidence * 100)}% (policy) — a human approves${attach}`, diagnosis, gate: null, proposalId: null, costUsd }
+
+  // 4. VALIDATE — the model selected; the library decides.
+  const sel = validatePlaybookSelection(domain, { playbook: diagnosis.playbook, params: diagnosis.params ?? {} }, new Set(offered))
+  if (!sel.ok) {
+    await step("playbook_refused", { reason: sel.reason, selected: diagnosis.playbook }, async () => sel, () => ({ ok: false, note: sel.reason }))
+    return { kind: "escalate", reason: `model selection refused: ${sel.reason}${attach}`, diagnosis, gate: null, proposalId: null, costUsd }
+  }
+
+  // 5–6. RUN the declared playbook through its executor; record; escalate on a hard stop / at the cap.
+  return runSelectedPlaybook(svc, i, sel, diagnosis, costUsd, attach, { attemptNo: ctx.playbookAttempts24h + 1, attemptCap }, ctx, executors, tools)
+}
+
+/**
+ * 140K — THE DECLARED PATH. A caller that already KNOWS the remediation (the tenant readiness contract
+ * names its playbook per check) runs it here with NO model call: the same hard gate, the same healing
+ * policy (attempt cap, allowed remediation classes), the same selection validator (an undeclared playbook,
+ * one outside the incident's domain, an undeclared / SQL parameter → refused), the same executors, the same
+ * verification, Exception-Center row, ledger, event and escalation. Never throws.
+ */
+export async function runDeclaredPlaybook(svc: Svc, i: HealthIncident, sel: { playbook: string; params?: Record<string, unknown> | null }, ctx: EngineCtx, deps: TroubleshootDeps = {}): Promise<TroubleshootResult> {
+  const domain = DETECTOR_DOMAIN[i.detector]
+  const tools = await engineTools(svc, i, ctx, deps, domain)
+
+  // 1. THE HARD GATE — money / tenant boundary / security / deletion in the incident → a human, nothing runs.
+  const gate0 = classifyForbidden(i)
+  if (gate0.forbidden) return { kind: "escalate", reason: `${gate0.reason} (declared remediation ${sel.playbook} NOT run)`, diagnosis: null, gate: gate0.class, proposalId: null, costUsd: 0 }
+
+  // 1b. THE POLICY — unreadable → fail closed.
+  const policy = deps.policy ?? await (await import("@/lib/kernel/healing-policy")).loadHealingPolicy(svc, i.brokerageId)
+  if (!policy.readable) return { kind: "escalate", reason: `self-healing policy unreadable (${policy.note ?? "no detail"}) — a human decides`, diagnosis: null, gate: null, proposalId: null, costUsd: 0 }
+  const attemptCap = policy.maxAttemptsPerDay
+
+  // 2. THE BOUND — the same cap the model path honours; exhausted → proposal + human, never a loop.
+  if (ctx.playbookAttempts24h >= attemptCap) {
+    const reason = `declared remediation ${sel.playbook} exhausted (${ctx.playbookAttempts24h}/${attemptCap} in 24h, policy) — a healing proposal for platform staff + a human, not another loop`
+    return { kind: "escalate", reason, diagnosis: null, gate: null, proposalId: await tools.proposeToHuman(reason, null), costUsd: 0 }
+  }
+
+  // 3. VALIDATE — only a playbook DECLARED for this domain, with an executor this tick, allowed by policy.
+  const executors = allExecutors(deps)
+  const allowed = policy.allowedRemediationClasses
+  const offered = DOMAIN_PLAYBOOKS[domain].filter((k) => !!executors[k] && (!SELF_HEAL_PLAYBOOKS[k].acts || allowed === null || allowed.includes(k)))
+  const v = validatePlaybookSelection(domain, { playbook: sel.playbook, params: sel.params ?? {} }, new Set(offered))
+  if (!v.ok) {
+    const notOffered = hasOwn(SELF_HEAL_PLAYBOOKS, sel.playbook) && DOMAIN_PLAYBOOKS[domain].includes(sel.playbook as PlaybookKey) && !offered.includes(sel.playbook as PlaybookKey)
+    const reason = notOffered && allowed !== null && !allowed.includes(sel.playbook) ? `playbook ${sel.playbook} is not in this tenant's allowed remediation classes (policy) — a human approves` : v.reason
+    await tools.step("playbook_refused", { reason, selected: sel.playbook }, async () => ({ ok: false as const, reason }), () => ({ ok: false, note: reason }))
+    return { kind: "escalate", reason: `declared remediation refused: ${reason}`, diagnosis: null, gate: null, proposalId: null, costUsd: 0 }
+  }
+  const diagnosis: Diagnosis = {
+    diagnosis: `declared remediation (no model call): ${SELF_HEAL_PLAYBOOKS[v.playbook].label}`, rootCause: "configuration",
+    touches: { money: false, tenantBoundary: false, security: false, dataDeletion: false }, playbook: v.playbook, params: v.params, confidence: 1,
+  }
+  return runSelectedPlaybook(svc, i, v, diagnosis, 0, "", { attemptNo: ctx.playbookAttempts24h + 1, attemptCap }, ctx, executors, tools)
 }

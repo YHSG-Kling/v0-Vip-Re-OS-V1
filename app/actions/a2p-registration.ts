@@ -17,7 +17,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 // ★ ACT-AS SEAM — TWO ENTRY POINTS, ONE GATE ★ resolveActingContext for the
 // status read, resolveWriteContext for the carrier filing.
 import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
-import { loadA2pState, runA2pRegistration, describeA2pState, nextA2pStep, resolveA2pProfile, type A2pState, type A2pFieldSource } from "@/lib/voice/a2p-registration"
+import { loadA2pState, describeA2pState, nextA2pStep, resolveA2pProfile, type A2pState, type A2pFieldSource } from "@/lib/voice/a2p-registration"
+import { syncA2pStatus, type TenantA2pUiState } from "@/lib/voice/carrier-registration-loop"
 import { redactDraftForClient, BUSINESS_REGISTRATION_SETTINGS_PATH } from "@/lib/branding/business-registration"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
@@ -76,6 +77,15 @@ export interface A2pStatusView {
   sources: Record<string, A2pFieldSource>
   /** Where the tenant completes what is missing (the Branding card). */
   settingsPath: string
+  /** Wave 140G: the tenant's ONE texting state, derived from the stored
+   *  carrier phase (lib/voice/carrier-registration-loop.ts tenantA2pUiState):
+   *  AVAILABLE | PENDING_REGISTRATION | ACTION_REQUIRED | RESTRICTED. */
+  uiState: TenantA2pUiState
+  uiLabel: string
+  /** The honest reason behind the state — the PROVIDER's reason when halted. */
+  reason: string
+  /** true when a credential / compliance refusal halted automatic filing. */
+  halted: boolean
 }
 
 export async function getA2pStatusAction(): Promise<{ ok: true; status: A2pStatusView } | { ok: false; error: string }> {
@@ -83,10 +93,12 @@ export async function getA2pStatusAction(): Promise<{ ok: true; status: A2pStatu
   const auth = await requireBrokerCtx("read")
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  // READ: resolveA2pProfile never writes (84D retired the derived-copy persist).
-  const [{ state }, v] = await Promise.all([
+  // READ: resolveA2pProfile never writes (84D retired the derived-copy persist);
+  // syncA2pStatus with probeOnly evaluates the stored state without running.
+  const [{ state }, v, sync] = await Promise.all([
     loadA2pState(svc, auth.brokerageId),
     resolveA2pProfile(svc, auth.brokerageId),
+    syncA2pStatus(svc, auth.brokerageId, { probeOnly: true }),
   ])
   return {
     ok: true,
@@ -100,22 +112,30 @@ export async function getA2pStatusAction(): Promise<{ ok: true; status: A2pStatu
       derivedKeys: v.derivedKeys ?? [],
       sources: v.sources ?? {},
       settingsPath: BUSINESS_REGISTRATION_SETTINGS_PATH,
+      uiState: sync.uiState,
+      uiLabel: sync.uiLabel,
+      reason: sync.reason,
+      halted: !!sync.halted,
     },
   }
 }
 
 /** Kick/resume registration — every call advances as far as carriers allow
- *  right now and polls the async reviews. Safe to press repeatedly. */
-export async function runA2pRegistrationAction(): Promise<{ ok: boolean; statusLine: string; error?: string }> {
+ *  right now and polls the async reviews. Safe to press repeatedly.
+ *  Wave 140G: this is a HUMAN resume — it runs the same pass the hourly loop
+ *  runs (syncA2pStatus: ports, both lanes, phase audit + bell) and is the one
+ *  tenant-side door that lifts a credential / compliance halt once. */
+export async function runA2pRegistrationAction(): Promise<{ ok: boolean; statusLine: string; uiState?: TenantA2pUiState; uiLabel?: string; error?: string }> {
   // WRITE — files with the carriers and stamps phone_number_events.
   const auth = await requireBrokerCtx("write")
   if (!auth.ok) return { ok: false, statusLine: "", error: auth.error }
   const svc = createServiceClient()
-  const r = await runA2pRegistration(svc, auth.brokerageId)
+  const r = await syncA2pStatus(svc, auth.brokerageId, { resume: true })
+  const { state } = await loadA2pState(svc, auth.brokerageId)
   await svc.from("phone_number_events").insert({
     brokerage_id: auth.brokerageId, phone_number: "a2p",
     event_type: "webhooks_bound", source: "a2p_registration",
-    notes: `A2P step machine ran → ${r.advancedTo}${r.error ? ` (error: ${r.error.slice(0, 160)})` : ""}`,
+    notes: `A2P step machine ran → ${nextA2pStep(state)}${!r.ok ? ` (error: ${r.reason.slice(0, 160)})` : ""}`,
   }).then(undefined, () => {})
-  return { ok: r.ok, statusLine: describeA2pState(r.state), error: r.error }
+  return { ok: r.ok, statusLine: describeA2pState(state), uiState: r.uiState, uiLabel: r.uiLabel, error: r.ok ? undefined : r.reason }
 }

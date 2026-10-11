@@ -207,6 +207,7 @@ import { PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_EMAIL_VALIDATE_COST_USD } from "@
 import { MCP_TOOL_CALL_COST_USD } from "@/lib/external/batchdata-ai-tools"
 import { VERSIUM_MATCH_CREDIT_USD, type VersiumIdentity, type VersiumContactCall, type VersiumDemographicCall, type VersiumProvenance } from "@/lib/external/versium-client"
 import { BATCHDATA_BILLED_PULL_OPT_IN } from "@/lib/buyer-search/listing-source-order"
+import { MAPBOX_SKU_USD, GOOGLE_MAPS_SKU_USD } from "@/lib/vendor-governance/cost-normalizer"
 
 /**
  * public_facts (wave 82 lane A) — owner verbatim: "the calculator was giving the property facts so
@@ -278,7 +279,9 @@ export const BATCHDATA_FALLBACK_MISS_REASONS: ReadonlySet<RentcastMissReason> = 
 // runVersiumContactLeg below).
 // Wave 99 (lane 99C, LAW 3 "agents request capabilities, not vendors"): "rentcast" joins as the
 // PRIMARY of the property_valuation capability — the AVM chain now routes through this same table.
-export type ContactDataProvider = "versium" | "batchdata" | "peopledata" | "rentcast"
+// Wave 140 (lane 140I, owner: "MAPBOX IS REQUIRED … one map subsystem"): the MAP providers ride the SAME
+// router (map_render below) — the name stays (two importers; a rename is a rewrite), the union widens.
+export type ContactDataProvider = "versium" | "batchdata" | "peopledata" | "rentcast" | "mapbox" | "google_maps"
 
 /** The capabilities the two providers sell, named by the QUESTION a caller asks. */
 export type ProviderCapability =
@@ -290,13 +293,14 @@ export type ProviderCapability =
   | "property_facts"         // beds/baths/sqft/year/lot for an address (the rail's rung 5)
   | "motivated_seller_list"  // quicklist pulls (pre-foreclosure, absentee, vacant, …)
   | "property_valuation"     // "what is this home worth?" — AVM point + range (wave 99, lane 99C)
+  | "map_render"             // a map of coordinates — static image or browser tiles (wave 140, lane 140I)
 
 export interface ProviderRouteEntry {
   provider: ContactDataProvider
   /** Documented per-unit USD (the constant the ledger books) — a cost ORDER, never an invoice. */
   unitCostUsd: number
   /** What the provider needs to be asked with. */
-  keyedBy: "property_address" | "person_identifier" | "phone" | "email" | "geography"
+  keyedBy: "property_address" | "person_identifier" | "phone" | "email" | "geography" | "coordinates"
 }
 
 /** RENTCAST_USD_PER_REQUEST (lib/property/rentcast.ts), Foundation plan; $0.018 at Scale — ONE spelling
@@ -362,6 +366,18 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
   property_valuation: [
     { provider: "rentcast", unitCostUsd: RENTCAST_REQUEST_USD, keyedBy: "property_address" },
     { provider: "batchdata", unitCostUsd: BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD, keyedBy: "property_address" },
+  ],
+  // Wave 140 (lane 140I; owner: "MAPBOX IS REQUIRED … team heatmap chooses a VALID configured provider,
+  // never Google Maps with an empty key … One map subsystem"). THE ONE MAP CAPABILITY: Mapbox first,
+  // Google Maps the fallback — cheapest-first AND the owner's order agree (Static Images $1.50 / 1k past
+  // 100k free vs Google Static Maps $2 / 1k past 10k free; both VARIABLE — the booked unit is the
+  // static-image SKU each transport books: lib/vendor-governance/cost-normalizer.ts MAPBOX_SKU_USD /
+  // GOOGLE_MAPS_SKU_USD). The WALK is lib/property/street-view.ts resolveMapProvider: route order minus
+  // failing providers minus UNCONFIGURED ones (a provider whose credential is absent is never chosen),
+  // for both the browser tiles (team heatmap) and the server-minted static images.
+  map_render: [
+    { provider: "mapbox", unitCostUsd: MAPBOX_SKU_USD.static_image, keyedBy: "coordinates" },
+    { provider: "google_maps", unitCostUsd: GOOGLE_MAPS_SKU_USD.static_map, keyedBy: "coordinates" },
   ],
 }
 

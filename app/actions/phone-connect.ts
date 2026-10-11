@@ -12,6 +12,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { writeScopeFor } from "@/lib/connections/scope"
+import { encryptSecret } from "@/lib/security/secret-crypto"
 
 export type PhonePlatform = "twilio" | "telnyx" | "bandwidth"
 const PHONE_PLATFORMS: PhonePlatform[] = ["twilio", "telnyx", "bandwidth"]
@@ -59,7 +60,7 @@ export async function connectPhoneAction(params: {
     owner_id: owner?.ownerId ?? null,
     platform,
     scope: member.agentScoped ? "agent" : "brokerage",
-    api_key: params.accountSid.trim(),
+    api_key: encryptSecret(params.accountSid.trim()),
     config: { auth_token: params.authToken.trim(), from_number: params.fromNumber.trim() },
     is_active: true,
     updated_at: new Date().toISOString(),

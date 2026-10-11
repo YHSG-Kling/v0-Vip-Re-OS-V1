@@ -37,7 +37,8 @@ function pureLayer() {
   check("standard+ is surfacing-eligible", VENDOR_TIERS.standard.surfacingEligible && VENDOR_TIERS.premium.surfacingEligible)
   check("only premium+ is preferred-eligible", !VENDOR_TIERS.standard.preferredEligible && VENDOR_TIERS.premium.preferredEligible)
   check("only preferred_network is featured-eligible", !VENDOR_TIERS.premium.featuredEligible && VENDOR_TIERS.preferred_network.featuredEligible)
-  check("prices ascend basic<standard<premium<preferred_network", VENDOR_TIERS.basic.monthlyPriceUsd < VENDOR_TIERS.standard.monthlyPriceUsd && VENDOR_TIERS.premium.monthlyPriceUsd < VENDOR_TIERS.preferred_network.monthlyPriceUsd)
+  // Wave 140J (owner: tier pricing is NOT set — never fabricated): the catalog carries NO price.
+  check("the catalog carries no price — every tier's monthlyPriceUsd is null (price_not_configured until administered)", Object.values(VENDOR_TIERS).every((t) => t.monthlyPriceUsd === null))
   check("normalizeTier defaults junk to basic", normalizeTier("nonsense") === "basic" && normalizeTier("PREMIUM") === "premium")
 
   console.log("\n[effective capabilities · pure — billing status gates]")
@@ -47,7 +48,7 @@ function pureLayer() {
   check("trialing standard is surfacing-eligible", tierAllows("standard", "trialing", "surfacing"))
 
   console.log("\n[editable pricing · pure — brokerage overrides win, else default]")
-  check("no override → catalog default", resolveTierPrice("standard") === VENDOR_TIERS.standard.monthlyPriceUsd)
+  check("no override → null (not configured; the checkout refuses, never charges a guess)", resolveTierPrice("standard") === null)
   check("a brokerage override wins", resolveTierPrice("standard", { standard: 129 }) === 129)
   check("a zero override is honored (free tier)", resolveTierPrice("basic", { basic: 0 }) === 0)
   check("resolveVendorTiers applies overrides but keeps capabilities", resolveVendorTiers({ premium: 249 }).premium.monthlyPriceUsd === 249 && resolveVendorTiers({ premium: 249 }).premium.preferredEligible === true)

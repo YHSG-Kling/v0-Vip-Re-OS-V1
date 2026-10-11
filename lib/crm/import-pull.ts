@@ -106,14 +106,18 @@ async function pullFollowUpBoss(apiKey: string, cursor: string | null): Promise<
 // internal helper — called in-file by pullCrmPage
 async function pullLofty(apiKey: string, baseUrl: string | null, cursor: string | null): Promise<CrmPullPage> {
   const offset = Number(cursor ?? 0)
-  const res = await callConnector<{ contacts?: any[]; data?: any[] }>({
-    connector: "lofty", baseUrl: baseUrl || "https://api.lofty.com/v1",
-    path: "contacts", method: "GET",
+  // Wave 140 (140I): the verified contract — GET {base}/leads with `Authorization: token <key>`, envelope
+  // { code, msg, data: { total, list } } (developer.lofty.com/quickstart) — ONE base URL (LOFTY_API_BASE).
+  const { LOFTY_API_BASE, loftyAuth } = await import("@/lib/crm/providers/lofty")
+  const res = await callConnector<{ data?: { list?: any[] } | any[]; list?: any[] }>({
+    connector: "lofty", baseUrl: baseUrl || LOFTY_API_BASE,
+    path: "leads", method: "GET",
     query: { limit: String(PAGE_SIZE), offset: String(offset) },
-    auth: { style: "bearer", token: apiKey },
+    auth: loftyAuth(apiKey),
   })
   if (!res.ok) return { rows: [], nextCursor: null, error: res.error ?? `Lofty pull failed (${res.status})` }
-  const contacts = res.data?.contacts ?? res.data?.data ?? []
+  const envelope = res.data?.data
+  const contacts: any[] = Array.isArray(envelope) ? envelope : envelope?.list ?? res.data?.list ?? []
   return { rows: contacts.map(loftyToRow), nextCursor: contacts.length === PAGE_SIZE ? String(offset + PAGE_SIZE) : null }
 }
 

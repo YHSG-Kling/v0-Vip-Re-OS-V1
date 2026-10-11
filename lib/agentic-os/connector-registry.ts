@@ -78,6 +78,79 @@ export interface ConnectorAlternate {
  */
 export const QBO_MINOR_VERSION = "75"
 
+/**
+ * THE Google Ads API version every Ads request speaks — ONE constant (wave 140, lane 140I; owner
+ * blocker "Google Ads API v17 past sunset"). Evidence (developers.google.com/google-ads/api/docs/
+ * sunset-dates, fetched 2026-10-11): v17 sunset 2025; v22 sunset October 2026 (blog 2026-09-02: Oct 7);
+ * RELEASED rows v23 (sunset Feb 2027), v24 (May 2027), v25 (released 2026-07-22, sunset August 2027).
+ * v25 is the released major with the longest runway. GOOGLE_ADS_API_SUNSET_AFTER is the first day of
+ * the published (tentative) sunset month — the adapter's deprecatedAfter, which decideProviderHeal
+ * reads; scripts/provider-adapter-guard.ts (section Q) refuses a literal `/v\d+` Ads pin anywhere else
+ * and goes red once the date passes (bump BOTH after re-reading the table — that is the whole point).
+ */
+export const GOOGLE_ADS_API_VERSION = "v25"
+export const GOOGLE_ADS_API_SUNSET_AFTER = "2027-08-01"
+
+/**
+ * VENDOR CONTRACTS (wave 140, lane 140I) — ONE base URL per vendor, each verified against the vendor's
+ * own documentation / published spec / SDK and CITED (`contractSource`), with the date it was read.
+ * The clients, the superadmin connection test and the adapter declaration (lib/kernel/provider-
+ * adapters.ts) all read these — a second spelling of any host below is a defect
+ * (scripts/provider-adapter-guard.ts section Q scans runtime code for one). A per-connection
+ * `config.base_uri` override stays the tenant's (partner-scoped hosts); these are the defaults.
+ * Leaf constants, like QBO_MINOR_VERSION: this module imports nothing.
+ */
+interface VendorContract {
+  baseUrl: string
+  /** The primary source(s) the base URL was read from — official docs first, SDK/spec second. */
+  contractSource: readonly string[]
+  verifiedOn: string
+  note: string
+}
+export const VENDOR_CONTRACTS: Readonly<Record<"lofty" | "skyslope" | "brokermint" | "formsimplicity" | "google_ads" | "open_meteo" | "open_meteo_commercial" | "mapbox", VendorContract>> = Object.freeze({
+  // Was https://api.lofty.com/v1 (an unversioned guess). Official: base https://api.lofty.com, path
+  // prefixes /v1.0/ (current stable) and /v2.0/ (select endpoints); API keys authenticate with the
+  // header `Authorization: token <api_key>` (OAuth access tokens with `Bearer`); the CRM entity is LEADS
+  // (GET /v1.0/leads → { code, msg, data: { total, list } }); ids are 64-bit integers.
+  lofty: { baseUrl: "https://api.lofty.com/v1.0", verifiedOn: "2026-10-11", contractSource: ["https://developer.lofty.com/introduction", "https://developer.lofty.com/quickstart", "https://developer.lofty.com/guides/lead-management"], note: "v1.0 prefix; API key → `token <key>` header; resource is leads" },
+  // Was https://api.skyslope.com (no public spec names that host). Official: the SkySlope Partnership
+  // API (Files / Auth / Forms / Documents / Envelopes / Contacts …) publishes servers
+  // https://forms.skyslope.com/partner/api (production; staging-forms / integ-forms for the others);
+  // token POST /ext/token; files under /files, documents /files/{id}/documents, envelopes
+  // /files/{id}/envelopes. Docs: forms.skyslope.com/partner/api/docs.
+  skyslope: { baseUrl: "https://forms.skyslope.com/partner/api", verifiedOn: "2026-10-11", contractSource: ["https://forms.skyslope.com/partner/api/docs", "https://raw.githubusercontent.com/api-evangelist/skyslope/refs/heads/main/openapi/skyslope-forms-api-openapi.yml", "https://apis.io/apis/skyslope/skyslope-files-api/"], note: "Partnership API production server; the Forms app itself frames from forms.skyslope.com" },
+  // Was TWO hosts: https://api.brokermint.com/v1 (provider) and https://brokermint.com + /api/v1 with a
+  // bearer header (connection test). Vendor docs (brokermint.com/api → the API Reference article) as
+  // restated by every published client: https://my.brokermint.com/api, `api_key` QUERY parameter on
+  // every request; transactions under /v2, contacts / commissions / checklists under /v1.
+  brokermint: { baseUrl: "https://my.brokermint.com/api", verifiedOn: "2026-10-11", contractSource: ["https://brokermintsupport.zendesk.com/hc/en-us/articles/360055896812-API-Reference", "https://libraries.io/go/github.com%2Fteslashibe%2Fbrokermint-go", "https://mixedanalytics.com/knowledge-base/import-brokermint-data-to-google-sheets/", "https://github.com/dpguthrie/brokermint"], note: "api_key query param; /v2/transactions, /v1/contacts|commissions|checklists" },
+  // Was https://api.formsimplicity.com/v1 with REST paths. Official (api.formsimplicity.com/docs):
+  // host https://api.formsimplicity.com, OAuth2 client_credentials at /oauth/token, RPC-style POST
+  // endpoints /fsforms/listTrans, /fsforms/getTransById, /fsforms/addTrans (and /officeTransactions/*);
+  // the dev host is formsapidev.floridarealtors.org. The intro page says the API is "setup for
+  // internal use only at this time" — an account is granted through the API agreement page.
+  formsimplicity: { baseUrl: "https://api.formsimplicity.com", verifiedOn: "2026-10-11", contractSource: ["https://api.formsimplicity.com/docs/intro", "https://api.formsimplicity.com/docs/fsforms", "https://api.formsimplicity.com/docs/oauth"], note: "no /v1 — paths are /fsforms/*; OAuth2 client_credentials" },
+  google_ads: { baseUrl: `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}`, verifiedOn: "2026-10-11", contractSource: ["https://developers.google.com/google-ads/api/docs/sunset-dates", "https://ads-developers.googleblog.com/2026/09/google-ads-api-v22-sunset-reminder.html"], note: `${GOOGLE_ADS_API_VERSION}; sunset after ${GOOGLE_ADS_API_SUNSET_AFTER}` },
+  // Open-Meteo: the keyless host is licensed for NON-commercial use only; a subscription issues an API
+  // key for customer-api.open-meteo.com — "the API syntax is identical to the free tier — only the
+  // domain and key parameter (&apikey=) differ". Plans are a fixed monthly price per call budget
+  // (Standard 1M calls / month); the amount is not declared here (unknown stays unknown).
+  open_meteo: { baseUrl: "https://api.open-meteo.com/v1", verifiedOn: "2026-10-11", contractSource: ["https://open-meteo.com/en/pricing", "https://open-meteo.com/en/docs"], note: "free host — non-commercial licence only" },
+  open_meteo_commercial: { baseUrl: "https://customer-api.open-meteo.com/v1", verifiedOn: "2026-10-11", contractSource: ["https://open-meteo.com/en/pricing", "https://open-meteo.com/en/docs"], note: "commercial host; key as the `apikey` query parameter (OPEN_METEO_API_KEY)" },
+  // Mapbox (owner: REQUIRED). Static Images API GET https://api.mapbox.com/styles/v1/{username}/
+  // {style_id}/static/{overlay}/{lon},{lat},{zoom},{bearing},{pitch}/{width}x{height}{@2x} (token scope
+  // styles:tiles; NOT compatible with the Mapbox Standard styles — a classic style id is required);
+  // Mapbox GL JS from the Mapbox CDN (install guide, v3.29.0 on 2026-10-11); a map load = one `Map`
+  // initialisation. LICENCE (pricing page, "Commercial Application License"): production use of
+  // Mapbox services "related to … real estate" requires a Commercial Application License — an owner
+  // item recorded in the lane notes, not something code can satisfy.
+  mapbox: { baseUrl: "https://api.mapbox.com", verifiedOn: "2026-10-11", contractSource: ["https://docs.mapbox.com/api/maps/static-images/", "https://docs.mapbox.com/mapbox-gl-js/guides/install/", "https://docs.mapbox.com/mapbox-gl-js/guides/pricing/", "https://www.mapbox.com/pricing"], note: "Static Images + GL JS (public pk. token in the browser by design)" },
+})
+/** The Mapbox GL JS release the heatmap loads from the Mapbox CDN (docs install guide, 2026-10-11). */
+export const MAPBOX_GL_JS_VERSION = "3.29.0"
+/** The classic Mapbox style the Static Images API renders (Standard styles are not supported there). */
+export const MAPBOX_STATIC_STYLE = "mapbox/streets-v12"
+
 export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Object.freeze({
   // ── Enrichment ─────────────────────────────────────────────────────────
   peopledata: {

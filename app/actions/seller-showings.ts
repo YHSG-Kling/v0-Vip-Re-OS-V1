@@ -10,6 +10,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { requireCaller } from "@/lib/auth/require-caller"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 // Auth gate — write actions in this file stamp brokerage_id / agent_user_id
 // onto lifecycle_events and listing-stage mutations. Without a session-derived
@@ -78,7 +79,7 @@ export async function syncShowingTimeShowings(params: {
   const baseUrl = cred.api_url || "https://api.showingtime.com/v1"
   const resp = await callConnector<{ showings?: any[] }>({
     connector: "showingtime", baseUrl, path: "/showings", method: "GET",
-    query: { listing_id: params.listingId }, auth: { style: "bearer", token: cred.api_key },
+    query: { listing_id: params.listingId }, auth: { style: "bearer", token: decryptSecret(cred.api_key) as string },
   })
 
   if (!resp.ok) return { success: false, error: `ShowingTime API error: ${resp.status}` }
@@ -212,7 +213,7 @@ export async function showingTimeConfirm(params: { showingId: string; credential
   const baseUrl = cred.api_url || "https://api.showingtime.com/v1"
   const resp = await callConnector({
     connector: "showingtime", baseUrl, path: `/showings/${showing.showingtime_id}/confirm`, method: "POST",
-    auth: { style: "bearer", token: cred.api_key }, body: {},
+    auth: { style: "bearer", token: decryptSecret(cred.api_key) as string }, body: {},
   })
 
   if (!resp.ok) return { success: false, error: `ShowingTime confirm failed: ${resp.status}` }
@@ -262,7 +263,7 @@ export async function showingTimeReschedule(params: {
   const baseUrl = cred.api_url || "https://api.showingtime.com/v1"
   const resp = await callConnector({
     connector: "showingtime", baseUrl, path: `/showings/${showing.showingtime_id}/reschedule`, method: "POST",
-    auth: { style: "bearer", token: cred.api_key },
+    auth: { style: "bearer", token: decryptSecret(cred.api_key) as string },
     body: { proposed_times: params.proposedTimes, reason: params.reason },
   })
 
@@ -314,7 +315,7 @@ export async function showingTimeDecline(params: {
   const baseUrl = cred.api_url || "https://api.showingtime.com/v1"
   const resp = await callConnector({
     connector: "showingtime", baseUrl, path: `/showings/${showing.showingtime_id}/decline`, method: "POST",
-    auth: { style: "bearer", token: cred.api_key }, body: { reason: params.reason },
+    auth: { style: "bearer", token: decryptSecret(cred.api_key) as string }, body: { reason: params.reason },
   })
 
   if (!resp.ok) return { success: false, error: `ShowingTime decline failed: ${resp.status}` }

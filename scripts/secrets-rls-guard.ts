@@ -19,6 +19,9 @@
  *  S4  a tenant cannot read another tenant's secret through the canonical resolver.
  *  S5  a custom manager / extension cannot request an undeclared secret or capability (the ONE
  *      extension lifecycle path: skill-registry validators + requestExtensionCapability).
+ *  T6  (wave 140H) the named wave-139 blockers hold at HEAD: auto-filer recomputeDocumentChecklist,
+ *      status-sync syncOfferStatus and analytics-sync pin the tenant on the service client and read
+ *      their errors; submitOfferToCompliance and trackDelivery gate BEFORE the service client.
  *  REG package.json + guard chain + MAINTENANCE_DOMAINS.
  * No network. Scans read stripped source (scripts/strip-comments.ts, scripts/strip-sql-comments.ts).
  */
@@ -295,6 +298,52 @@ async function extensionLayer() {
   check("requestExtensionCapability refuses before ANY delegation", !r.ok && delegated === 0, r.reason)
 }
 
+// ── T6 — the wave-139 cross-tenant / gate-before-service-client blockers (wave 140H) ──────────
+/** The chain that follows a `.from("<table>")` up to the next blank line (same windowing as S4). */
+function chainAfter(src: string, marker: string, from = 0): string {
+  const i = src.indexOf(marker, from)
+  if (i < 0) return ""
+  const end = src.indexOf("\n\n", i)
+  return src.slice(i, end < 0 ? i + 900 : Math.min(end, i + 900))
+}
+function blockerLayer() {
+  console.log("\n[T6 — the named wave-139 blockers at HEAD: tenant pinned on the service client; gate before the service client]")
+  // auto-filer.ts — recomputeDocumentChecklist runs on the service client (filer + RECONCILE_COUNTS rail)
+  const filer = code("lib/documents/auto-filer.ts")
+  const recompute = filer.slice(filer.indexOf("export async function recomputeDocumentChecklist"))
+  const docsChain = chainAfter(recompute, '.from("transaction_documents")')
+  check("auto-filer recomputeDocumentChecklist pins brokerage_id on transaction_documents and READS the error", /\.eq\("brokerage_id",\s*brokerageId\)/.test(docsChain) && /error:\s*docsError/.test(recompute) && /if \(docsError\)/.test(recompute))
+  check("auto-filer refuses to recompute with no tenant (fail closed) before the read", recompute.indexOf("if (!brokerageId)") >= 0 && recompute.indexOf("if (!brokerageId)") < recompute.indexOf('.from("transaction_documents")'))
+  check("auto-filer pins brokerage_id on the document_checklist read and update", /\.eq\("transaction_id",\s*transactionId\)\.eq\("brokerage_id",\s*brokerageId\)/.test(recompute) && /\.eq\("id",\s*\(existing as any\)\.id\)\.eq\("brokerage_id",\s*brokerageId\)/.test(recompute))
+  check("CONTROL: removing the transaction_documents pin is caught", !/\.eq\("brokerage_id",\s*brokerageId\)/.test(docsChain.replace('.eq("brokerage_id", brokerageId)', "")))
+  // status-sync.ts — syncOfferStatus on the service client
+  const sync = code("lib/buyer-offer/status-sync.ts")
+  const actChain = chainAfter(sync, '.from("activities")')
+  const offChain = chainAfter(sync, '.from("offers")')
+  check("syncOfferStatus takes the offer's tenant and pins it on the activities read AND the offers.status write (counted)", /syncOfferStatus\(\s*offerId: string,\s*(\/\*\*[\s\S]*?\*\/\s*)?brokerageId: string,?\s*\)/.test(sync.replace(/\n\s*\/\*\*[\s\S]*?\*\/\s*/g, "\n")) && /\.eq\("brokerage_id",\s*brokerageId\)/.test(actChain) && /\.eq\("brokerage_id",\s*brokerageId\)/.test(offChain) && /\.select\("id"\)/.test(offChain) && /updated\.length !== 1/.test(sync))
+  for (const f of ["app/actions/buyer-offer/submit-for-signature.ts", "app/actions/buyer-offer/respond-to-counter.ts"]) {
+    check(`${f} passes the session-verified tenant to syncOfferStatus`, /syncOfferStatus\(offerId,\s*[A-Za-z_][\w.]*(\s+as\s+string)?\)/.test(code(f)))
+  }
+  // analytics-sync.ts — cross-tenant sweep iterates per tenant
+  const an = code("lib/social/analytics-sync.ts")
+  const acctChain = chainAfter(an, '.from("social_media_accounts")')
+  check("analytics-sync groups posts per tenant and pins the credential read to that tenant", /byTenant/.test(an) && /for \(const \[tenantId, tenantPosts\] of byTenant\)/.test(an) && /\.eq\("brokerage_id",\s*tenantId\)/.test(acctChain) && /error:\s*accountError/.test(an))
+  check("analytics-sync decrypts the stored token and pins the analytics upsert to the tenant", /decryptSecret\(/.test(acctChain + an.slice(an.indexOf("const token"), an.indexOf("const token") + 200)) && /\.eq\("brokerage_id",\s*tenantId\)/.test(chainAfter(an, '.from("social_media_analytics")')))
+  check("CONTROL: an unpinned account read is caught", !/\.eq\("brokerage_id",\s*tenantId\)/.test(acctChain.replace('.eq("brokerage_id", tenantId)', "")))
+  // submit-to-compliance.ts — gate BEFORE createServiceClient
+  const stc = code("app/actions/buyer-offer/submit-to-compliance.ts")
+  const gateAt = stc.indexOf("await requireCallerTenant()")
+  check("submitOfferToCompliance gates on the session (requireCallerTenant) BEFORE createServiceClient()", gateAt > 0 && gateAt < stc.indexOf("createServiceClient()"))
+  check("…and refuses a foreign offer (session tenant must own the offer) + a sessionless caller without the presented secret", /offer\.brokerage_id !== sessionTenant/.test(stc) && /internalSecret === cronSecret/.test(stc) && /!caller\.ok && !presentedInternal/.test(stc))
+  check("the only sessionless caller (auto-execute-offer) PRESENTS CRON_SECRET", /internalSecret:\s*process\.env\.CRON_SECRET/.test(code("lib/transactions/auto-execute-offer.ts")))
+  check("the userId attribution is the session user unless the caller is on the tenant-admin roster (TENANT_ADMIN_USER_TYPES, not a retyped list)", /TENANT_ADMIN_USER_TYPES\.has\(caller\.userType/.test(stc) && !/\["broker",\s*"broker_admin"/.test(stc))
+  // direct-mail.ts — trackDelivery: the shared-secret gate precedes the service client
+  const dm = code("app/actions/direct-mail.ts")
+  const track = dm.slice(dm.indexOf("export async function trackDelivery"))
+  check("trackDelivery checks LOB_WEBHOOK_SECRET BEFORE createServiceClient() and resolves the tenant from the campaign row", track.indexOf("LOB_WEBHOOK_SECRET") > 0 && track.indexOf("LOB_WEBHOOK_SECRET") < track.indexOf("createServiceClient()") && /campaign\?\.brokerage_id/.test(track))
+  check("CONTROL: a service client built before the gate is caught", (() => { const swapped = track.replace("const supabase = createServiceClient()", "").replace("const secret = process.env.LOB_WEBHOOK_SECRET", "const supabase = createServiceClient()\n    const secret = process.env.LOB_WEBHOOK_SECRET"); return !(swapped.indexOf("LOB_WEBHOOK_SECRET") < swapped.indexOf("createServiceClient()")) })())
+}
+
 function registrationLayer() {
   console.log("\n[REG]")
   const pkg = read("package.json")
@@ -310,6 +359,7 @@ async function main() {
   await redactionLayer()
   tenantLayer()
   await extensionLayer()
+  blockerLayer()
   registrationLayer()
   console.log("\nBLIND SPOTS: the migration is checked as TEXT (the live trigger was read once via MCP, 2026-10-08); the")
   console.log("  redactor is name/shape based (a secret under a neutral key with no known shape passes); the console")

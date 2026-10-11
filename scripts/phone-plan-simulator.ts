@@ -64,40 +64,76 @@ console.log("\n── resolvePhoneAllowance: defaults + Superadmin → Plans ove
     resolvePhoneAllowance("team", { included_phone_numbers: "lots" as any }).includedNumbers === PHONE_ALLOWANCE_DEFAULTS.team.includedNumbers)
 }
 
+// Wave 140J (owner: tier pricing is NOT set — never fabricated): the RATES below are
+// ADMINISTERED overrides, the shape Superadmin → Plans writes into features.limits.
+// The catalog itself carries null rates; the unpriced path is proven right after.
+const RATES = { overage_number_cents: 300, overage_voice_minute_cents: 5, overage_sms_cents: 2 }
+
 console.log("\n── evaluateNumberProvisioning: bundle → overage → hard cap ──")
 {
-  const allowance = resolvePhoneAllowance("solo_agent") // included 1, max 3
+  const allowance = resolvePhoneAllowance("solo_agent", RATES) // included 1, max 3, rates administered
   const first = evaluateNumberProvisioning({ allowance, activeNumbers: 0 })
   check("the 1st number is inside the bundle (free, allowed)",
     first.allowed && first.billing === "included" && first.monthlyOverageCents === 0)
   const second = evaluateNumberProvisioning({ allowance, activeNumbers: 1 })
-  check("the 2nd number is allowed but METERED overage (not blocked)",
-    second.allowed && second.billing === "overage" && second.monthlyOverageCents === allowance.overageNumberCents)
+  check("the 2nd number is allowed but METERED overage (not blocked) at the administered rate",
+    second.allowed && second.billing === "overage" && second.monthlyOverageCents === allowance.overageNumberCents && second.monthlyOverageCents === 300)
   const past = evaluateNumberProvisioning({ allowance, activeNumbers: 3 })
   check("past the hard cap (maxNumbers) the purchase is BLOCKED with an upgrade reason",
-    !past.allowed && !!past.reason)
-  const uncapped = evaluateNumberProvisioning({ allowance: resolvePhoneAllowance("multi_location"), activeNumbers: 100000 })
+    !past.allowed && !!past.reason && !past.priceNotConfigured)
+  const uncapped = evaluateNumberProvisioning({ allowance: resolvePhoneAllowance("multi_location", RATES), activeNumbers: 100000 })
   check("an unlimited-cap tier is never blocked (still metered)",
     uncapped.allowed && uncapped.billing === "overage")
 }
 
+console.log("\n── price_not_configured: no administered rate → the overage number is REFUSED, never priced from code ──")
+{
+  for (const tier of ["solo_agent", "team", "brokerage", "multi_location"] as const) {
+    const a = PHONE_ALLOWANCE_DEFAULTS[tier]
+    check(`${tier}: the catalog carries NO overage rate (number / minute / sms all null)`,
+      a.overageNumberCents === null && a.overageVoiceMinuteCents === null && a.overageSmsCents === null)
+  }
+  const unpriced = resolvePhoneAllowance("solo_agent")
+  const refused = evaluateNumberProvisioning({ allowance: unpriced, activeNumbers: 1, tier: "solo_agent" })
+  check("the 2nd number on an unpriced tier is refused as price_not_configured with the tenant sentence and NO amount",
+    !refused.allowed && refused.priceNotConfigured?.code === "price_not_configured" && refused.monthlyOverageCents === null && /nothing was charged/.test(refused.reason ?? ""))
+  check("…while the 1st (included) number needs no rate at all",
+    evaluateNumberProvisioning({ allowance: unpriced, activeNumbers: 0 }).allowed)
+  check("a non-integer / negative override is NOT a rate (stays null); 0 is an explicit free rate",
+    resolvePhoneAllowance("team", { overage_sms_cents: 1.5 }).overageSmsCents === null &&
+    resolvePhoneAllowance("team", { overage_sms_cents: -1 }).overageSmsCents === null &&
+    resolvePhoneAllowance("team", { overage_sms_cents: 0 }).overageSmsCents === 0)
+  const srcPlan = src("lib/billing/phone-plan.ts").split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n")
+  check("no numeric overage rate literal remains in phone-plan.ts (positive control: the finder sees a fixture)",
+    !/overage(Number|VoiceMinute|Sms)Cents:\s*\d/.test(srcPlan) && /overage(Number|VoiceMinute|Sms)Cents:\s*\d/.test("overageNumberCents: 300"))
+  const resolveSrc = src("lib/billing/phone-plan-resolve.ts")
+  check("the server resolver raises the platform incident on a price_not_configured verdict and on an unpriced meter line",
+    (resolveSrc.match(/raisePriceNotConfiguredIncident\(/g) ?? []).length === 2)
+  const core = src("lib/voice/number-provisioning.ts")
+  check("the provisioning core tells the two refusals apart (priceNotConfigured is not capReached)",
+    /priceNotConfigured: true/.test(core) && /capReached: true/.test(core))
+}
+
 console.log("\n── evaluatePhoneMetering: included vs billable overage ──")
 {
-  const allowance = resolvePhoneAllowance("solo_agent") // 250 min, 500 sms, 1 number
+  const allowance = resolvePhoneAllowance("solo_agent", RATES) // 250 min, 500 sms, 1 number
   const inside = evaluatePhoneMetering({ allowance, voiceMinutes: 100, smsSegments: 100, activeNumbers: 1 })
   check("usage inside the bundle bills nothing",
     inside.overageTotalCents === 0 && inside.overageVoiceMinutes === 0 && inside.overageNumbers === 0)
   const over = evaluatePhoneMetering({ allowance, voiceMinutes: 340, smsSegments: 700, activeNumbers: 2 })
   check("voice overage = (340-250) minutes × rate",
-    over.overageVoiceMinutes === 90 && over.overageVoiceCents === 90 * allowance.overageVoiceMinuteCents)
+    over.overageVoiceMinutes === 90 && over.overageVoiceCents === 90 * (allowance.overageVoiceMinuteCents ?? NaN))
   check("sms overage = (700-500) segments × rate",
-    over.overageSmsSegments === 200 && over.overageSmsCents === 200 * allowance.overageSmsCents)
+    over.overageSmsSegments === 200 && over.overageSmsCents === 200 * (allowance.overageSmsCents ?? NaN))
   check("number overage = (2-1) × monthly number rate",
     over.overageNumbers === 1 && over.overageNumberCents === allowance.overageNumberCents)
   check("total overage sums the three lines",
-    over.overageTotalCents === over.overageVoiceCents + over.overageSmsCents + over.overageNumberCents)
+    over.overageTotalCents === (over.overageVoiceCents ?? 0) + (over.overageSmsCents ?? 0) + (over.overageNumberCents ?? 0) && over.priceNotConfigured.length === 0)
   check("overage counts never go negative",
     evaluatePhoneMetering({ allowance, voiceMinutes: 0, smsSegments: 0, activeNumbers: 0 }).overageTotalCents === 0)
+  const unpriced = evaluatePhoneMetering({ allowance: resolvePhoneAllowance("solo_agent"), voiceMinutes: 340, smsSegments: 100, activeNumbers: 1, tier: "solo_agent" })
+  check("an unpriced overage line reports its UNITS with NO amount (null, the gap named); a zero-unit unpriced line is an honest 0",
+    unpriced.overageVoiceMinutes === 90 && unpriced.overageVoiceCents === null && unpriced.overageTotalCents === null && unpriced.priceNotConfigured.length === 1 && unpriced.overageSmsCents === 0)
 }
 
 console.log("\n── the provisioning gate + finance rollup resolve through the bundle ──")

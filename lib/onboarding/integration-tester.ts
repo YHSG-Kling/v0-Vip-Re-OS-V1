@@ -6,6 +6,7 @@
 // Each provider has a specific test function
 
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { VENDOR_CONTRACTS } from "@/lib/agentic-os/connector-registry"
 
 export interface TestResult {
   pass: boolean
@@ -402,9 +403,10 @@ async function testOpcity(credentials: Record<string, string>): Promise<TestResu
 async function testSkySlope(credentials: Record<string, string>): Promise<TestResult> {
   const { api_key } = credentials
   if (!api_key) return { pass: false, detail: "API Key is required" }
-  // SkySlope REST API health check
+  // SkySlope Partnership API health check — GET /files (published operation; wave 140, 140I:
+  // VENDOR_CONTRACTS.skyslope — was api.skyslope.com/v3/transactions, a host no spec names).
   const response = await callConnector({
-    connector: "skyslope", baseUrl: "https://api.skyslope.com", path: "/v3/transactions", method: "GET",
+    connector: "skyslope", baseUrl: VENDOR_CONTRACTS.skyslope.baseUrl, path: "/files", method: "GET",
     query: { pageSize: "1" }, auth: { style: "bearer", token: api_key },
   })
   if (response.status === 401) return { pass: false, detail: "Invalid SkySlope API Key" }
@@ -417,11 +419,13 @@ async function testSkySlope(credentials: Record<string, string>): Promise<TestRe
 async function testBrokermint(credentials: Record<string, string>): Promise<TestResult> {
   const { api_key, office_id } = credentials
   if (!api_key) return { pass: false, detail: "API Key is required" }
-  // Brokermint API health check
+  // Brokermint API health check — the ONE host + api_key QUERY auth (wave 140, 140I:
+  // VENDOR_CONTRACTS.brokermint; was brokermint.com + a bearer header, a second spelling of the host
+  // the provider class never used).
   const response = await callConnector({
-    connector: "brokermint", baseUrl: "https://brokermint.com",
-    path: office_id ? `/api/v1/offices/${office_id}` : "/api/v1/offices", method: "GET",
-    auth: { style: "bearer", token: api_key },
+    connector: "brokermint", baseUrl: VENDOR_CONTRACTS.brokermint.baseUrl,
+    path: office_id ? `/v1/offices/${office_id}` : "/v1/offices", method: "GET",
+    auth: { style: "query", name: "api_key", value: api_key },
   })
   if (response.status === 401) return { pass: false, detail: "Invalid Brokermint API Key" }
   if (!response.ok && response.status !== 403) {

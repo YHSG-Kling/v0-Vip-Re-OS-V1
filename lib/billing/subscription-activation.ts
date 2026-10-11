@@ -12,7 +12,31 @@
 // route through ONE brokerage-keyed writer (upsertBrokerageSubscription) so a
 // brokerage can only ever have one live subscription row.
 
-import { customPricingCheckoutRefusal } from "./plan-catalog"
+import { customPricingCheckoutRefusal, isConfiguredPriceCents, priceNotConfiguredRefusal, type PriceNotConfiguredRefusal } from "./plan-catalog"
+
+/** The surface name every plan-checkout price_not_configured refusal and incident carries. */
+export const TENANT_PLAN_PRICE_SURFACE = "tenant_plan_checkout"
+
+/** PURE (wave 140J): the typed refusal when the catalogue row holds no recurring
+ *  price for the chosen cycle (null / 0 / not an integer), or null when it does.
+ *  Both self-serve checkouts (hosted createActivationCheckout, embedded
+ *  app/actions/billing.ts startSubscriptionCheckout) ask this BEFORE any Stripe
+ *  call — an unset `subscription_tiers.*_price_cents` must never become a $0
+ *  (or any invented) charge. Custom-priced tiers are refused earlier by
+ *  customPricingCheckoutRefusal and never reach this. */
+export function planPriceNotConfigured(
+  tier: { tier_name?: string | null; display_name?: string | null; monthly_price_cents?: number | null; annual_price_cents?: number | null },
+  billingCycle: "monthly" | "annual",
+): PriceNotConfiguredRefusal | null {
+  const cents = billingCycle === "annual" ? tier.annual_price_cents : tier.monthly_price_cents
+  if (isConfiguredPriceCents(cents)) return null
+  const name = tier.display_name ?? tier.tier_name ?? "this"
+  return priceNotConfiguredRefusal({
+    surface: TENANT_PLAN_PRICE_SURFACE,
+    what: `${tier.tier_name ?? "unknown"} tier ${billingCycle === "annual" ? "annual" : "monthly"}_price_cents (subscription_tiers)`,
+    whatIsBlocked: `no checkout was created for the ${name} plan`,
+  })
+}
 
 // ── PURE: checkout line items (recurring plan + one-time setup fee) ────────────
 
@@ -125,7 +149,9 @@ export interface ActivationCheckoutInput {
 
 export type ActivationCheckoutResult =
   | { ok: true; url: string; sessionId: string; setupFeeCents: number; setupFeeWaived: boolean; recurringCents: number }
-  | { ok: false; error: string; notConfigured?: boolean; customPricing?: boolean }
+  /** `priceNotConfigured` (wave 140J): the catalogue row holds no price for the cycle — refused
+   *  BEFORE Stripe, platform incident raised, `error` is the tenant's sentence. */
+  | { ok: false; error: string; notConfigured?: boolean; customPricing?: boolean; priceNotConfigured?: boolean }
 
 export async function createActivationCheckout(svc: any, input: ActivationCheckoutInput): Promise<ActivationCheckoutResult> {
   const { data: tier, error: tierErr } = await svc
@@ -140,6 +166,14 @@ export async function createActivationCheckout(svc: any, input: ActivationChecko
   // (wave 87C). Refused BEFORE any Stripe call.
   const customRefusal = customPricingCheckoutRefusal((tier as { tier_name?: string }).tier_name)
   if (customRefusal) return { ok: false, error: customRefusal, customPricing: true }
+  // An UNSET catalogue price is not a $0 plan — it is the typed price_not_configured
+  // state: refused before any Stripe call, platform staff told which row is empty.
+  const priceRefusal = planPriceNotConfigured(tier as CheckoutTier, input.billingCycle)
+  if (priceRefusal) {
+    const { raisePriceNotConfiguredIncident } = await import("./price-not-configured")
+    await raisePriceNotConfiguredIncident(svc, priceRefusal, { brokerageId: input.brokerageId })
+    return { ok: false, error: priceRefusal.tenantMessage, priceNotConfigured: true }
+  }
 
   const { data: brokerage, error: bErr } = await svc
     .from("brokerages").select("name, email").eq("id", input.brokerageId).maybeSingle()

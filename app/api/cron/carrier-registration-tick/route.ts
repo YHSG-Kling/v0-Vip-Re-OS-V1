@@ -25,7 +25,9 @@ export async function GET(req: Request) {
     advanced: r.results.length,
     ported: r.results.flatMap((x) => x.ported),
     approved: r.results.filter((x) => x.after === "approved" && x.before !== "approved").map((x) => x.brokerageId),
-    needsInput: r.results.filter((x) => x.after === "needs_input" || x.after === "rejected").map((x) => ({ brokerageId: x.brokerageId, needs: x.needs })),
+    // Wave 140G: the tenant's own vocabulary — ACTION_REQUIRED covers missing
+    // input, a carrier rejection AND a halted (credential / compliance) filing.
+    needsInput: r.results.filter((x) => x.uiState === "ACTION_REQUIRED").map((x) => ({ brokerageId: x.brokerageId, phase: x.after, needs: x.needs })),
     errors: [...r.errors, ...r.results.filter((x) => x.error).map((x) => `${x.brokerageId}: ${x.error}`)],
   }, { status: r.errors.length && !r.results.length ? 500 : 200 })
 }

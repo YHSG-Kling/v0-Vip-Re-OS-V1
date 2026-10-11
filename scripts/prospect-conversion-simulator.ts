@@ -157,8 +157,11 @@ async function main() {
     // checkout.session.completed advances it, so only an ACTIVE subscription
     // stamps 'converted' at creation; trial AND paid-pending stamp 'trial'.
     stampCallRe.test(core) && /outcome: input\.billing\.mode === "active" \? "converted" : "trial"/.test(core))
-  check("the core's stamp is best-effort (inside try/catch, after the tenant is committed)",
-    /try \{[\s\S]{0,400}stampProspectConversion/.test(core))
+  // RE-ANCHORED (wave 140C): the stamp runs as a RECORDED provisioning step — the
+  // step runner catches, records `failed` with the reason and continues, after the
+  // brokerage row is committed (the insert precedes the runner in the file).
+  check("the core's stamp is best-effort (a recorded provisioning step whose runner catches + records a failure, after the tenant is committed)",
+    /await step\("prospect_stamp", async \(\) => \{[\s\S]{0,400}stampProspectConversion/.test(core) && /catch \(err\) \{[\s\S]{0,400}status: "failed"/.test(core) && core.indexOf('from("brokerages")') < core.indexOf("stampProspectConversion("))
   check("the core matches by the admin email, the brokerage email, the brokerage phone (the reception's caller-ID key) and any prospect ids the caller holds",
     /emails: \[adminEmail, input\.brokerageEmail, \.\.\.\(input\.prospect\?\.emails \?\? \[\]\)\]/.test(core) &&
     /phone: input\.brokeragePhone \?\? input\.prospect\?\.phone \?\? null/.test(core) &&

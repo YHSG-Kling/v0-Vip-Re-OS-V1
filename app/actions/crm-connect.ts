@@ -122,7 +122,6 @@ export async function connectCrmAction(params: {
     }
   }
 
-  const apiSecret = rawSecret ? encryptSecret(rawSecret) : null
 
   if (member.agentScoped) {
     // Agent's OWN CRM — agent-scoped credential. resolveConnection reads this first.
@@ -134,8 +133,8 @@ export async function connectCrmAction(params: {
           brokerage_id: member.brokerageId,
           service_name: params.provider,
           service_type: "crm_sync",
-          api_key: params.apiKey.trim(),
-          api_secret: apiSecret,
+          api_key: encryptSecret(params.apiKey.trim()),
+          api_secret: encryptSecret(rawSecret || null),
           config: params.apiUrl?.trim() ? { apiUrl: params.apiUrl.trim() } : {},
           is_active: true,
         },
@@ -153,8 +152,8 @@ export async function connectCrmAction(params: {
       {
         brokerage_id: member.brokerageId,
         provider_name: params.provider,
-        api_key: params.apiKey.trim(),
-        api_secret: apiSecret,
+        api_key: encryptSecret(params.apiKey.trim()),
+        api_secret: encryptSecret(rawSecret || null),
         webhook_url: params.apiUrl?.trim() || null,
         is_active: true,
         updated_at: new Date().toISOString(),

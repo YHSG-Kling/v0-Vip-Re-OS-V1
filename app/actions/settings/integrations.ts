@@ -14,6 +14,7 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 import { selectableConnectionsForScope, candidateProvider } from "@/lib/connections/scope"
 import { canonicalProvider } from "@/lib/integrations/connection-manager"
+import { encryptSecret } from "@/lib/security/secret-crypto"
 
 export type PlatformCredential = {
   id: string
@@ -264,7 +265,9 @@ export async function upsertPlatformCredential(params: {
     owner_id:      brokerageId,
     platform:      params.platform,
     scope:         params.scope ?? "brokerage",
-    api_key:       params.api_key ?? null,
+    // Sealed at the write (wave 140H). `undefined` stays undefined — an update that omits api_key keeps the
+    // stored key (supabase-js drops the field); it is never turned into null and destroyed.
+    api_key:       encryptSecret(params.api_key),
     api_url:       params.api_url ?? null,
     account_id:    params.account_id ?? null,
     account_name:  params.account_name ?? null,

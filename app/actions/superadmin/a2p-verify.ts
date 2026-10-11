@@ -29,7 +29,10 @@ export async function verifyA2pPipelineMockAction(brokerageId: string): Promise<
   const { data: brk } = await svc.from("brokerages").select("id, name").eq("id", brokerageId).maybeSingle()
   if (!brk) return { ok: false, statusLine: "", nextStep: "", error: "Brokerage not found" }
 
-  const r = await runA2pRegistration(svc, brokerageId, { mock: true })
+  // Wave 140G: a platform staffer's explicit verify run RESUMES a halted tenant
+  // once (haltVerdict) — the one human door on the platform side; the hourly
+  // loop never does.
+  const r = await runA2pRegistration(svc, brokerageId, { mock: true, resume: true })
 
   try {
     const hdrs = await headers()

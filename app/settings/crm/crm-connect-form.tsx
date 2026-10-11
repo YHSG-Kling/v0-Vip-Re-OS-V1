@@ -99,7 +99,7 @@ export function CrmConnectForm({
               />
               {p.needsUrl && (
                 <Input
-                  placeholder="API host (optional, e.g. https://api.lofty.com/v1)"
+                  placeholder="API host (optional, e.g. https://api.lofty.com/v1.0)"
                   value={urls[p.key] ?? ""}
                   onChange={(e) => setUrls((s) => ({ ...s, [p.key]: e.target.value }))}
                 />

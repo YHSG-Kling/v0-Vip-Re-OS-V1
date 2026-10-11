@@ -293,11 +293,16 @@ export interface PhoneAllowanceStatus {
   maxNumbers: number | null
   /** Is the NEXT number inside the bundle or billable overage? */
   nextBilling: "included" | "overage"
-  /** Monthly USD-cents the next number adds when it's overage (0 when included). */
-  nextMonthlyOverageCents: number
-  /** Can another number be provisioned at all (false only at the hard cap)? */
+  /** Monthly USD-cents the next number adds when it's overage (0 when included).
+   *  null = the overage rate is NOT CONFIGURED (price_not_configured) — the next
+   *  number cannot be bought until the platform publishes the rate. */
+  nextMonthlyOverageCents: number | null
+  /** Can another number be provisioned at all (false at the hard cap, or when
+   *  the next number is overage and its rate is not configured)? */
   canAddNumber: boolean
   capReason?: string
+  /** True when `canAddNumber` is false because of price_not_configured, not the cap. */
+  priceNotConfigured?: boolean
 }
 
 /** Surface the plan's number allowance so the "Add a Number" card can show
@@ -320,6 +325,7 @@ export async function getPhoneAllowanceStatusAction(): Promise<
       nextMonthlyOverageCents: v.monthlyOverageCents,
       canAddNumber: v.allowed,
       capReason: v.allowed ? undefined : v.reason,
+      priceNotConfigured: v.priceNotConfigured ? true : undefined,
     },
   }
 }

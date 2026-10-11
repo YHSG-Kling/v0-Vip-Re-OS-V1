@@ -16,6 +16,7 @@ import { PROVIDER_METADATA, type ProviderName } from "@/lib/onboarding/integrati
 import { connectionScopeForUserType } from "@/lib/connections/field-spec"
 import { readRoleGrants, selectVendorGrant } from "@/lib/auth/role-grants"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { encryptSecret, isEncryptionConfigured } from "@/lib/security/secret-crypto"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -220,6 +221,17 @@ export async function GET(
         return redirectWithResult(baseUrl, false, provider, "Security validation failed - please try again")
       }
 
+      // FAIL CLOSED BEFORE THE EXCHANGE (wave 140H; owner wave 139: secrets fail closed). With no
+      // SECRETS_ENCRYPTION_KEY the credential write below would refuse; exchanging the code first would
+      // spend a single-use authorization code for tokens that cannot be stored. Refuse here, raise the
+      // platform incident (no secret in it), and tell the user nothing was stored.
+      if (!isEncryptionConfigured()) {
+        const { raiseSecretStorageIncident } = await import("@/lib/security/credential-rotation")
+        const { createServiceClient } = await import("@/lib/supabase/service")
+        await raiseSecretStorageIncident(createServiceClient(), { surface: `integration OAuth callback (${provider})`, brokerageId: null, code: "secrets_key_missing" })
+        return redirectWithResult(baseUrl, false, provider, "Secret storage is not configured on this deployment - the connection was not completed and nothing was stored")
+      }
+
       // Clear state cookie
       cookieStore.delete("oauth_state")
 
@@ -381,8 +393,9 @@ export async function GET(
         owner_id: ownerId,
         agent_user_id: ownerType === "agent" ? stateData.userId : null,
         platform: storedPlatform,
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
+        // Wave 140H — the callback writes ENCRYPTED columns only (fail closed with no key).
+        access_token: encryptSecret(tokens.access_token),
+        refresh_token: encryptSecret(tokens.refresh_token),
         ...(realmId ? { account_id: realmId } : {}),
         ...(adAccountId ? { account_id: adAccountId } : {}),
         ...(zoomUserId ? { account_id: zoomUserId } : {}),
@@ -449,8 +462,8 @@ export async function GET(
                   brokerage_id: stateData.brokerageId,
                   service_name: storedPlatform,
                   service_type: "personal_email",
-                  access_token: tokens.access_token,
-                  refresh_token: tokens.refresh_token,
+                  access_token: encryptSecret(tokens.access_token),
+                  refresh_token: encryptSecret(tokens.refresh_token),
                   token_expires_at: expiresAt,
                   config: { email: connectedEmail, scope: tokens.scope },
                   is_active: true,

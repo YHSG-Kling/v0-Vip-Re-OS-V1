@@ -74,7 +74,9 @@ export async function autoExecuteFullySignedOffer(
   let created = false, transactionId: string | undefined, reason: string | undefined
   try {
     const { submitOfferToCompliance } = await import("@/app/actions/buyer-offer/submit-to-compliance")
-    const r = await submitOfferToCompliance({ offerId, userId: agentUserId })
+    // Sessionless caller (provider webhook / cron): PRESENTS the internal secret, the same posture the
+    // ISA doors use (accept-handoff.ts). The action gates on it before it builds a service client.
+    const r = await submitOfferToCompliance({ offerId, userId: agentUserId, internalSecret: process.env.CRON_SECRET })
     created = !!r.transaction_id
     transactionId = r.transaction_id
     if (!created) {

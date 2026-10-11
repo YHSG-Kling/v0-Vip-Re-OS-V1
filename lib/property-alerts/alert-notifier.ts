@@ -10,6 +10,7 @@ import type { AlertProperty } from "./alert-matcher"
 // RENDER BOUNDARY (§6) — this email goes to the BUYER, so the chip speaks the
 // public word while `is_price_reduction` (the column) stays as it is.
 import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 export interface DeliverResult {
   sent: number
@@ -77,8 +78,10 @@ export async function deliverAlertResults(
         .eq("is_active", true)
         .maybeSingle()
 
+      // Stored keys are enc:v1 envelopes (legacy plaintext passes through) — decrypt before use.
+      if (sgCred?.api_key) sgCred.api_key = decryptSecret(sgCred.api_key)
       if (sgCred?.api_key) {
-        const subject = `[${n}] New ${n === 1 ? "Property Matches" : "Properties Match"} Your Search, ${contact.first_name}!`
+        const subject =`[${n}] New ${n === 1 ? "Property Matches" : "Properties Match"} Your Search, ${contact.first_name}!`
         // Body only — assembleEmail() in dispatchEmail() appends signature + unsubscribe + legal
         const bodyHtml = buildEmailHtml({
           contactFirstName: contact.first_name,

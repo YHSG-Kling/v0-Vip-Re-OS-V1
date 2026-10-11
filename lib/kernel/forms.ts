@@ -41,6 +41,7 @@
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 // ─── RESULT TYPE ────────────────────────────────────────────────────────────
 
@@ -166,7 +167,7 @@ export async function resolveTransactionFormsProvider(input: {
       data: {
         provider_name,
         is_configured,
-        access_token: credential?.access_token ?? null,
+        access_token: decryptSecret(credential?.access_token ?? null),
         account_id: credential?.account_id ?? null,
       },
     }

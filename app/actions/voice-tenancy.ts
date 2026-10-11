@@ -13,6 +13,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 // admitted on the read path. See the §5 note on requireBrokerageAdmin below.
 import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 import { loadVoiceUsage, type VoiceUsage } from "@/lib/voice/twilio-tenancy"
+import { encryptSecret } from "@/lib/security/secret-crypto"
 
 // TENANT ADMIN GATE (kept inline, telecom tenancy — deliberately no team_lead):
 // 'superadmin' removed — dead as users.user_type (0 live rows); broker_owner
@@ -121,7 +122,7 @@ export async function setTwilioByoCredsAction(input: { accountSid: string; authT
 
   const { data: existing } = await svc.from("platform_credentials").select("id")
     .eq("brokerage_id", auth.brokerageId).eq("platform", "twilio_byo").maybeSingle()
-  const row = { brokerage_id: auth.brokerageId, platform: "twilio_byo", account_id: sid, access_token: token, owner_type: "brokerage", owner_id: auth.brokerageId, is_active: true }
+  const row = { brokerage_id: auth.brokerageId, platform: "twilio_byo", account_id: sid, access_token: encryptSecret(token), owner_type: "brokerage", owner_id: auth.brokerageId, is_active: true }
   const { error } = existing
     ? await svc.from("platform_credentials").update(row).eq("id", (existing as any).id)
     : await svc.from("platform_credentials").insert(row)

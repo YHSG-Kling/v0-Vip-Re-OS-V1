@@ -3,7 +3,8 @@ export const dynamic = "force-dynamic"
 import { Suspense } from "react"
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { googleMapsBrowserKey } from "@/lib/env/aliases"
+import { resolveMapProvider, bookMapLoadSpend } from "@/lib/property/street-view"
+import { loadProviderHealth } from "@/lib/agentic-os/connector-gateway"
 import { createClient } from "@/lib/supabase/server"
 import {
   getHeatmapSnapshots,
@@ -111,10 +112,16 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
     getTeamsForFilter(),
   ])
 
-  // Check if Google Maps API key is available
-  // ONE SPELLING (§6): NEXT_PUBLIC_GOOGLE_MAPS_API_KEY via lib/env/aliases.ts
-  // (NEXT_PUBLIC_GOOGLE_MAPS_KEY accepted for one release).
-  const hasMapKey = !!googleMapsBrowserKey() || !!process.env.MAPBOX_TOKEN
+  // THE MAP PROVIDER (wave 140, lane 140I; owner: "team heatmap chooses a VALID configured provider,
+  // never Google Maps with an empty key"). Before this the page tested `Google key OR MAPBOX_TOKEN` and
+  // the client then loaded Google Maps JS regardless — with MAPBOX_TOKEN alone the script tag rendered
+  // `key=` empty. Now the ONE map_render route is walked server-side (Mapbox first, Google Maps the
+  // fallback, health-aware, unconfigured providers skipped) and the client receives only the chosen
+  // provider + its PUBLIC credential. One map load is booked per render, with the route as evidence.
+  const mapHealth = await Promise.all((["mapbox", "google_maps"] as const).map(async (p) => [p, await loadProviderHealth(p)] as const))
+  const mapChoice = resolveMapProvider("browser_tiles", { health: Object.fromEntries(mapHealth) })
+  if (mapChoice) await bookMapLoadSpend({ brokerageId: context.brokerageId ?? null, choice: mapChoice, systemSource: "team_heatmap" })
+  const hasMapKey = mapChoice !== null
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -144,13 +151,14 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
         <Card className="overflow-hidden">
           <CardContent className="p-0">
             <div className="h-[60vh] min-h-[400px] relative">
-              {hasMapKey ? (
+              {hasMapKey && mapChoice ? (
                 <Suspense fallback={<MapPlaceholder />}>
                   <HeatmapMap
                     snapshots={snapshots}
                     revenueWeighted={filters.revenueWeighted}
                     opportunityZones={opportunityZones}
                     showGaps={false}
+                    map={{ provider: mapChoice.provider, key: mapChoice.key, browser: mapChoice.browser }}
                   />
                 </Suspense>
               ) : (
@@ -392,7 +400,7 @@ function MapPlaceholder({ showConfigMessage = false }: { showConfigMessage?: boo
         <MapPin className="mx-auto h-12 w-12 text-muted-foreground/50" />
         <p className="mt-2 text-sm text-muted-foreground">
           {showConfigMessage
-            ? "Configure NEXT_PUBLIC_GOOGLE_MAPS_API_KEY or MAPBOX_TOKEN in settings"
+            ? "No map provider is configured — set MAPBOX_PUBLIC_TOKEN (preferred) or NEXT_PUBLIC_GOOGLE_MAPS_API_KEY"
             : "Loading map..."}
         </p>
       </div>

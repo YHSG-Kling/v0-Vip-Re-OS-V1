@@ -29,6 +29,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 export type InboundEmailProvider =
   | "gmail" | "outlook"            // per-user OAuth-based inboxes
@@ -183,8 +184,9 @@ function toResolved(row: any, scope: "agent" | "team" | "brokerage"): ResolvedIn
     credential_id: row.id as string,
     brokerage_id:  row.brokerage_id as string,
     agent_user_id: (row.agent_user_id as string | null) ?? null,
-    access_token:  (row.access_token  as string | null) ?? null,
-    refresh_token: (row.refresh_token as string | null) ?? null,
+    // Stored tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt at THE resolver.
+    access_token:  decryptSecret((row.access_token  as string | null) ?? null),
+    refresh_token: decryptSecret((row.refresh_token as string | null) ?? null),
     account_id:    (row.account_id    as string | null) ?? null,
     config:        (row.config as Record<string, unknown>) ?? {},
   }

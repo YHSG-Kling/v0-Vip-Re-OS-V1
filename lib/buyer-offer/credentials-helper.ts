@@ -26,6 +26,7 @@ import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 export interface ProviderCredentials {
   apiKey: string
@@ -65,9 +66,10 @@ export async function getAgentProviderCredentials(params: {
   }
 
   const credentials: ProviderCredentials = {
-    apiKey: data.api_key,
-    accessToken: data.access_token ?? undefined,
-    refreshToken: data.refresh_token ?? undefined,
+    // Stored keys/tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt before use.
+    apiKey: decryptSecret(data.api_key) as string,
+    accessToken: decryptSecret(data.access_token) ?? undefined,
+    refreshToken: decryptSecret(data.refresh_token) ?? undefined,
     profileId: (data.config as { profileId?: string } | null)?.profileId,
   }
 

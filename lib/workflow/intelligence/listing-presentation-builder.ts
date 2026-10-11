@@ -433,19 +433,19 @@ export async function buildListingPresentation(
     //     Falls back to satellite. Null when GOOGLE_MAPS_API_KEY is unset.
     let coverPhotoUrl: string | null = null
     try {
-      const { getStreetViewImageUrl, getStaticMapImageUrl, bookMapsImageSpend } =
+      const { getStreetViewImageUrl, getMapImageUrl, bookMapsImageSpend } =
         await import("@/lib/property/street-view")
       const street = getStreetViewImageUrl({
         address: input.propertyAddress,
         lat:     lat ?? undefined,
         lon:     lon ?? undefined,
       })
-      coverPhotoUrl = street?.url
-        ?? (lat != null && lon != null
-            ? getStaticMapImageUrl({ lat, lon })?.url ?? null
-            : null)
-      // The persisted cover is FETCHED wherever the deck renders — Google bills it (wave 139, 139C).
-      if (coverPhotoUrl) await bookMapsImageSpend({ brokerageId: input.brokerageId, sku: street?.url ? "street_view_static" : "static_map", url: coverPhotoUrl, systemSource: "listing_presentation" })
+      // Wave 140 (140I): the static-map fallback walks the ONE map_render route (Mapbox Static Images
+      // first, Google Static Maps when Mapbox is unconfigured / failing) — street view stays Google-only.
+      const mapImage = !street?.url && lat != null && lon != null ? getMapImageUrl({ lat, lon, zoom: 19 }) : null
+      coverPhotoUrl = street?.url ?? mapImage?.url ?? null
+      // The persisted cover is FETCHED wherever the deck renders — the vendor bills it (wave 139, 139C).
+      if (coverPhotoUrl) await bookMapsImageSpend({ brokerageId: input.brokerageId, provider: street?.url ? "google_maps" : mapImage?.provider ?? "google_maps", sku: street?.url ? "street_view_static" : mapImage?.sku ?? "static_map", url: coverPhotoUrl, systemSource: "listing_presentation" })
     } catch { /* cover photo is best-effort */ }
 
     // Effective property fields — input wins, enrichment fills gaps

@@ -43,7 +43,7 @@ export async function searchStockImagesAction(query: string): Promise<
     const { data: cred } = await createServiceClient().from("platform_credentials")
       .select("api_key").eq("brokerage_id", ctx.brokerageId)
       .eq("platform", "pexels").eq("is_active", true).maybeSingle()
-    tenantKey = (cred as any)?.api_key ?? null
+    tenantKey = decryptSecret((cred as any)?.api_key ?? null)
   }
   return searchPexels(query, 12, tenantKey, ctx?.isAuthenticated ? ctx.brokerageId ?? null : null)
 }
@@ -52,6 +52,7 @@ export async function searchStockImagesAction(query: string): Promise<
 // TRUE ADMIN GATE (operational: marketing) — repointed to the ONE tenant roster
 // (isAdminOrBroker). 'superadmin' was dead: 0 live rows store that users.user_type.
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { encryptSecret, decryptSecret } from "@/lib/security/secret-crypto"
 
 export async function setStockProviderKeyAction(input: { apiKey: string }): Promise<{ ok: boolean; error?: string }> {
   const p = await callerProfile()
@@ -63,7 +64,7 @@ export async function setStockProviderKeyAction(input: { apiKey: string }): Prom
   const svc = createServiceClient()
   const { data: existing } = await svc.from("platform_credentials").select("id")
     .eq("brokerage_id", ctx.brokerageId).eq("platform", "pexels").maybeSingle()
-  const row = { brokerage_id: ctx.brokerageId, platform: "pexels", api_key: apiKey, is_active: true, updated_at: new Date().toISOString() }
+  const row = { brokerage_id: ctx.brokerageId, platform: "pexels", api_key: encryptSecret(apiKey), is_active: true, updated_at: new Date().toISOString() }
   const { error } = existing
     ? await svc.from("platform_credentials").update(row).eq("id", (existing as any).id)
     : await svc.from("platform_credentials").insert(row)

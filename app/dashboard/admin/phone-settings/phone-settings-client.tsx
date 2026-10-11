@@ -291,7 +291,9 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
                 }
               >
                 {allowance.nextBilling === "overage"
-                  ? `Next number: +${dollars(allowance.nextMonthlyOverageCents)}/mo`
+                  ? (allowance.nextMonthlyOverageCents === null
+                      ? "Next number: metered — rate not yet published"
+                      : `Next number: +${dollars(allowance.nextMonthlyOverageCents)}/mo`)
                   : "Next number: included"}
               </Badge>
             </div>

@@ -15,6 +15,7 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { z } from "zod"
 import { createHash } from "node:crypto"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 // ============================================
 // AI LISTING INTAKE SYSTEM
@@ -619,7 +620,7 @@ export async function createOrPullDotloop(params: {
         notConfigured: true,
       }
     }
-    const DOTLOOP_API_KEY = dotloopCred.access_token
+    const DOTLOOP_API_KEY = decryptSecret(dotloopCred.access_token) as string
     const DOTLOOP_PROFILE_ID = dotloopCred.account_id
 
     // All three Dotloop calls now route through callConnector — single egress, healer-observable,
@@ -730,7 +731,7 @@ export async function aiCheckDocumentStatus(params: { loopId: string; agentId?: 
         notConfigured: true,
       }
     }
-    const DOTLOOP_API_KEY = dotloopCred2.access_token
+    const DOTLOOP_API_KEY = decryptSecret(dotloopCred2.access_token) as string
     const DOTLOOP_PROFILE_ID = dotloopCred2.account_id
 
     // Fetch documents from Dotloop — routed through callConnector for single egress + healer

@@ -84,9 +84,16 @@ export function isEncrypted(value: string | null | undefined): boolean {
 }
 
 /** Encrypt a NEW secret to `enc:v1:<iv_b64>:<tag_b64>:<ct_b64>`. Empty / already-encrypted values
- *  pass through. With no key it THROWS SecretStorageRefusedError — FAIL CLOSED, never plaintext. */
-export function encryptSecret(plaintext: string | null | undefined): string | null {
-  if (plaintext === null || plaintext === undefined || plaintext === "") return plaintext ?? null
+ *  pass through. With no key it THROWS SecretStorageRefusedError — FAIL CLOSED, never plaintext.
+ *  `undefined` stays `undefined` (wave 140H): supabase-js DROPS an undefined key from an update
+ *  payload, so `{ refresh_token: encryptSecret(maybe) }` must not turn "provider sent no new refresh
+ *  token" into "set refresh_token = null" — that would destroy the stored one. */
+export function encryptSecret(plaintext: string): string
+export function encryptSecret(plaintext: string | null): string | null
+export function encryptSecret(plaintext: string | null | undefined): string | null | undefined
+export function encryptSecret(plaintext: string | null | undefined): string | null | undefined {
+  if (plaintext === undefined) return undefined
+  if (plaintext === null || plaintext === "") return plaintext
   if (isEncrypted(plaintext)) return plaintext
   const key = keyBytes()
   if (!key) throw new SecretStorageRefusedError("secrets_key_missing")
@@ -118,4 +125,23 @@ export function decryptSecret(value: string | null | undefined): string | null {
     } catch { /* GCM auth failed under this key — try the next */ }
   }
   throw new Error(`encrypted secret did not authenticate under ${keys.map((k) => k.which).join(" or ")} SECRETS_ENCRYPTION_KEY (tampered, or sealed with a key no longer configured)`)
+}
+
+/**
+ * Decrypt the named secret columns of ONE store row (wave 140H — every reader of
+ * agent_api_credentials / integration_credentials / platform_credentials / social_media_accounts
+ * decrypts through here or decryptSecret before the value is used as a credential). Returns a
+ * shallow copy; a null row stays null; a plaintext value passes through verbatim (legacy rows keep
+ * working until the migration job re-seals them). Never rewrites the stored value.
+ */
+export function decryptSecretFields<T extends object>(row: T, keys: ReadonlyArray<keyof T & string>): T
+export function decryptSecretFields<T extends object>(row: T | null | undefined, keys: ReadonlyArray<keyof T & string>): T | null
+export function decryptSecretFields<T extends object>(row: T | null | undefined, keys: ReadonlyArray<keyof T & string>): T | null {
+  if (!row) return null
+  const out: Record<string, unknown> = { ...(row as Record<string, unknown>) }
+  for (const k of keys) {
+    const v = out[k]
+    if (typeof v === "string") out[k] = decryptSecret(v)
+  }
+  return out as T
 }

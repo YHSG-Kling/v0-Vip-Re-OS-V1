@@ -81,10 +81,15 @@ export async function createPlatformStaffAction(input: { email: string; firstNam
   // created and the person can be sent a magic link later).
   let userId: string | null = null
   try {
-    const { data: inv } = await svc.auth.admin.inviteUserByEmail(v.value.email, {
+    // READ the error (CLAUDE.md §3): supabase-js RESOLVES a refused invite, and
+    // the `{ data }` destructuring that stood here turned every refusal — SMTP
+    // down, email already registered, a malformed address — into the same
+    // silent fall-through to "promote an existing account".
+    const { data: inv, error: invErr } = await svc.auth.admin.inviteUserByEmail(v.value.email, {
       data: { first_name: v.value.firstName, last_name: v.value.lastName, ...cols },
       redirectTo: `${appUrl}/auth/callback`,
     })
+    if (invErr) console.warn("[createPlatformStaff] invite refused (continuing to the promote-existing path):", invErr.message)
     userId = (inv as any)?.user?.id ?? null
   } catch (err) {
     console.warn("[createPlatformStaff] invite failed (continuing):", (err as any)?.message)
@@ -101,7 +106,20 @@ export async function createPlatformStaffAction(input: { email: string; firstNam
     if (staffUpsertErr) return { ok: false, error: `Invite sent, but the staff role was not recorded: ${staffUpsertErr.message}` }
   } else {
     // No auth user (invite unavailable) — promote an existing account by email.
-    const { data: existing } = await svc.from("users").select("id").eq("email", v.value.email).maybeSingle()
+    //
+    // WRONG-TENANT CAPTURE GUARD (wave 140F). This promotion writes
+    // `brokerage_id: null` onto whatever row holds the email. For a TENANT
+    // member (a broker, an agent, a TC at a subscriber) that is not a
+    // promotion: it rips them out of their workspace — their agents row, grants
+    // and team keep the old tenant while users says none — and makes them
+    // platform staff above every tenant, on nothing but an email typed into the
+    // staff console. Platform staff sit above tenants; a tenant member must leave
+    // their workspace first. A refused read refuses the promotion (fail closed).
+    const { data: existing, error: existingErr } = await svc.from("users").select("id, brokerage_id").eq("email", v.value.email).maybeSingle()
+    if (existingErr) return { ok: false, error: `Could not check the existing account for ${v.value.email} (${existingErr.message}); nothing was changed.` }
+    if (existing?.brokerage_id) {
+      return { ok: false, error: "That email belongs to a member of a subscriber workspace. Platform staff sit above tenants — remove them from that workspace first, or use a staff address." }
+    }
     if (existing?.id) {
       userId = existing.id
       const { error: promoteErr } = await svc.from("users").update({ ...cols, brokerage_id: null, status: "active", updated_at: new Date().toISOString() }).eq("id", userId)

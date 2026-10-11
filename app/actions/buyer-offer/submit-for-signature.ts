@@ -455,7 +455,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   // the provider, so this is not a reason to fail the action — but it is
   // reported rather than dropped, because a status column that silently stopped
   // tracking is exactly what put this lane in the dark.
-  const sync = await syncOfferStatus(offerId)
+  const sync = await syncOfferStatus(offerId, callerRow.brokerage_id as string)
   const statusSyncError = sync.success ? null : (sync.error ?? "offers.status could not be synced")
   if (statusSyncError) {
     console.error(`[submit-for-signature] offer ${offerId}: ${statusSyncError}`)

@@ -9,9 +9,13 @@
  */
 import type { AdConnector, AudiencePushArgs, AudienceSyncResult, ConnectorCredential, LookalikeArgs, PerformanceQuery, ProviderPerformanceRow } from "./types"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { VENDOR_CONTRACTS } from "@/lib/agentic-os/connector-registry"
 import { deriveMetrics } from "./types"
 
-const ADS_API = "https://googleads.googleapis.com/v17"
+// Wave 140 (140I): ONE version — GOOGLE_ADS_API_VERSION (connector-registry.ts) folded into
+// VENDOR_CONTRACTS.google_ads.baseUrl; the literal "v17" here was past its 2025 sunset (every call
+// was failing). The adapter declaration and the sunset date read the same constant.
+const ADS_API = VENDOR_CONTRACTS.google_ads.baseUrl
 
 /** Pure: map a Google Ads searchStream report row → our normalized performance row.
  *  Google reports micros for cost/value; metrics are nested under `metrics`. */

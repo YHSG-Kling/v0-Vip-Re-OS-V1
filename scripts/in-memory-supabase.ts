@@ -193,6 +193,21 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
       },
       gte(col: string, v: any) { filterCols.push(col); filters.push((r) => val(r, col) !== null && val(r, col) !== undefined && val(r, col) >= v); return b },
       lte(col: string, v: any) { filterCols.push(col); filters.push((r) => val(r, col) !== null && val(r, col) !== undefined && val(r, col) <= v); return b },
+      // Wave 140 (lane 140L, the synthetic canaries): PostgREST array / jsonb containment —
+      // `.contains(col, [..])` (@>) and `.overlaps(col, [..])` (&&), the grammar the onboarding
+      // curriculum kickoff and education seeders filter by at tenant creation. An object pattern
+      // is shallow key/value containment (jsonb @>). Anything else compares equal, like eq.
+      contains(col: string, v: unknown) {
+        filterCols.push(col)
+        filters.push((r) => {
+          const x = val(r, col)
+          if (Array.isArray(v)) return Array.isArray(x) && v.every((e) => x.includes(e))
+          if (v && typeof v === "object") return !!x && typeof x === "object" && Object.entries(v as Row).every(([k, e]) => (x as Row)[k] === e)
+          return x === v
+        })
+        return b
+      },
+      overlaps(col: string, v: unknown[]) { filterCols.push(col); filters.push((r) => { const x = val(r, col); return Array.isArray(x) && v.some((e) => x.includes(e)) }); return b },
       gt(col: string, v: any) { filters.push((r) => val(r, col) > v); return b },
       lt(col: string, v: any) { filters.push((r) => val(r, col) < v); return b },
       order(col: string, o?: { ascending?: boolean }) { orderBy = { col, asc: o?.ascending !== false }; return b },

@@ -66,10 +66,17 @@ import { isValidUUID } from "@/lib/validations"
  * until the callers are repaired. Recorded in docs/wave7-slice-derivations.md.
  */
 export async function syncOfferStatus(
-  offerId: string
+  offerId: string,
+  /** The offer's tenant, from the CALLER'S verified session/offer row (wave 140H; wave-139 blocker
+   *  status-sync.ts:68). This runs on the SERVICE client, so every read and the status write pin it —
+   *  an offer id alone could read another tenant's lifecycle trail and move another tenant's row. */
+  brokerageId: string,
 ): Promise<{ success: boolean; newStatus?: string; error?: string }> {
   if (!isValidUUID(offerId)) {
     return { success: false, error: "Invalid offer ID" }
+  }
+  if (!isValidUUID(brokerageId)) {
+    return { success: false, error: "Invalid brokerage ID — offers.status sync needs the offer's tenant" }
   }
 
   const supabase = createServiceClient()
@@ -78,6 +85,7 @@ export async function syncOfferStatus(
   const { data: latestEvent, error: eventError } = await supabase
     .from("activities")
     .select("activity_type, created_at")
+    .eq("brokerage_id", brokerageId)
     .eq("entity_type", "offer")
     .eq("entity_id", offerId)
     .in("activity_type", OFFER_LIFECYCLE_EVENT_TYPES as string[])
@@ -121,10 +129,18 @@ export async function syncOfferStatus(
   }
 
   // Update offers.status
-  const { error: updateError } = await supabase
+  const { data: updated, error: updateError } = await supabase
     .from("offers")
     .update({ status: newStatus })
     .eq("id", offerId)
+    .eq("brokerage_id", brokerageId)
+    .select("id")
+
+  if (!updateError && (!Array.isArray(updated) || updated.length !== 1)) {
+    // An update that matched NOTHING also resolves (CLAUDE.md §3): the offer is not in this tenant.
+    console.error(`[offer-lifecycle] syncOfferStatus: offer ${offerId} is not in brokerage ${brokerageId} — offers.status NOT updated.`)
+    return { success: false, error: "Offer not found in this brokerage" }
+  }
 
   if (updateError) {
     console.error(

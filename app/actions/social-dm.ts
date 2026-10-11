@@ -23,6 +23,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchSocialDm, socialDmSupport, type SocialDmPlatform } from "@/lib/social/dm-dispatch"
 import { revalidatePath } from "next/cache"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 export interface SendSocialDmReplyResult {
   success: boolean
@@ -86,7 +87,7 @@ export async function sendSocialDmReply(params: {
         .limit(1)
         .maybeSingle()
       accountId = (account?.account_id as string | undefined) ?? null
-      accessToken = (account?.access_token as string | undefined) ?? null
+      accessToken = decryptSecret((account?.access_token as string | undefined) ?? null)
       if (!accountId || !accessToken) {
         return { success: false, error: `The ${platform === "instagram" ? "Instagram" : "Facebook"} account behind this thread isn't connected anymore — reconnect it in Settings → Social.` }
       }
@@ -117,7 +118,7 @@ export async function sendSocialDmReply(params: {
           .limit(1)
           .maybeSingle()
         accountId = (waAccount?.account_id as string | undefined) ?? null
-        accessToken = (waAccount?.access_token as string | undefined) ?? null
+        accessToken = decryptSecret((waAccount?.access_token as string | undefined) ?? null)
         if (!accountId || !accessToken) {
           return { success: false, error: "No connected WhatsApp Business account — connect one in Settings → Social." }
         }

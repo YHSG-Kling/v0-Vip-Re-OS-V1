@@ -64,6 +64,10 @@ export const HEALTH_DETECTORS = [
   "ai_anomalies", "media_render_failures", "compliance_flags",
   // wave 137E breadth
   "portal_invites", "esign_requests", "direct_mail_returns", "sequence_send_failures", "transaction_deadlines", "payments_sync",
+  // wave 140B/K — the tenant readiness contract's scheduled sweep rides THIS supervisor (no new cron):
+  // one transient + idempotent incident per REPAIRABLE check, repaired on the retry rail through
+  // lib/kernel/self-healing.ts runDeclaredPlaybook (hard gate → healing policy → owning service → verify).
+  "tenant_readiness",
 ] as const
 export type HealthDetector = (typeof HEALTH_DETECTORS)[number]
 
@@ -681,6 +685,14 @@ export const DETECTORS: Record<HealthDetector, Detector> = {
       idempotent: false, evidence: { provider: r.provider, sync_type: r.sync_type, status: r.status, started_at: r.started_at, records_failed: r.records_failed },
     }))
   },
+  // 140B/K — the TENANT READINESS CONTRACT (lib/kernel/tenant-readiness.ts): every check reads its owning
+  // service with the tenant pinned inside the contract; only REPAIRABLE checks become incidents here
+  // (BLOCKED / WAITING_EXTERNAL stay on the report with their owner — never an autonomous action).
+  tenant_readiness: async (svc, b, deps) => {
+    const { evaluateTenantReadiness, readinessIncident } = await import("@/lib/kernel/tenant-readiness")
+    const report = await evaluateTenantReadiness(svc, b, { repair: false, deps: { now: () => deps.now } })
+    return report.checks.filter((c) => c.status === "REPAIRABLE" && !!c.remediation).map((c) => readinessIncident(b, c))
+  },
 }
 
 /** Run every detector for ONE tenant. A refused read marks the detector UNREADABLE — never all-clear. */
@@ -785,6 +797,11 @@ export interface SupervisorReport {
 
 const defaultRetry = async (svc: Svc, i: HealthIncident): Promise<{ ok: boolean; outcome: string }> => {
   if (i.retryOwner) return { ok: true, outcome: `retry delegated to its rail: ${i.retryOwner}` } // the owning rail retries; no second path
+  // 140K — a readiness gap's retry IS its declared repair: the self-healing engine's declared path (no model).
+  if (i.detector === "tenant_readiness") {
+    const { retryReadinessRepair } = await import("@/lib/kernel/tenant-readiness")
+    return retryReadinessRepair(svc, i)
+  }
   if (i.subjectKey === "bus:open_past_window") {
     const { reapStuckManagerSignals } = await import("@/lib/kernel/signal-reaper")
     const r = await reapStuckManagerSignals(i.brokerageId, svc)

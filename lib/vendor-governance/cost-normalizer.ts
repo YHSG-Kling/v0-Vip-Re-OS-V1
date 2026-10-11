@@ -80,8 +80,17 @@ export const TAVILY_CREDIT_USD = 0.008
 /** Google Maps Platform Essentials SKUs, entry band (10,001–100,000 / month) per request —
  *  developers.google.com/maps/billing-and-pricing/pricing. VARIABLE: the first 10,000 / month per SKU
  *  are free and volume bands step the price down, so a booked mint is an UPPER-BOUND estimate. */
-export const GOOGLE_MAPS_SKU_USD = { street_view_static: 0.007, static_map: 0.002 } as const
+export const GOOGLE_MAPS_SKU_USD = { street_view_static: 0.007, static_map: 0.002, dynamic_map_load: 0.007 } as const
 export type GoogleMapsSku = keyof typeof GOOGLE_MAPS_SKU_USD
+
+/** Mapbox (wave 140, lane 140I — owner: Mapbox is REQUIRED), pay-as-you-go list rates, the first band
+ *  past the free tier — VARIABLE (volume bands step down; a Commercial Application License changes the
+ *  terms). static_image: Static Images API, 100,000 free / month then $1.50 / 1k (mapbox.com/pricing,
+ *  read 2026-10-11). map_load: Mapbox GL JS "Map Loads for Web", 50,000 free / month then $5.00 / 1k
+ *  (the pricing page renders that table client-side; the figure is its published restatement —
+ *  woosmap.com/blog/mapbox-pricing, 2026 — and reconciles against the Mapbox invoice). */
+export const MAPBOX_SKU_USD = { static_image: 0.0015, map_load: 0.005 } as const
+export type MapboxSku = keyof typeof MAPBOX_SKU_USD
 
 /** OpenAI image models (platform.openai.com/docs/models/gpt-image-1, /dall-e-3). gpt-image-1 is
  *  TOKEN-priced ($5 / 1M text-in, $10 / 1M image-in, $40 / 1M image-out) — when the response carries
@@ -311,7 +320,31 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
     costPerUnit: GOOGLE_MAPS_SKU_USD.street_view_static,
     priceState: 'variable',
     priceSource: 'https://developers.google.com/maps/billing-and-pricing/pricing — Essentials: 10,000 free / SKU / month, then $7 / 1k Static Street View, $2 / 1k Static Maps (volume bands lower)',
-    notes: 'Per image minted; the static-map SKU books GOOGLE_MAPS_SKU_USD.static_map',
+    notes: 'Per image minted; the static-map SKU books GOOGLE_MAPS_SKU_USD.static_map; a browser map load books GOOGLE_MAPS_SKU_USD.dynamic_map_load',
+  },
+
+  // Mapbox (wave 140, lane 140I) — the map_render capability's FIRST provider (owner: required). Static
+  // Images per image minted; Mapbox GL JS per map load (one per heatmap render). Plan / volume dependent.
+  'mapbox': {
+    vendorName: 'Mapbox',
+    unitType: 'api_calls',
+    costPerUnit: MAPBOX_SKU_USD.static_image,
+    priceState: 'variable',
+    priceSource: 'https://www.mapbox.com/pricing — Static Images API 100,000 free / month then $1.50 / 1k; Map Loads for Web 50,000 free / month then $5.00 / 1k (read 2026-10-11); volume bands step down; a Commercial Application License (required for real-estate production use) carries its own terms',
+    notes: 'static_image books MAPBOX_SKU_USD.static_image; map_load books MAPBOX_SKU_USD.map_load; platform-covered',
+  },
+
+  // Open-Meteo (wave 140, lane 140I) — commercial use needs a subscription key (customer-api host). The
+  // plan is a FIXED MONTHLY price per call budget (Standard 1M calls / month) whose amount the pricing
+  // page renders client-side — not verified from a primary source, so the per-call price is UNKNOWN on
+  // purpose: each forecast books its unit with price_state 'unknown' (reconciled against the invoice).
+  'open_meteo': {
+    vendorName: 'Open-Meteo (commercial API)',
+    unitType: 'api_calls',
+    costPerUnit: 0,
+    priceState: 'unknown',
+    priceSource: 'unknown — https://open-meteo.com/en/pricing: a fixed monthly subscription per call budget (Standard 1M calls / month); the amount is not published as text (read 2026-10-11); reconcile against the invoice',
+    notes: 'One forecast request per unit; the keyless host is non-commercial only and is refused in production',
   },
 
   // Image generation (OpenAI via the AI Gateway first, direct key fallback) — books ai_tool_usage.

@@ -37,6 +37,7 @@ import {
 } from "@/lib/platform/platform-social"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
+import { encryptSecret, isEncryptionConfigured } from "@/lib/security/secret-crypto"
 
 type SocialPlatform = SocialOAuthProvider
 
@@ -161,6 +162,17 @@ export async function GET(
     const storedState = cookieStore.get("social_oauth_state")?.value
     if (!storedState || storedState !== state) {
       return failRedirect("Security validation failed — please try again")
+    }
+
+    // FAIL CLOSED BEFORE THE EXCHANGE (wave 140H; owner wave 139: secrets fail closed). With no
+    // SECRETS_ENCRYPTION_KEY the token write below would refuse; exchanging the code first would spend
+    // a single-use authorization code for a token that cannot be stored. Refuse here, raise the
+    // platform incident (no secret in it), and tell the user nothing was stored.
+    if (!isEncryptionConfigured()) {
+      const { raiseSecretStorageIncident } = await import("@/lib/security/credential-rotation")
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      await raiseSecretStorageIncident(createServiceClient(), { surface: `social OAuth callback (${platform})`, brokerageId: null, code: "secrets_key_missing" })
+      return failRedirect("Secret storage is not configured on this deployment — the connection was not completed and nothing was stored")
     }
     cookieStore.delete("social_oauth_state")
 
@@ -291,8 +303,9 @@ export async function GET(
           brokerage_id: (connectingUser as any)?.brokerage_id ?? null,
           user_id: stateData.userId,
           platform,
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token ?? null,
+          // Wave 140H — the callback writes ENCRYPTED columns only (fail closed with no key).
+          access_token: encryptSecret(tokens.access_token),
+          refresh_token: encryptSecret(tokens.refresh_token ?? null),
           token_expires_at: tokens.expires_in
             ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
             : null,

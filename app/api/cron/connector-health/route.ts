@@ -17,6 +17,7 @@ import { scanConnectivity } from "@/lib/agentic-os/resolve-connectivity"
 import { resolveConnection } from "@/lib/integrations/connection-manager"
 import { probeConnector, PROBE_SPECS } from "@/lib/agentic-os/connector-probe"
 import { secretFromConfig } from "@/lib/connections/credential-secret"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 // Per-brokerage probes + per-provider AI healer call (Exa search + Anthropic) can take 60–120s
 // in aggregate. Without an explicit maxDuration the Vercel default (10–15s) would kill the route
@@ -105,14 +106,15 @@ export async function GET(req: Request) {
       if (!PROBE_SPECS[provider]) continue // only providers with a known liveness endpoint
       try {
         const probe = await probeConnector(provider, {
-          apiKey: (r.api_key as string) ?? null,
+          // Stored keys/tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt first.
+          apiKey: decryptSecret((r.api_key as string) ?? null),
           // The connect flow stores a provider secret under config.auth_token (e.g. Twilio auth
           // token); fall back to api_secret for any provider that uses that key.
           // ONE READING — this file's private two-key ladder was the THIRD spelling of
           // it (resolve-sms-provider.ts:69 had its own, connection-manager.ts had none
           // at all and read `null`). Merged onto lib/connections/credential-secret.ts.
           apiSecret: secretFromConfig(r.config),
-          accessToken: (r.access_token as string) ?? null,
+          accessToken: decryptSecret((r.access_token as string) ?? null),
           config: (r.config as Record<string, unknown>) ?? null,
         })
         if (!probe) continue

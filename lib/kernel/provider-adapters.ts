@@ -50,7 +50,7 @@
 
 import { CONTACT_PROVIDER_ROUTES, routeCapability, type CapabilityRoute, type ProviderCapability } from "@/lib/ai-isa/property-lookup-rail"
 import { SYSTEM_DEFAULTS, SYSTEM_ONLY_TYPES } from "@/lib/kernel/providers"
-import { CONNECTOR_REGISTRY, QBO_MINOR_VERSION, type ConnectorAlternate } from "@/lib/agentic-os/connector-registry"
+import { CONNECTOR_REGISTRY, QBO_MINOR_VERSION, VENDOR_CONTRACTS, GOOGLE_ADS_API_VERSION, GOOGLE_ADS_API_SUNSET_AFTER, MAPBOX_GL_JS_VERSION, type ConnectorAlternate } from "@/lib/agentic-os/connector-registry"
 import { CONNECTED_CAPABILITY_REGISTRY } from "@/lib/agentic-os/connected-vendor-registry"
 import { PROVIDER_CATALOG } from "@/lib/integrations/providers/catalog"
 import { PROVIDER_TENANCY } from "@/lib/providers/tenancy-matrix"
@@ -103,6 +103,9 @@ export interface ProviderAdapter {
      *  published) — a null docs root without one is refused. Optional for extension declarations. */
     urlNote?: string | null
     sdk: string | null; mcp: string | null; deprecatedAfter: string | null; alternates: AdapterAlternate[]
+    /** Wave 140 (140I): the vendor's OWN documentation / spec / SDK the base URL was verified against
+     *  (VENDOR_CONTRACTS.*.contractSource). Empty = the base URL carries no fresh verification. */
+    contractSource: readonly string[]
   }
 }
 
@@ -139,6 +142,11 @@ interface AdapterFacts {
   gateway?: true
   /** Reached outside every kernel rail — the PUBLISHED reason (a declaration, never a silence). */
   exception?: string
+  /** Wave 140 (140I): the cited sources the declared base URL was verified against (https pages). */
+  contractSource?: readonly string[]
+  /** Wave 140 (140I): a vendor-published sunset for the declared version when CONNECTOR_REGISTRY has
+   *  no entry to carry it (Google Ads reads GOOGLE_ADS_API_SUNSET_AFTER). */
+  deprecatedAfter?: string
 }
 
 const TENANT = (who: string) => `none — the tenant's own ${who}`
@@ -174,7 +182,9 @@ const ADAPTER_FACTS: Readonly<Record<string, AdapterFacts>> = {
   // ══ WAVE 138 (lane 138A) — the rest of the census ══
   // ── CRM (connected capability crm_contact_sync) ──
   gohighlevel: { serviceKeys: ["gohighlevel", "ghl"], aliases: ["leadconnector"], outputs: "CRM contact sync out, inbound webhooks", transport: "rest", version: "v2 (LeadConnector)", baseUrl: "https://services.leadconnectorhq.com", docsUrl: "https://marketplace.gohighlevel.com/docs/", ledger: "tenant_account", booking: TENANT("HighLevel account"), envVars: ["GHL_API_KEY"], gateway: true },
-  lofty: { serviceKeys: ["lofty"], aliases: ["chime"], outputs: "CRM contact sync out", transport: "rest", version: "v1", baseUrl: "https://api.lofty.com/v1", docsUrl: "https://developer.lofty.com/", ledger: "tenant_account", booking: TENANT("Lofty account"), gateway: true },
+  // Wave 140 (140I): base URL + API-key header scheme + resource verified against developer.lofty.com
+  // (VENDOR_CONTRACTS.lofty) — was /v1 (an unversioned guess), bearer for API keys, and "contacts".
+  lofty: { serviceKeys: ["lofty"], aliases: ["chime"], outputs: "CRM lead sync out / pull (leads)", transport: "rest", version: "v1.0", baseUrl: VENDOR_CONTRACTS.lofty.baseUrl, contractSource: VENDOR_CONTRACTS.lofty.contractSource, docsUrl: "https://developer.lofty.com/introduction", ledger: "tenant_account", booking: TENANT("Lofty account"), gateway: true },
   hubspot: { serviceKeys: ["hubspot"], outputs: "CRM contact sync out", transport: "sdk", version: "crm v3", baseUrl: "https://api.hubapi.com", docsUrl: "https://developers.hubspot.com/docs/api/overview", statusUrl: "https://status.hubspot.com", changelogUrl: "https://developers.hubspot.com/changelog", ledger: "tenant_account", booking: TENANT("HubSpot portal") },
   // ── email (connected capability email_send) ──
   outlook: { serviceKeys: ["outlook", "outlook_calendar", "microsoft-oauth", "microsoft-graph"], aliases: ["microsoft", "microsoft_graph", "office365"], outputs: "mail send, calendar events (Microsoft Graph)", transport: "rest", version: "v1.0", baseUrl: "https://graph.microsoft.com/v1.0", docsUrl: "https://learn.microsoft.com/en-us/graph/overview", statusUrl: "https://status.cloud.microsoft", changelogUrl: "https://developer.microsoft.com/en-us/graph/changelog", ledger: "tenant_account", booking: TENANT("Microsoft 365 account"), envVars: ["MICROSOFT_OAUTH_CLIENT_ID"], geography: "global", gateway: true },
@@ -189,10 +199,18 @@ const ADAPTER_FACTS: Readonly<Record<string, AdapterFacts>> = {
   // ── calendar ──
   nylas: { serviceKeys: ["nylas"], outputs: "calendar events (no client — vocabulary only)", transport: "rest", version: "v3", baseUrl: "https://api.us.nylas.com/v3", docsUrl: "https://developer.nylas.com", ledger: "tenant_account", booking: TENANT("Nylas account"), lifecycle: "vocabulary_only" },
   // ── transaction / e-sign (PROVIDER_CATALOG + connected esign_send / transaction_forms_open) ──
-  skyslope: { serviceKeys: ["skyslope"], outputs: "transaction files + forms, e-sign, webhooks", transport: "rest", version: "unversioned", baseUrl: "https://api.skyslope.com", docsUrl: "https://forms.skyslope.com/partner/api/docs", ledger: "tenant_account", booking: TENANT("SkySlope account"), gateway: true },
+  // Wave 140 (140I): the SkySlope Partnership API's published production server is
+  // forms.skyslope.com/partner/api (VENDOR_CONTRACTS.skyslope) — api.skyslope.com named no public spec.
+  skyslope: { serviceKeys: ["skyslope"], outputs: "transaction files + forms, e-sign, webhooks", transport: "rest", version: "Partnership API 1.0.0", baseUrl: VENDOR_CONTRACTS.skyslope.baseUrl, contractSource: VENDOR_CONTRACTS.skyslope.contractSource, docsUrl: "https://forms.skyslope.com/partner/api/docs", ledger: "tenant_account", booking: TENANT("SkySlope account"), gateway: true },
   authentisign: { serviceKeys: ["authentisign"], aliases: ["lwolf", "lone_wolf"], outputs: "e-sign envelopes + completion webhook", transport: "rest", version: "unversioned", baseUrl: "https://api.lwolf.com", docsUrl: "https://apidocs.lwolf.com/doc/authentisign-api/topic/topic-getting-started", ledger: "tenant_account", booking: TENANT("Lone Wolf account"), gateway: true },
-  brokermint: { serviceKeys: ["brokermint"], aliases: ["broker_mint"], outputs: "transactions / back-office sync", transport: "rest", version: "v1", baseUrl: "https://api.brokermint.com/v1", docsUrl: null, urlNote: "docs: brokermint.com/api is cited as the API reference only by third-party clients (pypi brokermint, brokermint-go) and could not be loaded on 2026-10-08 (non-HTML answer); Lone Wolf's apidocs.lwolf.com names no Brokermint API — unverified, so not declared", ledger: "tenant_account", booking: TENANT("Brokermint account"), gateway: true },
-  formsimplicity: { serviceKeys: ["formsimplicity"], aliases: ["form_simplicity"], outputs: "state-association forms + e-sign", transport: "rest", version: "v1", baseUrl: "https://api.formsimplicity.com/v1", docsUrl: "https://api.formsimplicity.com/docs/intro", ledger: "tenant_account", booking: TENANT("Form Simplicity account"), gateway: true },
+  // Wave 140 (140I): ONE Brokermint host — my.brokermint.com/api with the api_key QUERY parameter
+  // (VENDOR_CONTRACTS.brokermint; was api.brokermint.com/v1 in the provider AND brokermint.com + bearer
+  // in the connection test). The vendor's reference is a Zendesk help-center article (not a
+  // brokermint.com host, so it stays out of docsUrl's official-domain rule and rides contractSource).
+  brokermint: { serviceKeys: ["brokermint"], aliases: ["broker_mint"], outputs: "transactions / back-office sync", transport: "rest", version: "v2 transactions · v1 contacts/commissions/checklists", baseUrl: VENDOR_CONTRACTS.brokermint.baseUrl, contractSource: VENDOR_CONTRACTS.brokermint.contractSource, docsUrl: null, urlNote: "docs: the vendor's API Reference is hosted on its Zendesk help center (brokermintsupport.zendesk.com/hc/en-us/articles/360055896812-API-Reference, 2026-10-11) — off the brokermint.com domain, so it is cited in contractSource with the two published clients that restate it (brokermint-go, pypi brokermint) rather than declared as the docs root", ledger: "tenant_account", booking: TENANT("Brokermint account"), gateway: true },
+  // Wave 140 (140I): host without /v1 — the documented endpoints are RPC-style /fsforms/* and
+  // /officeTransactions/* behind OAuth2 client_credentials (VENDOR_CONTRACTS.formsimplicity).
+  formsimplicity: { serviceKeys: ["formsimplicity"], aliases: ["form_simplicity"], outputs: "state-association forms + e-sign", transport: "rest", version: "fsforms (unversioned)", baseUrl: VENDOR_CONTRACTS.formsimplicity.baseUrl, contractSource: VENDOR_CONTRACTS.formsimplicity.contractSource, docsUrl: "https://api.formsimplicity.com/docs/intro", ledger: "tenant_account", booking: TENANT("Form Simplicity account"), gateway: true },
   // ── showings ──
   showingtime: { serviceKeys: ["showingtime"], outputs: "showing requests + webhook", transport: "rest", version: "v1", baseUrl: "https://api.showingtime.com/v1", docsUrl: null, urlNote: "docs: ShowingTime (Zillow ShowingTime+) publishes no public developer API documentation (2026-10-08 search: integration-partner pages only; access is partner-gated) — not declared", ledger: "tenant_account", booking: TENANT("ShowingTime account"), gateway: true },
   // ── social (connected capability social_account_publish) ──
@@ -223,7 +241,11 @@ const ADAPTER_FACTS: Readonly<Record<string, AdapterFacts>> = {
   // census) and moved onto the gateway. NOTE (owner): Open-Meteo's keyless tier is licensed for
   // NON-commercial use; a commercial SaaS needs its paid API key (customer-api.open-meteo.com) — no
   // price is declared here (unknown stays unknown).
-  open_meteo: { serviceKeys: ["open_meteo"], aliases: ["openmeteo"], outputs: "daily forecast at a lat/lon (open-house weather)", transport: "rest", version: "v1", baseUrl: "https://api.open-meteo.com/v1", docsUrl: "https://open-meteo.com/en/docs", ledger: "free", booking: "none — keyless free API (commercial-use licence is an owner item)", geography: "global", gateway: true, payer: "platform", capabilities: ["weather_forecast"] },
+  // Wave 140 (140I): a COMMERCIAL subscription key (OPEN_METEO_API_KEY → customer-api.open-meteo.com,
+  // `apikey` query parameter) is the production path; without it the forecast REFUSES in production
+  // (the keyless host is non-commercial only). Each forecast books one unit, price explicitly UNKNOWN
+  // (a fixed monthly plan whose amount is not published as text — VENDOR_PRICING.open_meteo).
+  open_meteo: { serviceKeys: ["open_meteo"], aliases: ["openmeteo"], outputs: "daily forecast at a lat/lon (open-house weather)", transport: "rest", version: "v1", baseUrl: VENDOR_CONTRACTS.open_meteo_commercial.baseUrl, contractSource: VENDOR_CONTRACTS.open_meteo_commercial.contractSource, docsUrl: "https://open-meteo.com/en/docs", priceKey: "open_meteo", ledger: "vendor_usage_tracking", booking: "meterVendorSpend (app/actions/open-house-automation.ts) — one unit per forecast, price UNKNOWN (fixed monthly plan)", envVars: ["OPEN_METEO_API_KEY"], geography: "global", gateway: true, payer: "platform", capabilities: ["weather_forecast"] },
   osint_free: { serviceKeys: ["nominatim", "overpass", "census"], aliases: ["osm"], outputs: "geocode, amenities, ACS median value", transport: "rest", version: "unversioned", baseUrl: "https://nominatim.openstreetmap.org", docsUrl: "https://nominatim.org/release-docs/latest/api/Overview/", priceKey: "osint_free", ledger: "free", booking: "none — keyless free tiers", gateway: true, payer: "platform", capabilities: ["geocode", "neighborhood_facts"] },
   socrata: { serviceKeys: ["socrata"], outputs: "permits / code violations / probate (public records)", transport: "rest", version: "SODA 2.1", ledger: "free", booking: "none — public open data (app token raises the rate limit only)", gateway: true, payer: "platform", capabilities: ["public_records"] },
   arcgis: { serviceKeys: ["arcgis"], outputs: "permit FeatureServer layers (public records)", transport: "rest", version: "FeatureServer query", ledger: "free", booking: "none — anonymous public layers", gateway: true, payer: "platform", capabilities: ["public_records"] },
@@ -232,15 +254,23 @@ const ADAPTER_FACTS: Readonly<Record<string, AdapterFacts>> = {
   pexels: { serviceKeys: ["pexels"], outputs: "stock photos", transport: "rest", version: "v1", baseUrl: "https://api.pexels.com/v1", docsUrl: "https://www.pexels.com/api/documentation/", ledger: "free", booking: "none — free API (attribution)", envVars: ["PEXELS_API_KEY"], geography: "global", payer: "platform", capabilities: ["stock_media"], gateway: true },
   geoapify: { serviceKeys: ["geoapify"], outputs: "POI places near an address", transport: "rest", version: "v2", baseUrl: "https://api.geoapify.com/v2", docsUrl: "https://apidocs.geoapify.com", ledger: "free", booking: "none — free tier (3,000 credits/day); over-tier spend is NOT booked (published open item)", envVars: ["GEOAPIFY_API_KEY"], geography: "global", payer: "platform", capabilities: ["local_places"], gateway: true },
   // ── platform infrastructure + browser keys (outside the rails by nature — published) ──
-  google_maps: { serviceKeys: ["google_maps"], outputs: "static map / street view images, browser maps", transport: "browser", version: "Maps JS + Static APIs", baseUrl: "https://maps.googleapis.com/maps/api", docsUrl: "https://developers.google.com/maps/documentation", statusUrl: "https://status.cloud.google.com/maps-platform/", priceKey: "google_maps", ledger: "vendor_usage_tracking", booking: "meterVendorSpend (lib/property/street-view.ts) — server-minted Street View / Static Map images (bookMapsImageSpend, wave 139); browser-only loads (team-heatmap Maps JS, the tour tab's client static map) have no server rail and reconcile against the platform Google Cloud invoice", envVars: ["GOOGLE_MAPS_API_KEY"], geography: "global", payer: "platform", capabilities: ["maps_render"],
+  // Wave 140 (140I): the map_render FALLBACK (CONTACT_PROVIDER_ROUTES.map_render — Mapbox first). The
+  // team heatmap's browser map load is now booked per server render (bookMapLoadSpend); Street View
+  // stays Google-only (no Mapbox equivalent).
+  google_maps: { serviceKeys: ["google_maps"], outputs: "static map / street view images, browser maps", transport: "browser", version: "Maps JS + Static APIs", baseUrl: "https://maps.googleapis.com/maps/api", docsUrl: "https://developers.google.com/maps/documentation", statusUrl: "https://status.cloud.google.com/maps-platform/", priceKey: "google_maps", ledger: "vendor_usage_tracking", booking: "meterVendorSpend (lib/property/street-view.ts) — server-minted Street View / Static Map images (bookMapsImageSpend, wave 139) and the team heatmap's map load per render (bookMapLoadSpend, wave 140); the tour tab's client static map has no server rail and reconciles against the platform Google Cloud invoice", envVars: ["GOOGLE_MAPS_API_KEY"], geography: "global", payer: "platform",
     exception: "a browser-loaded key (NEXT_PUBLIC_*) and lib/property/street-view.ts image URLs — the browser calls Google directly, so no server rail can carry it" },
-  // Wave 139 (139C) re-proven at HEAD: NO Mapbox request exists anywhere (no SDK, no api.mapbox.com
-  // URL — scripts/cost-completeness-guard.ts proves the absence with a positive control). MAPBOX_TOKEN
-  // is read ONLY by a key-presence check (app/dashboard/team-heatmap/page.tsx) whose map then loads
-  // Google Maps JS — so there is no Mapbox spend to book. A future Mapbox client books through
-  // meterVendorSpend and moves this row back to live.
-  mapbox: { serviceKeys: ["mapbox"], outputs: "none — token read by a key-presence check only (no Mapbox call)", transport: "browser", version: "GL JS", baseUrl: "https://api.mapbox.com", docsUrl: "https://docs.mapbox.com", statusUrl: "https://status.mapbox.com", ledger: "free", booking: "none — no Mapbox request exists in code (nothing is spent)", lifecycle: "vocabulary_only", envVars: ["MAPBOX_TOKEN"], geography: "global", payer: "platform", capabilities: ["maps_render"],
-    exception: "vocabulary only: MAPBOX_TOKEN is read by app/dashboard/team-heatmap/page.tsx's key-presence check, but no Mapbox request is made (the heatmap loads Google Maps JS)" },
+  // Wave 140 (140I; owner: "MAPBOX IS REQUIRED"). LIVE: the FIRST provider of the ONE map_render
+  // capability (CONTACT_PROVIDER_ROUTES.map_render, walked by lib/property/street-view.ts
+  // resolveMapProvider — health-aware, unconfigured providers skipped). The team heatmap renders Mapbox
+  // GL JS (CDN v${MAPBOX_GL_JS_VERSION}) with the PUBLIC `pk.` token the server chose; static images
+  // mint Static Images API URLs with the same public token (a secret `sk.` token is refused); the
+  // platform probe (connector-probe.ts PROBE_SPECS.mapbox, MAPBOX_TOKEN) is the server-side health
+  // call through the probe egress. Every image mint and map load books vendor_usage_tracking
+  // (VENDOR_PRICING.mapbox — VARIABLE, cited). Git history (checked 2026-10-11: `git log -S mapbox`,
+  // every deleted *map* path) holds NO Mapbox client to restore — the capability was never built, only
+  // named; this row's lifecycle moved from vocabulary_only to live when the walk was built.
+  mapbox: { serviceKeys: ["mapbox"], outputs: "browser vector map (GL JS), static map images", transport: "browser", version: `GL JS v${MAPBOX_GL_JS_VERSION} + Static Images API v1`, baseUrl: VENDOR_CONTRACTS.mapbox.baseUrl, contractSource: VENDOR_CONTRACTS.mapbox.contractSource, docsUrl: "https://docs.mapbox.com/api/maps/static-images/", statusUrl: "https://status.mapbox.com", changelogUrl: "https://github.com/mapbox/mapbox-gl-js/releases", priceKey: "mapbox", ledger: "vendor_usage_tracking", booking: "bookMapsImageSpend (lib/property/street-view.ts) — static images per tenant · SKU · location · day; bookMapLoadSpend there books one GL JS map load per heatmap render", envVars: ["MAPBOX_TOKEN", "MAPBOX_PUBLIC_TOKEN"], geography: "global", payer: "platform",
+    exception: "browser GL tiles: the heatmap client calls api.mapbox.com directly with the PUBLIC token (public by design — a pk. token is URL-restrictable in the Mapbox console), so no server rail carries the tile traffic; the server side is the probe + the booked route choice" },
   web_push: { serviceKeys: ["web_push"], aliases: ["vapid"], outputs: "browser push notifications", transport: "sdk", version: "RFC 8030 + VAPID", baseUrl: "https://fcm.googleapis.com", docsUrl: "https://web.dev/articles/push-notifications-overview", ledger: "free", booking: "none — browser push services are free", envVars: ["VAPID_PRIVATE_KEY"], geography: "global", payer: "platform", capabilities: ["push_notify"],
     exception: "the push endpoint is each subscription's own browser-vendor URL (lib/providers/web-push.ts) — not a fixed connector the gateway can name" },
   vercel: { serviceKeys: ["vercel"], outputs: "custom-domain attach / verify", transport: "rest", version: "v10 domains", baseUrl: "https://api.vercel.com", docsUrl: "https://vercel.com/docs/rest-api", statusUrl: "https://www.vercel-status.com", changelogUrl: "https://vercel.com/changelog", ledger: "free", booking: "none — platform hosting account (domain calls carry no per-call charge)", envVars: ["VERCEL_TOKEN"], geography: "global", payer: "platform", capabilities: ["custom_domain"], gateway: true },
@@ -249,7 +279,10 @@ const ADAPTER_FACTS: Readonly<Record<string, AdapterFacts>> = {
   // ── ad platforms (wave 139, 139B: every egress now a callConnector site — the exceptions are gone) ──
   openai_ads: { serviceKeys: ["openai_ads"], aliases: ["chatgpt_ads"], outputs: "ChatGPT ad campaign launch", transport: "rest", version: "v1", baseUrl: "https://api.ads.openai.com/v1", docsUrl: "https://developers.openai.com/ads/api-quickstart", ledger: "tenant_account", booking: TENANT("OpenAI Ads account (ad spend is the tenant's)"), geography: "global", capabilities: ["ads_launch"], gateway: true },
   vibe: { serviceKeys: ["vibe"], outputs: "streaming-TV (CTV) ad campaign launch", transport: "rest", version: "X-Vibe-Revision", baseUrl: "https://api.vibe.co", docsUrl: "https://developers.vibe.co", ledger: "tenant_account", booking: TENANT("Vibe account (ad spend is the tenant's)"), capabilities: ["ads_launch"], gateway: true },
-  google_ads: { serviceKeys: ["google_ads"], outputs: "ads account OAuth; campaign publish, Customer Match upload, searchStream reporting (lib/ads/connectors/google.ts)", transport: "rest", version: "v17", baseUrl: "https://googleads.googleapis.com", docsUrl: "https://developers.google.com/google-ads/api/docs/start", ledger: "tenant_account", booking: TENANT("Google Ads account"), envVars: ["GOOGLE_ADS_DEVELOPER_TOKEN"], geography: "global", capabilities: ["ads_connect", "ads_launch"], gateway: true },
+  // Wave 140 (140I): ONE version constant (GOOGLE_ADS_API_VERSION, connector-registry.ts) read here and
+  // by lib/ads/connectors/google.ts; v17 was past its 2025 sunset. deprecatedAfter is the published
+  // (tentative) sunset month — decideProviderHeal proposes an endpoint_change once it passes.
+  google_ads: { serviceKeys: ["google_ads"], outputs: "ads account OAuth; campaign publish, Customer Match upload, searchStream reporting (lib/ads/connectors/google.ts)", transport: "rest", version: GOOGLE_ADS_API_VERSION, baseUrl: VENDOR_CONTRACTS.google_ads.baseUrl, contractSource: VENDOR_CONTRACTS.google_ads.contractSource, deprecatedAfter: GOOGLE_ADS_API_SUNSET_AFTER, docsUrl: "https://developers.google.com/google-ads/api/docs/start", changelogUrl: "https://developers.google.com/google-ads/api/docs/release-notes", ledger: "tenant_account", booking: TENANT("Google Ads account"), envVars: ["GOOGLE_ADS_DEVELOPER_TOKEN"], geography: "global", capabilities: ["ads_connect", "ads_launch"], gateway: true },
   // ── inbound-only / unimplemented (published) ──
   ce_provider: { serviceKeys: ["ce_provider"], outputs: "accredited CE completion webhook (inbound)", transport: "rest", version: "HMAC-SHA256 webhook", baseUrl: "https://www.arello.org", docsUrl: null, urlNote: "docs: no single vendor — any accredited CE provider POSTs to OUR HMAC webhook (app/api/webhooks/ce-provider), so the contract is ours; ARELLO certifies distance-education courses and publishes no API (its homepage was a placeholder root)", ledger: "tenant_account", booking: "none — inbound only", lifecycle: "inbound_only", capabilities: ["ce_credit_ingest"],
     exception: "inbound-only: the accredited CE provider POSTs completions (app/api/webhooks/ce-provider) — there is no outbound call to route" },
@@ -273,6 +306,7 @@ const OFFICIAL_URL_DOMAINS: Readonly<Record<string, readonly string[]>> = {
   google_maps: ["google.com"],
   google_ads: ["google.com"],
   google_ai: ["google.dev"],                     // ai.google.dev (Gemini API docs)
+  mapbox: ["github.com"],                        // changelog = the mapbox-gl-js repo releases (docs/status on mapbox.com)
   web_push: ["web.dev"],                         // Google's web.dev — the Push API overview (a web standard)
   docusign: ["docusign.com"],                    // endpoint www.docusign.net; docs + status on docusign.com
   dotloop: ["dotloop.github.io"],                // dotloop's own public-api GitHub Pages
@@ -408,7 +442,13 @@ export function resolveAdapterKey(name: string, opts: { prefix?: boolean } = {},
 
 function priceFor(names: Set<string>, facts: AdapterFacts): { unitUsd: number; unit: string; priceSource: string; priceState: PriceState | "tenant_account" } {
   const routed = Object.values(CONTACT_PROVIDER_ROUTES).flat().filter((e) => names.has(norm(e.provider)))
-  if (routed.length) return { unitUsd: Math.min(...routed.map((e) => e.unitCostUsd)), unit: "call/match", priceSource: "CONTACT_PROVIDER_ROUTES", priceState: "fixed" }
+  if (routed.length) {
+    // Wave 140 (140I): the route table carries the NUMBER (one spelling, the booked SKU); when the
+    // facts also name a VENDOR_PRICING row, that row's typed STATE rides along (the map providers are
+    // VARIABLE — volume bands, free tiers — not "fixed" because a route row holds a float).
+    const declared = facts.priceKey ? VENDOR_PRICING[facts.priceKey] : undefined
+    return { unitUsd: Math.min(...routed.map((e) => e.unitCostUsd)), unit: "call/match", priceSource: declared ? `CONTACT_PROVIDER_ROUTES (state: VENDOR_PRICING.${facts.priceKey}${declared.priceSource ? ` — ${declared.priceSource}` : ""})` : "CONTACT_PROVIDER_ROUTES", priceState: declared ? vendorPriceState(facts.priceKey as string) : "fixed" }
+  }
   const k = facts.priceKey
   const platform = k ? (PLATFORM_VENDOR_RATES as Record<string, { perUnit: number; unit: string }>)[k] : undefined
   if (platform) return { unitUsd: platform.perUnit, unit: platform.unit, priceSource: `PLATFORM_VENDOR_RATES.${k}`, priceState: "fixed" }
@@ -472,8 +512,9 @@ function deriveOne(provider: string, facts: AdapterFacts, names: Set<string>, pa
       urlNote: facts.urlNote ?? null,
       sdk: reg?.npmSdk ?? null,
       mcp: reg?.mcpServer?.url ?? reg?.mcpServer?.githubUrl ?? null,
-      deprecatedAfter: reg?.deprecatedAfter ?? null,
+      deprecatedAfter: reg?.deprecatedAfter ?? facts.deprecatedAfter ?? null,
       alternates: reg?.alternates ?? [],
+      contractSource: facts.contractSource ?? [],
     },
   }
 }
@@ -542,6 +583,12 @@ export function validateProviderAdapter(a: ProviderAdapter): string[] {
   // a placeholder / off-domain / non-https URL is refused (urlIntegrityFaults — it covers status +
   // changelog too). A null docs root leaves the research step to search by provider name.
   errs.push(...urlIntegrityFaults(a))
+  // Wave 140 (140I): a cited contract source is an https page on a real host — never a placeholder.
+  for (const src of a.api.contractSource) {
+    let host = ""
+    try { const u = new URL(src); if (u.protocol !== "https:") errs.push(`contractSource ${src} is not https`); host = u.hostname.toLowerCase() } catch { errs.push(`contractSource ${src} is not a URL`); continue }
+    if (host && PLACEHOLDER_HOST.test(host)) errs.push(`contractSource ${src} uses a placeholder host`)
+  }
   if (!a.health.serviceKeys.length) errs.push("no health service key — its outcomes cannot be judged")
   if (a.credential.survivor === "platform_env" && !a.credential.envVars.length) errs.push("platform credential with no env var named")
   if (!a.route.paths.length && (a.route.exception ?? "").trim().length < 20) errs.push("reached through no kernel path and publishes no exception reason")

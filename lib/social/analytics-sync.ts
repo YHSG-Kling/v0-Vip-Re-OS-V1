@@ -22,6 +22,7 @@ import "server-only"
 // invents a number.
 
 import { callConnector, type GatewayAuth } from "@/lib/agentic-os/connector-gateway"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 type Svc = any
 
@@ -180,7 +181,7 @@ export async function syncSocialAnalytics(
   const sinceIso = new Date(now.getTime() - sinceDays * 86_400_000).toISOString()
   const result: AnalyticsSyncResult = { scanned: 0, synced: 0, skippedNoAccount: 0, skippedUnsupported: 0, errors: 0 }
 
-  const { data: posts } = await svc
+  const { data: posts, error: postsError } = await svc
     .from("social_posts")
     .select("id, brokerage_id, platform, external_post_id, published_at, social_account_id")
     .eq("status", "published")
@@ -188,20 +189,42 @@ export async function syncSocialAnalytics(
     .gte("published_at", sinceIso)
     .order("published_at", { ascending: false })
     .limit(limit)
+  if (postsError) {
+    // supabase-js RESOLVES a refusal — a refused scan is an error, never "nothing published".
+    console.error(`[analytics-sync] social_posts scan refused: ${postsError.message}`)
+    result.errors++
+    return result
+  }
 
+  // PER-TENANT ITERATION (wave 140H; wave-139 blocker analytics-sync.ts:173). The sweep runs on the
+  // service client across every tenant, so the credential read is pinned to the POST'S tenant: an
+  // account id alone could fetch another tenant's token. Posts are grouped by brokerage_id and each
+  // tenant's posts read only that tenant's social_media_accounts row; a post with no tenant is
+  // skipped, never synced under a borrowed credential.
+  const byTenant = new Map<string, PublishedPost[]>()
   for (const post of (posts ?? []) as PublishedPost[]) {
+    if (!post.brokerage_id) { result.scanned++; result.skippedNoAccount++; continue }
+    const list = byTenant.get(post.brokerage_id) ?? []
+    list.push(post)
+    byTenant.set(post.brokerage_id, list)
+  }
+
+  for (const [tenantId, tenantPosts] of byTenant) for (const post of tenantPosts) {
     result.scanned++
     const fetcher = FETCHERS[post.platform]
     if (!fetcher) { result.skippedUnsupported++; continue }
 
-    // The SAME credential the publisher posted with.
+    // The SAME credential the publisher posted with — in THIS tenant.
     if (!post.social_account_id) { result.skippedNoAccount++; continue }
-    const { data: account } = await svc
+    const { data: account, error: accountError } = await svc
       .from("social_media_accounts")
       .select("access_token")
       .eq("id", post.social_account_id)
+      .eq("brokerage_id", tenantId)
       .maybeSingle()
-    const token = (account as { access_token?: string | null } | null)?.access_token
+    if (accountError) { result.errors++; continue }
+    // Stored tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt before use.
+    const token = decryptSecret((account as { access_token?: string | null } | null)?.access_token ?? null)
     if (!token) { result.skippedNoAccount++; continue }
 
     try {
@@ -209,12 +232,14 @@ export async function syncSocialAnalytics(
 
       // Upsert on (post_id, platform): update the existing measurement row or
       // insert the first one. Checked writes — a loss is an error, never silent.
-      const { data: existing } = await svc
+      const { data: existing, error: existingError } = await svc
         .from("social_media_analytics")
         .select("id")
+        .eq("brokerage_id", tenantId)
         .eq("post_id", post.id)
         .eq("platform", post.platform)
         .maybeSingle()
+      if (existingError) { result.errors++; continue }
 
       const row = {
         brokerage_id: post.brokerage_id,
@@ -239,7 +264,7 @@ export async function syncSocialAnalytics(
       }
 
       const write = existing
-        ? await svc.from("social_media_analytics").update(row).eq("id", (existing as { id: string }).id)
+        ? await svc.from("social_media_analytics").update(row).eq("id", (existing as { id: string }).id).eq("brokerage_id", tenantId)
         : await svc.from("social_media_analytics").insert(row)
       if (write.error) { result.errors++; continue }
 

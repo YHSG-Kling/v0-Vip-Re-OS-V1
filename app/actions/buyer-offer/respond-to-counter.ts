@@ -270,7 +270,7 @@ export async function respondToCounter(params: RespondToCounterParams) {
   // Now the writes carry the offer key, so this should find them. If it still
   // does not, that is a real failure — the events landed but the column every
   // screen renders did not follow — and the caller has to be told.
-  const sync = await syncOfferStatus(offerId)
+  const sync = await syncOfferStatus(offerId, brokerageId)
   if (!sync.success) {
     return {
       success: false,

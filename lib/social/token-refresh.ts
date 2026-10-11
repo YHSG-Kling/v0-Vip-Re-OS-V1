@@ -16,6 +16,8 @@
 //      failed exchanges): the tenant admin is notified to RECONNECT before
 //      expiry, once per account per week. No fake refresh, no silent death.
 
+import { encryptSecret, decryptSecretFields } from "@/lib/security/secret-crypto"
+
 export const RENEWAL_WINDOW_DAYS = 10
 
 export interface SocialTokenRow {
@@ -55,7 +57,9 @@ export async function runSocialTokenSweep(svc: any, now: Date = new Date()): Pro
 
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
 
-  for (const row of (rows ?? []) as SocialTokenRow[]) {
+  for (const stored of (rows ?? []) as SocialTokenRow[]) {
+    // Stored tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt before use.
+    const row = decryptSecretFields(stored, ["access_token", "refresh_token"])
     r.scanned += 1
     const plan = planTokenAction(row, now)
     try {
@@ -75,7 +79,7 @@ export async function runSocialTokenSweep(svc: any, now: Date = new Date()): Pro
         })
         if (res.ok && res.data?.access_token) {
           const { error: tokenSaveErr } = await svc.from("social_media_accounts").update({
-            access_token: res.data.access_token,
+            access_token: encryptSecret(res.data.access_token),
             token_expires_at: new Date(now.getTime() + (res.data.expires_in ?? 60 * 86_400) * 1000).toISOString(),
             updated_at: now.toISOString(),
           }).eq("id", row.id)
@@ -95,8 +99,8 @@ export async function runSocialTokenSweep(svc: any, now: Date = new Date()): Pro
         })
         if (res.ok && res.data?.access_token) {
           const { error: tokenSaveErr } = await svc.from("social_media_accounts").update({
-            access_token: res.data.access_token,
-            refresh_token: res.data.refresh_token ?? row.refresh_token,
+            access_token: encryptSecret(res.data.access_token),
+            refresh_token: encryptSecret(res.data.refresh_token ?? row.refresh_token),
             token_expires_at: new Date(now.getTime() + (res.data.expires_in ?? 60 * 86_400) * 1000).toISOString(),
             updated_at: now.toISOString(),
           }).eq("id", row.id)

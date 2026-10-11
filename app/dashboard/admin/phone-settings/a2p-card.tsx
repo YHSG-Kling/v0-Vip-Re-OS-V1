@@ -21,6 +21,17 @@ import { Button } from "@/components/ui/button"
 import { ShieldCheck } from "lucide-react"
 import { getA2pStatusAction, runA2pRegistrationAction } from "@/app/actions/a2p-registration"
 
+// Wave 140G: the tenant's ONE texting state (AVAILABLE / PENDING REGISTRATION /
+// ACTION REQUIRED / RESTRICTED) is derived server-side from the stored carrier
+// phase (lib/voice/carrier-registration-loop.ts) — this card only renders it.
+type UiState = "AVAILABLE" | "PENDING_REGISTRATION" | "ACTION_REQUIRED" | "RESTRICTED"
+const UI_STATE_CLASS: Record<UiState, string> = {
+  AVAILABLE: "bg-emerald-100 text-emerald-800",
+  PENDING_REGISTRATION: "bg-sky-100 text-sky-800",
+  ACTION_REQUIRED: "bg-amber-100 text-amber-900",
+  RESTRICTED: "bg-slate-200 text-slate-800",
+}
+
 export function A2pRegistrationCard() {
   const [statusLine, setStatusLine] = useState<string>("Loading…")
   const [profileSaved, setProfileSaved] = useState(false)
@@ -29,6 +40,10 @@ export function A2pRegistrationCard() {
   const [ein, setEin] = useState<string>("")
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<string | null>(null)
+  const [uiState, setUiState] = useState<UiState | null>(null)
+  const [uiLabel, setUiLabel] = useState<string>("")
+  const [reason, setReason] = useState<string>("")
+  const [halted, setHalted] = useState(false)
 
   useEffect(() => {
     getA2pStatusAction().then((r) => {
@@ -39,6 +54,10 @@ export function A2pRegistrationCard() {
         setSettingsPath(r.status.settingsPath)
         // Masked server-side (redactDraftForClient) — never the full EIN.
         setEin(r.status.prefill.ein ?? "")
+        setUiState(r.status.uiState)
+        setUiLabel(r.status.uiLabel)
+        setReason(r.status.reason)
+        setHalted(r.status.halted)
       } else setStatusLine(r.error)
     })
   }, [])
@@ -47,7 +66,8 @@ export function A2pRegistrationCard() {
     setBusy(true); setNote(null)
     const r = await runA2pRegistrationAction()
     setStatusLine(r.statusLine || r.error || "")
-    if (r.error) setNote(r.error)
+    if (r.uiState) { setUiState(r.uiState); setUiLabel(r.uiLabel ?? r.uiState) }
+    if (r.error) { setNote(r.error); setReason(r.error) } else { setHalted(false) }
     setBusy(false)
   }
 
@@ -65,7 +85,17 @@ export function A2pRegistrationCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
+        {uiState && (
+          <div className="flex items-center gap-2">
+            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${UI_STATE_CLASS[uiState]}`}>{uiLabel || uiState}</span>
+            {uiState === "ACTION_REQUIRED" && reason && <span className="text-xs text-amber-700">{reason}</span>}
+            {uiState === "RESTRICTED" && <span className="text-xs text-muted-foreground">Texting is restricted until a number is registered.</span>}
+          </div>
+        )}
         <div className="text-sm">{statusLine}</div>
+        {halted && (
+          <div className="text-xs text-amber-700">Automatic filing is paused until this is corrected — it is not retried on its own. Run / resume retries once after the fix.</div>
+        )}
         {!profileSaved && missing.length > 0 && (
           <div className="text-xs text-amber-600">Business registration still needs: {missing.join(", ")}</div>
         )}

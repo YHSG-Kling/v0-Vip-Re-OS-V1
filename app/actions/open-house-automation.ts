@@ -1208,19 +1208,37 @@ export async function fetchWeatherForEvent(eventId: string) {
     // Through the ONE egress (wave 139, lane 139B: was a raw fetch — a provider no census saw because
     // it needs no key). Keyless + free; the gateway's outcome row is the usage + health record, and
     // the tenant is the RLS-read event row's brokerage (never the caller's input).
+    // Wave 140 (140I) — COMMERCIAL LICENCE (open-meteo.com/en/pricing, 2026-10-11): the keyless host is
+    // for NON-commercial use only; a subscription issues OPEN_METEO_API_KEY for customer-api.open-meteo.com
+    // ("only the domain and key parameter differ"). Production without the key REFUSES, naming the remedy
+    // (fail closed — a release blocker stays a release blocker); development may use the free host.
     const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    const { VENDOR_CONTRACTS } = await import("@/lib/agentic-os/connector-registry")
+    const openMeteoKey = process.env.OPEN_METEO_API_KEY?.trim() || null
+    if (!openMeteoKey && process.env.NODE_ENV === "production") {
+      return { error: "Weather forecast unavailable: OPEN_METEO_API_KEY is not set — the keyless Open-Meteo tier is licensed for non-commercial use only; an API subscription (customer-api.open-meteo.com) is required in production" }
+    }
+    const openMeteo = openMeteoKey ? VENDOR_CONTRACTS.open_meteo_commercial : VENDOR_CONTRACTS.open_meteo
+    const eventBrokerageId = (event as { brokerage_id?: string | null }).brokerage_id ?? null
     const res = await callConnector<any>({
-      connector: "open_meteo", brokerageId: (event as { brokerage_id?: string | null }).brokerage_id ?? null,
-      baseUrl: "https://api.open-meteo.com/v1", path: "forecast",
+      connector: "open_meteo", brokerageId: eventBrokerageId,
+      baseUrl: openMeteo.baseUrl, path: "forecast",
       query: {
         latitude: String(event.property.latitude), longitude: String(event.property.longitude),
         daily: "weather_code,temperature_2m_max,precipitation_probability_max,wind_speed_10m_max",
         temperature_unit: "fahrenheit", wind_speed_unit: "mph", timezone: "auto",
         start_date: eventDate, end_date: eventDate,
       },
+      ...(openMeteoKey ? { auth: { style: "query" as const, name: "apikey", value: openMeteoKey } } : {}),
     })
     if (!res.ok) {
       return { error: `Weather provider error (${res.status ?? res.error}) — forecast unavailable for ${eventDate}` }
+    }
+    // A subscribed forecast is a PAID unit (fixed monthly plan — price UNKNOWN, VENDOR_PRICING.open_meteo):
+    // book it, platform-covered, once per executed call (no unmetered paid capability).
+    if (openMeteoKey) {
+      const { meterVendorSpend } = await import("@/lib/vendor-governance/meter-vendor")
+      await meterVendorSpend({ vendorName: "open_meteo", usageType: "forecast", cost: 0, unitCount: 1, priceState: "unknown", costBasis: "estimated", coverage: "platform_covered", brokerageId: eventBrokerageId, systemSource: "open_house_weather" })
     }
     const forecast = res.data
     const daily = forecast?.daily

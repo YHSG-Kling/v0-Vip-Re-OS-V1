@@ -33,6 +33,7 @@
 
 import "server-only"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { encryptSecret, decryptSecret } from "@/lib/security/secret-crypto"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { graphGet } from "@/lib/providers/meta/client"
 import {
@@ -257,6 +258,10 @@ async function upsertPlatformCredential(
     platform: credKey,
     updated_at: new Date().toISOString(),
     ...fields,
+    // Wave 140H — the token columns are sealed at THE write (every caller above hands this wrapper the
+    // provider's plaintext). undefined stays undefined (never nulled), null stays null.
+    ...("access_token" in fields ? { access_token: encryptSecret(fields.access_token as string | null | undefined) } : {}),
+    ...("refresh_token" in fields ? { refresh_token: encryptSecret(fields.refresh_token as string | null | undefined) } : {}),
   }
   const { data: existingCred } = await svc
     .from("platform_credentials")
@@ -570,6 +575,7 @@ export async function completePlatformFacebookPageSelection(
       .select("id, access_token, token_expires_at, config")
       .eq("id", account.credential_ref)
       .maybeSingle()
+    if (cred?.access_token) cred.access_token = decryptSecret(cred.access_token) // enc:v1 envelope (legacy plaintext passes through)
     const pending: any[] = Array.isArray((cred as any)?.config?.pending_pages) ? (cred as any).config.pending_pages : []
     if (!cred?.access_token || pending.length === 0) continue
     if (!pending.some((p) => String(p?.id) === pageId)) {
@@ -644,6 +650,7 @@ export async function verifyPlatformChannel(svc: ServiceClient, channel: Platfor
     .select("id, access_token, account_id, token_expires_at, is_active")
     .eq("id", account.credential_ref)
     .maybeSingle()
+  if (cred?.access_token) cred.access_token = decryptSecret(cred.access_token) // enc:v1 envelope (legacy plaintext passes through)
   if (!cred?.access_token || cred.is_active === false) return markError("Stored credential is missing or inactive — reconnect")
   if (cred.token_expires_at && new Date(cred.token_expires_at).getTime() < Date.now()) {
     return markError(`Token expired ${new Date(cred.token_expires_at).toLocaleDateString()} — reconnect`)
@@ -723,6 +730,7 @@ export async function getChannelPublishCredential(
     .select("id, access_token, account_id, token_expires_at, is_active")
     .eq("id", account.credential_ref)
     .maybeSingle()
+  if (cred?.access_token) cred.access_token = decryptSecret(cred.access_token) // enc:v1 envelope (legacy plaintext passes through)
   if (!cred?.access_token || cred.is_active === false) {
     return { ok: false, error: `${CHANNEL_LABELS[channel]} credential is missing or inactive — reconnect` }
   }

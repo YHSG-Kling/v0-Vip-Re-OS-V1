@@ -13,6 +13,7 @@
  */
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
+import { decryptSecretFields } from "@/lib/security/secret-crypto"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -178,7 +179,7 @@ export async function ingestMetaLeadByRef(
   const { data: cred } = await svc.from("platform_credentials")
     .select("brokerage_id, access_token")
     .eq("platform", "facebook").eq("account_id", input.pageId).maybeSingle()
-  const c = cred as { brokerage_id?: string; access_token?: string } | null
+  const c = decryptSecretFields(cred as { brokerage_id?: string; access_token?: string } | null, ["access_token"])
   if (!c?.brokerage_id) return { ok: false, stage: "no_credential" }
 
   let fields: MetaLeadField[] = Array.isArray(input.inlineFields) ? input.inlineFields : []

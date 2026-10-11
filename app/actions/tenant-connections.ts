@@ -19,6 +19,7 @@ const ADMIN_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 import { TENANT_CONNECTION_SLOTS } from "@/lib/settings/tenant-connection-slots"
 import { CONFIG_SECRET_KEYS } from "@/lib/connections/credential-secret"
+import { encryptSecret } from "@/lib/security/secret-crypto"
 
 /**
  * ONE gate, TWO channels (§6).
@@ -78,7 +79,7 @@ export async function saveTenantConnectionAction(input: {
   if ((slot.fields as readonly string[]).includes("api_secret") && !apiSecret) return { ok: false, error: `${slot.label} needs the secret half of the pair too` }
   const row = {
     brokerage_id: ctx.brokerageId, platform: input.platform,
-    api_key: apiKey, api_url: input.apiUrl?.trim() || null, account_id: input.accountId?.trim() || null,
+    api_key: encryptSecret(apiKey), api_url: input.apiUrl?.trim() || null, account_id: input.accountId?.trim() || null,
     owner_type: "brokerage", owner_id: ctx.brokerageId, is_active: true,
     ...(apiSecret ? { config: { [CONFIG_SECRET_KEYS[0]]: apiSecret } } : {}),
   }

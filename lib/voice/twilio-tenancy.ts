@@ -20,6 +20,7 @@
 // All Twilio egress stays on the connector gateway; creds-gated honestly.
 
 import { createSubaccount } from "@/lib/providers/twilio/client"
+import { encryptSecret, decryptSecretFields } from "@/lib/security/secret-crypto"
 
 export interface TwilioCreds {
   accountSid: string
@@ -68,8 +69,9 @@ export async function resolveTenantTwilioCreds(svc: any, brokerageId: string): P
     .eq("is_active", true)
   if (error) return null
 
-  const byo = ((rows ?? []) as any[]).find((r) => r.platform === "twilio_byo")
-  const sub = ((rows ?? []) as any[]).find((r) => r.platform === "twilio_subaccount")
+  // Stored auth tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt before use.
+  const byo = decryptSecretFields(((rows ?? []) as any[]).find((r) => r.platform === "twilio_byo") ?? null, ["access_token"])
+  const sub = decryptSecretFields(((rows ?? []) as any[]).find((r) => r.platform === "twilio_subaccount") ?? null, ["access_token"])
   const masterSid = process.env.TWILIO_ACCOUNT_SID
   const masterToken = process.env.TWILIO_AUTH_TOKEN
 
@@ -120,7 +122,7 @@ export async function ensureTenantSubaccount(
     brokerage_id: brokerageId,
     platform: "twilio_subaccount",
     account_id: res.data.sid,
-    access_token: res.data.authToken,
+    access_token: encryptSecret(res.data.authToken),
     owner_type: "brokerage",
     owner_id: brokerageId,
     is_active: true,

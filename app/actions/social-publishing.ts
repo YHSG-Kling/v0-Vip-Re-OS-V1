@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache"
 import { generateTextRouted } from "@/lib/ai/models"
 import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance-gate"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
+import { encryptSecret } from "@/lib/security/secret-crypto"
 // resolveRecipientBrokerageId (the recipient-tenant rule for notifications) is
 // no longer imported here: its only user, handleContentApproved, was deleted
 // onto approveSocialPost, which now carries the import.
@@ -173,8 +174,8 @@ export async function connectSocialAccount(params: {
         platform: params.platform,
         account_id: params.accountId,
         account_name: params.accountName,
-        access_token: params.accessToken,
-        refresh_token: params.refreshToken,
+        access_token: encryptSecret(params.accessToken),
+        refresh_token: encryptSecret(params.refreshToken),
         token_expires_at: params.tokenExpiresAt,
         scope: params.scope,
         is_active: true,

@@ -109,19 +109,36 @@ export async function recomputeDocumentChecklist(
   brokerageId: string | null,
 ): Promise<void> {
   try {
-    const { data: docs } = await supabase
+    // Wave 140H (wave-139 blocker auto-filer.ts:106): the rollup runs on the SERVICE client from the
+    // filer and from the self-healing RECONCILE_COUNTS rail, so the tenant predicate is pinned here —
+    // a transaction id alone would aggregate another tenant's documents under this tenant's row.
+    // No tenant → no recompute (fail closed); a refused read is reported, never read as "0 documents".
+    if (!brokerageId) {
+      console.error(`[auto-filer] document_checklist NOT recomputed for transaction ${transactionId}: no brokerage_id (tenant predicate required)`)
+      return
+    }
+    const { data: docs, error: docsError } = await supabase
       .from("transaction_documents")
       .select("id, doc_type, status")
       .eq("transaction_id", transactionId)
+      .eq("brokerage_id", brokerageId)
       .limit(500)
+    if (docsError) {
+      console.error(`[auto-filer] document_checklist NOT recomputed for transaction ${transactionId}: transaction_documents read refused: ${docsError.message}`)
+      return
+    }
     const all = (docs ?? []) as Array<{ doc_type: string | null; status: string | null }>
     const total = all.length
     const verified = all.filter((d) => d.status === "approved").length
     const required = Array.from(new Set(all.map((d) => d.doc_type).filter(Boolean)))
     const status = total === 0 ? "pending" : verified === total ? "complete" : "in_progress"
 
-    const { data: existing } = await supabase
-      .from("document_checklist").select("id").eq("transaction_id", transactionId).maybeSingle()
+    const { data: existing, error: existingError } = await supabase
+      .from("document_checklist").select("id").eq("transaction_id", transactionId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (existingError) {
+      console.error(`[auto-filer] document_checklist NOT recomputed for transaction ${transactionId}: checklist read refused: ${existingError.message}`)
+      return
+    }
     const row = {
       transaction_id: transactionId,
       brokerage_id: brokerageId,
@@ -133,7 +150,7 @@ export async function recomputeDocumentChecklist(
     }
     // The checklist is an aggregate recomputed on every filing — declared allowed
     // to fail (filing already succeeded), but never silently.
-    if (existing) await sentinelWrite(supabase, supabase.from("document_checklist").update(row).eq("id", (existing as any).id), { table: "document_checklist", flow: "document_checklist_write", reason: "checklist aggregate; recomputed on the next filing" })
+    if (existing) await sentinelWrite(supabase, supabase.from("document_checklist").update(row).eq("id", (existing as any).id).eq("brokerage_id", brokerageId), { table: "document_checklist", flow: "document_checklist_write", reason: "checklist aggregate; recomputed on the next filing" })
     else await sentinelWrite(supabase, supabase.from("document_checklist").insert(row), { table: "document_checklist", flow: "document_checklist_write", reason: "checklist aggregate; recomputed on the next filing" })
   } catch { /* the checklist is an aggregate — filing already succeeded */ }
 }

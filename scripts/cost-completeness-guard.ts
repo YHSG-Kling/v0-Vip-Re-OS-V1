@@ -41,6 +41,7 @@ import { webSearch } from "../lib/ai/web-search"
 import { bookSourceSpend } from "../lib/lead-pipeline/source-cost-ledger"
 import { estimateZyteCost } from "../lib/external/zyte-client"
 import { bookMapsImageSpend } from "../lib/property/street-view"
+import { MAPBOX_SKU_USD } from "../lib/vendor-governance/cost-normalizer"
 import { deriveProviderAdapters, validateAdapterSet } from "../lib/kernel/provider-adapters"
 
 const ROOT = process.cwd()
@@ -310,11 +311,27 @@ async function main() {
   const literalCost = (src: string) => /\bcost:\s*params\.searchDepth\s*===\s*"advanced"\s*\?\s*0\.\d+/.test(stripComments(src)) || /return\s+mode\s*===\s*"browserHtml"\s*\?\s*0\.\d+/.test(stripComments(src))
   ok(!literalCost(read("lib/external/tavily-client.ts")) && !literalCost(read("lib/external/zyte-client.ts")) && literalCost(`cost: params.searchDepth === "advanced" ? 0.01 : 0.005`), "no second price literal in the tavily / zyte clients (POSITIVE CONTROL: the old literal is recognised)")
 
-  // Mapbox — re-proven at HEAD: no request exists, so there is nothing to book.
+  // Mapbox (wave 140, lane 140I: RESTORED as the map_render primary — was "no request exists"). Every
+  // Mapbox request lives in a declared survivor and is BOOKED: the URL builder + bookings
+  // (street-view.ts), the heatmap client (GL JS), the health probe, the leaf contract, the adapter.
+  // Any other file naming api.mapbox.com / mapbox-gl is a second map subsystem (owner: ONE).
   const mapboxCall = (src: string) => /api\.mapbox\.com|from\s+["']mapbox-gl["']|["']@mapbox\/|import\(\s*["']mapbox-gl["']/.test(stripComments(src))
-  const mapboxFiles = corpus.filter((f) => f.path !== "lib/kernel/provider-adapters.ts" && mapboxCall(f.src)).map((f) => f.path)
-  ok(mapboxFiles.length === 0, `no Mapbox request anywhere in runtime code (${corpus.length} files; the adapter declaration excluded)${mapboxFiles.length ? ": " + mapboxFiles.join(", ") : ""}`)
+  const MAPBOX_SURVIVORS = new Set(["lib/property/street-view.ts", "app/dashboard/team-heatmap/heatmap-map.tsx", "lib/agentic-os/connector-probe.ts", "lib/agentic-os/connector-registry.ts", "lib/kernel/provider-adapters.ts"])
+  const mapboxFiles = corpus.filter((f) => mapboxCall(f.src)).map((f) => f.path)
+  const mapboxStrays = mapboxFiles.filter((p) => !MAPBOX_SURVIVORS.has(p))
+  // The map survivor spells the host ZERO times: it reaches it through the one leaf constant.
+  const svReachesContract = /VENDOR_CONTRACTS\.mapbox\.baseUrl/.test(stripComments(read("lib/property/street-view.ts")))
+  ok(svReachesContract && mapboxFiles.includes("lib/agentic-os/connector-registry.ts") && mapboxStrays.length === 0, `Mapbox's host is spelled ONCE (connector-registry VENDOR_CONTRACTS) and the map survivor reaches it through that constant; files naming the host / GL JS: ${mapboxFiles.join(", ")} — ${mapboxStrays.length} stray(s)${mapboxStrays.length ? ": " + mapboxStrays.join(", ") : ""}`)
   ok(mapboxCall(`await fetch("https://api.mapbox.com/styles/v1/x")`) && !mapboxCall(`// was api.mapbox.com`), "POSITIVE CONTROL: a planted Mapbox fetch is found; a comment is not")
+  const { getMapImageUrl, bookMapLoadSpend, resolveMapProvider } = await import("../lib/property/street-view")
+  const mbEnv = { MAPBOX_PUBLIC_TOKEN: "pk.guard" }
+  const mbImg = getMapImageUrl({ lat: 1, lon: 2, env: mbEnv })!
+  await bookMapsImageSpend({ brokerageId: A, provider: "mapbox", sku: "static_image", url: mbImg.url, systemSource: "listing_presentation" }, { meter: mMeter })
+  await bookMapsImageSpend({ brokerageId: A, provider: "mapbox", sku: "static_image", url: mbImg.url, systemSource: "listing_presentation" }, { meter: mMeter })
+  await bookMapLoadSpend({ brokerageId: A, choice: resolveMapProvider("browser_tiles", { env: mbEnv })!, systemSource: "team_heatmap" }, { meter: mMeter })
+  const mb = ev().filter((r) => r.vendor_name === "mapbox")
+  ok(mb.length === 2 && mb.some((r) => r.total_cost === MAPBOX_SKU_USD.static_image) && mb.some((r) => r.total_cost === MAPBOX_SKU_USD.map_load) && !JSON.stringify(mb).includes("pk.guard"),
+    "mapbox: a static image books once per tenant · SKU · location · day (the second mint books nothing), a map load books per render, the public token never reaches the ledger")
 
   // Advisory (owner: Stripe tier pricing is NOT set) — hard-coded tier overage literals are LISTED.
   const overageLit = (src: string) => (stripComments(src).match(/\boverage\w*Cents\s*:\s*\d+/g) ?? []).length

@@ -726,9 +726,18 @@ export async function assignUserToTeam(params: {
 // ─── repairIncompleteAccountSetup ─────────────────────────────────────────────
 
 /**
- * Detects and repairs incomplete account states.
- * Safe to call on every login — it is idempotent.
- * Uses createOrRepairUserDomainRecords internally.
+ * Detects and repairs incomplete account states — THE READINESS REPAIR
+ * EXECUTOR for a user's domain records. Idempotent; uses
+ * createOrRepairUserDomainRecords internally.
+ *
+ * NOT A LOGIN HOOK ANY MORE (owner, wave 140: "first login is never a hidden
+ * repair"). app/dashboard/page.tsx called this on every visit; it now DETECTS
+ * (resolveUserWorkspaceContext) and routes a visible setup state instead. The
+ * callers that remain are the seat/subscription flow (app/api/billing/webhook
+ * after checkout) and — READINESS HOOK (integrator) — lane 140B/K's
+ * evaluateTenantReadiness(svc, brokerageId, { repair: true }), whose seats /
+ * adminUser checks route a REPAIRABLE gap through the self-healing engine to
+ * this function and re-verify.
  */
 export async function repairIncompleteAccountSetup(
   userId: string
@@ -828,6 +837,31 @@ async function mergeOrphan(service: ReturnType<typeof createServiceClient>, orph
   }
 }
 
+/** THE SEAT GATE'S SUBJECT FOR A RETRY (wave 140F). Both member doors run
+ *  `seatGate` BEFORE inviteTenantMember, and neither told the gate WHO was
+ *  being added — so re-inviting a member already seated on a FULL tenant
+ *  (the retry the idempotent provisioner exists for) was refused as a second
+ *  seat. The gate's `subjectUserId` is the fix it already carries
+ *  (`already_seated`); this resolves it the way the gate counts: a users row
+ *  on THIS tenant holding this email. Never a cross-tenant lookup — a holder
+ *  at another brokerage is not this tenant's subject, and the invite refuses
+ *  them downstream. A refused read is `null` (the gate then runs as a plain
+ *  add, which is the fail-closed direction: it can only refuse more). */
+export async function seatSubjectForEmail(
+  service: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  email: string,
+): Promise<string | null> {
+  const { data, error } = await service
+    .from("users")
+    .select("id")
+    .eq("brokerage_id", brokerageId)
+    .ilike("email", email.trim().toLowerCase())
+    .limit(1)
+  if (error) return null
+  return (data as Array<{ id: string }> | null)?.[0]?.id ?? null
+}
+
 // ─── inviteTenantMember ───────────────────────────────────────────────────────
 
 export interface TenantMemberParams {
@@ -913,6 +947,33 @@ export async function inviteTenantMember(params: TenantMemberParams): Promise<Te
     }
   }
 
+  // TEAM LEAKAGE GUARD (wave 140F). `teamId` arrives from the DOOR's request
+  // body on both callers (app/actions/admin/invite-user.ts passes params.teamId
+  // through for every non-team_lead caller; the god console passes it verbatim)
+  // and was written to users.team_id, agents.team_id and
+  // user_role_assignments.team_id with no check that the team belongs to THIS
+  // tenant. A broker who knew another brokerage's team id could seat a member
+  // on that team — and every team-scoped read (lib/teams/team-scope.ts,
+  // lead-visibility's team scope) would then show them that team's board. The
+  // one check lives here, where both doors converge, and it FAILS CLOSED: a
+  // refused read is not "no such team", it is "could not verify", and no seat
+  // is minted on it.
+  if (teamId) {
+    const { data: team, error: teamErr } = await service
+      .from("teams")
+      .select("id")
+      .eq("id", teamId)
+      .eq("brokerage_id", brokerageId)
+      .is("deleted_at", null)
+      .maybeSingle()
+    if (teamErr) {
+      return { success: false, userId: null, agentId: null, error: `The team could not be verified (${teamErr.message}); nobody was invited.` }
+    }
+    if (!team) {
+      return { success: false, userId: null, agentId: null, error: "That team is not part of this workspace. Pick one of this workspace's teams, or invite without a team." }
+    }
+  }
+
   if (!authUserId) {
     try {
       const { data, error } = await service.auth.admin.inviteUserByEmail(email, {
@@ -979,6 +1040,23 @@ export async function inviteTenantMember(params: TenantMemberParams): Promise<Te
   const domain = await createOrRepairUserDomainRecords({
     userId: authUserId, email, firstName, lastName, userType, brokerageId, teamId, callerUserId,
   })
+
+  // ORPHAN USER / MISSING ROLE (wave 140F). The result of the ONE provisioning
+  // brain was dropped here: a refused role grant (or a refused agents row behind
+  // it) left a users row with a tenant and a type but no RBAC grant and no
+  // agent record — exactly the shape measured live (10 tenant users with no
+  // grant, 4 seat-role users with no agents row) — while this reported success
+  // and the door emitted USER_INVITED. The invite email has gone out, so this
+  // is not rolled back; it is REPORTED, and the retry is idempotent
+  // (users/agents/grants are all keyed, see createOrRepairUserDomainRecords).
+  if (!domain.success) {
+    return {
+      success: false,
+      userId: authUserId,
+      agentId: domain.agentId,
+      error: `${email} was invited, but their workspace records were not completed (${domain.error ?? "unknown refusal"}). Retry the invite — it is idempotent — or run the workspace readiness repair.`,
+    }
+  }
 
   return { success: true, userId: authUserId, agentId: domain.agentId }
 }

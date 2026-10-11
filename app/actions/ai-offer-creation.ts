@@ -12,6 +12,7 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 // ============================================
 // AI OFFER CREATION SYSTEM
@@ -379,7 +380,7 @@ export async function createOfferDotloop(params: {
         notConfigured: true,
       }
     }
-    const DOTLOOP_API_KEY = dotloopCred.access_token
+    const DOTLOOP_API_KEY = decryptSecret(dotloopCred.access_token) as string
     const DOTLOOP_PROFILE_ID = dotloopCred.account_id
 
     // If existing loop provided, link to it (transaction ownership was

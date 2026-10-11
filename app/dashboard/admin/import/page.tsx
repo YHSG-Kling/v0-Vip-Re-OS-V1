@@ -336,7 +336,7 @@ export default function ImportPage() {
               )}
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              Only for a list you bought. Leave blank for your own exports — raw sourcing and enrichment are platform-covered and never counted as your spend.
+              Only for a list you bought. Leave blank for your own exports — raw sourcing and enrichment are included in your subscription and never counted as your spend.
             </p>
           </div>
 

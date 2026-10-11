@@ -7,7 +7,6 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { readRoleGrants, selectVendorId } from '@/lib/auth/role-grants'
-import { ensureAgentBrokerage } from '@/app/actions/onboarding/ensure-agent-brokerage'
 import { getAgentOnboardingDashboard } from '@/lib/kernel/agent-onboarding'
 import { OnboardingDashboardClient } from './OnboardingDashboardClient'
 import { CriticalSetupMeter } from '@/app/components/onboarding/critical-setup-meter'
@@ -28,11 +27,15 @@ export default async function OnboardingPage() {
     redirect('/login')
   }
 
-  // Self-heal a brokerage-less agent/team_lead the same way /dashboard does — many
-  // surfaces bounce an incomplete account here, and previously it only fell through
-  // to /dashboard/agent (still no brokerage), so those pages "bounced back" forever.
-  // Idempotent + guarded (no-op for an already-anchored user or a non-agent type).
-  await ensureAgentBrokerage()
+  // FIRST LOGIN IS NEVER A HIDDEN REPAIR (owner, wave 140). TOMBSTONE: this
+  // landing used to call ensureAgentBrokerage() — a brokerage-of-one, a
+  // trialing subscription and the agents/onboarding/RBAC rows minted on a GET,
+  // invisible to the person. The seat flow (lib/kernel/users.ts
+  // inviteTenantMember) now produces the whole chain, and this page is the
+  // VISIBLE setup state an incomplete account is routed to.
+  // READINESS HOOK (integrator): evaluateTenantReadiness(svc, brokerageId, { repair: true })
+  // — a REPAIRABLE account gap routes through lane 140B/K's contract to
+  // repairIncompleteAccountSetup (lib/kernel/users.ts) and re-verifies.
 
   // Get user details including type — maybeSingle() never throws on missing row
   const { data: userData } = await supabase

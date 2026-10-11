@@ -50,6 +50,7 @@ import { OSINTClient } from "@/lib/osint-client"
 import { fetchOSINTNeighborhoodData } from "@/lib/external/osint-neighborhood"
 import { runFreeOsintLane } from "@/lib/external/osint-free"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 // ── Webhook expectations (the URLs bindNumberToTwilioLane writes) ────────────
 // ONE VOCABULARY (§6): the paths come from lib/providers/webhook-contract.ts —
@@ -206,7 +207,7 @@ export async function getTwilioFleetPosture(svc: any): Promise<TwilioFleetPostur
   const subBy = new Map<string, Creds>()
   for (const r of (credRows ?? []) as any[]) {
     if (!r.account_id || !r.access_token) continue
-    const c = { accountSid: r.account_id, authToken: r.access_token }
+    const c = { accountSid: r.account_id, authToken: decryptSecret(r.access_token) as string }
     if (r.platform === "twilio_byo") byoBy.set(r.brokerage_id, c)
     else subBy.set(r.brokerage_id, c)
   }

@@ -32,6 +32,11 @@
  *   H  BUILD HEAP — vercel.json's build heap and build.yml's bracket are named
  *      in the doc with the same numbers (derived, not pinned).
  *
+ *   V  TENANT VOCABULARY (wave 140, lane A+M) — no tenant-facing app/**​/*.tsx
+ *      renders "platform-covered"; the ruling-named 140J sites are a ratchet.
+ *   X  READINESS MATRIX (wave 140, lane A+M) — docs/architecture/READINESS-MATRIX.md
+ *      covers every census capability with status, action, lane and real cites.
+ *
  * Measurement (CLAUDE.md §2): code tokens are read from stripComments +
  * blankStrings source; every absence assertion has a positive control.
  */
@@ -325,7 +330,10 @@ function policyReaders(key: string): { consumers: string[]; display: string[] } 
 }
 /** Keys whose readers are DISPLAY-ONLY or absent, accepted with a reason that names the finding. */
 const POLICY_KEY_EXCEPTIONS: Record<string, string> = {
-  vendor_tier_pricing: "FINDING P1 (139G notes): the admin queue DISPLAYS the override (app/dashboard/admin/vendor-approvals/page.tsx) but the vendor checkout (app/actions/vendor-billing.ts createVendorSubscriptionCheckout) charges VENDOR_TIERS[t] and never reads it — money + unset tier pricing (wave-139 ECONOMICS ruling) → owner",
+  // vendor_tier_pricing: FINDING P1 (139G) CLOSED by wave 140J — the vendor checkout
+  // (app/actions/vendor-billing.ts createVendorSubscriptionCheckout) now resolves the
+  // administered override through resolveTierPrice and refuses an unset price
+  // (price_not_configured); the key has a consuming reader, so K2 retires the exception.
 }
 const policyCensus = policyKeys.map((k) => ({ key: k, ...policyReaders(k) }))
 const unread = policyCensus.filter((r) => r.consumers.length === 0 && !POLICY_KEY_EXCEPTIONS[r.key])
@@ -512,6 +520,96 @@ check("S2 POSITIVE CONTROL — an ungated service-client export is caught; the s
   serviceBeforeGate(`"use server"\nexport async function leak(id: string) { const svc = createServiceClient(); return svc }`).join() === "leak" &&
   serviceBeforeGate(`"use server"\nexport async function ok(id: string) { const a = await requireContactAccess(id); const svc = createServiceClient() }`).length === 0 &&
   serviceBeforeGate(`export async function lib(id: string) { const svc = createServiceClient() }`).length === 0)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 140 (lane A+M) — READINESS MATRIX + TENANT-FACING VOCABULARY.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── V · TENANT-FACING VOCABULARY ─────────────────────────────────────────────
+console.log("\n[V · tenant-facing vocabulary — no \"platform-covered\" in a .tsx a tenant can read (owner, wave 140)]")
+/** Platform-staff surfaces: an operator reads the cost-bearing entity by name there, by design. */
+const PLATFORM_FACING = /^app\/dashboard\/superadmin\//
+const FORBIDDEN_TENANT_VOCAB = /platform[- ]covered/i
+/** PURE — offending line numbers of a .tsx module. Comments are stripped (a tombstone or a JSX
+ *  comment is not copy); STRINGS AND JSX TEXT ARE KEPT — the rendered words are the subject. */
+function tenantVocabHits(src: string): number[] {
+  const out: number[] = []
+  stripComments(src).split("\n").forEach((l, i) => { if (FORBIDDEN_TENANT_VOCAB.test(l)) out.push(i + 1) })
+  return out
+}
+/** The sites the wave-140 ruling names, owned by lane 140J. A RATCHET, not a waypoint: this list may
+ *  only shrink; when it reaches zero hits it is deleted. A fixed file is NOT a stale entry (a check that
+ *  goes red because the work finished is forbidden, CLAUDE.md §2) — only a vanished file is. */
+const TENANT_VOCAB_OWNED: Record<string, string> = {
+  "app/leads/[leadId]/page.tsx": "ruling names :197 and :202 — :202 renders; :197 is a JSX comment (stripped, not copy) — 140J rewrites to 'included in your subscription'",
+  "app/dashboard/campaigns/competitive/brand-listening-card.tsx": "ruling names :31 — 140J",
+  "app/dashboard/admin/import/page.tsx": "ruling names :339 — 140J",
+  "app/dashboard/financials/brokerage/page.tsx": "ruling names the :1052 label — 140J",
+}
+/** Measured at the wave-140 base: 4 rendered sites (the ruling counted 5; its :197 is a comment). */
+const TENANT_VOCAB_RATCHET = 4
+const tenantTsx = SRC_FILES.filter((f) => f.startsWith("app/") && f.endsWith(".tsx") && !PLATFORM_FACING.test(f))
+const vocabHits = tenantTsx.map((f) => ({ f, lines: tenantVocabHits(read(f)) })).filter((h) => h.lines.length)
+const vocabNew = vocabHits.filter((h) => !TENANT_VOCAB_OWNED[h.f])
+const vocabOwnedCount = vocabHits.filter((h) => TENANT_VOCAB_OWNED[h.f]).reduce((n, h) => n + h.lines.length, 0)
+console.log(`    census: ${tenantTsx.length} tenant-facing .tsx modules (app/** minus ${SRC_FILES.filter((f) => PLATFORM_FACING.test(f) && f.endsWith(".tsx")).length} platform-staff); ${vocabHits.length} files carry the forbidden phrase — ${vocabOwnedCount} hit(s) in 140J-owned files, ${vocabNew.length} new`)
+for (const h of vocabHits) console.log(`      ${h.f}:${h.lines.join(",")}${TENANT_VOCAB_OWNED[h.f] ? "  (140J-owned)" : "  NEW"}`)
+console.log(`    RELEASE BLOCKER (published): ${vocabOwnedCount} tenant-visible "platform-covered" string(s) remain — certification needs 0${vocabOwnedCount === 0 && Object.keys(TENANT_VOCAB_OWNED).length ? "; the owned list is now empty of hits and can be deleted" : ""}`)
+console.log("    BLIND SPOT: .ts server-action result strings and lib/ copy are not in this population (at HEAD every .ts hit is a comment); a phrase assembled from fragments is not seen.")
+check("V1 no tenant-facing .tsx outside the 140J-owned list renders \"platform-covered\"", vocabNew.length === 0, vocabNew.map((h) => `${h.f}:${h.lines.join(",")}`).join(", "))
+check(`V2 the 140J-owned ratchet only shrinks (${vocabOwnedCount} ≤ ${TENANT_VOCAB_RATCHET})`, vocabOwnedCount <= TENANT_VOCAB_RATCHET)
+const vanishedOwned = Object.keys(TENANT_VOCAB_OWNED).filter((f) => !existsSync(join(ROOT, f)))
+check("V3 every owned file still exists (a renamed file re-enters the census under its new name)", vanishedOwned.length === 0, vanishedOwned.join(", "))
+check("V4 POSITIVE CONTROL — JSX text and a string literal are caught; a JSX comment, a line comment and the approved wording are not",
+  tenantVocabHits(`export default function P() { return <p>Platform-covered — never billed</p> }`).length === 1 &&
+  tenantVocabHits(`const s = "raw sourcing is platform-covered"`).length === 1 &&
+  tenantVocabHits(`export default function P() { return <p>{/* platform-covered */}x</p> }\n// platform-covered ledger`).length === 0 &&
+  tenantVocabHits(`const s = "included in your subscription — never counted as your spend"`).length === 0)
+check("V5 the platform-staff exclusion is narrow (superadmin only) and the population is non-empty", tenantTsx.length > 100 && !PLATFORM_FACING.test("app/dashboard/admin/import/page.tsx") && PLATFORM_FACING.test("app/dashboard/superadmin/a2p/page.tsx"))
+
+// ── X · READINESS MATRIX ─────────────────────────────────────────────────────
+console.log("\n[X · readiness matrix — docs/architecture/READINESS-MATRIX.md covers every capability, with status, action, lane and real citations]")
+const MATRIX = "docs/architecture/READINESS-MATRIX.md"
+const matrix = existsSync(join(ROOT, MATRIX)) ? read(MATRIX) : ""
+/** The census capabilities (wave 140, lane A): a row per entry, matched case-insensitively on the first cell. */
+const MATRIX_CAPABILITIES = ["tenant creation", "subscription activation", "provisioning", "snapshot/template", "entitlements", "feature flags", "tenant policies", "brokerage/global settings", "manager initialization", "website creation", "portals", "seats/users", "teams/roles", "phone provisioning", "A2P", "communication defaults", "billing", "Stripe", "provider credentials", "Mapbox", "self-healing", "readiness/health checks"]
+const STATUS_VOCAB = ["BUILT", "PARTIAL", "DUPLICATED", "UNWIRED", "MISSING"]
+const ACTION_VOCAB = ["KEEP", "WIRE", "FIX", "CONSOLIDATE", "BUILD"]
+interface MatrixRow { capability: string; status: string | null; action: string | null; lane: string | null }
+/** PURE — the capability rows of the matrix table (cells: capability | survivor | callers | status | edge | action). */
+function parseMatrixRows(md: string): MatrixRow[] {
+  const rows: MatrixRow[] = []
+  for (const line of md.split("\n")) {
+    if (!line.startsWith("|")) continue
+    const cells = line.split("|").slice(1, -1).map((c) => c.trim())
+    if (cells.length < 6 || /^-+$/.test(cells[0]) || /^capability$/i.test(cells[0])) continue
+    rows.push({
+      capability: cells[0],
+      status: STATUS_VOCAB.find((s) => new RegExp(`\\b${s}\\b`).test(cells[3])) ?? null,
+      action: ACTION_VOCAB.find((a) => new RegExp(`\\b${a}\\b`).test(cells[5])) ?? null,
+      lane: cells[5].match(/\b140[A-M]\b/)?.[0] ?? null,
+    })
+  }
+  return rows
+}
+const matrixRows = parseMatrixRows(matrix)
+const rowFor = (cap: string) => matrixRows.find((r) => r.capability.toLowerCase() === cap.toLowerCase())
+const missingRows = MATRIX_CAPABILITIES.filter((c) => !rowFor(c))
+const incompleteRows = matrixRows.filter((r) => !r.status || !r.action || !r.lane).map((r) => `${r.capability} (status ${r.status ?? "?"}, action ${r.action ?? "?"}, lane ${r.lane ?? "?"})`)
+const matrixCites = [...matrix.matchAll(/`((?:lib|app|scripts|supabase|docs|\.github)\/[A-Za-z0-9_./\[\]-]+\.(?:ts|tsx|sql|md|yml|json))(?::(\d+))?`/g)]
+const badMatrixCites = [...new Set(matrixCites.filter(([, f, line]) => !existsSync(join(ROOT, f)) || (!!line && Number(line) > read(f).split("\n").length)).map(([, f, l]) => `${f}${l ? ":" + l : ""}`))]
+const statusTally = STATUS_VOCAB.map((s) => `${s} ${matrixRows.filter((r) => r.status === s).length}`).join(", ")
+console.log(`    census: ${matrixRows.length} rows / ${MATRIX_CAPABILITIES.length} capabilities; ${statusTally}; ${matrixCites.length} citations`)
+check("X1 the readiness matrix exists", matrix.length > 0)
+check(`X2 every census capability (${MATRIX_CAPABILITIES.length}) has a row`, missingRows.length === 0, missingRows.join(", "))
+check("X3 every row carries a STATUS, an ACTION and an owning wave-140 lane", matrixRows.length > 0 && incompleteRows.length === 0, incompleteRows.join("; "))
+check(`X4 every file:line the matrix cites exists (${matrixCites.length})`, matrixCites.length > 0 && badMatrixCites.length === 0, badMatrixCites.join(", "))
+check("X5 the production architecture doc links the matrix", doc.includes("READINESS-MATRIX.md"))
+check("X6 POSITIVE CONTROL — a row with no status / no lane is incomplete; a header or rule row is skipped; a full row parses",
+  (() => {
+    const r = parseMatrixRows("| Capability | S | C | Status | E | Action |\n|---|---|---|---|---|---|\n| specimen | `x.ts:1` | d | ok | e | FIX — 140J |\n| specimen2 | s | c | PARTIAL | e | BUILD — 140D |")
+    return r.length === 2 && r[0].status === null && r[0].lane === "140J" && r[1].status === "PARTIAL" && r[1].action === "BUILD" && r[1].lane === "140D"
+  })())
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
 if (fail) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }

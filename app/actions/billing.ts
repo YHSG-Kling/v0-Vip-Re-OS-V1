@@ -327,6 +327,17 @@ export async function startSubscriptionCheckout(
   const { customPricingCheckoutRefusal } = await import("@/lib/billing/plan-catalog")
   const customRefusal = customPricingCheckoutRefusal((tier as { tier_name?: string }).tier_name)
   if (customRefusal) throw new Error(customRefusal)
+  // price_not_configured (wave 140J): an unset catalogue price is refused BEFORE any
+  // Stripe customer or session exists — the same pure check the hosted checkout
+  // asks (lib/billing/subscription-activation.ts planPriceNotConfigured), and the
+  // same platform incident. Never a $0 or invented charge.
+  const { planPriceNotConfigured } = await import("@/lib/billing/subscription-activation")
+  const priceRefusal = planPriceNotConfigured(tier as any, billingCycle)
+  if (priceRefusal) {
+    const { raisePriceNotConfiguredIncident } = await import("@/lib/billing/price-not-configured")
+    await raisePriceNotConfiguredIncident(createServiceClient(), priceRefusal, { brokerageId })
+    throw new Error(priceRefusal.tenantMessage)
+  }
 
   // Get brokerage info for customer
   const { data: brokerage, error: brokerageError } = await supabase

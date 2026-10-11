@@ -89,8 +89,9 @@ type Capability = keyof typeof CONTACT_PROVIDER_ROUTES
 const caps = Object.keys(CONTACT_PROVIDER_ROUTES) as Capability[]
 // Wave 82 lane A: + reverse_contact (person-keyed BatchData REVERSE skip trace, PeopleData on a miss).
 // Wave 99 (lane 99C): + property_valuation (the AVM chain as a capability — Layer 10).
-check("eight capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list, property_valuation)",
-  caps.sort().join(",") === "dnc_tcpa,email_validation,motivated_seller_list,owner_contact,person_profile,property_facts,property_valuation,reverse_contact")
+// Wave 140 (lane 140I): + map_render (Mapbox first, Google Maps the fallback — the ONE map capability).
+check("nine capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list, property_valuation, map_render)",
+  caps.sort().join(",") === "dnc_tcpa,email_validation,map_render,motivated_seller_list,owner_contact,person_profile,property_facts,property_valuation,reverse_contact")
 const rc = CONTACT_PROVIDER_ROUTES.reverse_contact
 // Re-anchored (wave 93, lane 93B2 — owner cost decision: "Versium first for owner/person email+phone
 // append, People Data Labs only when Versium misses"): Versium (an EXISTING vendor) leads both overlap

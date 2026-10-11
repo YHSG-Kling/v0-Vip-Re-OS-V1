@@ -37,6 +37,7 @@
 import type { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { QBO_MINOR_VERSION } from "@/lib/agentic-os/connector-registry"
+import { encryptSecret, decryptSecret } from "@/lib/security/secret-crypto"
 
 type ServiceClient = ReturnType<typeof createServiceClient>
 
@@ -263,8 +264,9 @@ export async function loadScopedQuickBooksCredential(
   const config = (data.config ?? {}) as Record<string, unknown>
   // Token columns are canonical; older QBO rows kept tokens in `config` (same
   // tolerance as lib/finance/accounting-egress.ts).
-  const accessToken = (data.access_token as string | null) ?? (config.access_token as string | undefined) ?? null
-  const refreshToken = (data.refresh_token as string | null) ?? (config.refresh_token as string | undefined) ?? ""
+  // Stored tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt before use.
+  const accessToken = decryptSecret((data.access_token as string | null) ?? (config.access_token as string | undefined) ?? null)
+  const refreshToken = decryptSecret((data.refresh_token as string | null) ?? (config.refresh_token as string | undefined) ?? "") ?? ""
   const realmId =
     (data.account_id as string | null) ??
     (config.realm_id as string | undefined) ??
@@ -316,8 +318,8 @@ export async function ensureFreshQuickBooksToken(
   const { error: persistError } = await svc
     .from("platform_credentials")
     .update({
-      access_token: res.data.accessToken,
-      refresh_token: res.data.refreshToken,
+      access_token: encryptSecret(res.data.accessToken),
+      refresh_token: encryptSecret(res.data.refreshToken),
       token_expires_at: tokenExpiresAt,
       updated_at: new Date().toISOString(),
     })

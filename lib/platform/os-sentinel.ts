@@ -367,7 +367,15 @@ export async function runOsSentinelSweep(client?: any, now: Date = new Date()): 
     rotationEscalated = (await escalateRotationRisks(svc, now)).escalated
     // Wave 139E — secrets fail closed: a missing SECRETS_ENCRYPTION_KEY or remaining legacy plaintext
     // raises the platform incident on the same daily heartbeat (counts only; never a secret value).
-    await reportSecretStoragePosture(svc, now)
+    const posture = await reportSecretStoragePosture(svc, now)
+    // Wave 140H — the heartbeat is the retry door for the legacy-plaintext re-seal: only when the key
+    // is configured AND the census still counts plaintext. Per row: encrypt, PROVE the round-trip,
+    // then replace, pinned to id + brokerage_id (lib/security/secret-migration.ts). Counts only.
+    if (posture.keyConfigured && posture.legacyPlaintextTotal > 0) {
+      const { migrateLegacyPlaintextSecrets } = await import("@/lib/security/secret-migration")
+      const r = await migrateLegacyPlaintextSecrets(svc, { now })
+      console.info(`[os-sentinel] legacy plaintext re-seal: migrated=${r.totals.migrated} verifyFailed=${r.totals.verifyFailed} notMatched=${r.totals.notMatched} refused=${r.totals.refused}${r.moreRemaining ? " (more remaining — next heartbeat)" : ""}`)
+    }
   } catch { /* best-effort */ }
 
   let health: OsHealth

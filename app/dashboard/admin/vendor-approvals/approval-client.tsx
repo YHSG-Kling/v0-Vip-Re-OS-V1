@@ -19,7 +19,8 @@ const INSURANCE_BADGE: Record<InsurancePosture, string> = {
   never:     "bg-muted text-muted-foreground border-transparent",
 }
 
-type TierPrice = { tier: "basic" | "standard" | "premium" | "preferred_network"; price: number }
+/** `price` null = not yet set for this brokerage (wave 140J: there is no platform default price). */
+type TierPrice = { tier: "basic" | "standard" | "premium" | "preferred_network"; price: number | null }
 
 export interface PendingVendor {
   id: string
@@ -72,7 +73,7 @@ export function VendorApprovalClient({ vendors, pricing }: { vendors: PendingVen
     <Card>
       <CardHeader className="pb-2"><CardTitle className="text-base">Vendor subscription pricing (your brokerage)</CardTitle></CardHeader>
       <CardContent>
-        <p className="text-xs text-muted-foreground mb-3">Set custom monthly prices for vendor tiers. Blank/0 falls back to the platform default.</p>
+        <p className="text-xs text-muted-foreground mb-3">Set the monthly price vendors pay for each tier. A tier with no price cannot be purchased — vendors see "pricing not yet published" until you set one; 0 makes a tier free.</p>
         <div className="grid gap-3 sm:grid-cols-4">
           {pricing.map((p) => (
             <div key={p.tier} className="space-y-1">
@@ -80,10 +81,10 @@ export function VendorApprovalClient({ vendors, pricing }: { vendors: PendingVen
               <div className="flex items-center gap-1">
                 <span className="text-sm text-muted-foreground">$</span>
                 <input
-                  type="number" min={0} defaultValue={p.price}
+                  type="number" min={0} defaultValue={p.price ?? ""} placeholder="not set"
                   className="border rounded px-2 py-1 text-sm w-24"
                   disabled={busy === `price-${p.tier}`}
-                  onBlur={(e) => { const val = Number(e.target.value); if (val !== p.price) run(`price-${p.tier}`, () => setVendorTierPricing(p.tier, val)) }}
+                  onBlur={(e) => { if (e.target.value === "") return; const val = Number(e.target.value); if (val !== p.price) run(`price-${p.tier}`, () => setVendorTierPricing(p.tier, val)) }}
                 />
                 <span className="text-xs text-muted-foreground">/mo</span>
               </div>

@@ -36,6 +36,7 @@
 import { createHmac } from "crypto"
 import type { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { encryptSecret, decryptSecret } from "@/lib/security/secret-crypto"
 
 type ServiceClient = ReturnType<typeof createServiceClient>
 
@@ -263,8 +264,9 @@ export async function loadScopedZoomCredential(
 
   if (!data || data.is_active === false) return null
   const config = (data.config ?? {}) as Record<string, unknown>
-  const accessToken = (data.access_token as string | null) ?? (config.access_token as string | undefined) ?? null
-  const refreshToken = (data.refresh_token as string | null) ?? (config.refresh_token as string | undefined) ?? ""
+  // Stored tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt before use.
+  const accessToken = decryptSecret((data.access_token as string | null) ?? (config.access_token as string | undefined) ?? null)
+  const refreshToken = decryptSecret((data.refresh_token as string | null) ?? (config.refresh_token as string | undefined) ?? "") ?? ""
   if (!accessToken) return null
   return {
     id: data.id as string,
@@ -318,8 +320,8 @@ export async function ensureFreshZoomToken(
   const { error: persistError } = await svc
     .from("platform_credentials")
     .update({
-      access_token: res.data.access_token,
-      refresh_token: res.data.refresh_token,
+      access_token: encryptSecret(res.data.access_token),
+      refresh_token: encryptSecret(res.data.refresh_token),
       token_expires_at: tokenExpiresAt,
       updated_at: new Date().toISOString(),
     })

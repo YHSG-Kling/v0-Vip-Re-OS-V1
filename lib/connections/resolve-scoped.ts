@@ -46,6 +46,7 @@ import {
   type ConnectionResolutionResult,
 } from "@/lib/integrations/connection-manager"
 import { scopeCascade, type ScopeContext, type ConnectionScope } from "./scope"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 export interface ScopedConnection extends ResolvedConnection {
   ownerType: ConnectionScope
@@ -147,10 +148,11 @@ async function readOwnerCredential(
         source: "platform_credentials",
         scope: ownerType === "agent" ? "agent" : "brokerage",
         credentialId: data.id,
-        apiKey: data.api_key ?? null,
+        // Stored keys/tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt here.
+        apiKey: decryptSecret(data.api_key ?? null),
         apiSecret: null,
-        accessToken: data.access_token ?? null,
-        refreshToken: data.refresh_token ?? null,
+        accessToken: decryptSecret(data.access_token ?? null),
+        refreshToken: decryptSecret(data.refresh_token ?? null),
         accountId: data.account_id ?? null,
         accountName: data.account_name ?? null,
         apiUrl: data.api_url ?? null,

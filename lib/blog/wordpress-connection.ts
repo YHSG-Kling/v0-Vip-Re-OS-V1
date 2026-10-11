@@ -55,6 +55,7 @@
 // and the lookup runs — the publish path itself needs no further change.
 
 import { CONNECTOR_PROVIDERS } from "@/lib/connections/scope"
+import { decryptSecretFields } from "@/lib/security/secret-crypto"
 
 /** The connector domain WordPress would live under, once it is decided. */
 const WORDPRESS_DOMAIN = "cms"
@@ -116,5 +117,6 @@ export async function resolveWordPressCredential(
     .eq("is_active", true)
     .maybeSingle()
 
-  return (data as WordPressCredential | null) ?? null
+  // Stored keys/tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt before use.
+  return decryptSecretFields((data as WordPressCredential | null) ?? null, ["api_key", "access_token"])
 }

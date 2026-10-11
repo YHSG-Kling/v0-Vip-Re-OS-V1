@@ -2,12 +2,18 @@
  * SkySlope Provider Implementation
  *
  * Wraps SkySlope's transaction + signing API.
- * https://api.skyslope.com (Bearer-token auth, REST + JSON).
+ * WAVE 140 (lane 140I) — CONTRACT VERIFIED (VENDOR_CONTRACTS.skyslope, 2026-10-11): the SkySlope
+ * Partnership API (Files / Auth / Forms / Documents / Envelopes …) publishes its production server as
+ * https://forms.skyslope.com/partner/api (OpenAPI spec servers; docs forms.skyslope.com/partner/api/docs;
+ * token POST /ext/token). https://api.skyslope.com named no published spec — retired as the default.
+ * Published paths match the ones below for files + documents (POST /files, /files/{id}/documents); the
+ * spec names envelopes as POST /files/{id}/envelopes where this client still posts /signatures — the
+ * envelope BODY shape is not in the spec excerpt, so that path is an open item, not a blind rename.
  *
  * Credentials shape (platform_credentials row):
  *   api_key     — SkySlope OAuth access token (Bearer).
  *   account_id  — SkySlope Office ID (the listing/sale belongs to an office).
- *   config.base_uri — Optional. Defaults to https://api.skyslope.com.
+ *   config.base_uri — Optional. Defaults to VENDOR_CONTRACTS.skyslope.baseUrl.
  *
  * Endpoint shape (SkySlope's file + DigiSign API):
  *   POST /files                                  → fileId      (transaction)
@@ -40,6 +46,7 @@ import type {
 } from "./transaction-provider.interface"
 import { mapProviderFormCategory } from "./transaction-provider.interface"
 import { callConnector, type GatewayResponse } from "@/lib/agentic-os/connector-gateway"
+import { VENDOR_CONTRACTS } from "@/lib/agentic-os/connector-registry"
 
 export class SkyslopeProvider implements ITransactionProvider {
   readonly name = "skyslope"
@@ -53,7 +60,7 @@ export class SkyslopeProvider implements ITransactionProvider {
     if (!credentials?.profileId) throw new Error("SkySlope: office_id required (profileId)")
     this.accessToken = credentials.apiKey
     this.officeId    = credentials.profileId
-    this.baseUri     = (credentials.baseUri ?? "https://api.skyslope.com").replace(/\/$/, "")
+    this.baseUri     = (credentials.baseUri ?? VENDOR_CONTRACTS.skyslope.baseUrl).replace(/\/$/, "")
   }
 
   /** Single egress choke point — every SkySlope API call leaves through the connector-gateway. */

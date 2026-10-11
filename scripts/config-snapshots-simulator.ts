@@ -112,10 +112,12 @@ function creationPathLayer() {
   }
   console.log(`    denominator: ${rootsToScan.length} .ts/.tsx files under app/ + lib/ (node_modules/.next excluded by the walker)`)
   console.log(`    creation paths found: ${creationPaths.length} — ${creationPaths.join(" · ") || "none"}`)
-  // RE-ANCHORED (lane 77B): the two actions no longer insert brokerages —
-  // the ONE core does; the self-heal (ensure-agent-brokerage) still does.
-  check("the census finds the known creation paths (the finder is not blind)",
-    creationPaths.some((p) => p.includes("lib/kernel/tenant-creation")) && creationPaths.some((p) => p.includes("ensure-agent-brokerage")))
+  // RE-ANCHORED (lane 77B, then wave 140C): the two actions no longer insert
+  // brokerages — the ONE core does; the brokerage-of-one self-heal
+  // (ensure-agent-brokerage) delegated there too in wave 140C (adoptExistingOwner),
+  // so the core is now the ONLY creation path the census may find.
+  check("the census finds the ONE creation path — the core — and nothing else (the finder is not blind: the control above sees an insert)",
+    creationPaths.length === 1 && creationPaths[0]!.includes("lib/kernel/tenant-creation"))
 
   const unsnapshotted = creationPaths.filter((rel) => {
     const stripped = stripComments(readFileSync(join(process.cwd(), rel), "utf8"))
@@ -137,8 +139,8 @@ function creationPathLayer() {
   check("createSubscriber delegates to the core with the staff-picked snapshot (params.snapshotId) and reports the outcome",
     /createTenantCore\(/.test(sub) && /snapshotId: params\.snapshotId/.test(sub) && /snapshotError/.test(sub))
   const heal = code("app/actions/onboarding/ensure-agent-brokerage.ts")
-  check("the brokerage-of-one self-heal applies the solo_agent funnel snapshot, best-effort",
-    /snapshotForTier\("solo_agent"/.test(heal) && /applySnapshotPayload\(/.test(heal))
+  check("the brokerage-of-one self-heal reaches the solo_agent funnel snapshot through the core (createTenantCore with tier solo_agent + adoptExistingOwner) and spells no snapshot of its own",
+    /createTenantCore\(svc, \{/.test(heal) && /tier: "solo_agent"/.test(heal) && /adoptExistingOwner:/.test(heal) && !/applySnapshotPayload\(/.test(heal) && !/snapshotForTier\(/.test(heal))
 
   // MUTATION CONTROL: strip the snapshot calls out of the core's source and
   // the detector must flag it — proof the assertion can actually fail.

@@ -171,6 +171,50 @@ export function customPricingCheckoutRefusal(tierName: string | null | undefined
   return `The ${String(tierName).replace(/_/g, " ")} plan is custom-priced — a person quotes it, so self-serve checkout is closed for it. Request a quote at ${customPricingDoorPath(String(tierName))}.`
 }
 
+// ── PRICE NOT CONFIGURED (wave 140J) ─────────────────────────────────────────
+//
+// Owner (wave 139 ECONOMICS, restated wave 140): "Stripe tier PRICING IS NOT
+// SET YET — nothing may hard-code a tier price; unknown price stays explicitly
+// unknown, never fabricated." This is the ONE typed state every money move
+// resolves an unset price to. A price is CONFIGURED only when an administered
+// row holds it (subscription_tiers.*_price_cents, subscription_tiers.features.
+// limits.overage_*_cents, brokerage_settings.settings.vendor_tier_pricing); a
+// code literal is never a price. A caller that meets this state REFUSES the
+// money move with `tenantMessage` (never a guess, never a $0 charge), and
+// raises the platform incident through lib/billing/price-not-configured.ts
+// raisePriceNotConfiguredIncident so the owner learns which price is missing.
+export const PRICE_NOT_CONFIGURED = "price_not_configured" as const
+
+export interface PriceNotConfiguredRefusal {
+  code: typeof PRICE_NOT_CONFIGURED
+  /** The money surface that refused (stable, for the incident dedupe): e.g. "phone_number_overage". */
+  surface: string
+  /** What price is missing, for staff: e.g. "team tier overage_number_cents". */
+  what: string
+  /** The sentence the TENANT / vendor sees. Says what did not happen and that staff know. */
+  tenantMessage: string
+}
+
+/** PURE: is this value an administered price in integer cents? `null`/`undefined`/
+ *  NaN/negative/non-integer are NOT configured. Zero counts only when the caller
+ *  says an explicit zero is a decision (a vendor-tier override of $0 is "free",
+ *  a plan's recurring price of 0 is an unset catalogue row). */
+export function isConfiguredPriceCents(v: unknown, opts: { allowZero?: boolean } = {}): v is number {
+  if (typeof v !== "number" || !Number.isFinite(v) || !Number.isInteger(v)) return false
+  return opts.allowZero ? v >= 0 : v > 0
+}
+
+/** PURE: the refusal for one unset price. `whatIsBlocked` completes the tenant
+ *  sentence ("this number was not added", "no checkout was started"). */
+export function priceNotConfiguredRefusal(input: { surface: string; what: string; whatIsBlocked: string }): PriceNotConfiguredRefusal {
+  return {
+    code: PRICE_NOT_CONFIGURED,
+    surface: input.surface,
+    what: input.what,
+    tenantMessage: `The price for this has not been published yet, so ${input.whatIsBlocked} and nothing was charged. Platform support has been notified — contact us and we will finish this with you.`,
+  }
+}
+
 // ── SEAT PACKAGES (wave 79A) ─────────────────────────────────────────────────
 //
 // A seat package is a Stripe add-on: ONE licensed price per tier
