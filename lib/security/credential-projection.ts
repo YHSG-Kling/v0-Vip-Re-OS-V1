@@ -35,8 +35,9 @@ export const CREDENTIAL_STORES = Object.freeze({
   platform_credentials: "platform_credentials", social_media_accounts: "social_media_accounts", integration_credentials: "integration_credentials",
 } as const) satisfies Record<CredentialStoreWithProjection, CredentialStoreWithProjection>
 
-/** The canonical `.select()` string for a store's non-secret columns. */
-export function canonicalCredentialSelect(store: CredentialStoreWithProjection): string {
+/** The canonical `.select()` string for a store's non-secret columns (internal — a proof derives the same
+ *  string from CREDENTIAL_STORE_PUBLIC_COLUMNS, the one list). */
+function canonicalCredentialSelect(store: CredentialStoreWithProjection): string {
   return CREDENTIAL_STORE_PUBLIC_COLUMNS[store].join(", ")
 }
 

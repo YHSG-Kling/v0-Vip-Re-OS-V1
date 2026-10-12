@@ -33,7 +33,7 @@ import { join } from "node:path"
 import { execFileSync } from "node:child_process"
 import { stripComments } from "./strip-comments"
 import { SECRET_STORE_COLUMNS } from "../lib/security/credential-rotation"
-import { CREDENTIAL_STORE_PUBLIC_COLUMNS, canonicalCredentialSelect } from "../lib/security/credential-projection"
+import { CREDENTIAL_STORE_PUBLIC_COLUMNS } from "../lib/security/credential-projection"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 
 let pass = 0, fail = 0
@@ -276,7 +276,7 @@ function readerLayer(files: string[]) {
   const siteDrift: string[] = []
   for (const f of projectionReaders) {
     for (const m of code(f).matchAll(/publicCredentialSelect\("([^"]+)",\s*CREDENTIAL_STORES\.([a-z_]+)\)/g)) {
-      if (m[1] !== canonicalCredentialSelect(m[2] as any)) siteDrift.push(`${f}: ${m[2]}`)
+      if (m[1] !== (CREDENTIAL_STORE_PUBLIC_COLUMNS as Record<string, readonly string[]>)[m[2]]?.join(", ")) siteDrift.push(`${f}: ${m[2]}`)
     }
     if (!/publicCredentialSelect\("[^"]+",\s*CREDENTIAL_STORES\.[a-z_]+\)/.test(code(f))) siteDrift.push(`${f}: literal-less call`)
   }
