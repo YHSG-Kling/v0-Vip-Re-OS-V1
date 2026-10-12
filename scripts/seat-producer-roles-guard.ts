@@ -214,11 +214,11 @@ console.log("\n[5 · EVERY ADMIT ON produces:false RECORDS IT; the tenant can fl
 {
   const invite = code(INVITE), staff = code(STAFF_DOOR), billing = code(BILLING), card = code(CARD)
   check("the tenant invite admits through seatGate with `produces` and, for a LICENSED role stated non-producing, calls setLicensedProducerExemption on the new user (refusal reported, not swallowed)",
-    /seatGate\(service, resolvedBrokerageId, requestedRole, \{ produces: params\.produces \}\)/.test(invite)
+    /seatGate\(service, resolvedBrokerageId, requestedRole, \{ produces: params\.produces(, subjectUserId)? \}\)/.test(invite)
     && /params\.produces === false && \(LICENSED_SEAT_ROLES as readonly string\[\]\)\.includes\(requestedRole\)/.test(invite)
     && /setLicensedProducerExemption\(service, resolvedBrokerageId, resolvedUserId, true\)/.test(invite) && /if \(!exemption\.ok\) \{\s*return \{ success: false/.test(invite))
   check("the staff door does the same on the target tenant and audits it",
-    /seatGate\(svc, params\.brokerageId, params\.userType, \{ produces: params\.produces \}\)/.test(staff)
+    /seatGate\(svc, params\.brokerageId, params\.userType, \{ produces: params\.produces(, subjectUserId)? \}\)/.test(staff)
     && /params\.produces === false && \(LICENSED_SEAT_ROLES as readonly string\[\]\)\.includes\(params\.userType\)/.test(staff)
     && /setLicensedProducerExemption\(svc, params\.brokerageId, res\.userId, true\)/.test(staff) && /"user\.marked_non_producing"/.test(staff))
   control("the finder sees an admit-without-record (the invite text minus the writer)", !/setLicensedProducerExemption\(/.test(invite.replace(/setLicensedProducerExemption\([^)]*\)/g, "")))

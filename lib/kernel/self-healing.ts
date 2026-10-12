@@ -747,8 +747,8 @@ function provisioningExecutors(s: RemediationServices): Partial<Record<PlaybookK
           const { data: a, error: aErr } = await svc.from("agents").select("id").eq("user_id", userId).eq("brokerage_id", i.brokerageId).limit(1)
           const okA = !aErr && ((a ?? []) as unknown[]).length > 0; verified = verified && okA; detail.push(`${userId.slice(0, 8)} agents row ${okA ? "present" : "ABSENT"}`)
         }
-        const { data: g, error: gErr } = await svc.from("user_role_assignments").select("id").eq("user_id", userId).eq("brokerage_id", i.brokerageId).limit(1)
-        const okG = !gErr && ((g ?? []) as unknown[]).length > 0; verified = verified && okG; detail.push(`${userId.slice(0, 8)} role grant ${okG ? "present" : "ABSENT"}`)
+        const { count: gCount, error: gErr } = await svc.from("user_role_assignments").select("id", { count: "exact", head: true }).eq("user_id", userId).eq("brokerage_id", i.brokerageId)
+        const okG = !gErr && (gCount ?? 0) > 0; verified = verified && okG; detail.push(`${userId.slice(0, 8)} role grant ${okG ? "present" : "ABSENT"}`)
       }
       if (tier && ownerNeedsTeamRow(tier)) {
         const { data: t, error: tErr } = await svc.from("teams").select("id").eq("brokerage_id", i.brokerageId).is("deleted_at", null).limit(1)

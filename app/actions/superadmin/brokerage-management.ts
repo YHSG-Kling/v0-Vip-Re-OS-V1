@@ -528,7 +528,7 @@ export async function reactivateBrokerageAction(brokerageId: string): Promise<{ 
 export async function cancelBrokerageAction(params: {
   brokerageId: string
   reason:      string
-}): Promise<{ ok: boolean; error?: string; stripeApplied?: boolean; stripeError?: string }> {
+}): Promise<{ ok: boolean; error?: string; stripeApplied?: boolean; stripeError?: string ; aiEntitlementCancelError?: string | null }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   if (!params.reason || params.reason.trim().length < 5) {
@@ -603,6 +603,12 @@ export async function cancelBrokerageAction(params: {
       stripeError,
     }
   }
+  // THE AI ENTITLEMENT follows the subscription (one writer module, lib/entitlements/ai-subscription-tier.ts):
+  // deactivated + cancelled_at stamped; a refusal is reported on the result, never swallowed.
+  const { deactivateAiSubscriptionTier } = await import("@/lib/entitlements/ai-subscription-tier")
+  const aiCancel = await deactivateAiSubscriptionTier(svc, { brokerageId: params.brokerageId })
+  const aiEntitlementCancelError = aiCancel.status === "refused" ? aiCancel.detail : null
+
 
   await writeAuditLog({
     actorUserId: auth.userId,
@@ -610,12 +616,12 @@ export async function cancelBrokerageAction(params: {
     action:      "brokerage.cancelled",
     targetType:  "brokerage",
     targetId:    params.brokerageId,
-    details:     { reason: params.reason.trim(), stripe_applied: stripeApplied, stripe_error: stripeError ?? null },
+    details:     { reason: params.reason.trim(), stripe_applied: stripeApplied, stripe_error: stripeError ?? null, ai_entitlement: aiCancel.status, ai_entitlement_error: aiEntitlementCancelError },
   })
 
   revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
   revalidatePath("/dashboard/superadmin/brokerages")
-  return { ok: true, stripeApplied, stripeError }
+  return { ok: true, stripeApplied, stripeError, aiEntitlementCancelError }
 }
 
 // ── SUBSCRIPTION PRIMITIVES: EXTEND TRIAL (COMP) / PAUSE ─────────────────────

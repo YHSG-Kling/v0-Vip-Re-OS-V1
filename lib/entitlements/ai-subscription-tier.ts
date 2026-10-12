@@ -112,3 +112,26 @@ export async function syncAiSubscriptionTier(
   if (!rowId) return refused("ai_subscription_tier insert returned no row — not counted as created", adminUserId)
   return { status: "created", detail: `entitlement row created for tier ${tier} (admin ${adminUserId})`, rowId, adminUserId, tier }
 }
+
+/**
+ * The CANCEL half. When the tenant's subscription is cancelled the AI entitlement row is
+ * deactivated and `cancelled_at` stamped — the superadmin tenant view reads it. Counted; an
+ * already-inactive (or absent) row is reported, never faked.
+ */
+export async function deactivateAiSubscriptionTier(
+  svc: Svc,
+  args: { brokerageId: string; now?: () => Date },
+): Promise<{ status: "deactivated" | "already_inactive" | "refused"; detail: string; rowId: string | null }> {
+  const brokerageId = (args.brokerageId ?? "").trim()
+  if (!brokerageId) return { status: "refused", detail: "no brokerage id — nothing was written", rowId: null }
+  const nowIso = (args.now ?? (() => new Date()))().toISOString()
+  const { data: rows, error } = await svc
+    .from("ai_subscription_tier")
+    .update({ is_active: false, cancelled_at: nowIso, updated_at: nowIso })
+    .eq("brokerage_id", brokerageId).eq("is_active", true)
+    .select("id")
+  if (error) return { status: "refused", detail: `ai_subscription_tier deactivate refused: ${error.message}`, rowId: null }
+  const hit = ((rows ?? []) as Array<{ id: string }>)[0] ?? null
+  if (!hit) return { status: "already_inactive", detail: "no active AI entitlement row for this tenant — nothing to cancel", rowId: null }
+  return { status: "deactivated", detail: `AI entitlement row ${hit.id} deactivated (cancelled_at ${nowIso})`, rowId: hit.id }
+}

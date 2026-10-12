@@ -29,7 +29,25 @@ export const CREDENTIAL_STORE_PUBLIC_COLUMNS = {
 
 export type CredentialStoreWithProjection = keyof typeof CREDENTIAL_STORE_PUBLIC_COLUMNS
 
-/** The `.select()` string for a store's non-secret columns. */
-export function publicCredentialSelect(store: CredentialStoreWithProjection): string {
+/** The store names as IDENTIFIERS for call sites — inside `.select(...)` the only string literal must be
+ *  the column list, or a column scanner reads the store name as a column. */
+export const CREDENTIAL_STORES = Object.freeze({
+  platform_credentials: "platform_credentials", social_media_accounts: "social_media_accounts", integration_credentials: "integration_credentials",
+} as const) satisfies Record<CredentialStoreWithProjection, CredentialStoreWithProjection>
+
+/** The canonical `.select()` string for a store's non-secret columns. */
+export function canonicalCredentialSelect(store: CredentialStoreWithProjection): string {
   return CREDENTIAL_STORE_PUBLIC_COLUMNS[store].join(", ")
+}
+
+/**
+ * The `.select()` string for a store's non-secret columns. The call site spells the column list
+ * LITERALLY as the first argument — that literal is what every column scanner (schema-drift,
+ * readerless-writes, opposite-missing) reads; an identifier would blind them to a real reader —
+ * and this helper holds it to the ONE canonical list: a drifted literal is never returned (the
+ * canonical list is, and the drift is visible to test:credential-migration's per-site check).
+ */
+export function publicCredentialSelect(literal: string, store: CredentialStoreWithProjection): string {
+  const canonical = canonicalCredentialSelect(store)
+  return literal === canonical ? literal : canonical
 }

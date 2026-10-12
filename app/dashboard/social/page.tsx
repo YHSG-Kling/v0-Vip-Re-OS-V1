@@ -50,10 +50,10 @@ export default async function SocialDashboardPage({
   // Get connected social accounts — the NON-secret projection (wave 140, lane 140P): these rows are
   // a prop of the client component below, so the sealed tokens must not ride along
   // (lib/security/credential-projection.ts, one spelling per store).
-  const { publicCredentialSelect } = await import("@/lib/security/credential-projection")
+  const { publicCredentialSelect, CREDENTIAL_STORES } = await import("@/lib/security/credential-projection")
   const { data: accounts } = await supabase
     .from("social_media_accounts")
-    .select(publicCredentialSelect("social_media_accounts"))
+    .select(publicCredentialSelect("id, brokerage_id, user_id, agent_id, platform, account_id, account_name, scope, token_expires_at, is_active, created_at, updated_at", CREDENTIAL_STORES.social_media_accounts))
     .eq("brokerage_id", profile.brokerage_id)
     .eq("is_active", true)
     .order("platform")

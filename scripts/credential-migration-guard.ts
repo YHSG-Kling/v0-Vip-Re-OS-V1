@@ -33,7 +33,7 @@ import { join } from "node:path"
 import { execFileSync } from "node:child_process"
 import { stripComments } from "./strip-comments"
 import { SECRET_STORE_COLUMNS } from "../lib/security/credential-rotation"
-import { CREDENTIAL_STORE_PUBLIC_COLUMNS } from "../lib/security/credential-projection"
+import { CREDENTIAL_STORE_PUBLIC_COLUMNS, canonicalCredentialSelect } from "../lib/security/credential-projection"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 
 let pass = 0, fail = 0
@@ -271,6 +271,16 @@ function readerLayer(files: string[]) {
   }
   const projectionReaders = files.filter((f) => /publicCredentialSelect\(/.test(code(f)) && f !== "lib/security/credential-projection.ts")
   check(`the projection has real readers (${projectionReaders.length}): the five 140P surfaces (platform_credentials ×2, social_media_accounts ×3, integration_credentials ×1)`, projectionReaders.length >= 6, projectionReaders.join(", "))
+  // Every call site spells the column list LITERALLY (what the column scanners read) and that literal IS the
+  // canonical list — a drift is a finding here, and the helper would have served the canonical list anyway.
+  const siteDrift: string[] = []
+  for (const f of projectionReaders) {
+    for (const m of code(f).matchAll(/publicCredentialSelect\("([^"]+)",\s*CREDENTIAL_STORES\.([a-z_]+)\)/g)) {
+      if (m[1] !== canonicalCredentialSelect(m[2] as any)) siteDrift.push(`${f}: ${m[2]}`)
+    }
+    if (!/publicCredentialSelect\("[^"]+",\s*CREDENTIAL_STORES\.[a-z_]+\)/.test(code(f))) siteDrift.push(`${f}: literal-less call`)
+  }
+  check("every projection call site spells the canonical column list literally (scanner-visible) — no drift, no identifier-only call", siteDrift.length === 0, siteDrift.join("; "))
   const getCreds = code("app/actions/settings/integrations.ts")
   const getCredsBody = getCreds.slice(getCreds.indexOf("export async function getPlatformCredentials"), getCreds.indexOf("export async function getProviderOverrides"))
   check("getPlatformCredentials never SELECTS a secret column: presence is answered by NOT NULL filters (api_key_configured / access_token_configured) and config is redacted of CONFIG_SECRET_KEYS", !SELECT_SECRET_RE.test(getCredsBody) && /\.not\("api_key", "is", null\)/.test(getCredsBody) && /\.not\("access_token", "is", null\)/.test(getCredsBody) && /api_key_configured: hasKey\.has/.test(getCredsBody) && /redactConfigSecrets\(row\.config\)/.test(getCredsBody) && /CONFIG_SECRET_KEYS/.test(getCreds))

@@ -345,7 +345,7 @@ console.log("\n[5 · WIRING — webhook, cron, the door actions, billing.ts, sta
   const kb = code(KERNEL_BILLING)
   check("billing.ts: NULL max_agents is unlimited (normalizeCatalogSeatLimit → no cap) plus extra seats, never `?? 0`", /normalizeCatalogSeatLimit\(tier\.max_agents\)/.test(kb) && /Number\.POSITIVE_INFINITY : seatCap \+ extraSeats/.test(kb) && !/max_agents \?\? 0/.test(kb))
   control("the finder sees the old `?? 0` shape", /max_agents \?\? 0/.test("active_agents: tier.max_agents ?? 0,"))
-  check("the staff door and the tenant invite take `produces` and pass it to the ONE gate", /seatGate\(svc, params\.brokerageId, params\.userType, \{ produces: params\.produces \}\)/.test(code(TENANT_USERS)) && /seatGate\(service, resolvedBrokerageId, requestedRole, \{ produces: params\.produces \}\)/.test(code(INVITE)))
+  check("the staff door and the tenant invite take `produces` and pass it to the ONE gate", /seatGate\(svc, params\.brokerageId, params\.userType, \{ produces: params\.produces(, subjectUserId)? \}\)/.test(code(TENANT_USERS)) && /seatGate\(service, resolvedBrokerageId, requestedRole, \{ produces: params\.produces(, subjectUserId)? \}\)/.test(code(INVITE)))
   check("the activation checkout returns to /login (the real sign-in page), not /auth/login (the demo page), and /login reads activated=1 / activation=cancelled with fixed copy",
     /successUrl: `\$\{appUrl\}\$\{SUBSCRIBER_ACTIVATED_PATH\}`/.test(code(CORE)) && /cancelUrl: `\$\{appUrl\}\$\{SUBSCRIBER_ACTIVATION_CANCELLED_PATH\}`/.test(code(CORE)) && !/auth\/login\?activated/.test(code(CORE))
     && /SUBSCRIBER_ACTIVATED_PATH = "\/login\?activated=1"/.test(code(DOOR)) && /SUBSCRIBER_ACTIVATION_CANCELLED_PATH = "\/login\?activation=cancelled"/.test(code(DOOR))

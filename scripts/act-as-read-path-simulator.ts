@@ -42,12 +42,17 @@
  * Run: npx tsx scripts/act-as-read-path-simulator.ts
  */
 import { execFileSync } from "node:child_process"
+import { builtinModules } from "node:module"
 import { readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { build } from "esbuild"
 import { stripComments } from "./strip-comments"
+
+// Since wave 140H every credential write FAILS CLOSED without SECRETS_ENCRYPTION_KEY (never plaintext);
+// the harness below stores a credential, so it runs under a test key (the key's own proofs are test:secrets-rls).
+process.env.SECRETS_ENCRYPTION_KEY ??= "a".repeat(64)
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8")
@@ -190,6 +195,8 @@ const stubPlugin = (overrides: Record<string, string>) => ({
       if (overrides[args.path] || STUBS[args.path]) return { path: args.path, namespace: "stub" }
       if (args.path.startsWith("@/")) return null // real module, resolved by tsconfig paths
       if (args.path.startsWith(".") || args.path.startsWith("/")) return null
+      // Node builtins are the runtime's own (the sealer needs node:crypto.randomBytes) — external, never a stub.
+      if (args.path.startsWith("node:") || builtinModules.includes(args.path)) return { path: args.path, external: true }
       // Any other bare specifier is a third-party leaf: proxy-stub it too, so an
       // npm package pulled in transitively cannot decide whether this proof runs.
       return { path: args.path, namespace: "stub" }
@@ -458,6 +465,16 @@ async function main() {
         "@/lib/voice/a2p-registration": `
         exports.validateA2pProfile = () => ({ ok: true, value: {} })
         exports.loadA2pState = async () => ({ state: {} })
+        // wave 140G: the halt verdict (credential / compliance failures halt the loop) — never halted in this harness
+        exports.haltVerdict = () => ({ halted: false })
+        exports.classifyCarrierFailure = () => "transient"
+        exports.assessPhoneTestReadiness = () => ({ ready: false, lanes: [], reason: "harness: no phone number" })
+        exports.a2pCampaignApproved = () => false
+        exports.isTollFreeNumber = (n) => String(n ?? "").replace(/[^0-9]/g, "").replace(/^1/, "").startsWith("8")
+        exports.describeTollfreeState = () => ""
+        exports.profileFingerprint = () => "harness"
+        exports.recordLoopPhase = async () => ({ ok: true })
+        exports.runTollfreeVerification = async () => ({ ok: true })
         exports.runA2pRegistration = async () => ({ ok: true })
         exports.describeA2pState = () => ""
         exports.nextA2pStep = () => ""

@@ -174,7 +174,9 @@ console.log("\n── every repointed write names a value its column admits ─�
     ["app/actions/social-dm.ts", "message_provider_logs", "channel", "social_dm", ["ai_social_dm"]],
     ["app/actions/seller-listing/execution-engine.ts", "commission_adjustments", "applies_to", "listing", ["gross"]],
     ["app/actions/seller-listing/execution-engine.ts", "commission_adjustments", "direction", "reduction", ["credit"]],
-    ["app/api/recruiting/provision-agent/route.ts", "agents", "onboarding_status", "pending", ["not_started"]],
+    // wave 140F: app/api/recruiting/provision-agent/route.ts converged onto inviteTenantMember — the agents row
+    // (and its onboarding_status) is written by the ONE provisioner, lib/kernel/users.ts.
+    ["lib/kernel/users.ts", "agents", "onboarding_status", "pending", ["not_started"]],
     ["app/crm/page.tsx", "marketing_campaigns", "campaign_type", "nurture", ["omni"]],
     ["app/dashboard/sphere/actions.ts", "predictive_listing_actions", "status", "approved", ["queued"]],
     // in_progress on a new row, and whatever the row already held preserved —

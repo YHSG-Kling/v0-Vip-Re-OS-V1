@@ -320,7 +320,7 @@ function blockerLayer() {
   const sync = code("lib/buyer-offer/status-sync.ts")
   const actChain = chainAfter(sync, '.from("activities")')
   const offChain = chainAfter(sync, '.from("offers")')
-  check("syncOfferStatus takes the offer's tenant and pins it on the activities read AND the offers.status write (counted)", /syncOfferStatus\(\s*offerId: string,\s*(\/\*\*[\s\S]*?\*\/\s*)?brokerageId: string,?\s*\)/.test(sync.replace(/\n\s*\/\*\*[\s\S]*?\*\/\s*/g, "\n")) && /\.eq\("brokerage_id",\s*brokerageId\)/.test(actChain) && /\.eq\("brokerage_id",\s*brokerageId\)/.test(offChain) && /\.select\("id"\)/.test(offChain) && /updated\.length !== 1/.test(sync))
+  check("syncOfferStatus takes the offer's tenant and pins it on the activities read AND the offers.status write (counted)", /syncOfferStatus\(\s*offerId: string,\s*brokerageId: string,?\s*\)/.test(sync) && /\.eq\("brokerage_id",\s*brokerageId\)/.test(actChain) && /\.eq\("brokerage_id",\s*brokerageId\)/.test(offChain) && /\.select\("id"\)/.test(offChain) && /updated\.length !== 1/.test(sync))
   for (const f of ["app/actions/buyer-offer/submit-for-signature.ts", "app/actions/buyer-offer/respond-to-counter.ts"]) {
     check(`${f} passes the session-verified tenant to syncOfferStatus`, /syncOfferStatus\(offerId,\s*[A-Za-z_][\w.]*(\s+as\s+string)?\)/.test(code(f)))
   }

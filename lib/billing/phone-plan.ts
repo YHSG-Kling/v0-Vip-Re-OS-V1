@@ -54,7 +54,7 @@ export interface PhoneAllowance {
 }
 
 /** The surface name every phone price_not_configured refusal and incident carries. */
-export const PHONE_OVERAGE_PRICE_SURFACE = "phone_number_overage"
+const PHONE_OVERAGE_PRICE_SURFACE = "phone_number_overage"
 
 // ── Per-tier BUNDLE DEFAULTS (owner-tunable via subscription_tiers.features.limits) ───
 // Generous inside-bundle so normal use is never billed twice. The overage

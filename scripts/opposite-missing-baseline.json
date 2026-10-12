@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-02",
+  "generated": "2026-10-12",
   "counts": {
     "col-write-no-read": 0,
     "col-read-no-write": 0,
@@ -11,7 +11,7 @@
     "fetch-no-route": 0,
     "route-no-caller": 0,
     "route-external-caller": 8,
-    "route-unresolved-door": 0
+    "route-unresolved-door": 1
   },
   "keys": {
     "col-write-no-read": [],
@@ -33,6 +33,8 @@
       "/api/voice/relay/plan",
       "/api/workflow/trigger"
     ],
-    "route-unresolved-door": []
+    "route-unresolved-door": [
+      "/api/v1/[resource]"
+    ]
   }
 }

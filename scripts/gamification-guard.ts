@@ -283,8 +283,10 @@ function wiringLayer() {
   check("exactly two call-site awards remain, both UNRESOLVED by design (CONTACT_ASSIGNED: the canonical CONTACT_AGENT_ASSIGNED is the welcome trigger and A→B→A repeats; CHALLENGE_PRIZE: no event, data-driven points)", remaining.length === 2 && !/awardAgentPoints\(/.test(src("lib/application/listing-lifecycle.ts")) && !/awardAgentPoints\(/.test(src("lib/kernel/agent-onboarding.ts")))
   check("anniversaries key on agents.anniversary_date with created_at fallback (pure anniversaryStartDate) and the roster read selects it",
     anniversaryStartDate({ created_at: "2024-01-01", anniversary_date: "2023-06-01" }) === "2023-06-01" && anniversaryStartDate({ created_at: "2024-01-01", anniversary_date: null }) === "2024-01-01" && /select\("id, created_at, anniversary_date"\)/.test(src("lib/gamification/work-anniversaries.ts")))
-  const seatDoors = ["lib/kernel/users.ts", "app/actions/agents.ts", "app/api/recruiting/provision-agent/route.ts"]
-  check("every agents-row provisioning door stamps anniversary_date (the writer the column lacked)", seatDoors.every((f) => /anniversary_date: new Date\(\)\.toISOString\(\)\.slice\(0, 10\)/.test(src(f))))
+  // The doors are derived (the files that still INSERT an agents row); wave 140F converged the recruiting
+  // route onto lib/kernel/users.ts, so a converged door drops out instead of failing a pinned list.
+  const seatDoors = ["lib/kernel/users.ts", "app/actions/agents.ts", "app/api/recruiting/provision-agent/route.ts"].filter((f) => /from\("agents"\)[\s\S]{0,400}?\.(insert|upsert)\(/.test(src(f)))
+  check(`every agents-row provisioning door stamps anniversary_date (the writer the column lacked) — doors: ${seatDoors.join(", ")}`, seatDoors.length >= 2 && seatDoors.every((f) => /anniversary_date: new Date\(\)\.toISOString\(\)\.slice\(0, 10\)/.test(src(f))))
   check("POSITIVE CONTROL: the stamp finder does not match a file that only READS the column", !/anniversary_date: new Date\(\)/.test(src("lib/gamification/work-anniversaries.ts")))
 
   // Fatigue-aware pressure.

@@ -15,7 +15,7 @@ import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting
 import { selectableConnectionsForScope, candidateProvider } from "@/lib/connections/scope"
 import { canonicalProvider } from "@/lib/integrations/connection-manager"
 import { encryptSecret } from "@/lib/security/secret-crypto"
-import { publicCredentialSelect } from "@/lib/security/credential-projection"
+import { publicCredentialSelect, CREDENTIAL_STORES } from "@/lib/security/credential-projection"
 import { CONFIG_SECRET_KEYS } from "@/lib/connections/credential-secret"
 
 /**
@@ -151,7 +151,7 @@ export async function getPlatformCredentials(): Promise<PlatformCredential[]> {
   // The NON-secret projection (lib/security/credential-projection.ts — spelled once per store), plus
   // two presence reads the database answers: which rows HAVE a sealed api_key / access_token. The
   // secret columns are never selected here (was `select("*")`, which shipped the envelopes to the browser).
-  const base = supabase.from("platform_credentials").select(publicCredentialSelect("platform_credentials")).eq("owner_type", "brokerage").eq("owner_id", brokerageId).order("platform")
+  const base = supabase.from("platform_credentials").select(publicCredentialSelect("id, brokerage_id, owner_type, owner_id, agent_user_id, platform, scope, api_url, token_expires_at, account_id, account_name, is_active, last_synced_at, last_tested_at, test_status, sync_error, config, created_at, updated_at", CREDENTIAL_STORES.platform_credentials)).eq("owner_type", "brokerage").eq("owner_id", brokerageId).order("platform")
   const keyed = supabase.from("platform_credentials").select("id").eq("owner_type", "brokerage").eq("owner_id", brokerageId).not("api_key", "is", null)
   const tokened = supabase.from("platform_credentials").select("id").eq("owner_type", "brokerage").eq("owner_id", brokerageId).not("access_token", "is", null)
   const [{ data, error }, { data: keyedRows, error: keyedError }, { data: tokenedRows, error: tokenedError }] = await Promise.all([base, keyed, tokened])

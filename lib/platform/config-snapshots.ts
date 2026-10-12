@@ -152,6 +152,16 @@ export async function applySnapshotPayload(
 
   /** ONE-ROW-PER-BROKERAGE layers (global_settings, brokerage_brand_settings). Re-sanitized on
    *  apply (allow-list) so a tampered payload never writes a column the capture would not carry. */
+  /** The write chains, one per table, spelled with the table LITERAL (the column census attributes a
+   *  dynamic-key write to the table only when it can see the table name; `.from(table)` hid both). */
+  const upsertKeyed = (table: "global_settings" | "brokerage_brand_settings", row: Record<string, unknown>) =>
+    table === "global_settings"
+      ? svc.from("global_settings").upsert(row, { onConflict: "brokerage_id" })
+      : svc.from("brokerage_brand_settings").upsert(row, { onConflict: "brokerage_id" })
+  const updateKeyed = (table: "global_settings" | "brokerage_brand_settings", patch: Record<string, unknown>) =>
+    table === "global_settings"
+      ? svc.from("global_settings").update(patch).eq("brokerage_id", targetBrokerageId).select("brokerage_id")
+      : svc.from("brokerage_brand_settings").update(patch).eq("brokerage_id", targetBrokerageId).select("brokerage_id")
   const applyKeyedLayer = async (table: "global_settings" | "brokerage_brand_settings", rawLayer: Record<string, unknown>, allow: readonly string[]) => {
     const layer = pickFields(rawLayer, allow)
     const cols = Object.keys(layer)
@@ -161,7 +171,8 @@ export async function applySnapshotPayload(
     const live = (existing ?? null) as Record<string, unknown> | null
     const absent = absentKeys(live, layer)
     if (!fillAbsent) {
-      const { error } = await svc.from(table).upsert({ brokerage_id: targetBrokerageId, ...layer, updated_at: now }, { onConflict: "brokerage_id" })
+      const replaceRow: Record<string, unknown> = { brokerage_id: targetBrokerageId, ...layer, updated_at: now }
+      const { error } = await upsertKeyed(table, replaceRow)
       if (error) { refused.push(`${table}: ${error.message}`); return }
       applied.push(table)
       book(table, cols, absent)
@@ -170,10 +181,12 @@ export async function applySnapshotPayload(
     for (const k of cols) if (!(k in absent)) preserved.push(`${table}.${k}`)
     if (!Object.keys(absent).length) return
     if (!live) {
-      const { error } = await svc.from(table).upsert({ brokerage_id: targetBrokerageId, ...absent, updated_at: now }, { onConflict: "brokerage_id" })
+      const fillRow: Record<string, unknown> = { brokerage_id: targetBrokerageId, ...absent, updated_at: now }
+      const { error } = await upsertKeyed(table, fillRow)
       if (error) { refused.push(`${table}: ${error.message}`); return }
     } else {
-      const { data: rows, error } = await svc.from(table).update({ ...absent, updated_at: now }).eq("brokerage_id", targetBrokerageId).select("brokerage_id")
+      const fillPatch: Record<string, unknown> = { ...absent, updated_at: now }
+      const { data: rows, error } = await updateKeyed(table, fillPatch)
       if (error) { refused.push(`${table}: ${error.message}`); return }
       if ((rows ?? []).length === 0) { refused.push(`${table}: fill matched no row for ${targetBrokerageId}`); return }
     }

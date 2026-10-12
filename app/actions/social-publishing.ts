@@ -119,10 +119,10 @@ export async function getSocialAccounts(_userId?: string, _userRole?: string) {
 
   // Wave 140 (lane 140P): the NON-secret projection — a "use server" return value handed to the
   // profile page's SocialAccountsCard; the sealed tokens stay in the store (credential-projection.ts).
-  const { publicCredentialSelect } = await import("@/lib/security/credential-projection")
+  const { publicCredentialSelect, CREDENTIAL_STORES } = await import("@/lib/security/credential-projection")
   let query = supabase
     .from("social_media_accounts")
-    .select(publicCredentialSelect("social_media_accounts"))
+    .select(publicCredentialSelect("id, brokerage_id, user_id, agent_id, platform, account_id, account_name, scope, token_expires_at, is_active, created_at, updated_at", CREDENTIAL_STORES.social_media_accounts))
     .eq("is_active", true)
     .order("platform")
 

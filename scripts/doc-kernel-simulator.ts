@@ -1893,7 +1893,10 @@ async function main() {
         && src("lib/vendor-marketplace/vendor-ratings.ts").includes('onConflict: "vendor_id"')
         && src("app/actions/social-publishing.ts").includes('onConflict: "brokerage_id,platform,account_id"')
         && src("app/api/social/oauth/[platform]/route.ts").includes('onConflict: "brokerage_id,platform,account_id"')
-        && src("app/dashboard/settings/integrations/idx-broker/page.tsx").includes('onConflict: "owner_id,owner_type,platform"')
+        // wave 140H/P: the IDX page's browser upsert moved onto the server action, whose write is an
+        // owner-keyed update-or-insert (the unique is a PARTIAL index a plain onConflict cannot target).
+        && !src("app/dashboard/settings/integrations/idx-broker/page.tsx").includes('from("platform_credentials").upsert')
+        && src("app/actions/settings/integrations.ts").includes("Owner-keyed update-or-insert")
         && src("app/actions/open-house.ts").includes('onConflict: "event_id,contact_id,channel"')
         && src("lib/kernel/calendar-sync.ts").includes('onConflict: "brokerage_id,provider_type,provider_account_id,user_id"')
         && src("lib/kernel/users.ts").includes("find-pending")
@@ -2149,7 +2152,9 @@ async function main() {
           //  lane 76C added simli — the backup face-render key, presence-audited so the
           //  readiness board shows the seam dark when the key is absent; no GET probe
           //  because Simli's only documented door MINTS a session token.)
-          Object.keys(PLATFORM_PROVIDER_KEYS).sort().join(",") === "did,elevenlabs,lob,newsapi_ai,rentcast,simli,web_push"
+          // the RULE (not a waypoint): every platform key named here is registered; a new key (wave 140I
+          // added mapbox, with its own probe) extends the list, it does not break this audit.
+          ["did", "elevenlabs", "lob", "newsapi_ai", "rentcast", "simli", "web_push", "mapbox"].every((k) => k in PLATFORM_PROVIDER_KEYS)
           && !!PROBE_SPECS.lob && !!PROBE_SPECS.elevenlabs && !!PROBE_SPECS.did && !!PROBE_SPECS.rentcast
           && !!PROBE_SPECS.stripe && !!PROBE_SPECS.quickbooks
           && src("app/api/cron/connector-health/route.ts").includes("PLATFORM_PROVIDER_KEYS")

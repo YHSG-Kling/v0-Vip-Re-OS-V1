@@ -51,7 +51,7 @@ check("the loop imports shouldAutoExecuteOffer (the one definition of fully-exec
 check("…and spells no execution predicate of its own",
   !/seller_response_type === "accepted"|!o\.buyer_signed_at|fully_signed_contract_received_at &&/.test(LOOP))
 check("the loop calls the ONE driver", /autoExecuteFullySignedOffer\(offerId/.test(LOOP))
-check("…which calls the ONE gate", /submitOfferToCompliance\(\{ offerId, userId: agentUserId \}\)/.test(DRIVER))
+check("…which calls the ONE gate", /submitOfferToCompliance\(\{ offerId, userId: agentUserId(, internalSecret: process\.env\.CRON_SECRET)? \}\)/.test(DRIVER))
 check("the loop never calls the gate or the bridge directly (no second door around the driver)",
   !/submitOfferToCompliance|createTransactionFromOffer/.test(LOOP))
 

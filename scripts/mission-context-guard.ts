@@ -271,7 +271,7 @@ async function main() {
     const dom = MAINTENANCE_DOMAINS.shared_working_context
     check("H6 MAINTENANCE_DOMAINS.shared_working_context — owner + co-owners named in the prose", !!dom && dom.manager in MANAGERS && dom.proof === "test:mission-context" && (dom.coOwners ?? []).length === 2 && (dom.coOwners ?? []).every((k) => dom.what.includes(k)))
     const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> }
-    check("H7 package.json registers the proof after test:scrapers", pkg.scripts["test:mission-context"] === "tsx scripts/mission-context-guard.ts" && /test:scrapers(\s*&&\s*npm run test:[a-z-]+)*\s*&&\s*npm run test:mission-context(\s|&|$)/.test(pkg.scripts.guard))
+    check("H7 package.json registers the proof after test:scrapers", pkg.scripts["test:mission-context"] === "tsx scripts/mission-context-guard.ts" && /test:scrapers(\s*&&\s*npm run test:[a-z0-9-]+)*\s*&&\s*npm run test:mission-context(\s|&|$)/.test(pkg.scripts.guard))
     const { readdirSync } = await import("node:fs")
     check("H8 no migration — the working context rides missions.evidence (no m714 file; no `working_context` column named by a writer)", !readdirSync("supabase/migrations").some((f) => f.startsWith("m714")) && !/update\(\{[^}]*working_context/.test(missions))
   }

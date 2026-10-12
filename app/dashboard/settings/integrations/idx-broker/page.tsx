@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox"
 import { Separator } from "@/components/ui/separator"
 import { createClient } from "@/lib/supabase/client"
-import { publicCredentialSelect } from "@/lib/security/credential-projection"
+import { publicCredentialSelect, CREDENTIAL_STORES } from "@/lib/security/credential-projection"
 
 /** The IDX credential AS THIS BROWSER PAGE MAY SEE IT (wave 140, lane 140P): the non-secret
  *  projection only. `api_key` is never selected here — a browser has no key to decrypt the sealed
@@ -99,7 +99,7 @@ export default function IDXBrokerSettingsPage() {
       // server action omits api_key), typing a new one replaces it.
       const { data: existing, error: existingError } = await supabase
         .from("platform_credentials")
-        .select(publicCredentialSelect("platform_credentials"))
+        .select(publicCredentialSelect("id, brokerage_id, owner_type, owner_id, agent_user_id, platform, scope, api_url, token_expires_at, account_id, account_name, is_active, last_synced_at, last_tested_at, test_status, sync_error, config, created_at, updated_at", CREDENTIAL_STORES.platform_credentials))
         .eq("brokerage_id", profile.brokerage_id)
         .eq("platform", "idxbroker")
         .maybeSingle()

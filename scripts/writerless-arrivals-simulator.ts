@@ -187,9 +187,9 @@ function secretLayer() {
 
   const crm = blankComments(src("app/actions/crm-connect.ts"))
   check("the secret is stored through THIS TREE'S secret scheme, not a second one",
-    /encryptSecret\(rawSecret\)/.test(crm) && /from "@\/lib\/security\/secret-crypto"/.test(crm))
-  check("a BLANK box is stored as null, never as '' (an '' secret passes every `!!apiSecret` gate)",
-    /rawSecret\s*\?\s*encryptSecret\(rawSecret\)\s*:\s*null/.test(crm))
+    /encryptSecret\(rawSecret( \|\| null)?\)/.test(crm) && /from "@\/lib\/security\/secret-crypto"/.test(crm))
+  check("a BLANK box is stored as null, never as '' (an '' secret passes every `!!apiSecret` gate): `rawSecret || null` turns '' into null BEFORE the sealer, whose contract returns null for null",
+    /encryptSecret\(rawSecret \|\| null\)/.test(crm))
   check("the secret is NEVER logged or echoed back to the caller",
     !/console\.(log|error|warn)\([^)]*apiSecret/i.test(crm) && !/error:\s*[^\n]*rawSecret/.test(crm))
   check("the form actually collects it (an action param with no field is still no writer)",
@@ -219,9 +219,9 @@ function secretLayer() {
   control("the discarded-secret literal restored",
     /apiSecret:\s*null/.test(cm.replace(/apiSecret: secretFromConfig\(data\.config\)/, "apiSecret: null")))
   control("the capture param removed from the write object",
-    writeKeysIn(crm.replace(/api_secret: apiSecret,/g, ""), "agent_api_credentials", "upsert")?.includes("api_secret") !== true)
+    writeKeysIn(crm.replace(/api_secret: encryptSecret\(rawSecret \|\| null\),/g, ""), "agent_api_credentials", "upsert")?.includes("api_secret") !== true)
   control("a blank secret stored as '' rather than null",
-    !/rawSecret\s*\?\s*encryptSecret\(rawSecret\)\s*:\s*null/.test(crm.replace(/rawSecret \? encryptSecret\(rawSecret\) : null/, 'encryptSecret(rawSecret ?? "")')))
+    !/encryptSecret\(rawSecret \|\| null\)/.test(crm.replace(/encryptSecret\(rawSecret \|\| null\)/g, 'encryptSecret(rawSecret ?? "")')))
   control("the duplicate reader restored", /from\(\s*["']integration_credentials["']\s*\)/.test(dispatchCode + '\n.from("integration_credentials")'))
 }
 

@@ -108,7 +108,7 @@ async function main() {
     !/stampPurchasedListCost\(/.test(`const { action } = await captureContact({ brokerageId })\nif (action === 'created') created++`))
   const page = code("app/dashboard/admin/import/page.tsx")
   ok("the import page asks \"What did this list cost you?\" and passes listCostUsd to createImportRecord", /What did this list cost you\?/.test(page) && /listCostUsd,\s*\}\)/.test(page))
-  ok("…refuses a negative amount client-side and says platform-covered sourcing is never the tenant's spend", /0 or more/.test(page) && /platform-covered/.test(page))
+  ok("…refuses a negative amount client-side and says sourcing is included in the subscription, never the tenant's spend (owner: never \"platform-covered\" to a tenant)", /0 or more/.test(page) && /included in your subscription/.test(page) && !/platform-covered/.test(page))
   ok("…and the history table shows the list cost", /List cost/.test(page) && /imp\.list_cost_usd/.test(page))
   const migrations = readdirSync(join(ROOT, "supabase/migrations")).filter((f) => /^m678-/.test(f))
   ok("m678 exists", migrations.length === 1, migrations.join(","))
