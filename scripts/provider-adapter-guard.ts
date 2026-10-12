@@ -533,6 +533,31 @@ async function main() {
   const heatMap = stripComments(read("app/dashboard/team-heatmap/heatmap-map.tsx"))
   ok(/resolveMapProvider\("browser_tiles"/.test(heatPage) && /bookMapLoadSpend\(/.test(heatPage) && /loadProviderHealth\(/.test(heatPage) && !/process\.env\.MAPBOX_TOKEN/.test(heatPage) && !/googleMapsBrowserKey/.test(heatPage), "the heatmap page resolves its provider through the ONE walk (health-aware), books the map load, and no longer tests MAPBOX_TOKEN by presence")
   ok(!/process\.env\./.test(heatMap) && !/googleMapsBrowserKey/.test(heatMap) && /isGoogle && provider && \(/.test(heatMap) && /mapboxgl/.test(heatMap) && /mb\.accessToken = provider\.key/.test(heatMap), "the client map reads NO env: Google Maps JS renders only for a server-chosen google_maps WITH a key; the Mapbox GL JS branch sets the public token it was handed")
+
+  // ── wave 140 (lane 140P): the buyer-tour route image rides the SAME walk, server-side, booked ──
+  const { getRouteMapImageUrl } = await import("../lib/property/street-view")
+  const routeStops = [
+    { address: "1 Congress Ave, Austin, TX", lat: 30.2672, lon: -97.7431 },
+    { address: "2 Guadalupe St, Austin, TX", lat: 30.27, lon: -97.74 },
+    { address: "3 Unplaceable Ln", lat: null, lon: null },
+  ]
+  const rMb = getRouteMapImageUrl({ stops: routeStops, env: envBoth })
+  const mbOverlay = rMb ? decodeURIComponent(rMb.url.slice(rMb.url.indexOf("geojson(") + 8, rMb.url.indexOf(")/auto/"))) : ""
+  ok(rMb?.provider === "mapbox" && rMb.sku === "static_image" && rMb.placed === 2 && /^https:\/\/api\.mapbox\.com\/styles\/v1\/mapbox\/[a-z0-9-]+\/static\/geojson\(/.test(rMb.url) && /\/auto\/600x200@2x\?padding=40&access_token=pk\.test$/.test(rMb.url) && /"marker-symbol":1/.test(mbOverlay) && /"marker-symbol":2/.test(mbOverlay) && !/"marker-symbol":3/.test(mbOverlay) && /"LineString"/.test(mbOverlay) && /-97\.7431,30\.2672/.test(mbOverlay),
+    `route image (Mapbox): numbered pins + a LineString over the GEOCODED stops only (2 of 3 placed), position auto, the public token (${rMb?.url.length ?? 0} chars)`)
+  const rG = getRouteMapImageUrl({ stops: routeStops, env: { GOOGLE_MAPS_API_KEY: "g-server" } })
+  ok(rG?.provider === "google_maps" && rG.sku === "static_map" && rG.placed === 3 && /maps\.googleapis\.com\/maps\/api\/staticmap/.test(rG.url) && /markers=label%3A1%7C30\.2672%2C-97\.7431/.test(rG.url) && /markers=label%3A3%7C3\+Unplaceable\+Ln/.test(rG.url) && /path=weight%3A3%7Ccolor%3A0x3b82f6%7C/.test(rG.url) && /key=g-server/.test(rG.url),
+    "route image (Google): every stop drawn — coordinates when placed, the ADDRESS otherwise — numbered markers + the path, the server key")
+  const rFall = getRouteMapImageUrl({ stops: [{ address: "3 Unplaceable Ln" }], env: envBoth })
+  ok(rFall?.provider === "google_maps" && rFall.route.skipped.length === 0 && getRouteMapImageUrl({ stops: [{ address: "3 Unplaceable Ln" }], env: { MAPBOX_PUBLIC_TOKEN: "pk.test" } }) === null && getRouteMapImageUrl({ stops: [], env: envBoth }) === null,
+    "a route with NO placed stop falls through Mapbox to Google (addresses) when Google is configured; null when only Mapbox is, or when there are no stops — never a fabricated point")
+  const tourTab = stripComments(read("app/crm/contacts/[contactId]/tours/components/tour-confirm-tab.tsx"))
+  ok(!/process\.env\./.test(tourTab) && !/maps\.googleapis\.com/.test(tourTab) && !/NEXT_PUBLIC_GOOGLE_MAPS_API_KEY/.test(tourTab) && /getTourRouteMap\(/.test(tourTab) && /attribution/.test(tourTab),
+    "the tour Confirm tab reads NO env and mints NO map URL — it asks getTourRouteMap and renders the URL + attribution it is handed")
+  const tourAction = stripComments(read("app/actions/tour-planner.ts"))
+  const trm = tourAction.slice(tourAction.indexOf("export async function getTourRouteMap"), tourAction.indexOf("export async function createTourPlan"))
+  ok(trm.indexOf("await requireCaller()") > 0 && trm.indexOf("await requireCaller()") < trm.indexOf("createServiceClient()") && /\.eq\('brokerage_id', auth\.brokerageId\)/.test(trm) && /loadProviderHealth\('mapbox'\)/.test(trm) && /resolveMapProvider\('static_image'/.test(trm) && /getRouteMapImageUrl\(/.test(trm) && /bookMapsImageSpend\(\{ brokerageId: auth\.brokerageId/.test(trm) && /createCachedGeocoder\(\)/.test(trm),
+    "getTourRouteMap: session gate before the service client, tour pinned to the session tenant, health-aware walk, geocodes through the free survivor only for Mapbox, mints via getRouteMapImageUrl and BOOKS the image for the tenant")
   const CORRECTED = ["lofty", "skyslope", "brokermint", "formsimplicity", "google_ads", "open_meteo", "mapbox"] as const
   for (const p of CORRECTED) {
     const a = adapterFor(p) as ProviderAdapter
@@ -587,9 +612,14 @@ async function main() {
 /** A raw fetch that may stay raw — `file|host` → the technical reason it cannot ride callConnector. */
 const RAW_FETCH_EXCEPTIONS: Record<string, string> = {
   "lib/voice/elevenlabs-tts.ts|api.elevenlabs.io": "STREAMING TTS — the raw Response body is piped to the client as it arrives; callConnector buffers every response (json/text/arraybuffer) and cannot hand back a stream. The buffered TTS path in the same file uses the gateway (scripts/elevenlabs-egress-guard.ts pins exactly one raw /stream fetch).",
-  "app/components/ui/address-autocomplete.tsx|nominatim.openstreetmap.org": "BROWSER call (\"use client\") — the gateway is server-only (it imports the service-role client for its outcome row), so a client component cannot reach it; keyless free geocoder, nothing to meter. Recommendation: a server action over osint_free's nominatim connector.",
-  "app/crm/contacts/[contactId]/offers/components/offer-initiation-flow.tsx|nominatim.openstreetmap.org": "BROWSER call (\"use client\") — same as address-autocomplete: the server-only gateway cannot run in a client component; keyless free geocoder. Recommendation: the same server action.",
+  // Wave 140 (lane 140P): the two BROWSER Nominatim exceptions (address-autocomplete.tsx, offer-initiation-flow.tsx)
+  // are GONE — both components now call app/actions/address-suggestions.ts over lib/external/nominatim-geocode.ts
+  // suggestAddressesDetailed (gateway, tenant, health gate, usage row). Section N's 140P block pins the move.
 }
+
+/** The two browser address boxes and the server door they ride (wave 140, lane 140P). */
+const ADDRESS_BOXES = ["app/components/ui/address-autocomplete.tsx", "app/crm/contacts/[contactId]/offers/components/offer-initiation-flow.tsx"] as const
+const ADDRESS_ACTION = "app/actions/address-suggestions.ts"
 
 /** Files that ARE the egress (the gateway's own fetch, the probe's) — never a hidden call. */
 const EGRESS_FILES = new Set(["lib/agentic-os/connector-gateway.ts", "lib/agentic-os/connector-probe.ts"])
@@ -668,6 +698,29 @@ async function sectionN(corpus: Array<{ path: string; src: string }>, derived: R
   }
   const brand = stripComments(read("app/actions/superadmin/platform-brand.ts"))
   ok(/tavilySearch\(/.test(brand) && !/api\.tavily\.com/.test(brand), "the platform-brand harvest's duplicate raw Tavily client is merged onto the survivor tavilySearch (lib/external/tavily-client.ts)")
+
+  // ── wave 140 (lane 140P): the browser Nominatim calls moved onto ONE server door over the osint_free survivor ──
+  for (const f of ADDRESS_BOXES) {
+    const s = stripComments(read(f))
+    ok(!/nominatim\.openstreetmap\.org/.test(s) && !/(?<![.\w])fetch\s*\(/.test(s) && /suggestAddresses\(/.test(s) && !/display_name|STATE_ABBR/.test(s),
+      `${f}: no browser Nominatim fetch, no second address parser — asks the server door suggestAddresses()`)
+  }
+  const addrAction = stripComments(read(ADDRESS_ACTION))
+  const addrGate = addrAction.indexOf("await requireCaller()")
+  ok(/^"use server"/.test(addrAction.trim()) && addrGate > 0 && addrGate < addrAction.indexOf("suggestAddressesDetailed(") && /brokerageId: caller\.brokerageId/.test(addrAction) && !/brokerageId\??: string/.test(addrAction),
+    `${ADDRESS_ACTION}: "use server", gates on the SESSION (requireCaller) before any egress, passes the session tenant, accepts no brokerageId parameter`)
+  ok(/trackVendorUsageService\(\{[\s\S]{0,120}vendor: "osint_free"/.test(addrAction) && /outcome !== "not_attempted"/.test(addrAction),
+    `${ADDRESS_ACTION}: every request that left is booked on the free ledger as osint_free (the row records the work at $0; a short query that never left books nothing)`)
+  const nomSrc = stripComments(read("lib/external/nominatim-geocode.ts"))
+  const suggestBody = nomSrc.slice(nomSrc.indexOf("export async function suggestAddressesDetailed"))
+  ok(/connector:\s*"nominatim"/.test(suggestBody) && /brokerageId:\s*opts\.brokerageId/.test(suggestBody) && /skipWhenFailing:\s*true/.test(suggestBody) && /respectNominatimGap\(\)/.test(suggestBody) && /addressdetails:\s*"1"/.test(suggestBody),
+    "suggestAddressesDetailed rides callConnector(nominatim) with the tenant, the health gate (skipWhenFailing) and the courtesy pacer")
+  const { parseNominatimAddressRow } = await import("../lib/external/nominatim-geocode")
+  const parsed = parseNominatimAddressRow({ place_id: 42, display_name: "1600 Pennsylvania Avenue NW, Washington, DC 20500, United States", address: { house_number: "1600", road: "Pennsylvania Avenue NW", city: "Washington", state: "District of Columbia", postcode: "20500" } })
+  ok(parsed?.placeId === "42" && parsed.street === "1600 Pennsylvania Avenue NW" && parsed.city === "Washington" && parsed.state === "DC" && parsed.zip === "20500" && parseNominatimAddressRow({ address: {} }) === null && parseNominatimAddressRow({ display_name: "Austin, Texas", address: { town: "Austin", state: "Texas" } })?.state === "TX",
+    "ONE parser: street = number + road, city falls back through town, the state is abbreviated, a row with no display name is null")
+  const rawBox = rawProviderFetches([{ path: "app/components/ui/x.tsx", src: `"use client"\nexport function X() { return fetch("https://nominatim.openstreetmap.org/search?q=1") }` }])
+  ok(rawBox.hits.length === 1 && rawBox.hits[0].host === "nominatim.openstreetmap.org", "POSITIVE CONTROL: a browser Nominatim fetch would be flagged again as a hidden provider call (no exception remains for it)")
   const regSrc = stripComments(read("lib/ads/connectors/registry.ts"))
   ok((regSrc.match(/brokerageId \}/g) ?? []).length >= 3, "loadConnectorCredential stamps the tenant it loaded FOR on every credential it returns (vibe_ctv, chatgpt, platform_credentials)")
   const exceptionsLeft = derived.adapters.filter((a) => a.route.exception).map((a) => a.provider)

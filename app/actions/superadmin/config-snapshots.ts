@@ -6,22 +6,35 @@
 // brand + voice + feature enablement as a reusable template, apply it to other tenants.
 // requireSuperadmin-gated, audited (superadmin_audit_log), service-client writes. The
 // capture layer is allow-list-based, so a snapshot can never carry a secret.
+//
+// APPLY (wave 140N): a tenant that already exists may already hold customizations, so a
+// re-apply fills ABSENT keys only (lib/platform/config-snapshots.ts applySnapshotPayload,
+// mode fill_absent — the same rule provisioning and the readiness repair use). Only an
+// EXPLICIT boolean `overwrite: true` from the staff actor selects replace mode, and that
+// apply is audited twice: the INTENT before the write (a refused audit row refuses the
+// overwrite — fail closed) and the RESULT after it, naming every `<table>.<key>` overwritten.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
-import { buildSnapshotPayload, applySnapshotPayload, payloadLeaksSecret, type SnapshotPayload } from "@/lib/platform/config-snapshots"
+import { buildSnapshotPayload, applySnapshotPayload, payloadLeaksSecret, type SnapshotPayload, type SnapshotApplyMode } from "@/lib/platform/config-snapshots"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 
-async function audit(actorUserId: string, actorEmail: string, action: string, targetId: string, details: Record<string, unknown>) {
+/** One superadmin_audit_log row. The insert is READ: a refused row is returned, never swallowed. */
+async function audit(actorUserId: string, actorEmail: string, action: string, targetId: string, details: Record<string, unknown>): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     const svc = createServiceClient()
     const h = await headers()
-    await svc.from("superadmin_audit_log").insert({
+    const { error } = await svc.from("superadmin_audit_log").insert({
       actor_user_id: actorUserId, actor_email: actorEmail, action, target_type: "brokerage", target_id: targetId,
       details, ip_address: h.get("x-forwarded-for") ?? h.get("x-real-ip"), user_agent: h.get("user-agent"),
     })
-  } catch (err) { console.error("[config-snapshots audit] failed:", err) }
+    if (error) { console.error("[config-snapshots audit] refused:", error.message); return { ok: false, error: error.message } }
+    return { ok: true }
+  } catch (err) {
+    console.error("[config-snapshots audit] failed:", err)
+    return { ok: false, error: (err as Error)?.message ?? "audit insert threw" }
+  }
 }
 
 export interface SnapshotRow {
@@ -124,23 +137,40 @@ export async function listSnapshotsAction(): Promise<{ ok: true; snapshots: Snap
   }
 }
 
-/** Apply a snapshot to a target tenant. */
-export async function applySnapshotAction(params: { snapshotId: string; targetBrokerageId: string }): Promise<{ ok: boolean; applied?: string[]; error?: string }> {
+/**
+ * Apply a snapshot to a target tenant. DEFAULT = fill absent keys only (a re-apply never overwrites
+ * a customization). `overwrite: true` (an explicit boolean from the staff actor, never a truthy string)
+ * selects replace mode, audited as snapshot.apply.overwrite — intent before, result after, naming the
+ * keys overwritten. FAIL CLOSED: an overwrite whose intent row cannot be written does not run.
+ */
+export async function applySnapshotAction(params: { snapshotId: string; targetBrokerageId: string; overwrite?: boolean }): Promise<{ ok: boolean; mode?: SnapshotApplyMode; applied?: string[]; preserved?: string[]; overwritten?: string[]; error?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   if (!params.snapshotId || !params.targetBrokerageId) return { ok: false, error: "Snapshot + target brokerage required" }
+  const overwrite = params.overwrite === true
+  const mode: SnapshotApplyMode = overwrite ? "replace" : "fill_absent"
   const svc = createServiceClient()
 
-  const { data: snap } = await svc.from("platform_config_snapshots").select("payload, name").eq("id", params.snapshotId).maybeSingle()
+  const { data: snap, error: snapErr } = await svc.from("platform_config_snapshots").select("payload, name").eq("id", params.snapshotId).maybeSingle()
+  if (snapErr) return { ok: false, error: `Snapshot read refused: ${snapErr.message}` }
   if (!snap) return { ok: false, error: "Snapshot not found" }
-  const { data: brk } = await svc.from("brokerages").select("id").eq("id", params.targetBrokerageId).maybeSingle()
+  const { data: brk, error: brkErr } = await svc.from("brokerages").select("id").eq("id", params.targetBrokerageId).maybeSingle()
+  if (brkErr) return { ok: false, error: `Target brokerage read refused: ${brkErr.message}` }
   if (!brk) return { ok: false, error: "Target brokerage not found" }
+  const name = (snap as { name: string }).name
 
-  const { applied, refused } = await applySnapshotPayload((snap as any).payload as SnapshotPayload, params.targetBrokerageId, auth.userId, svc)
-  await audit(auth.userId, auth.email, "snapshot.apply", params.targetBrokerageId, { snapshot_id: params.snapshotId, name: (snap as any).name, applied, refused })
+  if (overwrite) {
+    // INTENT first — an overwrite the audit log cannot record does not run (LAW 5: evidence before consequence).
+    const intent = await audit(auth.userId, auth.email, "snapshot.apply.overwrite", params.targetBrokerageId, { snapshot_id: params.snapshotId, name, mode, phase: "intent" })
+    if (!intent.ok) return { ok: false, mode, error: `Overwrite refused: the audit row could not be written (${intent.error}) — nothing was applied` }
+  }
+  const { applied, refused, preserved, filled, overwritten } = await applySnapshotPayload((snap as any).payload as SnapshotPayload, params.targetBrokerageId, auth.userId, svc, { mode })
+  const result = await audit(auth.userId, auth.email, overwrite ? "snapshot.apply.overwrite" : "snapshot.apply", params.targetBrokerageId, { snapshot_id: params.snapshotId, name, mode, phase: "result", applied, refused, preserved, filled, overwritten })
   revalidatePath(`/dashboard/superadmin/brokerages/${params.targetBrokerageId}`)
-  if (refused.length > 0) return { ok: false, applied, error: `Snapshot partly applied — refused: ${refused.join("; ")}` }
-  return { ok: true, applied }
+  const auditNote = result.ok ? "" : ` (the result audit row was refused: ${result.error})`
+  if (refused.length > 0) return { ok: false, mode, applied, preserved, overwritten, error: `Snapshot partly applied — refused: ${refused.join("; ")}${auditNote}` }
+  if (!result.ok) return { ok: false, mode, applied, preserved, overwritten, error: `Applied, but the audit row was refused: ${result.error}` }
+  return { ok: true, mode, applied, preserved, overwritten }
 }
 
 /** Delete a snapshot. */

@@ -14,6 +14,7 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 import { createClient } from "@supabase/supabase-js"
 import { awaitingFirstResponse } from "../lib/support/support-thread"
 
@@ -36,7 +37,11 @@ function sourceLayer() {
   check("reply posts a message + stamps first_response + open→in_progress", /support_ticket_messages"\)[\s\S]*?insert/.test(th) && /first_response_at = new Date/.test(th) && /status = "in_progress"/.test(th))
   check("staff reply notifies the TENANT; tenant reply notifies platform staff", /type:\s*"support_reply"/.test(th) && /notifyPlatformStaff/.test(th))
   const con = src("app/actions/superadmin/support-console.ts")
-  check("console actions are staff-gated (superadmin+support)", /requireStaff/.test(con) && /"superadmin",\s*"support"/.test(con))
+  // THE RULE, NOT THE SPELLING (CLAUDE.md §2 / §4): the console gates through the ONE capability
+  // gate its pages use (requirePlatformCapability("support") — platform_role is the roster column),
+  // never a local `["superadmin", "support"]` set matched against user_type (lane 140O re-anchor).
+  check("console actions are staff-gated through requirePlatformCapability(\"support\")", /requireStaff/.test(con) && /requirePlatformCapability\(\s*"support"\s*\)/.test(con))
+  check("  control: no live two-role staff set remains (stripped source)", !/new Set\(\[\s*"superadmin",\s*"support"\s*\]\)/.test(stripComments(con)))
   check("the queue carries brokerage name + first-response flag + counts", /brokerageName/.test(con) && /awaitingFirstResponse/.test(con))
   check("reply / assign / status actions exist", /export async function replyToTicketAction/.test(con) && /export async function assignTicketAction/.test(con) && /export async function setTicketStatusAction/.test(con))
   const sup = src("app/actions/support.ts")

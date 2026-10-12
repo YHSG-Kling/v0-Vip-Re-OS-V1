@@ -248,6 +248,76 @@ export async function getBuyerTours(contactId: string) {
   return { success: true, tours: data ?? [] }
 }
 
+// ─── 2b. The tour's route image (wave 140, lane 140P) ─────────────────────────
+//
+// The Confirm tab used to mint a Google Static Maps URL in the BROWSER from
+// NEXT_PUBLIC_GOOGLE_MAPS_API_KEY — no provider choice, no health, no booking
+// (lane 140I's outside-lane finding). The image is now minted HERE on the ONE
+// map walk (lib/property/street-view.ts: Mapbox first, Google second, health-
+// aware, credential-aware) and booked through bookMapsImageSpend (once per
+// tenant · provider · SKU · route · day). The client receives a URL only.
+//
+// Mapbox draws overlays from coordinates, so when the walk chooses Mapbox the
+// stops are geocoded through the free survivor (lib/external/nominatim-geocode.ts
+// createCachedGeocoder — paced, cached per address); a stop it cannot place is
+// left off the image (never a fabricated point), and a route with no placed stop
+// falls through to Google, which draws from addresses. Tenant from the session.
+
+export type TourRouteMapResult =
+  | { success: true; url: string | null; provider: "mapbox" | "google_maps" | null; attribution: string | null; placed: number; reason?: string }
+  | { success: false; error: string }
+
+export async function getTourRouteMap(tourId: string): Promise<TourRouteMapResult> {
+  if (!isValidUUID(tourId)) return { success: false, error: 'Invalid tour ID' }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const supabase = createServiceClient()
+  const { data: tour, error: tourErr } = await supabase
+    .from('tours')
+    .select('id, brokerage_id, tour_stops ( id, order_index, property_address, city, state, zip )')
+    .eq('id', tourId)
+    .eq('brokerage_id', auth.brokerageId)
+    .maybeSingle()
+  if (tourErr) return { success: false, error: tourErr.message }
+  if (!tour) return { success: false, error: 'Tour not found' }
+
+  const stops = (((tour as any).tour_stops ?? []) as Array<{ order_index: number | null; property_address: string | null; city: string | null; state: string | null; zip: string | null }>)
+    .filter((s) => !!s.property_address)
+    .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+  if (stops.length === 0) return { success: true, url: null, provider: null, attribution: null, placed: 0, reason: 'no stops' }
+
+  const { resolveMapProvider, getRouteMapImageUrl, bookMapsImageSpend } = await import('@/lib/property/street-view')
+  const { loadProviderHealth } = await import('@/lib/agentic-os/connector-gateway')
+  const [mapbox, google_maps] = await Promise.all([
+    loadProviderHealth('mapbox').catch(() => null),
+    loadProviderHealth('google_maps').catch(() => null),
+  ])
+  const health = { mapbox, google_maps }
+
+  const first = resolveMapProvider('static_image', { health })
+  if (!first) return { success: true, url: null, provider: null, attribution: null, placed: 0, reason: 'no configured map provider' }
+
+  // Geocode only when the chosen provider draws from coordinates.
+  let routeStops: Array<{ address: string; lat?: number | null; lon?: number | null }> = stops.map((s) => ({ address: s.property_address as string }))
+  if (first.provider === 'mapbox') {
+    const geocode = (await import('@/lib/external/nominatim-geocode')).createCachedGeocoder()
+    routeStops = []
+    for (const s of stops) {
+      const p = await geocode({ address: s.property_address, city: s.city, state: s.state, zip: s.zip })
+      routeStops.push({ address: s.property_address as string, lat: p?.lat ?? null, lon: p?.lng ?? null })
+    }
+  }
+
+  const img = getRouteMapImageUrl({ stops: routeStops, width: 600, height: 200, health })
+  if (!img) return { success: true, url: null, provider: null, attribution: null, placed: 0, reason: 'no provider could draw this route' }
+
+  // The spend is the platform's (PLATFORM-COVERED), attributed to the tenant; idempotent per route per day.
+  await bookMapsImageSpend({ brokerageId: auth.brokerageId, provider: img.provider, sku: img.sku, url: img.url, systemSource: 'tour_route_map' })
+
+  return { success: true, url: img.url, provider: img.provider, attribution: img.attribution, placed: img.placed }
+}
+
 // ─── 3. Create a tour plan ────────────────────────────────────────────────────
 
 export async function createTourPlan(params: CreateTourParams) {

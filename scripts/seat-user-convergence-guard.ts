@@ -401,8 +401,42 @@ console.log("\n[no lazy repair on the login / session path — detection + evide
   check("  control: a tombstone naming the retired call is NOT flagged (comment-blind)", !REPAIR_CALL.test(stripComments(`// this page used to call repairIncompleteAccountSetup() on every visit\nconst x = 1`)))
   const dash = stripComments(src("app/dashboard/page.tsx"))
   check("the dashboard router DETECTS (resolveUserWorkspaceContext) and EVIDENCES (USER_ACCOUNT_INCOMPLETE) an incomplete account", /resolveUserWorkspaceContext\(/.test(dash) && /USER_ACCOUNT_INCOMPLETE/.test(dash) && /determineFirstLoginDestination\(/.test(dash))
-  check("both landings carry the READINESS HOOK (integrator) for lane 140B/K's evaluateTenantReadiness", /READINESS HOOK \(integrator\)/.test(src("app/dashboard/page.tsx")) && /READINESS HOOK \(integrator\)/.test(src("app/dashboard/onboarding/page.tsx")) && /evaluateTenantReadiness\(/.test(src("app/dashboard/page.tsx")))
+  check("both landings route a detected account gap through the readiness contract — evaluateTenantReadiness(…, { repair: true }) — never a bare lazy repair", /evaluateTenantReadiness\([\s\S]{0,120}repair:\s*true/.test(src("app/dashboard/page.tsx")) && /evaluateTenantReadiness\([\s\S]{0,120}repair:\s*true/.test(src("app/dashboard/onboarding/page.tsx")))
   check("the repair executor survives for the readiness repair (exported, documented as not-a-login-hook)", /export async function repairIncompleteAccountSetup\(/.test(src("lib/kernel/users.ts")) && /NOT A LOGIN HOOK/.test(src("lib/kernel/users.ts")))
+}
+
+console.log("\n[live backlog shape (lane 140O) — users with no role grant + seat-role users without an agents row, cleared by the executor the readiness playbook runs]")
+{
+  // The two classes observed live (10 users with no grant, 4 seat-role users with no agents row),
+  // planted in memory on brk-2. The readiness contract routes `repair_user_records`
+  // (lib/kernel/self-healing.ts) to lib/kernel/users.ts repairIncompleteAccountSetup — the ONE
+  // provisioning brain — so that executor is what must clear both classes, per user.
+  ACTIVE.authUsers.push({ id: "u-norole", email: "norole@b2.test" }, { id: "u-noagent", email: "noagent@b2.test" })
+  ACTIVE.t("users").push(
+    { id: "u-norole", email: "norole@b2.test", first_name: "No", last_name: "Grant", user_type: "tc", brokerage_id: "brk-2", team_id: null, status: "active", platform_role: null },
+    { id: "u-noagent", email: "noagent@b2.test", first_name: "No", last_name: "Agent", user_type: "agent", brokerage_id: "brk-2", team_id: "team-2", status: "active", platform_role: null },
+  )
+  check("  control: both detectors see the planted backlog (1 missing grant, 1 seat-role user without an agents row)", missingRole(ACTIVE).some((u) => u.id === "u-norole") && orphanUsers(ACTIVE).some((u) => u.id === "u-noagent") && missingRole(ACTIVE).some((u) => u.id === "u-noagent"))
+  const r1 = await users.repairIncompleteAccountSetup("u-norole")
+  const r2 = await users.repairIncompleteAccountSetup("u-noagent")
+  check("repairIncompleteAccountSetup (the repair_user_records executor) succeeds for both users", r1.success && r2.success, `${r1.error ?? ""} ${r2.error ?? ""}`)
+  check("after repair: NO missing role and NO orphan user remain anywhere in the store", missingRole(ACTIVE).length === 0 && orphanUsers(ACTIVE).length === 0, JSON.stringify({ missingRole: missingRole(ACTIVE).map((u) => u.id), orphanUsers: orphanUsers(ACTIVE).map((u) => u.id) }))
+  const tcGrants = ACTIVE.t("user_role_assignments").filter((g) => g.user_id === "u-norole")
+  const agGrants = ACTIVE.t("user_role_assignments").filter((g) => g.user_id === "u-noagent")
+  const ag = ACTIVE.t("agents").find((a) => a.user_id === "u-noagent")
+  check("the tc now holds exactly one grant (tc) on ITS tenant + a coordinator row; the agent holds one grant + an agents row on its tenant and team", tcGrants.length === 1 && tcGrants[0].role === "tc" && tcGrants[0].brokerage_id === "brk-2" && count(ACTIVE, "transaction_coordinators", (t) => t.user_id === "u-norole" && t.brokerage_id === "brk-2") === 1
+    && agGrants.length === 1 && agGrants[0].role === "agent" && agGrants[0].brokerage_id === "brk-2" && !!ag && ag.brokerage_id === "brk-2" && ag.team_id === "team-2" && wrongTenant(ACTIVE).length === 0 && teamLeak(ACTIVE).length === 0)
+  check("EVIDENCE: each repair left a USER_ACCOUNT_REPAIRED lifecycle row (LAW 5)", count(ACTIVE, "lifecycle_events", (e) => e.entity_id === "u-norole") >= 1 && count(ACTIVE, "lifecycle_events", (e) => e.entity_id === "u-noagent") >= 1)
+  const before = { users: count(ACTIVE, "users"), agents: count(ACTIVE, "agents"), grants: count(ACTIVE, "user_role_assignments"), tcs: count(ACTIVE, "transaction_coordinators"), onb: count(ACTIVE, "agent_onboarding") }
+  const r3 = await users.repairIncompleteAccountSetup("u-noagent")
+  const after = { users: count(ACTIVE, "users"), agents: count(ACTIVE, "agents"), grants: count(ACTIVE, "user_role_assignments"), tcs: count(ACTIVE, "transaction_coordinators"), onb: count(ACTIVE, "agent_onboarding") }
+  check("idempotent: a second repair of a now-complete user repairs nothing and creates nothing", r3.success && r3.repaired.length === 0 && JSON.stringify(before) === JSON.stringify(after))
+  // The ROUTING (read-only pins; lane N owns the contract): the playbook executor is this function, and the
+  // contract's adminUser check routes it for the OWNER only — a non-owner backlog needs the executor per user.
+  const heal = stripComments(src("lib/kernel/self-healing.ts")), contract = stripComments(src("lib/kernel/tenant-readiness.ts"))
+  const exec = heal.slice(heal.indexOf("repair_user_records: async"), heal.indexOf("sync_carrier_registration: async"))
+  check("self-healing's repair_user_records executor runs repairIncompleteAccountSetup behind a same-tenant check (every id pinned to i.brokerageId BEFORE the repairer runs; a foreign id is a boundary stop)", exec.indexOf('.eq("brokerage_id", i.brokerageId)') > -1 && exec.indexOf('.eq("brokerage_id", i.brokerageId)') < exec.indexOf("repairIncompleteAccountSetup") && /tenant_boundary/.test(exec))
+  check("the readiness contract routes repair_user_records for the owner (adminUser) AND for every incomplete seat user (seats → userIds list) — the live 9 + 4 backlog is cleared by the contract, not by hand", /"repair_user_records",\s*\{\s*userId:\s*owner\.id\s*\}/.test(contract) && /"repair_user_records",\s*\{\s*userIds:/.test(contract) && /userIds/.test(exec))
 }
 
 console.log("\n[registration]")

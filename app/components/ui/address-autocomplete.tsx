@@ -3,6 +3,8 @@
 import { useState, useRef, useCallback } from "react"
 import { Input } from "@/components/ui/input"
 import { useClickOutside } from "@/hooks/use-click-outside"
+import { suggestAddresses } from "@/app/actions/address-suggestions"
+import type { AddressSuggestion } from "@/lib/external/nominatim-geocode"
 
 interface AddressComponents {
   street: string
@@ -22,46 +24,12 @@ interface AddressAutocompleteProps {
   disabled?: boolean
 }
 
-interface NominatimResult {
-  place_id: number
-  display_name: string
-  address: {
-    house_number?: string
-    road?: string
-    neighbourhood?: string
-    suburb?: string
-    city?: string
-    town?: string
-    village?: string
-    state?: string
-    postcode?: string
-  }
-}
-
-const STATE_ABBR: Record<string, string> = {
-  Alabama: "AL", Alaska: "AK", Arizona: "AZ", Arkansas: "AR", California: "CA",
-  Colorado: "CO", Connecticut: "CT", Delaware: "DE", Florida: "FL", Georgia: "GA",
-  Hawaii: "HI", Idaho: "ID", Illinois: "IL", Indiana: "IN", Iowa: "IA",
-  Kansas: "KS", Kentucky: "KY", Louisiana: "LA", Maine: "ME", Maryland: "MD",
-  Massachusetts: "MA", Michigan: "MI", Minnesota: "MN", Mississippi: "MS",
-  Missouri: "MO", Montana: "MT", Nebraska: "NE", Nevada: "NV", "New Hampshire": "NH",
-  "New Jersey": "NJ", "New Mexico": "NM", "New York": "NY", "North Carolina": "NC",
-  "North Dakota": "ND", Ohio: "OH", Oklahoma: "OK", Oregon: "OR", Pennsylvania: "PA",
-  "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD", Tennessee: "TN",
-  Texas: "TX", Utah: "UT", Vermont: "VT", Virginia: "VA", Washington: "WA",
-  "West Virginia": "WV", Wisconsin: "WI", Wyoming: "WY",
-  "District of Columbia": "DC",
-}
-
-function parseNominatim(result: NominatimResult): AddressComponents {
-  const a = result.address
-  const street = [a.house_number, a.road].filter(Boolean).join(" ")
-  const city = a.city ?? a.town ?? a.village ?? a.suburb ?? a.neighbourhood ?? ""
-  const stateFull = a.state ?? ""
-  const state = STATE_ABBR[stateFull] ?? stateFull
-  const zip = a.postcode ?? ""
-  return { street, city, state, zip, full: result.display_name }
-}
+// Wave 140 (lane 140P): the Nominatim fetch, the NominatimResult shape, the state table and
+// the parser that lived here moved to the SERVER — app/actions/address-suggestions.ts over
+// lib/external/nominatim-geocode.ts (suggestAddressesDetailed / parseNominatimAddressRow). A
+// browser call reached the vendor outside the connector gateway (no tenant, no health, no
+// usage row); this component now receives parsed suggestions only.
+const MIN_QUERY = 4
 
 export function AddressAutocomplete({
   value,
@@ -72,23 +40,21 @@ export function AddressAutocomplete({
   className,
   disabled,
 }: AddressAutocompleteProps) {
-  const [suggestions, setSuggestions] = useState<NominatimResult[]>([])
+  const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([])
   const [open, setOpen] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const requestIdRef = useRef(0)
 
   const fetchSuggestions = useCallback(async (query: string) => {
-    if (query.length < 4) { setSuggestions([]); setOpen(false); return }
+    if (query.length < MIN_QUERY) { setSuggestions([]); setOpen(false); return }
     // Stamp this request so we can discard out-of-order responses
     const currentId = ++requestIdRef.current
     try {
-      const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=us&limit=5&q=${encodeURIComponent(query)}`
-      const res = await fetch(url, { headers: { "Accept-Language": "en" } })
-      if (!res.ok) return
-      const data: NominatimResult[] = await res.json()
+      const res = await suggestAddresses(query)
       // Ignore if a newer request has already been issued
       if (currentId !== requestIdRef.current) return
+      const data = res.ok ? res.suggestions : []
       setSuggestions(data)
       setOpen(data.length > 0)
     } catch {
@@ -103,10 +69,9 @@ export function AddressAutocomplete({
     debounceRef.current = setTimeout(() => fetchSuggestions(v), 350)
   }
 
-  const handleSelect = (result: NominatimResult) => {
-    const parsed = parseNominatim(result)
-    onChange(parsed.street || parsed.full)
-    if (onSelect) onSelect(parsed)
+  const handleSelect = (s: AddressSuggestion) => {
+    onChange(s.street || s.label)
+    if (onSelect) onSelect({ street: s.street, city: s.city, state: s.state, zip: s.zip, full: s.label })
     setSuggestions([])
     setOpen(false)
   }
@@ -132,11 +97,11 @@ export function AddressAutocomplete({
         <ul className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-md text-sm max-h-60 overflow-auto">
           {suggestions.map((s) => (
             <li
-              key={s.place_id}
+              key={s.placeId}
               className="px-3 py-2 cursor-pointer hover:bg-accent hover:text-accent-foreground truncate"
               onMouseDown={(e) => { e.preventDefault(); handleSelect(s) }}
             >
-              {s.display_name}
+              {s.label}
             </li>
           ))}
         </ul>

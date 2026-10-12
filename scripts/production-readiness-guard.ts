@@ -529,7 +529,10 @@ check("S2 POSITIVE CONTROL — an ungated service-client export is caught; the s
 console.log("\n[V · tenant-facing vocabulary — no \"platform-covered\" in a .tsx a tenant can read (owner, wave 140)]")
 /** Platform-staff surfaces: an operator reads the cost-bearing entity by name there, by design. */
 const PLATFORM_FACING = /^app\/dashboard\/superadmin\//
-const FORBIDDEN_TENANT_VOCAB = /platform[- ]covered/i
+/** Wave 140P widened the census from "platform-covered" to the whole family the ruling names
+ *  ("platform-paid", "we cover") — the approved wording is "included in your subscription" /
+ *  "never counted as your spend". */
+const FORBIDDEN_TENANT_VOCAB = /platform[- ](covered|paid)|\bwe cover\b/i
 /** PURE — offending line numbers of a .tsx module. Comments are stripped (a tombstone or a JSX
  *  comment is not copy); STRINGS AND JSX TEXT ARE KEPT — the rendered words are the subject. */
 function tenantVocabHits(src: string): number[] {
@@ -537,34 +540,33 @@ function tenantVocabHits(src: string): number[] {
   stripComments(src).split("\n").forEach((l, i) => { if (FORBIDDEN_TENANT_VOCAB.test(l)) out.push(i + 1) })
   return out
 }
-/** The sites the wave-140 ruling names, owned by lane 140J. A RATCHET, not a waypoint: this list may
- *  only shrink; when it reaches zero hits it is deleted. A fixed file is NOT a stale entry (a check that
- *  goes red because the work finished is forbidden, CLAUDE.md §2) — only a vanished file is. */
-const TENANT_VOCAB_OWNED: Record<string, string> = {
-  "app/leads/[leadId]/page.tsx": "ruling names :197 and :202 — :202 renders; :197 is a JSX comment (stripped, not copy) — 140J rewrites to 'included in your subscription'",
-  "app/dashboard/campaigns/competitive/brand-listening-card.tsx": "ruling names :31 — 140J",
-  "app/dashboard/admin/import/page.tsx": "ruling names :339 — 140J",
-  "app/dashboard/financials/brokerage/page.tsx": "ruling names the :1052 label — 140J",
-}
-/** Measured at the wave-140 base: 4 rendered sites (the ruling counted 5; its :197 is a comment). */
-const TENANT_VOCAB_RATCHET = 4
+/** The sites the wave-140 ruling named, owned by lane 140J. A RATCHET, not a waypoint: this list may
+ *  only shrink; when it reaches zero hits it is deleted. Lane 140J rewrote all four (leads :202,
+ *  brand-listening-card :31, admin/import :339, financials/brokerage :1052) to "included in your
+ *  subscription" — the census read 0 at 496ab27fa, so the owned list is EMPTY and the ratchet is 0
+ *  (wave 140P). Every tenant-facing hit is now a NEW finding under V1. */
+const TENANT_VOCAB_OWNED: Record<string, string> = {}
+/** 0 since wave 140P (was 4 at the wave-140 base). */
+const TENANT_VOCAB_RATCHET = 0
 const tenantTsx = SRC_FILES.filter((f) => f.startsWith("app/") && f.endsWith(".tsx") && !PLATFORM_FACING.test(f))
 const vocabHits = tenantTsx.map((f) => ({ f, lines: tenantVocabHits(read(f)) })).filter((h) => h.lines.length)
 const vocabNew = vocabHits.filter((h) => !TENANT_VOCAB_OWNED[h.f])
 const vocabOwnedCount = vocabHits.filter((h) => TENANT_VOCAB_OWNED[h.f]).reduce((n, h) => n + h.lines.length, 0)
-console.log(`    census: ${tenantTsx.length} tenant-facing .tsx modules (app/** minus ${SRC_FILES.filter((f) => PLATFORM_FACING.test(f) && f.endsWith(".tsx")).length} platform-staff); ${vocabHits.length} files carry the forbidden phrase — ${vocabOwnedCount} hit(s) in 140J-owned files, ${vocabNew.length} new`)
-for (const h of vocabHits) console.log(`      ${h.f}:${h.lines.join(",")}${TENANT_VOCAB_OWNED[h.f] ? "  (140J-owned)" : "  NEW"}`)
-console.log(`    RELEASE BLOCKER (published): ${vocabOwnedCount} tenant-visible "platform-covered" string(s) remain — certification needs 0${vocabOwnedCount === 0 && Object.keys(TENANT_VOCAB_OWNED).length ? "; the owned list is now empty of hits and can be deleted" : ""}`)
+console.log(`    census: ${tenantTsx.length} tenant-facing .tsx modules (app/** minus ${SRC_FILES.filter((f) => PLATFORM_FACING.test(f) && f.endsWith(".tsx")).length} platform-staff); ${vocabHits.length} render "platform-covered"`)
+for (const h of vocabHits) console.log(`      ${h.f}:${h.lines.join(",")}${TENANT_VOCAB_OWNED[h.f] ? "  (owned)" : "  NEW"}`)
 console.log("    BLIND SPOT: .ts server-action result strings and lib/ copy are not in this population (at HEAD every .ts hit is a comment); a phrase assembled from fragments is not seen.")
 check("V1 no tenant-facing .tsx outside the 140J-owned list renders \"platform-covered\"", vocabNew.length === 0, vocabNew.map((h) => `${h.f}:${h.lines.join(",")}`).join(", "))
 check(`V2 the 140J-owned ratchet only shrinks (${vocabOwnedCount} ≤ ${TENANT_VOCAB_RATCHET})`, vocabOwnedCount <= TENANT_VOCAB_RATCHET)
 const vanishedOwned = Object.keys(TENANT_VOCAB_OWNED).filter((f) => !existsSync(join(ROOT, f)))
 check("V3 every owned file still exists (a renamed file re-enters the census under its new name)", vanishedOwned.length === 0, vanishedOwned.join(", "))
-check("V4 POSITIVE CONTROL — JSX text and a string literal are caught; a JSX comment, a line comment and the approved wording are not",
+check("V4 POSITIVE CONTROL — JSX text and a string literal are caught (platform-covered, platform-paid, we cover); a JSX comment, a line comment and the approved wording are not",
   tenantVocabHits(`export default function P() { return <p>Platform-covered — never billed</p> }`).length === 1 &&
   tenantVocabHits(`const s = "raw sourcing is platform-covered"`).length === 1 &&
-  tenantVocabHits(`export default function P() { return <p>{/* platform-covered */}x</p> }\n// platform-covered ledger`).length === 0 &&
-  tenantVocabHits(`const s = "included in your subscription — never counted as your spend"`).length === 0)
+  tenantVocabHits(`export default function P() { return <p>Platform-paid (not your cost)</p> }`).length === 1 &&
+  tenantVocabHits(`const s = "we cover enrichment for you"`).length === 1 &&
+  tenantVocabHits(`export default function P() { return <p>{/* platform-covered */}x</p> }\n// platform-covered ledger\n// platform-paid ledger`).length === 0 &&
+  tenantVocabHits(`const s = "included in your subscription — never counted as your spend"`).length === 0 &&
+  tenantVocabHits(`const s = "Covered by the platform (not the tenant's cost)"`).length === 0)
 check("V5 the platform-staff exclusion is narrow (superadmin only) and the population is non-empty", tenantTsx.length > 100 && !PLATFORM_FACING.test("app/dashboard/admin/import/page.tsx") && PLATFORM_FACING.test("app/dashboard/superadmin/a2p/page.tsx"))
 
 // ── X · READINESS MATRIX ─────────────────────────────────────────────────────

@@ -207,7 +207,7 @@ export default async function LeadDetailPage({ params }: PageProps) {
             // relabelled for what it is: the platform's cost for this person, raw row → lead →
             // contact (lib/lead-intelligence/person-spend.ts). "a floor" when a read was refused.
             <p className="text-xs text-muted-foreground">
-              Platform-paid (not the tenant's cost):
+              Covered by the platform (not the tenant&apos;s cost):
               {timeline.platformPaidAcquisitionCost != null ? ` acquisition $${timeline.platformPaidAcquisitionCost.toFixed(2)};` : ""}
               {timeline.platformPaidSpend ? ` vendor spend to date $${timeline.platformPaidSpend.totalUsd.toFixed(2)}` : ""}
               {timeline.platformPaidSpend && timeline.convertedAt

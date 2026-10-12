@@ -33,6 +33,7 @@ import { join } from "node:path"
 import { execFileSync } from "node:child_process"
 import { stripComments } from "./strip-comments"
 import { SECRET_STORE_COLUMNS } from "../lib/security/credential-rotation"
+import { CREDENTIAL_STORE_PUBLIC_COLUMNS } from "../lib/security/credential-projection"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 
 let pass = 0, fail = 0
@@ -195,10 +196,25 @@ function writerLayer(files: string[]) {
 
 // ── R — reader census ─────────────────────────────────────────────────────────────────────────
 const SELECT_SECRET_RE = new RegExp(`\\.select\\("[^"]*\\b(${SECRET_COLS.join("|")})\\b`)
-/** Wildcard readers that dereference a secret field with no decrypt — adjudicated by name with the reason. */
-const ADJUDICATED_WILDCARD: Record<string, string> = {
-  "app/dashboard/settings/integrations/idx-broker/page.tsx": "browser page: reads its row only to detect a stored enc:v1 envelope and masks it; the key is written by the server action (encrypt-on-write) — a browser has no key to decrypt and never needs the plaintext",
-  "app/actions/settings/integrations.ts": "getPlatformCredentials hands rows to the settings UI with the secret columns still sealed (the UI never needs the plaintext); its only `.api_key` dereference is the sealed write payload (encryptSecret(params.api_key))",
+/** Wildcard readers that dereference a secret field with no decrypt — adjudicated by name with the reason.
+ *  Wave 140P emptied it: the two entries (the IDX browser page, getPlatformCredentials) now read the NON-secret
+ *  projection (lib/security/credential-projection.ts) and dereference no secret field. */
+const ADJUDICATED_WILDCARD: Record<string, string> = {}
+
+/** PURE — chain-level: every `.from("<store>")` whose chain (up to the next blank line / statement end)
+ *  selects `*`. File-level co-occurrence (a `select("*")` on some OTHER table in a store-reading file) is
+ *  NOT a hit — that is what the file-level census above counts as "wildcard"; this is the stricter rule. */
+function wildcardStoreChains(src: string, stores: readonly string[]): string[] {
+  const out: string[] = []
+  const re = new RegExp(`\\.from\\("(${stores.join("|")})"\\)`, "g")
+  for (const m of src.matchAll(re)) {
+    const start = m.index ?? 0
+    const rest = src.slice(start)
+    const endBlank = rest.indexOf("\n\n")
+    const chain = rest.slice(0, Math.min(endBlank < 0 ? 600 : endBlank, 600))
+    if (/\.select\("\*"\)/.test(chain)) out.push(`${m[1]}@${src.slice(0, start).split("\n").length}`)
+  }
+  return out
 }
 function readerLayer(files: string[]) {
   console.log("\n[R — reader census: every secret-selecting store reader decrypts]")
@@ -229,6 +245,36 @@ function readerLayer(files: string[]) {
   check("no wildcard store reader dereferences a secret field without decrypting (or it is adjudicated by name)", wildcardBad.length === 0, wildcardBad.join(", "))
   check("CONTROL: a wildcard reader dereferencing access_token with no decrypt is what the finder catches", (() => { const s = `const { data } = await svc.from("social_media_accounts").select("*")\nuse(data.access_token)`; return /\.select\("\*"\)/.test(s) && /\.(access_token)\b/.test(s.replace(/\.select\("[^"]*"\)/g, "")) && !/decryptSecret/.test(s) })())
   for (const f of Object.keys(ADJUDICATED_WILDCARD)) check(`adjudicated wildcard reader ${f} still exists and still has no decrypt (a stale adjudication fails)`, files.includes(f) && !/\bdecryptSecret(Fields)?\(/.test(code(f)))
+
+  // ── wave 140 (lane 140P): rows that reach a BROWSER never carry a secret column ──────────────────
+  // THE RULE: a store read whose rows become a "use server" return value or a page/component prop
+  // (any `"use server"` module, any .tsx module) selects the NON-secret projection, never `*`.
+  // Derived (chain-level), zero baseline — lib/ and route handlers are outside this population
+  // (their rows stay server-side; the file-level census above still counts them).
+  console.log("\n[P — the browser projection: no \"use server\" module and no .tsx reads a credential store with select(\"*\")]")
+  const surface = files.filter((f) => f.endsWith(".tsx") || /^\s*["']use server["']/m.test(read(f).split("\n").slice(0, 40).join("\n")))
+  const surfaceHits = surface.flatMap((f) => wildcardStoreChains(code(f), STORES).map((h) => `${f} ${h}`))
+  console.log(`    census: ${surface.length} surface modules (.tsx + "use server") in lib/ + app/; ${surfaceHits.length} wildcard store chain(s)`)
+  check("no surface module reads a credential store with select(\"*\") (rows that reach a browser carry the projection only)", surfaceHits.length === 0, surfaceHits.join("; "))
+  check("CONTROL: a store chain selecting * is caught; a select(*) on another table in the same file is not; a projected read is not",
+    wildcardStoreChains(`const { data } = await svc.from("platform_credentials")\n  .select("*")\n  .eq("id", x)`, STORES).length === 1 &&
+    wildcardStoreChains(`const { data } = await svc.from("platform_credentials").select("id, platform").eq("id", x)\n\nconst { data: o } = await svc.from("provider_overrides").select("*")`, STORES).length === 0 &&
+    wildcardStoreChains(`await svc.from("social_media_accounts").select(publicCredentialSelect("social_media_accounts"))`, STORES).length === 0)
+  // the projection module: every list is live columns MINUS the store's secret columns, spelled once
+  const snapshot = SCHEMA_SNAPSHOT as Record<string, readonly string[]>
+  for (const [store, cols] of Object.entries(CREDENTIAL_STORE_PUBLIC_COLUMNS)) {
+    const secret = SECRET_STORE_COLUMNS.find((s) => s.table === store)?.columns ?? []
+    const live = snapshot[store] ?? []
+    const leaked = (cols as readonly string[]).filter((c) => secret.includes(c))
+    const dead = (cols as readonly string[]).filter((c) => !live.includes(c))
+    check(`credential-projection ${store}: ${cols.length} columns — no secret column (${secret.join("/")}) and every column is LIVE (schema snapshot)`, leaked.length === 0 && dead.length === 0 && live.length > 0, `leaked=${leaked.join(",")} dead=${dead.join(",")}`)
+  }
+  const projectionReaders = files.filter((f) => /publicCredentialSelect\(/.test(code(f)) && f !== "lib/security/credential-projection.ts")
+  check(`the projection has real readers (${projectionReaders.length}): the five 140P surfaces (platform_credentials ×2, social_media_accounts ×3, integration_credentials ×1)`, projectionReaders.length >= 6, projectionReaders.join(", "))
+  const getCreds = code("app/actions/settings/integrations.ts")
+  const getCredsBody = getCreds.slice(getCreds.indexOf("export async function getPlatformCredentials"), getCreds.indexOf("export async function getProviderOverrides"))
+  check("getPlatformCredentials never SELECTS a secret column: presence is answered by NOT NULL filters (api_key_configured / access_token_configured) and config is redacted of CONFIG_SECRET_KEYS", !SELECT_SECRET_RE.test(getCredsBody) && /\.not\("api_key", "is", null\)/.test(getCredsBody) && /\.not\("access_token", "is", null\)/.test(getCredsBody) && /api_key_configured: hasKey\.has/.test(getCredsBody) && /redactConfigSecrets\(row\.config\)/.test(getCredsBody) && /CONFIG_SECRET_KEYS/.test(getCreds))
+  check("CONTROL: the secret-select finder recognises a select that names access_token", SELECT_SECRET_RE.test(`.select("id, platform, access_token")`) && !SELECT_SECRET_RE.test(`.select("id, platform, account_name")`))
 }
 
 // ── M — the job against an injected store ─────────────────────────────────────────────────────

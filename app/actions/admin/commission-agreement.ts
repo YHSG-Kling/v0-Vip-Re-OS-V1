@@ -435,10 +435,12 @@ export async function sendCommissionAgreementAction(input: {
     // Inline provider send where wired (Dotloop today) — stamp the envelope id.
     if (providerName === "dotloop") {
       try {
-        const { resolveTransactionFormsProvider } = await import("@/lib/kernel/forms")
-        const pr = await resolveTransactionFormsProvider({ brokerage_id: auth.brokerageId })
-        const creds = pr.data?.access_token && pr.data?.account_id
-          ? { apiKey: pr.data.access_token, profileId: pr.data.account_id }
+        // The egress half (wave 140P): the decrypted credential is loaded HERE, where the provider
+        // request is signed — resolveTransactionFormsProvider above no longer carries the token.
+        const { loadTransactionFormsCredential } = await import("@/lib/kernel/forms")
+        const cred = await loadTransactionFormsCredential({ brokerage_id: auth.brokerageId })
+        const creds = cred.data?.access_token && cred.data?.account_id
+          ? { apiKey: cred.data.access_token, profileId: cred.data.account_id }
           : undefined
         const { DotloopProvider } = await import("@/lib/integrations/providers/dotloop-provider")
         const dotloop = new DotloopProvider(creds)

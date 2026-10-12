@@ -198,7 +198,13 @@ export interface TenantProvisioningRecord {
   completed_at: string | null
   attempts: number
   steps: Partial<Record<TenantProvisioningStep, ProvisioningStepState>>
+  /** THE VERDICT (wave 140): evaluateTenantReadiness run once every step is terminal —
+   *  READY / NOT READY with the blockers, so the record itself says whether this
+   *  tenant can work. Unknown (the evaluation threw) is recorded as NOT ready. */
+  readiness?: TenantReadinessVerdict
 }
+
+export interface TenantReadinessVerdict { ready: boolean; blockers: string[]; checkedAt: string }
 
 export interface TenantCreationResult {
   ok: boolean
@@ -213,6 +219,8 @@ export interface TenantCreationResult {
    *  from live tables the moment the brokerage row exists (brand cascade,
    *  listings, agents, blog, recruiting). Present on every ok result. */
   websitePath?: string
+  /** READY / NOT READY for this tenant at the end of provisioning (also persisted on the provisioning record). */
+  readiness?: TenantReadinessVerdict
   trialEndsAt?: string | null
   inviteSent?: boolean
   inviteError?: string
@@ -250,11 +258,14 @@ export interface TenantCreationDeps {
   curriculum?: (svc: any, params: { brokerageId: string; tier: CanonicalTier }) => Promise<{ authored: number; topics: number }>
   checkout?: (svc: any, input: ActivationCheckoutInput) => Promise<ActivationCheckoutResult>
   accountRepair?: (userId: string) => Promise<{ success: boolean; repaired: string[]; error?: string }>
+  /** The readiness contract (lib/kernel/tenant-readiness.ts evaluateTenantReadiness) — evaluated, never repaired, at the end of provisioning. */
+  readiness?: (svc: any, brokerageId: string) => Promise<TenantReadinessVerdict>
   /** Lane 140D/E's operating-baseline initializer (lib/kernel/tenant-operating-baseline.ts). */
   operatingBaseline?: (svc: any, brokerageId: string, opts: { actorUserId?: string | null }) => Promise<{ ok: boolean; websitePath: string | null; snapshotVersion: string | null; items: Array<{ key: string; status: string }>; refused: string[]; preserved: string[] }>
 }
 
 const DEFAULT_TRIAL_DAYS = 14
+
 
 /** PURE: the tenant's public slug — kebab of the name + a short suffix so a
  *  collision can never 500 a signup. */
@@ -581,7 +592,7 @@ interface ProvisioningCtx {
   extrasSkipped: string[]
 }
 
-type StepOutputs = Pick<TenantCreationResult, "subscriptionId" | "subscriptionError" | "checkoutUrl" | "checkoutError" | "setupFeeCents" | "setupFeeWaived" | "snapshotApplied" | "snapshotName" | "snapshotError" | "prospectStamp">
+type StepOutputs = Pick<TenantCreationResult, "subscriptionId" | "subscriptionError" | "checkoutUrl" | "checkoutError" | "setupFeeCents" | "setupFeeWaived" | "snapshotApplied" | "snapshotName" | "snapshotError" | "prospectStamp" | "readiness">
 
 /**
  * STEPS 5-8 + THE OPERATING BASELINE, each recorded. A step already `done` or
@@ -817,14 +828,13 @@ async function runProvisioningSteps(ctx: ProvisioningCtx): Promise<StepOutputs> 
   //    net and /dashboard use) runs HERE, at creation, so the owner's first
   //    sign-in finds nothing to mend.
   //    READINESS HOOK (integrator): this is THE convergence point every door
-  //    reaches. Lane 140B's evaluateTenantReadiness(svc, brokerageId) reads the
-  //    record above (billing_metadata.provisioning) for the tenantCore /
-  //    adminUser / subscription / snapshot / website checks and lane 140K routes
-  //    a REPAIRABLE gap back to resumeTenantProvisioning below. Lanes 140D/E
-  //    register the settings / policy / entitlement / feature-flag / manager /
-  //    communications-defaults initializers INSIDE this step (after the account
-  //    repair), so trial, paid, staff-created, converted and adopted tenants all
-  //    receive them from the one place — initializeTenantOperatingBaseline
+  //    reaches — trial, paid, staff-created, converted and adopted tenants all
+  //    pass through it, and evaluateTenantReadiness (lib/kernel/tenant-readiness.ts)
+  //    is run right after it to stamp the verdict on the record; a REPAIRABLE gap
+  //    found later routes through the self-healing engine (os-health detector
+  //    tenant_readiness) back to the owning rails. The settings / policy /
+  //    entitlement / feature-flag / manager / communications-defaults
+  //    initializers run INSIDE this step (after the account repair) — initializeTenantOperatingBaseline
   //    (lib/kernel/tenant-operating-baseline.ts) is that initializer: website
   //    slug, tier snapshot (fill-absent), settings, policies, entitlements,
   //    feature flags, managers and communications defaults, with evidence in
@@ -834,14 +844,33 @@ async function runProvisioningSteps(ctx: ProvisioningCtx): Promise<StepOutputs> 
     const repair = deps.accountRepair ?? (await import("@/lib/kernel/users")).repairIncompleteAccountSetup
     const r = await repair(userId)
     if (!r.success) return { error: r.error ?? "account repair refused" }
-    const baseline = deps.operatingBaseline ?? (await import("@/lib/kernel/tenant-operating-baseline")).initializeTenantOperatingBaseline
+    const baselineMod = await import("@/lib/kernel/tenant-operating-baseline")
+    const baseline = deps.operatingBaseline ?? baselineMod.initializeTenantOperatingBaseline
     const base = await baseline(service, brokerageId, { actorUserId: input.callerUserId ?? userId })
-    if (!base.ok) return { error: `operating baseline refused: ${base.refused.join("; ") || "unknown"}` }
+    // The items the tenant cannot WORK without fail the step (resume re-runs it); a
+    // best-effort item (isa_actor, starter assistant, comms defaults — the same class
+    // steps 8a/8b already treat as non-fatal) is recorded, and the readiness
+    // reconciliation (os-health detector tenant_readiness) carries it.
+    const hard = baselineMod.baselineHardRefusals(base)
+    if (hard.length) return { error: `operating baseline refused: ${base.refused.join("; ") || hard.join(",")}` }
     const created = base.items.filter((i) => i.status === "created").map((i) => i.key)
-    return { detail: [r.repaired.length ? `repaired: ${r.repaired.join(",")}` : "account complete", `baseline ${base.websitePath ?? "(no site)"} snapshot=${base.snapshotVersion ?? "none"}`, created.length ? `created: ${created.join(",")}` : "baseline present", base.preserved.length ? `preserved ${base.preserved.length}` : ""].filter(Boolean).join(" | ") }
+    const soft = base.items.filter((i) => i.status === "refused").map((i) => i.key)
+    return { detail: [r.repaired.length ? `repaired: ${r.repaired.join(",")}` : "account complete", `baseline ${base.websitePath ?? "(no site)"} snapshot=${base.snapshotVersion ?? "none"}`, created.length ? `created: ${created.join(",")}` : "baseline present", base.preserved.length ? `preserved ${base.preserved.length}` : "", soft.length ? `refused (non-blocking): ${soft.join(",")}` : ""].filter(Boolean).join(" | ") }
   }, "operating_baseline")
 
-  if (provisioningComplete(record)) { record.completed_at = nowIso(); await persistProvisioningRecord(service, brokerageId, record) }
+  // 10. THE VERDICT — evaluate (never repair: every step above just ran; what is
+  //     still open is a blocker a human or the scheduled reconciliation owns) and
+  //     stamp it on the record, so "is this tenant ready to work" is answered by
+  //     the tenant's own row. A thrown evaluation is NOT READY (fail closed).
+  try {
+    const evaluate = deps.readiness ?? (async (svc: any, id: string) => { const r = await (await import("@/lib/kernel/tenant-readiness")).evaluateTenantReadiness(svc, id); return { ready: r.ready, blockers: r.blockers, checkedAt: r.checkedAt } })
+    record.readiness = await evaluate(service, brokerageId)
+  } catch (e) {
+    record.readiness = { ready: false, blockers: [`readiness evaluation threw: ${(e as Error).message}`], checkedAt: nowIso() }
+  }
+  out.readiness = record.readiness
+  if (provisioningComplete(record)) record.completed_at = nowIso()
+  await persistProvisioningRecord(service, brokerageId, record)
   return out
 }
 

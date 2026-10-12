@@ -178,6 +178,10 @@ export interface CarrierTickDeps {
    *  (lazy — it is server-only). null = unknown (a refused read never reads as
    *  "not applicable"). */
   numbersAllowed?: (svc: any, brokerageId: string) => Promise<boolean | null>
+  /** Wave 140N (readiness): the business-profile resolver (default resolveA2pProfile —
+   *  it reads the registration sources + NEXT_PUBLIC_APP_URL; the readiness proof
+   *  injects it so the REAL syncA2pStatus runs against an in-memory tenant). */
+  profile?: typeof resolveA2pProfile
 }
 
 export interface CarrierTickTenantResult {
@@ -221,7 +225,7 @@ export async function advanceTenantCarrier(svc: any, brokerageId: string, deps: 
   const numbers = (nums ?? []) as Array<{ phone_number: string; twilio_number_sid: string | null }>
 
   // 2. The profile, derived from the brokerage's own record.
-  const profile = numbers.length ? await resolveA2pProfile(svc, brokerageId) : { ok: false as const, missing: [] }
+  const profile = numbers.length ? await (deps.profile ?? resolveA2pProfile)(svc, brokerageId) : { ok: false as const, missing: [] }
   // Wave 140G: the fingerprint the halt rule compares (a corrected registration
   // lifts a compliance halt); an explicit resume lifts any halt once.
   const fingerprint = profile.ok ? profileFingerprint(profile.draft) : null
@@ -269,14 +273,19 @@ export async function advanceTenantCarrier(svc: any, brokerageId: string, deps: 
 // (the readiness contract's evaluate step; repair runs it for real).
 //
 // READINESS HOOK (integrator): lib/kernel/tenant-readiness.ts (lane 140B/K)
-// maps `readiness` below onto its `communications` ReadinessCheck — evaluate
-// with { probeOnly: true }, repair with no option, and never widen the halt.
+// takes the PHONE HALF of its `communications` ReadinessCheck from `readiness`
+// below (status + required + reason + evidence — wave 140N: no second mapping
+// of the phase anywhere) — evaluate with { probeOnly: true }, repair with no
+// option, and never widen the halt.
 //
-// THE RULE FOR A TENANT WITH NO NUMBER YET (documented for lane 140B/K): the
-// communications check is WAITING_EXTERNAL (the tenant has not picked or
-// ported a number — their choice, outside the platform) or NOT_APPLICABLE
-// (the plan admits no number at all) — NEVER BLOCKED. Readiness does not fail
-// a tenant for not having chosen a phone number.
+// THE RULE FOR A TENANT WITH NO NUMBER YET: the communications check is
+// WAITING_EXTERNAL with required:false (the tenant has not picked or ported a
+// number — their choice, outside the platform; the contract's READY rule only
+// counts REQUIRED checks, so this never blocks READY) or NOT_APPLICABLE (the
+// plan admits no number at all) — NEVER BLOCKED, NEVER REQUIRED. Readiness
+// does not fail a tenant for not having chosen a phone number. A filing the
+// carrier is reviewing stays required:true WAITING_EXTERNAL — not READY until
+// the carrier answers.
 
 export interface A2pSyncResult {
   /** false when the sync did not run (halted — the stored reason is returned) or a read refused. */
@@ -309,7 +318,8 @@ function a2pReadinessVerdict(phase: CarrierPhase, state: A2pState, numbersAllowe
     case "approved": return { status: "PASS", required: true, reason: "every lane the tenant's numbers need is carrier-registered", owner: "compliance_officer", repair: null }
     case "no_numbers":
       if (numbersAllowed === false) return { status: "NOT_APPLICABLE", required: false, reason: "the plan admits no phone number — nothing to register", owner: "compliance_officer", repair: null }
-      return { status: "WAITING_EXTERNAL", required: true, reason: "no phone number yet — the tenant picks a local number or ports theirs; never a blocker", owner: "compliance_officer", repair: null }
+      // required:false — "never a blocker" IS the rule (readinessVerdict counts only REQUIRED checks).
+      return { status: "WAITING_EXTERNAL", required: false, reason: "no phone number yet — the tenant picks a local number or ports theirs; never a blocker", owner: "compliance_officer", repair: null }
     case "carrier_review": return { status: "WAITING_EXTERNAL", required: true, reason: "filed — waiting on Twilio / TCR / carrier review", owner: "compliance_officer", repair: null }
     case "filing": return { status: "REPAIRABLE", required: true, reason: "steps still to submit — the hourly loop or a sync files them", owner: "compliance_officer", repair: "lib/voice/carrier-registration-loop.ts syncA2pStatus(svc, brokerageId)" }
     case "needs_input": return { status: "BLOCKED", required: true, reason: `the Business registration is missing fields (${BUSINESS_REGISTRATION_SETTINGS_PATH})`, owner: "compliance_officer", repair: null }
@@ -347,7 +357,7 @@ export async function syncA2pStatus(svc: any, brokerageId: string, opts: { deps?
     .select("phone_number, twilio_number_sid").eq("brokerage_id", brokerageId).eq("is_active", true).limit(20)
   if (numErr) throw new Error(`tenant phone numbers could not be read (${numErr.message}) — the carrier status is unknown, not clear`)
   const numbers = (nums ?? []) as Array<{ phone_number: string; twilio_number_sid: string | null }>
-  const profile = numbers.length ? await resolveA2pProfile(svc, brokerageId) : { ok: false as const, missing: [] as string[] }
+  const profile = numbers.length ? await (deps.profile ?? resolveA2pProfile)(svc, brokerageId) : { ok: false as const, missing: [] as string[] }
   const view = carrierRegistrationPhase(state, numbers, profile.ok ? [] : profile.missing)
   const numbersAllowed = numbers.length ? true : await (deps.numbersAllowed ?? defaultNumbersAllowed)(svc, brokerageId)
   const nowHalt = haltVerdict(state, null)

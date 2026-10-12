@@ -46,6 +46,9 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
   const [pending, startTransition] = useTransition()
   const [name, setName] = useState('')
   const [recTier, setRecTier] = useState('')
+  // Wave 140N: a re-apply fills only what this tenant has NOT set unless staff explicitly choose to
+  // overwrite — that choice is audited server-side (superadmin_audit_log snapshot.apply.overwrite).
+  const [overwrite, setOverwrite] = useState(false)
 
   function refresh() {
     listSnapshotsAction().then((r) => { if (r.ok) setSnapshots(r.snapshots); else setErr(r.error); setLoading(false) })
@@ -64,8 +67,12 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
   function apply(id: string, label: string) {
     setErr(null); setMsg(null)
     startTransition(async () => {
-      const r = await applySnapshotAction({ snapshotId: id, targetBrokerageId: brokerageId })
-      if (!r.ok) setErr(r.error ?? 'Apply failed'); else setMsg(`Applied "${label}": ${(r.applied ?? []).join(', ') || 'nothing to apply'}`)
+      const r = await applySnapshotAction({ snapshotId: id, targetBrokerageId: brokerageId, overwrite })
+      if (!r.ok) setErr(r.error ?? 'Apply failed')
+      else {
+        const kept = (r.preserved ?? []).length, replaced = (r.overwritten ?? []).length
+        setMsg(`Applied "${label}" (${r.mode === 'replace' ? 'overwrite — audited' : 'absent keys only'}): ${(r.applied ?? []).join(', ') || 'nothing to apply'}${kept ? ` · kept ${kept} of this tenant's own value${kept === 1 ? '' : 's'}` : ''}${replaced ? ` · overwrote ${replaced}` : ''}`)
+      }
     })
   }
   function remove(id: string) {
@@ -94,6 +101,10 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
           <Button size="sm" disabled={pending} onClick={capture} className="gap-1.5"><Camera className="h-3.5 w-3.5" />Capture</Button>
         </div>
         <p className="text-[11px] text-muted-foreground -mt-2">Captures branding, brand voice, public-site content, and feature enablement. Secrets/credentials are never included. The recommended tier is preselected when provisioning a new subscriber from the snapshot.</p>
+        <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+          <input type="checkbox" className="h-3 w-3" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} aria-label="Overwrite this tenant's own values" />
+          <span>Overwrite this tenant&apos;s own values when applying (audited). Off: only values the tenant has not set are filled.</span>
+        </label>
 
         {loading ? (
           <p className="text-sm text-muted-foreground flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />Loading…</p>

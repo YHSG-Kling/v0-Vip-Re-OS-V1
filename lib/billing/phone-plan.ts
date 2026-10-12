@@ -158,7 +158,7 @@ export function resolvePhoneAllowance(
 }
 
 /** PURE: the typed refusal for one unset phone rate on one tier. */
-export function phoneRateNotConfigured(tier: string | null | undefined, rate: "overage_number_cents" | "overage_voice_minute_cents" | "overage_sms_cents", whatIsBlocked: string): PriceNotConfiguredRefusal {
+function phoneRateNotConfigured(tier: string | null | undefined, rate: "overage_number_cents" | "overage_voice_minute_cents" | "overage_sms_cents", whatIsBlocked: string): PriceNotConfiguredRefusal {
   return priceNotConfiguredRefusal({
     surface: PHONE_OVERAGE_PRICE_SURFACE,
     what: `${tier ?? "unknown"} tier ${rate} (subscription_tiers.features.limits)`,

@@ -15,15 +15,29 @@ import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting
 import { selectableConnectionsForScope, candidateProvider } from "@/lib/connections/scope"
 import { canonicalProvider } from "@/lib/integrations/connection-manager"
 import { encryptSecret } from "@/lib/security/secret-crypto"
+import { publicCredentialSelect } from "@/lib/security/credential-projection"
+import { CONFIG_SECRET_KEYS } from "@/lib/connections/credential-secret"
 
+/**
+ * A brokerage credential AS THE BROWSER MAY SEE IT (wave 140, lane 140P). The secret columns
+ * (`api_key`, `access_token`, `refresh_token` — sealed `enc:v1:` envelopes since 140H) are NOT
+ * here: this type is the return value of a `"use server"` export, i.e. it is shipped to the
+ * settings page in a browser that has no key and never needs the value. Each secret is
+ * projected to a `*_configured` boolean, answered by the database (a NOT NULL filter), so the
+ * ciphertext never even reaches the server process for this read. `config` is the row's
+ * jsonb minus CONFIG_SECRET_KEYS (the Twilio auth_token / api_secret / client_secret that
+ * some connectors keep inside it — lane 140H item 2).
+ */
 export type PlatformCredential = {
   id: string
   brokerage_id: string
   agent_user_id: string | null
   platform: string
   scope: string
-  access_token: string | null
-  api_key: string | null
+  /** A stored (sealed) api_key exists — never the value, never its ciphertext. */
+  api_key_configured: boolean
+  /** A stored (sealed) access_token exists — never the value, never its ciphertext. */
+  access_token_configured: boolean
   api_url: string | null
   token_expires_at: string | null
   account_id: string | null
@@ -34,6 +48,17 @@ export type PlatformCredential = {
   config: Record<string, unknown>
   created_at: string
   updated_at: string
+}
+
+/** PURE. The jsonb config with every CONFIG_SECRET_KEYS entry removed (the browser projection). */
+function redactConfigSecrets(config: unknown): Record<string, unknown> {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return {}
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(config as Record<string, unknown>)) {
+    if ((CONFIG_SECRET_KEYS as readonly string[]).includes(k)) continue
+    out[k] = v
+  }
+  return out
 }
 
 export type ProviderOverride = {
@@ -123,15 +148,38 @@ export async function getPlatformCredentials(): Promise<PlatformCredential[]> {
   const supabase = acting.db
   const { brokerageId } = await getBrokerageId(supabase)
 
-  const { data, error } = await supabase
-    .from("platform_credentials")
-    .select("*")
-    .eq("owner_type", "brokerage")
-    .eq("owner_id", brokerageId)
-    .order("platform")
+  // The NON-secret projection (lib/security/credential-projection.ts — spelled once per store), plus
+  // two presence reads the database answers: which rows HAVE a sealed api_key / access_token. The
+  // secret columns are never selected here (was `select("*")`, which shipped the envelopes to the browser).
+  const base = supabase.from("platform_credentials").select(publicCredentialSelect("platform_credentials")).eq("owner_type", "brokerage").eq("owner_id", brokerageId).order("platform")
+  const keyed = supabase.from("platform_credentials").select("id").eq("owner_type", "brokerage").eq("owner_id", brokerageId).not("api_key", "is", null)
+  const tokened = supabase.from("platform_credentials").select("id").eq("owner_type", "brokerage").eq("owner_id", brokerageId).not("access_token", "is", null)
+  const [{ data, error }, { data: keyedRows, error: keyedError }, { data: tokenedRows, error: tokenedError }] = await Promise.all([base, keyed, tokened])
 
   if (error) throw new Error(error.message)
-  return (data ?? []) as PlatformCredential[]
+  if (keyedError) throw new Error(keyedError.message)
+  if (tokenedError) throw new Error(tokenedError.message)
+  const hasKey = new Set(((keyedRows ?? []) as Array<{ id: string }>).map((r) => r.id))
+  const hasToken = new Set(((tokenedRows ?? []) as Array<{ id: string }>).map((r) => r.id))
+  return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+    id: row.id as string,
+    brokerage_id: row.brokerage_id as string,
+    agent_user_id: (row.agent_user_id as string | null) ?? null,
+    platform: row.platform as string,
+    scope: (row.scope as string) ?? "brokerage",
+    api_key_configured: hasKey.has(row.id as string),
+    access_token_configured: hasToken.has(row.id as string),
+    api_url: (row.api_url as string | null) ?? null,
+    token_expires_at: (row.token_expires_at as string | null) ?? null,
+    account_id: (row.account_id as string | null) ?? null,
+    account_name: (row.account_name as string | null) ?? null,
+    is_active: row.is_active === true,
+    last_synced_at: (row.last_synced_at as string | null) ?? null,
+    sync_error: (row.sync_error as string | null) ?? null,
+    config: redactConfigSecrets(row.config),
+    created_at: row.created_at as string,
+    updated_at: row.updated_at as string,
+  }))
 }
 
 export async function getProviderOverrides(): Promise<ProviderOverride[]> {
@@ -142,7 +190,7 @@ export async function getProviderOverrides(): Promise<ProviderOverride[]> {
 
   const { data, error } = await supabase
     .from("provider_overrides")
-    .select("*")
+    .select("id, scope_type, scope_id, provider_type, provider_key, config, enabled, created_at, updated_at")
     .eq("scope_type", "brokerage")
     .eq("scope_id", brokerageId)
     .order("provider_type")

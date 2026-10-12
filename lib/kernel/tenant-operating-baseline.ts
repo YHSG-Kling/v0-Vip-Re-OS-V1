@@ -36,6 +36,13 @@
 //   assistant the day-one assistant identity (ai_identity_profiles, seedStarterAssistant)
 //   education the onboarding library assignment for the tenant admin
 //             (learning_assignments, upsert ignoreDuplicates — the 8d idiom)
+//   ai_entitlement the tenant's AI entitlement row (ai_subscription_tier — the live RLS
+//             policy ai_usage_monthly_view reads it) through THE ONE writer,
+//             lib/entitlements/ai-subscription-tier.ts syncAiSubscriptionTier in
+//             fill_absent mode: present → kept whatever tier staff set; absent → created
+//             once (admin = the roster's first seat; no price — AI is covered by the
+//             subscription with per-tier overage). Lane 140O: before this, only the staff
+//             tier change ever wrote the row, so every new tenant started without one.
 //   reactivation the AI-ISA reactivation campaign_sequence (ensureReactivationSequence)
 //
 // TENANT (CLAUDE.md §4): brokerageId is the id the caller minted (provisioner) or
@@ -48,13 +55,38 @@
 // `settings` and `managers` checks read the items this returns and route a
 // REPAIRABLE gap back to this function (playbook "tenant_operating_baseline");
 // createTenantCore calls it after the subscription row exists (step 6).
+//
+// WAVE 140N — ONE PATH. The readiness repair's own fill-absent half (lane 140K:
+// lib/kernel/tenant-readiness.ts fillAbsentDefaults / applyAbsentSnapshotDefaults and
+// the three provisioning executors fill_settings_defaults / apply_snapshot_defaults /
+// ensure_website_slug) was a second implementation of this module + the one snapshot
+// writer. Its guarantees were merged onto the survivors — the active-voice skip, the
+// existing-override keep and the filled / preserved report live in
+// lib/platform/config-snapshots.ts applySnapshotPayload (mode fill_absent); the ACTING
+// USER rule (feature_access_overrides.created_by FKs users: the caller's actor, else the
+// tenant's AI-ISA system actor, else its first admin, else the features layer is
+// skipped and named) lives below — and the duplicate was deleted. The ONE declared
+// playbook is `tenant_operating_baseline` (lib/kernel/self-healing.ts
+// provisioningExecutors), whose executor calls this function with actorUserId null.
 
 import { tenantWebsitePath, resolveUniqueTenantSlug } from "@/lib/kernel/tenant-creation"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+import type { SnapshotPayload } from "@/lib/platform/config-snapshots"
 
 export const OPERATING_BASELINE_EVIDENCE_KEY = "operating_baseline"
 
-export type TenantBaselineItemKey = "website" | "snapshot" | "evidence" | "isa_actor" | "assistant" | "education" | "reactivation"
+export type TenantBaselineItemKey = "website" | "snapshot" | "evidence" | "isa_actor" | "assistant" | "education" | "ai_entitlement" | "reactivation"
+
+/** The items a tenant cannot WORK without — a refusal here fails the baseline run (createTenantCore's
+ *  operating_baseline step and the self-healing playbook alike). Every other item (ISA actor, assistant,
+ *  education, reactivation sequence — the class steps 8a/8b already treat as non-fatal) is recorded and
+ *  carried by the readiness reconciliation. ONE vocabulary for both callers. */
+export const REQUIRED_BASELINE_ITEMS: ReadonlySet<string> = new Set(["website", "snapshot", "evidence", "ai_entitlement"])
+
+/** PURE: the REQUIRED items a baseline result refused (empty = the tenant can work; soft refusals may remain). */
+export function baselineHardRefusals(r: { items: ReadonlyArray<{ key: string; status: string }> }): string[] {
+  return r.items.filter((i) => i.status === "refused" && REQUIRED_BASELINE_ITEMS.has(i.key)).map((i) => i.key)
+}
 export type TenantBaselineItemStatus = "present" | "created" | "filled" | "skipped" | "refused"
 
 export interface TenantBaselineItem {
@@ -75,28 +107,33 @@ export interface TenantOperatingBaselineResult {
   refused: string[]
   /** `<table>.<key>` values a fill-absent apply left as the tenant holds them. */
   preserved: string[]
+  /** `<table>.<key>` values a fill-absent apply wrote where the tenant held nothing. */
+  filled: string[]
 }
 
 /** The EXISTING initializers, injectable so an in-memory proof can pin each one's
  *  idempotency contract without the env (auth admin, image generation) they need live. */
 export interface TenantBaselineDeps {
   snapshotForTier: (tier: string, svc: any) => Promise<{ id: string; name: string; createdAt: string; payload: unknown } | null>
-  applySnapshotPayload: (payload: any, brokerageId: string, actorUserId: string, svc: any, opts: { mode: "fill_absent" }) => Promise<{ applied: string[]; refused: string[]; preserved: string[] }>
+  applySnapshotPayload: (payload: any, brokerageId: string, actorUserId: string, svc: any, opts: { mode: "fill_absent" }) => Promise<{ applied: string[]; refused: string[]; preserved: string[]; filled: string[] }>
   provisionIsaActor: (args: { brokerageId: string; brokerageName?: string; brokerageSlug?: string | null }) => Promise<{ userId: string; created: boolean }>
   seedStarterAssistant: (svc: any, brokerageId: string) => Promise<{ seeded: boolean; withPhoto: boolean; reason?: string }>
   ensureReactivationSequence: (brokerageId: string, svc: any) => Promise<{ sequenceId: string | null; created: boolean; error?: string }>
   mergeBrokerageSettings: (svc: any, brokerageId: string, patch: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>
+  /** THE ONE ai_subscription_tier writer (lib/entitlements/ai-subscription-tier.ts); the baseline calls it fill_absent only. */
+  syncAiSubscriptionTier: (svc: any, args: { brokerageId: string; tier: string; mode: "fill_absent" | "set" }) => Promise<{ status: "present" | "created" | "updated" | "skipped" | "refused"; detail: string; rowId: string | null }>
   now: () => Date
 }
 
 async function defaultDeps(): Promise<TenantBaselineDeps> {
-  const [{ snapshotForTier }, { applySnapshotPayload }, { provisionIsaActorForBrokerage }, { seedStarterAssistant }, { ensureReactivationSequence }, { mergeBrokerageSettings }] = await Promise.all([
+  const [{ snapshotForTier }, { applySnapshotPayload }, { provisionIsaActorForBrokerage }, { seedStarterAssistant }, { ensureReactivationSequence }, { mergeBrokerageSettings }, { syncAiSubscriptionTier }] = await Promise.all([
     import("@/lib/platform/trial-funnel"),
     import("@/lib/platform/config-snapshots"),
     import("@/lib/auth/provision-isa-actor"),
     import("@/lib/kernel/assistant-starter"),
     import("@/lib/lead-pipeline/reactivation-sequence-installer"),
     import("@/lib/settings/brokerage-settings-merge"),
+    import("@/lib/entitlements/ai-subscription-tier"),
   ])
   return {
     snapshotForTier,
@@ -105,11 +142,13 @@ async function defaultDeps(): Promise<TenantBaselineDeps> {
     seedStarterAssistant,
     ensureReactivationSequence,
     mergeBrokerageSettings: (svc, brokerageId, patch) => mergeBrokerageSettings(svc, brokerageId, patch),
+    syncAiSubscriptionTier: (svc, args) => syncAiSubscriptionTier(svc, args),
     now: () => new Date(),
   }
 }
 
 /** PURE: the version string the evidence row carries for a snapshot (or none). */
+/** @proofSeam pure version spelling proven by test:tenant-baseline; production reaches it only through initializeTenantOperatingBaseline in this file. */
 export function snapshotVersionOf(snap: { id: string; createdAt: string } | null): string {
   return snap ? `${snap.id}@${snap.createdAt}` : "platform_defaults"
 }
@@ -128,9 +167,10 @@ export async function initializeTenantOperatingBaseline(
   const items: TenantBaselineItem[] = []
   const refused: string[] = []
   const preserved: string[] = []
+  const filled: string[] = []
   const deps: TenantBaselineDeps = { ...(await defaultDeps()), ...(opts.deps ?? {}) }
   const actor = opts.actorUserId ?? null
-  const fail = (reason: string): TenantOperatingBaselineResult => ({ ok: false, brokerageId, websitePath: null, snapshotVersion: null, items, refused: [...refused, reason], preserved })
+  const fail = (reason: string): TenantOperatingBaselineResult => ({ ok: false, brokerageId, websitePath: null, snapshotVersion: null, items, refused: [...refused, reason], preserved, filled })
 
   if (!brokerageId) return fail("No brokerage id — the operating baseline needs the tenant the caller minted or resolved; nothing was written.")
 
@@ -141,6 +181,11 @@ export async function initializeTenantOperatingBaseline(
   if (!brokerage) return fail(`Brokerage ${brokerageId} not found — baseline NOT initialized.`)
   const b = brokerage as { id: string; name: string; slug: string | null; plan_tier: string | null; ai_isa_system_user_id: string | null }
   const nowIso = deps.now().toISOString()
+
+  // 0b. THE TENANT'S FIRST ADMIN (one read, reused by the acting-user rule and the education item).
+  //     A refused read is reported on both; it never reads as "no admin".
+  const { data: admins, error: aErr } = await svc.from("users").select("id").eq("brokerage_id", brokerageId).is("deleted_at", null).in("user_type", Array.from(TENANT_ADMIN_USER_TYPES)).order("created_at", { ascending: true }).limit(1)
+  const firstAdminId = aErr ? null : (((admins ?? []) as Array<{ id: string }>)[0]?.id ?? null)
 
   // 1. WEBSITE — the slug IS the storefront (app/site/[slug] assembles the default
   //    pages — hero, listings, agents, blog, recruiting — from this tenant's rows only).
@@ -162,21 +207,45 @@ export async function initializeTenantOperatingBaseline(
     }
   }
 
-  // 2. SNAPSHOT — the tier's canonical (newest) snapshot, fill-absent only.
+  // 2. ISA ACTOR — idempotent on brokerages.ai_isa_system_user_id. Runs BEFORE the snapshot (wave 140N)
+  //    so a tenant initialized with no caller actor has its system actor when feature overrides need one.
+  let isaUserId: string | null = b.ai_isa_system_user_id
+  if (isaUserId) items.push({ key: "isa_actor", status: "present", detail: "ai_isa_system_user_id set" })
+  else {
+    try {
+      const r = await deps.provisionIsaActor({ brokerageId, brokerageName: b.name, brokerageSlug: slug })
+      isaUserId = r.userId || null
+      items.push({ key: "isa_actor", status: r.created ? "created" : "present", detail: `ai_isa_system_user_id ${r.userId}` })
+    } catch (err) { const msg = (err as Error)?.message ?? "ISA actor provisioning threw"; refused.push(`isa_actor: ${msg}`); items.push({ key: "isa_actor", status: "refused", detail: msg }) }
+  }
+  // THE ACTING USER for rows that need a creator (feature_access_overrides.created_by FKs users — a
+  // non-user actor is refused by the database and would read as a failed baseline): the caller's actor,
+  // else the tenant's AI-ISA system actor, else its first admin. None → the features layer is skipped,
+  // named, and filled on the next run (the admin is the readiness contract's own item, never minted here).
+  const actingUserId = actor ?? isaUserId ?? firstAdminId
+
+  // 3. SNAPSHOT — the tier's canonical (newest) snapshot, fill-absent only.
   let snap: { id: string; name: string; createdAt: string; payload: unknown } | null = null
   let snapshotApplied: string[] = []
   try {
     snap = b.plan_tier ? await deps.snapshotForTier(b.plan_tier, svc) : null
     if (!snap) items.push({ key: "snapshot", status: "skipped", detail: `no platform_config_snapshots row recommends tier ${b.plan_tier ?? "(none)"} — platform defaults (readers fall back by absence)` })
     else {
-      const r = await deps.applySnapshotPayload(snap.payload, brokerageId, actor ?? "system", svc, { mode: "fill_absent" })
+      let payload = (snap.payload ?? {}) as SnapshotPayload
+      const skipped: string[] = []
+      if (!actingUserId && payload.features?.length) {
+        payload = { ...payload, features: [] }
+        skipped.push("features.* (no acting user on the tenant — feature overrides need a users.id creator; filled on the next run once the AI-ISA actor or an admin exists)")
+      }
+      const r = await deps.applySnapshotPayload(payload, brokerageId, actingUserId ?? "system", svc, { mode: "fill_absent" })
       snapshotApplied = r.applied
       preserved.push(...r.preserved)
+      filled.push(...r.filled)
       refused.push(...r.refused.map((x) => `snapshot ${x}`))
       items.push({
         key: "snapshot", status: r.refused.length ? "refused" : r.applied.length ? "filled" : "present",
         detail: r.refused.length ? r.refused.join("; ") : r.applied.length ? `filled: ${r.applied.join(", ")}` : `every carried key already held (${r.preserved.length} preserved)`,
-        evidence: { snapshot_id: snap.id, snapshot_name: snap.name, version: snapshotVersionOf(snap), applied: r.applied, preserved: r.preserved },
+        evidence: { snapshot_id: snap.id, snapshot_name: snap.name, version: snapshotVersionOf(snap), applied: r.applied, filled: r.filled, preserved: r.preserved, skipped, acting_user: actingUserId },
       })
     }
   } catch (err) {
@@ -185,7 +254,7 @@ export async function initializeTenantOperatingBaseline(
   }
   const snapshotVersion = snapshotVersionOf(snap)
 
-  // 3. EVIDENCE — written once on the tenant's own settings row; a later run that
+  // 4. EVIDENCE — written once on the tenant's own settings row; a later run that
   //    filled something appends last_filled (a run that filled nothing writes nothing).
   const { data: settingsRow, error: sErr } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
   if (sErr) { refused.push(`evidence read: ${sErr.message}`); items.push({ key: "evidence", status: "refused", detail: sErr.message }) }
@@ -205,15 +274,6 @@ export async function initializeTenantOperatingBaseline(
     } else items.push({ key: "evidence", status: "present", detail: `operating_baseline ${String(existing.version)}`, evidence: existing })
   }
 
-  // 4. ISA ACTOR — idempotent on brokerages.ai_isa_system_user_id.
-  if (b.ai_isa_system_user_id) items.push({ key: "isa_actor", status: "present", detail: "ai_isa_system_user_id set" })
-  else {
-    try {
-      const r = await deps.provisionIsaActor({ brokerageId, brokerageName: b.name, brokerageSlug: slug })
-      items.push({ key: "isa_actor", status: r.created ? "created" : "present", detail: `ai_isa_system_user_id ${r.userId}` })
-    } catch (err) { const msg = (err as Error)?.message ?? "ISA actor provisioning threw"; refused.push(`isa_actor: ${msg}`); items.push({ key: "isa_actor", status: "refused", detail: msg }) }
-  }
-
   // 5. ASSISTANT IDENTITY — seedStarterAssistant never overwrites an existing profile.
   try {
     const r = await deps.seedStarterAssistant(svc, brokerageId)
@@ -224,12 +284,11 @@ export async function initializeTenantOperatingBaseline(
 
   // 6. EDUCATION — the onboarding library for the tenant admin (the provisioner's 8d idiom:
   //    upsert on (agent_user_id, module_id), ignoreDuplicates). No admin yet → skipped, named:
-  //    the admin user is the readiness contract's own item, never minted here.
-  const { data: admins, error: aErr } = await svc.from("users").select("id").eq("brokerage_id", brokerageId).in("user_type", Array.from(TENANT_ADMIN_USER_TYPES)).order("created_at", { ascending: true }).limit(1)
+  //    the admin user is the readiness contract's own item, never minted here (admin read: 0b).
   if (aErr) { refused.push(`education (admin read): ${aErr.message}`); items.push({ key: "education", status: "refused", detail: aErr.message }) }
-  else if (!(admins ?? []).length) items.push({ key: "education", status: "skipped", detail: "no tenant admin user yet (readiness item adminUser) — library assigned once one exists" })
+  else if (!firstAdminId) items.push({ key: "education", status: "skipped", detail: "no tenant admin user yet (readiness item adminUser) — library assigned once one exists" })
   else {
-    const adminId = (admins as Array<{ id: string }>)[0].id
+    const adminId = firstAdminId
     const { data: have, error: hErr } = await svc.from("learning_assignments").select("id").eq("brokerage_id", brokerageId).eq("agent_user_id", adminId).eq("signal_source", "subscriber_onboarding").limit(1)
     if (hErr) { refused.push(`education (read): ${hErr.message}`); items.push({ key: "education", status: "refused", detail: hErr.message }) }
     else if ((have ?? []).length) items.push({ key: "education", status: "present", detail: "onboarding library assigned" })
@@ -250,6 +309,19 @@ export async function initializeTenantOperatingBaseline(
     }
   }
 
+  // 6b. AI ENTITLEMENT — the tenant's ai_subscription_tier row through THE ONE writer, fill-absent:
+  //     a row that exists is the tenant's (whatever tier staff set) and is kept; absent → created
+  //     once, admin = the roster's first seat (the writer derives it — never retyped here). No plan
+  //     tier → skipped, named. AI is covered by the subscription with per-tier overage: no price lands.
+  if (!b.plan_tier) items.push({ key: "ai_entitlement", status: "skipped", detail: "no plan tier on the brokerage — the AI entitlement names the tier it covers; written once the tier is set" })
+  else {
+    try {
+      const r = await deps.syncAiSubscriptionTier(svc, { brokerageId, tier: b.plan_tier, mode: "fill_absent" })
+      if (r.status === "refused") { refused.push(`ai_entitlement: ${r.detail}`); items.push({ key: "ai_entitlement", status: "refused", detail: r.detail }) }
+      else items.push({ key: "ai_entitlement", status: r.status === "updated" ? "filled" : r.status, detail: r.detail, evidence: { row_id: r.rowId, tier: b.plan_tier } })
+    } catch (err) { const msg = (err as Error)?.message ?? "AI entitlement writer threw"; refused.push(`ai_entitlement: ${msg}`); items.push({ key: "ai_entitlement", status: "refused", detail: msg }) }
+  }
+
   // 7. REACTIVATION SEQUENCE — ensureReactivationSequence is idempotent per brokerage.
   try {
     const r = await deps.ensureReactivationSequence(brokerageId, svc)
@@ -258,5 +330,5 @@ export async function initializeTenantOperatingBaseline(
   } catch (err) { const msg = (err as Error)?.message ?? "reactivation installer threw"; refused.push(`reactivation: ${msg}`); items.push({ key: "reactivation", status: "refused", detail: msg }) }
 
   if (refused.length) console.error(`[tenant-operating-baseline] ${brokerageId}: ${refused.length} item(s) refused — ${refused.join(" | ")}`)
-  return { ok: refused.length === 0, brokerageId, websitePath: slug ? tenantWebsitePath(slug) : null, snapshotVersion, items, refused, preserved }
+  return { ok: refused.length === 0, brokerageId, websitePath: slug ? tenantWebsitePath(slug) : null, snapshotVersion, items, refused, preserved, filled }
 }

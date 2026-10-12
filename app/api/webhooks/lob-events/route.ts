@@ -24,6 +24,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ingestProviderTruth } from "@/lib/outcomes/reconciliation-ledger"
 import { TRUTH_SOURCES } from "@/lib/outcomes/reconciliation"
+import { secretsEqual } from "@/lib/security/constant-time"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -41,7 +42,8 @@ export async function POST(request: NextRequest) {
   const secret = process.env.LOB_WEBHOOK_SECRET
   if (!secret) return NextResponse.json({ error: "not found" }, { status: 404 })
   const given = request.nextUrl.searchParams.get("secret") ?? request.headers.get("x-webhook-secret")
-  if (given !== secret) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
+  // Constant-time compare (wave 140P, lib/security/constant-time.ts) — same gate as trackDelivery's.
+  if (!secretsEqual(given, secret)) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
 
   let body: any
   try { body = await request.json() } catch {

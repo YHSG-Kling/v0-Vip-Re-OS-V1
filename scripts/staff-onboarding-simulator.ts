@@ -35,7 +35,11 @@ function sourceLayer() {
     /requirePlatformCapability\(\s*"support"\s*\)/.test(act) &&
     /@\/lib\/platform\/require-capability/.test(act))
   check("it runs loadSetupReadiness against the TENANT's owner identity (not the staffer)", /loadSetupReadiness\(\{\s*userId:\s*ownerUserId/.test(act) && /brokerageId,/.test(act))
-  check("it resolves the tenant owner (broker/admin, else an active agent)", /in\("user_type",\s*\["broker"/.test(act) && /from\("agents"\)/.test(act))
+  // THE RULE, NOT THE SPELLING (CLAUDE.md §2 / §4): the owner is resolved from the ONE roster
+  // (TENANT_ADMIN_USER_TYPES spread into the filter), never a retyped `["broker", …]` literal —
+  // lane 140O re-anchored this from the literal it used to pin.
+  check("it resolves the tenant owner from the roster (TENANT_ADMIN_USER_TYPES, else an active agent)", /in\("user_type",\s*\[\.\.\.TENANT_ADMIN_USER_TYPES\]/.test(act) && /from\("agents"\)/.test(act))
+  check("  control: the retyped owner roster is gone from the action", !/in\("user_type",\s*\["broker"/.test(act))
   check("honest when the tenant has no owner yet", /has no owner user yet/.test(act))
   const panel = src("app/dashboard/superadmin/brokerages/[id]/tenant-setup-panel.tsx")
   check("the panel renders the tenant's % + required-first checklist", /getTenantSetupReadinessAction/.test(panel) && /required/.test(panel) && /r\.pct/.test(panel))

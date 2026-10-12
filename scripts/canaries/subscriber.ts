@@ -14,7 +14,10 @@ export async function run() {
   const svc = canaryClient({
     subscription_tiers: [{ id: TIER, tier_name: "brokerage", is_active: true, display_name: "Brokerage" }],
     users: [{ id: STAFF, email: `staff@${CANARY_EMAIL_DOMAIN}`, platform_role: "superadmin", user_type: "admin", brokerage_id: null }],
-    platform_config_snapshots: [{ id: SNAP, name: `${CANARY_TAG} snapshot`, payload: { global: { timezone: "America/Chicago" }, brand: { primary_color: "#0f766e" } } }],
+    // The PLATFORM CATALOGUE a real platform carries: the tier's canonical snapshot (payload.recommendedTier is how
+    // snapshotForTier finds it) and a feature the tier is entitled to — without them the tenant-side verdict cannot be READY.
+    platform_config_snapshots: [{ id: SNAP, name: `${CANARY_TAG} snapshot`, created_at: new Date().toISOString(), payload: { recommendedTier: "brokerage", global: { timezone: "America/Chicago" }, brand: { tagline: `${CANARY_TAG} tagline`, accent_color: "#0f766e" }, voice: { tone: "warm", tagline: `${CANARY_TAG} voice` } } }],
+    feature_flags: [{ id: uuid(), feature_key: `${CANARY_TAG}_crm`, enabled: true, brokerage_access: true, team_access: true, enterprise_access: true, solo_access: true }],
   })
   setSvc(svc)
   const { createTenantCore, tenantWebsitePath } = await import("../../lib/kernel/tenant-creation")
@@ -43,12 +46,26 @@ export async function run() {
   const evidence = (svc.tables.lifecycle_events ?? []).filter((e) => e.brokerage_id === B).map((e) => String(e.event_type))
   c.step("evidence: the creation emitted kernel events on THIS tenant (lifecycle_events, incl. subscription created)", evidence.length > 0 && evidence.some((e) => /subscription/i.test(e)), `events=${evidence.join(",") || "none"}`)
   const again = await createTenantCore(svc, input)
-  c.step("idempotency: the same owner email a second time is REFUSED (never a duplicate tenant)", !again.ok && (svc.tables.brokerages ?? []).filter((x) => x.name === input.brokerageName).length === 1, again.error ?? "created twice")
-  // READINESS HOOK (integrator): replace the proxy below with
-  //   const readiness = await evaluateTenantReadiness(svc, B!, { repair: false })
-  //   c.step("READY: every required ReadinessCheck PASS", readiness.ready, readiness.blockers.join("; "))
-  // once lib/kernel/tenant-readiness.ts (lane 140B) is merged — do not import it before.
-  c.step("READY (pre-contract proxy): tenantCore, subscription, snapshot, website, adminUser all PASS", c.allOk(), "replaced by evaluateTenantReadiness at merge")
+  // A complete record is REFUSED as a duplicate owner; an incomplete one (a best-effort step needing a provider
+  // failed in-memory) RESUMES the SAME brokerage — either way never a second tenant.
+  c.step("idempotency: the same owner email a second time never mints a second tenant (refused as duplicate, or resumes the same brokerage id)", (!again.ok || again.brokerageId === B) && (svc.tables.brokerages ?? []).filter((x) => x.name === input.brokerageName).length === 1, again.ok ? `resumed ${again.brokerageId}${again.provisioning?.completed_at ? "" : " (record still open: " + Object.entries(again.provisioning?.steps ?? {}).filter(([, v]) => (v as { status: string }).status === "failed").map(([k]) => k).join(",") + ")"}` : again.error ?? "")
+  // THE READINESS CONTRACT (lib/kernel/tenant-readiness.ts): the verdict the creation stamped on the
+  // provisioning record, then a fresh evaluation — the checks the creation path OWNS must PASS, and the
+  // verdict is reported with its blockers (platform-catalogue blockers name what staff still configure).
+  const { evaluateTenantReadiness } = await import("../../lib/kernel/tenant-readiness")
+  const readiness = await evaluateTenantReadiness(svc, B!, { repair: false })
+  const status = (k: string) => readiness.checks.find((x) => x.key === k)?.status ?? "MISSING"
+  const owned = ["tenantCore", "subscription", "plan", "adminUser", "website", "settings", "seats"]
+  c.step("readiness: every check the creation path owns PASSES (tenantCore, subscription, plan, adminUser, website, settings, seats)", owned.every((k) => status(k) === "PASS"), owned.map((k) => `${k}=${status(k)}`).join(" "))
+  c.step("readiness: the creation stamped the SAME verdict on the provisioning record (billing_metadata.provisioning.readiness)", !!r.readiness && typeof r.readiness.ready === "boolean" && r.readiness.ready === readiness.ready, `record.ready=${String(r.readiness?.ready)} fresh.ready=${String(readiness.ready)}`)
+  c.step("readiness: no check is BLOCKED by a REFUSED read (an unreadable row is a blocker that names itself, never silence)", !readiness.checks.some((x) => x.status === "BLOCKED" && /unreadable|refused/i.test(x.reason)), readiness.checks.filter((x) => x.status !== "PASS").map((x) => `${x.key}=${x.status}`).join(" ") || "all PASS")
+  // THE VERDICT. Tenant-side (every check a manager owns) must be clear — that is what the creation path
+  // certifies. A PLATFORM-owned blocker (provider lanes dark, secrets key absent) is production
+  // configuration the owner performs; the canary reports it by name and does not call it a tenant defect.
+  const tenantBlockers = readiness.checks.filter((x) => x.owner !== "platform" && x.required && x.status !== "PASS" && x.status !== "NOT_APPLICABLE")
+  const platformBlockers = readiness.checks.filter((x) => x.owner === "platform" && x.status === "BLOCKED")
+  c.step(`verdict: tenant side ${tenantBlockers.length === 0 ? "READY" : "NOT READY"} — ${tenantBlockers.length} tenant blocker(s); ${platformBlockers.length} platform-configuration blocker(s)`, tenantBlockers.length === 0, [...tenantBlockers.map((x) => `${x.key}: ${x.reason}`), ...platformBlockers.map((x) => `[platform] ${x.key}: ${x.reason}`)].join("; ").slice(0, 500) || "READY")
+  if (platformBlockers.length) c.blind(`platform configuration still required for a READY verdict: ${platformBlockers.map((x) => x.key).join(", ")} (env-bound — the release checklist, not the tenant).`)
   c.blind("Supabase Auth is stubbed: the invite email is never sent; the on_auth_user_created trigger is modelled in the canary client.")
   c.blind("Stripe is never called (billing mode active = staff-invoiced); the paid/trial doors are proven by subscriber-door-simulator, not here.")
   c.blind("extrasSkipped reported by the core: " + (r.extrasSkipped.join(",") || "none") + " — best-effort day-one extras that need providers.")

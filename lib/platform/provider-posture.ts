@@ -340,9 +340,16 @@ export function assessA2pStall(state: A2pState, lastActivityIso: string | null, 
   if (ageDays === null) return { stalled: true, reason: "in progress but no activity ever recorded" }
 
   const brandStatus = (state.brand_status ?? "").toUpperCase()
-  const failed = brandStatus === "FAILED" || campaignStatus === "FAILED" || !!state.last_error
+  // Wave 140 (lane 140P; lane 140G's finding): read the failure CLASS, not the presence of a message.
+  // A `transient` last_error (408 / 429 / 5xx / network — lib/voice/a2p-registration.ts
+  // classifyCarrierFailure) is retried by the next hourly tick on its own and is NOT a failed
+  // registration; counting it was a false stall two days after a vendor hiccup. A credential /
+  // compliance / input class — or a legacy row with no class — still counts.
+  const hardError = !!state.last_error && state.last_error_class !== "transient"
+  const failed = brandStatus === "FAILED" || campaignStatus === "FAILED" || hardError
   if (failed && ageDays >= A2P_FAILED_STALL_DAYS) {
-    return { stalled: true, reason: `failed ${ageDays}d ago and not re-run${state.last_error ? ` — ${state.last_error.slice(0, 120)}` : ""}` }
+    const cls = hardError && state.last_error_class ? ` (${state.last_error_class})` : ""
+    return { stalled: true, reason: `failed${cls} ${ageDays}d ago and not re-run${state.last_error ? ` — ${state.last_error.slice(0, 120)}` : ""}` }
   }
   if (state.brand_sid && brandStatus !== "APPROVED" && !failed && ageDays >= A2P_BRAND_STALL_DAYS) {
     return { stalled: true, reason: `brand under review ${ageDays}d (normally clears in hours–2 days)` }

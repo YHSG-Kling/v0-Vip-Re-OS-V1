@@ -13,6 +13,7 @@
  * plain array the proof seeds and inspects.
  */
 
+import { randomUUID } from "node:crypto"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 export type Row = Record<string, any>
@@ -35,6 +36,8 @@ export interface MemOptions {
    * byte-for-byte (wave 94: the moment dedupe reads `created_at >= since`).
    */
   stampCreatedAt?: boolean
+  /** Mint uuid ids for inserted rows that carry none (the live DB's gen_random_uuid()); default `${table}-${n}` for the older proofs' readable ids. */
+  uuidIds?: boolean
 }
 
 type Filter = (row: Row) => boolean
@@ -106,7 +109,7 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
         for (const r of inserted ?? []) {
           const hit = conflictCols.length > 0 ? rows.find((x) => conflictCols.every((c) => x[c] === r[c])) : undefined
           if (hit) { Object.assign(hit, r); made.push(hit); continue }
-          const row: Row = { id: r.id ?? `${table}-${++seq}`, ...r }
+          const row: Row = { id: r.id ?? (opts.uuidIds ? randomUUID() : `${table}-${++seq}`), ...r }
           if (opts.stampCreatedAt && row.created_at === undefined) row.created_at = new Date().toISOString()
           rows.push(row); made.push(row)
         }
@@ -116,7 +119,7 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
       if (op === "insert") {
         const made: Row[] = []
         for (const r of inserted ?? []) {
-          const row: Row = { id: r.id ?? `${table}-${++seq}`, ...r }
+          const row: Row = { id: r.id ?? (opts.uuidIds ? randomUUID() : `${table}-${++seq}`), ...r }
           if (opts.stampCreatedAt && row.created_at === undefined) row.created_at = new Date().toISOString()
           rows.push(row); made.push(row)
         }

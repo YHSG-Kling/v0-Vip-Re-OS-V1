@@ -11,6 +11,10 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { loadSetupReadiness, normalizeSetupRole, type SetupReadiness } from "@/lib/onboarding/setup-readiness"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
+// The tenant-admin roster, DERIVED (CLAUDE.md §4) — the owner lookup below used to retype
+// `["broker", "broker_owner", "admin"]`; the readiness contract (lib/kernel/tenant-readiness.ts
+// adminUser) resolves the same owner from the same Set (lane 140O).
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THIS GATE WAS NOT DEAD — IT WAS TOO WIDE, IN THE OTHER DIRECTION
@@ -75,7 +79,7 @@ export async function getTenantSetupReadinessAction(brokerageId: string): Promis
   const { data: owner } = await svc.from("users")
     .select("id, user_type, first_name, last_name")
     .eq("brokerage_id", brokerageId)
-    .in("user_type", ["broker", "broker_owner", "admin"])
+    .in("user_type", [...TENANT_ADMIN_USER_TYPES])
     .is("deleted_at", null)
     .order("created_at", { ascending: true })
     .limit(1).maybeSingle()

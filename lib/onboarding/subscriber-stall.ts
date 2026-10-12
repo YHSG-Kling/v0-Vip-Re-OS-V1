@@ -32,6 +32,10 @@
 // subscriber_door.
 
 import { STALL_AFTER_DAYS } from "@/lib/onboarding/onboarding-roster"
+// The tenant-admin roster, DERIVED (CLAUDE.md §4) — the owner lookup below used to retype
+// `["broker", "broker_owner", "admin"]` and so skipped a broker_admin / team_lead /
+// compliance_officer owner silently (lane 140O).
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 /** Days after creation before the first nudge. */
 export const NUDGE_AFTER_DAYS = 3
@@ -173,7 +177,7 @@ export async function runSubscriberStallSweep(svc: any, now: Date = new Date(), 
     try {
       const { data: owners, error: ownerErr } = await svc.from("users")
         .select("id, email, first_name").eq("brokerage_id", row.id)
-        .in("user_type", ["broker", "broker_owner", "admin"]).order("created_at", { ascending: true }).limit(1)
+        .in("user_type", [...TENANT_ADMIN_USER_TYPES]).order("created_at", { ascending: true }).limit(1)
       if (ownerErr) { out.errors.push(`${row.id} owner read: ${ownerErr.message}`); continue }
       const owner = ((owners ?? []) as Array<{ id: string; email: string | null; first_name: string | null }>)[0] ?? null
       const to = owner?.email ?? row.email

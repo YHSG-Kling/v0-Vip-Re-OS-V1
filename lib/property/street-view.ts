@@ -172,6 +172,17 @@ export function resolveMapProvider(
   kind: MapRenderKind,
   opts: { health?: Partial<Record<MapProvider, CapabilityProviderHealth | null>>; env?: MapCredentialEnv } = {},
 ): MapProviderChoice | null {
+  return walkMapProviders(kind, opts)[0] ?? null
+}
+
+/** The same walk, EVERY viable provider in route order (wave 140, lane 140P). A caller whose render
+ *  needs something the first provider cannot be given (a Mapbox route image with no geocoded stop)
+ *  continues to the next viable one instead of re-walking with a forged health. Each choice carries
+ *  the route evidence as resolveMapProvider does; the skipped list grows as the walk advances. */
+function walkMapProviders(
+  kind: MapRenderKind,
+  opts: { health?: Partial<Record<MapProvider, CapabilityProviderHealth | null>>; env?: MapCredentialEnv } = {},
+): MapProviderChoice[] {
   const env: MapCredentialEnv = opts.env ?? {
     MAPBOX_PUBLIC_TOKEN: process.env.MAPBOX_PUBLIC_TOKEN,
     MAPBOX_TOKEN: process.env.MAPBOX_TOKEN,
@@ -180,19 +191,20 @@ export function resolveMapProvider(
   }
   const routed = routeCapability("map_render", opts.health ?? {})
   const skipped: Array<{ provider: MapProvider; reason: string }> = routed.skipped.map((s) => ({ provider: s.provider as MapProvider, reason: s.reason }))
+  const out: MapProviderChoice[] = []
   for (const provider of routed.providers as MapProvider[]) {
     const cred = credentialFor(provider, kind, env)
     if ("missing" in cred) { skipped.push({ provider, reason: `unconfigured: ${cred.missing} is not set` }); continue }
-    return {
+    out.push({
       provider,
       key: cred.key,
-      route: { capability: "map_render", order: routed.providers as MapProvider[], skipped },
+      route: { capability: "map_render", order: routed.providers as MapProvider[], skipped: [...skipped] },
       browser: provider === "mapbox"
         ? { script: `${MAPBOX_API}/mapbox-gl-js/v${MAPBOX_GL_JS_VERSION}/mapbox-gl.js`, css: `${MAPBOX_API}/mapbox-gl-js/v${MAPBOX_GL_JS_VERSION}/mapbox-gl.css` }
         : { script: `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(cred.key)}&libraries=places`, css: null },
-    }
+    })
   }
-  return null
+  return out
 }
 
 /**
@@ -246,6 +258,91 @@ export function getMapImageUrl(opts: {
   }
   const g = getStaticMapImageUrl({ lat: opts.lat, lon: opts.lon, zoom: opts.zoom, width: opts.width, height: opts.height, apiKey: choice.key })
   return g ? { ...g, provider: "google_maps", sku: "static_map", route: choice.route } : null
+}
+
+// ─── A ROUTE IMAGE — numbered stops on one static map (wave 140, lane 140P) ─────────────────────
+// The buyer-tour Confirm tab used to build a Google Static Maps URL in the BROWSER from
+// NEXT_PUBLIC_GOOGLE_MAPS_API_KEY (no provider choice, no health, no booking — lane 140I's
+// outside-lane finding). It now asks app/actions/tour-planner.ts getTourRouteMap, which mints
+// the image HERE on the same walk as getMapImageUrl and books it through bookMapsImageSpend.
+
+/** One stop of a route image. Coordinates are OPTIONAL: Google draws from addresses; Mapbox's
+ *  Static Images API draws overlays from coordinates only, so an un-geocoded stop is left off a
+ *  Mapbox image (honest — never a fabricated point) and a route with no placed stop falls through
+ *  to the next viable provider. */
+export interface RouteMapStop {
+  address: string
+  lat?: number | null
+  lon?: number | null
+}
+
+interface RouteMapImage extends MapImage {
+  /** Stops drawn on the image (Mapbox: the geocoded ones; Google: all addresses). */
+  placed: number
+}
+
+/** PURE. Mapbox Static Images GeoJSON overlay (docs.mapbox.com/api/maps/static-images/#overlay-options,
+ *  read 2026-10-11): `geojson({…})` with simplestyle properties — `marker-symbol` 0-99 renders the
+ *  stop number, `marker-color` the pin; a LineString joins the stops in order; position `auto`
+ *  fits the overlay. URL-encoded; the whole URL stays under the documented 8,192-char limit for
+ *  any tour this product plans (≤ ~40 stops). */
+function mapboxRouteOverlay(stops: Array<{ lat: number; lon: number }>): string {
+  const coords = stops.map((s) => [Number(s.lon.toFixed(6)), Number(s.lat.toFixed(6))])
+  const features: unknown[] = coords.map((c, i) => ({
+    type: "Feature",
+    properties: { "marker-symbol": Math.min(99, i + 1), "marker-color": "#3b82f6", "marker-size": "small" },
+    geometry: { type: "Point", coordinates: c },
+  }))
+  if (coords.length >= 2) {
+    features.push({ type: "Feature", properties: { stroke: "#3b82f6", "stroke-width": 3, "stroke-opacity": 0.9 }, geometry: { type: "LineString", coordinates: coords } })
+  }
+  return `geojson(${encodeURIComponent(JSON.stringify({ type: "FeatureCollection", features }))})`
+}
+
+/** A static route image of ORDERED stops from the ONE route walk: Mapbox Static Images (geocoded
+ *  stops, numbered, joined) first; Google Static Maps (address markers + path) when Mapbox is
+ *  unconfigured / failing / has no placed stop. null = no configured provider or no stops. */
+export function getRouteMapImageUrl(opts: {
+  stops: RouteMapStop[]
+  width?: number
+  height?: number
+  health?: Partial<Record<MapProvider, CapabilityProviderHealth | null>>
+  env?: MapCredentialEnv
+}): RouteMapImage | null {
+  const stops = opts.stops.filter((s) => typeof s.address === "string" && s.address.trim().length > 0)
+  if (stops.length === 0) return null
+  const w = Math.min(1280, Math.max(1, Math.round(opts.width ?? 600)))
+  const h = Math.min(1280, Math.max(1, Math.round(opts.height ?? 200)))
+  for (const choice of walkMapProviders("static_image", { health: opts.health, env: opts.env })) {
+    if (choice.provider === "mapbox") {
+      const placed = stops.filter((s): s is RouteMapStop & { lat: number; lon: number } => Number.isFinite(s.lat ?? NaN) && Number.isFinite(s.lon ?? NaN))
+      if (placed.length === 0) continue // nothing Mapbox can draw — the next viable provider draws from addresses
+      const overlay = mapboxRouteOverlay(placed.map((s) => ({ lat: s.lat, lon: s.lon })))
+      return {
+        url: `${MAPBOX_API}/styles/v1/${MAPBOX_STATIC_STYLE}/static/${overlay}/auto/${w}x${h}@2x?padding=40&access_token=${encodeURIComponent(choice.key)}`,
+        source: "mapbox_static",
+        attribution: "© Mapbox © OpenStreetMap",
+        provider: "mapbox",
+        sku: "static_image",
+        route: choice.route,
+        placed: placed.length,
+      }
+    }
+    const params = new URLSearchParams({ size: `${w}x${h}`, key: choice.key })
+    const point = (s: RouteMapStop) => (Number.isFinite(s.lat ?? NaN) && Number.isFinite(s.lon ?? NaN) ? `${s.lat},${s.lon}` : s.address)
+    if (stops.length >= 2) params.append("path", `weight:3|color:0x3b82f6|${stops.map(point).join("|")}`)
+    stops.forEach((s, i) => params.append("markers", `${i < 9 ? `label:${i + 1}|` : ""}${point(s)}`))
+    return {
+      url: `https://maps.googleapis.com/maps/api/staticmap?${params.toString()}`,
+      source: "google_street_view",
+      attribution: "Google Maps",
+      provider: "google_maps",
+      sku: "static_map",
+      route: choice.route,
+      placed: stops.length,
+    }
+  }
+  return null
 }
 
 // ─── THE SPEND (wave 139, lane 139C; wave 140, lane 140I: + Mapbox, + map loads) ────────────────

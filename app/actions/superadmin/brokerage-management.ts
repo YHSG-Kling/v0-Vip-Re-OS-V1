@@ -30,6 +30,7 @@ import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
+import { syncAiSubscriptionTier } from "@/lib/entitlements/ai-subscription-tier"
 import {
   stripeCancelAtPeriodEnd, stripeResume, stripeSwapPrice, stripeExtendTrial, stripePauseCollection,
   computeTrialExtension, 
@@ -368,45 +369,25 @@ export async function changeBrokerageTierAction(params: {
     stripeError = r.error
   }
 
-  // AI ENTITLEMENT ROW (burn-down round 6): lib/security/authorization.ts gates
-  // admin AI operations on ai_subscription_tier — writer-less, so NO admin
-  // could ever pass the entitlement check. Tier changes keep it in lockstep:
-  // one active row per brokerage, admin_user_id = the brokerage's admin/broker.
-  // Best-effort, but NEVER silent: a refused entitlement write leaves the tenant's
-  // AI gate on the OLD tier, so the refusal rides the audit row and the return.
+  // AI ENTITLEMENT ROW — through THE ONE writer, lib/entitlements/ai-subscription-tier.ts
+  // syncAiSubscriptionTier (mode "set": the row follows the new tier), the same writer
+  // initializeTenantOperatingBaseline runs fill-absent for every NEW tenant, so a tenant no
+  // longer waits for a staff tier change to receive its first entitlement row.
+  //
+  // TOMBSTONE (lane 140O): the inline admin lookup that stood here —
+  // `.in("user_type", ["broker", "admin", "broker_owner"])`, a retyped roster (CLAUDE.md §4) —
+  // and the ai_subscription_tier insert / update moved into that module, which derives the
+  // admin from TENANT_ADMIN_USER_TYPES, COUNTS the rows it moves (§3) and keeps the
+  // survivor's rules: subscribed_at IS TENURE (w26 lane C8 — stamped once on the insert, never
+  // on an update; AI is covered by the subscription with per-tier overage, so this is a money
+  // surface), no price ever written. Best-effort, but NEVER silent: a refused or skipped
+  // entitlement write leaves the tenant's AI gate on the OLD tier, so it rides the audit row
+  // and the return.
   let aiEntitlementError: string | undefined
   try {
-    const { data: adminUser } = await svc
-      .from("users").select("id").eq("brokerage_id", params.brokerageId)
-      .in("user_type", ["broker", "admin", "broker_owner"])
-      .order("created_at", { ascending: true }).limit(1).maybeSingle()
-    if (adminUser) {
-      const { data: existingTier } = await svc
-        .from("ai_subscription_tier").select("id, subscribed_at").eq("brokerage_id", params.brokerageId).maybeSingle()
-      const nowIso = new Date().toISOString()
-      const tierRowPayload = {
-        brokerage_id: params.brokerageId,
-        tier_name: params.newTier,
-        is_active: true,
-        admin_user_id: (adminUser as any).id,
-        updated_at: nowIso,
-      }
-      if (existingTier) {
-        // subscribed_at IS TENURE, NOT "LAST TOUCHED" (w26 lane C8, §5 — AI is
-        // platform-covered with per-tier overage, so this is a money surface).
-        // Stamping `now` on every tier change made the column mean "the most recent
-        // upgrade", which is what `updated_at` already means (§6, two spellings of one
-        // idea). The row's own age was destroyed by each edit, so no surface could ever
-        // have told a tenant how long they had been on AI. It is now set ONCE, on the
-        // insert that creates the entitlement, and carried forward untouched — and a row
-        // that never recorded one keeps its NULL rather than being back-dated to today.
-        const { error: tierUpdErr } = await svc.from("ai_subscription_tier").update(tierRowPayload).eq("id", (existingTier as any).id)
-        if (tierUpdErr) aiEntitlementError = `ai_subscription_tier update refused: ${tierUpdErr.message}`
-      } else {
-        const { error: tierInsErr } = await svc.from("ai_subscription_tier").insert({ ...tierRowPayload, subscribed_at: nowIso })
-        if (tierInsErr) aiEntitlementError = `ai_subscription_tier insert refused: ${tierInsErr.message}`
-      }
-    }
+    const ent = await syncAiSubscriptionTier(svc, { brokerageId: params.brokerageId, tier: params.newTier, mode: "set" })
+    if (ent.status === "refused") aiEntitlementError = `ai_subscription_tier sync refused: ${ent.detail}`
+    else if (ent.status === "skipped") aiEntitlementError = `ai_subscription_tier not written: ${ent.detail}`
   } catch (e) {
     /* entitlement sync is best-effort — the audit log below is the record */
     aiEntitlementError = `ai_subscription_tier sync threw: ${e instanceof Error ? e.message : String(e)}`

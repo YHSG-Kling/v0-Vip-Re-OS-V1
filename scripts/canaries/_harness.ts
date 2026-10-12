@@ -79,7 +79,7 @@ export function canaryClient(seed: Record<string, Row[]> = {}): CanarySvc {
     const live = createClient(url, process.env.SUPABASE_SERVICE_ROLE_KEY ?? "", { auth: { autoRefreshToken: false, persistSession: false } })
     return live as unknown as CanarySvc
   }
-  const mem = memSupabase(seed, { stampCreatedAt: true })
+  const mem = memSupabase(seed, { stampCreatedAt: true, uuidIds: true })
   const authUsers: Array<{ id: string; email: string }> = []
   const admin = {
     // The auth user exists FIRST and the on_auth_user_created trigger seeds public.users with
@@ -90,6 +90,17 @@ export function canaryClient(seed: Record<string, Row[]> = {}): CanarySvc {
       authUsers.push({ id, email: e })
       ;(mem.tables.users ??= []).push({ id, email: e, created_at: nowIso() })
       return { data: { user: { id, email: e } }, error: null }
+    },
+    // createUser — the ISA system actor (lib/auth/provision-isa-actor.ts) and any staff-created seat: same
+    // invariant as the invite (auth user first, the trigger seeds public.users with the auth id).
+    createUser: async (attrs: { email?: string; user_metadata?: Record<string, unknown> }) => {
+      const e = (attrs.email ?? `${uuid()}@${CANARY_EMAIL_DOMAIN}`).toLowerCase()
+      const dup = authUsers.find((u) => u.email === e)
+      if (dup) return { data: { user: null }, error: { message: "A user with this email address has already been registered", code: "email_exists" } }
+      const id = uuid()
+      authUsers.push({ id, email: e })
+      ;(mem.tables.users ??= []).push({ id, email: e, created_at: nowIso() })
+      return { data: { user: { id, email: e, user_metadata: attrs.user_metadata ?? {} } }, error: null }
     },
     listUsers: async () => ({ data: { users: authUsers }, error: null }),
     getUserById: async (id: string) => ({ data: { user: authUsers.find((u) => u.id === id) ?? null }, error: null }),

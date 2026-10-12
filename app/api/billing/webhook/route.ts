@@ -9,6 +9,9 @@ import { buildSubscriptionPatch, upsertBrokerageSubscription, type NormalizedStr
 import { deriveSubscriptionSeatState, itemFactsOf, normalizeStripeSubscription, type TierSeatLink } from "@/lib/billing/seat-packages"
 import { TENANT_BILLING_WEBHOOK_EVENTS } from "@/lib/billing/stripe-account-scope"
 import { emitSubscriptionTransition, reminderCycle, sendSubscriptionReminder, resolveStripeEventTenant, withStripeEventLedger } from "@/lib/billing/stripe-subscription-ops"
+// The tenant-admin roster, DERIVED (CLAUDE.md §4: spread the Set, never retype
+// `["broker", "admin", …]`) — lane 140O replaced the inline owner lookup below.
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import Stripe from "stripe"
 
 /** Every status this webhook moves emits its kernel event (wave 99A, LAW 5) — from the
@@ -173,7 +176,14 @@ export async function POST(request: NextRequest) {
           // Safety: ensure the paid account is fully provisioned (idempotent no-op
           // when signup already provisioned it).
           try {
-            const { data: owner } = await supabase.from("users").select("id").eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin", "agent"]).limit(1).maybeSingle()
+            // THE OWNER = the tenant's first seat on the admin roster, OR the agent / team_lead a solo
+            // tenant adopted with their REAL user_type (createTenantCore adoptExistingOwner — never
+            // re-typed admin). `agent` is the one deliberate addition to the roster; the roster itself
+            // is spread, not retyped. READ the error (§3): a refused read is not "no owner".
+            const { data: owners, error: ownerErr } = await supabase.from("users").select("id").eq("brokerage_id", brokerageId)
+              .in("user_type", ["agent", ...TENANT_ADMIN_USER_TYPES]).order("created_at", { ascending: true }).limit(1)
+            if (ownerErr) console.error("[Billing Webhook] owner lookup for the safety repair refused:", ownerErr.message)
+            const owner = ((owners ?? []) as Array<{ id: string }>)[0] ?? null
             if (owner?.id) {
               const { repairIncompleteAccountSetup } = await import("@/lib/kernel/users")
               await repairIncompleteAccountSetup(owner.id)

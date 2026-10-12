@@ -38,6 +38,11 @@
 
 import { useState, useCallback, useTransition, useRef, useEffect } from "react"
 import { cn } from "@/lib/utils"
+// Wave 140 (lane 140P): the browser Nominatim fetch moved onto the server action over the
+// osint_free survivor (lib/external/nominatim-geocode.ts) — tenant from the session, health-gated,
+// usage booked, ONE parser (the state table lived only in address-autocomplete.tsx before).
+import { suggestAddresses } from "@/app/actions/address-suggestions"
+import type { AddressSuggestion } from "@/lib/external/nominatim-geocode"
 import {
   searchListingsByAddress,
   resolveFormSource,
@@ -124,7 +129,7 @@ export function OfferInitiationFlow({
     getConnectedEsignProvider(brokerageId).then(setConnectedProvider).catch(() => setConnectedProvider(null))
   }, [brokerageId])
   const [suggestions, setSuggestions]   = useState<{ id: string; address: string; city: string; state: string; zip: string; list_price: number }[]>([])
-  const [nominatimSuggestions, setNominatimSuggestions] = useState<{ display_name: string; address: { house_number?: string; road?: string; city?: string; town?: string; village?: string; state?: string; postcode?: string } }[]>([])
+  const [nominatimSuggestions, setNominatimSuggestions] = useState<AddressSuggestion[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
   const [formSrc, setFormSrc]     = useState<ResolvedFormSource | null>(null)
   const [recommendation, setRecommendation] = useState<StrategyRecommendation | null>(null)
@@ -214,20 +219,17 @@ export function OfferInitiationFlow({
         setSuggestions(results)
         setShowDropdown(results.length > 0 || value.length >= 3)
 
-        // Only call Nominatim when internal results are insufficient
+        // Only ask the address service when internal results are insufficient (server action —
+        // the server refuses stubs below its minimum length and answers [] for them).
         if (results.length < 2) {
           try {
-            const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=us&limit=5&q=${encodeURIComponent(value)}`
-            const response = await fetch(nominatimUrl, {
-              headers: { 'User-Agent': 'KernelOS-RealEstate/1.0' }
-            })
-            if (response.ok) {
-              const nominatimResults = await response.json()
-              setNominatimSuggestions(nominatimResults ?? [])
+            const res = await suggestAddresses(value)
+            if (res.ok && res.suggestions.length > 0) {
+              setNominatimSuggestions(res.suggestions)
               setShowDropdown(true)
             }
           } catch {
-            // Nominatim failure is silent — internal results still shown
+            // address-service failure is silent — internal results still shown
           }
         }
       })
@@ -250,22 +252,18 @@ export function OfferInitiationFlow({
     })
   }
 
-  function selectNominatimResult(result: typeof nominatimSuggestions[0]) {
-    const addr = result.address
-    const street = [addr.house_number, addr.road].filter(Boolean).join(" ")
-    const city = addr.city ?? addr.town ?? addr.village ?? ""
-    const state = addr.state ?? ""
-    const zip = addr.postcode ?? ""
-    const fullAddress = street || result.display_name
+  function selectNominatimResult(result: AddressSuggestion) {
+    // Parsed server-side (parseNominatimAddressRow) — street, city, abbreviated state, zip.
+    const fullAddress = result.street || result.label
     setAddressInput(fullAddress)
     setShowDropdown(false)
     setSuggestions([])
     setNominatimSuggestions([])
     setProperty({
       address:         fullAddress,
-      city,
-      state,
-      zip,
+      city:            result.city,
+      state:           result.state,
+      zip:             result.zip,
       listingId:       null,
       listPrice:       null,
       aiFilledAddress: false,
@@ -1063,13 +1061,13 @@ export function OfferInitiationFlow({
                     <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground bg-muted/40 border-b border-border/50">
                       Address Search
                     </div>
-                    {nominatimSuggestions.map((n, i) => (
+                    {nominatimSuggestions.map((n) => (
                       <button
-                        key={i}
+                        key={n.placeId}
                         onClick={() => selectNominatimResult(n)}
                         className="w-full text-left px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors border-b border-border/50 last:border-0"
                       >
-                        <span className="text-foreground">{n.display_name}</span>
+                        <span className="text-foreground">{n.label}</span>
                       </button>
                     ))}
                   </>

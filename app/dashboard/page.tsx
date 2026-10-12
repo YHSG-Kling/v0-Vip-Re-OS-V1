@@ -49,11 +49,23 @@ export default async function DashboardPage() {
       eventType:    KernelEvent.USER_ACCOUNT_INCOMPLETE,
       metadata:     { missingRecords: workspace.missingRecords, surface: "dashboard_router" },
     })
-    // READINESS HOOK (integrator): evaluateTenantReadiness(svc, workspace.brokerageId, { repair: true })
-    // — lane 140B's contract (seats / adminUser checks) routes this REPAIRABLE gap through the
-    // self-healing engine (lane 140K) to repairIncompleteAccountSetup and re-verifies. Until it is
-    // wired, determineFirstLoginDestination routes the account to /dashboard/onboarding
-    // (setup_incomplete): visible, never hidden.
+    // THE READINESS CONTRACT (wave 140): the gap is routed through
+    // evaluateTenantReadiness({ repair: true }) — its seats / adminUser checks
+    // run the declared playbook (repair_user_records → repairIncompleteAccountSetup)
+    // through the self-healing engine, which leaves a self_heal_events row, a
+    // ledger row and a kernel event, then re-verifies. Not a hidden repair: it is
+    // evidenced, policy-capped, and the account is still routed to the VISIBLE
+    // setup state below when anything remains. Gate first (the session resolved
+    // this tenant), then the service client. A thrown evaluation never 500s the
+    // landing — the route still shows the setup state.
+    if (workspace.brokerageId) {
+      try {
+        const [{ evaluateTenantReadiness }, { createServiceClient }] = await Promise.all([import("@/lib/kernel/tenant-readiness"), import("@/lib/supabase/service")])
+        await evaluateTenantReadiness(createServiceClient(), workspace.brokerageId, { repair: true })
+      } catch (e) {
+        console.error("[dashboard] readiness repair failed", (e as Error).message)
+      }
+    }
   }
 
   // Determine the correct destination from onboarding + workspace state

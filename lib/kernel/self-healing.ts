@@ -33,7 +33,7 @@
 import { z } from "zod"
 import type { HealthDetector, HealthIncident } from "@/lib/kernel/os-health"
 import { HEALING_POLICY_DEFAULTS, HEALING_POLICY_KEY, type HealingPolicy } from "@/lib/kernel/healing-policy"
-import { SNAPSHOT_LAYERS, type SnapshotLayer } from "@/lib/kernel/tenant-readiness"
+import type { TenantOperatingBaselineResult } from "@/lib/kernel/tenant-operating-baseline"
 
 type Svc = any
 
@@ -67,10 +67,11 @@ export const SELF_HEAL_PLAYBOOKS = {
   reconcile_counts:     { label: "Recompute a derived count from its authoritative table", acts: true, runner: "owning_rail", rail: "RECONCILE_COUNTS (lib/documents/auto-filer.ts recomputeDocumentChecklist)", params: { counts: { type: "string", max: 40 } } },
   // 140K — PROVISIONING RECONCILIATION: the tenant readiness contract's DECLARED repairs (lib/kernel/tenant-readiness.ts),
   // each through the service that OWNS the rows and each filling ABSENT defaults only (never a tenant's own value).
-  fill_settings_defaults:    { label: "Fill absent operating defaults from the tier snapshot's global layer", acts: true, runner: "owning_rail", rail: "lib/kernel/tenant-readiness.ts applyAbsentSnapshotDefaults → lib/platform/config-snapshots.ts applySnapshotPayload (the ONE snapshot writer; absent keys only)", params: {} },
-  apply_snapshot_defaults:   { label: "Re-apply absent snapshot layers (brand / voice / features), absent keys only", acts: true, runner: "owning_rail", rail: "lib/kernel/tenant-readiness.ts applyAbsentSnapshotDefaults (SNAPSHOT_LAYERS) → applySnapshotPayload", params: { layers: { type: "string", max: 40 } } },
-  ensure_website_slug:       { label: "Mint the storefront slug a tenant never received", acts: true, runner: "owning_rail", rail: "lib/kernel/tenant-creation.ts resolveUniqueTenantSlug, written only where slug IS NULL (counted)", params: {} },
-  repair_user_records:       { label: "Repair the owner's tier-required domain records", acts: true, runner: "owning_rail", rail: "lib/kernel/users.ts repairIncompleteAccountSetup → createOrRepairUserDomainRecords (the one provisioning brain)", params: { userId: { type: "string", max: 36 } } },
+  // TOMBSTONE (wave 140N): fill_settings_defaults / apply_snapshot_defaults / ensure_website_slug — three playbooks over a
+  // SECOND fill-absent implementation (tenant-readiness.ts applyAbsentSnapshotDefaults) — converged onto the ONE below:
+  // lib/kernel/tenant-operating-baseline.ts initializeTenantOperatingBaseline (the provisioner's own initializer).
+  tenant_operating_baseline: { label: "Initialize / re-verify the tenant operating baseline (website slug, tier snapshot, evidence, ISA actor, assistant, education, reactivation) — absent keys only", acts: true, runner: "owning_rail", rail: "lib/kernel/tenant-operating-baseline.ts initializeTenantOperatingBaseline → lib/platform/config-snapshots.ts applySnapshotPayload({ mode: \"fill_absent\" }) (the ONE snapshot writer; absentKeys is the rule) + lib/kernel/tenant-creation.ts resolveUniqueTenantSlug (written only where slug IS NULL, counted)", params: {} },
+  repair_user_records:       { label: "Repair tier-required domain records for the owner (userId) or a list of this tenant's seat users (userIds)", acts: true, runner: "owning_rail", rail: "lib/kernel/users.ts repairIncompleteAccountSetup → createOrRepairUserDomainRecords (the one provisioning brain)", params: { userId: { type: "string", max: 36 }, userIds: { type: "string", max: 1850 } } },
   sync_carrier_registration: { label: "Advance carrier registration through its own loop", acts: true, runner: "owning_rail", rail: "lib/voice/carrier-registration-loop.ts advanceTenantCarrier (never claims approval before the carrier confirms)", params: {} },
   notify_owner_manager: { label: "Hand the diagnosis to the owning manager's humans", acts: false, runner: "self", rail: "notifications (org recipients)", params: { message: { type: "string", max: 280 } } },
   read_only_diagnosis:  { label: "Attach a read-only diagnosis (no action)", acts: false, runner: "self", rail: "the Exception Center (self_heal_events)", params: {} },
@@ -107,7 +108,7 @@ export const DOMAIN_PLAYBOOKS: Readonly<Record<PlaybookDomain, readonly Playbook
   data:            ["reconcile_counts", "re_sync", "rebuild_cache", "notify_owner_manager"],
   // money (subscription / plan / billing / seats), security and cross-tenant findings never reach this domain:
   // the contract marks them BLOCKED with an owner; only ABSENT-DEFAULT fills are declared here.
-  provisioning:    ["fill_settings_defaults", "apply_snapshot_defaults", "ensure_website_slug", "repair_user_records", "sync_carrier_registration", "notify_owner_manager", "read_only_diagnosis"],
+  provisioning:    ["tenant_operating_baseline", "repair_user_records", "sync_carrier_registration", "notify_owner_manager", "read_only_diagnosis"],
 }
 
 /** Every os-health detector's domain (typed over HEALTH_DETECTORS — a new detector must declare one). */
@@ -308,8 +309,8 @@ interface RemediationServices {
   rebuildSet?: Readonly<Record<string, { table: string; rail: string }>>
   now?: () => Date
   // 140K — the provisioning executors' owning services (each reaches env / auth / a carrier in production).
-  applyAbsentSnapshotDefaults?: (svc: Svc, brokerageId: string, layers: readonly SnapshotLayer[]) => Promise<{ ok: boolean; error: string | null; kept: Record<SnapshotLayer, string[]>; skipped: string[]; snapshot: { id: string; name: string } | null }>
-  resolveUniqueTenantSlug?: (svc: Svc, brokerageName: string) => Promise<{ ok: true; slug: string } | { ok: false; error: string }>
+  /** lib/kernel/tenant-operating-baseline.ts initializeTenantOperatingBaseline — THE ONE executor behind settings / snapshot / website (140N). */
+  initializeTenantOperatingBaseline?: (svc: Svc, brokerageId: string, opts: { actorUserId: null }) => Promise<TenantOperatingBaselineResult>
   repairUserRecords?: (userId: string) => Promise<{ success: boolean; repaired: string[]; error?: string }>
   advanceTenantCarrier?: (svc: Svc, brokerageId: string) => Promise<{ before: string | null; after: string; ran: string[]; needs: string[]; error?: string }>
 }
@@ -656,87 +657,105 @@ function owningRailExecutors(s: RemediationServices): Partial<Record<PlaybookKey
   }
 }
 
-// ── 4c. PROVISIONING EXECUTORS (wave 140K) ───────────────────────────────────────────────────
+// ── 4c. PROVISIONING EXECUTORS (wave 140K; converged wave 140N) ──────────────────────────────
 // The tenant readiness contract's declared repairs. Each runs THROUGH the service that owns the rows,
-// fills ABSENT defaults only (fillAbsentDefaults is the rule — a tenant's own value is never replaced),
-// re-checks the tenant on every write, and VERIFIES by re-reading the owning rows. Money / security /
-// cross-tenant / destructive findings never reach these: the contract marks them BLOCKED (no playbook).
+// fills ABSENT defaults only (lib/platform/config-snapshots.ts absentKeys is the rule — a tenant's own
+// value is never replaced), re-checks the tenant on every write, and VERIFIES by re-reading the owning
+// rows. Money / security / cross-tenant / destructive findings never reach these: the contract marks
+// them BLOCKED (no playbook).
+// TOMBSTONE (wave 140N): fill_settings_defaults / apply_snapshot_defaults / ensure_website_slug — three
+// executors over lib/kernel/tenant-readiness.ts applyAbsentSnapshotDefaults (a second fill-absent
+// implementation) — are ONE playbook, tenant_operating_baseline → lib/kernel/tenant-operating-baseline.ts:139
+// initializeTenantOperatingBaseline (website slug, tier snapshot fill-absent, evidence, ISA actor, assistant,
+// education, reactivation; idempotent) over lib/platform/config-snapshots.ts:130 applySnapshotPayload.
+
+type BaselineItemKey = TenantOperatingBaselineResult["items"][number]["key"]
+/** Which baseline items answer for which readiness check — the executor's ok reads THOSE; verification re-reads the owning rows. */
+const BASELINE_TARGETS: Readonly<Record<string, readonly BaselineItemKey[]>> = {
+  settings: ["snapshot", "evidence"], snapshot: ["snapshot", "evidence"], website: ["website"],
+}
 
 function provisioningExecutors(s: RemediationServices): Partial<Record<PlaybookKey, PlaybookExecutor>> {
-  const now = s.now ?? (() => new Date())
-  const applyDefaults = s.applyAbsentSnapshotDefaults ?? (async (svc: Svc, b: string, layers: readonly SnapshotLayer[]) => (await import("@/lib/kernel/tenant-readiness")).applyAbsentSnapshotDefaults(svc, b, layers))
-  /** Does the layer's owning row exist for THIS tenant now? */
-  const layerPresent = async (svc: Svc, b: string, layer: SnapshotLayer): Promise<boolean> => {
-    if (layer === "global") { const { data, error } = await svc.from("global_settings").select("id").eq("brokerage_id", b).maybeSingle(); return !error && !!data }
-    if (layer === "brand") { const { data, error } = await svc.from("brokerage_brand_settings").select("id").eq("brokerage_id", b).maybeSingle(); return !error && !!data }
-    if (layer === "voice") { const { data, error } = await svc.from("brand_voice_profile").select("id").eq("brokerage_id", b).is("agent_id", null).is("team_id", null).eq("is_active", true).limit(1); return !error && ((data ?? []) as unknown[]).length > 0 }
-    const { error } = await svc.from("feature_access_overrides").select("id").eq("brokerage_id", b).is("user_id", null).is("team_id", null).limit(1)
-    return !error
-  }
-  const applyLayers = async (svc: Svc, i: HealthIncident, layers: readonly SnapshotLayer[]): Promise<ExecResult> => {
-    const r = await applyDefaults(svc, i.brokerageId, layers)
-    if (!r.ok) return { ok: false, outcome: `snapshot defaults not applied: ${r.error ?? "refused"}` }
-    const present = await Promise.all(layers.map((l) => layerPresent(svc, i.brokerageId, l)))
-    const missing = layers.filter((_, idx) => !present[idx])
-    const filled = layers.reduce((n, l) => n + r.kept[l].length, 0)
-    return {
-      ok: true, outcome: `${layers.join("+")} layer(s) of "${r.snapshot?.name ?? "snapshot"}" applied — ${filled} absent key(s) filled, ${r.skipped.length} tenant value(s) kept untouched`,
-      verification: { verified: missing.length === 0, detail: missing.length ? `${missing.join(", ")} still absent after apply` : `${layers.join(", ")} row(s) present for the tenant` },
+  const baseline = s.initializeTenantOperatingBaseline ?? (async (svc: Svc, b: string, o: { actorUserId: null }) => (await import("@/lib/kernel/tenant-operating-baseline")).initializeTenantOperatingBaseline(svc, b, o))
+  /** THE RE-READ the engine verifies by: does the check's owning row exist for THIS tenant now? */
+  const owningRowsPresent = async (svc: Svc, b: string, check: string): Promise<Verification> => {
+    if (check === "website") {
+      const { data, error } = await svc.from("brokerages").select("slug").eq("id", b).maybeSingle()
+      const slug = String((data as { slug?: string | null } | null)?.slug ?? "").trim()
+      return { verified: !error && !!slug, detail: error ? `brokerages unreadable: ${error.message}` : slug ? `brokerages.slug = ${slug}` : "slug still absent after the baseline ran" }
     }
+    if (check === "settings") {
+      const { data, error } = await svc.from("global_settings").select("id").eq("brokerage_id", b).maybeSingle()
+      return { verified: !error && !!data, detail: error ? `global_settings unreadable: ${error.message}` : data ? "global_settings row present" : "global_settings row still absent (the tier snapshot carries no global layer?)" }
+    }
+    const [brand, voice] = await Promise.all([
+      svc.from("brokerage_brand_settings").select("id").eq("brokerage_id", b).maybeSingle(),
+      svc.from("brand_voice_profile").select("id").eq("brokerage_id", b).is("agent_id", null).is("team_id", null).eq("is_active", true).limit(1),
+    ])
+    const missing = [...(brand.error || !brand.data ? ["brand"] : []), ...(voice.error || !((voice.data ?? []) as unknown[]).length ? ["voice"] : [])]
+    return { verified: missing.length === 0, detail: missing.length ? `${missing.join(", ")} layer(s) still absent after apply` : "brand + active voice rows present for the tenant" }
   }
   return {
-    fill_settings_defaults: async (svc, i) => applyLayers(svc, i, ["global"]),
-
-    apply_snapshot_defaults: async (svc, i, p) => {
-      const layers = String(p.layers ?? "").split(",").map((x) => x.trim()).filter(Boolean)
-      const bad = layers.filter((l) => !(SNAPSHOT_LAYERS as readonly string[]).includes(l))
-      if (!layers.length || bad.length) return { ok: false, outcome: `layers must name declared snapshot layers (${SNAPSHOT_LAYERS.join(" / ")})${bad.length ? ` — not ${bad.join(",")}` : ""}` }
-      return applyLayers(svc, i, layers as SnapshotLayer[])
-    },
-
-    // The storefront slug — minted through the tenant-creation survivor, written ONLY where none exists (counted).
-    ensure_website_slug: async (svc, i) => {
-      const { data: row, error } = await svc.from("brokerages").select("id, name, slug").eq("id", i.brokerageId).maybeSingle()
-      if (error || !row) return { ok: false, outcome: `brokerage unreadable: ${error?.message ?? "no row"}` }
-      const cur = String((row as { slug?: string | null }).slug ?? "").trim()
-      if (cur) return { ok: true, outcome: `slug already present (${cur}) — nothing minted`, verification: { verified: true, detail: `slug ${cur}` } }
-      const resolve = s.resolveUniqueTenantSlug ?? (await import("@/lib/kernel/tenant-creation")).resolveUniqueTenantSlug
-      const slugRes = await resolve(svc, String((row as { name?: string | null }).name ?? "brokerage"))
-      if (!slugRes.ok) return { ok: false, outcome: slugRes.error }
-      const { data: up, error: upErr } = await svc.from("brokerages").update({ slug: slugRes.slug, updated_at: now().toISOString() }).eq("id", i.brokerageId).is("slug", null).select("id")
-      if (upErr) return { ok: false, outcome: `slug write refused: ${upErr.message}` }
-      const n = Array.isArray(up) ? up.length : 0
-      if (n !== 1) return { ok: false, outcome: `slug write matched ${n} row(s) — nothing minted (a slug landed concurrently or the tenant predicate refused)` }
-      const { data: after, error: afterErr } = await svc.from("brokerages").select("slug").eq("id", i.brokerageId).maybeSingle()
-      const verified = !afterErr && (after as { slug?: string } | null)?.slug === slugRes.slug
-      return { ok: true, outcome: `storefront slug minted: ${slugRes.slug}`, verification: { verified, detail: verified ? `brokerages.slug = ${slugRes.slug}` : `re-read disagrees (${afterErr?.message ?? (after as { slug?: string } | null)?.slug ?? "no slug"})` } }
+    // THE ONE baseline repair — settings / snapshot / website all declare it; the incident names which check.
+    tenant_operating_baseline: async (svc, i) => {
+      const check = String((i.evidence as { check?: unknown }).check ?? "")
+      const r = await baseline(svc, i.brokerageId, { actorUserId: null })
+      const targets = BASELINE_TARGETS[check] ?? (["website", "snapshot", "evidence"] as const)
+      const targeted = r.items.filter((it) => (targets as readonly string[]).includes(it.key))
+      const summary = r.items.map((it) => `${it.key}=${it.status}`).join(", ")
+      const tail = `${r.filled.length} absent key(s) filled, ${r.preserved.length} tenant value(s) kept untouched${r.refused.length ? `; refused: ${r.refused.join("; ").slice(0, 300)}` : ""}`
+      // ONE vocabulary with createTenantCore's operating_baseline step: a REQUIRED item refused fails the run;
+      // a best-effort item (ISA actor, assistant, education, reactivation) is reported and carried by the sweep.
+      const { baselineHardRefusals } = await import("@/lib/kernel/tenant-operating-baseline")
+      const hard = baselineHardRefusals(r)
+      if (!targeted.length || hard.length || targeted.some((it) => it.status === "refused")) return { ok: false, outcome: `operating baseline did not land for ${check || "the tenant"} (${summary}; required refused: ${hard.join(",") || "none"}) — ${tail}` }
+      const toVerify = check in BASELINE_TARGETS ? [check] : ["website", "settings", "snapshot"]
+      const results = await Promise.all(toVerify.map((c) => owningRowsPresent(svc, i.brokerageId, c)))
+      return {
+        ok: true, outcome: `operating baseline ${r.snapshotVersion ?? "platform_defaults"} (${summary}) — ${tail}`,
+        verification: { verified: results.every((v) => v.verified), detail: results.map((v) => v.detail).join("; ") },
+      }
     },
 
     // The owner's domain records — the ONE provisioning brain; a user outside this tenant is a boundary stop.
+    // ONE user (the owner — adminUser check) or a LIST of this tenant's seat users (seats check, wave 140
+    // integration: the live backlog was 9 users without a role grant + 4 seat-role users without an agents
+    // row, none of them the owner). Every id is pinned to THIS tenant before the repairer is called; a
+    // foreign id is a boundary stop for the whole run, nothing repaired.
     repair_user_records: async (svc, i, p) => {
-      const userId = uuidIn(p.userId)
-      if (!userId) return { ok: false, outcome: "userId must be a uuid" }
-      const { data: u, error } = await svc.from("users").select("id, user_type").eq("id", userId).eq("brokerage_id", i.brokerageId).is("deleted_at", null).maybeSingle()
-      if (error) return { ok: false, outcome: `user unreadable: ${error.message}` }
-      if (!u) return { ok: false, outcome: `user ${userId} is not this tenant's — nothing repaired`, hardStop: "tenant_boundary" }
+      const listed = typeof p.userIds === "string" ? p.userIds.split(",").map((x) => x.trim()).filter(Boolean) : []
+      const ids = [...new Set([...(uuidIn(p.userId) ? [uuidIn(p.userId) as string] : []), ...listed.map((x) => uuidIn(x))])].filter((x): x is string => !!x)
+      if (!ids.length || ids.length !== (listed.length + (p.userId ? 1 : 0)) && listed.some((x) => !uuidIn(x))) return { ok: false, outcome: "userId / userIds must be uuids" }
+      if (ids.length > 50) return { ok: false, outcome: `${ids.length} users in one run — the cap is 50; the next pass takes the rest` }
+      const { data: rows, error } = await svc.from("users").select("id, user_type").in("id", ids).eq("brokerage_id", i.brokerageId).is("deleted_at", null)
+      if (error) return { ok: false, outcome: `users unreadable: ${error.message}` }
+      const own = new Map(((rows ?? []) as Array<{ id: string; user_type: string }>).map((u) => [u.id, u]))
+      const foreign = ids.filter((id) => !own.has(id))
+      if (foreign.length) return { ok: false, outcome: `${foreign.length} user(s) (${foreign[0]}…) are not this tenant's — nothing repaired`, hardStop: "tenant_boundary" }
       const repair = s.repairUserRecords ?? (async (id: string) => (await import("@/lib/kernel/users")).repairIncompleteAccountSetup(id))
-      const r = await repair(userId)
-      if (!r.success) return { ok: false, outcome: `repair refused: ${r.error ?? "unknown"}` }
-      // VERIFY through the provisioning spec — the rows the tier requires now exist for this tenant.
       const { data: brk } = await svc.from("brokerages").select("plan_tier").eq("id", i.brokerageId).maybeSingle()
       const tier = (brk as { plan_tier?: string | null } | null)?.plan_tier ?? null
       const { requiresAgentRow, ownerNeedsTeamRow } = await import("@/lib/kernel/tenant-provisioning-spec")
-      const detail: string[] = []
+      const repaired: string[] = [], refused: string[] = [], detail: string[] = []
       let verified = true
-      if (requiresAgentRow(String((u as { user_type?: string }).user_type ?? ""), tier)) {
-        const { data: a, error: aErr } = await svc.from("agents").select("id").eq("user_id", userId).eq("brokerage_id", i.brokerageId).limit(1)
-        const okA = !aErr && ((a ?? []) as unknown[]).length > 0; verified = verified && okA; detail.push(`agents row ${okA ? "present" : "ABSENT"}`)
+      for (const userId of ids) {
+        const r = await repair(userId)
+        if (!r.success) { refused.push(`${userId}: ${r.error ?? "unknown"}`); verified = false; continue }
+        repaired.push(...r.repaired.map((x) => `${userId.slice(0, 8)}:${x}`))
+        // VERIFY through the provisioning spec — the rows the tier requires now exist for this tenant.
+        if (requiresAgentRow(String(own.get(userId)?.user_type ?? ""), tier)) {
+          const { data: a, error: aErr } = await svc.from("agents").select("id").eq("user_id", userId).eq("brokerage_id", i.brokerageId).limit(1)
+          const okA = !aErr && ((a ?? []) as unknown[]).length > 0; verified = verified && okA; detail.push(`${userId.slice(0, 8)} agents row ${okA ? "present" : "ABSENT"}`)
+        }
+        const { data: g, error: gErr } = await svc.from("user_role_assignments").select("id").eq("user_id", userId).eq("brokerage_id", i.brokerageId).limit(1)
+        const okG = !gErr && ((g ?? []) as unknown[]).length > 0; verified = verified && okG; detail.push(`${userId.slice(0, 8)} role grant ${okG ? "present" : "ABSENT"}`)
       }
       if (tier && ownerNeedsTeamRow(tier)) {
         const { data: t, error: tErr } = await svc.from("teams").select("id").eq("brokerage_id", i.brokerageId).is("deleted_at", null).limit(1)
         const okT = !tErr && ((t ?? []) as unknown[]).length > 0; verified = verified && okT; detail.push(`teams row ${okT ? "present" : "ABSENT"}`)
       }
-      return { ok: true, outcome: `domain records repaired: ${r.repaired.join(", ") || "nothing was missing"}`, verification: { verified, detail: detail.join("; ") || "no tier-required record" } }
+      if (refused.length === ids.length) return { ok: false, outcome: `repair refused for every user: ${refused.join("; ").slice(0, 300)}` }
+      return { ok: true, outcome: `${ids.length} user(s): domain records repaired: ${repaired.join(", ") || "nothing was missing"}${refused.length ? `; refused ${refused.length}: ${refused.join("; ").slice(0, 200)}` : ""}`, verification: { verified, detail: detail.join("; ").slice(0, 600) || "no tier-required record" } }
     },
 
     // Carrier registration — the owning loop files what is left; approval is the carrier's word, never claimed.

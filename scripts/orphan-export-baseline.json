@@ -86,7 +86,6 @@
     "lib/auth/role-grants.ts": 1,
     "lib/avm/provider-chain.ts": 1,
     "lib/billing/ai-overage.ts": 1,
-    "lib/billing/billing-access.ts": 1,
     "lib/billing/dunning.ts": 2,
     "lib/billing/stripe-overage-meter.ts": 8,
     "lib/billing/stripe-subscription-ops.ts": 2,
@@ -156,7 +155,7 @@
     "lib/external/batchdata-seller-signals.ts": 16,
     "lib/external/exa-client.ts": 1,
     "lib/external/nextdoor-extract.ts": 1,
-    "lib/external/nominatim-geocode.ts": 2,
+    "lib/external/nominatim-geocode.ts": 3,
     "lib/external/peopledata-client.ts": 4,
     "lib/external/permit-signals.ts": 11,
     "lib/external/review-extract.ts": 1,
@@ -328,7 +327,9 @@
     "lib/kernel/team-plays.ts": 2,
     "lib/kernel/team-query.ts": 2,
     "lib/kernel/tenant-creation.ts": 5,
+    "lib/kernel/tenant-operating-baseline.ts": 1,
     "lib/kernel/tenant-policy.ts": 1,
+    "lib/kernel/tenant-readiness.ts": 1,
     "lib/kernel/title-closing-watchtower.ts": 3,
     "lib/kernel/tour-optimizer.ts": 5,
     "lib/kernel/vendor-coverage-forecast.ts": 2,
@@ -338,7 +339,6 @@
     "lib/kernel/vendor-price-intelligence.ts": 2,
     "lib/kernel/vendor-rating-governance.ts": 2,
     "lib/kernel/vendor-seat-contact.ts": 1,
-    "lib/kernel/vendor-subscription.ts": 1,
     "lib/kernel/vendor-verification.ts": 1,
     "lib/kernel/video-coordination.ts": 2,
     "lib/kernel/voice-delegation.ts": 7,
@@ -430,7 +430,7 @@
     "lib/osint-client.ts": 2,
     "lib/platform/acting-context.ts": 1,
     "lib/platform/ai-ops.ts": 1,
-    "lib/platform/config-snapshots.ts": 1,
+    "lib/platform/config-snapshots.ts": 2,
     "lib/platform/deal-room-demo.ts": 9,
     "lib/platform/demo-tenant.ts": 1,
     "lib/platform/go-live-readiness.ts": 1,
@@ -465,6 +465,7 @@
     "lib/portal/portal-showing-feed.ts": 2,
     "lib/portal-stream/ai-delegation-reaction.ts": 2,
     "lib/property/rentcast.ts": 1,
+    "lib/property/street-view.ts": 1,
     "lib/providers/calendar/graph-event-shape.ts": 1,
     "lib/providers/calendar/personal-calendar.ts": 1,
     "lib/providers/messaging/sms-adapters.ts": 2,
@@ -494,6 +495,7 @@
     "lib/remotion/voiceover-mixer.ts": 2,
     "lib/security/oauth-refresh.ts": 2,
     "lib/security/secret-crypto.ts": 1,
+    "lib/security/secret-migration.ts": 1,
     "lib/showings/showingtime-ingest.ts": 1,
     "lib/social/publisher.ts": 1,
     "lib/social/token-refresh.ts": 1,
@@ -542,8 +544,8 @@
     "lib/video/video-metering.ts": 2,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
-    "lib/voice/a2p-registration.ts": 1,
-    "lib/voice/carrier-registration-loop.ts": 3,
+    "lib/voice/a2p-registration.ts": 2,
+    "lib/voice/carrier-registration-loop.ts": 2,
     "lib/voice/conversation-relay.ts": 3,
     "lib/voice/local-number-search.ts": 2,
     "lib/voice/number-port-in.ts": 2,
@@ -561,7 +563,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 11208,
+  "census": 11262,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -582,6 +584,7 @@
     "app/actions/academy.ts": 7,
     "app/actions/accounting-sync.ts": 12,
     "app/actions/activities.ts": 4,
+    "app/actions/address-suggestions.ts": 1,
     "app/actions/admin/agent-360.ts": 3,
     "app/actions/admin/agent-assistant-tool-calls.ts": 2,
     "app/actions/admin/agent-profile.ts": 2,
@@ -607,6 +610,7 @@
     "app/actions/admin/subscription-agreement.ts": 2,
     "app/actions/admin/team-members.ts": 3,
     "app/actions/admin/tenant-policy.ts": 3,
+    "app/actions/admin/tenant-readiness.ts": 2,
     "app/actions/admin/update-user.ts": 1,
     "app/actions/agent-action-queue.ts": 1,
     "app/actions/agent-deactivation.ts": 5,
@@ -1080,6 +1084,7 @@
     "app/actions/superadmin/provider-posture.ts": 3,
     "app/actions/superadmin/saas-operations.ts": 1,
     "app/actions/superadmin/screenshot-capture.ts": 5,
+    "app/actions/superadmin/secret-migration.ts": 1,
     "app/actions/superadmin/stripe-webhook-events.ts": 2,
     "app/actions/superadmin/subscriber-referrals.ts": 4,
     "app/actions/superadmin/subscription-contracts.ts": 6,
@@ -1089,6 +1094,7 @@
     "app/actions/superadmin/tenant-entitlements.ts": 7,
     "app/actions/superadmin/tenant-import.ts": 2,
     "app/actions/superadmin/tenant-message.ts": 3,
+    "app/actions/superadmin/tenant-readiness.ts": 2,
     "app/actions/superadmin/tenant-setup.ts": 1,
     "app/actions/superadmin/tenant-transition-log.ts": 1,
     "app/actions/superadmin/tenant-users.ts": 6,
@@ -1105,7 +1111,7 @@
     "app/actions/tenant-webhooks.ts": 13,
     "app/actions/time-to-value.ts": 1,
     "app/actions/title-portal.ts": 9,
-    "app/actions/tour-planner.ts": 12,
+    "app/actions/tour-planner.ts": 13,
     "app/actions/transaction-compliance.ts": 6,
     "app/actions/transaction-document-signatures.ts": 4,
     "app/actions/transaction-hazard-insurance.ts": 2,
@@ -1121,7 +1127,7 @@
     "app/actions/twin-studio.ts": 11,
     "app/actions/usage-overview.ts": 1,
     "app/actions/user-profile.ts": 5,
-    "app/actions/vendor-billing.ts": 3,
+    "app/actions/vendor-billing.ts": 4,
     "app/actions/vendor-budget.ts": 6,
     "app/actions/vendor-contact-access.ts": 5,
     "app/actions/vendor-documents.ts": 1,
@@ -1766,6 +1772,8 @@
     "app/components/onboarding/setup-readiness-card-client.tsx": 1,
     "app/components/onboarding/setup-readiness-card.tsx": 1,
     "app/components/onboarding/setup-readiness-view.tsx": 1,
+    "app/components/onboarding/tenant-readiness-card.tsx": 1,
+    "app/components/onboarding/tenant-readiness-view.tsx": 1,
     "app/components/portal/AIDraftSuggestion.tsx": 1,
     "app/components/portal/BuyerBrokerAgreementSignCard.tsx": 1,
     "app/components/portal/BuyerFinancialUploadCard.tsx": 1,
@@ -2460,6 +2468,7 @@
     "app/dashboard/superadmin/brokerages/[id]/tenant-crm-pull-panel.tsx": 1,
     "app/dashboard/superadmin/brokerages/[id]/tenant-entitlements-panel.tsx": 1,
     "app/dashboard/superadmin/brokerages/[id]/tenant-import-panel.tsx": 1,
+    "app/dashboard/superadmin/brokerages/[id]/tenant-readiness-panel.tsx": 1,
     "app/dashboard/superadmin/brokerages/[id]/tenant-setup-panel.tsx": 1,
     "app/dashboard/superadmin/brokerages/[id]/tenant-snapshots-panel.tsx": 1,
     "app/dashboard/superadmin/brokerages/[id]/tenant-users-panel.tsx": 1,
@@ -2999,8 +3008,9 @@
     "lib/billing/past-due-clock.ts": 2,
     "lib/billing/phone-plan-resolve.ts": 2,
     "lib/billing/phone-plan.ts": 3,
-    "lib/billing/plan-catalog.ts": 11,
+    "lib/billing/plan-catalog.ts": 13,
     "lib/billing/plan-tier.ts": 3,
+    "lib/billing/price-not-configured.ts": 1,
     "lib/billing/resolve-stripe-account.ts": 3,
     "lib/billing/seat-packages.ts": 6,
     "lib/billing/seat-sync.ts": 1,
@@ -3008,10 +3018,10 @@
     "lib/billing/stripe-overage-meter.ts": 13,
     "lib/billing/stripe-portal.ts": 1,
     "lib/billing/stripe-status.ts": 4,
-    "lib/billing/stripe-subscription-ops.ts": 18,
+    "lib/billing/stripe-subscription-ops.ts": 20,
     "lib/billing/stripe-webhook-registration.ts": 3,
     "lib/billing/stripe-webhook-secrets.ts": 2,
-    "lib/billing/subscription-activation.ts": 5,
+    "lib/billing/subscription-activation.ts": 6,
     "lib/billing/sync-plan-tier.ts": 1,
     "lib/blog/seo-optimizer.ts": 2,
     "lib/blog/wordpress-connection.ts": 2,
@@ -3239,7 +3249,7 @@
     "lib/crm/import-pull.ts": 4,
     "lib/crm/providers/followupboss.ts": 1,
     "lib/crm/providers/hubspot.ts": 1,
-    "lib/crm/providers/lofty.ts": 1,
+    "lib/crm/providers/lofty.ts": 2,
     "lib/crm/sync.ts": 1,
     "lib/cron-auth.ts": 1,
     "lib/data/brokerKPIs.ts": 2,
@@ -3335,6 +3345,7 @@
     "lib/enrichment/lead-freshness.ts": 2,
     "lib/enrichment/reverse-skip-trace.ts": 2,
     "lib/enrichment/web-mention-search.ts": 3,
+    "lib/entitlements/ai-subscription-tier.ts": 1,
     "lib/entitlements/resolve.ts": 2,
     "lib/entitlements/tenant-capabilities.ts": 1,
     "lib/env/aliases.ts": 4,
@@ -3371,7 +3382,7 @@
     "lib/external/llm-html-extractor.ts": 1,
     "lib/external/lob-address-verify.ts": 1,
     "lib/external/nextdoor-extract.ts": 3,
-    "lib/external/nominatim-geocode.ts": 5,
+    "lib/external/nominatim-geocode.ts": 7,
     "lib/external/osint-free.ts": 3,
     "lib/external/osint-neighborhood.ts": 3,
     "lib/external/peopledata-client.ts": 6,
@@ -3635,7 +3646,7 @@
     "lib/kernel/client-story-drafts.ts": 11,
     "lib/kernel/client-welcome.ts": 4,
     "lib/kernel/closing-war-room.ts": 8,
-    "lib/kernel/command-center.ts": 3,
+    "lib/kernel/command-center.ts": 4,
     "lib/kernel/commission-forecaster.ts": 11,
     "lib/kernel/communication-compliance.ts": 1,
     "lib/kernel/communications/assemble-email.ts": 1,
@@ -3697,7 +3708,7 @@
     "lib/kernel/financing-pit-stop.ts": 8,
     "lib/kernel/fire-drills.ts": 3,
     "lib/kernel/flow-integrity.ts": 10,
-    "lib/kernel/forms.ts": 9,
+    "lib/kernel/forms.ts": 10,
     "lib/kernel/global-settings.ts": 2,
     "lib/kernel/healing-policy.ts": 5,
     "lib/kernel/helpers.ts": 6,
@@ -3803,7 +3814,7 @@
     "lib/kernel/second-opinion.ts": 1,
     "lib/kernel/self-book.ts": 7,
     "lib/kernel/self-heal-ledger.ts": 7,
-    "lib/kernel/self-healing.ts": 6,
+    "lib/kernel/self-healing.ts": 7,
     "lib/kernel/self-optimization.ts": 13,
     "lib/kernel/seller-decision-room.ts": 1,
     "lib/kernel/seller-listing-timeline.ts": 2,
@@ -3830,10 +3841,12 @@
     "lib/kernel/tenancy-principal.ts": 1,
     "lib/kernel/tenant-config-reads.ts": 3,
     "lib/kernel/tenant-creation-rollback.ts": 1,
-    "lib/kernel/tenant-creation.ts": 7,
+    "lib/kernel/tenant-creation.ts": 10,
     "lib/kernel/tenant-guard.ts": 1,
+    "lib/kernel/tenant-operating-baseline.ts": 3,
     "lib/kernel/tenant-policy.ts": 17,
     "lib/kernel/tenant-provisioning-spec.ts": 3,
+    "lib/kernel/tenant-readiness.ts": 4,
     "lib/kernel/tenant-scope.ts": 7,
     "lib/kernel/tier-role-matrix.ts": 20,
     "lib/kernel/title-closing-watchtower.ts": 8,
@@ -3842,7 +3855,7 @@
     "lib/kernel/twin-scenario.ts": 3,
     "lib/kernel/unambiguous-tenant.ts": 3,
     "lib/kernel/urgent-sla.ts": 2,
-    "lib/kernel/users.ts": 9,
+    "lib/kernel/users.ts": 10,
     "lib/kernel/vendor-categories.ts": 3,
     "lib/kernel/vendor-coverage-forecast.ts": 4,
     "lib/kernel/vendor-doc-compliance.ts": 4,
@@ -4147,7 +4160,7 @@
     "lib/platform/ai-ops.ts": 3,
     "lib/platform/capability-overrides.ts": 2,
     "lib/platform/changelog.ts": 2,
-    "lib/platform/config-snapshots.ts": 4,
+    "lib/platform/config-snapshots.ts": 5,
     "lib/platform/coupons.ts": 8,
     "lib/platform/custom-domains.ts": 8,
     "lib/platform/deal-room-demo.ts": 13,
@@ -4249,7 +4262,7 @@
     "lib/property/rentcast-query.ts": 1,
     "lib/property/rentcast.ts": 12,
     "lib/property/resolve-property-facts.ts": 4,
-    "lib/property/street-view.ts": 3,
+    "lib/property/street-view.ts": 7,
     "lib/property-alerts/alert-cadence.ts": 3,
     "lib/property-alerts/alert-engine.ts": 2,
     "lib/property-alerts/alert-matcher.ts": 2,
@@ -4349,12 +4362,15 @@
     "lib/reputation/review-request-draft.ts": 1,
     "lib/revenue-protection/scorer.ts": 1,
     "lib/security/audio-source-allowlist.ts": 2,
+    "lib/security/constant-time.ts": 1,
+    "lib/security/credential-projection.ts": 1,
     "lib/security/credential-rotation.ts": 5,
     "lib/security/export-credential-scan.ts": 3,
     "lib/security/oauth-refresh.ts": 3,
     "lib/security/public-rate-limit.ts": 2,
     "lib/security/rbac.ts": 5,
-    "lib/security/secret-crypto.ts": 5,
+    "lib/security/secret-crypto.ts": 11,
+    "lib/security/secret-migration.ts": 2,
     "lib/security/server-action-guard.ts": 2,
     "lib/security/share-password.ts": 2,
     "lib/security/types.ts": 6,
@@ -4579,13 +4595,13 @@
     "lib/video/video-status.ts": 2,
     "lib/video/video-thumbnail-embed.ts": 1,
     "lib/video/viral-script-share.ts": 1,
-    "lib/voice/a2p-registration.ts": 18,
+    "lib/voice/a2p-registration.ts": 21,
     "lib/voice/broker-commands.ts": 3,
     "lib/voice/call-analysis.ts": 4,
     "lib/voice/call-coaching.ts": 1,
     "lib/voice/call-recording.ts": 5,
     "lib/voice/campaign-command.ts": 1,
-    "lib/voice/carrier-registration-loop.ts": 4,
+    "lib/voice/carrier-registration-loop.ts": 5,
     "lib/voice/command-coverage.ts": 3,
     "lib/voice/conversation-relay.ts": 8,
     "lib/voice/deal-decision.ts": 4,
@@ -4801,6 +4817,9 @@
       "getAgentActivities",
       "getPendingFollowups"
     ],
+    "app/actions/address-suggestions.ts": [
+      "suggestAddresses"
+    ],
     "app/actions/admin/agent-360.ts": [
       "getAgent360Action",
       "assignAcademyModuleAction",
@@ -4945,6 +4964,10 @@
       "getTenantOperatingConstitution",
       "policyHistory",
       "revertPolicy"
+    ],
+    "app/actions/admin/tenant-readiness.ts": [
+      "getMyTenantReadiness",
+      "repairMyTenantReadiness"
     ],
     "app/actions/admin/update-user.ts": [
       "updateUser"
@@ -8067,6 +8090,9 @@
       "setScreenshotUsesAction",
       "listDemoStillSurfacesAction"
     ],
+    "app/actions/superadmin/secret-migration.ts": [
+      "resealLegacyPlaintextSecretsAction"
+    ],
     "app/actions/superadmin/stripe-webhook-events.ts": [
       "checkStripeWebhookEventsAction",
       "registerStripeWebhookEventsAction"
@@ -8117,6 +8143,10 @@
       "listMessageableAdminsAction",
       "draftTenantAdminMessageAction",
       "sendTenantAdminMessageAction"
+    ],
+    "app/actions/superadmin/tenant-readiness.ts": [
+      "getTenantReadinessAction",
+      "repairTenantReadinessAction"
     ],
     "app/actions/superadmin/tenant-setup.ts": [
       "getTenantSetupReadinessAction"
@@ -8240,6 +8270,7 @@
     "app/actions/tour-planner.ts": [
       "getSavedPropertiesForTour",
       "getBuyerTours",
+      "getTourRouteMap",
       "createTourPlan",
       "scheduleTourStops",
       "finalizeTour",
@@ -8403,6 +8434,7 @@
     ],
     "app/actions/vendor-billing.ts": [
       "createVendorSubscriptionCheckout",
+      "getVendorTierPricesAction",
       "createVendorBillingPortalSession",
       "applyVendorSubscriptionEvent"
     ],
@@ -10544,6 +10576,12 @@
     "app/components/onboarding/setup-readiness-view.tsx": [
       "SetupReadinessCardView"
     ],
+    "app/components/onboarding/tenant-readiness-card.tsx": [
+      "TenantReadinessCard"
+    ],
+    "app/components/onboarding/tenant-readiness-view.tsx": [
+      "TenantReadinessView"
+    ],
     "app/components/portal/AIDraftSuggestion.tsx": [
       "AIDraftSuggestion"
     ],
@@ -12684,6 +12722,9 @@
     ],
     "app/dashboard/superadmin/brokerages/[id]/tenant-import-panel.tsx": [
       "TenantImportPanel"
+    ],
+    "app/dashboard/superadmin/brokerages/[id]/tenant-readiness-panel.tsx": [
+      "TenantReadinessPanel"
     ],
     "app/dashboard/superadmin/brokerages/[id]/tenant-setup-panel.tsx": [
       "TenantSetupPanel"
@@ -14958,6 +14999,8 @@
       "isCustomPricedTier",
       "customPricingDoorPath",
       "customPricingCheckoutRefusal",
+      "isConfiguredPriceCents",
+      "priceNotConfiguredRefusal",
       "seatPackageSellable",
       "seatPackagesNeeded",
       "comparePlanPriceToStripe",
@@ -14968,6 +15011,9 @@
       "toPlanTier",
       "resolvePlanTier",
       "readPlanTier"
+    ],
+    "lib/billing/price-not-configured.ts": [
+      "raisePriceNotConfiguredIncident"
     ],
     "lib/billing/resolve-stripe-account.ts": [
       "resolvePlatformStripeAccount",
@@ -15034,7 +15080,9 @@
       "planTrialEnd",
       "emitSubscriptionTransition",
       "sendSubscriptionReminder",
-      "runSubscriptionLifecycleSweep"
+      "runSubscriptionLifecycleSweep",
+      "resolveStripeEventTenant",
+      "withStripeEventLedger"
     ],
     "lib/billing/stripe-webhook-registration.ts": [
       "expectedWebhookUrl",
@@ -15046,6 +15094,7 @@
       "verifyStripeWebhook"
     ],
     "lib/billing/subscription-activation.ts": [
+      "planPriceNotConfigured",
       "buildCheckoutConfig",
       "buildCheckoutTaxConfig",
       "createActivationCheckout",
@@ -16209,6 +16258,7 @@
       "syncContactToHubSpot"
     ],
     "lib/crm/providers/lofty.ts": [
+      "loftyAuth",
       "syncContactToLofty"
     ],
     "lib/crm/sync.ts": [
@@ -16667,6 +16717,9 @@
       "classifyMentionEvents",
       "searchPersonMentions"
     ],
+    "lib/entitlements/ai-subscription-tier.ts": [
+      "syncAiSubscriptionTier"
+    ],
     "lib/entitlements/resolve.ts": [
       "rolloutBucket",
       "resolveEntitlement"
@@ -16896,6 +16949,8 @@
       "parseNominatimRow",
       "geocodeOneDetailed",
       "geocodeOne",
+      "parseNominatimAddressRow",
+      "suggestAddressesDetailed",
       "createCachedGeocoder"
     ],
     "lib/external/osint-free.ts": [
@@ -18212,6 +18267,7 @@
     ],
     "lib/kernel/command-center.ts": [
       "extractProposalCopy",
+      "buildAndPersistBrokerageTwin",
       "loadCommandCenter",
       "loadManagerSessionDetail"
     ],
@@ -18618,6 +18674,7 @@
     ],
     "lib/kernel/forms.ts": [
       "resolveTransactionFormsProvider",
+      "loadTransactionFormsCredential",
       "loadAvailableTransactionForms",
       "prefillFormWithContext",
       "saveFormDraft",
@@ -19405,7 +19462,8 @@
       "runBoundedModel",
       "isDerivedCacheTable",
       "requeueVerdict",
-      "troubleshootIncident"
+      "troubleshootIncident",
+      "runDeclaredPlaybook"
     ],
     "lib/kernel/self-optimization.ts": [
       "isOptimizationClass",
@@ -19571,13 +19629,21 @@
       "isCanonicalTier",
       "buildTenantSlug",
       "tenantWebsitePath",
+      "provisioningComplete",
+      "provisioningStepsPending",
       "resolveUniqueTenantSlug",
       "platformMembershipFlags",
       "buildSubscriptionRow",
-      "createTenantCore"
+      "createTenantCore",
+      "resumeTenantProvisioning"
     ],
     "lib/kernel/tenant-guard.ts": [
       "logTenantFinding"
+    ],
+    "lib/kernel/tenant-operating-baseline.ts": [
+      "baselineHardRefusals",
+      "snapshotVersionOf",
+      "initializeTenantOperatingBaseline"
     ],
     "lib/kernel/tenant-policy.ts": [
       "assignmentRulePolicyKey",
@@ -19602,6 +19668,12 @@
       "requiresAgentRow",
       "requiresOnboardingRow",
       "ownerNeedsTeamRow"
+    ],
+    "lib/kernel/tenant-readiness.ts": [
+      "readinessVerdict",
+      "evaluateTenantReadiness",
+      "readinessIncident",
+      "retryReadinessRepair"
     ],
     "lib/kernel/tenant-scope.ts": [
       "isTenantScopeRefusal",
@@ -19702,6 +19774,7 @@
       "assignUserToBrokerage",
       "assignUserToTeam",
       "repairIncompleteAccountSetup",
+      "seatSubjectForEmail",
       "inviteTenantMember",
       "provisionTenantOwner",
       "emitUserProvisionedEvent"
@@ -21311,6 +21384,7 @@
     "lib/platform/config-snapshots.ts": [
       "pickFields",
       "payloadLeaksSecret",
+      "absentKeys",
       "buildSnapshotPayload",
       "applySnapshotPayload"
     ],
@@ -21902,7 +21976,11 @@
     "lib/property/street-view.ts": [
       "getStreetViewImageUrl",
       "getStaticMapImageUrl",
-      "bookMapsImageSpend"
+      "resolveMapProvider",
+      "getMapImageUrl",
+      "getRouteMapImageUrl",
+      "bookMapsImageSpend",
+      "bookMapLoadSpend"
     ],
     "lib/property-alerts/alert-cadence.ts": [
       "isSnoozed",
@@ -22406,6 +22484,12 @@
       "platformAudioHostRules",
       "checkAudioSourceUrl"
     ],
+    "lib/security/constant-time.ts": [
+      "secretsEqual"
+    ],
+    "lib/security/credential-projection.ts": [
+      "publicCredentialSelect"
+    ],
     "lib/security/credential-rotation.ts": [
       "credentialRotationStatus",
       "loadRotationRisks",
@@ -22439,7 +22523,17 @@
       "isEncryptionConfigured",
       "isEncrypted",
       "encryptSecret",
-      "decryptSecret"
+      "encryptSecret",
+      "encryptSecret",
+      "encryptSecret",
+      "decryptSecret",
+      "decryptSecretFields",
+      "decryptSecretFields",
+      "decryptSecretFields"
+    ],
+    "lib/security/secret-migration.ts": [
+      "sealVerified",
+      "migrateLegacyPlaintextSecrets"
     ],
     "lib/security/server-action-guard.ts": [
       "checkServerActionPermission",
@@ -23633,6 +23727,9 @@
       "validateA2pProfile",
       "deriveA2pProfile",
       "resolveA2pProfile",
+      "classifyCarrierFailure",
+      "profileFingerprint",
+      "haltVerdict",
       "recordLoopPhase",
       "nextA2pStep",
       "describeA2pState",
@@ -23677,6 +23774,7 @@
       "carrierRegistrationPhase",
       "carrierTickPlan",
       "advanceTenantCarrier",
+      "syncA2pStatus",
       "runCarrierRegistrationTick"
     ],
     "lib/voice/command-coverage.ts": [

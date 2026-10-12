@@ -366,12 +366,20 @@ export async function ensureDemoTenant(): Promise<EnsureDemoTenantResult> {
   // brokerage-management uses; there is no Stripe customer at signup).
   // If this pause does not land, the demo tenant stays billable — the one thing
   // "never bills" has to guarantee. The provisioning result said ok either way.
-  const { error: pauseError } = await svc
+  // COUNTED (CLAUDE.md §3): an UPDATE that matches nothing also resolves with error null —
+  // byte-identical to a pause that worked — so the rows are selected back and counted. Zero
+  // rows here is not "nothing to pause": canonical provisioning just wrote the subscription,
+  // so zero means the predicate found no row and the demo tenant WOULD bill (lane 140O).
+  const { data: paused, error: pauseError } = await svc
     .from("subscriptions")
     .update({ status: "paused", updated_at: now })
     .eq("brokerage_id", brokerageId)
+    .select("id")
   if (pauseError) {
     return { ok: false, created: true, error: `Provisioned but could not pause billing on the demo subscription: ${pauseError.message}` }
+  }
+  if (((paused ?? []) as unknown[]).length === 0) {
+    return { ok: false, created: true, error: "Provisioned but the billing pause matched no subscription row — the demo tenant would bill, so it is not reported as never-billing." }
   }
 
   const brokerage = await findDemoBrokerage(svc)

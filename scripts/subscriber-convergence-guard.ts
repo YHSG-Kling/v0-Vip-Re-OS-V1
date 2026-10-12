@@ -160,7 +160,7 @@ function seedTables(): Record<string, Row[]> {
     brokerage_brand_settings: [], brand_voice_profile: [], feature_access_overrides: [], superadmin_audit_log: [], calendar_events: [],
   }
 }
-interface Counters { owner: number; domain: number; isa: number; assistant: number; events: Row[]; curriculum: number; checkout: number; repair: number; baseline: number }
+interface Counters { owner: number; domain: number; isa: number; assistant: number; events: Row[]; curriculum: number; checkout: number; repair: number; baseline: number; readiness: number }
 function makeDeps(svc: ReturnType<typeof fakeSvc>, c: Counters, fail: { isaOnce?: boolean; ownerOnce?: boolean } = {}): TenantCreationDeps {
   return {
     provisionOwner: async (p) => {
@@ -180,9 +180,11 @@ function makeDeps(svc: ReturnType<typeof fakeSvc>, c: Counters, fail: { isaOnce?
     accountRepair: async () => { c.repair++; return { success: true, repaired: [] } },
     // Lane 140D/E's initializer is proven against its own fixture (test:tenant-baseline); here it is COUNTED per door.
     operatingBaseline: async (_s, id) => { c.baseline++; return { ok: true, websitePath: `/site/${id}`, snapshotVersion: "snap@fixture", items: [], refused: [], preserved: [] } },
+    // The verdict (lib/kernel/tenant-readiness.ts) is proven by test:tenant-readiness; here it is COUNTED and its stamping proven.
+    readiness: async () => { c.readiness++; return { ready: true, blockers: [], checkedAt: "2026-10-11T00:00:00.000Z" } },
   }
 }
-const counters = (): Counters => ({ owner: 0, domain: 0, isa: 0, assistant: 0, events: [], curriculum: 0, checkout: 0, repair: 0, baseline: 0 })
+const counters = (): Counters => ({ owner: 0, domain: 0, isa: 0, assistant: 0, events: [], curriculum: 0, checkout: 0, repair: 0, baseline: 0, readiness: 0 })
 const baseInput = (over: Partial<TenantCreationInput>): TenantCreationInput => ({
   brokerageName: "Acme Realty", adminEmail: "owner@acme.test", adminFirstName: "Dana", adminLastName: "Lee", tier: "team",
   signupSource: "self_serve", billing: { mode: "trial", trialDays: 14 }, callerUserId: null, ...over,
@@ -239,7 +241,7 @@ check("snapshot: the tier's funnel snapshot (or the staff-picked one) landed on 
 check("owner: exactly one anchored user per tenant; adoption anchored the EXISTING user (no invite, domain records once) while the others were invited once",
   Object.values(F).every((f) => f.users.length === 1) && F.adopt!.users[0]!.id === "usr-solo" && F.adopt!.users[0]!.user_type === "agent" && adopt.inviteSent === false && c.owner === 4 && c.domain === 1)
 check("ISA actor + starter assistant + SUBSCRIPTION_CREATED + onboarding library + welcome bell + operating-baseline repair ran ONCE per tenant (5 tenants)",
-  c.isa === 5 && c.assistant === 5 && c.events.length === 5 && c.events.every((e) => e.event === "subscription.created" || String(e.event).toLowerCase().includes("subscription")) && c.repair === 5 && c.baseline === 5 && c.curriculum === 5
+  c.isa === 5 && c.assistant === 5 && c.events.length === 5 && c.events.every((e) => e.event === "subscription.created" || String(e.event).toLowerCase().includes("subscription")) && c.repair === 5 && c.baseline === 5 && c.readiness === 5 && c.curriculum === 5
   && Object.values(F).every((f) => svc.tables.learning_assignments.filter((a) => a.brokerage_id === f.brk.id).length === 2 && svc.tables.notifications.some((n) => n.brokerage_id === f.brk.id && n.type === "agent_onboarding") && svc.tables.ai_identity_profiles.filter((p) => p.brokerage_id === f.brk.id).length === 1))
 check("the prospect door linked the prospect row to the minted tenant (status trial) and the never-a-prospect doors linked zero", svc.tables.platform_prospects[0]!.converted_brokerage_id === doors.conv!.brokerageId && svc.tables.platform_prospects[0]!.status === "trial" && (trial.prospectStamp?.linked ?? 0) === 0)
 check("the record names its door and key: self_serve / superadmin, key tenant:<owner email>", F.trial!.record!.door === "self_serve" && F.trial!.record!.key === "tenant:owner@acme.test" && F.staff!.record!.door === "superadmin" && F.conv!.record!.key === "tenant:sam@convert.test")

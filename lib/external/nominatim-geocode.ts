@@ -15,6 +15,13 @@
 // module now calls geocodeOne here. FOLDED (wave 80 lane B): the third inline copy in
 // lib/property/enrichment-chain.ts went with that file — its listing-intake path now
 // lives in lib/ai-isa/property-lookup-rail.ts and geocodes through geocodeOne here.
+// MOVED IN (wave 140, lane 140P): the two BROWSER Nominatim calls — app/components/ui/
+// address-autocomplete.tsx and the offer-initiation flow — each fetched
+// nominatim.openstreetmap.org/search from the client with its own address parser (two
+// spellings of one parse, one with a state-abbreviation table and one without). Both now
+// call the server action app/actions/address-suggestions.ts, which rides suggestAddressesDetailed
+// below: the same gateway egress (tenant-scoped, health-gated), the same courtesy pacer, ONE
+// parser (parseNominatimAddressRow), and a usage row on the free ledger.
 
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { gatewayProbe, notAttemptedProbe, unreachableProbe, type FreeProbe } from "./free-probe"
@@ -22,6 +29,10 @@ import { gatewayProbe, notAttemptedProbe, unreachableProbe, type FreeProbe } fro
 const NOMINATIM_BASE = "https://nominatim.openstreetmap.org"
 /** Nominatim's documented courtesy rate limit: 1 request/second. */
 export const NOMINATIM_MIN_GAP_MS = 1100
+/** Fewer characters than this never leaves the server (Nominatim's policy forbids heavy
+ *  autocomplete; the clients debounce AND the server refuses stubs). */
+export const ADDRESS_SUGGEST_MIN_QUERY = 4
+export const ADDRESS_SUGGEST_MAX_RESULTS = 5
 
 export interface GeoPoint {
   lat: number
@@ -117,6 +128,99 @@ export async function geocodeOneDetailed(parts: AddressParts): Promise<FreeProbe
  */
 export async function geocodeOne(parts: AddressParts): Promise<GeoPoint | null> {
   return (await geocodeOneDetailed(parts)).value
+}
+
+// ─── ADDRESS SUGGESTIONS (wave 140, lane 140P) ─────────────────────────────────────────────
+
+/** One parsed Nominatim search hit — what the address boxes render and select. */
+export interface AddressSuggestion {
+  placeId: string
+  /** Nominatim's display_name — the line the dropdown shows. */
+  label: string
+  street: string
+  city: string
+  state: string
+  zip: string
+}
+
+/** USPS state abbreviations — Nominatim spells the state in full. The ONE table (it used to live
+ *  in the browser autocomplete only, so the offer flow's parse kept "Texas"). */
+const US_STATE_ABBR: Record<string, string> = {
+  Alabama: "AL", Alaska: "AK", Arizona: "AZ", Arkansas: "AR", California: "CA",
+  Colorado: "CO", Connecticut: "CT", Delaware: "DE", Florida: "FL", Georgia: "GA",
+  Hawaii: "HI", Idaho: "ID", Illinois: "IL", Indiana: "IN", Iowa: "IA",
+  Kansas: "KS", Kentucky: "KY", Louisiana: "LA", Maine: "ME", Maryland: "MD",
+  Massachusetts: "MA", Michigan: "MI", Minnesota: "MN", Mississippi: "MS",
+  Missouri: "MO", Montana: "MT", Nebraska: "NE", Nevada: "NV", "New Hampshire": "NH",
+  "New Jersey": "NJ", "New Mexico": "NM", "New York": "NY", "North Carolina": "NC",
+  "North Dakota": "ND", Ohio: "OH", Oklahoma: "OK", Oregon: "OR", Pennsylvania: "PA",
+  "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD", Tennessee: "TN",
+  Texas: "TX", Utah: "UT", Vermont: "VT", Virginia: "VA", Washington: "WA",
+  "West Virginia": "WV", Wisconsin: "WI", Wyoming: "WY",
+  "District of Columbia": "DC",
+}
+
+/** PURE. Parse one `addressdetails=1` search row into an AddressSuggestion, or null when the row
+ *  carries no display name. Street = house number + road; city falls back through town / village /
+ *  suburb / neighbourhood (Nominatim's own precedence); the state is abbreviated when known. */
+/** @proofSeam pure Nominatim row parser proven by test:provider-adapter (section Q); production reaches it only through suggestAddressesDetailed in this file. */
+export function parseNominatimAddressRow(row: unknown): AddressSuggestion | null {
+  if (!row || typeof row !== "object") return null
+  const r = row as { place_id?: unknown; display_name?: unknown; address?: Record<string, unknown> | null }
+  const label = typeof r.display_name === "string" ? r.display_name.trim() : ""
+  if (!label) return null
+  const a = (r.address && typeof r.address === "object" ? r.address : {}) as Record<string, unknown>
+  const s = (k: string) => (typeof a[k] === "string" ? (a[k] as string).trim() : "")
+  const street = [s("house_number"), s("road")].filter(Boolean).join(" ")
+  const city = s("city") || s("town") || s("village") || s("suburb") || s("neighbourhood")
+  const stateFull = s("state")
+  return {
+    placeId: r.place_id == null ? label : String(r.place_id),
+    label,
+    street,
+    city,
+    state: US_STATE_ABBR[stateFull] ?? stateFull,
+    zip: s("postcode"),
+  }
+}
+
+/**
+ * Address SUGGESTIONS for a partial query (US only), REPORTING WHY there are none. The same
+ * gateway egress as geocodeOneDetailed, plus: `brokerageId` lands on the outcome row (tenant
+ * scope), `skipWhenFailing` refuses without egress while Nominatim is in a failing cool-down
+ * (provider health respected — a dead geocoder costs the typist nothing), and the courtesy
+ * pacer still spaces every real request. Never throws. Server-only (the gateway is).
+ */
+export async function suggestAddressesDetailed(
+  query: string,
+  opts: { brokerageId?: string | null; limit?: number } = {},
+): Promise<FreeProbe<AddressSuggestion[]>> {
+  const q = (query ?? "").trim()
+  if (q.length < ADDRESS_SUGGEST_MIN_QUERY) return notAttemptedProbe<AddressSuggestion[]>(`query shorter than ${ADDRESS_SUGGEST_MIN_QUERY} characters`)
+  const limit = Math.min(ADDRESS_SUGGEST_MAX_RESULTS, Math.max(1, Math.round(opts.limit ?? ADDRESS_SUGGEST_MAX_RESULTS)))
+  await respectNominatimGap()
+  try {
+    const res = await callConnector<unknown[]>({
+      connector: "nominatim",
+      brokerageId: opts.brokerageId ?? null,
+      baseUrl: NOMINATIM_BASE,
+      path: "/search",
+      method: "GET",
+      query: { q, format: "json", addressdetails: "1", limit: String(limit), countrycodes: "us" },
+      auth: { style: "none" },
+      headers: { "User-Agent": "RealEstateOS/1.0 (address-suggestions)", "Accept-Language": "en" },
+      timeoutMs: 5000,
+      retry: false,
+      skipWhenFailing: true,
+    })
+    return gatewayProbe<AddressSuggestion[]>(res, () => {
+      const rows = Array.isArray(res.data) ? res.data : []
+      const parsed = rows.map(parseNominatimAddressRow).filter((x): x is AddressSuggestion => x !== null)
+      return parsed.length > 0 ? parsed : null
+    })
+  } catch (err) {
+    return unreachableProbe<AddressSuggestion[]>(err)
+  }
 }
 
 /**

@@ -23,6 +23,7 @@
 import { readFileSync, existsSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
+import { createRequire } from "node:module"
 import { stripComments } from "./strip-comments"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
@@ -249,7 +250,13 @@ async function main() {
     check("port-in create / fetch and portability go through the SDK (numbers.v1)", /\.numbers\.v1\.portingPortIns\.create\(/.test(client) && /\.numbers\.v1\.portingPortIns\(portInRequestSid\)\.fetch\(\)/.test(client) && /\.numbers\.v1\.portingPortabilities\(e164\)\.fetch\(/.test(client))
     check("the ownership proof is on the SDK (incomingPhoneNumbers.list)", /incomingPhoneNumbers\.list\(\{ phoneNumber: e164, limit: 1 \}\)/.test(client))
     check("NO bare fetch( in the adapter; the ONE non-SDK call (utility-bill upload — twilio-node 6.1.1 ships no Documents resource) runs through an injected fetchImpl", !bareFetch.test(client) && /await fetchImpl\("https:\/\/numbers-upload\.twilio\.com\/v1\/Documents"/.test(client))
-    check("the SDK version on disk really has no numbers Documents resource (the exception's premise)", existsSync(join(root, "node_modules/twilio/lib/rest/numbers/v1/portingPortIn.js")) && !existsSync(join(root, "node_modules/twilio/lib/rest/numbers/v1/document.js")) && !existsSync(join(root, "node_modules/twilio/lib/rest/numbers/v1/documents.js")))
+    // Wave 140 (lane 140P; lane 140G's finding): the twilio package is resolved the way Node resolves it
+    // (createRequire from this file — walks UP to the nearest node_modules), not `join(root, "node_modules/…")`:
+    // a git worktree without its own node_modules made this check red for an environmental reason.
+    let twilioDir: string | null = null
+    try { twilioDir = dirname(createRequire(import.meta.url).resolve("twilio/package.json")) } catch { twilioDir = null }
+    const numbersV1 = twilioDir ? join(twilioDir, "lib/rest/numbers/v1") : null
+    check("the SDK version on disk really has no numbers Documents resource (the exception's premise)", !!numbersV1 && existsSync(join(numbersV1, "portingPortIn.js")) && !existsSync(join(numbersV1, "document.js")) && !existsSync(join(numbersV1, "documents.js")))
   }
 
   console.log("\n[7 · the doors: session tenant, admin gate first, fail closed]")

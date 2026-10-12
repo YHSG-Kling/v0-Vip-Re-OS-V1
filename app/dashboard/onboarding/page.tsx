@@ -33,9 +33,10 @@ export default async function OnboardingPage() {
   // invisible to the person. The seat flow (lib/kernel/users.ts
   // inviteTenantMember) now produces the whole chain, and this page is the
   // VISIBLE setup state an incomplete account is routed to.
-  // READINESS HOOK (integrator): evaluateTenantReadiness(svc, brokerageId, { repair: true })
-  // — a REPAIRABLE account gap routes through lane 140B/K's contract to
-  // repairIncompleteAccountSetup (lib/kernel/users.ts) and re-verifies.
+  // A REPAIRABLE account gap routes through the readiness contract
+  // (evaluateTenantReadiness({ repair: true }) → self-healing engine →
+  // repairIncompleteAccountSetup, lib/kernel/users.ts) and is re-verified — see
+  // below, where this page finds an agent-role user without an agents row.
 
   // Get user details including type — maybeSingle() never throws on missing row
   const { data: userData } = await supabase
@@ -82,10 +83,28 @@ export default async function OnboardingPage() {
   // substitution only ever happened for the non-agent roles the AGENT
   // onboarding dashboard does not describe in the first place. A role without
   // an agents row gets an honest notice, not an empty agent curriculum.
+  let setupBlockers: string[] = []
+  if (isAgentRole && !agentId) {
+    // THE READINESS CONTRACT (wave 140): evidenced, policy-capped repair through the
+    // self-healing engine (self_heal_events + ledger + kernel event), then ONE re-read.
+    // The tenant is the session's (users.brokerage_id above) — never a parameter.
+    try {
+      const [{ evaluateTenantReadiness }, { createServiceClient }] = await Promise.all([import("@/lib/kernel/tenant-readiness"), import("@/lib/supabase/service")])
+      const report = await evaluateTenantReadiness(createServiceClient(), brokerageId, { repair: true })
+      setupBlockers = report.blockers
+      const { data: healed } = await supabase.from('agents').select('id').eq('user_id', user.id).eq('brokerage_id', brokerageId).maybeSingle()
+      agentId = healed?.id ?? null
+    } catch (error) {
+      console.error('[Onboarding] readiness repair failed:', (error as Error).message)
+    }
+  }
   if (isAgentRole && !agentId) {
     return (
       <div className="p-8 text-center text-muted-foreground">
-        Finishing your account setup — refresh in a moment to view your onboarding.
+        <p>Finishing your account setup — refresh in a moment to view your onboarding.</p>
+        {setupBlockers.length > 0 && (
+          <p className="mt-2 text-xs">Waiting on: {setupBlockers.slice(0, 3).join('; ')}</p>
+        )}
       </div>
     )
   }

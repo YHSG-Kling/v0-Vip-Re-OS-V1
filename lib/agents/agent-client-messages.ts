@@ -284,6 +284,31 @@ export async function approveClientMessage(
       // translation — so an approved portal-channel message NEVER rendered for the client.
       // transparency_updates is the canonical "what happened on my deal" card the portal
       // reads; writing it directly makes the final hop provable.)
+      //
+      // ACTION LEDGER FOR THE PORTAL HOP (lane 140O, LAW 5). Email / SMS / direct mail already run
+      // inside withActionLedger through the dispatcher (`ledger` above); the portal card and the
+      // approved-draft notification were the two consequential writes with NO evidence row. Same
+      // cycle (the proposal is the unit of once), the portal egress vocabulary
+      // (lib/portal/portal-message-egress.ts: action comms.portal.send, provider "portal", risk
+      // COMMUNICATION); a replayed claim IS the earlier delivery — never a second card. Each write
+      // `.select()`s its row and COUNTS it (§3): a write that returned no row is a failure, not a send.
+      const portalHop = async (subject: { type: string; id: string }, write: () => Promise<{ id: string | null; error: string | null }>) => {
+        const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+        return withActionLedger<{ id: string | null; error: string | null }>({
+          brokerageId: m.brokerage_id, action: "comms.portal.send", channel,
+          actor: approverUserId ? { type: "user", userId: approverUserId } : { type: "system" },
+          subject, reasonCode: ledger.reasonCode ?? null, reasonDetail: ledger.reasonDetail ?? null, cycle: ledger.cycle,
+          riskClass: "COMMUNICATION", systemSource: "agent_client_message",
+          detail: { agent_client_message_id: messageId, entity_type: m.entity_type, audience: m.audience },
+        }, write, {
+          settle: (r) => r.error || !r.id
+            ? { status: "failed", outcome: "insert_refused", provider: "portal", error: r.error ?? "no row" }
+            : { status: "executed", outcome: "delivered_to_portal", provider: "portal", providerRef: r.id, costUsd: 0 },
+          replay: (claim) => claim.kind === "replay"
+            ? { id: claim.entry.provider_ref ?? null, error: null }
+            : { id: null, error: claim.kind === "refused" ? claim.error : `portal delivery ${claim.kind === "unknown" ? "outcome unknown" : "already in flight"} — not re-sent` },
+        }, { client: supabase })
+      }
       if (!m.recipient_contact_id) {
         // INTERNAL drafts (audience 'agent' — e.g. recruiting outreach, partner thank-yous
         // with no contact): approving delivers the APPROVED DRAFT to the responsible
@@ -296,13 +321,16 @@ export async function approveClientMessage(
             recipient_contact_id: null, entity_type: m.entity_type, entity_id: m.entity_id,
           })
           if (!agentUserId) return await fail(supabase, messageId, "no responsible agent to deliver the approved draft to")
-          const { error: notifErr } = await supabase.from("notifications").insert({
-            user_id: agentUserId, brokerage_id: m.brokerage_id, type: "approved_draft",
-            title: m.subject ?? "Approved draft ready to send",
-            body: m.body.slice(0, 2000),
-            entity_type: "agent_client_message", entity_id: messageId, priority: "medium", is_read: false,
+          const hop = await portalHop({ type: "user", id: agentUserId }, async () => {
+            const { data, error } = await supabase.from("notifications").insert({
+              user_id: agentUserId, brokerage_id: m.brokerage_id, type: "approved_draft",
+              title: m.subject ?? "Approved draft ready to send",
+              body: m.body.slice(0, 2000),
+              entity_type: "agent_client_message", entity_id: messageId, priority: "medium", is_read: false,
+            }).select("id").maybeSingle()
+            return { id: (data as { id?: string } | null)?.id ?? null, error: error?.message ?? null }
           })
-          if (notifErr) return await fail(supabase, messageId, `draft delivery failed: ${notifErr.message}`)
+          if (hop.error || !hop.id) return await fail(supabase, messageId, `draft delivery failed: ${hop.error ?? "no row written"}`)
         } else {
           return await fail(supabase, messageId, "portal channel needs a recipient contact")
         }
@@ -313,18 +341,22 @@ export async function approveClientMessage(
       // carries the meeting date. Only the human-approved authored recap ships;
       // the transcript never leaves the internal ledger.
       const isMeetingRecap = m.entity_type === "meeting_recap"
-      const { error: cardErr } = await supabase.from("transparency_updates").insert({
-        brokerage_id:           m.brokerage_id,
-        contact_id:             m.recipient_contact_id,
-        title:                  m.subject ?? "An update from your agent",
-        plain_language_summary: m.body,
-        message:                m.body,
-        update_type:            isMeetingRecap ? "meeting_recap" : "agent_message",
-        is_visible_to_client:   true,
-        metadata:               { audience: m.audience, channel, human_approved: true, agent_client_message_id: messageId, ...(isMeetingRecap ? { meeting_voice_call_id: m.entity_id } : {}) },
-        created_at:             new Date().toISOString(),
+      const contactId = m.recipient_contact_id
+      const card = await portalHop({ type: "contact", id: contactId }, async () => {
+        const { data, error } = await supabase.from("transparency_updates").insert({
+          brokerage_id:           m.brokerage_id,
+          contact_id:             contactId,
+          title:                  m.subject ?? "An update from your agent",
+          plain_language_summary: m.body,
+          message:                m.body,
+          update_type:            isMeetingRecap ? "meeting_recap" : "agent_message",
+          is_visible_to_client:   true,
+          metadata:               { audience: m.audience, channel, human_approved: true, agent_client_message_id: messageId, ...(isMeetingRecap ? { meeting_voice_call_id: m.entity_id } : {}) },
+          created_at:             new Date().toISOString(),
+        }).select("id").maybeSingle()
+        return { id: (data as { id?: string } | null)?.id ?? null, error: error?.message ?? null }
       })
-      if (cardErr) return await fail(supabase, messageId, `portal card write failed: ${cardErr.message}`)
+      if (card.error || !card.id) return await fail(supabase, messageId, `portal card write failed: ${card.error ?? "no row written"}`)
 
       // SELLER UPDATE VIDEO — also materialize the rich seller_updates row the listing dashboard's
       // AgentUpdateVideoCard reads (nothing wrote that table, so the avatar update never surfaced

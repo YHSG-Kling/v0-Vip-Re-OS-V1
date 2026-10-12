@@ -343,6 +343,7 @@ export interface A2pState {
 export type A2pFailureClass = "credential" | "compliance" | "input" | "transient"
 
 /** PURE: classify a filing failure from the provider's HTTP answer + our message. */
+/** @proofSeam pure failure classifier (credential / compliance / transient / input) proven by test:phone-a2p-automation; production reaches it only through the carrier loop in this file. */
 export function classifyCarrierFailure(resp: { status?: number | null; error?: string | null }, message: string): A2pFailureClass {
   if (/Business profile incomplete|no Twilio subaccount|No active (tenant|toll-free) number|Twilio not configured for this tenant/i.test(message)) return "input"
   const text = `${message} ${resp.error ?? ""}`

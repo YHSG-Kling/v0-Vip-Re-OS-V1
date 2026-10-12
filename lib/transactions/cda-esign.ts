@@ -107,8 +107,12 @@ export async function dispatchCdaSignerEsign(
     if (providerName === "dotloop") {
       try {
         const { DotloopProvider } = await import("@/lib/integrations/providers/dotloop-provider")
-        const creds = providerResult.data?.access_token && providerResult.data?.account_id
-          ? { apiKey: providerResult.data.access_token, profileId: providerResult.data.account_id }
+        // The egress half (wave 140P): the decrypted credential is loaded HERE, where the provider
+        // request is signed — resolveTransactionFormsProvider above no longer carries the token.
+        const { loadTransactionFormsCredential } = await import("@/lib/kernel/forms")
+        const credResult = await loadTransactionFormsCredential({ brokerage_id: args.brokerageId })
+        const creds = credResult.data?.access_token && credResult.data?.account_id
+          ? { apiKey: credResult.data.access_token, profileId: credResult.data.account_id }
           : undefined
         const dotloop = new DotloopProvider(creds)
         const tx = await dotloop.createTransaction({

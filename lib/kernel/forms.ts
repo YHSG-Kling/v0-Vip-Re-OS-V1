@@ -142,22 +142,39 @@ export interface BuyerPropertyInterest {
 // only; e-sign is resolved by lib/integrations/resolve-esign-provider.ts (selection, else the
 // catalog DEFAULT_ESIGN_PROVIDER — DocuSign — never "dotloop" and never "whatever TM is connected").
 // Rule: provider is a brokerage/team property — NEVER a contact property.
+//
+// WAVE 140 (lane 140P; lane 140H: "forms.ts returns a token in its result"): this result carried
+// the DECRYPTED access_token to every caller — including app/actions/forms-kernel.ts
+// resolveFormsProviderAction, a "use server" export that returned it to two browser components.
+// The resolver now answers the QUESTION ("which provider, is it configured, is a token stored") and
+// never the secret; the two egress callers that actually sign a provider request (the Dotloop
+// branches of lib/transactions/cda-esign.ts and app/actions/admin/commission-agreement.ts) load
+// it through loadTransactionFormsCredential below, which has no "use server" caller.
+
+const TRANSACTION_FORMS_PLATFORMS = ["dotloop", "skyslope", "formsimplicity", "brokermint", "authentisign", "docusign"] as const
+
+/** The newest active transaction-forms credential row (the SEALED token, never decrypted here).
+ *  One read, a literal select, so the credential reader census sees exactly which columns leave the store. */
+async function newestTransactionFormsCredential(brokerage_id: string) {
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("platform_credentials")
+    .select("platform, account_id, is_active, access_token")
+    .eq("brokerage_id", brokerage_id)
+    .in("platform", [...TRANSACTION_FORMS_PLATFORMS])
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw new Error(`platform_credentials read refused: ${error.message}`)
+  return (data ?? null) as { platform: string | null; account_id: string | null; is_active: boolean | null; access_token: string | null } | null
+}
 
 export async function resolveTransactionFormsProvider(input: {
   brokerage_id: string
-}): Promise<KernelFormsResult<{ provider_name: string; is_configured: boolean; access_token: string | null; account_id: string | null }>> {
+}): Promise<KernelFormsResult<{ provider_name: string; is_configured: boolean; has_access_token: boolean; account_id: string | null }>> {
   try {
-    const supabase = createServiceClient()
-
-    const { data: credential } = await supabase
-      .from("platform_credentials")
-      .select("platform, account_id, access_token, is_active")
-      .eq("brokerage_id", input.brokerage_id)
-      .in("platform", ["dotloop", "skyslope", "formsimplicity", "brokermint", "authentisign", "docusign"])
-      .eq("is_active", true)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    const credential = await newestTransactionFormsCredential(input.brokerage_id)
 
     const provider_name = credential?.platform ?? "not_configured"
     const is_configured = !!credential?.account_id
@@ -167,6 +184,31 @@ export async function resolveTransactionFormsProvider(input: {
       data: {
         provider_name,
         is_configured,
+        // A handle, not the token: "a sealed token is stored" (the sealed value never leaves this function).
+        has_access_token: typeof credential?.access_token === "string" && credential.access_token.length > 0,
+        account_id: credential?.account_id ?? null,
+      },
+    }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+}
+
+/**
+ * THE EGRESS HALF — the decrypted transaction-forms credential, for a server caller that is about
+ * to sign a provider request (today: the Dotloop branches named above). Never reached from a
+ * "use server" export, never returned to a browser; a caller that only needs the provider's NAME
+ * uses resolveTransactionFormsProvider.
+ */
+export async function loadTransactionFormsCredential(input: {
+  brokerage_id: string
+}): Promise<KernelFormsResult<{ provider_name: string; access_token: string | null; account_id: string | null }>> {
+  try {
+    const credential = await newestTransactionFormsCredential(input.brokerage_id)
+    return {
+      success: true,
+      data: {
+        provider_name: credential?.platform ?? "not_configured",
         access_token: decryptSecret(credential?.access_token ?? null),
         account_id: credential?.account_id ?? null,
       },

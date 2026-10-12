@@ -14,15 +14,27 @@ import { loadAiOps, type AiOps } from "@/lib/platform/ai-ops"
 import { loadManagerOps, type ManagerOps, loadVoiceToolRoundDeadlineStats, type VoiceToolRoundDeadlineStats } from "@/lib/platform/manager-ops"
 import { loadRotationRisks, type RotationRisk } from "@/lib/security/credential-rotation"
 import { runCredentialRefresh } from "@/lib/security/oauth-refresh"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 
+/**
+ * Platform staff only — through THE ONE capability gate the console page already uses
+ * (app/dashboard/superadmin/ai-ops/page.tsx: requirePlatformCapability("ai_ops")).
+ *
+ * TOMBSTONE (lane 140O, CLAUDE.md §4/§6): this used to re-spell a two-role roster,
+ * `["superadmin", "support"]`, matched against BOTH identity columns — which admitted a
+ * TENANT user stored as user_type='support' to cross-tenant AI operations (replay a
+ * signal, resolve an error) and refused the platform 'admin' the page had just let in.
+ * Platform staff live in platform_role (lib/platform/platform-staff-roster.ts); the
+ * capability map + superadmin overrides decide who holds 'ai_ops'. The session email is
+ * read for the audit row only after the gate admits the caller.
+ */
 async function requireStaff(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
+  const gate = await requirePlatformCapability("ai_ops")
+  // FAIL CLOSED (§4): a gate that did not admit, or admitted nobody, is a refusal.
+  if (!gate.ok || !gate.userId) return { ok: false, error: gate.error ?? "Forbidden — platform staff only" }
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-  const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const isStaff = ["superadmin", "support"].includes((data as any)?.user_type) || ["superadmin", "support"].includes((data as any)?.platform_role)
-  if (!isStaff) return { ok: false, error: "Forbidden — platform staff only" }
-  return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
+  return { ok: true, userId: gate.userId, email: user?.email ?? "" }
 }
 
 async function audit(actorUserId: string, actorEmail: string, action: string, targetType: string, targetId: string, details: Record<string, unknown>) {

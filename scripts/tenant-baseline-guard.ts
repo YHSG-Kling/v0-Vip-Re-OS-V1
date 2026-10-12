@@ -16,6 +16,10 @@
  *      unchanged on retry, a collision re-suffixes, and no row of ANOTHER tenant moves.
  *   3. every AUTO-PROVISION item is present/created after one call and present after a
  *      second; nothing refused.
+ *   3b. acting user (wave 140N, merged from lane 140K): feature overrides need a users.id
+ *      creator — with no caller actor, no ISA actor and no admin the features layer is
+ *      SKIPPED and named, never written with a non-user creator; the next run (ISA actor
+ *      provisioned BEFORE the snapshot) fills it with that users.id.
  *   4. source: registered (package.json + guard membership), MAINTENANCE_DOMAINS entry,
  *      default deps name the EXISTING initializers, READINESS HOOK comment present;
  *      negative control on the fill_absent regex.
@@ -195,7 +199,7 @@ async function main() {
   const r1 = await initializeTenantOperatingBaseline(db, "brk-1", { actorUserId: "user-1", deps })
   check("ok, nothing refused", r1.ok && r1.refused.length === 0, r1.refused.join("; "))
   const st = (k: string) => r1.items.find((i) => i.key === k)?.status
-  check("every item present/created/filled after ONE call (none skipped, none refused)", ["website", "snapshot", "evidence", "isa_actor", "assistant", "education", "reactivation"].every((k) => ["present", "created", "filled"].includes(st(k) ?? "")), JSON.stringify(r1.items.map((i) => [i.key, i.status])))
+  check("every item present/created/filled after ONE call (none skipped, none refused)", ["website", "snapshot", "evidence", "isa_actor", "assistant", "education", "ai_entitlement", "reactivation"].every((k) => ["present", "created", "filled"].includes(st(k) ?? "")), JSON.stringify(r1.items.map((i) => [i.key, i.status])))
   const brk1 = db.t("brokerages").find((b) => b.id === "brk-1")!
   check("website: slug minted once, tenant-owned, /site/<slug> usable", /^my-brokerage-[a-z0-9]{4}$/.test(brk1.slug ?? "") && r1.websitePath === `/site/${brk1.slug}` && st("website") === "created")
   check("snapshot: the NEWEST solo_agent snapshot is the version (not the older, not team's)", r1.snapshotVersion === `snap-new@${NEW}`)
@@ -205,6 +209,13 @@ async function main() {
   const ev1 = db.t("brokerage_settings").find((s) => s.brokerage_id === "brk-1")?.settings?.[OPERATING_BASELINE_EVIDENCE_KEY]
   check("evidence: operating_baseline carries version + snapshot id/name + actor + when", ev1?.version === `snap-new@${NEW}` && ev1?.snapshot_id === "snap-new" && ev1?.snapshot_name === "Solo v2" && ev1?.initialized_by === "user-1" && typeof ev1?.initialized_at === "string")
   check("isa actor / assistant / education / reactivation each ran their EXISTING initializer once", calls.isa === 1 && calls.assistant === 1 && calls.reactivation === 1 && db.t("learning_assignments").filter((a) => a.brokerage_id === "brk-1").length === 2 && db.t("ai_identity_profiles").length === 1 && db.t("campaign_sequences").length === 1)
+  // AI ENTITLEMENT (lane 140O) — the row the live RLS policy ai_usage_monthly_view reads; before this
+  // item only the staff tier change ever wrote it, so a new tenant started with none.
+  const ent1 = db.t("ai_subscription_tier").filter((r) => r.brokerage_id === "brk-1")
+  check("ai entitlement: ONE ai_subscription_tier row for brk-1 — tier = plan_tier, active, admin = the roster's first seat, subscribed_at stamped (tenure), NO price written",
+    ent1.length === 1 && ent1[0].tier_name === "solo_agent" && ent1[0].is_active === true && ent1[0].admin_user_id === "user-1" && typeof ent1[0].subscribed_at === "string" && !("monthly_budget_cents" in ent1[0]) && st("ai_entitlement") === "created",
+    JSON.stringify(ent1))
+  const entTenure = ent1[0]?.subscribed_at
   check("no cross-tenant write: every row written carries brk-1; the other tenant is byte-identical", db.log.every((l) => l.brokerage === "brk-1") && JSON.stringify([db.t("brokerages")[1], db.t("global_settings")[0]]) === otherBefore, JSON.stringify(db.log.filter((l) => l.brokerage !== "brk-1")))
 
   console.log("\n[baseline] tenant customizes, then a RETRY changes nothing")
@@ -213,26 +224,55 @@ async function main() {
   db.t("brand_voice_profile").find((x) => x.brokerage_id === "brk-1")!.tone = "casual"
   brk1.about_text = "My own about"; brk1.widget_enabled = false
   db.t("feature_access_overrides").find((x) => x.brokerage_id === "brk-1")!.override_type = "disable"
+  // Staff moved the tenant's AI tier (the brokerage-management path) — the baseline must never move it back.
+  db.t("ai_subscription_tier").find((x) => x.brokerage_id === "brk-1")!.tier_name = "team"
   const before2 = db.snapshot(); const logLen = db.log.length
   const r2 = await initializeTenantOperatingBaseline(db, "brk-1", { actorUserId: null, deps })
   check("second call: ok, every item PRESENT, nothing created/filled/refused", r2.ok && r2.items.every((i) => i.status === "present"), JSON.stringify(r2.items.map((i) => [i.key, i.status, i.detail])))
   check("second call: the whole store is byte-identical (customizations kept, slug kept, evidence kept)", db.snapshot() === before2 && db.log.length === logLen)
   check("second call: preserved names each held key", r2.preserved.includes("global_settings.primary_color") && r2.preserved.includes("brokerage_brand_settings.tagline") && r2.preserved.includes("brand_voice_profile.tone") && r2.preserved.includes("brokerages.about_text") && r2.preserved.includes("brokerages.widget_enabled") && r2.preserved.includes("feature_access_overrides.autonomy"))
   check("second call with the same snapshot: initializer ran each existing initializer again and each was a no-op", calls.isa === 1 && calls.assistant === 2 && calls.reactivation === 2 && db.t("ai_identity_profiles").length === 1 && db.t("campaign_sequences").length === 1 && db.t("learning_assignments").length === 2)
+  check("ai entitlement: the tenant's row is kept as staff set it (fill-absent never overwrites), still one row", db.t("ai_subscription_tier").filter((x) => x.brokerage_id === "brk-1").length === 1 && db.t("ai_subscription_tier").find((x) => x.brokerage_id === "brk-1")!.tier_name === "team" && r2.items.find((i) => i.key === "ai_entitlement")?.status === "present")
 
   console.log("\n[baseline] a NULLED key is filled; held keys still untouched")
   gs1.timezone = null
   const r3 = await initializeTenantOperatingBaseline(db, "brk-1", { actorUserId: null, deps })
-  check("fill-absent: timezone filled from the snapshot, primary_color still the tenant's", gs1.timezone === "America/New_York" && gs1.primary_color === "#123456" && r3.items.find((i) => i.key === "snapshot")?.status === "filled")
+  check("fill-absent: timezone filled from the snapshot (named in `filled`), primary_color still the tenant's", gs1.timezone === "America/New_York" && gs1.primary_color === "#123456" && r3.items.find((i) => i.key === "snapshot")?.status === "filled" && r3.filled.includes("global_settings.timezone") && !r3.filled.includes("global_settings.primary_color"))
   const ev3 = db.t("brokerage_settings").find((s) => s.brokerage_id === "brk-1")?.settings?.[OPERATING_BASELINE_EVIDENCE_KEY]
   check("evidence: original version kept, last_filled appended (by system)", ev3?.version === `snap-new@${NEW}` && ev3?.initialized_by === "user-1" && ev3?.last_filled?.by === "system" && Array.isArray(ev3?.last_filled?.applied))
 
   console.log("\n[positive control] the default `replace` mode DOES overwrite — the preservation checks above are not vacuous")
   const pc = await applySnapshotPayload({ global: { primary_color: "#0A2540" } } as any, "brk-1", "user-1", db as any)
-  check("replace mode overwrote primary_color", gs1.primary_color === "#0A2540" && pc.applied.includes("global_settings") && pc.preserved.length === 0)
+  check("replace mode overwrote primary_color — and names it in `overwritten` (the staff door's audit evidence)", gs1.primary_color === "#0A2540" && pc.applied.includes("global_settings") && pc.preserved.length === 0 && pc.overwritten.includes("global_settings.primary_color") && pc.filled.length === 0)
   gs1.primary_color = "#123456"
   const fa = await applySnapshotPayload({ global: { primary_color: "#0A2540" } } as any, "brk-1", "user-1", db as any, { mode: "fill_absent" })
-  check("fill_absent mode on the same payload preserved it", gs1.primary_color === "#123456" && fa.applied.length === 0 && fa.preserved.includes("global_settings.primary_color"))
+  check("fill_absent mode on the same payload preserved it (nothing filled, nothing overwritten)", gs1.primary_color === "#123456" && fa.applied.length === 0 && fa.filled.length === 0 && fa.overwritten.length === 0 && fa.preserved.includes("global_settings.primary_color"))
+
+  console.log("\n[positive control] syncAiSubscriptionTier mode 'set' (the staff tier change) DOES move the row — the fill-absent preservation above is not vacuous")
+  {
+    const { syncAiSubscriptionTier } = await import("../lib/entitlements/ai-subscription-tier")
+    const moved = await syncAiSubscriptionTier(db, { brokerageId: "brk-1", tier: "brokerage", mode: "set" })
+    const row = db.t("ai_subscription_tier").find((x) => x.brokerage_id === "brk-1")!
+    check("set mode: updated + counted, tier moved team → brokerage, subscribed_at untouched (tenure), admin re-resolved from the roster", moved.status === "updated" && moved.rowId === row.id && row.tier_name === "brokerage" && row.subscribed_at === entTenure && row.admin_user_id === "user-1", JSON.stringify(moved))
+    const again = await syncAiSubscriptionTier(db, { brokerageId: "brk-1", tier: "brokerage", mode: "set" })
+    check("set mode is idempotent: the same tier again writes nothing (present)", again.status === "present" && db.t("ai_subscription_tier").filter((x) => x.brokerage_id === "brk-1").length === 1)
+    const fill = await syncAiSubscriptionTier(db, { brokerageId: "brk-1", tier: "solo_agent", mode: "fill_absent" })
+    check("fill_absent on a present row: kept at the staff-set tier, reported present", fill.status === "present" && row.tier_name === "brokerage")
+    row.tier_name = "team"
+    db.t("brokerages").push({ id: "brk-3", name: "No Admin Yet", slug: "no-admin-zzzz", plan_tier: "team", ai_isa_system_user_id: null, deleted_at: null })
+    const noAdmin = await syncAiSubscriptionTier(db, { brokerageId: "brk-3", tier: "team", mode: "fill_absent" })
+    check("no admin seat yet → skipped, named (readiness item adminUser), no row written", noAdmin.status === "skipped" && /adminUser/.test(noAdmin.detail) && db.t("ai_subscription_tier").filter((x) => x.brokerage_id === "brk-3").length === 0)
+    // The planted no-admin tenant leaves the store again: the website block below asserts the
+    // brokerages count across the baseline's three calls, and this control is not one of them.
+    db.t("brokerages").splice(db.t("brokerages").findIndex((x) => x.id === "brk-3"), 1)
+    const refusing: any = new Proxy({}, { get: (_t, k) => k === "then" ? (res: any) => Promise.resolve({ data: null, error: { message: "rls refused" } }).then(res) : () => refusing })
+    const countBefore = db.t("ai_subscription_tier").length
+    const refusedUsers = await syncAiSubscriptionTier({ from: (t: string) => t === "users" ? refusing : db.from(t) }, { brokerageId: "brk-1", tier: "team", mode: "set" })
+    const refusedTier = await syncAiSubscriptionTier({ from: (t: string) => t === "ai_subscription_tier" ? refusing : db.from(t) }, { brokerageId: "brk-1", tier: "team", mode: "set" })
+    check("FAIL CLOSED: a refused users read or a refused entitlement read is `refused` (never 'no admin' / 'absent'), nothing written", refusedUsers.status === "refused" && /unreadable/.test(refusedUsers.detail) && refusedTier.status === "refused" && /unreadable/.test(refusedTier.detail) && db.t("ai_subscription_tier").length === countBefore)
+    const noTier = await syncAiSubscriptionTier(db, { brokerageId: "brk-1", tier: "", mode: "fill_absent" })
+    check("no tier → refused, nothing written (the entitlement names the tier it covers)", noTier.status === "refused" && db.t("ai_subscription_tier").length === countBefore)
+  }
 
   console.log("\n[website] collision + fail-closed + no duplicate")
   const coll = await resolveUniqueTenantSlug(db, "Other Tenant", { suffixes: ["zzzz", "abcd"] })
@@ -249,6 +289,18 @@ async function main() {
   const closed = await initializeTenantOperatingBaseline(refusingBrk, "brk-1", { deps })
   check("refused tenant read: ok=false, fail closed (not 'a new tenant')", !closed.ok && /could not be read/.test(closed.refused[0] ?? ""))
 
+  console.log("\n[acting user] feature overrides need a users.id creator (feature_access_overrides.created_by FKs users)")
+  db.t("platform_config_snapshots").push({ id: "snap-brk", name: "Brokerage v1", created_at: NEW, payload: { recommendedTier: "brokerage", global: { primary_color: "#B20000" }, features: [{ feature_key: "autonomy", override_type: "grant_trial", trial_ends_at: null }] } })
+  db.t("brokerages").push({ id: "brk-3", name: "No Admin Yet", slug: null, plan_tier: "brokerage", ai_isa_system_user_id: null, deleted_at: null })
+  const noActor = { ...deps, provisionIsaActor: async () => { throw new Error("auth admin unavailable (proof)") } }
+  const a1 = await initializeTenantOperatingBaseline(db, "brk-3", { actorUserId: null, deps: noActor })
+  const a1snap = a1.items.find((i) => i.key === "snapshot")
+  check("no caller actor, no ISA actor, no admin → the features layer is SKIPPED and named; the global layer still fills; NO override row with a non-user creator", db.t("feature_access_overrides").filter((x) => x.brokerage_id === "brk-3").length === 0 && /no acting user/.test(JSON.stringify(a1snap?.evidence?.skipped ?? [])) && a1snap?.evidence?.acting_user === null && db.t("global_settings").find((g) => g.brokerage_id === "brk-3")?.primary_color === "#B20000", JSON.stringify(a1snap))
+  const a2 = await initializeTenantOperatingBaseline(db, "brk-3", { actorUserId: null, deps })
+  const ov3 = db.t("feature_access_overrides").find((x) => x.brokerage_id === "brk-3")
+  check("next run: the ISA system actor is provisioned BEFORE the snapshot → the override is filled with created_by = that users.id (never 'system')", !!ov3 && ov3.created_by === "isa-brk-3" && a2.items.find((i) => i.key === "snapshot")?.status === "filled" && a2.filled.includes("feature_access_overrides.autonomy"), JSON.stringify(a2.items.map((i) => [i.key, i.status])))
+  check("POSITIVE CONTROL: the stub refuses a non-user creator the way the FK would — the first run would have failed had it written one", (() => { const bad = db.t("feature_access_overrides").some((x) => x.created_by === "system"); return !bad })())
+
   console.log("\n[source] wiring + registration")
   const pkg = JSON.parse(src("package.json"))
   check("package.json test:tenant-baseline runs this guard", /tenant-baseline-guard\.ts/.test(pkg.scripts["test:tenant-baseline"] ?? ""))
@@ -256,14 +308,29 @@ async function main() {
   const reg = stripComments(src("lib/kernel/manager-registry.ts"))
   check("MAINTENANCE_DOMAINS.tenant_operating_baseline names this proof", /tenant_operating_baseline:\s*\{[^}]*proof:\s*"test:tenant-baseline"/.test(reg))
   const init = stripComments(src("lib/kernel/tenant-operating-baseline.ts"))
-  check("default deps are the EXISTING initializers (no parallel system)", ["@/lib/platform/trial-funnel", "@/lib/platform/config-snapshots", "@/lib/auth/provision-isa-actor", "@/lib/kernel/assistant-starter", "@/lib/lead-pipeline/reactivation-sequence-installer", "@/lib/settings/brokerage-settings-merge"].every((m) => init.includes(`import("${m}")`)) && /resolveUniqueTenantSlug\(/.test(init))
+  check("default deps are the EXISTING initializers (no parallel system)", ["@/lib/platform/trial-funnel", "@/lib/platform/config-snapshots", "@/lib/auth/provision-isa-actor", "@/lib/kernel/assistant-starter", "@/lib/lead-pipeline/reactivation-sequence-installer", "@/lib/settings/brokerage-settings-merge", "@/lib/entitlements/ai-subscription-tier"].every((m) => init.includes(`import("${m}")`)) && /resolveUniqueTenantSlug\(/.test(init))
+  // ONE WRITER (lane 140O): the staff tier change and the baseline both reach ai_subscription_tier through
+  // lib/entitlements/ai-subscription-tier.ts; no other file writes the table (stripped source, lib/ + app/).
+  {
+    const { readdirSync, statSync } = await import("node:fs")
+    const walk = (d: string, out: string[]) => { for (const n of readdirSync(d)) { const p = join(d, n); if (statSync(p).isDirectory()) walk(p, out); else if (/\.tsx?$/.test(n)) out.push(p) }; return out }
+    const writerRe = /from\(\s*"ai_subscription_tier"\s*\)\s*\.\s*(insert|update|upsert|delete)\s*\(/
+    const writers = [...walk(join(ROOT, "lib"), []), ...walk(join(ROOT, "app"), [])].filter((p) => writerRe.test(stripComments(readFileSync(p, "utf8")))).map((p) => p.slice(ROOT.length + 1))
+    check("ai_subscription_tier has exactly ONE writer file (lib/entitlements/ai-subscription-tier.ts)", writers.length === 1 && writers[0] === "lib/entitlements/ai-subscription-tier.ts", writers.join(", "))
+    check("  control: the writer finder recognises a live insert and ignores a tombstone", writerRe.test(stripComments('await svc.from("ai_subscription_tier").insert({ a: 1 })')) && !writerRe.test(stripComments('// the old svc.from("ai_subscription_tier").insert({ a: 1 }) moved\nconst x = 1')))
+    check("the staff tier change calls the one writer in set mode", /syncAiSubscriptionTier\(svc,\s*\{[^}]*mode:\s*"set"/.test(stripComments(src("app/actions/superadmin/brokerage-management.ts"))))
+    check("the baseline calls the one writer in fill_absent mode only", /syncAiSubscriptionTier\(svc,\s*\{[^}]*mode:\s*"fill_absent"/.test(init) && !/syncAiSubscriptionTier\(svc,\s*\{[^}]*mode:\s*"set"/.test(init))
+  }
   check("the baseline applies the snapshot in fill_absent mode only", /mode:\s*"fill_absent"/.test(init) && !/mode:\s*"replace"/.test(init))
   check("READINESS HOOK (integrator) comment marks the convergence point", /READINESS HOOK \(integrator\)/.test(src("lib/kernel/tenant-operating-baseline.ts")))
   const snapSrc = stripComments(src("lib/platform/config-snapshots.ts"))
   const fillRe = /fillAbsent\s*=\s*opts\.mode\s*===\s*"fill_absent"/
   check("applySnapshotPayload honours opts.mode === \"fill_absent\"", fillRe.test(snapSrc))
   check("negative control: a source without the mode switch is caught", !fillRe.test(snapSrc.replace(/fill_absent/g, "")))
-  check("staff apply door keeps replace semantics (no mode passed)", !/fill_absent/.test(stripComments(src("app/actions/superadmin/config-snapshots.ts"))))
+  const door = stripComments(src("app/actions/superadmin/config-snapshots.ts"))
+  check("staff apply door (wave 140N) DEFAULTS to fill_absent and selects replace only on an explicit boolean overwrite", /params\.overwrite === true/.test(door) && /"fill_absent"/.test(door) && /"replace"/.test(door) && /applySnapshotPayload\([\s\S]*?\{ mode \}\)/.test(door))
+  check("…an overwrite is audited in superadmin_audit_log as snapshot.apply.overwrite — intent BEFORE the write (a refused row refuses the apply), result AFTER it naming the keys overwritten", /snapshot\.apply\.overwrite/.test(door) && /overwritten/.test(door) && door.indexOf('phase: "intent"') > -1 && door.indexOf('phase: "intent"') < door.indexOf("applySnapshotPayload(") && door.indexOf("applySnapshotPayload(") < door.indexOf('phase: "result"') && /if \(!intent\.ok\) return \{ ok: false/.test(door))
+  check("negative control: a door that always passed replace would be caught", !/params\.overwrite === true/.test(door.replace(/params\.overwrite === true/g, "true")))
 
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

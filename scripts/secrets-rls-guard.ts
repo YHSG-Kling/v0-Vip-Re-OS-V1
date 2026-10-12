@@ -344,6 +344,41 @@ function blockerLayer() {
   check("CONTROL: a service client built before the gate is caught", (() => { const swapped = track.replace("const supabase = createServiceClient()", "").replace("const secret = process.env.LOB_WEBHOOK_SECRET", "const supabase = createServiceClient()\n    const secret = process.env.LOB_WEBHOOK_SECRET"); return !(swapped.indexOf("LOB_WEBHOOK_SECRET") < swapped.indexOf("createServiceClient()")) })())
 }
 
+// ── T7 — secrets never reach the browser; shared secrets compare in constant time (wave 140P) ──────
+async function browserBoundaryLayer() {
+  console.log("\n[T7 — the 140P corrections: constant-time secret compare; no token in a forms-provider result; no secret column in a browser-bound credential read]")
+  // (1) the ONE constant-time compare and its two Lob callers
+  const { secretsEqual } = await import("../lib/security/constant-time")
+  check("secretsEqual: equal strings match; a differing byte, a different LENGTH (no throw), an empty or absent side never match", secretsEqual("whsec_abc", "whsec_abc") && !secretsEqual("whsec_abd", "whsec_abc") && !secretsEqual("whsec_ab", "whsec_abc") && !secretsEqual("", "") && !secretsEqual(undefined, "x") && !secretsEqual("x", null))
+  const track = code("app/actions/direct-mail.ts"); const trackBody = track.slice(track.indexOf("export async function trackDelivery"))
+  check("trackDelivery compares LOB_WEBHOOK_SECRET with secretsEqual (constant-time), never !== / ===", /secretsEqual\(params\.webhookSecret, secret\)/.test(trackBody) && !/webhookSecret !== secret|webhookSecret === secret/.test(trackBody))
+  const lob = code("app/api/webhooks/lob-events/route.ts")
+  check("the Lob receiver compares the presented secret with secretsEqual too (same gate, same posture)", /secretsEqual\(given, secret\)/.test(lob) && !/given !== secret/.test(lob))
+  check("CONTROL: the plain-inequality shape is what the finder refuses", /webhookSecret !== secret/.test(`if (!secret || params.webhookSecret !== secret) {`))
+  // (2) the forms-provider resolver answers a question, never the token; the egress half has no "use server" caller
+  const forms = code("lib/kernel/forms.ts")
+  const resolver = forms.slice(forms.indexOf("export async function resolveTransactionFormsProvider"), forms.indexOf("export async function loadTransactionFormsCredential"))
+  check("resolveTransactionFormsProvider's result type and body carry has_access_token (a handle) and NO access_token / decryptSecret", /has_access_token: boolean/.test(resolver) && !/access_token:\s*decryptSecret/.test(resolver) && !/access_token: string \| null/.test(resolver))
+  const loader = forms.slice(forms.indexOf("export async function loadTransactionFormsCredential"))
+  check("loadTransactionFormsCredential is the ONE decryptor of the forms token", /access_token: decryptSecret\(/.test(loader) && (forms.match(/decryptSecret\(/g) ?? []).length === 1)
+  const loaderCallers = ["app/actions/admin/commission-agreement.ts", "lib/transactions/cda-esign.ts"]
+  /** PURE — the variables a file binds to resolveTransactionFormsProvider(...) that are later read for `.data?.access_token` / `.data.access_token`. */
+  const resolverTokenReads = (src: string): string[] => {
+    const names = [...src.matchAll(/const\s+(\w+)\s*=\s*await\s+resolveTransactionFormsProvider\(/g)].map((m) => m[1])
+    return names.filter((n) => new RegExp(`\\b${n}\\.data\\??\\.access_token\\b`).test(src))
+  }
+  for (const f of loaderCallers) check(`${f} loads the credential through loadTransactionFormsCredential at its Dotloop egress and never reads access_token off the resolver's result`, /loadTransactionFormsCredential\(/.test(code(f)) && resolverTokenReads(code(f)).length === 0, resolverTokenReads(code(f)).join(", "))
+  check("CONTROL: a token read off the resolver's result is what the finder catches; one off the loader's is not", resolverTokenReads(`const pr = await resolveTransactionFormsProvider({ b })\nconst k = pr.data?.access_token`).join() === "pr" && resolverTokenReads(`const pr = await resolveTransactionFormsProvider({ b })\nconst cred = await loadTransactionFormsCredential({ b })\nconst k = cred.data?.access_token`).length === 0)
+  const formsKernelAction = code("app/actions/forms-kernel.ts")
+  check("the \"use server\" wrapper (resolveFormsProviderAction) never imports or returns the credential loader", /resolveTransactionFormsProvider/.test(formsKernelAction) && !/loadTransactionFormsCredential/.test(formsKernelAction))
+  check("no caller RETURNS the loader's result from an export (the two callers consume it inside their body) and lib/kernel/index.ts does not re-export it", loaderCallers.every((f) => !/return (await )?loadTransactionFormsCredential/.test(code(f))) && !/loadTransactionFormsCredential/.test(code("lib/kernel/index.ts")))
+  // (3) the settings credential list a browser receives
+  const integ = code("app/actions/settings/integrations.ts")
+  const typeBlock = integ.slice(integ.indexOf("export type PlatformCredential"), integ.indexOf("export type ProviderOverride"))
+  check("PlatformCredential (a \"use server\" return type) has api_key_configured / access_token_configured and NO api_key / access_token / refresh_token field", /api_key_configured: boolean/.test(typeBlock) && /access_token_configured: boolean/.test(typeBlock) && !/\b(api_key|access_token|refresh_token):/.test(typeBlock))
+  check("the settings client reads no secret field off a credential", !/cred\.(api_key|access_token|refresh_token)\b/.test(code("app/dashboard/settings/integrations/integrations-client.tsx")))
+}
+
 function registrationLayer() {
   console.log("\n[REG]")
   const pkg = read("package.json")
@@ -360,6 +395,7 @@ async function main() {
   tenantLayer()
   await extensionLayer()
   blockerLayer()
+  await browserBoundaryLayer()
   registrationLayer()
   console.log("\nBLIND SPOTS: the migration is checked as TEXT (the live trigger was read once via MCP, 2026-10-08); the")
   console.log("  redactor is name/shape based (a secret under a neutral key with no known shape passes); the console")

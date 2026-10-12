@@ -10,10 +10,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox"
 import { Separator } from "@/components/ui/separator"
 import { createClient } from "@/lib/supabase/client"
+import { publicCredentialSelect } from "@/lib/security/credential-projection"
 
+/** The IDX credential AS THIS BROWSER PAGE MAY SEE IT (wave 140, lane 140P): the non-secret
+ *  projection only. `api_key` is never selected here — a browser has no key to decrypt the sealed
+ *  envelope and never needs it; the box below is always empty (empty = keep the stored key). */
 interface IDXCred {
   id?: string
-  api_key: string
   account_name: string
   config: Record<string, any>
   is_active: boolean
@@ -90,22 +93,23 @@ export default function IDXBrokerSettingsPage() {
 
       if (!profile?.brokerage_id) return
 
-      // Load existing credential
-      const { data: existing } = await supabase
+      // Load existing credential — the NON-secret projection (lib/security/credential-projection.ts).
+      // Wave 140H sealed the key server-side; wave 140P stops selecting it at all: the browser never
+      // receives the envelope. The box stays empty — saving with it empty KEEPS the stored key (the
+      // server action omits api_key), typing a new one replaces it.
+      const { data: existing, error: existingError } = await supabase
         .from("platform_credentials")
-        .select("*")
+        .select(publicCredentialSelect("platform_credentials"))
         .eq("brokerage_id", profile.brokerage_id)
         .eq("platform", "idxbroker")
         .maybeSingle()
+      if (existingError) console.error("[idx-broker] credential read failed:", existingError.message)
 
       if (existing) {
-        setCred(existing)
-        // Wave 140H — a stored key is an enc:v1 envelope (sealed server-side); the browser never sees
-        // the plaintext. Leave the box empty: saving with it empty KEEPS the stored key (the server
-        // action omits api_key), typing a new one replaces it.
-        setApiKey(existing.api_key && !String(existing.api_key).startsWith("enc:v1:") ? existing.api_key : "")
-        setPartnerKey((existing.config as any)?.partner_key ?? "")
-        setAccountLabel(existing.account_name ?? "")
+        setCred(existing as unknown as IDXCred)
+        setApiKey("")
+        setPartnerKey(((existing as any).config as any)?.partner_key ?? "")
+        setAccountLabel((existing as any).account_name ?? "")
       }
 
       // Load global settings defaults

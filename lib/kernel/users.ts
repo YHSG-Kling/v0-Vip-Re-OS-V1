@@ -52,6 +52,11 @@ import { KernelEvent } from "./events"
 import { requiresAgentRow, requiresOnboardingRow, ownerNeedsTeamRow } from "./tenant-provisioning-spec"
 import { roleDashboardRoute } from "./role-routes"
 import { readRoleGrants, selectAgentId } from "@/lib/auth/role-grants"
+// THE ONE total-control test (lane 140O): never `user_type === "superadmin" ||
+// platform_role === "superadmin"` re-spelled per site — platform staff live in
+// platform_role, no live row carries user_type='superadmin', and the survivor also
+// refuses the ai_isa_system service account (lib/platform/platform-staff-roster.ts).
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 // Runtime-safe both ways: seat-usage imports only TYPES from this module
 // (erased at compile time), so this is not a runtime cycle.
 import { seatGate } from "./seat-usage"
@@ -933,7 +938,7 @@ export async function inviteTenantMember(params: TenantMemberParams): Promise<Te
         .maybeSingle()
       const callerType = (caller as { user_type?: string | null } | null)?.user_type ?? ""
       const callerPlatformRole = (caller as { platform_role?: string | null } | null)?.platform_role ?? ""
-      const isSuperadmin = callerType === "superadmin" || callerPlatformRole === "superadmin"
+      const isSuperadmin = isPlatformSuperadminIdentity(callerType, callerPlatformRole)
 
       if (!isSuperadmin) {
         return {

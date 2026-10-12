@@ -221,6 +221,7 @@ async function main() {
   }
 
   console.log("\n[4 · the sync is idempotent]")
+  let reviewRequired: boolean | null = null // the required flag of a filed review, compared against the no-number verdict in [6]
   {
     const db = tenantDb()
     const tw = fakeTwilio({ brand: ["PENDING", "PENDING", "PENDING"], campaign: ["IN_PROGRESS"] })
@@ -233,7 +234,8 @@ async function main() {
     check("first sync files (POSTs); the second and third make ZERO new POSTs — a review in flight is polled (GET), never re-filed", posts1 > 0 && tw.posts() === posts1 && tw.calls.filter((c) => c.method === "GET").length >= 2, `posts ${posts1} → ${tw.posts()}`)
     check("the stored state is identical between syncs (updated_at aside) and the view is the same", s1 === s3 && r1.uiState === r2.uiState && r2.uiState === r3.uiState && r3.uiState === "PENDING_REGISTRATION")
     check("exactly ONE twilio_a2p state row exists after three syncs (no duplicate filings on retry)", db.tables.platform_credentials.filter((r: Row) => r.platform === "twilio_a2p").length === 1)
-    check("the readiness verdict for a review in flight is WAITING_EXTERNAL (compliance_officer owns it)", r3.readiness.status === "WAITING_EXTERNAL" && r3.readiness.owner === "compliance_officer")
+    reviewRequired = r3.readiness.required
+    check("the readiness verdict for a review in flight is WAITING_EXTERNAL and REQUIRED (compliance_officer owns it; not READY until the carrier answers)", r3.readiness.status === "WAITING_EXTERNAL" && r3.readiness.required === true && r3.readiness.owner === "compliance_officer")
     // Approved tenant: a sync is free.
     const db2 = tenantDb()
     const tw2 = fakeTwilio({ brand: ["APPROVED"], campaign: ["VERIFIED"] })
@@ -302,10 +304,25 @@ async function main() {
     const a = await syncA2pStatus(db, "b1", { deps: deps(tw, true) })
     const b = await syncA2pStatus(db, "b1", { deps: deps(tw, false) })
     const c = await syncA2pStatus(db, "b1", { deps: deps(tw, null) })
-    check("no number + plan admits numbers → WAITING_EXTERNAL (RESTRICTED to the tenant), zero provider calls", a.readiness.status === "WAITING_EXTERNAL" && a.uiState === "RESTRICTED" && a.phase === "no_numbers" && tw.calls.length === 0)
+    check("no number + plan admits numbers → WAITING_EXTERNAL with required:false (RESTRICTED to the tenant; 'never a blocker' IS the flag the contract's READY rule reads), zero provider calls", a.readiness.status === "WAITING_EXTERNAL" && a.readiness.required === false && a.uiState === "RESTRICTED" && a.phase === "no_numbers" && tw.calls.length === 0)
     check("no number + plan admits NO number → NOT_APPLICABLE (not required)", b.readiness.status === "NOT_APPLICABLE" && !b.readiness.required)
-    check("an unknown plan read (null) is WAITING_EXTERNAL — a refused read never reads as not-applicable, and never BLOCKED", c.readiness.status === "WAITING_EXTERNAL")
+    check("an unknown plan read (null) is WAITING_EXTERNAL, required:false — a refused read never reads as not-applicable, never BLOCKED, never a blocker", c.readiness.status === "WAITING_EXTERNAL" && c.readiness.required === false)
+    // THE RULE (not a waypoint): of the two WAITING_EXTERNAL verdicts, only the one the carrier owes an answer on is required.
+    check("CONTROL: a filed review ([4]) is the required:true WAITING_EXTERNAL and a missing number the required:false one — the flag alone tells them apart", reviewRequired === true && a.readiness.required === false)
     check("the rule is written beside the sync for lane 140B/K (READINESS HOOK + never BLOCKED)", /READINESS HOOK \(integrator\)/.test(src("lib/voice/carrier-registration-loop.ts")) && /NEVER BLOCKED/.test(src("lib/voice/carrier-registration-loop.ts")))
+  }
+
+  console.log("\n[6b · the platform sentinel's stall detector reads the failure CLASS (wave 140P; this lane's outside-lane finding)]")
+  {
+    const { assessA2pStall, A2P_FAILED_STALL_DAYS } = await import("../lib/platform/provider-posture")
+    const now = new Date("2026-10-11T12:00:00Z")
+    const old = new Date(now.getTime() - (A2P_FAILED_STALL_DAYS + 1) * 86_400_000).toISOString()
+    const base = { customer_profile_sid: "BU1", last_error: "HTTP 503 from Twilio", updated_at: old } as any
+    const transient = assessA2pStall({ ...base, last_error_class: "transient" }, old, now)
+    const credential = assessA2pStall({ ...base, last_error_class: "credential" }, old, now)
+    const legacy = assessA2pStall(base, old, now)
+    check("a TRANSIENT last_error is not a failed registration: no 'failed … not re-run' stall (the next tick retries it); a CREDENTIAL class is, and names its class; a legacy row with no class still counts", !/failed/.test(transient.reason ?? "") && credential.stalled && /failed \(credential\)/.test(credential.reason ?? "") && legacy.stalled && /^failed \d+d ago/.test(legacy.reason ?? ""))
+    check("CONTROL: the detector still fires on a FAILED brand status regardless of class", assessA2pStall({ ...base, last_error: undefined, brand_sid: "BN1", brand_status: "FAILED" }, old, now).stalled)
   }
 
   console.log("\n[7 · registration]")

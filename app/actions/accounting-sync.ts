@@ -19,11 +19,15 @@ export async function getProviderConnectionStatus(claimedBrokerageId: string) {
   const brokerageId = caller.brokerageId
   const supabase = await createClient()
 
-  const { data: credentials } = await supabase
+  // Wave 140 (lane 140P): the NON-secret projection (credential-projection.ts) — this export's
+  // return is derived from these rows; the sealed api_key/api_secret were never needed here.
+  const { publicCredentialSelect } = await import("@/lib/security/credential-projection")
+  const { data: credentialRows } = await supabase
     .from("integration_credentials")
-    .select("*")
+    .select(publicCredentialSelect("integration_credentials"))
     .eq("brokerage_id", brokerageId)
     .in("provider_name", ["quickbooks", "xero"])
+  const credentials = (credentialRows ?? null) as Array<{ id: string; provider_name: string; is_active: boolean | null; webhook_url: string | null }> | null
 
   const quickbooks = credentials?.find((c) => c.provider_name === "quickbooks")
   const xero = credentials?.find((c) => c.provider_name === "xero")

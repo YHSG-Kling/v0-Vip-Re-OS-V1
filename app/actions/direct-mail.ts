@@ -483,9 +483,12 @@ export async function trackDelivery(params: TrackDeliveryParams & { webhookSecre
       return { success: false, error: "Invalid campaign ID" }
     }
 
-    // Provider-truth ingest is not callable by a browser. Unset secret = refuse.
+    // Provider-truth ingest is not callable by a browser. Unset secret = refuse. The compare is
+    // CONSTANT-TIME (wave 140P — lib/security/constant-time.ts secretsEqual): `!==` returned at the
+    // first differing byte and leaked the length of a correct prefix.
     const secret = process.env.LOB_WEBHOOK_SECRET
-    if (!secret || params.webhookSecret !== secret) {
+    const { secretsEqual } = await import("@/lib/security/constant-time")
+    if (!secret || !secretsEqual(params.webhookSecret, secret)) {
       return {
         success: false,
         error:

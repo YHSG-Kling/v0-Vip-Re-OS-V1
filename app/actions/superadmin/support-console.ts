@@ -8,13 +8,18 @@
 // whose ticket it is.
 
 import { headers } from "next/headers"
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { postTicketReply, loadTicketThread, awaitingFirstResponse, type TicketThread } from "@/lib/support/support-thread"
 import { evaluateTicketSla, rollupCsat, type SlaBreachKind } from "@/lib/support/support-sla"
 
-const STAFF_ROLES = new Set(["superadmin", "support"])
+// TOMBSTONE (lane 140O, CLAUDE.md §4/§6): `const STAFF_ROLES = new Set(["superadmin", "support"])`,
+// matched against BOTH identity columns, stood here. It admitted a TENANT user stored as
+// user_type='support' (a legal tenant seat) to every tenant's support queue, and refused the
+// platform 'admin' that app/dashboard/superadmin/support/page.tsx had just admitted through
+// requirePlatformCapability("support"). Survivor: that same capability gate, in requireStaff
+// below — platform staff live in platform_role (lib/platform/platform-staff-roster.ts).
 
 /**
  * THE LANE THIS CONSOLE ANSWERS, AND THE ONLY ONE IT MAY TOUCH.
@@ -70,14 +75,13 @@ async function audit(actorUserId: string, action: string, ticketId: string, deta
   }
 }
 
+/** Platform support staff only — the ONE capability gate the support pages use ('support':
+ *  superadmin, admin, support per the capability map + overrides). */
 async function requireStaff(): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-  const { data } = await supabase.from("users").select("user_type, platform_role").eq("id", user.id).maybeSingle()
-  const isStaff = STAFF_ROLES.has((data as any)?.user_type) || STAFF_ROLES.has((data as any)?.platform_role)
-  if (!isStaff) return { ok: false, error: "Forbidden — platform support only" }
-  return { ok: true, userId: user.id }
+  const gate = await requirePlatformCapability("support")
+  // FAIL CLOSED (§4): a gate that did not admit, or admitted nobody, is a refusal.
+  if (!gate.ok || !gate.userId) return { ok: false, error: gate.error ?? "Forbidden — platform support only" }
+  return { ok: true, userId: gate.userId }
 }
 
 export interface SupportQueueRow {

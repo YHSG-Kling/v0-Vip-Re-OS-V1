@@ -23,11 +23,17 @@
 // REPAIR (140K) — `opts.repair` routes each REPAIRABLE check's DECLARED remediation through
 // lib/kernel/self-healing.ts runDeclaredPlaybook (hard gate → healing policy: attempt cap + allowed
 // classes → the provisioning executor over the owning service → VERIFY → self_heal_events row + ledger +
-// event → proposal + human at the cap), then RE-RUNS the check. A repair fills ABSENT defaults only
-// (fillAbsentDefaults is the pure rule; applyAbsentSnapshotDefaults applies it through the ONE snapshot
-// writer applySnapshotPayload) — tenant customization is never overwritten. Money (subscription, plan,
-// billing, seats over cap), security (secrets posture), credentials, cross-tenant and destructive
+// event → proposal + human at the cap), then RE-RUNS the check. The settings / snapshot / website gaps
+// declare ONE playbook, `tenant_operating_baseline` (wave 140N — OS law 2): its executor is
+// lib/kernel/tenant-operating-baseline.ts initializeTenantOperatingBaseline, which fills ABSENT defaults
+// only through the ONE snapshot writer (lib/platform/config-snapshots.ts applySnapshotPayload, mode
+// fill_absent: absentKeys is the never-overwrite rule) — tenant customization is never overwritten; a
+// playbook that already ran this pass is re-verified, not re-run, for a sibling check. Money (subscription,
+// plan, billing, seats over cap), security (secrets posture), credentials, cross-tenant and destructive
 // (duplicate slugs) findings are BLOCKED with evidence and an owner — never routed to a playbook.
+// COMMUNICATIONS — the email half is read here; the PHONE half is the ONE A2P status sync's own verdict
+// (lib/voice/carrier-registration-loop.ts syncA2pStatus(…, { probeOnly: true }).readiness) — no second
+// mapping of the carrier phase.
 //
 // Other lanes CONSUME this contract (import its types); `// READINESS HOOK (integrator)` marks their
 // convergence points. One contract — never a second.
@@ -36,7 +42,7 @@ import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import type { HealthIncident } from "@/lib/kernel/os-health"
 import type { TroubleshootDeps } from "@/lib/kernel/self-healing"
 import type { SnapshotPayload } from "@/lib/platform/config-snapshots"
-import type { A2pState } from "@/lib/voice/a2p-registration"
+import type { A2pSyncResult, CarrierTickDeps } from "@/lib/voice/carrier-registration-loop"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import { ownerNeedsTeamRow, requiresAgentRow } from "@/lib/kernel/tenant-provisioning-spec"
 import { isCanonicalTier, tenantWebsitePath } from "@/lib/kernel/tenant-creation"
@@ -97,6 +103,10 @@ export const READINESS_OWNER: Readonly<Record<ReadinessKey, ManagerKey | "platfo
   billing: "finance_manager", providerState: "platform", requiredSecurityState: "platform",
 })
 
+/** The seat population the `seats` check verifies: the operational admin roster (spread, never restated —
+ *  CLAUDE.md §4) plus the producing seat types. */
+const SEAT_USER_TYPES: ReadonlySet<string> = new Set([...TENANT_ADMIN_USER_TYPES, "agent", "isa"])
+
 /** Every key is required: an optional condition reads NOT_APPLICABLE with its reason, never "optional". */
 const REQUIRED: ReadonlySet<ReadinessKey> = new Set(READINESS_KEYS)
 
@@ -112,8 +122,9 @@ export interface ReadinessDeps {
   providerReadiness?: (svc: Svc, brokerageId: string) => Promise<{ ready: number; needsConnection: number; platformDark: number; readinessPct: number; rows: Array<{ provider: string; category: string; state: string; ready: boolean }> }>
   /** lib/security/secret-crypto.ts isEncryptionConfigured (reads SECRETS_ENCRYPTION_KEY). */
   encryptionConfigured?: () => boolean
-  /** lib/voice/a2p-registration.ts resolveA2pProfile (reads the registration sources + NEXT_PUBLIC_APP_URL). */
-  a2pProfile?: (svc: Svc, brokerageId: string) => Promise<{ ok: boolean; missing?: string[] }>
+  /** lib/voice/carrier-registration-loop.ts CarrierTickDeps handed to syncA2pStatus (probeOnly): the proof injects
+   *  `profile` (resolveA2pProfile reads the registration sources + NEXT_PUBLIC_APP_URL) and `numbersAllowed` (the plan). */
+  carrier?: CarrierTickDeps
   /** lib/platform/trial-funnel.ts snapshotForTier (the tier's canonical snapshot). */
   snapshotForTier?: (tier: string, svc: Svc) => Promise<{ id: string; name: string; createdAt: string; payload: SnapshotPayload } | null>
   /** lib/kernel/seat-usage.ts resolveSeatUsage / resolveCatalogSeatLimits / resolveTenantSeatTerms fold. */
@@ -126,10 +137,11 @@ export interface ReadinessDeps {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-type Partial_ = Omit<ReadinessCheck, "key" | "owner" | "lastChecked" | "required">
+/** A check may LOWER `required` (the A2P verdict's "never a blocker"); the base sets it from REQUIRED. */
+type Partial_ = Omit<ReadinessCheck, "key" | "owner" | "lastChecked" | "required"> & { required?: boolean }
 const pass = (reason: string, evidence: Record<string, unknown> = {}): Partial_ => ({ status: "PASS", reason, evidence, remediation: null })
 const blocked = (reason: string, evidence: Record<string, unknown> = {}): Partial_ => ({ status: "BLOCKED", reason, evidence, remediation: null })
-const waiting = (reason: string, evidence: Record<string, unknown> = {}): Partial_ => ({ status: "WAITING_EXTERNAL", reason, evidence, remediation: null })
+// (no `waiting` helper: the only WAITING_EXTERNAL verdict is the A2P sync's own — wave 140N)
 const notApplicable = (reason: string, evidence: Record<string, unknown> = {}): Partial_ => ({ status: "NOT_APPLICABLE", reason, evidence, remediation: null })
 const repairable = (reason: string, playbook: string, params: Record<string, unknown>, evidence: Record<string, unknown> = {}): Partial_ => ({ status: "REPAIRABLE", reason, evidence, remediation: { playbook, params } })
 
@@ -212,7 +224,7 @@ const CHECKS: Record<ReadinessKey, Check> = {
     if (c.gs === undefined) return blocked("operating defaults (global_settings) unreadable", {})
     const { data: bs, error } = await c.svc.from("brokerage_settings").select("id").eq("brokerage_id", c.b).maybeSingle()
     if (error) return blocked(`brokerage_settings unreadable: ${error.message}`, {})
-    if (!c.gs) return repairable("operating defaults (global_settings: timezone, date format, currency, app name) absent — fill the tier snapshot's global layer, absent keys only", "fill_settings_defaults", {}, { hasGlobalSettings: false, hasSettingsRow: !!bs })
+    if (!c.gs) return repairable("operating defaults (global_settings: timezone, date format, currency, app name) absent — the operating baseline fills the tier snapshot's global layer, absent keys only", "tenant_operating_baseline", {}, { hasGlobalSettings: false, hasSettingsRow: !!bs })
     return pass("operating defaults present", { hasGlobalSettings: true, hasSettingsRow: !!bs, timezone: c.gs.timezone ?? null })
   },
 
@@ -230,13 +242,13 @@ const CHECKS: Record<ReadinessKey, Check> = {
     if (!brand.data) missing.push("brand")
     if (!((voice.data ?? []) as unknown[]).length) missing.push("voice")
     const evidence = { snapshotId: snap.id, snapshotName: snap.name, snapshotVersion: snap.createdAt, missingLayers: missing }
-    if (missing.length) return repairable(`snapshot "${snap.name}" not evidenced on the tenant (${missing.join(", ")} layer(s) absent) — re-apply those layers, absent keys only`, "apply_snapshot_defaults", { layers: missing.join(",") }, evidence)
+    if (missing.length) return repairable(`snapshot "${snap.name}" not evidenced on the tenant (${missing.join(", ")} layer(s) absent) — the operating baseline re-applies the tier snapshot, absent keys only`, "tenant_operating_baseline", {}, evidence)
     return pass(`snapshot "${snap.name}" (${snap.createdAt}) evidenced: brand + voice layers present`, evidence)
   },
 
   website: async (c) => {
     const slug = (c.brk?.slug ?? "").trim()
-    if (!slug) return repairable("no storefront slug — the website cannot be served (app/site/[slug]); mint one through resolveUniqueTenantSlug", "ensure_website_slug", {}, { slug: null })
+    if (!slug) return repairable("no storefront slug — the website cannot be served (app/site/[slug]); the operating baseline mints one through resolveUniqueTenantSlug, written only where still null", "tenant_operating_baseline", {}, { slug: null })
     const { data: same, error } = await c.svc.from("brokerages").select("id").eq("slug", slug).is("deleted_at", null).limit(2)
     if (error) return blocked(`storefront uniqueness unreadable: ${error.message}`, { slug })
     const n = ((same ?? []) as unknown[]).length
@@ -277,7 +289,30 @@ const CHECKS: Record<ReadinessKey, Check> = {
     const posture = await (c.deps.seatPosture ?? defaultSeatPosture)(c.svc, c.b, tier, seatOverride)
     if (!posture.ok) return blocked(`seat usage unreadable: ${posture.error ?? "refused"} — a refused count never reads as zero`, { tier })
     if (posture.limit !== null && posture.seatCount > posture.limit) return blocked(`${posture.seatCount} producing seats on a ${posture.limit}-seat band — upgrade / buy seats is a money decision; Finance (and the tenant) decide`, { tier, seatCount: posture.seatCount, limit: posture.limit })
-    return pass(`${posture.seatCount} producing seat(s) within the ${posture.limit === null ? "unlimited" : String(posture.limit)} band`, { tier, seatCount: posture.seatCount, limit: posture.limit })
+    // EVERY SEAT USER, not only the owner (wave 140 integration — the live backlog was 9 tenant users
+    // without a role grant + 4 seat-role users without an agents row): a seat is usable only when the
+    // user's tier-required records exist. Missing → ONE repair_user_records run over the list.
+    const { data: seatRows, error: sErr } = await c.svc.from("users").select("id, user_type, created_at").eq("brokerage_id", c.b).is("deleted_at", null)
+      .in("user_type", [...SEAT_USER_TYPES]).order("created_at", { ascending: true }).limit(500)
+    if (sErr) return blocked(`seat users unreadable: ${sErr.message}`, { tier })
+    const allSeatRows = (seatRows ?? []) as Array<{ id: string; user_type: string }>
+    // The OWNER (the earliest admin-roster user — the adminUser check's subject) is excluded: one check per
+    // subject, so a missing owner record is repaired once (adminUser), never twice.
+    const ownerId = allSeatRows.find((u) => TENANT_ADMIN_USER_TYPES.has(u.user_type as never))?.id ?? null
+    const seatUsers = allSeatRows.filter((u) => u.id !== ownerId)
+    const [agentRows, grantRows] = await Promise.all([
+      c.svc.from("agents").select("user_id").eq("brokerage_id", c.b).limit(1000),
+      c.svc.from("user_role_assignments").select("user_id").eq("brokerage_id", c.b).limit(1000),
+    ])
+    if (agentRows.error || grantRows.error) return blocked(`seat records unreadable: ${(agentRows.error ?? grantRows.error).message}`, { tier })
+    const hasAgent = new Set(((agentRows.data ?? []) as Array<{ user_id: string }>).map((r) => r.user_id))
+    const hasGrant = new Set(((grantRows.data ?? []) as Array<{ user_id: string }>).map((r) => r.user_id))
+    const missingAgent = seatUsers.filter((u) => requiresAgentRow(u.user_type, tier) && !hasAgent.has(u.id)).map((u) => u.id)
+    const missingGrant = seatUsers.filter((u) => !hasGrant.has(u.id)).map((u) => u.id)
+    const incomplete = [...new Set([...missingAgent, ...missingGrant])]
+    const ev = { tier, seatCount: posture.seatCount, limit: posture.limit, seatUsers: seatUsers.length, missingAgentsRow: missingAgent.length, missingRoleGrant: missingGrant.length, incompleteSample: incomplete.slice(0, 5) }
+    if (incomplete.length) return repairable(`${incomplete.length} of ${seatUsers.length} seat user(s) missing tier-required records (${missingAgent.length} without an agents row, ${missingGrant.length} without a role grant) — repair through the one provisioning brain (createOrRepairUserDomainRecords), up to 50 per pass`, "repair_user_records", { userIds: incomplete.slice(0, 50).join(",") }, ev)
+    return pass(`${posture.seatCount} producing seat(s) within the ${posture.limit === null ? "unlimited" : String(posture.limit)} band; ${seatUsers.length} seat user(s) complete`, ev)
   },
 
   managers: async (c) => {
@@ -294,24 +329,23 @@ const CHECKS: Record<ReadinessKey, Check> = {
     const fromEmail = (c.gs?.from_email as string | null | undefined) ?? null
     const replyTo = (c.brk?.email ?? "").trim() || null
     if (!fromEmail && !replyTo) return blocked("no sender identity — neither global_settings.from_email nor the brokerage email is set; a human supplies it", {})
-    const { data: nums, error } = await c.svc.from("tenant_phone_numbers").select("phone_number").eq("brokerage_id", c.b).eq("is_active", true).limit(20)
-    if (error) return blocked(`phone inventory unreadable: ${error.message}`, { fromEmail: !!fromEmail, replyTo: !!replyTo })
-    const numbers = (nums ?? []) as Array<{ phone_number: string }>
     const emailEv = { fromEmail: !!fromEmail, replyTo: !!replyTo }
-    if (!numbers.length) return pass("email defaults present; no phone number provisioned yet (carrier registration starts automatically when one is)", { ...emailEv, numbers: 0, carrier: "not_applicable" })
-    const { loadA2pState } = await import("@/lib/voice/a2p-registration")
-    const { carrierRegistrationPhase } = await import("@/lib/voice/carrier-registration-loop")
-    let state: A2pState
-    try { state = (await loadA2pState(c.svc, c.b)).state } catch (e) { return blocked(`carrier registration state unreadable: ${(e as Error).message}`, { ...emailEv, numbers: numbers.length }) }
-    const profile = await (c.deps.a2pProfile ?? (async (s, b) => (await import("@/lib/voice/a2p-registration")).resolveA2pProfile(s, b)))(c.svc, c.b)
-    const view = carrierRegistrationPhase(state, numbers, profile.ok ? [] : (profile.missing ?? []))
-    const ev = { ...emailEv, numbers: numbers.length, carrierPhase: view.phase, testUnlocked: view.testUnlocked }
-    switch (view.phase) {
-      case "approved": return pass("email defaults present; carrier registration approved (phone test unlocked)", ev)
-      case "carrier_review": return waiting("carrier registration submitted — waiting on Twilio / TCR / carrier review; never claimed approved before the provider confirms", ev)
-      case "filing": return repairable("carrier registration has steps left to submit — run the owning registration loop (advanceTenantCarrier)", "sync_carrier_registration", {}, ev)
-      case "needs_input": case "rejected": return blocked(`carrier registration ${view.phase.replace("_", " ")} — ${view.needs.join("; ").slice(0, 300)}; a human supplies / corrects the business profile`, { ...ev, needs: view.needs.slice(0, 5) })
-      default: return blocked(`carrier registration phase ${view.phase} with numbers present`, ev)
+    // THE PHONE HALF is THE ONE A2P status sync's own verdict (probeOnly: the stored state, zero provider
+    // calls) — status + required + reason + evidence come from it; this check maps no phase itself. Its rule:
+    // no number yet → WAITING_EXTERNAL required:false (never a blocker) or NOT_APPLICABLE when the plan admits
+    // none; filed and under carrier review → WAITING_EXTERNAL required:true (not READY until the carrier
+    // answers); steps left → REPAIRABLE through the owning loop; missing input / rejected / halted → BLOCKED.
+    // A refused numbers read THROWS inside the sync → runCheck records BLOCKED (fail closed).
+    const a2p: A2pSyncResult = await (await import("@/lib/voice/carrier-registration-loop")).syncA2pStatus(c.svc, c.b, { probeOnly: true, deps: c.deps.carrier })
+    const v = a2p.readiness
+    const ev = {
+      ...emailEv, numbers: a2p.evidence.numbers, carrierPhase: a2p.phase, uiState: a2p.uiState, testUnlocked: a2p.testUnlocked,
+      needs: a2p.needs.slice(0, 5), halted: a2p.halted, a2pOwner: v.owner,
+      brand_status: a2p.evidence.brand_status, campaign_status: a2p.evidence.campaign_status, tollfree_status: a2p.evidence.tollfree_status, last_error_class: a2p.evidence.last_error_class,
+    }
+    return {
+      status: v.status, required: v.required, reason: `email defaults present; ${v.reason}`, evidence: ev,
+      remediation: v.status === "REPAIRABLE" ? { playbook: "sync_carrier_registration", params: {} } : null,
     }
   },
 
@@ -321,6 +355,11 @@ const CHECKS: Record<ReadinessKey, Check> = {
     const customer = c.sub?.stripe_customer_id ?? (typeof bmCustomer === "string" ? bmCustomer : null)
     if (customer) return pass(`Stripe customer linked${c.sub?.stripe_subscription_id ? " + subscription id" : ""}`, { stripeCustomer: true, stripeSubscription: !!c.sub?.stripe_subscription_id })
     if (c.access?.state === "trialing") return notApplicable("trial — the Stripe customer attaches at activation; a trial never requires it", { stripeCustomer: false, state: "trialing" })
+    // STAFF-INVOICED (the staff / sales-assisted door provisions billing mode "active": invoiced outside
+    // Stripe by design — lib/kernel/tenant-creation.ts TenantBilling). The provisioning record on the
+    // tenant's own row says so; it is the SAME convergence state as a Stripe-linked tenant, not a gap.
+    const provisioning = bm && typeof bm === "object" ? (bm as { provisioning?: { billing_mode?: string; door?: string } }).provisioning : null
+    if (provisioning?.billing_mode === "active") return notApplicable(`staff-invoiced (billing mode "active", door ${provisioning.door ?? "staff"}) — no Stripe object by design; Finance invoices outside Stripe`, { stripeCustomer: false, billingMode: "active", door: provisioning.door ?? null })
     return blocked(`subscription ${c.access?.state ?? "unknown"} with no Stripe linkage — a money object; Finance reconciles (read-only diagnosis, never auto-linked)`, { stripeCustomer: false, state: c.access?.state ?? null })
   },
 
@@ -412,10 +451,25 @@ export async function evaluateTenantReadiness(svc: Svc, brokerageId: string, opt
   let repairs: ReadinessRepairOutcome[] | undefined
   if (opts.repair) {
     repairs = []
+    // ONE playbook per pass: several checks declare the same remediation (settings / snapshot / website all
+    // route to tenant_operating_baseline). Once it ran for one, a sibling is RE-VERIFIED first and only re-runs
+    // the playbook if it is still REPAIRABLE — no duplicate runs, no inflated evidence rows.
+    const ranThisPass = new Set<string>()
     for (let i = 0; i < checks.length; i++) {
-      const check = checks[i]
+      let check = checks[i]
       if (check.status !== "REPAIRABLE" || !check.remediation) continue
+      const signature = `${check.remediation.playbook}:${JSON.stringify(check.remediation.params)}`
+      if (ranThisPass.has(signature)) {
+        const reverified = await runCheck(check.key, await loadCtx(svc, brokerageId, deps))
+        checks[i] = reverified
+        if (reverified.status !== "REPAIRABLE" || !reverified.remediation) {
+          repairs.push({ key: check.key, playbook: check.remediation.playbook, ran: false, ok: true, after: reverified.status, escalated: false, outcome: `re-verified after ${check.remediation.playbook} ran for a sibling check this pass — nothing re-run` })
+          continue
+        }
+        check = reverified
+      }
       const outcome = await repairReadinessCheck(svc, brokerageId, check, deps)
+      ranThisPass.add(signature)
       // RE-VERIFY — the check is re-run against a FRESH context (the repair may have changed the rows it reads).
       const fresh = await loadCtx(svc, brokerageId, deps)
       const after = await runCheck(check.key, fresh)
@@ -471,94 +525,20 @@ export async function retryReadinessRepair(svc: Svc, i: HealthIncident, deps: Re
   return { ok: r.ok, outcome: `${r.playbook}: ${r.outcome}` }
 }
 
-// ── 6. Absent-defaults-only snapshot application (the repair rule) ───────────────────────────
-
-export const SNAPSHOT_LAYERS = ["global", "brand", "voice", "features"] as const
-export type SnapshotLayer = (typeof SNAPSHOT_LAYERS)[number]
-
-interface ExistingSnapshotState {
-  global: Record<string, unknown> | null
-  brand: Record<string, unknown> | null
-  /** A brokerage-level active voice row exists → the voice layer is the tenant's, never replaced. */
-  voiceExists: boolean
-  /** Feature keys that already carry a brokerage-level override. */
-  featureKeys: ReadonlySet<string>
-}
-
-const isAbsent = (v: unknown) => v === null || v === undefined || (typeof v === "string" && v.trim() === "")
-
-/** The four repairable layers, always present on a filtered payload (the site layer is never part of a repair). */
-type FilledSnapshotPayload = Required<Pick<SnapshotPayload, "global" | "brand" | "voice" | "features">>
-
-/**
- * PURE — THE NEVER-OVERWRITE RULE. Keep only the snapshot keys the tenant has NOT set: a present value
- * (even one equal to the default) is the tenant's and stays; the voice layer is skipped entirely when
- * the tenant has an active brokerage voice; a feature override that exists is never re-applied.
- * @proofSeam the proof drives a customized row against a different default and asserts the default is dropped
- */
-export function fillAbsentDefaults(payload: SnapshotPayload, existing: ExistingSnapshotState, layers: readonly SnapshotLayer[]): { payload: FilledSnapshotPayload; kept: Record<SnapshotLayer, string[]>; skipped: string[] } {
-  const out: FilledSnapshotPayload = { global: {}, brand: {}, voice: {}, features: [] }
-  const kept: Record<SnapshotLayer, string[]> = { global: [], brand: [], voice: [], features: [] }
-  const skipped: string[] = []
-  const pick = (src: Record<string, unknown> | undefined, row: Record<string, unknown> | null, layer: "global" | "brand") => {
-    for (const [k, v] of Object.entries(src ?? {})) {
-      if (isAbsent(v)) continue
-      if (row && !isAbsent(row[k])) { skipped.push(`${layer}.${k}`); continue }
-      out[layer][k] = v
-      kept[layer].push(k)
-    }
-  }
-  if (layers.includes("global")) pick(payload.global, existing.global, "global")
-  if (layers.includes("brand")) pick(payload.brand, existing.brand, "brand")
-  if (layers.includes("voice")) {
-    if (existing.voiceExists) skipped.push("voice.*")
-    else { out.voice = { ...(payload.voice ?? {}) }; kept.voice = Object.keys(payload.voice ?? {}) }
-  }
-  if (layers.includes("features")) {
-    for (const f of payload.features ?? []) {
-      if (existing.featureKeys.has(f.feature_key)) { skipped.push(`features.${f.feature_key}`); continue }
-      out.features.push(f); kept.features.push(f.feature_key)
-    }
-  }
-  // The site layer is never part of a repair: it shapes identity-adjacent brokerage fields the tenant owns.
-  return { payload: out, kept, skipped }
-}
-
-/**
- * Apply the tier's canonical snapshot to ONE tenant, ABSENT KEYS ONLY, through the ONE snapshot writer
- * (lib/platform/config-snapshots.ts applySnapshotPayload). Idempotent: a second run keeps nothing.
- * The acting user is the tenant's AI-ISA system actor, else its first admin (feature overrides need a creator).
- */
-export async function applyAbsentSnapshotDefaults(svc: Svc, brokerageId: string, layers: readonly SnapshotLayer[], deps: Pick<ReadinessDeps, "snapshotForTier"> = {}): Promise<{ ok: boolean; applied: string[]; refused: string[]; kept: Record<SnapshotLayer, string[]>; skipped: string[]; snapshot: { id: string; name: string } | null; error: string | null }> {
-  const none: Record<SnapshotLayer, string[]> = { global: [], brand: [], voice: [], features: [] }
-  if (!UUID_RE.test(brokerageId)) return { ok: false, applied: [], refused: [], kept: none, skipped: [], snapshot: null, error: "no tenant id — refused" }
-  const { data: brk, error } = await svc.from("brokerages").select("id, plan_tier, ai_isa_system_user_id").eq("id", brokerageId).maybeSingle()
-  if (error || !brk) return { ok: false, applied: [], refused: [], kept: none, skipped: [], snapshot: null, error: `brokerage unreadable: ${error?.message ?? "no row"}` }
-  const tier = (brk as { plan_tier?: string | null }).plan_tier ?? null
-  if (!isCanonicalTier(tier)) return { ok: false, applied: [], refused: [], kept: none, skipped: [], snapshot: null, error: `plan_tier ${tier ?? "null"} is not canonical` }
-  const snap = await (deps.snapshotForTier ?? (async (t, s) => (await import("@/lib/platform/trial-funnel")).snapshotForTier(t, s)))(tier, svc)
-  if (!snap) return { ok: false, applied: [], refused: [], kept: none, skipped: [], snapshot: null, error: `no canonical snapshot for the ${tier} tier` }
-  const [gs, bs, voice, overrides] = await Promise.all([
-    svc.from("global_settings").select("*").eq("brokerage_id", brokerageId).maybeSingle(),
-    svc.from("brokerage_brand_settings").select("*").eq("brokerage_id", brokerageId).maybeSingle(),
-    svc.from("brand_voice_profile").select("id").eq("brokerage_id", brokerageId).is("agent_id", null).is("team_id", null).eq("is_active", true).limit(1),
-    svc.from("feature_access_overrides").select("feature_key").eq("brokerage_id", brokerageId).is("user_id", null).is("team_id", null).limit(500),
-  ])
-  const firstErr = gs.error ?? bs.error ?? voice.error ?? overrides.error
-  if (firstErr) return { ok: false, applied: [], refused: [], kept: none, skipped: [], snapshot: { id: snap.id, name: snap.name }, error: `tenant state unreadable: ${firstErr.message} — nothing applied (a refused read is never "absent")` }
-  const existing: ExistingSnapshotState = {
-    global: (gs.data as Record<string, unknown> | null) ?? null, brand: (bs.data as Record<string, unknown> | null) ?? null,
-    voiceExists: ((voice.data ?? []) as unknown[]).length > 0,
-    featureKeys: new Set(((overrides.data ?? []) as Array<{ feature_key: string }>).map((o) => o.feature_key)),
-  }
-  const filtered = fillAbsentDefaults(snap.payload, existing, layers)
-  let actor = (brk as { ai_isa_system_user_id?: string | null }).ai_isa_system_user_id ?? null
-  if (!actor) {
-    const { data: admin } = await svc.from("users").select("id").eq("brokerage_id", brokerageId).is("deleted_at", null).in("user_type", [...TENANT_ADMIN_USER_TYPES]).order("created_at", { ascending: true }).limit(1).maybeSingle()
-    actor = (admin as { id?: string } | null)?.id ?? null
-  }
-  if (!actor && filtered.payload.features.length) { filtered.skipped.push("features.* (no acting user on the tenant)"); filtered.payload.features = [] }
-  const { applySnapshotPayload } = await import("@/lib/platform/config-snapshots")
-  const r = await applySnapshotPayload(filtered.payload, brokerageId, actor ?? brokerageId, svc)
-  return { ok: r.refused.length === 0, applied: r.applied, refused: r.refused, kept: filtered.kept, skipped: filtered.skipped, snapshot: { id: snap.id, name: snap.name }, error: r.refused.length ? r.refused.join("; ") : null }
-}
+// ── 6. TOMBSTONE (wave 140N — OS law 2, one canonical path) ──────────────────────────────────
+// fillAbsentDefaults / applyAbsentSnapshotDefaults / SNAPSHOT_LAYERS lived here (lane 140K) as a SECOND
+// fill-absent implementation beside lane 140D's. Every guarantee was merged onto the survivors FIRST,
+// then the duplicate was deleted:
+//   · the never-overwrite rule (a held value — even "" / 0 / false — stays; a live null is filled) →
+//     lib/platform/config-snapshots.ts:92 absentKeys, applied by
+//     lib/platform/config-snapshots.ts:130 applySnapshotPayload(…, { mode: "fill_absent" }), which also
+//     skips the voice layer WHOLE when an ACTIVE brokerage voice exists, never re-applies an existing
+//     feature override, and reports `preserved` (kept) + `filled` (written);
+//   · the acting-user rule (feature_access_overrides.created_by FKs users: AI-ISA actor, else first
+//     admin, else the features layer is skipped and named) →
+//     lib/kernel/tenant-operating-baseline.ts:139 initializeTenantOperatingBaseline — the ONE repair the
+//     settings / snapshot / website checks declare (playbook tenant_operating_baseline,
+//     lib/kernel/self-healing.ts provisioningExecutors), which the provisioner also calls.
+// Blind spot moved with it, published: the site layer IS part of the baseline's fill-absent apply (absent
+// keys only — a tenant's own about_text / widget flag is never replaced; identity / billing fields are
+// re-sanitized out on apply).

@@ -185,9 +185,12 @@ export async function getConnectedAccounts(agentId?: string, _brokerageId?: stri
 
   const supabase = await createClient()
 
+  // Wave 140 (lane 140P): the NON-secret projection — this is a "use server" return value, so the
+  // rows reach a browser; the sealed access/refresh tokens stay in the store (credential-projection.ts).
+  const { publicCredentialSelect } = await import("@/lib/security/credential-projection")
   let query = supabase
     .from("social_media_accounts")
-    .select("*")
+    .select(publicCredentialSelect("social_media_accounts"))
     .eq("brokerage_id", auth.brokerageId) // tenant-scoped at the source
     .eq("is_active", true)
     .order("platform")

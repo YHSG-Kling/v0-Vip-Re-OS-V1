@@ -100,11 +100,15 @@ provider or add-on the baseline does not need); **EXTERNAL APPROVAL** (a third p
 | Admin user / seats / teams | AUTO-PROVISION | `lib/kernel/users.ts provisionTenantOwner` (lane 140F) | at creation | `test:tenant-user-mgmt` |
 | Plan catalogue prices, tier seat packages, setup fee | PLATFORM ADMIN ONLY | superadmin plan catalogue, Stripe (owner: prices NOT set — never fabricated) | staff | `test:plan-catalog` |
 
-**Blind spots, published.** (1) The initializer's wiring into `createTenantCore` and into the
-readiness repair playbook is owned by lanes 140C and 140B+K (the `READINESS HOOK (integrator)`
-comment in `lib/kernel/tenant-operating-baseline.ts` marks the convergence point); until merged,
-creation still runs the same initializers inline and `app/actions/onboarding/ensure-agent-brokerage.ts`
-still applies its snapshot in replace mode. (2) Default-by-absence rows are classified from each
+**Blind spots, published.** (1) WIRED at integration (2026-10-11): `createTenantCore`'s
+`operating_baseline` step calls `initializeTenantOperatingBaseline` after the account repair
+(`lib/kernel/tenant-creation.ts`), then `evaluateTenantReadiness` stamps the READY / NOT READY
+verdict on `billing_metadata.provisioning.readiness`; `app/dashboard/page.tsx` and
+`app/dashboard/onboarding/page.tsx` route a detected account gap through
+`evaluateTenantReadiness({ repair: true })` (evidenced through the self-healing engine, never a
+bare lazy repair); `app/actions/onboarding/ensure-agent-brokerage.ts` converged onto
+`createTenantCore` (lane 140C). The scheduled reconciliation is the os-health detector
+`tenant_readiness` (lane 140B/K). (2) Default-by-absence rows are classified from each
 reader's documented fallback (`tenant-policy.ts defaultNote`, `autonomy-gate.ts:284`,
 `global-settings.ts:169`), not by executing every reader against an empty tenant. (3) The matrix
 reflects HEAD 9bb0208ce; other wave-140 lanes append their own sections below.

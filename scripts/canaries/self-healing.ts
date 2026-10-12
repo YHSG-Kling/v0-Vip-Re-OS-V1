@@ -16,6 +16,9 @@ export async function run() {
   const dead = () => ({ id: uuid(), brokerage_id: B, subscription_id: SUB, status: "dead", attempts: 5, created_at: nowIso(), error_detail: "503 Service Unavailable", notes: CANARY_TAG })
   const svc = canaryClient({
     brokerages: [{ id: B, name: `${CANARY_TAG} Brokerage`, plan_tier: "brokerage", slug: `${CANARY_TAG}-heal` }],
+    // The platform catalogue the readiness repair fills FROM: the tier's canonical snapshot with a global layer
+    // (without it the settings check can only stay REPAIRABLE — nothing to fill from).
+    platform_config_snapshots: [{ id: uuid(), name: `${CANARY_TAG} snapshot`, created_at: nowIso(), payload: { recommendedTier: "brokerage", global: { timezone: "America/Chicago" }, brand: { tagline: `${CANARY_TAG} tagline` }, voice: { tone: "warm" } } }],
     tenant_webhook_subscriptions: [{ id: SUB, brokerage_id: B, url: "https://example.invalid/hook", is_active: true }],
     tenant_webhook_deliveries: [dead(), dead()],
     self_heal_events: [],
@@ -56,8 +59,20 @@ export async function run() {
   // The gate escalates WITH the diagnosis attached (a human reads it) — so the model may be asked;
   // the invariant is that NOTHING RAN: no playbook ledger row, no delivery touched.
   c.step("POSITIVE CONTROL: the same incident naming ANOTHER tenant is ESCALATED (tenant_boundary) — no playbook ran, no row moved", cross.kind === "escalate" && cross.gate === "tenant_boundary" && playbookLedgerRows === 1 && rungAfter === rungBefore, cross.kind === "escalate" ? cross.reason.slice(0, 120) : "ran")
-  // READINESS HOOK (integrator): a REPAIRABLE readiness gap routes through this same engine (lane 140K) —
-  //   evaluateTenantReadiness(svc, B, { repair: true }) then re-verify readiness.ready.
+  // THE READINESS CONTRACT rides this same engine: a REPAIRABLE gap (the storefront slug removed)
+  // → evaluateTenantReadiness({ repair: true }) → declared playbook → re-verified, with evidence.
+  const { evaluateTenantReadiness } = await import("../../lib/kernel/tenant-readiness")
+  const brk = (svc.tables.brokerages ?? []).find((b) => b.id === B)
+  if (brk) brk.slug = null
+  const healEventsBefore = (svc.tables.self_heal_events ?? []).filter((e) => e.brokerage_id === B).length
+  const report = await evaluateTenantReadiness(svc as never, B, { repair: true })
+  const website = report.checks.find((k) => k.key === "website")
+  const websiteRepair = (report.repairs ?? []).find((x) => x.key === "website")
+  // ONE baseline run per pass: the playbook may have run for a sibling check (settings) first, in which
+  // case the website check is RE-VERIFIED against the rows that run produced — either way it is PASS now.
+  const baselineRan = (report.repairs ?? []).some((x) => x.playbook === "tenant_operating_baseline" && x.ran && x.ok)
+  c.step("readiness repair: the removed storefront slug is REPAIRABLE → the declared playbook ran ONCE through this engine → website re-verified PASS", website?.status === "PASS" && baselineRan && websiteRepair?.ok === true && !!(svc.tables.brokerages ?? []).find((b) => b.id === B)?.slug, `website=${website?.status} repairs=${(report.repairs ?? []).map((x) => `${x.key}:${x.playbook}:${x.ran ? "ran" : "reverified"}:${x.ok ? "ok" : "NOT_OK"}:${x.outcome.slice(0, 400)}`).join(" | ")}`.slice(0, 1200))
+  c.step("readiness repair: evidence — a self_heal_events row on THIS tenant for the readiness repair", (svc.tables.self_heal_events ?? []).filter((e) => e.brokerage_id === B).length > healEventsBefore, `before=${healEventsBefore} after=${(svc.tables.self_heal_events ?? []).filter((e) => e.brokerage_id === B).length}`)
   c.blind("The AI diagnosis is stubbed (a scripted selection of a declared playbook); the model lane, budget cap and attempt cap are self-healing-guard's proofs.")
   c.blind("The webhook receiver is never contacted: re-enqueue changes delivery status only; the drain's signed POST is tenant-webhooks' proof.")
   const { cleanup, residual, mismatches } = await cleanupCanary(svc, B)
