@@ -417,7 +417,10 @@ async function main() {
   const portalSettings = read("app/components/portal/PortalSettingsPage.tsx")
   check("C2 the portal privacy switches are disabled with the honest 'Not available yet' sentence beside them (never a dead toggle)", (portalSettings.match(/<Switch[^>]*\bdisabled\b/g) ?? []).length >= 2 && (portalSettings.match(/Not available yet/g) ?? []).length >= 2)
   const providersPage = read("app/dashboard/admin/system/providers/page.tsx")
-  check("C3 the platform providers console gates on requireSuperadmin before rendering the client (platform staff see full config; a tenant never reaches it)", /requireSuperadmin\(\)/.test(providersPage) && /if\s*\(!gate\.ok\)\s*redirect\(/.test(providersPage) && providersPage.indexOf("requireSuperadmin()") < providersPage.indexOf("<SystemProvidersClient"))
+  // Integration (2026-10-14): the refusal is IN PLACE (RoleGateNotice — page-role-gate-roster P5: a
+  // redirect("/dashboard") on a role refusal is "a click that appeared to do nothing"); the gate still
+  // decides before the client renders and the notice names the audience without revealing platform data.
+  check("C3 the platform providers console gates on requireSuperadmin before rendering the client and refuses IN PLACE (RoleGateNotice, never a silent bounce; platform staff see full config; a tenant never reaches it)", /requireSuperadmin\(\)/.test(providersPage) && /if\s*\(!gate\.ok\)\s*return\s*<RoleGateNotice\b/.test(providersPage) && !/redirect\(/.test(providersPage) && providersPage.indexOf("requireSuperadmin()") < providersPage.indexOf("<SystemProvidersClient"))
   const crm = read("app/crm/page.tsx"), agent = read("app/dashboard/agent/page.tsx")
   const contactPages = walkTs(join(ROOT, "app/crm/contacts/[contactId]")).filter((f) => /\/page\.tsx$|client\.tsx$/.test(f)).map((f) => stripComments(readFileSync(f, "utf8"))).join("\n")
   check("C4 embedded intelligence is MOUNTED, not merely exported: NextBestActionPanel on the CRM board, AgentNextBestActions on the agent dashboard, follow-up + buyer-insights cards on the contact detail", /<NextBestActionPanel\b/.test(crm) && /<AgentNextBestActions\b/.test(agent) && /followup-card/.test(contactPages) && /buyer-insights-panel/.test(contactPages))
