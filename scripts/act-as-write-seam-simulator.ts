@@ -250,9 +250,9 @@ function main() {
     /isPlatformSuperadminIdentity\(userType, platformRole\)/.test(gsk) &&
     /from "@\/lib\/platform\/platform-staff-roster"/.test(gsk) &&
     /if \(!BROKERAGE_ADMIN_USER_TYPES\.has\(userType\) && !isPlatformSuperadmin\)/.test(gsk))
-  check("…and the survivor it delegates to still reads BOTH identity columns",
+  check("…and the survivor it delegates to takes BOTH identity columns and answers from platform_role alone (owner ruling 2026-10-14: no user_type fallback)",
     /export function isPlatformSuperadminIdentity\(\s*\n?\s*userType: string \| null \| undefined,\s*\n?\s*platformRole: string \| null \| undefined,?\s*\n?\s*\): boolean/.test(rosterSrc) &&
-    /userType === "superadmin" \|\| platformRole === "superadmin"/.test(rosterSrc))
+    /return platformRole === "superadmin"\s*\}/.test(rosterSrc) && !/userType === "superadmin"/.test(rosterSrc))
   check("both kernel entry points thread the db into the gate",
     (gsk.match(/requireBrokerAdmin\(params\.userId, params\.db\)/g) ?? []).length === 2)
   const ugs = read("app/actions/settings/update-global-settings.ts")

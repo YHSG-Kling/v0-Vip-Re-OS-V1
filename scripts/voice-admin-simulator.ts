@@ -48,10 +48,15 @@ function main() {
   check("it is SUPERADMIN-gated before executing (BOTH identity columns, via the one definition)",
     /intent === "create_tenant_user"[\s\S]*isPlatformSuperadminIdentity\(profile\.user_type, \(profile as any\)\.platform_role\)/.test(route) &&
     /export function isPlatformSuperadminIdentity\(/.test(vaRoster) &&
-    /userType === "superadmin" \|\| platformRole === "superadmin"/.test(vaRoster))
+    /return platformRole === "superadmin"\s*\}/.test(vaRoster) && !/userType === "superadmin"/.test(vaRoster))
   check("a non-staff caller is refused (no execution)", /superadmin-only command/.test(route))
   check("it routes to the SAME tested + audited createTenantUserAction", /createTenantUserAction\(\{/.test(route) && /from "@\/app\/actions\/superadmin\/tenant-users"/.test(route))
-  check("it resolves the target brokerage by name (else the caller's)", /ilike\("name", `%\$\{ex\.brokerageName\}%`\)/.test(route))
+  // Wave 141A (owner ruling: a brokerage NAME MATCH IS NEVER PROOF OF SAME TENANT): the spoken-name →
+  // tenant-id `.ilike("name", …)` router was DELETED from the route (tombstone names the survivor,
+  // lib/kernel/brokerage-identity.ts). A named brokerage now REFUSES with the god-console instruction;
+  // the target is the caller's tenant only. Asserted on STRIPPED source — the tombstone quotes the old read.
+  check("it never resolves a target brokerage by spoken NAME — a named brokerage is refused toward the god console (act-as), the caller's tenant is the only target (141A, survivor lib/kernel/brokerage-identity.ts)",
+    !/ilike\("name"/.test(stripComments(route)) && /brokerage name isn't an identity/.test(route) && /if \(ex\.brokerageName\) targetBrokerageId = null/.test(route))
   check("the UNAUTHENTICATED ElevenLabs webhook does NOT gain admin/provisioning tools", !/createTenantUserAction/.test(webhook) && !/create_tenant_user/.test(webhook))
 
   console.log("\n[governance]")

@@ -79,12 +79,12 @@ function sourceLayer() {
   // COMMENT and stays green while the code decays to one column — proved by
   // mutation, 2026-08-24. CLAUDE.md §2: "a TOMBSTONE IS NOT A CALL SITE".
   const soRoster = stripComments(src("lib/platform/platform-staff-roster.ts"))
-  check("the read action is superadmin-gated (BOTH identity columns, via the one definition)",
+  check("the read action is superadmin-gated (both columns in the contract, platform_role the only authority — owner ruling 2026-10-14 — via the one definition)",
     /requireSuperadmin/.test(act) &&
     /isPlatformSuperadminIdentity\(/.test(act) &&
     /platform-staff-roster/.test(act) &&
     /export function isPlatformSuperadminIdentity\(/.test(soRoster) &&
-    /userType === "superadmin" \|\| platformRole === "superadmin"/.test(soRoster))
+    /return platformRole === "superadmin"\s*\}/.test(soRoster) && !/userType === "superadmin"/.test(soRoster))
   const page = src("app/dashboard/superadmin/subscriptions/page.tsx")
   check("the console renders counts + the attention queue + full roster", /getSubscriptionOversightAction/.test(page) && /Needs attention/.test(page) && /All subscriptions/.test(page))
   check("each row links to the tenant's existing lifecycle controls", /\/dashboard\/superadmin\/brokerages\/\$\{r\.brokerageId\}/.test(page))
