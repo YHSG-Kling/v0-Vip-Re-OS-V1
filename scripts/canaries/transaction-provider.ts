@@ -11,7 +11,7 @@
  * WAVE141 HOOK.
  */
 import { CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSvc, uuid } from "./_harness"
-import { hooksFor } from "./_registry"
+import { hooksFor, strippedRepo } from "./_registry"
 
 export async function run() {
   const c = canary("Transaction provider: tenant selects a provider → forms work (credentials tenant-owned; capability catalog honest)")
@@ -46,13 +46,27 @@ export async function run() {
   c.step("capability honesty: e-sign and transaction-forms are SEPARATE flags per provider; a forms-only provider (brokermint) is never offered for e-sign", entries.every((e) => typeof e.capabilities.esign === "boolean" && typeof e.capabilities.transactionForms === "boolean") && PROVIDER_CATALOG.brokermint.capabilities.esign === false && !esignSelectable.includes("brokermint") && !getEsignProviders().includes("brokermint"), esignSelectable.join(","))
   c.step("capability honesty: only IMPLEMENTED (or portal-send) providers are selectable; the platform default e-sign is DocuSign and listed first", esignSelectable.every((n) => PROVIDER_CATALOG[n].implemented || PROVIDER_CATALOG[n].portalSend) && DEFAULT_ESIGN_PROVIDER === "docusign" && esignSelectable[0] === "docusign", `default ${DEFAULT_ESIGN_PROVIDER}`)
   c.step("capability honesty: an embed claim is per provider (skyslope frames; dotloop does not) — the wizard never shows a blank iframe for a provider with no embed surface", PROVIDER_CATALOG.skyslope.capabilities.embed === true && PROVIDER_CATALOG.dotloop.capabilities.embed === false, "")
-  // WAVE141 HOOK (integrator): 141C — the typed matrix.
+  // WAVE141 HOOK (integrator): 141C — the typed matrix, LANDED on the one catalog (PROVIDER_CAPABILITY_MATRIX +
+  // CAPABILITY_REQUIRED_STEPS + providerOfferVerdict; lib/connections/scope.ts providerSelectionVerdict); wired 141K.
   for (const h of hooksFor("transaction-provider")) {
     const at = h.probe()
     if (!at) { c.hook(h.lane, h.contract, "at HEAD the catalog carries implemented + 3 capability flags; the per-path BUILT/PARTIAL/UNWIRED/MISSING matrix does not exist"); continue }
-    const mod = (await import(`../../${at.replace(/\.ts$/, "")}`)) as Record<string, unknown>
-    const matrix = Object.values(mod).find((v) => v && typeof v === "object" && !Array.isArray(v) && Object.values(v as Record<string, unknown>).some((row) => row && typeof row === "object")) as Record<string, Record<string, unknown>> | undefined
-    c.step(`${h.lane} landed (${at}): the matrix names every catalog provider and every cell carries a BUILT/PARTIAL/UNWIRED/MISSING verdict (the integrator wires the selectable-only rule here: WAVE141 HOOK (integrator): 141C)`, !!matrix && entries.every((e) => e.name in matrix) && Object.values(matrix).every((row) => /BUILT|PARTIAL|UNWIRED|MISSING/.test(JSON.stringify(row))), matrix ? Object.keys(matrix).join(",") : "no matrix export found")
+    const { PROVIDER_CAPABILITY_MATRIX, CAPABILITY_REQUIRED_STEPS, MATRIX_STEPS, providerOfferVerdict, esignCertified } = await import("../../lib/integrations/providers/catalog")
+    const { providerSelectionVerdict } = await import("../../lib/connections/scope")
+    type Cell = { status: string; evidence: string; reason?: string }
+    const matrix = PROVIDER_CAPABILITY_MATRIX as Record<string, Record<string, Cell>>
+    const cells = entries.flatMap((e) => MATRIX_STEPS.map((s) => matrix[e.name]?.[s]))
+    c.step(`${h.lane} landed (${at}): the matrix names every catalog provider (${entries.length}) and every cell (${cells.length} = providers × ${MATRIX_STEPS.length} steps: credentials → settings → forms → transaction creation → upload → fill → e-sign → status → sync) carries a BUILT/PARTIAL/UNWIRED/MISSING verdict with its evidence; a non-BUILT cell states its reason`, entries.every((e) => e.name in matrix) && cells.every((cell) => !!cell && /^(BUILT|PARTIAL|UNWIRED|MISSING)$/.test(cell.status) && cell.evidence.length > 0 && (cell.status === "BUILT" || !!cell.reason)), entries.map((e) => e.name).join(","))
+    const derived = (cap: "esign" | "transaction", e: (typeof entries)[number]) => (cap === "esign" ? e.capabilities.esign : e.capabilities.transactionForms) && CAPABILITY_REQUIRED_STEPS[cap].every((s) => matrix[e.name][s].status === "BUILT")
+    const agree = entries.every((e) => providerOfferVerdict("esign", e.name).ok === derived("esign", e) && providerOfferVerdict("transaction", e.name).ok === derived("transaction", e))
+    const offeredEsign = entries.filter((e) => providerOfferVerdict("esign", e.name).ok).map((e) => e.name), offeredTx = entries.filter((e) => providerOfferVerdict("transaction", e.name).ok).map((e) => e.name)
+    c.step("141C ONE rule, derived: offered ⇔ the catalog claims the capability AND every required cell is BUILT — recomputed here from the cells for every provider × capability and compared with providerOfferVerdict; nothing hand-sets 'available'", agree && offeredEsign.length > 0 && offeredTx.length > 0, `esign: ${offeredEsign.join(",")} · transaction: ${offeredTx.join(",")}`)
+    const bm = providerOfferVerdict("esign", "brokermint")
+    c.step("141C honest offer: a forms-only platform (brokermint) is never offered for e-sign (capability); a transaction platform whose e-sign path is not BUILT (skyslope, dotloop) is not offered for e-sign; the platform default DocuSign is certified for both", !bm.ok && bm.step === "capability" && !esignCertified("brokermint") && !esignCertified("skyslope") && !esignCertified("dotloop") && esignCertified("docusign") && providerOfferVerdict("transaction", "docusign").ok && providerOfferVerdict("transaction", "skyslope").ok, `brokermint: ${bm.ok ? "offered" : bm.reason.slice(0, 100)}`)
+    const refusedPick = providerSelectionVerdict("esign", "dotloop")
+    c.step("141C selectable ONLY when certified: the one selection verdict refuses an uncertified e-sign pick WITH the honest reason (the step that is not BUILT), accepts a certified one, 'none', and the owner's payment default (Stripe); an unknown name is refused", !refusedPick.ok && /unavailable/.test(refusedPick.reason) && providerSelectionVerdict("esign", "docusign").ok && providerSelectionVerdict("transaction", "skyslope").ok && providerSelectionVerdict("esign", "none").ok && providerSelectionVerdict("payment", "stripe").ok && !providerSelectionVerdict("transaction", "zillow-forms").ok, refusedPick.ok ? "" : refusedPick.reason.slice(0, 160))
+    const doors = ["app/actions/settings/integrations.ts", "app/actions/settings/provider-settings-actions.ts"]
+    c.step("141C the write doors ask the verdict BEFORE writing a provider_overrides selection (both settings doors, stripped source) — the menu and the write cannot disagree", doors.every((f) => /providerSelectionVerdict\(/.test(strippedRepo(f) ?? "")), doors.join(","))
   }
   c.blind("No provider is called: creating a transaction, uploading, filling and syncing with SkySlope are the adapter's live paths (test:provider-adapter, test:form-wizard-esign); this canary proves selection, the credential boundary and the forms list.")
   const a = await cleanupCanary(svc, B), b = await cleanupCanary(svc, B2)

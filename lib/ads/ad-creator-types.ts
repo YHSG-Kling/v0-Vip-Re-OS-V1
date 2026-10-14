@@ -34,6 +34,14 @@ export interface TargetingConfig {
   lookalike_source_audience_id: string | null
   income_percentile: "top_25" | "top_50" | "any"
   homeowner_status: "renter" | "owner" | "any"
+  /**
+   * Wave 141 (lane 141E): the LEAD MAGNET this campaign sends the click to (lead_capture_forms.id, same
+   * tenant, published). When set, every creative's destination_url is the magnet's /lm/[slug] page
+   * carrying campaign / ad-campaign / creative attribution (lib/ads/ad-destination.ts →
+   * lib/lead-magnets/attribution.ts leadMagnetLandingUrl), so the capture keeps it end to end.
+   * Optional: a listing or brand-site destination is unchanged when absent.
+   */
+  lead_magnet_id?: string | null
 }
 
 export interface CreateAdCampaignParams {

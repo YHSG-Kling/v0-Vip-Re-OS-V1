@@ -85,6 +85,16 @@ export interface CanaryControls { authCalls: CanaryAuthCall[]; faults: { inviteU
 
 export type CanarySvc = MemClient & { canary: CanaryControls }
 
+/** WAVE 141 (lane 141K): the live UNIQUE constraints the chains' idempotency RIDES — the action ledger's
+ *  at-most-once (claim → 23505 → replay; lib/kernel/action-ledger.ts) and the coupon redemption ledger's
+ *  one-per-tenant row (lib/billing/discount-codes.ts recordCouponRedemption reads 23505 as "already"). Modelled
+ *  by the in-memory client (memSupabase `unique`), published as the fixture it is: a UNIQUE the live schema has
+ *  and this list does not name is not modelled. */
+const CANARY_UNIQUE: Record<string, string[][]> = {
+  agent_action_ledger: [["idempotency_key"]],
+  platform_coupon_redemptions: [["coupon_id", "brokerage_id"]],
+}
+
 /**
  * The canary client. In-memory by default; the live service client under CANARY_LIVE.
  * The in-memory one carries the provider stubs the kernel reaches for (auth.admin, rpc, storage).
@@ -98,7 +108,7 @@ export function canaryClient(seed: Record<string, Row[]> = {}): CanarySvc {
     ;(live as unknown as { canary: CanaryControls }).canary = { authCalls: [], faults: {} }
     return live as unknown as CanarySvc
   }
-  const mem = memSupabase(seed, { stampCreatedAt: true, uuidIds: true })
+  const mem = memSupabase(seed, { stampCreatedAt: true, uuidIds: true, unique: CANARY_UNIQUE })
   const authUsers: Array<{ id: string; email: string }> = []
   const controls: CanaryControls = { authCalls: [], faults: {} }
   const admin = {

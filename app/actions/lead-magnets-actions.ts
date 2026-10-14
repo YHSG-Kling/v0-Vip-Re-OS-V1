@@ -2,7 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { listLeadMagnets, createLeadMagnet, publishLeadMagnet, getMagnetPerformance } from "@/lib/kernel/lead-magnets"
+import { listLeadMagnets, createLeadMagnet, publishLeadMagnet, getMagnetPerformance, cloneLeadMagnet, defaultFieldsForType, type LeadMagnetField } from "@/lib/kernel/lead-magnets"
 import { headers } from "next/headers"
 
 /**
@@ -102,13 +102,28 @@ export async function createLeadMagnetAction(input: {
   thank_you_message?: string
   tcpa_text?: string
   notify_on_submission?: boolean
+  /** Wave 141: the tenant's OWN questions, ADDED to the type's canonical fields (never replacing them). */
+  extra_fields?: Array<{ label: string; type?: string; required?: boolean; options?: string[] }>
+  /** Wave 141: the builder creates a DRAFT (publish is its next step); "live" keeps the old one-shot create. */
+  publish_state?: "draft" | "live"
+  /** AI landing copy generated in the builder, persisted WITH the row (one write, not a second save). */
+  landing?: import("@/lib/marketing/lead-magnet-copy").LandingContent | null
 }) {
   try {
     const ctx = await getAgentContext()
     if (!ctx.brokerageId || !ctx.agentId) return { success: false as const, error: "Not authenticated" }
+    const magnetType = input.magnet_type as Parameters<typeof createLeadMagnet>[0]["magnetType"]
+    // The tenant's extra questions ride on top of the canonical identity fields — the same validator the
+    // AI draft uses (lib/lead-magnets/ai-draft.ts mergeExtraQuestions), so a typed field and an
+    // AI-proposed one obey one rule.
+    let fields: LeadMagnetField[] | undefined
+    if (Array.isArray(input.extra_fields) && input.extra_fields.length > 0) {
+      const { mergeExtraQuestions } = await import("@/lib/lead-magnets/ai-draft")
+      fields = mergeExtraQuestions(defaultFieldsForType(magnetType), input.extra_fields)
+    }
     const result = await createLeadMagnet({
       title: input.name,
-      magnetType: input.magnet_type as any,
+      magnetType,
       brokerageId: ctx.brokerageId,
       agentId: ctx.agentId,
       // ABSORBED from the retired /api/lead-magnets/create route: createdBy lands
@@ -119,21 +134,144 @@ export async function createLeadMagnetAction(input: {
       description: input.description ?? "",
       thankYouMessage: input.thank_you_message,
       tcpaDisclosureText: input.tcpa_text,
+      fields,
+      publishState: input.publish_state ?? "live",
+      landingContent: input.landing ?? null,
+      settings: { authoring: { by: "human", requested_by: ctx.userId, generated_at: new Date().toISOString(), from_ai_copy: !!input.landing } },
     })
     // Persist the notification preference into the dedicated `settings` jsonb bag
     // (added in l40-s01) — NOT landing_content, which the AI-landing-copy save
     // overwrites. Non-fatal: the magnet exists regardless of whether it persists.
+    // Wave 141: MERGED onto the bag the kernel just wrote (lifecycle / authoring) — a bare
+    // `{ settings: { notify_on_submission } }` would have clobbered the draft record.
     if (result.success && result.magnetId && input.notify_on_submission !== undefined) {
       const supabase = createServiceClient()
+      const { data: cur, error: curErr } = await supabase
+        .from("lead_capture_forms")
+        .select("settings")
+        .eq("id", result.magnetId)
+        .eq("brokerage_id", ctx.brokerageId)
+        .maybeSingle()
+      if (curErr) console.warn("[lead-magnets] settings read refused before notify save:", curErr.message)
+      const { notify_on_submission: _prior, ...rest } = (((cur as { settings?: Record<string, unknown> | null } | null)?.settings ?? {}) as Record<string, unknown>)
       const { error: notifyError } = await supabase
         .from("lead_capture_forms")
-        .update({ settings: { notify_on_submission: input.notify_on_submission } })
+        .update({ settings: { notify_on_submission: input.notify_on_submission, ...rest } })
+        .eq("brokerage_id", ctx.brokerageId)
         .eq("id", result.magnetId)
       if (notifyError) console.warn("[lead-magnets] notify preference not saved:", notifyError.message)
     }
     return result
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to create magnet" }
+  }
+}
+
+/**
+ * AI CREATES THE ACTUAL DRAFT (wave 141, lane 141E). Concept → a real lead_capture_forms row in DRAFT
+ * (lib/lead-magnets/ai-draft.ts draftLeadMagnetFromConcept): entitlement first (mayUseAndAfford
+ * "ai.generate"), the routed model lane (feature lead_magnet_draft, booked under this tenant), the
+ * Fair-Housing scan, the kernel's create. The human previews / edits it on the Lead Magnets page and
+ * publishes — publishLeadMagnetAction is the approval. Tenant + actor from the session.
+ */
+export async function draftLeadMagnetWithAiAction(input: { concept: string; magnet_type?: string | null; area?: string | null; brand?: string | null; audience?: string | null }) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId || !ctx.agentId) return { success: false as const, error: "Not authenticated" }
+    const { draftLeadMagnetFromConcept } = await import("@/lib/lead-magnets/ai-draft")
+    const VALID = ["home_valuation", "buyer_guide", "seller_guide", "market_report", "listing_alert", "open_house", "generic_form"] as const
+    const magnetType = (VALID as readonly string[]).includes(String(input.magnet_type)) ? (input.magnet_type as (typeof VALID)[number]) : null
+    const r = await draftLeadMagnetFromConcept({
+      brokerageId: ctx.brokerageId,
+      agentId: ctx.agentId,
+      createdBy: ctx.userId,
+      concept: input.concept,
+      magnetType,
+      area: input.area ?? null,
+      brand: input.brand ?? null,
+      audience: input.audience ?? null,
+      actor: { userType: ctx.role ?? null },
+    })
+    if (!r.success) return { success: false as const, error: r.error ?? "The draft was not created." }
+    return { success: true as const, magnetId: r.magnetId!, slug: r.slug!, magnetType: r.magnetType!, fromAi: !!r.fromAi, fallbackReason: r.fallbackReason ?? null, fairHousingFlags: r.fairHousing?.flagged ?? [] }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to draft with AI" }
+  }
+}
+
+/** CLONE an existing magnet (same tenant) into a new DRAFT with provenance (wave 141). */
+export async function cloneLeadMagnetAction(sourceMagnetId: string, title?: string) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId || !ctx.agentId) return { success: false as const, error: "Not authenticated" }
+    const r = await cloneLeadMagnet({ sourceMagnetId, brokerageId: ctx.brokerageId, agentId: ctx.agentId, createdBy: ctx.userId, title })
+    if (!r.success || !r.magnetId) return { success: false as const, error: r.error ?? "Clone failed" }
+    return { success: true as const, magnetId: r.magnetId, slug: r.slug!, clonedFromId: r.clonedFromId ?? sourceMagnetId }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to clone magnet" }
+  }
+}
+
+/** The editable record for the draft review (wave 141): tenant-scoped read of one magnet. */
+export async function getLeadMagnetDraftAction(magnetId: string) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
+    const supabase = createServiceClient()
+    const { data, error } = await supabase
+      .from("lead_capture_forms")
+      .select("id, name, slug, magnet_type, fields, is_active, thank_you_message, tcpa_disclosure_text, redirect_url, landing_content, settings")
+      .eq("id", magnetId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (error) return { success: false as const, error: error.message }
+    if (!data) return { success: false as const, error: "Magnet not found" }
+    const row = data as { id: string; name: string; slug: string; magnet_type: string | null; fields: LeadMagnetField[] | null; is_active: boolean | null; thank_you_message: string | null; tcpa_disclosure_text: string | null; redirect_url: string | null; landing_content: Record<string, unknown> | null; settings: Record<string, unknown> | null }
+    const settings = (row.settings ?? {}) as Record<string, unknown>
+    const lifecycle = (settings.lifecycle ?? null) as { state?: string; published_at?: string | null; approved_by?: string | null } | null
+    const authoring = (settings.authoring ?? null) as { by?: string; fallback_reason?: string | null; fair_housing_flags?: string[]; concept?: string } | null
+    const provenance = (settings.provenance ?? null) as { cloned_from_id?: string; cloned_from_name?: string } | null
+    return {
+      success: true as const,
+      magnet: {
+        id: row.id, name: row.name, slug: row.slug, magnetType: row.magnet_type ?? "generic_form",
+        fields: Array.isArray(row.fields) ? row.fields : [],
+        isActive: row.is_active === true,
+        lifecycleState: (lifecycle?.state === "draft" ? "draft" : "published") as "draft" | "published",
+        publishedAt: lifecycle?.published_at ?? null,
+        approvedBy: lifecycle?.approved_by ?? null,
+        thankYouMessage: row.thank_you_message ?? "",
+        tcpaDisclosureText: row.tcpa_disclosure_text ?? "",
+        redirectUrl: row.redirect_url ?? "",
+        landing: (row.landing_content ?? null) as import("@/lib/marketing/lead-magnet-copy").LandingContent | null,
+        authoredBy: authoring?.by === "ai" ? "ai" as const : "human" as const,
+        authoringNote: authoring?.fallback_reason ?? null,
+        fairHousingFlags: Array.isArray(authoring?.fair_housing_flags) ? authoring!.fair_housing_flags! : [],
+        concept: authoring?.concept ?? null,
+        clonedFromId: provenance?.cloned_from_id ?? null,
+        clonedFromName: provenance?.cloned_from_name ?? null,
+      },
+    }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to load magnet" }
+  }
+}
+
+/**
+ * PROACTIVE IDEAS (wave 141): the tenant's own evidence → deterministic suggestions, each also recorded
+ * on the manager-signal bus (deduped per idea key). Tenant from the session; nothing is created —
+ * "Draft this with AI" is the human's next click.
+ */
+export async function suggestLeadMagnetIdeasAction() {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
+    const { runLeadMagnetSuggestions } = await import("@/lib/lead-magnets/suggestions")
+    const r = await runLeadMagnetSuggestions(createServiceClient(), ctx.brokerageId, { publish: true })
+    if (!r.ok) return { success: false as const, error: r.error ?? "Suggestions unavailable" }
+    return { success: true as const, suggestions: r.suggestions, published: r.published, deduped: r.deduped }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to suggest ideas" }
   }
 }
 

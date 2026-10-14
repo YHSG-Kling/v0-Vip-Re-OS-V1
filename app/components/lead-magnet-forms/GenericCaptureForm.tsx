@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react"
 import { captureFormSubmissionAction } from "@/app/actions/lead-magnet-capture"
+import type { LeadMagnetAttribution } from "@/lib/lead-magnets/attribution"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -36,6 +37,8 @@ interface Props {
   ctaText?: string
   tcpaText?: string
   thankYouMessage?: string
+  /** Wave 141: where the visitor came from (the page parsed it from the query string). */
+  attribution?: LeadMagnetAttribution | null
   onSubmitted?: (submissionId: string) => void
 }
 
@@ -49,6 +52,7 @@ export function GenericCaptureForm({
   ctaText = "Submit",
   tcpaText = "By submitting, you consent to receive communications. You may opt out at any time.",
   thankYouMessage = "Thank you! We will be in touch shortly.",
+  attribution = null,
   onSubmitted,
 }: Props) {
   const [isPending, startTransition] = useTransition()
@@ -100,6 +104,7 @@ export function GenericCaptureForm({
         source,
         tcpaConsentGiven: tcpaChecked,
         submissionData,
+        attribution,
       })
 
       if (!result.success) {

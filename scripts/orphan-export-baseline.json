@@ -91,6 +91,7 @@
     "lib/billing/stripe-subscription-ops.ts": 2,
     "lib/billing/stripe-webhook-registration.ts": 2,
     "lib/billing/stripe-webhook-secrets.ts": 1,
+    "lib/billing/subscriber-handoff.ts": 1,
     "lib/brokerage-intelligence/miners.ts": 1,
     "lib/brokerage-intelligence/offer-term-outcomes.ts": 3,
     "lib/buyer-search/external-match.ts": 2,
@@ -119,7 +120,9 @@
     "lib/connections/scope.ts": 1,
     "lib/connections/zoom.ts": 6,
     "lib/contact-promotion/conversion-welcome.ts": 1,
+    "lib/contacts/card-classifier.ts": 1,
     "lib/crm/import-pull.ts": 3,
+    "lib/crm/sync.ts": 1,
     "lib/data-guard/index.ts": 1,
     "lib/did/avatar-completion.ts": 2,
     "lib/direct-mail/address-suppression.ts": 2,
@@ -225,6 +228,8 @@
     "lib/kernel/board-packet.ts": 1,
     "lib/kernel/brand-voice.ts": 1,
     "lib/kernel/broker-objectives.ts": 5,
+    "lib/kernel/brokerage-identity.ts": 1,
+    "lib/kernel/brokerage-transfer.ts": 2,
     "lib/kernel/brokerage-twin.ts": 9,
     "lib/kernel/call-intelligence.ts": 1,
     "lib/kernel/campaign-center.ts": 1,
@@ -262,6 +267,7 @@
     "lib/kernel/flow-integrity.ts": 4,
     "lib/kernel/healing-policy.ts": 2,
     "lib/kernel/idle-hands.ts": 2,
+    "lib/kernel/immediate-operations.ts": 2,
     "lib/kernel/improvement-proposals.ts": 2,
     "lib/kernel/ingress-continuity.ts": 2,
     "lib/kernel/intelligence-report.ts": 4,
@@ -350,7 +356,9 @@
     "lib/lead-governance/seller-signal-strength.ts": 4,
     "lib/lead-intelligence/behavioral-summary.ts": 4,
     "lib/lead-intelligence/visitor-email-capture.ts": 1,
+    "lib/lead-magnets/ai-draft.ts": 3,
     "lib/lead-magnets/embed-snippet.ts": 1,
+    "lib/lead-magnets/suggestions.ts": 2,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
     "lib/lead-pipeline/email-engagement-sourcer.ts": 1,
     "lib/lead-pipeline/email-seek.ts": 1,
@@ -401,10 +409,10 @@
     "lib/marketing/geo-faq.ts": 1,
     "lib/marketing/guide-booklet-content.ts": 1,
     "lib/marketing/image-library.ts": 2,
-    "lib/marketing/lead-magnet-copy.ts": 1,
     "lib/marketing/marketing-autonomy-ratchet.ts": 2,
     "lib/marketing/marketing-qr.ts": 1,
     "lib/marketing/package-catalog.ts": 1,
+    "lib/marketing/qr-contract.ts": 1,
     "lib/marketing/social-cadence.ts": 1,
     "lib/marketing/social-carousel.ts": 2,
     "lib/marketing/social-media-pairing.ts": 2,
@@ -563,7 +571,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 11262,
+  "census": 11358,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -686,7 +694,7 @@
     "app/actions/autonomy-halt.ts": 1,
     "app/actions/avatar-video.ts": 2,
     "app/actions/avatar-voice-catalog.ts": 3,
-    "app/actions/billing.ts": 13,
+    "app/actions/billing.ts": 14,
     "app/actions/blog-cadence-policy.ts": 2,
     "app/actions/blog.ts": 13,
     "app/actions/brand-template-registry.ts": 12,
@@ -696,7 +704,8 @@
     "app/actions/brokerage-cda-setup.ts": 6,
     "app/actions/brokerage-fees.ts": 8,
     "app/actions/brokerage-intelligence.ts": 4,
-    "app/actions/business-card/business-card-actions.ts": 2,
+    "app/actions/brokerage-transfer.ts": 6,
+    "app/actions/business-card/business-card-actions.ts": 3,
     "app/actions/buyer-broker-agreements.ts": 7,
     "app/actions/buyer-closing-costs.ts": 1,
     "app/actions/buyer-coaching.ts": 1,
@@ -851,12 +860,12 @@
     "app/actions/lead-assignment/assign-lead.ts": 3,
     "app/actions/lead-governance/govern-lead.ts": 1,
     "app/actions/lead-handoff/pending-handoffs.ts": 1,
-    "app/actions/lead-import/crm-pull-actions.ts": 3,
+    "app/actions/lead-import/crm-pull-actions.ts": 4,
     "app/actions/lead-import/import-actions.ts": 3,
     "app/actions/lead-intelligence.ts": 17,
     "app/actions/lead-lifecycle.ts": 2,
     "app/actions/lead-magnet-capture.ts": 1,
-    "app/actions/lead-magnets-actions.ts": 8,
+    "app/actions/lead-magnets-actions.ts": 12,
     "app/actions/lead-management.ts": 4,
     "app/actions/lead-promotion/promote-lead.ts": 1,
     "app/actions/lead-quick-actions.ts": 3,
@@ -1009,6 +1018,7 @@
     "app/actions/seller-updates.ts": 5,
     "app/actions/sequence-step-ai.ts": 2,
     "app/actions/services-config.ts": 10,
+    "app/actions/settings/brokerage-affiliation.ts": 2,
     "app/actions/settings/brokerage-column-settings.ts": 4,
     "app/actions/settings/brokerage-identity.ts": 2,
     "app/actions/settings/business-registration.ts": 2,
@@ -1695,6 +1705,7 @@
     "app/components/features/financial/ExportCSVButton.tsx": 1,
     "app/components/features/financial/PayoutButton.tsx": 1,
     "app/components/features/lead-magnets/MagnetBuilder.tsx": 1,
+    "app/components/features/lead-magnets/MagnetDraftReview.tsx": 1,
     "app/components/features/lead-magnets/MagnetLibrary.tsx": 1,
     "app/components/features/lead-magnets/PerformanceDashboard.tsx": 1,
     "app/components/features/lead-magnets/PublishGuideToGbp.tsx": 1,
@@ -2035,6 +2046,7 @@
     "app/dashboard/admin/scrape-diagnostics/scrape-diagnostics-client.tsx": 1,
     "app/dashboard/admin/scrape-diagnostics/tenant-coverage-card.tsx": 1,
     "app/dashboard/admin/support-tickets/support-queue-client.tsx": 1,
+    "app/dashboard/admin/system/providers/system-providers-client.tsx": 1,
     "app/dashboard/admin/tasks/task-row-actions.tsx": 1,
     "app/dashboard/admin/tenant-safety/tenant-safety-client.tsx": 1,
     "app/dashboard/admin/usage/usage-by-type-chart.tsx": 1,
@@ -2732,8 +2744,10 @@
     "app/settings/direct-mail/size-prefs/client.tsx": 1,
     "app/settings/direct-mail/variants/client.tsx": 1,
     "app/settings/email-templates/template-preview.tsx": 1,
+    "app/settings/general/brokerage-affiliation-card.tsx": 1,
     "app/settings/lifecycle-promos/tabs.tsx": 1,
     "app/settings/phone/phone-connect-form.tsx": 1,
+    "app/settings/users/brokerage-adoption-card.tsx": 1,
     "app/settings/users/sso-connection-card.tsx": 1,
     "app/settings/users/users-management-client.tsx": 1,
     "app/site/[slug]/page.tsx": 1,
@@ -3004,6 +3018,7 @@
     "lib/behavior-learning/signal-mapping.ts": 7,
     "lib/billing/ai-overage.ts": 4,
     "lib/billing/billing-access.ts": 6,
+    "lib/billing/discount-codes.ts": 5,
     "lib/billing/dunning.ts": 3,
     "lib/billing/past-due-clock.ts": 2,
     "lib/billing/phone-plan-resolve.ts": 2,
@@ -3018,9 +3033,11 @@
     "lib/billing/stripe-overage-meter.ts": 13,
     "lib/billing/stripe-portal.ts": 1,
     "lib/billing/stripe-status.ts": 4,
-    "lib/billing/stripe-subscription-ops.ts": 20,
+    "lib/billing/stripe-subscription-ops.ts": 22,
     "lib/billing/stripe-webhook-registration.ts": 3,
     "lib/billing/stripe-webhook-secrets.ts": 2,
+    "lib/billing/subscriber-billing-handoff.ts": 1,
+    "lib/billing/subscriber-handoff.ts": 2,
     "lib/billing/subscription-activation.ts": 6,
     "lib/billing/sync-plan-tier.ts": 1,
     "lib/blog/seo-optimizer.ts": 2,
@@ -3198,7 +3215,7 @@
     "lib/connections/credential-secret.ts": 1,
     "lib/connections/field-spec.ts": 6,
     "lib/connections/resolve-scoped.ts": 2,
-    "lib/connections/scope.ts": 7,
+    "lib/connections/scope.ts": 8,
     "lib/connections/vendor-quickbooks.ts": 2,
     "lib/connections/vendor-stripe.ts": 4,
     "lib/connections/zoom-transcripts.ts": 2,
@@ -3222,7 +3239,7 @@
     "lib/contact-types.ts": 5,
     "lib/contact-validation.ts": 3,
     "lib/contacts/buyer-stage.ts": 1,
-    "lib/contacts/card-classifier.ts": 1,
+    "lib/contacts/card-classifier.ts": 9,
     "lib/contacts/contact-brief.ts": 1,
     "lib/contacts/ownership-model.ts": 1,
     "lib/contacts/persona-builder.ts": 1,
@@ -3246,11 +3263,11 @@
     "lib/content-intel/topic-bank.ts": 2,
     "lib/copilot/seven-day-plan.ts": 1,
     "lib/credit/credit-event-handlers.ts": 4,
-    "lib/crm/import-pull.ts": 4,
+    "lib/crm/import-pull.ts": 5,
     "lib/crm/providers/followupboss.ts": 1,
     "lib/crm/providers/hubspot.ts": 1,
     "lib/crm/providers/lofty.ts": 2,
-    "lib/crm/sync.ts": 1,
+    "lib/crm/sync.ts": 2,
     "lib/cron-auth.ts": 1,
     "lib/data/brokerKPIs.ts": 2,
     "lib/data/serviceDeliveryMetrics.ts": 2,
@@ -3345,7 +3362,7 @@
     "lib/enrichment/lead-freshness.ts": 2,
     "lib/enrichment/reverse-skip-trace.ts": 2,
     "lib/enrichment/web-mention-search.ts": 3,
-    "lib/entitlements/ai-subscription-tier.ts": 1,
+    "lib/entitlements/ai-subscription-tier.ts": 2,
     "lib/entitlements/resolve.ts": 2,
     "lib/entitlements/tenant-capabilities.ts": 1,
     "lib/env/aliases.ts": 4,
@@ -3441,6 +3458,7 @@
     "lib/forms/esign-anchors.ts": 2,
     "lib/forms/esign-execution-loop.ts": 2,
     "lib/forms/form-path-scope.ts": 1,
+    "lib/forms/legal-description.ts": 4,
     "lib/forms/party-prefill.ts": 1,
     "lib/forms/pdf-form-fill.ts": 3,
     "lib/forms/prefill-property-into-pdf.ts": 1,
@@ -3480,8 +3498,8 @@
     "lib/integrations/connection-manager.ts": 4,
     "lib/integrations/integration-status.ts": 1,
     "lib/integrations/providers/brokerage-authority.ts": 7,
-    "lib/integrations/providers/catalog.ts": 7,
-    "lib/integrations/providers/provider-resolver.ts": 4,
+    "lib/integrations/providers/catalog.ts": 9,
+    "lib/integrations/providers/provider-resolver.ts": 5,
     "lib/integrations/providers/transaction-provider.interface.ts": 1,
     "lib/integrations/resolve-esign-provider.ts": 2,
     "lib/integrations/transaction-providers/resolve-transaction-provider.ts": 1,
@@ -3629,6 +3647,8 @@
     "lib/kernel/brand-compliance.ts": 1,
     "lib/kernel/brand-voice.ts": 2,
     "lib/kernel/broker-objectives.ts": 6,
+    "lib/kernel/brokerage-identity.ts": 4,
+    "lib/kernel/brokerage-transfer.ts": 8,
     "lib/kernel/brokerage-twin.ts": 22,
     "lib/kernel/calendar-deadline-watcher.ts": 1,
     "lib/kernel/calendar-engine.ts": 1,
@@ -3713,6 +3733,7 @@
     "lib/kernel/healing-policy.ts": 5,
     "lib/kernel/helpers.ts": 6,
     "lib/kernel/idle-hands.ts": 3,
+    "lib/kernel/immediate-operations.ts": 7,
     "lib/kernel/improvement-proposals.ts": 12,
     "lib/kernel/ingress-continuity.ts": 7,
     "lib/kernel/intelligence-report.ts": 8,
@@ -3723,7 +3744,7 @@
     "lib/kernel/law-rule-healing.ts": 2,
     "lib/kernel/lead-acquisition-handlers.ts": 7,
     "lib/kernel/lead-intake-cockpit.ts": 6,
-    "lib/kernel/lead-magnets.ts": 8,
+    "lib/kernel/lead-magnets.ts": 10,
     "lib/kernel/lender-linkage.ts": 10,
     "lib/kernel/lifecycle-promo-policy.ts": 2,
     "lib/kernel/lifecycle.ts": 1,
@@ -3855,7 +3876,7 @@
     "lib/kernel/twin-scenario.ts": 3,
     "lib/kernel/unambiguous-tenant.ts": 3,
     "lib/kernel/urgent-sla.ts": 2,
-    "lib/kernel/users.ts": 10,
+    "lib/kernel/users.ts": 11,
     "lib/kernel/vendor-categories.ts": 3,
     "lib/kernel/vendor-coverage-forecast.ts": 4,
     "lib/kernel/vendor-doc-compliance.ts": 4,
@@ -3908,7 +3929,10 @@
     "lib/lead-intelligence/visitor-email-capture.ts": 3,
     "lib/lead-intent/inbound-lead-intent.ts": 1,
     "lib/lead-intent/lead-opt-out.ts": 2,
+    "lib/lead-magnets/ai-draft.ts": 5,
+    "lib/lead-magnets/attribution.ts": 6,
     "lib/lead-magnets/embed-snippet.ts": 2,
+    "lib/lead-magnets/suggestions.ts": 3,
     "lib/lead-pipeline/acquisition-coverage.ts": 2,
     "lib/lead-pipeline/ai-intent-classifier.ts": 7,
     "lib/lead-pipeline/canonical-lead-eligibility.ts": 4,
@@ -4080,6 +4104,7 @@
     "lib/marketing/newsletter-cadence.ts": 1,
     "lib/marketing/package-catalog.ts": 5,
     "lib/marketing/qr-asset-linker.ts": 5,
+    "lib/marketing/qr-contract.ts": 5,
     "lib/marketing/qr-registry-board.ts": 1,
     "lib/marketing/segment-membership.ts": 2,
     "lib/marketing/social-baselines.ts": 2,
@@ -4161,8 +4186,8 @@
     "lib/platform/capability-overrides.ts": 2,
     "lib/platform/changelog.ts": 2,
     "lib/platform/config-snapshots.ts": 5,
-    "lib/platform/coupons.ts": 8,
-    "lib/platform/custom-domains.ts": 8,
+    "lib/platform/coupons.ts": 11,
+    "lib/platform/custom-domains.ts": 12,
     "lib/platform/deal-room-demo.ts": 13,
     "lib/platform/demo-tenant.ts": 6,
     "lib/platform/disposition-route.ts": 1,
@@ -5521,7 +5546,8 @@
       "getSeatDoorAction",
       "setLicensedProducerAction",
       "buySeatPackagesAction",
-      "changePlanTierAction"
+      "changePlanTierAction",
+      "applyDiscountCodeAction"
     ],
     "app/actions/blog-cadence-policy.ts": [
       "getMyBlogCadencePolicy",
@@ -5599,8 +5625,17 @@
       "dismissInsightAction",
       "rescanBrokerageIntelligenceAction"
     ],
+    "app/actions/brokerage-transfer.ts": [
+      "getBrokerageAdoptionPanelAction",
+      "requestBrokerageAdoptionAction",
+      "cancelBrokerageAdoptionAction",
+      "retryBrokerageAdoptionAction",
+      "listIncomingTransferRequestsAction",
+      "respondToBrokerageTransferAction"
+    ],
     "app/actions/business-card/business-card-actions.ts": [
       "uploadBusinessCard",
+      "confirmBusinessCardScan",
       "getRecentScans"
     ],
     "app/actions/buyer-broker-agreements.ts": [
@@ -6566,6 +6601,7 @@
     ],
     "app/actions/lead-import/crm-pull-actions.ts": [
       "setCrmImportCredentialAction",
+      "previewCrmImportAction",
       "runCrmImportAction",
       "getCrmImportStatusAction"
     ],
@@ -6603,6 +6639,10 @@
     "app/actions/lead-magnets-actions.ts": [
       "listLeadMagnetsAction",
       "createLeadMagnetAction",
+      "draftLeadMagnetWithAiAction",
+      "cloneLeadMagnetAction",
+      "getLeadMagnetDraftAction",
+      "suggestLeadMagnetIdeasAction",
       "saveMagnetLandingContentAction",
       "publishLeadMagnetAction",
       "updateMagnetSettingsAction",
@@ -7667,6 +7707,10 @@
       "getStageRules",
       "createStageRule",
       "deleteStageRule"
+    ],
+    "app/actions/settings/brokerage-affiliation.ts": [
+      "getBrokerageAffiliationPanelAction",
+      "declareBrokerageAffiliationAction"
     ],
     "app/actions/settings/brokerage-column-settings.ts": [
       "getReviewRequestDelaySettingAction",
@@ -10343,6 +10387,9 @@
     "app/components/features/lead-magnets/MagnetBuilder.tsx": [
       "MagnetBuilder"
     ],
+    "app/components/features/lead-magnets/MagnetDraftReview.tsx": [
+      "MagnetDraftReview"
+    ],
     "app/components/features/lead-magnets/MagnetLibrary.tsx": [
       "MagnetLibrary"
     ],
@@ -11377,6 +11424,9 @@
     ],
     "app/dashboard/admin/support-tickets/support-queue-client.tsx": [
       "SupportQueueClient"
+    ],
+    "app/dashboard/admin/system/providers/system-providers-client.tsx": [
+      "SystemProvidersClient"
     ],
     "app/dashboard/admin/tasks/task-row-actions.tsx": [
       "TaskRowActions"
@@ -13534,11 +13584,17 @@
     "app/settings/email-templates/template-preview.tsx": [
       "TemplatePreview"
     ],
+    "app/settings/general/brokerage-affiliation-card.tsx": [
+      "BrokerageAffiliationCard"
+    ],
     "app/settings/lifecycle-promos/tabs.tsx": [
       "LifecyclePromoSettingsTabs"
     ],
     "app/settings/phone/phone-connect-form.tsx": [
       "PhoneConnectForm"
+    ],
+    "app/settings/users/brokerage-adoption-card.tsx": [
+      "BrokerageAdoptionCard"
     ],
     "app/settings/users/sso-connection-card.tsx": [
       "SsoConnectionCard"
@@ -14974,6 +15030,13 @@
       "isPaywalledPath",
       "resolveRequestAccess"
     ],
+    "lib/billing/discount-codes.ts": [
+      "resolveDiscountForCheckout",
+      "recordCouponRedemption",
+      "stampCouponStripeApplication",
+      "invoiceDiscountCents",
+      "subscriptionDiscountCoupon"
+    ],
     "lib/billing/dunning.ts": [
       "planNextDunningStep",
       "composeDunningMessage",
@@ -15074,6 +15137,8 @@
       "stripePauseCollection",
       "computeTrialExtension",
       "stripeApplyCoupon",
+      "stripeLookupDiscount",
+      "stripeEndSubscriptionForHandoff",
       "stripeRefundLatestInvoice",
       "reminderCycle",
       "planLifecycleReminder",
@@ -15092,6 +15157,13 @@
     "lib/billing/stripe-webhook-secrets.ts": [
       "stripeWebhookCandidates",
       "verifyStripeWebhook"
+    ],
+    "lib/billing/subscriber-billing-handoff.ts": [
+      "handoffSubscriberBillingToBrokerage"
+    ],
+    "lib/billing/subscriber-handoff.ts": [
+      "handoffCycle",
+      "handoffSubscriberBillingToBrokerage"
     ],
     "lib/billing/subscription-activation.ts": [
       "planPriceNotConfigured",
@@ -16026,6 +16098,7 @@
     ],
     "lib/connections/scope.ts": [
       "candidateProvider",
+      "providerSelectionVerdict",
       "isConnectionAllowed",
       "isProviderAllowedForScope",
       "domainsForScope",
@@ -16149,7 +16222,15 @@
       "isBuyerStage"
     ],
     "lib/contacts/card-classifier.ts": [
-      "classifyCardSubject"
+      "classifyCardSubject",
+      "normalizeCardValue",
+      "parseCardExtraction",
+      "humanConfirmedExtraction",
+      "assessCardExtraction",
+      "confidentCardFields",
+      "unconfirmedCardNote",
+      "decideCardFieldWrite",
+      "cardStampsForContact"
     ],
     "lib/contacts/contact-brief.ts": [
       "getContactBrief"
@@ -16249,6 +16330,7 @@
       "fubToRow",
       "loftyToRow",
       "ghlToRow",
+      "crmImportPreviewToken",
       "pullCrmPage"
     ],
     "lib/crm/providers/followupboss.ts": [
@@ -16262,6 +16344,7 @@
       "syncContactToLofty"
     ],
     "lib/crm/sync.ts": [
+      "crmSyncOutcomePatch",
       "syncContactToCRM"
     ],
     "lib/cron-auth.ts": [
@@ -16718,7 +16801,8 @@
       "searchPersonMentions"
     ],
     "lib/entitlements/ai-subscription-tier.ts": [
-      "syncAiSubscriptionTier"
+      "syncAiSubscriptionTier",
+      "deactivateAiSubscriptionTier"
     ],
     "lib/entitlements/resolve.ts": [
       "rolloutBucket",
@@ -17254,6 +17338,12 @@
     "lib/forms/form-path-scope.ts": [
       "checkFormPathsInScope"
     ],
+    "lib/forms/legal-description.ts": [
+      "legalDescriptionRequirement",
+      "typedLegalDescription",
+      "legalDescriptionGate",
+      "resolveLegalDescriptionForForm"
+    ],
     "lib/forms/party-prefill.ts": [
       "buildPartyPrefill"
     ],
@@ -17448,9 +17538,12 @@
       "getTransactionFormProviders",
       "getSelectableEsignProviders",
       "getEsignProviders",
-      "supportsEmbeddedSend"
+      "supportsEmbeddedSend",
+      "providerOfferVerdict",
+      "esignCertified"
     ],
     "lib/integrations/providers/provider-resolver.ts": [
+      "resolveTenantProviderCredentials",
       "getTransactionProvider",
       "getTransactionProviderByName",
       "getAvailableProviders",
@@ -18149,6 +18242,22 @@
       "planObjectiveDelegation",
       "submitBrokerObjective"
     ],
+    "lib/kernel/brokerage-identity.ts": [
+      "normalizeDeclaredAffiliation",
+      "declareBrokerageAffiliation",
+      "readDeclaredAffiliation",
+      "isIndependentSubscriberTier"
+    ],
+    "lib/kernel/brokerage-transfer.ts": [
+      "transferMigrationComplete",
+      "transferStepsPending",
+      "memberTargetRole",
+      "requestBrokerageTransfer",
+      "recordBrokerageTransferConsent",
+      "cancelBrokerageTransferRequest",
+      "runBrokerageTransferMigration",
+      "listBrokerageTransferRequests"
+    ],
     "lib/kernel/brokerage-twin.ts": [
       "resolveWorkforceThresholds",
       "validateWorkforceThresholdsEdit",
@@ -18708,6 +18817,15 @@
       "seasonalPlayFor",
       "runIdleHands"
     ],
+    "lib/kernel/immediate-operations.ts": [
+      "isImmediateOperation",
+      "resolveOperationOwner",
+      "reportOperationOutcome",
+      "verifyUserRow",
+      "verifyCredentialRow",
+      "verifyIntegrationRow",
+      "handleOperationFailureEscalated"
+    ],
     "lib/kernel/improvement-proposals.ts": [
       "canTransition",
       "promotionDecision",
@@ -18784,7 +18902,9 @@
     ],
     "lib/kernel/lead-magnets.ts": [
       "leadMagnetQrLabel",
+      "defaultFieldsForType",
       "createLeadMagnet",
+      "cloneLeadMagnet",
       "publishLeadMagnet",
       "captureFormSubmission",
       "generateQRCode",
@@ -19775,6 +19895,7 @@
       "assignUserToTeam",
       "repairIncompleteAccountSetup",
       "seatSubjectForEmail",
+      "redispatchInvitation",
       "inviteTenantMember",
       "provisionTenantOwner",
       "emitUserProvisionedEvent"
@@ -20074,9 +20195,29 @@
       "applyLeadOptOut",
       "reopenLeadOnInboundConsent"
     ],
+    "lib/lead-magnets/ai-draft.ts": [
+      "classifyConceptMagnetType",
+      "mergeExtraQuestions",
+      "composeMagnetDraft",
+      "draftFairHousingVerdict",
+      "draftLeadMagnetFromConcept"
+    ],
+    "lib/lead-magnets/attribution.ts": [
+      "attributionSlug",
+      "parseLeadMagnetAttribution",
+      "sanitizeLeadMagnetAttribution",
+      "leadMagnetLandingUrl",
+      "touchpointChannelFor",
+      "sourceChannelFor"
+    ],
     "lib/lead-magnets/embed-snippet.ts": [
       "leadMagnetEmbedEndpoint",
       "buildLeadMagnetEmbedSnippet"
+    ],
+    "lib/lead-magnets/suggestions.ts": [
+      "seasonFor",
+      "suggestLeadMagnetIdeas",
+      "runLeadMagnetSuggestions"
     ],
     "lib/lead-pipeline/acquisition-coverage.ts": [
       "recordAcquisitionIntents",
@@ -20975,6 +21116,13 @@
       "getQrCodePerformance",
       "listAvailableQrCodes"
     ],
+    "lib/marketing/qr-contract.ts": [
+      "qrEncodeOptions",
+      "isQrInAppPublicPath",
+      "qrInAppDefaultPath",
+      "resolveQrScanDestination",
+      "qrContinueLabel"
+    ],
     "lib/marketing/qr-registry-board.ts": [
       "summarizeQrRegistry"
     ],
@@ -21396,12 +21544,19 @@
       "discountedPriceCents",
       "describeCoupon",
       "stripeCouponPayload",
-      "isMockStripeCouponId"
+      "isMockStripeCouponId",
+      "normalizeStripeDiscount",
+      "evaluateStripeDiscount",
+      "checkoutDiscountParams"
     ],
     "lib/platform/custom-domains.ts": [
       "validateCustomDomain",
       "platformReservedHosts",
       "dnsInstructionsFor",
+      "dnsProviderGuide",
+      "probeDomainDns",
+      "nextCustomDomainStatus",
+      "tenantFacingDomainMessage",
       "getVercelDomainsConfig",
       "addDomainToProject",
       "getDomainStatus",

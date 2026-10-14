@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 456 tables, 822 columns.
+ * MEASURED AT GENERATION: 457 tables, 826 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-08
+ * generated: 2026-10-14
  * source: public.live_check_constraints_json()
- * body-sha256: 7790a596f29a034349000ab3af44cdbfaf7302c402294ec05b2a3eca8501e7f2
+ * body-sha256: a89bedb472cd8c0a4bd07a1fd4e23f4cd7d5a8be4569b9ad96da59ca9d209d46
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -344,6 +344,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     classification: ["addendum", "agency_disclosure", "appraisal_report", "closing_disclosure", "commission_agreement", "counter_offer", "disclosure", "earnest_money_receipt", "hoa_documents", "id_document", "inspection_report", "insurance_binder", "lender_letter", "listing_agreement", "other", "pre_approval_letter", "preliminary_closing_statement", "proof_of_funds", "seller_broker_agreement", "signed_contract", "title_report", "wire_instructions"],
     deal_type: ["buyer", "dual", "seller"],
     scope_type: ["agent", "brokerage", "multi_location", "platform", "team"],
+  },
+  brokerage_transfer_requests: {
+    status: ["cancelled", "completed", "consented", "declined", "failed", "migrating", "requested"],
+    target_role: ["agent", "team_lead"],
   },
   brokerages: {
     default_assignment_method: ["geo_based", "load_balance", "manual", "round_robin", "specialization"],
@@ -923,6 +927,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     priority: ["high", "low", "medium"],
   },
   listings: {
+    legal_description_source: ["agent", "rentcast"],
     lifecycle_stage: ["AGENT_CONSULTATION", "APPOINTMENT_SET", "APPRAISAL", "CLOSED", "CLOSING_PREP", "CMA_GENERATION", "COMING_SOON_ACTIVE", "COMING_SOON_PREP", "FINANCING", "INSPECTION", "LEAD", "LEAD_ASSIGNED", "LIFETIME_CUSTOMER", "LISTING_AGREEMENT_INITIATED", "LISTING_AGREEMENT_SIGNED", "LISTING_CANCELLED", "LISTING_EXPIRED", "LISTING_PRESENTATION_CREATED", "MEDIA_APPROVED", "MEDIA_CAPTURE", "MLS_ACTIVE", "MLS_DATE_CONFIRMED", "MLS_READY", "NEGOTIATION", "OFFERS_RECEIVED", "OPEN_HOUSE_EVENT", "OPEN_HOUSE_MARKETING", "PRESENTATION_DRIP_PREP", "PRESENTATION_VIDEO_GENERATED", "REPAIRS_IN_PROGRESS", "SELLER_DECISION", "SELLER_DECLINED", "SHOWINGS_ACTIVE", "UNDER_CONTRACT"],
     property_type: ["commercial", "condo", "land", "multi_family", "other", "single_family", "townhouse"],
     status: ["active", "cancelled", "coming_soon", "draft", "expired", "listing_signed", "off_market", "pending", "sold", "withdrawn"],
@@ -1621,6 +1626,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   transactions: {
     commission_final_source: ["cd_uploaded", "cda_signed"],
     deal_type: ["buyer", "dual", "seller"],
+    legal_description_source: ["agent", "rentcast"],
     source_family: ["contact_direct", "lead", "raw"],
     stage: ["APPRAISAL", "CLOSED", "CLOSING_PREP", "FINANCING_PENDING", "INSPECTION", "LOST", "UNDER_CONTRACT"],
     status: ["active", "archived", "clear_to_close", "closed", "funded", "lead", "lost", "pending", "qualifying", "under_contract"],
@@ -1642,7 +1648,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     usage_type: ["ai_call", "email", "scraper_call", "sms", "storage", "video", "voice_call"],
   },
   user_invitations: {
-    status: ["accepted", "expired", "pending", "revoked"],
+    status: ["accepted", "expired", "failed", "pending", "revoked"],
   },
   users: {
     platform_role: ["admin", "ai_isa_system", "marketing", "superadmin", "support"],

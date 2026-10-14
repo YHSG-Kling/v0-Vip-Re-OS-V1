@@ -17,18 +17,27 @@
  * Marketing namespace rather than /agent or /admin because all three personas
  * reach it from the same "Marketing & Content" nav group — a shared screen
  * should not live behind one persona's path prefix.
+ *
+ * Wave 141 (lane 141E): a DRAFT state (AI drafts, clones and hand-built magnets
+ * open on "Review & publish" first; the preview iframe shows a draft with
+ * ?preview=1, which /lm/[slug] serves only to this tenant), and the proactive
+ * idea panel ("Draft this with AI" pre-fills the builder).
  */
 
 import { useEffect, useState, useTransition } from "react"
 import { createClient } from "@/lib/supabase/client"
+import { suggestLeadMagnetIdeasAction } from "@/app/actions/lead-magnets-actions"
 import { MagnetLibrary } from "@/app/components/features/lead-magnets/MagnetLibrary"
 import { MagnetBuilder } from "@/app/components/features/lead-magnets/MagnetBuilder"
+import { MagnetDraftReview } from "@/app/components/features/lead-magnets/MagnetDraftReview"
 import { QRCodeGenerator } from "@/app/components/features/lead-magnets/QRCodeGenerator"
 import { PerformanceDashboard } from "@/app/components/features/lead-magnets/PerformanceDashboard"
 import { PublishGuideToGbp } from "@/app/components/features/lead-magnets/PublishGuideToGbp"
+import type { CreateLeadMagnetInput } from "@/lib/kernel/lead-magnets"
 import { Button } from "@/components/ui/button"
+import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ArrowLeft, BarChart2, FileText, QrCode, Magnet, Building2 } from "lucide-react"
+import { ArrowLeft, BarChart2, FileText, QrCode, Magnet, Building2, Lightbulb, PencilLine, Wand2 } from "lucide-react"
 
 type View = "library" | "new" | "detail"
 
@@ -51,6 +60,50 @@ interface SelectedMagnet {
   slug: string
   magnetType?: string
   qrCodeId?: string
+  /** Wave 141: a draft opens on review first and previews with ?preview=1. */
+  isDraft: boolean
+}
+
+interface Suggestion { key: string; kind: string; magnetType: string; concept: string; why: string; magnetId: string | null }
+
+/** Wave 141: the OS's own ideas (seasonal / local-market / audience gap / underperformer / test). */
+function LeadMagnetSuggestions({ onUse }: { onUse: (s: Suggestion) => void }) {
+  const [items, setItems] = useState<Suggestion[] | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    suggestLeadMagnetIdeasAction().then((r) => {
+      if (!live) return
+      if (!r.success) { setNote(r.error ?? "Ideas unavailable"); setItems([]); return }
+      setItems(r.suggestions as Suggestion[])
+    })
+    return () => { live = false }
+  }, [])
+  if (items === null) return null
+  if (items.length === 0) return note ? <p className="text-xs text-muted-foreground">{note}</p> : null
+  return (
+    <Card>
+      <CardContent className="p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Lightbulb className="h-4 w-4 text-primary" />
+          <p className="text-sm font-medium">Ideas worth drafting</p>
+        </div>
+        <ul className="space-y-2">
+          {items.map((s) => (
+            <li key={s.key} className="flex flex-col sm:flex-row sm:items-center gap-2 rounded-lg border p-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm">{s.concept}</p>
+                <p className="text-xs text-muted-foreground">{s.kind.replace(/_/g, " ")} — {s.why}</p>
+              </div>
+              <Button size="sm" variant="secondary" onClick={() => onUse(s)}>
+                <Wand2 className="h-4 w-4 mr-1" /> Draft this with AI
+              </Button>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  )
 }
 
 export default function LeadMagnetsPage() {
@@ -59,6 +112,7 @@ export default function LeadMagnetsPage() {
   const [view, setView] = useState<View>("library")
   const [selected, setSelected] = useState<SelectedMagnet | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [prefill, setPrefill] = useState<{ concept: string; magnetType: CreateLeadMagnetInput["magnetType"] } | null>(null)
   const [isPending, startTransition] = useTransition()
 
   useEffect(() => {
@@ -95,7 +149,7 @@ export default function LeadMagnetsPage() {
       const supabase = createClient()
       const { data: form } = await supabase
         .from("lead_capture_forms")
-        .select("id, name, slug, magnet_type")
+        .select("id, name, slug, magnet_type, is_active, settings")
         .eq("id", magnetId)
         .eq("brokerage_id", ctx.brokerageId)
         .single()
@@ -114,12 +168,14 @@ export default function LeadMagnetsPage() {
           .eq("is_active", true)
           .maybeSingle()
 
+        const lifecycle = ((form as { settings?: { lifecycle?: { state?: string } } | null }).settings?.lifecycle ?? null)
         setSelected({
           id: form.id,
           name: form.name,
           slug: form.slug,
           magnetType: (form as { magnet_type?: string }).magnet_type,
           qrCodeId: qr?.id,
+          isDraft: lifecycle?.state === "draft",
         })
         setView("detail")
       }
@@ -127,9 +183,22 @@ export default function LeadMagnetsPage() {
   }
 
   function handleCreated(magnetId: string, slug: string) {
-    setSelected({ id: magnetId, name: slug, slug })
+    setSelected({ id: magnetId, name: slug, slug, isDraft: false })
     setRefreshKey((k) => k + 1)
     setView("detail")
+  }
+
+  /** The AI wrote a real draft — open it on review (the same path a clone takes). */
+  function handleDrafted(magnetId: string) {
+    setRefreshKey((k) => k + 1)
+    setPrefill(null)
+    void handleSelectMagnet(magnetId)
+  }
+
+  function handlePublished(magnetId: string, slug: string) {
+    setSelected((prev) => (prev ? { ...prev, isDraft: false, slug } : prev))
+    setRefreshKey((k) => k + 1)
+    void magnetId
   }
 
   if (authError) {
@@ -148,6 +217,8 @@ export default function LeadMagnetsPage() {
     )
   }
 
+  const previewSrc = selected ? `/lm/${selected.slug}${selected.isDraft ? "?preview=1" : ""}` : ""
+
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 space-y-6">
       <div className="flex items-center gap-3">
@@ -155,7 +226,7 @@ export default function LeadMagnetsPage() {
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => { setView("library"); setSelected(null) }}
+            onClick={() => { setView("library"); setSelected(null); setPrefill(null) }}
             aria-label="Back to library"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -178,31 +249,46 @@ export default function LeadMagnetsPage() {
                   : "Create and manage your lead capture campaigns"
                 : view === "new"
                 ? "Configure your lead magnet and publishing channels"
-                : `/lm/${selected?.slug}`}
+                : `/lm/${selected?.slug}${selected?.isDraft ? " (draft)" : ""}`}
             </p>
           </div>
         </div>
       </div>
 
       {view === "library" && (
-        <MagnetLibrary
-          key={refreshKey}
-          brokerageId={ctx.brokerageId}
-          onSelectMagnet={handleSelectMagnet}
-          onCreateNew={() => setView("new")}
-        />
+        <>
+          <LeadMagnetSuggestions
+            onUse={(s) => {
+              setPrefill({ concept: s.concept, magnetType: s.magnetType as CreateLeadMagnetInput["magnetType"] })
+              setView("new")
+            }}
+          />
+          <MagnetLibrary
+            key={refreshKey}
+            brokerageId={ctx.brokerageId}
+            onSelectMagnet={handleSelectMagnet}
+            onCreateNew={() => { setPrefill(null); setView("new") }}
+          />
+        </>
       )}
 
       {view === "new" && (
         <MagnetBuilder
           brokerageId={ctx.brokerageId}
           onCreated={handleCreated}
+          onDrafted={handleDrafted}
+          initialConcept={prefill?.concept}
+          initialMagnetType={prefill?.magnetType}
         />
       )}
 
       {view === "detail" && selected && (
-        <Tabs defaultValue="analytics" className="space-y-4">
+        <Tabs defaultValue={selected.isDraft ? "draft" : "analytics"} className="space-y-4">
           <TabsList>
+            <TabsTrigger value="draft" className="flex items-center gap-2">
+              <PencilLine className="h-4 w-4" />
+              {selected.isDraft ? "Review & publish" : "Edit"}
+            </TabsTrigger>
             <TabsTrigger value="analytics" className="flex items-center gap-2">
               <BarChart2 className="h-4 w-4" />
               Analytics
@@ -221,6 +307,10 @@ export default function LeadMagnetsPage() {
             </TabsTrigger>
           </TabsList>
 
+          <TabsContent value="draft">
+            <MagnetDraftReview magnetId={selected.id} onPublished={handlePublished} />
+          </TabsContent>
+
           <TabsContent value="analytics">
             <PerformanceDashboard
               magnetId={selected.id}
@@ -230,12 +320,16 @@ export default function LeadMagnetsPage() {
           </TabsContent>
 
           <TabsContent value="qr">
-            <QRCodeGenerator
-              magnetId={selected.id}
-              magnetSlug={selected.slug}
-              brokerageId={ctx.brokerageId}
-              existingQrCodeId={selected.qrCodeId}
-            />
+            {selected.isDraft ? (
+              <p className="text-sm text-muted-foreground">Publish this draft first — a QR code must point at a live page.</p>
+            ) : (
+              <QRCodeGenerator
+                magnetId={selected.id}
+                magnetSlug={selected.slug}
+                brokerageId={ctx.brokerageId}
+                existingQrCodeId={selected.qrCodeId}
+              />
+            )}
           </TabsContent>
 
           <TabsContent value="preview">
@@ -243,10 +337,10 @@ export default function LeadMagnetsPage() {
               <div className="bg-muted/40 border-b px-4 py-2 flex items-center gap-2 text-xs text-muted-foreground">
                 <span className="font-mono">/lm/{selected.slug}</span>
                 <span>—</span>
-                <span>Public landing page preview</span>
+                <span>{selected.isDraft ? "Draft preview (only you can see this)" : "Public landing page preview"}</span>
               </div>
               <iframe
-                src={`/lm/${selected.slug}`}
+                src={previewSrc}
                 title={`Preview of ${selected.name}`}
                 className="w-full h-[600px] border-0"
               />
@@ -261,6 +355,7 @@ export default function LeadMagnetsPage() {
           </TabsContent>
         </Tabs>
       )}
+      {isPending && <p className="sr-only">Loading</p>}
     </div>
   )
 }

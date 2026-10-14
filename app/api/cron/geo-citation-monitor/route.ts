@@ -93,6 +93,13 @@ export async function GET(req: NextRequest) {
         const scan = await runGeoGapScan(brokerageId, {}, supabase)
         gaps += scan.gapsFound
         signals += scan.signalsPublished
+        // 3 — PROACTIVE LEAD-MAGNET IDEAS (wave 141, lane 141E): the same per-tenant sweep over the same
+        // lead-magnet pages — seasonal / local-market / audience-gap / underperformer / test ideas on the
+        // lead_magnet_suggestion signal, deduped per idea key (lib/lead-magnets/suggestions.ts). Rides this
+        // cron rather than a new one; a tenant with no landing-copy page is reached on demand from the page.
+        const { runLeadMagnetSuggestions } = await import("@/lib/lead-magnets/suggestions")
+        const ideas = await runLeadMagnetSuggestions(supabase, brokerageId, {})
+        signals += ideas.published
       } catch (e: any) {
         errors.push(`${brokerageId}: ${e?.message ?? String(e)}`)
       }

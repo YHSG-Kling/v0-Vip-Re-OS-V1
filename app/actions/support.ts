@@ -37,6 +37,7 @@ import {
   type TicketStatus, type TicketPriority, type TicketLane, type SupportTicket, type HelpArticle,
 } from "@/lib/support/ticket-constants"
 import { BROKERAGE_ADMIN_USER_TYPES } from "@/lib/auth/require-brokerage-admin"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 // SCOPE LADDER (kept inline — 'support' is a storable platform-staff user_type
 // this queue deliberately admits): 'superadmin' removed — dead as
@@ -102,13 +103,16 @@ async function callerAdministersOwnBrokerage(ctx: { userId: string; userType: st
  * scope decision this fix has no mandate to make. Only the dead half is repaired.
  */
 async function callerReadsAllBrokerages(ctx: { userId: string; userType: string }): Promise<boolean> {
-  if (ctx.userType === "superadmin" || ctx.userType === "support") return true
+  // Owner ruling 2026-10-14: `ctx.userType === "superadmin"` is never an authority arm (platform staff
+  // live in platform_role; the old arm matched nobody and was the fallback shape the ruling forbids).
+  if (ctx.userType === "support") return true
   const { data } = await createServiceClient()
     .from("users")
-    .select("platform_role")
+    .select("user_type, platform_role")
     .eq("id", ctx.userId)
     .maybeSingle()
-  return (data as { platform_role?: string | null } | null)?.platform_role === "superadmin"
+  const row = data as { user_type?: string | null; platform_role?: string | null } | null
+  return isPlatformSuperadminIdentity(row?.user_type, row?.platform_role)
 }
 
 function mapTicket(r: Record<string, unknown>): SupportTicket {

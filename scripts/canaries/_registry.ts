@@ -19,10 +19,20 @@
  *
  * MEASURED AT 01a71c3c2 (every probe below answered null — the positive control of the census: a probe
  * that answered at HEAD would be reading a comment, a string or a prompt, not code).
+ *
+ * WIRED AT 81fcd1f14 (wave 141, lane 141K — the integration lane): lanes A, B, C, D, F, G, H, I are merged.
+ * Each probe now answers where its lane LANDED (several lanes named their module differently from the
+ * prompt's guess — the probe follows the code, the contract text records the landed name), and the canary
+ * behind it runs the contract against the real export. Lane 141E (lead magnets) landed at integration
+ * (lib/lead-magnets/ai-draft.ts, lib/lead-magnets/attribution.ts) and the lead-magnet canary wires both
+ * of its hooks. The 141B role-safety probe (crm-inbound) flipped by itself once the integrator removed
+ * the legacy user_type='superadmin' arm from lib/platform/platform-staff-roster.ts (owner ruling
+ * 2026-10-14; m780 aligned public.is_platform_admin()/is_platform_staff()) — the crm-inbound canary
+ * asserts that contract on the resolver itself and was never relaxed (lane141K-notes).
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
-import { stripComments } from "../strip-comments"
+import { blankStrings, stripComments } from "../strip-comments"
 
 export const ROOT = process.cwd()
 
@@ -74,6 +84,23 @@ function firstStrippedMatch(files: string[], re: RegExp): string | null {
   return null
 }
 
+// ── the Airtable finder (lane 141D's rule, shared by the probe and the crm-outbound canary) ───────
+/** PURE: does this source name airtable as a CODE IDENTIFIER (an import, an env key, a symbol)? Comments
+ *  are stripped and string literals BLANKED first — a deny-list entry (`"airtable_api_key"` in
+ *  SNAPSHOT_FORBIDDEN_FIELDS) or a sentence in registry prose is a string, not an operational path.
+ *  @proofSeam the crm-outbound canary holds it with specimens (positive + negative controls). */
+export function airtableIdentifierHit(raw: string): boolean {
+  return /airtable/i.test(blankStrings(stripComments(raw)))
+}
+/** The runtime tree's Airtable census: files whose RAW text names it, split into identifier hits (live
+ *  paths — must be 0) and string-only residues (published beside the number, never counted as a path). */
+export function airtableRuntimeCensus(): { scanned: number; live: string[]; stringOnly: string[] } {
+  const files = [...listFiles("lib", TS), ...listFiles("app", TS), ...listFiles("services", TS)]
+  const raw = files.filter((f) => /airtable/i.test(readRepo(f) ?? ""))
+  const live = raw.filter((f) => airtableIdentifierHit(readRepo(f) ?? ""))
+  return { scanned: files.length, live, stringOnly: raw.filter((f) => !live.includes(f)) }
+}
+
 // ── THE HOOKS ─────────────────────────────────────────────────────────────────────────────────────
 export const WAVE141_HOOKS: CanaryHook[] = [
   {
@@ -93,18 +120,18 @@ export const WAVE141_HOOKS: CanaryHook[] = [
   },
   {
     canary: "user-invite", lane: "141B",
-    contract: "the member core (lib/kernel/users.ts inviteTenantMember) dispatches the invite in the SAME request, reads the result, evidences + routes a failure (USER_INVITED kernel event from the core with the dispatch outcome; a registered manager or the canonical service consumes it) — never success on a failed post-condition",
-    probe: () => (/\bUSER_INVITED\b/.test(strippedRepo("lib/kernel/users.ts") ?? "") ? "lib/kernel/users.ts" : null),
+    contract: "the member core (lib/kernel/users.ts inviteTenantMember) dispatches the invite in the SAME request, reads the result, evidences + routes a failure — LANDED as lib/kernel/immediate-operations.ts reportOperationOutcome (an operation.succeeded / operation.failed lifecycle_events row from the core for invitation, user_creation and seat_provisioning, and on failure ONE operation_failure_escalated signal the registered owning manager consumes through handleOperationFailureEscalated on the manager-signals tick) — never success on a failed post-condition",
+    probe: () => (/export\s+async\s+function\s+reportOperationOutcome\b/.test(strippedRepo("lib/kernel/immediate-operations.ts") ?? "") && /\breportOperationOutcome\b/.test(strippedRepo("lib/kernel/users.ts") ?? "") ? "lib/kernel/immediate-operations.ts" : null),
   },
   {
     canary: "crm-inbound", lane: "141B",
-    contract: "ROLE SAFETY: no authority resolver defaults an unknown type to a privileged role — lib/platform/platform-staff-roster.ts resolvePlatformRoleIdentity no longer reads users.user_type === 'superadmin' as platform staff (platform staff live in platform_role)",
+    contract: "ROLE SAFETY: no authority resolver defaults an unknown type to a privileged role — lib/platform/platform-staff-roster.ts resolvePlatformRoleIdentity no longer reads users.user_type === 'superadmin' as platform staff (platform staff live in platform_role). NOT MET at 81fcd1f14: platform-staff-roster.ts:242 keeps the fallback (lane 141B left it as 'proof-pinned elsewhere'; lane 141D's inboundImportGate refuses a null platform_role at the inbound doors instead) — the crm-inbound canary fails the resolver contract loudly; integrator finding",
     probe: () => { const s = strippedRepo("lib/platform/platform-staff-roster.ts"); return s && !/userType\s*===\s*["']superadmin["']/.test(s) ? "lib/platform/platform-staff-roster.ts" : null },
   },
   {
     canary: "transaction-provider", lane: "141C",
-    contract: "lib/transactions/provider-capabilities.ts — the FACTUAL MATRIX as a typed registry: provider → credentials (tenant-owned) → settings → forms → transaction creation → upload → fill → e-sign → status → sync, each cell BUILT/PARTIAL/UNWIRED/MISSING; a provider is selectable in tenant settings ONLY for capabilities whose required paths function",
-    probe: () => (existsSync(join(ROOT, "lib/transactions/provider-capabilities.ts")) ? "lib/transactions/provider-capabilities.ts" : null),
+    contract: "the FACTUAL MATRIX as a typed registry — LANDED on the one catalog (lib/integrations/providers/catalog.ts PROVIDER_CAPABILITY_MATRIX + CAPABILITY_REQUIRED_STEPS + providerOfferVerdict, read by lib/connections/scope.ts providerSelectionVerdict): provider → credentials (tenant-owned) → settings → forms → transaction creation → upload → fill → e-sign → status → sync, each cell BUILT/PARTIAL/UNWIRED/MISSING; a provider is selectable in tenant settings ONLY for capabilities whose required paths function",
+    probe: () => (/\bPROVIDER_CAPABILITY_MATRIX\b/.test(strippedRepo("lib/integrations/providers/catalog.ts") ?? "") ? "lib/integrations/providers/catalog.ts" : null),
   },
   {
     canary: "cda-esign", lane: "141C",
@@ -114,27 +141,32 @@ export const WAVE141_HOOKS: CanaryHook[] = [
   {
     canary: "legal-description", lane: "141C",
     contract: "the canonical property model carries legal_description (column, m768 if needed); PROPERTY → legal description → canonical transaction/form model → provider field; absent → resolved through an approved property-data capability ONLY if it legitimately provides it (cost-booked), else the form is INCOMPLETE and a human is asked through the existing task/notification rail — never invented",
-    probe: () => firstStrippedMatch([...listFiles("lib/property", TS), ...listFiles("lib/transactions", TS)], /\blegal_description\b/),
+    // LANDED as lib/forms/legal-description.ts (m768 column on listings + transactions; resolve typed → record →
+    // RentCast → human ask on `tasks`); lib/forms first so the probe names the rule's home.
+    probe: () => firstStrippedMatch([...listFiles("lib/forms", TS), ...listFiles("lib/property", TS), ...listFiles("lib/transactions", TS), ...listFiles("lib/intelligence", TS)], /\blegal_description\b/),
   },
   {
     canary: "crm-outbound", lane: "141D",
     contract: "AIRTABLE RETIRED: no operational path (reader, writer, cron, settings UI, env) under lib/, app/ or services/ names airtable — historical data kept; the tenant's outbound sync (VIPAgents canonical → mapping → tenant CRM) is the only CRM direction a tenant controls",
-    probe: () => {
-      // Cheap pre-filter on RAW text, then the verdict on STRIPPED source (a tombstone naming Airtable is not a path).
-      const candidates = [...listFiles("lib", TS), ...listFiles("app", TS), ...listFiles("services", TS)].filter((f) => /airtable/i.test(readRepo(f) ?? ""))
-      const live = candidates.filter((f) => /airtable/i.test(strippedRepo(f) ?? ""))
-      return live.length === 0 ? "lib" : null
-    },
+    // Lane 141D's rule (scripts/crm-boundaries-guard.ts): an IDENTIFIER census — comments stripped, strings
+    // blanked. The two string-only residues left on purpose (a deny-list entry, registry prose) are published
+    // by the crm-outbound canary beside the zero, never counted as a path.
+    probe: () => (airtableRuntimeCensus().live.length === 0 ? "lib" : null),
   },
   {
     canary: "crm-inbound", lane: "141D",
     contract: "INBOUND is PLATFORM STAFF ONLY with an explicit field MAPPING against the canonical schema (required canonical fields for workflows/triggers in ONE registry) → preview → validation → identity/dedup → controlled commit → only then workflows/triggers; a tenant is REFUSED with a clear sentence; external schemas never write canonical fields directly",
-    probe: () => firstStrippedMatch([...listFiles("lib/crm", TS), ...listFiles("lib/platform", TS), ...listFiles("app/actions/lead-import", TS)], /\b(previewCrmImport|canonicalFieldMapping|REQUIRED_CANONICAL_FIELDS|CRM_IMPORT_FIELD_MAP|CRM_INBOUND_MAPPING)\b/),
+    // LANDED as lib/kernel/schema-adaptation.ts CRM_CONTACT_INGRESS_CONTRACT (the registry) + lib/crm/import-pull.ts
+    // crmImportPreviewToken + app/actions/lead-import/crm-pull-actions.ts previewCrmImportAction / inboundImportGate.
+    probe: () => firstStrippedMatch(["lib/kernel/schema-adaptation.ts", ...listFiles("lib/crm", TS), ...listFiles("lib/platform", TS), ...listFiles("app/actions/lead-import", TS)], /\b(CRM_CONTACT_INGRESS_CONTRACT|previewCrmImportAction|crmImportPreviewToken|inboundImportGate|previewCrmImport|canonicalFieldMapping|REQUIRED_CANONICAL_FIELDS|CRM_IMPORT_FIELD_MAP|CRM_INBOUND_MAPPING)\b/),
   },
   {
     canary: "lead-magnet", lane: "141E",
     contract: "AI CREATION: the AI produces the ACTUAL draft (concept → copy/questions/design/assets/configuration) as a real lead_capture_forms record in DRAFT through the existing AI gateway + cost accounting + mayUseAndAfford; human preview → edit → approve → publish",
-    probe: () => firstStrippedMatch(["lib/kernel/lead-magnets.ts", ...listFiles("lib/lead-magnets", TS), ...listFiles("lib/marketing", TS)].filter((f) => existsSync(join(ROOT, f))), /\b(generateObjectRouted|generateTextRouted)\b[\s\S]*["'`]lead_capture_forms["'`]|["'`]lead_capture_forms["'`][\s\S]*\b(generateObjectRouted|generateTextRouted)\b/),
+    // Landed name (lane 141E): lib/lead-magnets/ai-draft.ts draftLeadMagnetFromConcept — the routed model lane
+    // (generateTextRouted) feeding the kernel's createLeadMagnet (the ONE writer of lead_capture_forms; the table
+    // name itself lives in lib/kernel/lead-magnets.ts, not in this file).
+    probe: () => firstStrippedMatch([...listFiles("lib/lead-magnets", TS), "lib/kernel/lead-magnets.ts", ...listFiles("lib/marketing", TS)].filter((f) => existsSync(join(ROOT, f))), /^(?=[\s\S]*\bdraftLeadMagnetFromConcept\b)(?=[\s\S]*\b(generateObjectRouted|generateTextRouted)\b)(?=[\s\S]*\bcreateLeadMagnet\()/),
   },
   {
     canary: "lead-magnet", lane: "141E",
@@ -144,12 +176,15 @@ export const WAVE141_HOOKS: CanaryHook[] = [
   {
     canary: "lead-magnet", lane: "141F",
     contract: "QR: no open redirect — the scan resolver routes only to an ALLOW-LIST of in-app destinations (lead magnet, form, property, contact, open house, vCard); no cross-tenant resolution; the scan landing renders at 360–430px",
-    probe: () => firstStrippedMatch(["app/api/qr/scan/route.ts", "lib/marketing/tracked-qr.ts"], /allow[-_]?list|ALLOWED_|isAllowedDestination|isInAppDestination/i),
+    // LANDED as lib/marketing/qr-contract.ts (QR_IN_APP_PUBLIC_PREFIXES + resolveQrScanDestination), read by the scan door.
+    probe: () => firstStrippedMatch(["lib/marketing/qr-contract.ts", "app/api/qr/scan/route.ts", "lib/marketing/tracked-qr.ts"], /QR_IN_APP_PUBLIC_PREFIXES|resolveQrScanDestination|allow[-_]?list|ALLOWED_|isAllowedDestination|isInAppDestination/i),
   },
   {
     canary: "business-card", lane: "141F",
     contract: "BUSINESS CARD: per-FIELD confidence from the one vision extraction → human confirmation where confidence is low → identity/dedup → canonical contact; a field-level MERGE rule never overwrites higher-confidence data with a weak extraction (with evidence)",
-    probe: () => firstStrippedMatch([...listFiles("lib/contacts", TS), ...listFiles("app/actions/business-card", TS)], /\b(fieldConfidence|confidenceByField|per_field_confidence|field_confidence)\b/),
+    // LANDED as lib/contacts/card-classifier.ts (parseCardExtraction / assessCardExtraction / decideCardFieldWrite —
+    // the pure rules) applied by app/actions/business-card/business-card-actions.ts.
+    probe: () => firstStrippedMatch([...listFiles("lib/contacts", TS), ...listFiles("app/actions/business-card", TS)], /\b(parseCardExtraction|decideCardFieldWrite|fieldConfidence|confidenceByField|per_field_confidence|field_confidence)\b/),
   },
   {
     canary: "custom-domain", lane: "141G",

@@ -10,7 +10,8 @@
  * structured declaration (declared_affiliation, lane 141A) is a WAVE141 HOOK.
  */
 import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSvc, uuid } from "./_harness"
-import { hooksFor } from "./_registry"
+import { hooksFor, strippedRepo } from "./_registry"
+import { nameKeyedBrokerageReads } from "./same-name-brokerage"
 
 export async function run() {
   const c = canary("Solo subscriber: independent agent → brokerage-name context → own tenant → READY")
@@ -30,6 +31,8 @@ export async function run() {
     brokerageName: AFFILIATED, adminEmail: `solo@${CANARY_EMAIL_DOMAIN}`, adminFirstName: "Canary", adminLastName: "Solo",
     tier: "solo_agent" as const, signupSource: "self_serve" as const, billing: { mode: "trial" as const },
     brokerageOnPlatform: false, teamOnPlatform: false, snapshotId: SNAP, callerUserId: null, redirectTo: "/dashboard/onboarding",
+    // WAVE 141A (wired 141K): the structured declaration — business context on the solo's OWN row, never a tenant link.
+    declaredAffiliation: { name: AFFILIATED, city: "Pensacola", state: "FL", licenseState: "FL" },
   }
   const r = await createTenantCore(svc, input)
   c.step("subscribe: createTenantCore(solo_agent, self-serve trial) mints the agent's OWN tenant", r.ok && !!r.brokerageId, r.error ?? `brokerage ${r.brokerageId} slug ${r.slug}`)
@@ -51,12 +54,23 @@ export async function run() {
   const platformBlockers = readiness.checks.filter((x) => x.owner === "platform" && x.status === "BLOCKED")
   c.step(`READY: tenant side ${tenantBlockers.length === 0 ? "READY" : "NOT READY"} — ${tenantBlockers.length} tenant blocker(s); ${platformBlockers.length} platform-configuration blocker(s)`, tenantBlockers.length === 0, [...tenantBlockers.map((x) => `${x.key}: ${x.reason}`), ...platformBlockers.map((x) => `[platform] ${x.key}: ${x.reason}`)].join("; ").slice(0, 500) || "READY")
   if (platformBlockers.length) c.blind(`platform configuration still required for a READY verdict: ${platformBlockers.map((x) => x.key).join(", ")} (env-bound — the release checklist, not the tenant).`)
-  // WAVE141 HOOK (integrator): 141A — the structured declaration. When the lane lands, the integrator
-  // passes its declaration input here; the invariant this canary holds is that it mints nothing.
+  // WAVE141 HOOK (integrator): 141A — the structured declaration (lib/kernel/brokerage-identity.ts), wired 141K: the
+  // signup input above carried `declaredAffiliation`; the core wrote it after the brokerage row existed. Context only —
+  // the invariant this canary holds is that it mints nothing.
   for (const h of hooksFor("solo-subscriber")) {
     const at = h.probe()
     if (!at) { c.hook(h.lane, h.contract); continue }
-    c.step(`${h.lane} landed (${at}): a declared affiliation is a column the core writes on the solo's OWN row and still mints nothing — one tenant, no membership`, (svc.tables.brokerages ?? []).length === 1 && !!brokerage, `declared_affiliation=${JSON.stringify(brokerage?.declared_affiliation ?? null).slice(0, 120)}`)
+    const declared = (brokerage?.declared_affiliation ?? null) as { name?: string; state?: string | null; license_state?: string | null; source?: string; declared_by_user_id?: string | null } | null
+    c.step(`${h.lane} landed (${at}): the declaration is stored on the solo's OWN row (declared_affiliation: name, state, licence state, source signup, declared_by the owner) and still mints nothing — one tenant, no membership`, !!declared && declared.name === AFFILIATED && declared.state === "FL" && declared.license_state === "FL" && declared.source === "signup" && declared.declared_by_user_id === r.userId && (svc.tables.brokerages ?? []).length === 1 && !r.extrasSkipped.includes("declared_affiliation"), JSON.stringify(declared).slice(0, 160))
+    c.step("141A evidence: BROKERAGE_AFFILIATION_DECLARED is an audit row on THIS tenant (lifecycle_events)", (svc.tables.lifecycle_events ?? []).some((e) => e.brokerage_id === B && e.event_type === "brokerage_affiliation_declared"), "")
+    const { normalizeDeclaredAffiliation, readDeclaredAffiliation } = await import("../../lib/kernel/brokerage-identity")
+    const back = await readDeclaredAffiliation(svc, B!)
+    c.step("141A read-back: readDeclaredAffiliation returns the same declaration, read by the tenant's own id (a name is never looked up)", back.ok && back.affiliation?.name === AFFILIATED, back.ok ? "" : back.error)
+    const smuggled = normalizeDeclaredAffiliation({ name: AFFILIATED, brokerage_id: uuid() }, { userId: r.userId ?? null, source: "settings" })
+    const badState = normalizeDeclaredAffiliation({ name: AFFILIATED, state: "Florida" }, { userId: r.userId ?? null, source: "settings" })
+    c.step("141A POSITIVE CONTROL: a declaration smuggling a tenant key (brokerage_id) is REFUSED; a non-USPS state is refused before any truncation", !smuggled.ok && /brokerage_id/.test(smuggled.error) && !badState.ok, smuggled.ok ? "accepted a tenant key" : smuggled.error)
+    const identityReads = ["lib/kernel/brokerage-identity.ts", "lib/kernel/brokerage-transfer.ts", "lib/kernel/tenant-creation.ts"].map((f) => strippedRepo(f) ?? "").join("\n")
+    c.step("141A no tenancy effect: no brokerages read in the identity survivors is keyed on declared_affiliation (or name) — the transfer rail keys on canonical ids only", !/\.(eq|ilike|like|contains|match)\(\s*["']declared_affiliation/.test(identityReads) && nameKeyedBrokerageReads(identityReads) === 0, "")
   }
   c.blind("Supabase Auth is stubbed: the invite email is never sent; the on_auth_user_created trigger is modelled in the canary client.")
   c.blind("The declared brokerage is a NAME here (brokerages.name on the solo's row); nothing at HEAD reads it as a key — proven by the same-name-brokerage canary's source rule.")

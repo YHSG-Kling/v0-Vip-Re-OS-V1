@@ -212,7 +212,7 @@ export async function generateAdCreative(
   // (lib/ads/listing-ad-producer.ts) and the launch assembler already reads.
   const { data: campaign, error: campaignError } = await supabase
     .from("ad_campaigns")
-    .select("platform, objective, campaign_name, team_id, targeting_config")
+    .select("platform, objective, campaign_name, team_id, targeting_config, marketing_campaign_id")
     .eq("id", adCampaignId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
@@ -326,7 +326,22 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
     // never be filled in with a guessed host.
     const { resolveAdDestination } = await import("./ad-destination")
     const targeting = (campaign.targeting_config ?? {}) as Record<string, unknown>
-    const destinationUrl = await resolveAdDestination(supabase as never, {
+    // Wave 141 (lane 141E): a campaign that names a LEAD MAGNET sends every creative to that magnet's
+    // capture page with the attribution the capture keeps — campaign (marketing_campaigns.id, the
+    // attribution FK contacts.campaign_attribution_id points at), ad campaign, platform as utm_source,
+    // and PER VARIATION the creative itself. Resolved per variation below; the batch destination stays
+    // the one resolution for listing / brand-site campaigns.
+    const leadMagnetId = typeof targeting.lead_magnet_id === "string" && targeting.lead_magnet_id ? targeting.lead_magnet_id : null
+    const platform = String((campaign as { platform?: string }).platform ?? "")
+    const { attributionSlug } = await import("@/lib/lead-magnets/attribution")
+    const baseAttribution = leadMagnetId ? {
+      campaignId: (campaign as { marketing_campaign_id?: string | null }).marketing_campaign_id ?? null,
+      adCampaignId,
+      utmSource: platform || null,
+      utmMedium: platform === "google" ? "paid_search" : "paid_social",
+      utmCampaign: String((campaign as { campaign_name?: string }).campaign_name ?? "") || null,
+    } : null
+    const destinationUrl = leadMagnetId ? null : await resolveAdDestination(supabase as never, {
       brokerageId: context.brokerageId,
       listingId: typeof targeting.listing_id === "string" ? targeting.listing_id : null,
       teamId: (campaign as { team_id?: string | null }).team_id ?? null,
@@ -336,6 +351,13 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
 
     for (const variation of variations) {
       const combinedText = `${variation.headline} ${variation.primaryText} ${variation.description}`
+      const variationDestination = leadMagnetId
+        ? await resolveAdDestination(supabase as never, {
+            brokerageId: context.brokerageId,
+            leadMagnetId,
+            attribution: { ...baseAttribution, creative: attributionSlug(variation.variationName) },
+          })
+        : destinationUrl
 
       // Run all 5 compliance gates: Brand Voice → TCPA → Authority → Fair Housing → Them-First
       // Ad creative uses the "social" channel and a synthetic broadcast contact (no real recipient).
@@ -365,7 +387,7 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
           primary_text: variation.primaryText,
           description: variation.description,
           call_to_action: variation.callToAction,
-          destination_url: destinationUrl,
+          destination_url: variationDestination,
           approval_status: approvalStatus,
         })
         .select("id")

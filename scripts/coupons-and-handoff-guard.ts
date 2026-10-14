@@ -332,7 +332,7 @@ async function main() {
     && /Stripe applied \{c\.stripe_applied_redemptions\}\/\{c\.ledger_redemptions\}/.test(code("app/dashboard/superadmin/coupons/coupons-manager.tsx")))
   const m777 = src("supabase/migrations/m777-coupon-reconciliation-columns.sql")
   check("m777 adds exactly the three reconciliation columns (nullable, IF NOT EXISTS) and carries a status header",
-    /ADD COLUMN IF NOT EXISTS discount_cents integer/.test(m777) && /ADD COLUMN IF NOT EXISTS stripe_discount_id text/.test(m777) && /ADD COLUMN IF NOT EXISTS stripe_applied_at timestamptz/.test(m777) && /^-- ── (WRITTEN, NOT APPLIED|APPLIED LIVE)/.test(m777))
+    /ADD COLUMN IF NOT EXISTS discount_cents integer/.test(m777) && /ADD COLUMN IF NOT EXISTS stripe_discount_id text/.test(m777) && /ADD COLUMN IF NOT EXISTS stripe_applied_at timestamptz/.test(m777) && /^-- ── (APPLIED LIVE 2026-10-14|APPLIED LIVE)/.test(m777))
 
   // ─── E · the handoff ────────────────────────────────────────────────────────
   console.log("\n[E · subscriber → brokerage billing handoff — prorated once, never across a tenant]")

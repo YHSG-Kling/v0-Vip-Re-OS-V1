@@ -92,7 +92,11 @@ async function stampCrmSyncOutcome(
   const patch = crmSyncOutcomePatch(ref.table, result)
   if (!patch) return
   try {
-    let q = client.from(ref.table).update(patch)
+    // One LITERAL chain per store (the column census attributes a dynamic-key write to a table only when it can
+    // see the table name; `.from(ref.table)` hid agent_api_credentials.error_message / last_verified_at's writer).
+    let q = ref.table === "agent_api_credentials" ? client.from("agent_api_credentials").update(patch)
+      : ref.table === "brokerage_integrations" ? client.from("brokerage_integrations").update(patch)
+      : client.from("platform_credentials").update(patch)
     for (const [col, v] of Object.entries(ref.match)) q = q.eq(col, v)
     const { data, error } = await q.select("id")
     if (error) console.error(`[crm-sync] outcome stamp on ${ref.table} (${result.providerKey}) was refused: ${error.message}`)

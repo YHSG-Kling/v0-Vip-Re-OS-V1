@@ -25,8 +25,10 @@
  *                                      2026-08-24: 0 of 23 users rows carry
  *                                      user_type='superadmin'. The branch can
  *                                      never fire for the account it admits.
- *   platformRole === "superadmin"    ← misses the legacy marker that RLS's
- *                                      public.is_platform_admin() still honours.
+ *   platformRole === "superadmin"    ← admits a SERVICE row that carries it and
+ *                                      re-derives what the roster already decides.
+ *   (The legacy user_type marker is no longer an arm anywhere: owner ruling
+ *   2026-10-14, m780 aligned public.is_platform_admin()/is_platform_staff().)
  *
  * The survivor reads BOTH and additionally refuses `ai_isa_system`:
  *
@@ -339,9 +341,13 @@ export function discriminatorSpellingsIn(raw: string): Finding[] {
       why: "the eleven converted staff gates call a function that is no longer there",
     },
     {
-      name: "it reads BOTH identity columns (neither alone answers the question)",
-      ok: /userType === "superadmin" \|\| platformRole === "superadmin"/.test(src),
-      why: "the survivor has decayed into one of the two halves it exists to replace",
+      name: "it TAKES both identity columns and ANSWERS from platform_role alone — no user_type fallback arm anywhere in the survivor (owner ruling 2026-10-14)",
+      // `src` is stripped source, so the roster's own prose (which quotes the retired
+      // `userType === "superadmin"` spelling as history) cannot satisfy the absence half.
+      ok: /export function isPlatformSuperadminIdentity\(\s*userType: string \| null \| undefined,\s*platformRole: string \| null \| undefined,?\s*\): boolean/.test(src) &&
+          /return platformRole === "superadmin"\s*\}/.test(src) &&
+          !/userType === "superadmin"/.test(src),
+      why: "the survivor must keep BOTH columns in its contract (every gate hands them over; the service-account shape needs user_type) while never reading user_type as authority — the fallback shape the owner ruled out",
     },
     {
       name: "ai_isa_system is refused BY NAME, not by string inequality",
@@ -379,9 +385,9 @@ export function discriminatorSpellingsIn(raw: string): Finding[] {
       why: "MEASURED live 2026-08-24: this is the platform's only superadmin row. Refusing it locks the owner out of his own OS",
     },
     {
-      name: "the legacy marker (user_type='superadmin') is still admitted",
-      ok: mod.isPlatformSuperadminIdentity("superadmin", null) === true,
-      why: "public.is_platform_admin() honours it in RLS; the app gate would then be tighter than the database",
+      name: "the legacy marker (user_type='superadmin') with NO platform_role is REFUSED — never a fallback",
+      ok: mod.isPlatformSuperadminIdentity("superadmin", null) === false && mod.platformActorKind("superadmin", null) === null,
+      why: "owner ruling 2026-10-14 (wave 141): 'be careful on falling back to user type superadmin' — platform staff live in platform_role; m780 removed the same arm from public.is_platform_admin()/is_platform_staff() so app and RLS agree. Flipped from 'still admitted' on that ruling; 0 live rows ever carried the marker",
     },
     {
       name: "a tenant admin (user_type='admin', platform_role=null) is REFUSED",
@@ -405,9 +411,10 @@ export function discriminatorSpellingsIn(raw: string): Finding[] {
       why: "the four-role roster is the STAFF question; only superadmin is the OS user",
     },
     {
-      name: "the role derivation returns the roster role, the legacy superadmin, and NULL for everything else",
+      name: "the role derivation returns the roster role and NULL for everything else — a user_type is never read as a role",
       ok: mod.resolvePlatformRoleIdentity("system", "marketing") === "marketing" &&
-          mod.resolvePlatformRoleIdentity("superadmin", null) === "superadmin" &&
+          mod.resolvePlatformRoleIdentity("admin", "superadmin") === "superadmin" &&
+          mod.resolvePlatformRoleIdentity("superadmin", null) === null &&
           mod.resolvePlatformRoleIdentity("admin", null) === null &&
           mod.resolvePlatformRoleIdentity("system", "ai_isa_system") === null,
       why: "eleven converted staff gates feed this straight into platformStaffCan; a wrong answer here is a wrong answer at all eleven",

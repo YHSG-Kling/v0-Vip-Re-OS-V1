@@ -39,7 +39,8 @@
  *   G  RELEASE GATE (wave 141, lane 141J) — EVERY owner gate of the wave-141
  *      ruling mapped to the proof(s) and canary(ies) that certify it; a gate
  *      reads CERTIFIED only when every proof is registered, in a guard chain and
- *      on disk, and every canary is in the roster with no WAVE141 HOOK pending —
+ *      on disk, and every canary is in the roster with no WAVE141 HOOK pending (of the
+ *      lanes the gate's contract names, when `hookLanes` narrows it — lane 141K) —
  *      otherwise NOT CERTIFIED with its reasons (never silently green). The
  *      verdict line "RELEASE: READY / NOT READY" is the integrator's reading;
  *      "guards green" alone is never READY.
@@ -689,6 +690,10 @@ interface ReleaseGate {
   proofs: string[]
   /** scripts/canaries roster keys (CANARY_KEYS); a canary with a WAVE141 HOOK still pending does not certify. */
   canaries: string[]
+  /** Lane 141K: when a canary carries hooks for SEVERAL lanes' contracts, the lanes whose pending hook blocks THIS
+   *  gate (the lead-magnet canary carries 141E AI-draft/attribution hooks AND the 141F QR allow-list hook — the
+   *  QR/barcode gate waits on 141F, not on 141E). Omitted = any pending hook on the canary blocks the gate. */
+  hookLanes?: string[]
   /** Workflow files that must exist for the in-repo half of a CI gate. */
   ci?: string[]
   /** A verdict this guard cannot read (it lives outside the repo) — the gate can only reach EXTERNAL, never CERTIFIED, here. */
@@ -697,7 +702,7 @@ interface ReleaseGate {
 const RELEASE_GATES: ReleaseGate[] = [
   { gate: "security", proofs: ["test:secrets-rls", "test:credential-migration", "test:rls-public-grant", "test:rls-anon-escape", "test:webhook-contract", "test:production-readiness"], canaries: [] },
   { gate: "tenant isolation", proofs: ["test:tenant-scope", "test:conditional-tenant-predicate", "test:sessionless-use-server-census", "test:brokerage-identity"], canaries: ["seat", "same-name-brokerage"] },
-  { gate: "role safety", proofs: ["test:role-vocabulary", "test:immediate-operations"], canaries: ["crm-inbound"] },
+  { gate: "role safety", proofs: ["test:role-vocabulary", "test:immediate-operations"], canaries: ["crm-inbound"], hookLanes: ["141B"] },
   { gate: "brokerage identity", proofs: ["test:brokerage-identity"], canaries: ["solo-subscriber", "same-name-brokerage"] },
   { gate: "subscriber migration", proofs: ["test:brokerage-identity"], canaries: ["brokerage-adoption"] },
   { gate: "Stripe proration", proofs: ["test:coupons-and-handoff", "test:stripe-webhook-events"], canaries: ["brokerage-adoption"] },
@@ -712,7 +717,7 @@ const RELEASE_GATES: ReleaseGate[] = [
   { gate: "CRM rules", proofs: ["test:crm-boundaries", "test:crm-pull", "test:crm-sync-credential"], canaries: ["crm-outbound", "crm-inbound"] },
   { gate: "lead magnets", proofs: ["test:lead-magnet-creation", "test:lead-magnet-flow", "test:lead-magnet-embed"], canaries: ["lead-magnet"] },
   { gate: "AI creation", proofs: ["test:lead-magnet-creation", "test:ai-routing-coverage", "test:cost-completeness"], canaries: ["lead-magnet"] },
-  { gate: "QR/barcode", proofs: ["test:qr-and-card-scanner", "test:qr-registry", "test:marketing-qr"], canaries: ["lead-magnet"] },
+  { gate: "QR/barcode", proofs: ["test:qr-and-card-scanner", "test:qr-registry", "test:marketing-qr"], canaries: ["lead-magnet"], hookLanes: ["141F"] },
   { gate: "business card scanner", proofs: ["test:qr-and-card-scanner"], canaries: ["business-card"] },
   { gate: "coupons", proofs: ["test:coupons-and-handoff", "test:plan-catalog"], canaries: ["coupon"] },
   { gate: "A2P", proofs: ["test:phone-a2p-automation", "test:tenant-readiness"], canaries: [] },
@@ -749,7 +754,8 @@ function certifyGate(g: ReleaseGate, env: GateEnv): GateVerdict {
   })
   const canaries = g.canaries.map((key) => {
     if (!env.roster.includes(key)) return { key, state: "unknown" as CanaryState, lanes: [] }
-    const lanes = env.pending.get(key) ?? []
+    // Lane 141K: only the lanes this gate's contract names block it (hookLanes); unnamed = every pending hook blocks.
+    const lanes = (env.pending.get(key) ?? []).filter((l) => !g.hookLanes || g.hookLanes.includes(l))
     return { key, state: (lanes.length ? "pending" : "ok") as CanaryState, lanes }
   })
   const reasons: string[] = []
@@ -782,7 +788,7 @@ check("G2 every gate names at least one proof (a gate with no proof can never be
 check("G3 every canary a gate names is in the runner's roster and on disk", RELEASE_GATES.every((g) => g.canaries.every((c) => (CANARY_KEYS as readonly string[]).includes(c) && existsSync(join(ROOT, `scripts/canaries/${c}.ts`)))), RELEASE_GATES.flatMap((g) => g.canaries.filter((c) => !(CANARY_KEYS as readonly string[]).includes(c) || !existsSync(join(ROOT, `scripts/canaries/${c}.ts`)))).join(", "))
 check("G4 every roster canary exists on disk and every WAVE141 hook names a roster canary (the census cannot point at nothing)", CANARY_KEYS.every((k) => existsSync(join(ROOT, `scripts/canaries/${k}.ts`))) && WAVE141_HOOKS.every((h) => (CANARY_KEYS as readonly string[]).includes(h.canary)), "")
 check("G5 every REGISTERED proof the table names has a MAINTENANCE_DOMAINS owner that is a registered manager (the roster is the registry's, recruiting_manager included)", allProofs.filter((k) => pkg.scripts[k]).every((k) => !proofOwner.has(k) || Object.keys(MANAGERS).includes(proofOwner.get(k)!)), "")
-check("G6 POSITIVE CONTROL — a gate naming an unregistered proof is NOT CERTIFIED; one naming a registered+chained proof and a hook-free canary is CERTIFIED; an unchained proof is a reason; a pending hook is a reason; an invented owner is refused and recruiting_manager is accepted",
+check("G6 POSITIVE CONTROL — a gate naming an unregistered proof is NOT CERTIFIED; one naming a registered+chained proof and a hook-free canary is CERTIFIED; an unchained proof is a reason; a pending hook is a reason; a pending hook of a lane the gate's hookLanes does NOT name is not (and one it names is); an invented owner is refused and recruiting_manager is accepted",
   (() => {
     const env: GateEnv = { scripts: { "test:spec": "tsx scripts/spec.ts", "test:unchained": "tsx scripts/spec.ts" }, chain: "npm run test:spec && npm run test:specialist", fileExists: () => true, roster: ["spec-canary", "hooked"], pending: new Map([["hooked", ["141Z"]]]), ownerOf: (p) => (p === "test:spec" ? "recruiting_manager" : null), managers: new Set(Object.keys(MANAGERS)) }
     const a = certifyGate({ gate: "coupons", proofs: ["test:absent"], canaries: [] }, env)
@@ -790,7 +796,9 @@ check("G6 POSITIVE CONTROL — a gate naming an unregistered proof is NOT CERTIF
     const c2 = certifyGate({ gate: "coupons", proofs: ["test:unchained"], canaries: [] }, env)
     const d = certifyGate({ gate: "coupons", proofs: ["test:spec"], canaries: ["hooked"] }, env)
     const e = certifyGate({ gate: "coupons", proofs: ["test:spec"], canaries: [] }, { ...env, ownerOf: () => "growth_manager" })
-    return a.state === "NOT CERTIFIED" && b.state === "CERTIFIED" && b.owner === "recruiting_manager" && c2.state === "NOT CERTIFIED" && /NO guard chain/.test(c2.reasons[0]) && d.state === "NOT CERTIFIED" && /141Z/.test(d.reasons[0]) && e.state === "NOT CERTIFIED" && /not a registered manager/.test(e.reasons[0])
+    const f = certifyGate({ gate: "coupons", proofs: ["test:spec"], canaries: ["hooked"], hookLanes: ["141Y"] }, env)
+    const g2 = certifyGate({ gate: "coupons", proofs: ["test:spec"], canaries: ["hooked"], hookLanes: ["141Z"] }, env)
+    return a.state === "NOT CERTIFIED" && b.state === "CERTIFIED" && b.owner === "recruiting_manager" && c2.state === "NOT CERTIFIED" && /NO guard chain/.test(c2.reasons[0]) && d.state === "NOT CERTIFIED" && /141Z/.test(d.reasons[0]) && e.state === "NOT CERTIFIED" && /not a registered manager/.test(e.reasons[0]) && f.state === "CERTIFIED" && g2.state === "NOT CERTIFIED" && /141Z/.test(g2.reasons[0])
   })())
 check("G7 POSITIVE CONTROL — the hook census reads STRIPPED source: a probe over a module that names its token only in a comment answers null (the harness strips before every probe)", (() => { const specimen = "// declared_affiliation\nexport const x = 1\n"; return !/\bdeclared_affiliation\b/.test(stripComments(specimen)) && /\bdeclared_affiliation\b/.test(specimen) })())
 /** PURE — the gate rows of the matrix's release-gate section: a FIVE-cell table (gate | proofs | canaries |

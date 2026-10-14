@@ -254,8 +254,8 @@ function pureLayer() {
     isPlatformStaffIdentity("team_lead", null) === false)
   check("'marketing' — not a legal user_type at all — is staff through platform_role",
     isPlatformStaffIdentity("system", "marketing") === true)
-  check("the legacy user_type='superadmin' marker still counts, so old accounts are not demoted",
-    isPlatformStaffIdentity("superadmin", null) === true)
+  check("the legacy user_type='superadmin' marker alone is REFUSED (owner ruling 2026-10-14: never fall user_type back to superadmin; platform_role is the one authority)",
+    isPlatformStaffIdentity("superadmin", null) === false && isPlatformStaffIdentity("admin", "superadmin") === true)
   check("ai_isa_system is a legal platform_role but NOT a member of staff",
     isPlatformStaffIdentity("system", "ai_isa_system") === false)
 

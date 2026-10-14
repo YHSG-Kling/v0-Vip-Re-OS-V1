@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1842 of 1906 pairs) — storing them would be
+ * overwhelming majority (1842 of 1908 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,18 +75,18 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1989 edges across 731 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1906 unordered
- * table pairs carry at least one FK; 64
+ * MEASURED AT GENERATION: 1994 edges across 732 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1908 unordered
+ * table pairs carry at least one FK; 66
  * carry more than one and are listed below. 15 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
  * however many columns it spans, so counting its unnested rows separately would flag an
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-08
+ * generated: 2026-10-14
  * source: public.live_foreign_keys_json()
- * body-sha256: b2c3bc036b6f83e97a0d3722d7257ed3c037be3ef9c278a729c4ed762371917b
+ * body-sha256: f8ad0c332a442925e8bc9e70f3af70a60215dad492daa30ee8a9f26bb54a65b0
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -229,6 +229,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "brokerage_p_l": { "brokerage_id": "brokerages" },
   "brokerage_required_documents": { "brokerage_id": "brokerages", "created_by": "users", "template_form_id": "brokerage_form_library" },
   "brokerage_settings": { "brokerage_id": "brokerages" },
+  "brokerage_transfer_requests": { "brokerage_id": "brokerages", "initiated_by_user_id": "users", "source_brokerage_id": "brokerages", "subject_user_id": "users", "target_brokerage_id": "brokerages" },
   "brokerage_twin_snapshots": { "brokerage_id": "brokerages", "previous_snapshot_id": "brokerage_twin_snapshots", "team_id": "teams" },
   "brokerages": { "ai_isa_system_user_id": "users" },
   "budgets": { "agent_id": "agents", "brokerage_id": "brokerages" },
@@ -870,6 +871,8 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "ai_video_projects|users": 2,
   "automation_errors|users": 4,
   "blog_posts|users": 2,
+  "brokerage_transfer_requests|brokerages": 3,
+  "brokerage_transfer_requests|users": 2,
   "brokerages|leads": 2,
   "brokerages|users": 2,
   "business_card_scans|users": 2,

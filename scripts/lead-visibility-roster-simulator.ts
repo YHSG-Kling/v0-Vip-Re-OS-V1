@@ -680,8 +680,8 @@ console.log("\n[the rest of the roster keeps the scope it always had]")
   const deadSuperadmin = await resolveLeadVisibility(fakeClient({ user_role_assignments: { data: [] } }).client, {
     userId: "u", userType: "superadmin", platformRole: null, brokerageId: BROK,
   })
-  check("the legacy user_type='superadmin' marker still admits (m308/is_platform_admin read it too)",
-    deadSuperadmin.allowed === true)
+  check("the legacy user_type='superadmin' marker alone is REFUSED (owner ruling 2026-10-14; m780 aligned is_platform_admin) — 'superadmin' is not a lead-desk user_type and no platform_role was given",
+    deadSuperadmin.allowed === false)
 
   // THE SECOND SEAT: user_type 'agent' holding a tenant-pinned 'admin' grant.
   const grant = await resolveLeadVisibility(

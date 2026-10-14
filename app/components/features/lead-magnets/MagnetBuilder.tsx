@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { createLeadMagnetAction, publishLeadMagnetAction, saveMagnetLandingContentAction } from "@/app/actions/lead-magnets-actions"
+import { createLeadMagnetAction, publishLeadMagnetAction, draftLeadMagnetWithAiAction } from "@/app/actions/lead-magnets-actions"
 import { generateLeadMagnetCopyAction } from "@/app/actions/marketing/lead-magnet-copy"
 import type { CreateLeadMagnetInput } from "@/lib/kernel/lead-magnets"
 import type { LandingContent } from "@/lib/marketing/lead-magnet-copy"
@@ -19,7 +19,10 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { Bell, CheckCircle2, Loader2, Sparkles } from "lucide-react"
+import { Bell, CheckCircle2, Loader2, Plus, Sparkles, Trash2, Wand2 } from "lucide-react"
+
+type MagnetType = CreateLeadMagnetInput["magnetType"]
+type PublishChannel = "qr_code" | "email" | "landing_page" | "social"
 
 interface Props {
   brokerageId: string
@@ -27,26 +30,41 @@ interface Props {
   // the session. The prop was never read, and every caller was passing the auth
   // user id — the wrong id class for lead_capture_forms.agent_id.
   onCreated?: (magnetId: string, slug: string) => void
+  /** Wave 141: the AI wrote a REAL draft record — open it for preview / edit / approval. */
+  onDrafted?: (magnetId: string, slug: string) => void
+  /** Wave 141: a suggestion the human picked ("Draft this with AI") pre-fills the concept + type. */
+  initialConcept?: string
+  initialMagnetType?: MagnetType
 }
 
-const MAGNET_TYPES: Array<{ value: CreateLeadMagnetInput["magnetType"]; label: string; description: string }> = [
+const MAGNET_TYPES: Array<{ value: MagnetType; label: string; description: string }> = [
   { value: "home_valuation",  label: "Home Valuation",   description: "Capture seller leads by offering a free home value estimate" },
   { value: "buyer_guide",     label: "Buyer Guide",      description: "Attract first-time buyers with an educational resource" },
   { value: "seller_guide",    label: "Seller Guide",     description: "Engage motivated sellers with a step-by-step selling guide" },
   { value: "market_report",   label: "Market Report",    description: "Share local market data in exchange for contact info" },
   { value: "listing_alert",   label: "Listing Alert",    description: "Notify buyers when matching homes come on the market" },
   { value: "open_house",      label: "Open House",       description: "Collect visitor info at open house events" },
-  { value: "generic_form",    label: "Generic Form",     description: "Custom lead capture form for any purpose" },
+  { value: "generic_form",    label: "Custom Form",      description: "Your own capture form — add the questions you need" },
 ]
 
-const PUBLISH_CHANNELS = [
+const PUBLISH_CHANNELS: ReadonlyArray<{ id: PublishChannel; label: string }> = [
   { id: "qr_code",      label: "QR Code" },
   { id: "landing_page", label: "Landing Page" },
   { id: "email",        label: "Email Link" },
   { id: "social",       label: "Social Media" },
-] as const
+]
 
-export function MagnetBuilder({ brokerageId, onCreated }: Props) {
+const FIELD_TYPES = [
+  { value: "text", label: "Short answer" },
+  { value: "textarea", label: "Long answer" },
+  { value: "number", label: "Number" },
+  { value: "select", label: "Choice" },
+  { value: "checkbox", label: "Checkbox" },
+]
+
+interface ExtraField { label: string; type: string; required: boolean; options: string }
+
+export function MagnetBuilder({ brokerageId, onCreated, onDrafted, initialConcept, initialMagnetType }: Props) {
   const [step, setStep] = useState<"configure" | "publish" | "done">("configure")
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -55,14 +73,16 @@ export function MagnetBuilder({ brokerageId, onCreated }: Props) {
   // Form state
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
-  const [magnetType, setMagnetType] = useState<CreateLeadMagnetInput["magnetType"]>("home_valuation")
+  const [magnetType, setMagnetType] = useState<MagnetType>(initialMagnetType ?? "home_valuation")
   const [tcpaText, setTcpaText] = useState(
     "By submitting this form, you consent to receive communications. You may opt out at any time."
   )
   const [thankYouMessage, setThankYouMessage] = useState("Thank you! We will be in touch shortly.")
-  const [channels, setChannels] = useState<string[]>(["qr_code", "landing_page"])
+  const [channels, setChannels] = useState<PublishChannel[]>(["qr_code", "landing_page"])
   // notifyByEmail: email the agent (in addition to the in-app alert) on each submission.
   const [notifyByEmail, setNotifyByEmail] = useState(false)
+  // Wave 141: the tenant's OWN questions, added on top of the type's canonical fields.
+  const [extraFields, setExtraFields] = useState<ExtraField[]>([])
 
   // AI landing copy — built from real buyer/seller demand topics + the GEO FAQ/JSON-LD.
   const [area, setArea] = useState("")
@@ -70,10 +90,34 @@ export function MagnetBuilder({ brokerageId, onCreated }: Props) {
   const [landing, setLanding] = useState<LandingContent | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
 
-  function toggleChannel(channel: string) {
+  // Wave 141: AI CREATES THE ACTUAL DRAFT — concept in, a real draft record out.
+  const [concept, setConcept] = useState(initialConcept ?? "")
+  const [isDrafting, setIsDrafting] = useState(false)
+  const [draftNote, setDraftNote] = useState<string | null>(null)
+
+  function toggleChannel(channel: PublishChannel) {
     setChannels((prev) =>
       prev.includes(channel) ? prev.filter((c) => c !== channel) : [...prev, channel]
     )
+  }
+
+  function handleDraftWithAi() {
+    setError(null)
+    setDraftNote(null)
+    if (concept.trim().length < 8) { setError("Describe the lead magnet in a sentence or two first."); return }
+    setIsDrafting(true)
+    ;(async () => {
+      try {
+        const res = await draftLeadMagnetWithAiAction({ concept: concept.trim(), magnet_type: magnetType, area: area.trim() || null, brand: brand.trim() || null })
+        if (!res.success) { setError(res.error ?? "The draft was not created"); return }
+        setDraftNote(res.fromAi ? "Draft created — review, edit and publish it." : `Draft created from the safe baseline (${res.fallbackReason ?? "AI copy unavailable"}) — review, edit and publish it.`)
+        onDrafted?.(res.magnetId, res.slug)
+      } catch (err: any) {
+        setError(err?.message ?? "The draft was not created")
+      } finally {
+        setIsDrafting(false)
+      }
+    })()
   }
 
   function handleGenerateCopy() {
@@ -106,6 +150,16 @@ export function MagnetBuilder({ brokerageId, onCreated }: Props) {
     })()
   }
 
+  function addExtraField() {
+    setExtraFields((prev) => [...prev, { label: "", type: "text", required: false, options: "" }])
+  }
+  function patchExtraField(i: number, patch: Partial<ExtraField>) {
+    setExtraFields((prev) => prev.map((f, idx) => (idx === i ? { ...f, ...patch } : f)))
+  }
+  function removeExtraField(i: number) {
+    setExtraFields((prev) => prev.filter((_, idx) => idx !== i))
+  }
+
   function handleCreate() {
     if (!title.trim()) { setError("Title is required"); return }
     setError(null)
@@ -118,6 +172,13 @@ export function MagnetBuilder({ brokerageId, onCreated }: Props) {
         thank_you_message: thankYouMessage.trim(),
         tcpa_text: tcpaText.trim() || undefined,
         notify_on_submission: notifyByEmail,
+        extra_fields: extraFields
+          .filter((f) => f.label.trim())
+          .map((f) => ({ label: f.label.trim(), type: f.type, required: f.required, options: f.type === "select" ? f.options.split(",").map((o) => o.trim()).filter(Boolean) : undefined })),
+        // Created as a DRAFT: the next step (publish) is the approval that makes it public.
+        publish_state: "draft",
+        // The AI landing copy is persisted WITH the row (one write — not a second save that could fail).
+        landing: landing ?? null,
       })
 
       if (!result.success || !result.magnetId) {
@@ -125,13 +186,9 @@ export function MagnetBuilder({ brokerageId, onCreated }: Props) {
         return
       }
 
-      // Persist the AI landing copy + GEO FAQ/JSON-LD so the public page can render it.
-      if (landing) {
-        const saved = await saveMagnetLandingContentAction(result.magnetId, landing)
-        if (!saved.success) { setError(saved.error ?? "Created, but failed to save AI landing copy"); return }
-      }
-
-      setCreatedMagnet({ magnetId: result.magnetId, slug: title.trim().toLowerCase().replace(/\s+/g, "-") })
+      // THE REAL SLUG (wave 141): the kernel appends a time suffix; the client-side guess this used to
+      // show sent the done screen, the QR card and the preview to a page that did not exist.
+      setCreatedMagnet({ magnetId: result.magnetId, slug: result.slug ?? "" })
       setStep("publish")
     })
   }
@@ -141,7 +198,9 @@ export function MagnetBuilder({ brokerageId, onCreated }: Props) {
     setError(null)
 
     startTransition(async () => {
-      const result = await publishLeadMagnetAction(createdMagnet.magnetId)
+      // THE CHANNELS ARE PASSED (wave 141): the checkboxes were collected and never sent, so the
+      // kernel's QR branch was unreachable from this builder.
+      const result = await publishLeadMagnetAction(createdMagnet.magnetId, channels)
 
       if (!result.success) {
         setError(result.error ?? "Failed to publish")
@@ -174,7 +233,7 @@ export function MagnetBuilder({ brokerageId, onCreated }: Props) {
       <Card>
         <CardHeader>
           <CardTitle>Publish Channels</CardTitle>
-          <CardDescription>Choose how you want to distribute this lead magnet</CardDescription>
+          <CardDescription>Your draft is saved. Choose how you want to distribute it — publishing makes the page public.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="grid grid-cols-2 gap-3">
@@ -218,7 +277,7 @@ export function MagnetBuilder({ brokerageId, onCreated }: Props) {
         {/* Type */}
         <div className="space-y-2">
           <Label>Magnet Type</Label>
-          <Select value={magnetType} onValueChange={(v) => { setMagnetType(v as any); setLanding(null) }}>
+          <Select value={magnetType} onValueChange={(v) => { setMagnetType(v as MagnetType); setLanding(null) }}>
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
@@ -235,16 +294,23 @@ export function MagnetBuilder({ brokerageId, onCreated }: Props) {
           </Select>
         </div>
 
-        {/* AI copy — built from what buyers/sellers are actually asking, with a GEO FAQ for AI-search visibility */}
-        <div className="space-y-3 rounded-lg border border-dashed p-4 bg-muted/20">
+        {/* Wave 141: AI creates the ACTUAL draft — a real record you then review, edit and publish. */}
+        <div className="space-y-3 rounded-lg border p-4 bg-primary/5">
           <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-primary" />
-            <p className="text-sm font-medium">Let AI write this page</p>
+            <Wand2 className="h-4 w-4 text-primary" />
+            <p className="text-sm font-medium">Draft it with AI</p>
           </div>
           <p className="text-xs text-muted-foreground">
-            Grounded in real buyer/seller questions for your area, plus an FAQ that gets the page cited by
-            AI search (ChatGPT, Perplexity, Google AI Overviews) — not just indexed.
+            Describe the lead magnet you want. The AI writes the page copy, the questions and the FAQ as a draft
+            you preview, edit and approve — nothing goes public until you publish it.
           </p>
+          <Textarea
+            id="ai-concept"
+            value={concept}
+            onChange={(e) => setConcept(e.target.value)}
+            placeholder="e.g. A spring selling guide for homeowners who are thinking about listing this year"
+            rows={2}
+          />
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label htmlFor="ai-area" className="text-xs">Area / market <span className="text-muted-foreground">(optional)</span></Label>
@@ -255,10 +321,17 @@ export function MagnetBuilder({ brokerageId, onCreated }: Props) {
               <Input id="ai-brand" value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="e.g. The Kling Group" />
             </div>
           </div>
-          <Button type="button" variant="secondary" size="sm" onClick={handleGenerateCopy} disabled={isGenerating}>
-            {isGenerating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}
-            {landing ? "Regenerate copy" : "Generate copy"}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" onClick={handleDraftWithAi} disabled={isDrafting || isGenerating}>
+              {isDrafting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Wand2 className="h-4 w-4 mr-2" />}
+              Draft with AI
+            </Button>
+            <Button type="button" variant="secondary" size="sm" onClick={handleGenerateCopy} disabled={isGenerating || isDrafting}>
+              {isGenerating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}
+              {landing ? "Regenerate page copy only" : "Write page copy only"}
+            </Button>
+          </div>
+          {draftNote && <p className="text-xs text-green-700">{draftNote}</p>}
 
           {landing && (
             <div className="space-y-3 pt-1">
@@ -312,6 +385,54 @@ export function MagnetBuilder({ brokerageId, onCreated }: Props) {
           />
         </div>
 
+        {/* Wave 141: the tenant's own questions (added to the type's standard fields). */}
+        <div className="space-y-3 rounded-lg border p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Your questions</p>
+              <p className="text-xs text-muted-foreground">Name, email and phone are always asked{magnetType === "home_valuation" ? ", plus the property details" : ""}. Add anything else you want to know.</p>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={addExtraField}>
+              <Plus className="h-4 w-4 mr-1" /> Add question
+            </Button>
+          </div>
+          {extraFields.length === 0 && (
+            <p className="text-xs text-muted-foreground">No extra questions yet.</p>
+          )}
+          {extraFields.map((f, i) => (
+            <div key={i} className="grid grid-cols-1 sm:grid-cols-[1fr_140px_auto_auto] gap-2 items-center">
+              <Input
+                aria-label={`Question ${i + 1}`}
+                value={f.label}
+                onChange={(e) => patchExtraField(i, { label: e.target.value })}
+                placeholder="e.g. When are you planning to move?"
+              />
+              <Select value={f.type} onValueChange={(v) => patchExtraField(i, { type: v })}>
+                <SelectTrigger aria-label={`Question ${i + 1} type`}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {FIELD_TYPES.map((t) => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <label className="flex items-center gap-2 text-xs">
+                <Checkbox checked={f.required} onCheckedChange={(v) => patchExtraField(i, { required: Boolean(v) })} />
+                Required
+              </label>
+              <Button type="button" variant="ghost" size="icon" aria-label={`Remove question ${i + 1}`} onClick={() => removeExtraField(i)}>
+                <Trash2 className="h-4 w-4" />
+              </Button>
+              {f.type === "select" && (
+                <Input
+                  className="sm:col-span-4"
+                  aria-label={`Question ${i + 1} choices`}
+                  value={f.options}
+                  onChange={(e) => patchExtraField(i, { options: e.target.value })}
+                  placeholder="Choices, comma-separated (e.g. 0-3 months, 3-6 months, 6-12 months)"
+                />
+              )}
+            </div>
+          ))}
+        </div>
+
         {/* Thank you message */}
         <div className="space-y-2">
           <Label htmlFor="ty-msg">Thank You Message</Label>
@@ -351,9 +472,9 @@ export function MagnetBuilder({ brokerageId, onCreated }: Props) {
 
         {error && <p className="text-sm text-destructive">{error}</p>}
 
-        <Button onClick={handleCreate} disabled={isPending} className="w-full">
+        <Button onClick={handleCreate} disabled={isPending || isDrafting} className="w-full">
           {isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-          Continue to Publish
+          Save draft and continue to publish
         </Button>
       </CardContent>
     </Card>

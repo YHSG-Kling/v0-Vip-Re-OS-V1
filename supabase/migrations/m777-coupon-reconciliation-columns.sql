@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-10-14 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) ──
 --
 -- m777 — COUPON / PROMOTION-CODE RECONCILIATION COLUMNS (wave 141, lane 141H). Owner (wave 141,
 -- COUPONS, binding): "code → Stripe validation → eligibility → application → invoice/checkout →

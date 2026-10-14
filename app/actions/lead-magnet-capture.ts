@@ -2,6 +2,7 @@
 
 import { headers } from "next/headers"
 import { captureFormSubmission, trackMagnetEvent } from "@/lib/kernel/lead-magnets"
+import { sanitizeLeadMagnetAttribution, type LeadMagnetAttribution } from "@/lib/lead-magnets/attribution"
 
 interface CaptureFormInput {
   formId: string
@@ -9,6 +10,9 @@ interface CaptureFormInput {
   source?: string
   tcpaConsentGiven?: boolean
   submissionData: Record<string, unknown>
+  /** Wave 141: the landing page's query-string attribution (campaign / ad / creative / QR / utm),
+   *  sanitized here and VERIFIED by the kernel against the magnet's own tenant. */
+  attribution?: LeadMagnetAttribution | null
 }
 
 /**
@@ -53,6 +57,7 @@ export async function captureFormSubmissionAction(input: CaptureFormInput) {
       // still runs, with no provenance rather than a fabricated one.
     }
 
+    const attribution = sanitizeLeadMagnetAttribution(input.attribution)
     const result = await captureFormSubmission({
       formId: input.formId,
       brokerageId: input.brokerageId,
@@ -61,6 +66,7 @@ export async function captureFormSubmissionAction(input: CaptureFormInput) {
       tcpaConsentGiven: input.tcpaConsentGiven ?? false,
       ipAddress,
       userAgent,
+      attribution,
     })
     if (!result.success) return { success: false, error: result.error ?? "Submission failed" }
 
@@ -74,7 +80,7 @@ export async function captureFormSubmissionAction(input: CaptureFormInput) {
       contactId: result.contactId,
       ipAddress,
       userAgent,
-      metadata: { source: input.source ?? "website" },
+      metadata: { source: input.source ?? "website", attribution: result.attribution ?? null },
     }).catch(() => {})
 
     return { success: true, submissionId: result.submissionId, contactId: result.contactId }

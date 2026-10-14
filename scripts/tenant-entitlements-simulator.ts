@@ -166,7 +166,7 @@ async function liveLayer() {
   const cleanup: Array<{ table: string; id: string }> = []
   try {
     const { data: brk } = await svc.from("brokerages").insert({ name: "ZZENT", email: "zzent@example.com", plan_tier: "brokerage", onboarding_status: "pending" }).select("id").single()
-    const { data: staff } = await svc.from("users").insert({ email: "zzent-staff@example.com", first_name: "Ent", last_name: "Staff", user_type: "superadmin", is_contact: false }).select("id").single()
+    const { data: staff } = await svc.from("users").insert({ email: "zzent-staff@example.com", first_name: "Ent", last_name: "Staff", user_type: "superadmin", platform_role: "superadmin", is_contact: false }).select("id").single()
     const { data: flag } = await svc.from("feature_flags").select("feature_key").eq("enabled", true).limit(1).maybeSingle()
     const b = (brk as any).id, staffId = (staff as any).id, fk = (flag as any)?.feature_key
     cleanup.push({ table: "brokerages", id: b }, { table: "users", id: staffId })

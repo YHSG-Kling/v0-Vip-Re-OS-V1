@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-10-14 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) ──
 --
 -- m765 — BROKERAGE IDENTITY (wave 141, lane 141A). Owner ruling 2026-10-14, verbatim where quoted:
 --   "a solo agent/team may subscribe independently and DECLARE an affiliated brokerage name for

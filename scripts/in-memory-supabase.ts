@@ -38,6 +38,14 @@ export interface MemOptions {
   stampCreatedAt?: boolean
   /** Mint uuid ids for inserted rows that carry none (the live DB's gen_random_uuid()); default `${table}-${n}` for the older proofs' readable ids. */
   uuidIds?: boolean
+  /**
+   * Wave 141 (lane 141K, the canaries): the live UNIQUE constraints a proof names, per table — each entry a column
+   * list. An INSERT whose key columns (all non-null) match an existing row is refused with code 23505 exactly as
+   * PostgREST refuses it, so a caller's idempotency that RIDES the constraint (lib/kernel/action-ledger.ts: claim
+   * → 23505 → re-read the winner → replay) runs for real instead of acting twice. Upserts are unaffected (they
+   * already resolve on their conflict columns). Off by default — existing proofs see exactly what they saw.
+   */
+  unique?: Record<string, string[][]>
 }
 
 type Filter = (row: Row) => boolean
@@ -122,6 +130,12 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
       if (op === "insert") {
         const made: Row[] = []
         for (const r of inserted ?? []) {
+          // The modelled UNIQUE (opts.unique): a duplicate key is refused 23505, the batch lands nothing further.
+          const dup = (opts.unique?.[table] ?? []).find((key) => key.every((c) => r[c] !== undefined && r[c] !== null) && rows.some((x) => key.every((c) => x[c] === r[c])))
+          if (dup) {
+            writes.push({ table, op: "insert", payload: r, matched: 0 })
+            return { data: null, error: { message: `duplicate key value violates unique constraint "${table}_${dup.join("_")}_key"`, code: "23505" } }
+          }
           const row: Row = { id: r.id ?? (opts.uuidIds ? randomUUID() : `${table}-${++seq}`), ...r }
           if (opts.stampCreatedAt && row.created_at === undefined) row.created_at = new Date().toISOString()
           rows.push(row); made.push(row)

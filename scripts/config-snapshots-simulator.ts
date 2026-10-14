@@ -160,7 +160,7 @@ async function liveLayer() {
   try {
     const { data: srcBrk } = await svc.from("brokerages").insert({ name: "ZZSNAP-src", email: "zzsnap-src@example.com", plan_tier: "brokerage", onboarding_status: "pending", about_text: "ZZSNAP about", primary_color: "#0A2540" }).select("id").single()
     const { data: tgtBrk } = await svc.from("brokerages").insert({ name: "ZZSNAP-tgt", email: "zzsnap-tgt@example.com", plan_tier: "brokerage", onboarding_status: "pending" }).select("id").single()
-    const { data: staff } = await svc.from("users").insert({ email: "zzsnap-staff@example.com", first_name: "Snap", last_name: "Staff", user_type: "superadmin", is_contact: false }).select("id").single()
+    const { data: staff } = await svc.from("users").insert({ email: "zzsnap-staff@example.com", first_name: "Snap", last_name: "Staff", user_type: "superadmin", platform_role: "superadmin", is_contact: false }).select("id").single()
     const { data: flag } = await svc.from("feature_flags").select("feature_key").eq("enabled", true).limit(1).maybeSingle()
     const s = (srcBrk as any).id, t = (tgtBrk as any).id, staffId = (staff as any).id, fk = (flag as any)?.feature_key
     cleanup.push({ table: "brokerages", col: "id", id: s }, { table: "brokerages", col: "id", id: t }, { table: "users", col: "id", id: staffId })

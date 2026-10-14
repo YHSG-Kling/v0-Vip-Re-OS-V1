@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-10-14 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) ──
 --
 -- m779 — user_invitations.status admits 'failed' (wave 141, lane 141B; owner ruling 2026-10-14:
 -- "Invitations dispatch immediately after a successful valid creation … NEVER report success when

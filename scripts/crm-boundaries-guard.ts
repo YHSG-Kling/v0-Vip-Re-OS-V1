@@ -109,9 +109,11 @@ async function main() {
   ok("POSITIVE CONTROL (blind spot stated): a module holding Airtable ONLY in a string literal is NOT an identifier hit",
     !airtableIdent.test(blankStrings(stripComments(`const url = "https://api.airtable.com/v0/x"`))))
   const scriptFiles = walk(join(ROOT, "scripts")).map((f) => relative(ROOT, f))
-    .filter((f) => !/scripts\/schema-snapshot\.ts$/.test(f) && !/scripts\/crm-boundaries-guard\.ts$/.test(f))
+    // Excluded: the generated cache, this guard, and the two CHECKERS that name the token in order to look for it
+    // (lane 141J's crm-outbound canary + its probe registry) — a checker is not an operational path.
+    .filter((f) => !/scripts\/schema-snapshot\.ts$/.test(f) && !/scripts\/crm-boundaries-guard\.ts$/.test(f) && !/scripts\/canaries\/(crm-outbound|_registry)\.ts$/.test(f))
   const scriptHits = scriptFiles.filter((f) => airtableIdent.test(stripComments(raw(f))))
-  ok(`no operational script (strings kept, comments stripped) touches Airtable — ${scriptFiles.length} scripts scanned, schema-snapshot.ts (generated cache) excluded (found ${scriptHits.length})`,
+  ok(`no operational script (strings kept, comments stripped) touches Airtable — ${scriptFiles.length} scripts scanned, schema-snapshot.ts (generated cache) + the two Airtable-retirement checkers excluded (found ${scriptHits.length})`,
     scriptHits.length === 0, scriptHits.join(", "))
   for (const gone of ["scripts/seed-test-contacts.ts", "scripts/011-migrate-airtable-to-supabase.ts", "scripts/migrate-airtable-imports.sh", "scripts/complete-migration.ts"]) {
     ok(`legacy Airtable operational path deleted: ${gone}`, !existsSync(join(ROOT, gone)))

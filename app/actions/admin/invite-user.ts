@@ -22,6 +22,7 @@ import { LICENSED_SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
 // team_lead, broker_admin, broker, broker_owner and admin keep the surface
 // byte-for-byte and nobody who could invite yesterday is refused today.
 import { isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 export interface InviteUserParams {
   email: string
@@ -76,11 +77,14 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   // ── 2. Load caller profile — use user_type (canonical), not legacy role ──
   const { data: caller } = await supabase
     .from("users")
-    .select("user_type, brokerage_id, team_id")
+    .select("user_type, platform_role, brokerage_id, team_id")
     .eq("id", user.id)
     .maybeSingle()
 
   const callerType = caller?.user_type ?? "agent"
+  // Platform total control is read from platform_role through THE ONE resolver — never from
+  // `callerType === "superadmin"` (owner ruling 2026-10-14: no fallback from user_type to superadmin).
+  const callerIsPlatformSuperadmin = isPlatformSuperadminIdentity(callerType, (caller as { platform_role?: string | null } | null)?.platform_role)
 
   // Only admin, broker, broker_owner, broker_admin and team_lead can invite —
   // the tenant roster MINUS compliance_officer, because an invite consumes a
@@ -93,7 +97,7 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   const requestedRole = params.userType as UserDomainRole
 
   // Prevent non-superadmins from granting the platform-staff role
-  if (callerType !== "superadmin" && SUPERADMIN_ONLY_ROLES.has(requestedRole)) {
+  if (!callerIsPlatformSuperadmin && SUPERADMIN_ONLY_ROLES.has(requestedRole)) {
     return { success: false, error: `Forbidden: cannot assign role '${requestedRole}'` }
   }
 
@@ -106,7 +110,7 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   // Non-superadmin: always scoped to caller's brokerage
   // Superadmin: may specify a different brokerage via params
   const resolvedBrokerageId: string | null =
-    callerType === "superadmin"
+    callerIsPlatformSuperadmin
       ? params.brokerageId ?? caller?.brokerage_id ?? null
       : caller?.brokerage_id ?? null
 

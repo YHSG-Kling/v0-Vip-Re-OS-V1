@@ -51,11 +51,51 @@ export async function run() {
   const regTokens = ["lib/platform/custom-domains.ts", "app/actions/custom-domains.ts"].flatMap((f) => registrarTokens(strippedRepo(f) ?? "").map((t) => `${f}:${t}`))
   c.step("no registrar path: neither the adapter nor the action carries a buy/register/transfer affordance (the platform never sells or hosts domains)", regTokens.length === 0, regTokens.join(",") || "0 tokens")
   c.step("POSITIVE CONTROL: the finder catches a specimen `buy_domain(` call", registrarTokens(`const r = await vercel.buy_domain({ name })`).length === 1)
-  // WAVE141 HOOKS (integrator): 141G — per-provider instructions + state machine; 141G — the kernel event.
+  // WAVE141 HOOKS (integrator): 141G — per-provider instructions + ONE state machine; 141G — the kernel event and its
+  // readers. Both wired 141K against lib/platform/custom-domains.ts (the two hooks share a probe; the contract text
+  // tells them apart).
+  const { dnsProviderGuide, DNS_PROVIDERS, probeDomainDns, nextCustomDomainStatus, CUSTOM_DOMAIN_STATUSES, CONNECT_POST_CONDITION_STATUSES, tenantFacingDomainMessage } = await import("../../lib/platform/custom-domains")
   for (const h of hooksFor("custom-domain")) {
     const at = h.probe()
     if (!at) { c.hook(h.lane, h.contract); continue }
-    c.step(`${h.lane} landed (${at}) — wire the per-provider instructions / state machine / kernel event into this canary (WAVE141 HOOK (integrator): 141G)`, false, "")
+    if (/KERNEL EVENT/.test(h.contract)) {
+      type EvMeta = { phase?: string; error_code?: string | null; outcome?: string }
+      const ev = (type: string) => (svc.tables.lifecycle_events ?? []).filter((e) => e.brokerage_id === B && e.event_type === type && e.entity_id === D)
+      const err = ev("custom_domain_error")
+      const errMeta = (err[0]?.metadata ?? {}) as EvMeta
+      c.step(`${h.lane} landed (${at}): the verify FAILURE above emitted KernelEvent.CUSTOM_DOMAIN_ERROR on this tenant for the domain row, with evidence (phase, the error CODE, the DNS verdict) — and NEVER the routing layer's raw text`, err.length === 1 && errMeta.phase === "verify" && errMeta.error_code === "dns_not_propagated" && !/CNAME not found/.test(JSON.stringify(err[0])), JSON.stringify(errMeta))
+      await reportCustomDomainOutcome({ brokerageId: B, domainRowId: D, domain: "www.canary-realty.com", outcome: "verified", phase: "verify", status: "active", dns: { checked: true, matches: true }, actorUserId: ADMIN, client: svc })
+      await reportCustomDomainOutcome({ brokerageId: B, domainRowId: D, domain: "www.canary-realty.com", outcome: "connected", phase: "add", status: "pending_dns", actorUserId: ADMIN, client: svc })
+      const ok = ev("custom_domain_verified"), conn = ev("custom_domain_connected")
+      const verifiedSignal = (svc.tables.manager_signals ?? []).find((s) => s.brokerage_id === B && s.signal_type === "custom_domain_verified")
+      c.step("141G success is evidenced too (immediate post-condition → event): verify → CUSTOM_DOMAIN_VERIFIED (actor = the human who clicked, source ui) + the bus line to the registered brand owner (campaign_orchestrator); connect → CUSTOM_DOMAIN_CONNECTED, event-only (no feed noise)", ok.length === 1 && ok[0].actor_user_id === ADMIN && ok[0].source === "ui" && !!verifiedSignal && verifiedSignal.to_manager === "campaign_orchestrator" && conn.length === 1 && !(svc.tables.manager_signals ?? []).some((s) => s.brokerage_id === B && /connected/.test(String(s.signal_type))), `verified=${ok.length} connected=${conn.length} signal=${verifiedSignal?.signal_type ?? "none"}`)
+      const { WEBHOOK_EVENT_CATALOG } = await import("../../lib/platform/tenant-webhooks-core")
+      const { KernelEvent } = await import("../../lib/kernel/events")
+      const { SIGNAL_REGISTRY } = await import("../../lib/kernel/signal-registry")
+      const { MANAGERS } = await import("../../lib/kernel/manager-registry")
+      const reader = WEBHOOK_EVENT_CATALOG.find((e) => e.internalTypes.includes(KernelEvent.CUSTOM_DOMAIN_VERIFIED))
+      c.step("141G consumed by the canonical service and a registered manager: CUSTOM_DOMAIN_VERIFIED is read by the tenant webhook rail (website.domain_verified — the host and its status only, never the routing error text) and both bus lines are catalogued for the registered campaign_orchestrator", reader?.event === "website.domain_verified" && reader.payloadFields.join() === "domain,status" && !!SIGNAL_REGISTRY.custom_domain_verified && !!SIGNAL_REGISTRY.custom_domain_error && "campaign_orchestrator" in MANAGERS, reader?.event ?? "no reader")
+      continue
+    }
+    const hosts = ["canary-realty.com", "www.canary-realty.com"]
+    const guides = DNS_PROVIDERS.flatMap((p) => hosts.map((d) => ({ p, d, g: dnsProviderGuide(p, d) })))
+    c.step(`${h.lane} landed (${at}): per-provider DNS instructions for GoDaddy, Cloudflare, Namecheap, Squarespace Domains and any other DNS — each with a console path, ordered steps, the EXACT record from the one source (apex A ${VERCEL_APEX_A_TARGET} / www CNAME ${VERCEL_CNAME_TARGET}) and the provider's trap (Cloudflare grey cloud, GoDaddy forwarding/parked, Namecheap redirect record, Squarespace presets); an unknown provider gets the generic guide, never a refusal`, guides.length === DNS_PROVIDERS.length * 2 && guides.every(({ d, g }) => g.steps.length >= 1 && g.cautions.length >= 1 && g.consolePath.length > 0 && g.records.length === 1 && g.records[0].value === (d.startsWith("www.") ? VERCEL_CNAME_TARGET : VERCEL_APEX_A_TARGET) && g.records[0].name === (d.startsWith("www.") ? "www" : "@")) && /DNS only|grey cloud/i.test(dnsProviderGuide("cloudflare", hosts[1]).cautions.join(" ")) && /Forwarding/i.test(dnsProviderGuide("godaddy", hosts[0]).cautions.join(" ")) && /Redirect/i.test(dnsProviderGuide("namecheap", hosts[1]).cautions.join(" ")) && /preset/i.test(dnsProviderGuide("squarespace", hosts[1]).cautions.join(" ")) && dnsProviderGuide("route53", hosts[0]).provider === "other", DNS_PROVIDERS.join(","))
+    const resolver = (cname: () => Promise<string[]>, a: () => Promise<string[]>) => ({ resolveCname: cname, resolve4: a })
+    const fail = (code: string) => () => Promise.reject(Object.assign(new Error(code), { code }))
+    const broken = await probeDomainDns(hosts[1], { resolver: resolver(fail("SERVFAIL"), fail("ETIMEOUT")) })
+    const empty = await probeDomainDns(hosts[1], { resolver: resolver(fail("ENODATA"), fail("ENOTFOUND")) })
+    const wrong = await probeDomainDns(hosts[1], { resolver: resolver(async () => ["parked.example."], fail("ENODATA")) })
+    const good = await probeDomainDns(hosts[1], { resolver: resolver(async () => ["CNAME.VERCEL-DNS.COM."], fail("ENODATA")) })
+    c.step("141G immediate DNS feedback, FAIL CLOSED: a resolver that cannot answer → checked:false (never 'looks fine'); no record → an ANSWER ('No DNS record is visible yet' + the exact record to add); a wrong record → named with the fix; the standard target (case / trailing-dot insensitive) → matches; no sentence names a provider or an env key", !broken.checked && !broken.matches && empty.checked && !empty.matches && /No DNS record is visible yet/.test(empty.reason) && wrong.checked && !wrong.matches && /currently resolves to CNAME parked\.example/.test(wrong.reason) && good.checked && good.matches && !/VERCEL_TOKEN|projectId|vercel api/i.test(broken.reason + empty.reason + wrong.reason + good.reason), `${broken.reason.slice(0, 80)} | ${empty.reason.slice(0, 80)}`)
+    const signals = ["attach_ok_verified", "attach_ok_unverified", "attach_failed", "check_verified", "check_unverified", "check_failed", "routing_unavailable", "remove", "revive"] as const
+    const table = CUSTOM_DOMAIN_STATUSES.flatMap((s) => signals.map((g) => ({ s, g, n: nextCustomDomainStatus(s, g) })))
+    const reachActive = table.filter((t) => t.n === "active" && t.s !== "active")
+    const fromPending = new Set(table.filter((t) => t.s === "pending_dns" && /^attach_|^routing_unavailable$/.test(t.g)).map((t) => t.n))
+    c.step("141G ONE state machine (pending_dns → verifying → active | error | removed), derived here cell by cell: only a VERIFIED signal reaches active; routing_unavailable never promotes or demotes; removed is absorbing except revive → pending_dns; the connect post-condition set equals exactly what an attach can leave from pending_dns", table.length === CUSTOM_DOMAIN_STATUSES.length * signals.length && table.every((t) => (CUSTOM_DOMAIN_STATUSES as readonly string[]).includes(t.n)) && reachActive.length > 0 && reachActive.every((t) => t.g === "attach_ok_verified" || t.g === "check_verified") && table.filter((t) => t.g === "routing_unavailable").every((t) => t.n === t.s) && table.filter((t) => t.s === "removed").every((t) => t.n === (t.g === "revive" ? "pending_dns" : "removed")) && [...fromPending].sort().join() === [...CONNECT_POST_CONDITION_STATUSES].sort().join(), `from pending_dns: ${[...fromPending].join(",")}`)
+    const msgs = CUSTOM_DOMAIN_STATUSES.flatMap((s) => [null, "domain_taken", "network_error", "routing_unavailable", "weird_code"].map((code) => tenantFacingDomainMessage(s, code)))
+    c.step("141G tenant-sanitized by construction: no state × code sentence names a provider, an env key, an HTTP code or a credential; 'active' reads Live", msgs.every((m) => m.length > 0 && !/vercel|VERCEL_|token|projectId|\b4\d\d\b|\b5\d\d\b/i.test(m)) && /Live/.test(tenantFacingDomainMessage("active")), `${msgs.length} sentences`)
+    const act = strippedRepo("app/actions/custom-domains.ts") ?? ""
+    c.step("141G the session action runs the rail: DNS probe → ledgered routing call (withActionLedger) → the machine (nextCustomDomainStatus) → IMMEDIATE post-condition re-read (confirmDomainRowPostCondition against the DERIVED set) → events (reportCustomDomainOutcome); gated by mayUseAndAfford and the derived admin roster; no env note reaches a tenant field", /probeDomainDns\(/.test(act) && /withActionLedger/.test(act) && /nextCustomDomainStatus\(/.test(act) && /confirmDomainRowPostCondition\(/.test(act) && /CONNECT_POST_CONDITION_STATUSES/.test(act) && /reportCustomDomainOutcome\(/.test(act) && /mayUseAndAfford\(/.test(act) && /BROKERAGE_FINANCE_ADMIN_USER_TYPES/.test(act) && !/VERCEL_NOT_CONFIGURED_NOTE|vercelConfigured/.test(act), "")
   }
   c.blind("The Vercel Domains API is never called (unconfigured by design in-memory): the live add/verify/SSL loop is test:domain-api's; the session-gated action (addCustomDomainAction) is modelled by writing the row shape it writes.")
   const { cleanup, residual, mismatches } = await cleanupCanary(svc, B)

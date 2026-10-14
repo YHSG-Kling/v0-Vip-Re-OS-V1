@@ -40,6 +40,7 @@
  * lib/listing-presentation/section-drip.ts:831 states for a portal link.
  */
 import type { createServiceClient } from "@/lib/supabase/service"
+import { leadMagnetLandingUrl, type LeadMagnetAttribution } from "@/lib/lead-magnets/attribution"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -141,14 +142,64 @@ async function brandAdDestination(
 }
 
 /**
- * The destination for a creative: the listing's landing page when the campaign
- * is about a listing, else the advertiser's own site. Null when neither is
- * available — see the fail-closed note in this file's header.
+ * 3. A LEAD-MAGNET ad (wave 141, lane 141E) sends the click to the magnet's own published capture
+ *    page — /lm/[slug] (app/lm/[slug]/page.tsx) — carrying the campaign / ad-campaign / creative
+ *    attribution the capture keeps (lib/lead-magnets/attribution.ts: ONE query-string contract for
+ *    the writer here, the page and the kernel). FAILS CLOSED like its siblings: a magnet that is not
+ *    this tenant's, or not PUBLISHED (a draft / paused page 404s or refuses submissions), yields null
+ *    and the readiness check keeps refusing — a paid click must never land on a page that cannot
+ *    capture.
+ *
+ * NOT EXPORTED — see the note on listingAdDestination above.
+ */
+async function leadMagnetAdDestination(
+  supabase: Svc, brokerageId: string, leadMagnetId: string | null | undefined, attribution: LeadMagnetAttribution | null | undefined,
+): Promise<string | null> {
+  const origin = publicOrigin()
+  if (!origin || !leadMagnetId) return null
+  const { data, error } = await supabase
+    .from("lead_capture_forms")
+    .select("id, slug, is_active")
+    .eq("id", leadMagnetId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (error) {
+    console.error("[ad-destination] lead-magnet lookup was refused:", error.message)
+    return null
+  }
+  const row = data as { id: string; slug: string | null; is_active: boolean | null } | null
+  if (!row?.slug) {
+    console.warn(`[ad-destination] lead magnet ${leadMagnetId} is not this brokerage's — no destination`)
+    return null
+  }
+  if (row.is_active !== true) {
+    console.warn(`[ad-destination] lead magnet ${leadMagnetId} is not published — no destination until a human publishes it`)
+    return null
+  }
+  return leadMagnetLandingUrl(origin, row.slug, attribution ?? null)
+}
+
+/**
+ * The destination for a creative: the lead magnet's capture page when the campaign names one, else
+ * the listing's landing page when the campaign is about a listing, else the advertiser's own site.
+ * Null when none is available — see the fail-closed note in this file's header.
  */
 export async function resolveAdDestination(
   supabase: Svc,
-  params: { brokerageId: string; listingId?: string | null; teamId?: string | null },
+  params: {
+    brokerageId: string
+    listingId?: string | null
+    teamId?: string | null
+    /** Wave 141: lead_capture_forms.id (same tenant, published) + the attribution the URL should carry. */
+    leadMagnetId?: string | null
+    attribution?: LeadMagnetAttribution | null
+  },
 ): Promise<string | null> {
+  if (params.leadMagnetId) {
+    // A named lead magnet is the ONLY acceptable destination for that campaign: no silent fallback to
+    // the brand site, which would send paid traffic past the capture the campaign was built around.
+    return leadMagnetAdDestination(supabase, params.brokerageId, params.leadMagnetId, params.attribution)
+  }
   const listingUrl = await listingAdDestination(supabase, params.listingId)
   if (listingUrl) return listingUrl
   return brandAdDestination(supabase, params.brokerageId, params.teamId ?? null)

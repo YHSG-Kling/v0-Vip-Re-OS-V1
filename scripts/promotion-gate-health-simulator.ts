@@ -64,7 +64,7 @@ async function liveLayer(): Promise<void> {
   const staffId = randomUUID()
   const rawIds: string[] = []
   try {
-    await svc.from("users").insert({ id: staffId, email: `${tag}@example.com`, user_type: "superadmin" })
+    await svc.from("users").insert({ id: staffId, email: `${tag}@example.com`, user_type: "superadmin", platform_role: "superadmin" })
 
     // 2 cap-exhausted stranded, 1 territory_mismatch, 1 still-retrying, 1 promoted.
     const seed = [

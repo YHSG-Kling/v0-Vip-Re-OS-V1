@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react"
 import { captureFormSubmissionAction } from "@/app/actions/lead-magnet-capture"
+import type { LeadMagnetAttribution } from "@/lib/lead-magnets/attribution"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -26,6 +27,8 @@ interface Props {
   tcpaText?: string
   thankYouMessage?: string
   primaryColor?: string
+  /** Wave 141: where the visitor came from (the page parsed it from the query string). */
+  attribution?: LeadMagnetAttribution | null
   onSubmitted?: (submissionId: string) => void
 }
 
@@ -50,6 +53,7 @@ export function HomeValueForm({
   ctaText = "Get My Free Home Valuation",
   tcpaText = "By submitting, you consent to receive communications. You may opt out at any time.",
   thankYouMessage = "Thank you! Your request has been received. We will be in touch shortly.",
+  attribution = null,
   onSubmitted,
 }: Props) {
   const [isPending, startTransition] = useTransition()
@@ -96,6 +100,7 @@ export function HomeValueForm({
         brokerageId,
         source,
         tcpaConsentGiven: tcpaChecked,
+        attribution,
         submissionData: {
           first_name: firstName.trim(),
           last_name: lastName.trim(),

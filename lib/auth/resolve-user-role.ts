@@ -107,15 +107,19 @@ export type UserRole =
  * (user_type='admin', platform_role='superadmin') — so the user_type-only gate
  * refused the platform's only administrator. Every caller now passes both columns.
  *
- * user_type participates ONLY through the legacy 'superadmin' marker, which is how
- * public.is_platform_admin() and public.is_platform_staff() read it too — an account
- * predating the platform_role column is not demoted by this.
+ * user_type does NOT participate. Owner ruling (wave 141, 2026-10-14): "be careful
+ * on falling back to user type superadmin" — the legacy `user_type='superadmin'`
+ * arm that used to sit here is gone, and m780 removed the same arm from
+ * public.is_platform_admin() / public.is_platform_staff(), so app and database
+ * read staff from ONE column: platform_role. (0 live rows ever carried the
+ * marker; the app never writes it.) The parameter stays so every caller keeps
+ * handing over both columns — the roster's service-account shape needs it.
  */
 export function isPlatformStaffIdentity(
   userType: string | null | undefined,
   platformRole: string | null | undefined,
 ): boolean {
-  if (userType === "superadmin") return true
+  void userType // never a fallback
   return isPlatformStaffRole(platformRole)
 }
 

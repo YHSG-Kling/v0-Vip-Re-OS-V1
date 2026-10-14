@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { isRawProcessingStatus, RAW_PROCESSING_STATUSES } from '@/lib/lead-pipeline/processing-status'
+import { isPlatformStaffIdentity } from '@/lib/auth/resolve-user-role'
 
 /**
  * CANONICAL LEAD BUSINESS PROCESS (owner, round 37):
@@ -81,9 +82,9 @@ export async function listRawLeadsForReview(opts?: {
     .eq("id", user.id)
     .maybeSingle()
   if (callerError) return { ok: false, error: "Could not verify your account" }
-  const isPlatform =
-    callerRow?.user_type === "superadmin" ||
-    ["superadmin", "admin", "marketing", "support"].includes(String((callerRow as any)?.platform_role ?? ""))
+  // THE ONE staff predicate (both columns; platform_role is the only authority — owner ruling
+  // 2026-10-14: never fall user_type back to superadmin, never restate the roster).
+  const isPlatform = isPlatformStaffIdentity(callerRow?.user_type, (callerRow as { platform_role?: string | null } | null)?.platform_role)
   if (!isPlatform) {
     return { ok: false, error: "Raw leads are platform-only — tenants see promoted leads" }
   }

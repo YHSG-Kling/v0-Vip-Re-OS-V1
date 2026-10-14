@@ -11,7 +11,7 @@
 import { pathToFileURL } from "node:url"
 import { join } from "node:path"
 import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSvc, stubModule, uuid } from "./_harness"
-import { ROOT, hooksFor } from "./_registry"
+import { ROOT, airtableIdentifierHit, airtableRuntimeCensus, hooksFor } from "./_registry"
 
 export async function run() {
   const c = canary("CRM outbound: tenant → external CRM (canonical mapping, tenant credentials, honest errors)")
@@ -48,11 +48,14 @@ export async function run() {
   const bad = await syncContactToCRM({ firstName: "Sam", lastName: "Canary", email: `sam@${CANARY_EMAIL_DOMAIN}`, brokerageId: B })
   c.step("tenant-actionable error: the provider's refusal (401 from the tenant's own key) is returned as the tenant's integration error — not swallowed, not a platform incident", !bad.success && bad.providerKey === "followupboss" && /401|Unauthorized/.test(bad.error ?? ""), bad.error ?? "")
   rec.respond = () => ({ ok: true, status: 201, data: { id: "canary-remote-1" } })
-  // WAVE141 HOOK (integrator): 141D — Airtable retired.
+  // WAVE141 HOOK (integrator): 141D — Airtable retired; wired 141K on lane D's own rule (an IDENTIFIER census —
+  // comments stripped, strings blanked — the finder scripts/crm-boundaries-guard.ts also holds).
   for (const h of hooksFor("crm-outbound")) {
     const at = h.probe()
     if (!at) { c.hook(h.lane, h.contract, "runtime files still name airtable (global_settings.airtable_api_key + readers)"); continue }
-    c.step(`${h.lane} landed: no runtime path under lib/, app/ or services/ names Airtable (stripped source)`, true, at)
+    const census = airtableRuntimeCensus()
+    c.step(`${h.lane} landed: 0 runtime files under lib/, app/ or services/ name airtable as a CODE IDENTIFIER (${census.scanned} files scanned; comments stripped, strings blanked) — the ${census.stringOnly.length} string-only residues (a snapshot deny-list entry, registry prose, the retirement record) are published beside the zero, never counted as a path`, census.live.length === 0 && census.scanned > 1000, `live: ${census.live.join(", ") || "none"} · string-only: ${census.stringOnly.join(", ")}`)
+    c.step("141D POSITIVE CONTROL: the identifier finder catches `process.env.AIRTABLE_API_KEY` and `import { airtableService }`, and ignores a deny-list string and a tombstone comment", airtableIdentifierHit("const k = process.env.AIRTABLE_API_KEY") && airtableIdentifierHit('import { airtableService } from "./x"') && !airtableIdentifierHit('const F = ["airtable_api_key", "smtp_host"]') && !airtableIdentifierHit("// moved from airtable\nexport const x = 1"))
   }
   c.blind("Usage booking for an outbound sync is the connector gateway's (meterVendorSpend inside callConnector) — replaced by the recorder here, so booking is lane 139C's test:cost-completeness, not this canary.")
   c.blind("GHL and HubSpot sync-out take the same entry (providerKey ghl / hubspot); only the FUB adapter's request is asserted.")

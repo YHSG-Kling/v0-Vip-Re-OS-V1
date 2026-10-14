@@ -49,9 +49,10 @@ async function loadCaller(): Promise<{ userId: string; email: string; userType: 
  * capability check ran — two documented staff roles were unreachable.
  *
  * IDENTITY-CLASS RULE: 'admin' is ALSO a tenant user_type, so the roster is
- * matched ONLY against platform_role. user_type participates solely through
- * the legacy 'superadmin' marker — a tenant admin can never become platform
- * staff here.
+ * matched ONLY against platform_role. user_type does not participate at all
+ * (owner ruling 2026-10-14: the legacy 'superadmin' marker is no longer an arm —
+ * never fall a user_type back to a platform role) — a tenant admin can never
+ * become platform staff here.
  *
  * TOMBSTONE (ruling 1, 2026-08-24): the "which staff role is this" derivation was
  * written out here as

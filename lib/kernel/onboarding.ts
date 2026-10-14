@@ -29,7 +29,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { roleDashboardRoute } from "./role-routes"
 import { emitUserProvisionedEvent } from "./users"
-import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
+import { isPlatformStaffRole, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -370,14 +370,14 @@ export async function determineFirstLoginDestination(
   const userType = userData?.user_type ?? "agent"
 
   // ── PLATFORM STAFF ────────────────────────────────────────────────────────
-  // Platform employees (superadmin/admin/marketing/support via platform_role, or
-  // legacy user_type='superadmin') sit ABOVE every tenant — they have no
-  // brokerage_id and no onboarding, so they must be routed BEFORE the
+  // Platform employees (superadmin/admin/marketing/support via platform_role —
+  // never via user_type; owner ruling 2026-10-14) sit ABOVE every tenant — they
+  // have no brokerage_id and no onboarding, so they must be routed BEFORE the
   // no-brokerage "setup incomplete" check. They land on the role-aware staff
   // command home, which shows exactly the surfaces their capability map allows.
-  const platformRole =
-    (userData as { platform_role?: string | null } | null)?.platform_role ??
-    (userType === "superadmin" ? "superadmin" : null)
+  // ONE resolver (lib/platform/platform-staff-roster.ts) — the inline
+  // `platform_role ?? (user_type === 'superadmin' ? …)` re-derivation is gone.
+  const platformRole = resolvePlatformRoleIdentity(userType, (userData as { platform_role?: string | null } | null)?.platform_role)
   if (isPlatformStaffRole(platformRole)) {
     return { route: "/dashboard/superadmin/home", reason: "role_dashboard" }
   }

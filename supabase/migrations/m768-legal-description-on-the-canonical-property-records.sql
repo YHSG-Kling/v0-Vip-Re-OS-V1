@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-10-14 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) ──
 --
 -- m768 — LEGAL DESCRIPTION ON THE CANONICAL PROPERTY RECORDS (wave 141, lane 141C). Owner verbatim:
 -- "LEGAL DESCRIPTION: some forms need address AND legal description. PROPERTY → legal description →

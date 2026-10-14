@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState, useTransition } from "react"
-import { listLeadMagnetsAction, updateMagnetSettingsAction } from "@/app/actions/lead-magnets-actions"
+import { listLeadMagnetsAction, updateMagnetSettingsAction, cloneLeadMagnetAction } from "@/app/actions/lead-magnets-actions"
 import type { ListLeadMagnetsOutput } from "@/lib/kernel/lead-magnets"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button"
 // titled card; nothing was moved out of this file and nothing was lost.
 import { Card, CardContent } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
-import { FileText, QrCode, BarChart2, Link2, Users, Code2 } from "lucide-react"
+import { FileText, QrCode, BarChart2, Link2, Users, Code2, Copy, Wand2 } from "lucide-react"
 // THE EMBED (lane 85E, census 6d — the missing half of POST
 // /api/lead-magnets/submissions): a tenant can put this magnet's form on their
 // OWN website; the snippet posts into the same kernel command the hosted
@@ -47,7 +47,7 @@ const TYPE_LABELS: Record<string, string> = {
   market_report: "Market Report",
   listing_alert: "Listing Alert",
   open_house: "Open House",
-  generic_form: "Generic Form",
+  generic_form: "Custom Form",
 }
 
 export function MagnetLibrary({ brokerageId, scope, onSelectMagnet, onCreateNew }: Props) {
@@ -56,6 +56,7 @@ export function MagnetLibrary({ brokerageId, scope, onSelectMagnet, onCreateNew 
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [cloningId, setCloningId] = useState<string | null>(null)
 
   async function copyEmbed(magnet: Magnet) {
     const snippet = buildLeadMagnetEmbedSnippet({
@@ -97,6 +98,19 @@ export function MagnetLibrary({ brokerageId, scope, onSelectMagnet, onCreateNew 
           prev.map((m) => (m.id === magnet.id ? { ...m, isActive: !m.isActive } : m))
         )
       }
+    })
+  }
+
+  /** Wave 141: clone an approved magnet into a NEW DRAFT (provenance kept) and open it for review. */
+  function handleClone(magnet: Magnet) {
+    setError(null)
+    setCloningId(magnet.id)
+    startTransition(async () => {
+      const result = await cloneLeadMagnetAction(magnet.id)
+      setCloningId(null)
+      if (!result.success) { setError(result.error ?? "Could not clone this lead magnet"); return }
+      await load()
+      onSelectMagnet?.(result.magnetId)
     })
   }
 
@@ -153,12 +167,19 @@ export function MagnetLibrary({ brokerageId, scope, onSelectMagnet, onCreateNew 
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <p className="font-medium truncate">{magnet.name}</p>
-                    <Badge variant={magnet.isActive ? "default" : "secondary"} className="text-xs">
-                      {magnet.isActive ? "Active" : "Inactive"}
-                    </Badge>
+                    {magnet.lifecycleState === "draft" ? (
+                      <Badge variant="outline" className="text-xs border-amber-400 text-amber-800">Draft</Badge>
+                    ) : (
+                      <Badge variant={magnet.isActive ? "default" : "secondary"} className="text-xs">
+                        {magnet.isActive ? "Active" : "Paused"}
+                      </Badge>
+                    )}
                     <Badge variant="outline" className="text-xs">
                       {TYPE_LABELS[magnet.magnetType] ?? magnet.magnetType}
                     </Badge>
+                    {magnet.authoredBy === "ai" && (
+                      <Badge variant="outline" className="text-xs flex items-center gap-1"><Wand2 className="h-3 w-3" /> AI draft</Badge>
+                    )}
                   </div>
                   <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground flex-wrap">
                     <span className="flex items-center gap-1">
@@ -175,9 +196,25 @@ export function MagnetLibrary({ brokerageId, scope, onSelectMagnet, onCreateNew 
                       <Link2 className="h-3 w-3" />
                       /lm/{magnet.slug}
                     </span>
+                    {magnet.clonedFromId && (
+                      <span className="flex items-center gap-1">
+                        <Copy className="h-3 w-3" />
+                        cloned from {magnet.clonedFromName ?? "another magnet"}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    title="Clone into a new draft you can customize"
+                    aria-label={`Clone ${magnet.name}`}
+                    disabled={isPending && cloningId === magnet.id}
+                    onClick={(e) => { e.stopPropagation(); handleClone(magnet) }}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -188,15 +225,18 @@ export function MagnetLibrary({ brokerageId, scope, onSelectMagnet, onCreateNew 
                     <Code2 className="h-4 w-4" />
                     {copiedId === magnet.id && <span className="ml-1 text-xs">Copied</span>}
                   </Button>
-                  <Switch
-                    checked={magnet.isActive}
-                    onCheckedChange={() => handleToggleActive(magnet)}
-                    disabled={isPending}
-                    aria-label={`Toggle ${magnet.name}`}
-                  />
+                  {magnet.lifecycleState !== "draft" && (
+                    <Switch
+                      checked={magnet.isActive}
+                      onCheckedChange={() => handleToggleActive(magnet)}
+                      disabled={isPending}
+                      aria-label={`Toggle ${magnet.name}`}
+                    />
+                  )}
                   <Button
                     size="sm"
                     variant="ghost"
+                    aria-label={`Open ${magnet.name}`}
                     onClick={(e) => { e.stopPropagation(); onSelectMagnet?.(magnet.id) }}
                   >
                     <BarChart2 className="h-4 w-4" />

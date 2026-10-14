@@ -312,8 +312,9 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // transactions legal_description + legal_description_source (CHECK agent | rentcast). Deliberate bump,
 // named per this guard's own instruction; drops back once the integrator applies it and flips the
 // header. Sibling wave-141 lanes bump this line for their own files — the integrator sums them.
-// Wave 141 integration: m739 (owner SQL editor) + m765 (141A) + m768 (141C) + m771 (141D) + m777 (141H) + m779 (141B) — six files written, not applied.
-const NOT_APPLIED_BASELINE = 6
+// Wave 141 integration (2026-10-14): m765, m768, m777, m779 applied live via MCP; m739 (3 × DROP INDEX) and m771 (DROP COLUMN) are
+// held by the MCP for the owner's confirmation — both remain the owner's SQL-editor action, so two files still claim NOT APPLIED.
+const NOT_APPLIED_BASELINE = 2
 // 1 → 2 (wave 141, lane 141B — immediate operations): m779-user-invitations-failed-dispatch-status.sql,
 // WRITTEN NOT APPLIED — user_invitations.status admits 'failed' (an invite whose email could not be dispatched
 // in the creating request is shown to the admin as FAILED with a Resend, owner ruling 2026-10-14). Deliberate

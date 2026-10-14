@@ -159,12 +159,18 @@ export function isPlatformActorRole(role: string | null | undefined): role is Pl
  *   null       not a platform actor at all (an ordinary tenant user)
  *
  * Reads BOTH identity columns for the same reason every predicate in this file
- * does: neither alone answers it. The legacy `user_type='superadmin'` marker
- * still counts as staff, and the service refusal is checked FIRST so a row that
- * somehow carried both could not be promoted by the legacy arm. (The database
- * already forbids that combination — users_isa_actor_shape_check forces
- * user_type='system' for an ai_isa_system row — so this is defence in depth, not
- * a live hole.)
+ * does: the service refusal is checked FIRST so a row that somehow carried a
+ * service platform_role could never be read as staff. (The database already
+ * forbids the mixed shape — users_isa_actor_shape_check forces
+ * user_type='system' for an ai_isa_system row — so this is defence in depth.)
+ *
+ * OWNER RULING (wave 141, 2026-10-14): "be careful on falling back to user type
+ * superadmin" — no authority resolver falls a users.user_type back to a platform
+ * role. The legacy `user_type='superadmin'` arm that used to sit below is GONE:
+ * platform staff live in `platform_role` and nowhere else (0 live rows carry the
+ * legacy marker; the app never writes it). `userType` stays in the signature so
+ * every gate keeps handing over both columns — the service-account shape
+ * (isAiIsaServiceIdentity) still needs it — but it can only ever REFUSE here.
  */
 export function platformActorKind(
   userType: string | null | undefined,
@@ -172,7 +178,8 @@ export function platformActorKind(
 ): "staff" | "service" | null {
   if (isNonHumanPlatformRole(platformRole)) return "service"
   if (isPlatformStaffRole(platformRole)) return "staff"
-  return userType === "superadmin" ? "staff" : null
+  void userType // never a fallback — see the ruling above
+  return null
 }
 
 /**
@@ -204,7 +211,9 @@ export function isPlatformSuperadminIdentity(
 ): boolean {
   // A service account is never the OS user, whatever else its row says.
   if (isNonHumanPlatformRole(platformRole)) return false
-  return userType === "superadmin" || platformRole === "superadmin"
+  // Owner ruling 2026-10-14 (see platformActorKind): user_type is never a fallback to superadmin.
+  void userType
+  return platformRole === "superadmin"
 }
 
 /**
@@ -215,18 +224,20 @@ export function isPlatformSuperadminIdentity(
  * spelling of the total-control test lives HERE — the one file the
  * platform-discriminator guard exempts — instead of being re-spelled per
  * site (§6). Safe as a bare comparison only BECAUSE the input is resolved:
- * the resolver already refused ai_isa_system (fails closed to null) and
- * already honoured the legacy user_type marker. Never call this with a raw
- * users.platform_role value — that is what isPlatformSuperadminIdentity is
- * for.
+ * the resolver already refused ai_isa_system (fails closed to null) and never
+ * reads user_type as a fallback. Never call this with a raw users.platform_role
+ * value — that is what isPlatformSuperadminIdentity is for.
  */
 export function isResolvedPlatformSuperadmin(role: string | null | undefined): boolean {
   return role === "superadmin"
 }
 
 /**
- * THE ONE derivation of a caller's EFFECTIVE platform role: `platform_role` wins;
- * the legacy `user_type='superadmin'` marker still counts as superadmin.
+ * THE ONE derivation of a caller's EFFECTIVE platform role: `platform_role`, and
+ * only `platform_role`. Owner ruling 2026-10-14: a users.user_type is NEVER
+ * read as a platform role (the legacy `user_type='superadmin'` arm is gone — see
+ * platformActorKind). An identity with no staff platform_role resolves to null,
+ * and every caller of null refuses: unknown authority is refused, never elevated.
  *
  * Returns NULL for a non-staff row AND for a service account — every caller of this
  * shape is a STAFF GATE, so answering `ai_isa_system` would hand a role string to a
@@ -239,7 +250,8 @@ export function resolvePlatformRoleIdentity(
 ): PlatformStaffRole | null {
   if (isPlatformStaffRole(platformRole)) return platformRole
   if (isNonHumanPlatformRole(platformRole)) return null
-  return userType === "superadmin" ? "superadmin" : null
+  void userType // never a fallback — owner ruling 2026-10-14
+  return null
 }
 
 // ── Platform capability map (pure) ────────────────────────────────────────────

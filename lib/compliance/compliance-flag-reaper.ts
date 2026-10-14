@@ -21,7 +21,9 @@ export interface ComplianceFlagReapResult {
 async function resolveComplianceOwners(svc: Svc, brokerageId: string): Promise<string[]> {
   // TIER-SAFE — compliance/broker staff when present; the solo agent otherwise (their own oversight).
   const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
-  return resolveOrgRecipients(svc, brokerageId, { roles: ["compliance_officer", "broker", "broker_admin", "admin"], limit: 20 })
+  // The default roster (ORG_STAFF_ROLES = the tenant admin class minus team_lead) — the hand-typed
+  // list that sat here omitted broker_owner (CLAUDE.md §4: never restate the roster).
+  return resolveOrgRecipients(svc, brokerageId, { limit: 20 })
 }
 
 export async function reapStuckComplianceFlags(

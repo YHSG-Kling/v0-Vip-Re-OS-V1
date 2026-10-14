@@ -656,8 +656,8 @@ async function testVendorGateway() {
     isPlatformStaffIdentity("system", "marketing"))
   check("TENANT user_type=support with no platform_role is NOT staff",
     !isPlatformStaffIdentity("support", null))
-  check("legacy user_type=superadmin marker alone IS staff",
-    isPlatformStaffIdentity("superadmin", null))
+  check("legacy user_type=superadmin marker alone is NOT staff (owner ruling 2026-10-14: never fall user_type back to superadmin)",
+    isPlatformStaffIdentity("superadmin", null) === false && isPlatformStaffIdentity("admin", "superadmin") === true)
 
   check("budgetLevel ok/approaching/paused", budgetLevel({ allowed: true, softWarning: false }) === "ok" && budgetLevel({ allowed: true, softWarning: true }) === "approaching" && budgetLevel({ allowed: false, softWarning: false }) === "paused")
 
@@ -995,7 +995,7 @@ async function testVendorGateway() {
   check("field-spec: phone write maps SID/auth/from to resolver shape", (() => { const w = buildCredentialWrite("phone", { accountSid: "AC1", authToken: "tok", fromNumber: "+15551112222" }); return !!w && w.api_key === "AC1" && (w.config as any).auth_token === "tok" && (w.config as any).from_number === "+15551112222" })())
   check("field-spec: esign write maps profileId to config.profile_id + account_id", (() => { const w = buildCredentialWrite("esign", { apiKey: "k", profileId: "p1" }); return !!w && w.api_key === "k" && w.account_id === "p1" && (w.config as any).profile_id === "p1" })())
   check("field-spec: missing required field rejected (returns null)", buildCredentialWrite("phone", { accountSid: "AC1" }) === null && buildCredentialWrite("listing", {}) === null)
-  check("field-spec: userType→scope mapping (vendor/broker/team_lead/agent/superadmin)", connectionScopeForUserType("vendor").scope === "vendor" && connectionScopeForUserType("broker_owner").scope === "brokerage" && connectionScopeForUserType("broker_owner").isBrokerageManager && connectionScopeForUserType("team_lead").scope === "team" && connectionScopeForUserType("agent").scope === "agent" && connectionScopeForUserType("superadmin").scope === "platform")
+  check("field-spec: userType→scope mapping (vendor/broker/team_lead/agent/platform superadmin by platform_role) — a bare user_type 'superadmin' with no platform_role FAILS CLOSED toward the tenant scopes (owner ruling 2026-10-14)", connectionScopeForUserType("vendor").scope === "vendor" && connectionScopeForUserType("broker_owner").scope === "brokerage" && connectionScopeForUserType("broker_owner").isBrokerageManager && connectionScopeForUserType("team_lead").scope === "team" && connectionScopeForUserType("agent").scope === "agent" && connectionScopeForUserType("admin", "superadmin").scope === "platform" && connectionScopeForUserType("superadmin").scope !== "platform")
   check("field-spec: external partners (lender/title) map to vendor scope (not agent)", connectionScopeForUserType("lender").scope === "vendor" && connectionScopeForUserType("title").scope === "vendor")
   check("field-spec: staff (tc/isa/compliance) own at agent scope", connectionScopeForUserType("tc").scope === "agent" && connectionScopeForUserType("isa").scope === "agent" && connectionScopeForUserType("compliance").scope === "agent")
   check("field-spec: staff self-connect ONLY email+calendar (rest is brokerage-managed)", selfConnectableDomains("tc", "agent").sort().join(",") === "calendar,email")
