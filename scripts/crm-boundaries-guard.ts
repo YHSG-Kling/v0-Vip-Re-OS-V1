@@ -162,7 +162,12 @@ async function main() {
   ok("the egress gate still refuses a nameless/unreachable contact before any push", /validateEgress\(CRM_CONTACT_EGRESS_CONTRACT/.test(sync))
   ok("every dispatch stamps its outcome on the tenant's credential row (stampCrmSyncOutcome ×3: GHL, gateway providers, unsupported)",
     (sync.match(/await stampCrmSyncOutcome\(/g) ?? []).length >= 3)
-  ok("the stamp READS its refusal and its row count (.select(\"id\") + error + zero-row log) — CLAUDE.md §3", /await q\.select\("id"\)/.test(sync) && /matched no row/.test(sync))
+  // Integration (2026-10-14): the stamp is one COMPLETE statement per store and outcome — a literal table,
+  // literal match columns, a literal column object — each destructuring its own `{ data, error }` and ending
+  // in `.select("id")` so the refusal and the row count are read on the statement that writes (the swallowed-
+  // refusal / silent-write / credential-migration censuses all see that shape; a split chain read as opaque).
+  ok("the stamp READS its refusal and its row count on EVERY store statement (const { data, error } = await client.from(<store>).update({…}).…select(\"id\") ×≥5 + the zero-row log) — CLAUDE.md §3",
+    (sync.match(/const \{ data, error \} = await client\.from\("(agent_api_credentials|brokerage_integrations|platform_credentials)"\)\.update\(\{[^\n]*\)\.select\("id"\)/g) ?? []).length >= 5 && /matched no row/.test(sync))
   const S = await import("../lib/crm/sync")
   const now = new Date("2026-10-14T12:00:00Z")
   const agentOk = S.crmSyncOutcomePatch("agent_api_credentials", { success: true }, now)

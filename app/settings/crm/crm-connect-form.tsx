@@ -23,6 +23,7 @@ export function CrmConnectForm({
   connected,
   lastError = null,
   lastSyncedAt = null,
+  verified = false,
 }: {
   active: string | null
   connected: CrmProvider[]
@@ -30,6 +31,8 @@ export function CrmConnectForm({
    *  shown with the fix next to the key the tenant controls. Null = no failure recorded. */
   lastError?: string | null
   lastSyncedAt?: string | null
+  /** The provider accepted the active credential on its last successful push (the outcome stamp's verdict). */
+  verified?: boolean
 }) {
   const [keys, setKeys] = useState<Record<string, string>>({})
   // The SECOND HALF of a key+secret pair. Optional, and separate from `keys`
@@ -95,7 +98,7 @@ export function CrmConnectForm({
                 </div>
               )}
               {active === p.key && !lastError && lastSyncedAt && (
-                <p className="text-xs text-muted-foreground">Last successful sync: {new Date(lastSyncedAt).toLocaleString()}</p>
+                <p className="text-xs text-muted-foreground">Last successful sync: {new Date(lastSyncedAt).toLocaleString()}{verified ? " · credential verified by the provider" : ""}</p>
               )}
               <Input
                 type="password"

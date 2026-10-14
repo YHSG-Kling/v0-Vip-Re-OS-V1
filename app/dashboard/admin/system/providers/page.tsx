@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 import { SystemProvidersClient } from "./system-providers-client"
 
 export const dynamic = "force-dynamic"
@@ -15,11 +15,14 @@ export const dynamic = "force-dynamic"
  * session → platform-staff resolution the sibling consoles use (lib/auth/
  * platform-guard.ts requireSuperadmin → isPlatformSuperadminIdentity, platform
  * staff live in `platform_role`, never a `superadmin` user_type fallback) now
- * decides BEFORE anything renders; a non-staff caller is sent to their dashboard.
- * Fail closed: an unauthenticated or unresolved caller is refused too.
+ * decides BEFORE anything renders; a non-staff caller is told so in place
+ * (RoleGateNotice — page-role-gate-roster P5: a `redirect("/dashboard")` on a
+ * role refusal is "a click that appeared to do nothing"; the notice reveals no
+ * platform data). Fail closed: an unauthenticated or unresolved caller gets the
+ * same notice, never the console.
  */
 export default async function SystemProvidersPage() {
   const gate = await requireSuperadmin()
-  if (!gate.ok) redirect("/dashboard")
+  if (!gate.ok) return <RoleGateNotice surface="The platform providers console" audience="platform staff with total control (superadmin)" />
   return <SystemProvidersClient />
 }

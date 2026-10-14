@@ -263,6 +263,10 @@ export async function getCrmStatusAction(): Promise<
       lastError: string | null
       /** When the active CRM last accepted a push (null = never recorded). */
       lastSyncedAt: string | null
+      /** The provider ACCEPTED the active credential on its last successful push (agent scope:
+       *  agent_api_credentials.is_verified, the outcome stamp's own column; brokerage scope: the
+       *  integration row is connected with no recorded error). */
+      verified: boolean
     }
   | { ok: false; error: string }
 > {
@@ -274,7 +278,7 @@ export async function getCrmStatusAction(): Promise<
   if (member.agentScoped) {
     const { data } = await supabase
       .from("agent_api_credentials")
-      .select("service_name, is_active, error_message, last_verified_at")
+      .select("service_name, is_active, is_verified, error_message, last_verified_at")
       .eq("agent_id", member.agentId)
       .eq("service_type", "crm_sync")
       .in("service_name", CRM_PROVIDERS)
@@ -285,6 +289,7 @@ export async function getCrmStatusAction(): Promise<
       ok: true, scope: "agent", active: connected[0] ?? null, connected,
       lastError: (activeRow?.error_message as string | null) ?? null,
       lastSyncedAt: (activeRow?.last_verified_at as string | null) ?? null,
+      verified: activeRow?.is_verified === true && !activeRow?.error_message,
     }
   }
 
@@ -305,5 +310,6 @@ export async function getCrmStatusAction(): Promise<
     ok: true, scope: "brokerage", active: active?.provider_name ?? null, connected,
     lastError: (active?.last_error as string | null) ?? null,
     lastSyncedAt: active?.last_error ? null : ((active?.last_health_check_at as string | null) ?? null),
+    verified: !!active && !active.last_error,
   }
 }
