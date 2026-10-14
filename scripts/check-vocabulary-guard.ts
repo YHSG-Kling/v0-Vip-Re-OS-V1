@@ -846,12 +846,35 @@ if (process.env.UPDATE_CHECK_VOCAB_BASELINE === "1") {
   process.exit(0)
 }
 
+// Wave 106 (106A): a value a WRITTEN-NOT-APPLIED migration declares for the column's CHECK
+// (`<table>_<column>_check … IN (…)`) is QUEUED for the integrator, not "a value the column can never
+// hold" — the SAME rule the mirrored constants below apply (pendingValues). It is reported beside the
+// count, never silently dropped, and the finder stays whole: a value no migration names still trips.
+// Wave 141 (141B): the rule now applies to BOTH detectors — a write/filter literal that a pending
+// migration declares (user_invitations.status 'failed', m779) is queued here exactly as the in-memory
+// comparison was, so the lane that wrote the migration does not have to pad the zero baseline.
+const pendingCheckValues = (table: string, column: string): Set<string> => {
+  const out = new Set<string>()
+  const migDir = join(root, "supabase/migrations")
+  if (!existsSync(migDir)) return out
+  for (const f of readdirSync(migDir).filter((n) => n.endsWith(".sql"))) {
+    const raw = readFileSync(join(migDir, f), "utf8")
+    if (!/^--[^\n]*WRITTEN, NOT APPLIED/.test(raw)) continue
+    const body = raw.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
+    const m = new RegExp(`${table}_${column}_check\\s*CHECK\\s*\\(\\s*\\w+\\s+IN\\s*\\(([^)]*)\\)`, "s").exec(body)
+    if (m) for (const x of m[1].matchAll(/'([^']+)'/g)) out.add(x[1])
+  }
+  return out
+}
+
 const baselineSet = new Set(baseline)
-const fresh = found.filter((v) => !baselineSet.has(key(v)))
+const queued = found.filter((v) => pendingCheckValues(v.table, v.column).has(v.value))
+const queuedSet = new Set(queued.map(key))
+const fresh = found.filter((v) => !baselineSet.has(key(v)) && !queuedSet.has(key(v)))
 const stillPresent = new Set(found.map(key))
 const fixed = baseline.filter((b) => !stillPresent.has(b))
 
-check(`no NEW literal outside a live CHECK vocabulary (${found.length} total, ${baseline.length} baselined)`,
+check(`no NEW literal outside a live CHECK vocabulary (${found.length} total, ${baseline.length} baselined${queued.length ? `, ${queued.length} queued by a WRITTEN-NOT-APPLIED migration: ${[...new Set(queued.map((v) => `${v.table}.${v.column}=${v.value}`))].join(", ")}` : ""})`,
   fresh.length === 0,
   fresh.slice(0, 8).map((v) => `${v.file}: ${v.table}.${v.column} ${v.kind} "${v.value}"`).join("; "))
 check(`the baseline only shrinks (${fixed.length} retired this run)`, true)
@@ -867,23 +890,7 @@ const memBaseline: string[] = existsSync(MEM_BASELINE_PATH)
   : []
 
 const memBaselineSet = new Set(memBaseline)
-// Wave 106 (106A): a value a WRITTEN-NOT-APPLIED migration declares for the column's CHECK
-// (`<table>_<column>_check … IN (…)`) is QUEUED for the integrator, not "a value the column can never
-// hold" — the SAME rule the mirrored constants below apply (pendingValues). It is reported beside the
-// count, never silently dropped, and the finder stays whole: a value no migration names still trips.
-const pendingCheckValues = (table: string, column: string): Set<string> => {
-  const out = new Set<string>()
-  const migDir = join(root, "supabase/migrations")
-  if (!existsSync(migDir)) return out
-  for (const f of readdirSync(migDir).filter((n) => n.endsWith(".sql"))) {
-    const raw = readFileSync(join(migDir, f), "utf8")
-    if (!/^--[^\n]*WRITTEN, NOT APPLIED/.test(raw)) continue
-    const body = raw.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
-    const m = new RegExp(`${table}_${column}_check\\s*CHECK\\s*\\(\\s*\\w+\\s+IN\\s*\\(([^)]*)\\)`, "s").exec(body)
-    if (m) for (const x of m[1].matchAll(/'([^']+)'/g)) out.add(x[1])
-  }
-  return out
-}
+// The pending-migration rule (pendingCheckValues, hoisted above detector 1 in wave 141) applies here too.
 const memQueued = memFound.filter((v) => v.tables.split(",").some((t) => pendingCheckValues(t.trim(), v.column).has(v.value)))
 const memQueuedSet = new Set(memQueued.map(memKey))
 const memFresh = memFound.filter((v) => !memBaselineSet.has(memKey(v)) && !memQueuedSet.has(memKey(v)))

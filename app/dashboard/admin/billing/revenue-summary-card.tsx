@@ -128,7 +128,8 @@ export function RevenueSummaryCard() {
               No subscriptions were created in this window.
             </p>
           ) : (
-            <table className="mt-4 w-full text-sm">
+            <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-gray-500">
                   <th className="py-1">Tier</th>
@@ -150,6 +151,7 @@ export function RevenueSummaryCard() {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </>
       )}

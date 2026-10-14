@@ -504,6 +504,7 @@ export default function IDXBrokerSettingsPage() {
                 {usage.rows.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No activity in the last 7 days.</p>
                 ) : (
+                  <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="text-left text-xs text-muted-foreground border-b">
@@ -528,6 +529,7 @@ export default function IDXBrokerSettingsPage() {
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 )}
               </div>
 

@@ -91,6 +91,9 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
   // Solo-agent only: routes broker-side steps (CDA signature, compliance) in-app vs external.
   const [brokerageOnPlatform, setBrokerageOnPlatform] = useState(false)
   const [teamOnPlatform, setTeamOnPlatform]           = useState(false)
+  // Solo/team only (wave 141A): the brokerage they are affiliated with — declared as business
+  // context on their own workspace; never matched to another tenant.
+  const [affiliatedBrokerageName, setAffiliatedBrokerageName] = useState("")
 
   const [error, setError]     = useState<string | null>(null)
   const [success, setSuccess] = useState<SignupBrokerageResult | null>(null)
@@ -124,6 +127,7 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
         tier, brokerageCity: city || undefined, brokerageState: state || undefined,
         brokerageOnPlatform: tier === "solo_agent" ? brokerageOnPlatform : undefined,
         teamOnPlatform:      tier === "solo_agent" ? teamOnPlatform : undefined,
+        affiliatedBrokerage: (tier === "solo_agent" || tier === "team") && affiliatedBrokerageName.trim() ? { name: affiliatedBrokerageName.trim() } : null,
         // The tier's LIVE funnel snapshot (may be absent — plain signup then).
         snapshotId: funnelSnapshots[tier]?.id,
         // Send the validated code when we have one, else whatever was typed —
@@ -447,6 +451,14 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
                 <input type="checkbox" checked={teamOnPlatform} onChange={(e) => setTeamOnPlatform(e.target.checked)} className="h-4 w-4" />
                 My team is on the platform
               </label>
+              <div className="space-y-1 pt-1">
+                <Label htmlFor="affiliated-brokerage" className="text-xs">Brokerage you&apos;re affiliated with (optional)</Label>
+                <Input id="affiliated-brokerage" value={affiliatedBrokerageName} onChange={(e) => setAffiliatedBrokerageName(e.target.value)} placeholder="e.g. Harbor Realty — Northside office" maxLength={160} />
+                <p className="text-[11px] text-muted-foreground">
+                  Shown on your disclosures and documents. Your workspace stays your own — a brokerage joins you to
+                  its account only with your explicit consent later, never by name.
+                </p>
+              </div>
             </div>
           )}
         </CardContent>

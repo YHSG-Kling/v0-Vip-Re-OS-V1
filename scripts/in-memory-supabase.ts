@@ -72,6 +72,9 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
     let conflictCols: string[] = []
     let cols: string[] | null = null
     let limitN: number | null = null
+    /** Wave 141 (lane 141J, the CRM-inbound canary): `.range(from, to)` — PostgREST's inclusive offset window,
+     *  the grammar lib/platform/tenant-import.ts pages the dedupe scan with. */
+    let offsetN = 0
     let orderBy: { col: string; asc: boolean } | null = null
     let selectAfterWrite = false
 
@@ -143,6 +146,7 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
         const { col, asc } = orderBy
         matched = [...matched].sort((a, b) => (a[col] < b[col] ? -1 : a[col] > b[col] ? 1 : 0) * (asc ? 1 : -1))
       }
+      if (offsetN > 0) matched = matched.slice(offsetN)
       if (limitN !== null) matched = matched.slice(0, limitN)
       return { data: matched.map(project), error: null }
     }
@@ -215,6 +219,7 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
       lt(col: string, v: any) { filters.push((r) => val(r, col) < v); return b },
       order(col: string, o?: { ascending?: boolean }) { orderBy = { col, asc: o?.ascending !== false }; return b },
       limit(n: number) { limitN = n; return b },
+      range(from: number, to: number) { offsetN = Math.max(0, from); limitN = Math.max(0, to - from + 1); return b },
       maybeSingle: async () => { const r = run(); if (r.error) return r; return { data: Array.isArray(r.data) ? (r.data[0] ?? null) : r.data, error: null } },
       single: async () => {
         const r = run(); if (r.error) return r

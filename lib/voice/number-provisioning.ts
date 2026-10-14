@@ -460,6 +460,25 @@ export async function attachOwnedNumber(
     registrationNote = `Business registration could not start: ${(err as Error)?.message ?? "unknown"}`
   }
 
+  // IMMEDIATE OPERATION OUTCOME (wave 141B — phone_a2p). The number landed; the post-condition of THIS
+  // step is "carrier registration STARTED (or is honestly waiting on the tenant / the carrier)". A kickoff
+  // that THREW is routed now to the AI ISA (communications owner) — never left for the hourly tick alone;
+  // the carrier's own verdict (pending / action required / rejected) rides the readiness `communications`
+  // check the consumer re-verifies. Evidence carries the number's last four digits only.
+  try {
+    const { reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
+    await reportOperationOutcome(svc, {
+      operation: "phone_a2p", brokerageId: params.brokerageId, ok: registration !== undefined,
+      subjectType: "tenant_phone_number", subjectId: numberRowId ?? null, actorUserId: params.agentUserId ?? null,
+      source: params.eventSource === "tenant_action" ? "ui" : "system",
+      evidence: { number_last4: cleaned.slice(-4), source: params.source, bound, registration: registrationNote ?? null },
+      error: registration === undefined ? registrationNote ?? "carrier registration kickoff threw" : null,
+      tenantFacing: registration === undefined ? "business registration for your new number could not start — the OS will retry and tell you if it needs your business profile" : null,
+    })
+  } catch (err) {
+    console.warn("[number-provisioning] phone_a2p outcome not reported:", (err as Error)?.message)
+  }
+
   return { ok: true, phoneNumber: cleaned, twilioSid: verifiedSid, numberRowId, bound, bindNote, registration, registrationNote }
 }
 

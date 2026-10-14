@@ -147,9 +147,11 @@ export interface BuyerPropertyInterest {
 // the DECRYPTED access_token to every caller — including app/actions/forms-kernel.ts
 // resolveFormsProviderAction, a "use server" export that returned it to two browser components.
 // The resolver now answers the QUESTION ("which provider, is it configured, is a token stored") and
-// never the secret; the two egress callers that actually sign a provider request (the Dotloop
-// branches of lib/transactions/cda-esign.ts and app/actions/admin/commission-agreement.ts) load
-// it through loadTransactionFormsCredential below, which has no "use server" caller.
+// never the secret; the ONE egress caller that still signs a provider request from it (the Dotloop
+// branch of app/actions/admin/commission-agreement.ts) loads it through loadTransactionFormsCredential
+// below, which has no "use server" caller. (lib/transactions/cda-esign.ts no longer reads either —
+// wave 141: the CDA follows the tenant's E-SIGN selection through lib/esign/dispatch-packet.ts, whose
+// credential is resolved by lib/integrations/resolve-esign-provider.ts, never the TM vendor's.)
 
 const TRANSACTION_FORMS_PLATFORMS = ["dotloop", "skyslope", "formsimplicity", "brokermint", "authentisign", "docusign"] as const
 

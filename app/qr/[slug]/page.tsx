@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation'
 import { createServiceClient } from '@/lib/supabase/service'
+import { resolveQrScanDestination, qrContinueLabel } from '@/lib/marketing/qr-contract'
 import QRLandingClient from './QRLandingClient'
 
 interface PageProps {
@@ -39,6 +40,8 @@ export default async function QRLandingPage({ params }: PageProps) {
       brokerage_id,
       agent_id,
       listing_id,
+      target_url,
+      destination_type,
       is_active,
       expires_at
     `)
@@ -96,6 +99,25 @@ export default async function QRLandingPage({ params }: PageProps) {
     listingAddress = listing?.address ?? null
   }
 
+  // ── THE CODE'S INTENDED DESTINATION, OFFERED (wave 141F) ────────────────────
+  // /api/qr/scan already redirects an allow-listed in-app destination straight
+  // through, so a scanner only lands HERE when the code's destination IS this
+  // form, when the link was opened directly, or when the destination is an https
+  // host we do not own — which is never auto-followed (no open redirect) and is
+  // offered instead as a link the person taps. The same pure resolver decides
+  // both doors, so they cannot disagree.
+  const destination = resolveQrScanDestination({
+    slug,
+    targetUrl: qr.target_url ?? null,
+    appOrigins: [process.env.NEXT_PUBLIC_APP_URL ?? null],
+  })
+  const continueTo =
+    destination.kind === 'in_app'
+      ? { href: destination.path, label: qrContinueLabel(qr.destination_type, false), external: false }
+      : destination.external
+        ? { href: destination.external.url, label: `${qrContinueLabel(qr.destination_type, true)} (${destination.external.host})`, external: true }
+        : null
+
   return (
     <QRLandingClient
       slug={slug}
@@ -105,6 +127,7 @@ export default async function QRLandingPage({ params }: PageProps) {
       agentName={agentName}
       agentPhoto={agentPhoto}
       listingAddress={listingAddress}
+      continueTo={continueTo}
     />
   )
 }

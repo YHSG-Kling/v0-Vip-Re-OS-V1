@@ -173,11 +173,112 @@ export function computeTrialExtension(currentTrialEnd: string | null, addDays: n
 export function stripeApplyCoupon(
   subscriptionId: string | null | undefined,
   stripeCouponId: string | null | undefined,
+  /** wave 141H: a Stripe PROMOTION CODE id (promo_…) names the coupon instead —
+   *  Stripe then counts the promotion code's own redemption. */
+  opts: { promotionCodeId?: string | null } = {},
 ): Promise<StripeOpResult> {
-  if (!stripeCouponId || stripeCouponId.startsWith("mock_")) return Promise.resolve(skip())
+  if (!opts.promotionCodeId && (!stripeCouponId || stripeCouponId.startsWith("mock_"))) return Promise.resolve(skip())
   return guard(subscriptionId, async (stripe) => {
-    await stripe.subscriptions.update(subscriptionId!, { discounts: [{ coupon: stripeCouponId }] })
+    await stripe.subscriptions.update(subscriptionId!, {
+      discounts: opts.promotionCodeId ? [{ promotion_code: opts.promotionCodeId }] : [{ coupon: stripeCouponId! }],
+    })
   })
+}
+
+// ─── DISCOUNT CODES (wave 141H) ───────────────────────────────────────────────
+//
+// Owner (wave 141, COUPONS): "code → Stripe validation → eligibility → application
+// → invoice/checkout → internal reconciliation. No independent discount math."
+// The READ half lives here so no new importer of the platform Stripe client is
+// minted (scripts/stripe-account-scope-simulator.ts PLATFORM_CLIENT_IMPORTERS).
+// lib/billing/discount-codes.ts is the orchestrator (platform_coupons row → this
+// lookup → lib/platform/coupons.ts evaluateStripeDiscount → `discounts` params).
+
+export type StripeDiscountLookup =
+  | { ok: true; coupon: any; promotionCode: any | null }
+  /** Stripe has no such coupon / no ACTIVE promotion code spelled that way. */
+  | { ok: false; notFound: true; skipped: false }
+  /** Stripe is not configured — nothing could be checked (the caller says so). */
+  | { ok: false; notFound: false; skipped: true }
+  | { ok: false; notFound: false; skipped: false; error: string }
+
+/**
+ * Look a discount up ON STRIPE: by the platform coupon's live Stripe id, or by a
+ * promotion code's customer-facing spelling (stripe.promotionCodes.list code=…,
+ * the code Stripe matches case-insensitively). applies_to is expanded so the
+ * product restriction is visible to the pure evaluator. Read-only.
+ */
+export async function stripeLookupDiscount(q: { stripeCouponId?: string | null; promotionCode?: string | null }): Promise<StripeDiscountLookup> {
+  if (!isStripeConfigured()) return { ok: false, notFound: false, skipped: true }
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    if (q.stripeCouponId && !q.stripeCouponId.startsWith("mock_")) {
+      const coupon = await stripe.coupons.retrieve(q.stripeCouponId, { expand: ["applies_to"] })
+      if (!coupon || (coupon as any).deleted) return { ok: false, notFound: true, skipped: false }
+      return { ok: true, coupon, promotionCode: null }
+    }
+    if (q.promotionCode) {
+      const list = await stripe.promotionCodes.list({ code: q.promotionCode, active: true, limit: 1, expand: ["data.coupon.applies_to"] })
+      const promo = (list as any)?.data?.[0] ?? null
+      if (!promo) return { ok: false, notFound: true, skipped: false }
+      const coupon = typeof promo.coupon === "string" ? await stripe.coupons.retrieve(promo.coupon, { expand: ["applies_to"] }) : promo.coupon
+      return { ok: true, coupon, promotionCode: promo }
+    }
+    return { ok: false, notFound: true, skipped: false }
+  } catch (err: any) {
+    // Stripe answers "No such coupon" with a 404 resource_missing — that is not found, not an outage.
+    if (err?.code === "resource_missing" || err?.statusCode === 404) return { ok: false, notFound: true, skipped: false }
+    return { ok: false, notFound: false, skipped: false, error: err?.message ?? String(err) }
+  }
+}
+
+// ─── SUBSCRIBER → BROKERAGE BILLING HANDOFF (wave 141H) ──────────────────────
+//
+// Owner (wave 141, BROKERAGE IDENTITY): "stop individual billing at the right
+// effective time → Stripe proration → no double billing … invoices immutable, no
+// lost paid period, no fabricated refund". The Stripe side of
+// lib/billing/subscriber-handoff.ts: Stripe computes every proration — a future
+// effective date is `cancel_at` with create_prorations (the unused remainder
+// credits the customer at the cancel), an effective date already reached is
+// `cancel(prorate: true, invoice_now: true)` (Stripe issues the final invoice
+// with the proration credit on it). No refund is created here: a credit only
+// exists if Stripe's own proration computed one (customer balance / credit
+// note), and invoices already issued are never touched.
+
+export interface HandoffStripeResult extends StripeOpResult {
+  mode?: "scheduled_cancel" | "cancelled_now"
+  /** The final invoice Stripe issued on an immediate cancel (null when scheduled). */
+  finalInvoiceId?: string | null
+  /** Stripe's own cancel_at (unix) after the write, for the evidence row. */
+  cancelAtUnix?: number | null
+}
+
+export async function stripeEndSubscriptionForHandoff(
+  subscriptionId: string | null | undefined,
+  effectiveAtUnix: number,
+  nowUnix: number,
+  idempotencyKey: string,
+  comment?: string,
+): Promise<HandoffStripeResult> {
+  if (!isStripeConfigured() || !subscriptionId) return skip()
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    if (effectiveAtUnix <= nowUnix) {
+      const cancelled = await stripe.subscriptions.cancel(
+        subscriptionId,
+        { prorate: true, invoice_now: true, cancellation_details: { comment: comment ?? "billing handed off to brokerage" } },
+        { idempotencyKey },
+      )
+      const inv = (cancelled as any)?.latest_invoice
+      return { applied: true, skipped: false, mode: "cancelled_now", finalInvoiceId: typeof inv === "string" ? inv : (inv?.id ?? null), cancelAtUnix: (cancelled as any)?.canceled_at ?? nowUnix }
+    }
+    const updated = await stripe.subscriptions.update(
+      subscriptionId,
+      { cancel_at: effectiveAtUnix, proration_behavior: "create_prorations", cancellation_details: { comment: comment ?? "billing handed off to brokerage" } },
+      { idempotencyKey },
+    )
+    return { applied: true, skipped: false, mode: "scheduled_cancel", finalInvoiceId: null, cancelAtUnix: (updated as any)?.cancel_at ?? effectiveAtUnix }
+  } catch (err: any) { return { applied: false, skipped: false, error: err?.message ?? String(err) } }
 }
 
 /** Refund the subscription's most recent PAID invoice (full or partial cents).
@@ -337,12 +438,19 @@ async function stripeCustomerHasPaymentMethod(customerId: string | null | undefi
  */
 async function stripeConvertTrial(args: {
   customerId: string; priceId: string; brokerageId: string; idempotencyKey: string
+  /** wave 141H: the signup coupon (brokerages.billing_metadata.coupon), resolved + Stripe-validated by
+   *  lib/billing/discount-codes.ts resolveDiscountForCheckout — applied as Stripe `discounts`, never as
+   *  a price this code computed. */
+  discounts?: Array<{ promotion_code: string } | { coupon: string }> | null
 }): Promise<StripeOpResult & { stripeSubscriptionId?: string }> {
   if (!isStripeConfigured()) return skip()
   try {
     const { stripe } = await import("@/lib/stripe")
     const created = await stripe.subscriptions.create(
-      { customer: args.customerId, items: [{ price: args.priceId }], metadata: { brokerage_id: args.brokerageId } },
+      {
+        customer: args.customerId, items: [{ price: args.priceId }], metadata: { brokerage_id: args.brokerageId },
+        ...(args.discounts && args.discounts.length > 0 ? { discounts: args.discounts } : {}),
+      },
       { idempotencyKey: args.idempotencyKey },
     )
     return { applied: true, skipped: false, stripeSubscriptionId: (created as any)?.id }
@@ -414,6 +522,8 @@ export interface LifecycleSweepResult {
   scanned: number
   converted: number
   expired: number
+  /** wave 141H: LOCAL (non-Stripe) rows whose cancel_at arrived and were moved to 'cancelled'. */
+  cancelAtReached: number
   remindersAttempted: number
   remindersSent: number
   errors: string[]
@@ -425,6 +535,8 @@ export interface LifecycleSweepDeps {
   send?: (p: any) => Promise<{ success: boolean; providerKey?: string; error?: string }>
   /** Ledger client seam (default: the service client inside withActionLedger). */
   ledgerClient?: { from: (table: string) => any }
+  /** wave 141H: the discount resolver seam (default: lib/billing/discount-codes.ts resolveDiscountForCheckout). */
+  resolveDiscount?: (svc: any, args: { brokerageId: string; tier: string | null }) => Promise<{ status: string; params?: { discounts: Array<{ promotion_code: string } | { coupon: string }> } | null; message?: string }>
 }
 
 /**
@@ -433,7 +545,7 @@ export interface LifecycleSweepDeps {
  * inside withActionLedger with cycle = the trial end it is about, so it happens once.
  */
 export async function runSubscriptionLifecycleSweep(svc: any, now: Date = new Date(), deps: LifecycleSweepDeps = {}): Promise<LifecycleSweepResult> {
-  const out: LifecycleSweepResult = { scanned: 0, converted: 0, expired: 0, remindersAttempted: 0, remindersSent: 0, errors: [] }
+  const out: LifecycleSweepResult = { scanned: 0, converted: 0, expired: 0, cancelAtReached: 0, remindersAttempted: 0, remindersSent: 0, errors: [] }
   const { data: rows, error } = await svc
     .from("subscriptions")
     .select("id, brokerage_id, status, trial_end, current_period_end, cancel_at, stripe_subscription_id, stripe_customer_id, tier_id")
@@ -464,6 +576,40 @@ export async function runSubscriptionLifecycleSweep(svc: any, now: Date = new Da
       const isTrial = normalizeStripeStatus(row.status) === "trialing"
       const trialEnded = isTrial && !!trialIso && Number.isFinite(Date.parse(trialIso)) && Date.parse(trialIso) <= now.getTime()
 
+      // wave 141H — a LOCAL row (no Stripe subscription: a trial, or a staff-invoiced tenant) whose
+      // cancel_at has arrived. Stripe-linked rows are cancelled BY Stripe at cancel_at and mirrored by
+      // the webhook / reconcile; nothing enforced the column on a local row, so a scheduled
+      // subscriber→brokerage handoff (lib/billing/subscriber-handoff.ts) of a trial would have stayed
+      // 'trialing' past its effective date. COUNTED, ledgered once per (row, cancel_at), evented.
+      if (!row.stripe_subscription_id && row.cancel_at && Number.isFinite(Date.parse(row.cancel_at)) && Date.parse(row.cancel_at) <= now.getTime()) {
+        const cycle = `cancel_at:${new Date(Date.parse(row.cancel_at)).toISOString()}`
+        const res = await withActionLedger<{ moved: number; error: string | null }>(
+          { brokerageId: row.brokerage_id, action: "billing.subscription.cancel_at_reached", actor: { type: "system" },
+            subject: { type: "subscription", id: row.id }, reasonCode: "SUBSCRIPTION_LIFECYCLE",
+            reasonDetail: "scheduled end reached on a local (non-Stripe) subscription", cycle, riskClass: "FINANCIAL",
+            systemSource: "billing_lifecycle", detail: { cancel_at: row.cancel_at, from: row.status, to: "cancelled" } },
+          async () => {
+            const { data: moved, error: mErr } = await svc.from("subscriptions")
+              .update({ status: "cancelled", cancelled_at: now.toISOString(), updated_at: now.toISOString() })
+              .eq("id", row.id).eq("status", row.status as string)
+              .select("id")
+            return { moved: ((moved ?? []) as unknown[]).length, error: mErr?.message ?? null }
+          },
+          {
+            settle: (r) => ({ status: r.error ? "failed" : "executed", outcome: r.error ? "refused" : r.moved === 1 ? "cancelled" : "already_moved", error: r.error }),
+            replay: () => ({ moved: 0, error: null }),
+          },
+          ledgerOpts,
+        )
+        if (res.error) { out.errors.push(`${row.id}: cancel_at refused — ${res.error}`); continue }
+        if (res.moved === 1) {
+          out.cancelAtReached += 1
+          const t = await emitSubscriptionTransition({ brokerageId: row.brokerage_id, subscriptionId: row.id, from: row.status, to: "cancelled", source: "sweep", detail: { cancel_at: row.cancel_at } })
+          if (!t.ok) out.errors.push(`${row.id}: cancel_at transition event not recorded — ${t.error}`)
+        }
+        continue
+      }
+
       if (trialEnded) {
         const stripeLinked = !!row.stripe_subscription_id
         const pm = stripeLinked ? { ok: true, has: false } : await hasPm(row.stripe_customer_id)
@@ -472,15 +618,24 @@ export async function runSubscriptionLifecycleSweep(svc: any, now: Date = new Da
         const cycle = reminderCycle("trial_end", trialIso!)
 
         if (action === "convert") {
-          const { data: tier, error: tErr } = await svc.from("subscription_tiers").select("stripe_price_id").eq("id", row.tier_id).maybeSingle()
+          const { data: tier, error: tErr } = await svc.from("subscription_tiers").select("stripe_price_id, tier_name").eq("id", row.tier_id).maybeSingle()
           const priceId = (tier as { stripe_price_id?: string | null } | null)?.stripe_price_id ?? null
           if (tErr || !priceId) { out.errors.push(`${row.id}: no Stripe price for tier ${row.tier_id} (${tErr?.message ?? "unpriced"}) — cannot convert`); continue }
+          // wave 141H — the coupon the tenant redeemed at signup (billing_metadata.coupon) rides the
+          // conversion as Stripe `discounts`, after Stripe re-validated it. A REFUSED code (expired on
+          // Stripe since signup, product-restricted) converts WITHOUT the discount and says so in the
+          // errors list — the paid period is never lost over a stale promo, and no price is invented.
+          const resolveDiscount = deps.resolveDiscount ?? (async (client: any, args: { brokerageId: string; tier: string | null }) =>
+            (await import("./discount-codes")).resolveDiscountForCheckout(client, { brokerageId: args.brokerageId, tier: args.tier }))
+          const discount = await resolveDiscount(svc, { brokerageId: row.brokerage_id, tier: (tier as { tier_name?: string | null } | null)?.tier_name ?? null })
+          if (discount.status === "refused") out.errors.push(`${row.id}: signup discount not applied — ${discount.message ?? "refused"}`)
+          const discounts = discount.status === "applied" ? discount.params?.discounts ?? null : null
           const res = await withActionLedger<StripeOpResult & { stripeSubscriptionId?: string }>(
             { brokerageId: row.brokerage_id, action: "billing.subscription.convert_trial", actor: { type: "system" },
               subject: { type: "subscription", id: row.id }, reasonCode: "SUBSCRIPTION_LIFECYCLE",
               reasonDetail: "trial ended with a payment method on file", cycle, riskClass: "FINANCIAL",
-              systemSource: "billing_lifecycle", detail: { trial_end: trialIso, price_id: priceId } },
-            () => convert({ customerId: row.stripe_customer_id!, priceId, brokerageId: row.brokerage_id, idempotencyKey: `trial-convert:${row.id}:${cycle}` }),
+              systemSource: "billing_lifecycle", detail: { trial_end: trialIso, price_id: priceId, discount: discount.status, discounts } },
+            () => convert({ customerId: row.stripe_customer_id!, priceId, brokerageId: row.brokerage_id, idempotencyKey: `trial-convert:${row.id}:${cycle}`, discounts }),
             {
               settle: (r) => ({ status: r.applied ? "executed" : "failed", outcome: r.applied ? "converted" : (r.skipped ? "stripe_unconfigured" : "stripe_refused"), provider: "stripe", providerRef: r.stripeSubscriptionId ?? null, error: r.error ?? null }),
               replay: () => ({ applied: false, skipped: true }),

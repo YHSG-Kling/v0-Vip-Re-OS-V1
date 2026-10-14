@@ -19,6 +19,7 @@ import {
   cancelSubscription,
   getCancellationSaveOfferAction,
   acceptCancellationSaveOfferAction,
+  applyDiscountCodeAction,
 } from "@/app/actions/billing"
 import type { SaveOffer } from "@/lib/platform/save-offer"
 import { formatSeatLimit, formatTenantSeatLimit, normalizeCatalogSeatLimit } from "@/lib/kernel/tier-role-matrix"
@@ -45,6 +46,28 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
   const [cancelStep, setCancelStep] = useState<"loading" | "offer" | "confirm">("loading")
   const [saveOffer, setSaveOffer] = useState<SaveOffer | null>(null)
   const [busy, setBusy] = useState(false)
+  // wave 141H — apply a discount code to the LIVE subscription (seat packages, renewals).
+  // Stripe validates; the next Stripe invoice is the amount. Prefixed handlers (wave-137 lesson).
+  const [discountCodeInput, setDiscountCodeInput] = useState("")
+  const [discountCodeBusy, setDiscountCodeBusy] = useState(false)
+  const [discountCodeApplied, setDiscountCodeApplied] = useState<{ code: string; summary: string } | null>(null)
+
+  const handleDiscountCodeApply = async () => {
+    if (!discountCodeInput.trim()) return
+    setDiscountCodeBusy(true)
+    try {
+      const res = await applyDiscountCodeAction(discountCodeInput)
+      if (res.ok) {
+        setDiscountCodeApplied({ code: res.code, summary: res.summary })
+        setDiscountCodeInput("")
+        toast({ title: `${res.code} applied`, description: `${res.summary} — it appears on your next Stripe invoice.` })
+      } else {
+        toast({ title: "Code not applied", description: res.error, variant: "destructive" })
+      }
+    } finally {
+      setDiscountCodeBusy(false)
+    }
+  }
 
   // Did we read a catalogue tier at all? "no plan" and "unlimited plan" both
   // arrive at max_agents === null/undefined; only this tells them apart.
@@ -212,6 +235,28 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
               <span>
                 Your subscription will end on {new Date(subscription.cancel_at).toLocaleDateString()}
               </span>
+            </div>
+          )}
+
+          {/* Discount code on the live subscription (wave 141H) — only when the plan is Stripe-linked. */}
+          {subscription?.stripe_subscription_id && (
+            <div className="flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center">
+              <Label htmlFor="plan-discount-code" className="text-sm whitespace-nowrap">Have a discount code?</Label>
+              <input
+                id="plan-discount-code"
+                className="h-9 flex-1 rounded-md border bg-background px-3 text-sm"
+                placeholder="e.g. LAUNCH20"
+                value={discountCodeInput}
+                onChange={(e) => setDiscountCodeInput(e.target.value.toUpperCase())}
+                disabled={discountCodeBusy}
+                aria-label="Discount code"
+              />
+              <Button variant="outline" size="sm" onClick={handleDiscountCodeApply} disabled={discountCodeBusy || !discountCodeInput.trim()}>
+                {discountCodeBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Apply"}
+              </Button>
+              {discountCodeApplied && (
+                <p className="text-xs text-emerald-700">{discountCodeApplied.code}: {discountCodeApplied.summary} — on your next invoice.</p>
+              )}
             </div>
           )}
 

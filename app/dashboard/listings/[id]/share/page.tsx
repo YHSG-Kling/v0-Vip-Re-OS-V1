@@ -22,6 +22,8 @@ import Image from "next/image"
 // Use the qrcode npm package to generate a QR code data URL on the client
 // (avoids server-side canvas dependency issues with qrcode).
 import QRCode from "qrcode"
+// ONE encoding contract (wave 141F): quiet zone, error correction, black-on-white contrast.
+import { qrEncodeOptions } from "@/lib/marketing/qr-contract"
 
 interface QrRecord {
   id: string
@@ -131,11 +133,7 @@ export default function ListingSharePage() {
         // to its campaign before redirecting to target_url; a printed code that
         // points straight at target_url is a scan the platform never sees.
         const origin = process.env.NEXT_PUBLIC_APP_URL ?? window.location.origin
-        const dataUrl = await QRCode.toDataURL(`${origin}/api/qr/scan?slug=${qr.slug}`, {
-          width: 300,
-          margin: 2,
-          color: { dark: "#1e293b", light: "#ffffff" },
-        })
+        const dataUrl = await QRCode.toDataURL(`${origin}/api/qr/scan?slug=${qr.slug}`, qrEncodeOptions(300))
         setQrDataUrl(dataUrl)
       }
 
@@ -310,6 +308,8 @@ export default function ListingSharePage() {
                     each day, so someone who came back on another day is counted again.
                   </p>
                 ) : null}
+                {/* Six columns never fit a phone — the table scrolls inside its card instead of pushing the page sideways (wave 141, 141I mobile census). */}
+                <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="text-left text-muted-foreground border-b">
@@ -334,6 +334,7 @@ export default function ListingSharePage() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
             )}
           </CardContent>

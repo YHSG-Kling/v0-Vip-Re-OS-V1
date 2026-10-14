@@ -59,10 +59,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // speak for scans it routes, but this endpoint is reachable directly from a
     // bookmarked landing page, and capturing a lead through a retired code
     // writes a contact the tenant will read as coming from a live campaign.
+    // THE PAIR MUST AGREE (wave 141F): the landing hands this door both the id and the slug of
+    // ONE code. Looking the row up by id alone and recording whatever slug the body carried
+    // let a forged body file a capture under one code's tenant while naming another code's
+    // slug in the evidence (rawPayload / the touchpoint metadata). Both predicates, fail
+    // closed — a mismatched pair is "not found", not a guess at which half to trust.
     const { data: qr, error: qrError } = await supabase
       .from('qr_codes')
       .select('id, brokerage_id, agent_id, lead_count, is_active, expires_at, marketing_campaign_id')
       .eq('id', qrCodeId)
+      .eq('slug', slug)
       .maybeSingle()
 
     if (qrError || !qr) {

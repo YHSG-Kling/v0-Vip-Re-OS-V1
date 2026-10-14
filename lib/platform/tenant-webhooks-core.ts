@@ -136,6 +136,16 @@ export const WEBHOOK_EVENT_CATALOG: WebhookEventDef[] = [
     // Dates + the source offer id only — no title company, no amounts.
     payloadFields: ["closing_date", "inspection_deadline", "earnest_money_due", "earnest_money_due_days", "created_from_offer"],
   },
+  {
+    event: "website.domain_verified",
+    description: "A custom domain the tenant owns was verified and now serves their website.",
+    // lib/platform/custom-domains.ts reportCustomDomainOutcome (wave 141G) — the custom-domain
+    // rail's one emission voice, after the connect/verify post-condition passed.
+    internalTypes: [KernelEvent.CUSTOM_DOMAIN_VERIFIED],
+    entityTypes: ["tenant_custom_domain"],
+    // The host and its status only — never the routing layer's error text or any credential.
+    payloadFields: ["domain", "status"],
+  },
 ]
 
 /** All external event names, in catalog order. */

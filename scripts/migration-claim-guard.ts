@@ -307,7 +307,29 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // could not give it. Deliberate bump, named per this guard's instruction; drops back to 0 once applied.
 // (wave 139: lane 139E bumped this to 2 for m752; the integrator applied m752 live the same day, so it drops back to 1.)
 // (wave 139: lane 139C bumped this for m750; the integrator applied m750 live the same day — no net change.)
-const NOT_APPLIED_BASELINE = 1
+// 1 → 2 (wave 141, lane 141C — legal description on the canonical property records):
+// m768-legal-description-on-the-canonical-property-records.sql, WRITTEN NOT APPLIED — listings /
+// transactions legal_description + legal_description_source (CHECK agent | rentcast). Deliberate bump,
+// named per this guard's own instruction; drops back once the integrator applies it and flips the
+// header. Sibling wave-141 lanes bump this line for their own files — the integrator sums them.
+// Wave 141 integration: m739 (owner SQL editor) + m765 (141A) + m768 (141C) + m771 (141D) + m777 (141H) + m779 (141B) — six files written, not applied.
+const NOT_APPLIED_BASELINE = 6
+// 1 → 2 (wave 141, lane 141B — immediate operations): m779-user-invitations-failed-dispatch-status.sql,
+// WRITTEN NOT APPLIED — user_invitations.status admits 'failed' (an invite whose email could not be dispatched
+// in the creating request is shown to the admin as FAILED with a Resend, owner ruling 2026-10-14). Deliberate
+// bump, named per this guard's instruction; drops back once the integrator applies it and flips the header.
+// wave 141H: +1 for m777 (coupon reconciliation columns — billing_invoices.discount_cents,
+// platform_coupon_redemptions.stripe_discount_id / stripe_applied_at), written, not applied;
+// the integrator lowers this as it applies.
+// 1 → 2 (wave 141, lane 141A — brokerage identity): m765-brokerage-identity-declared-affiliation-and-
+// transfer-requests.sql, WRITTEN NOT APPLIED — brokerages.declared_affiliation (context only) +
+// brokerage_transfer_requests (the ONE subscriber → brokerage-location transfer rail's request/evidence
+// row, two CHECKs, tenant RLS). Deliberate bump, named per this guard's instruction; drops back to 1 once
+// the integrator applies it and flips the header (m739 stays the owner's SQL-editor action).
+// 1 → 2 (wave 141, lane 141D): m771-airtable-retired-drop-global-settings-airtable-api-key.sql, WRITTEN NOT
+// APPLIED — drops global_settings.airtable_api_key (Airtable retired; 0 values live, no reader, no writer).
+// Deliberate bump, named per this guard's instruction; drops back once the integrator applies it and flips
+// the header. Sibling wave-141 lanes bump this line for their own files — the integrator sums them.
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)
 check(`files claiming NOT APPLIED at or below ${NOT_APPLIED_BASELINE} (found ${notApplied.length})`,

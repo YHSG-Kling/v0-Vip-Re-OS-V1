@@ -18,7 +18,20 @@ import { platformStaffCan, type PlatformCapability } from "./platform-staff-rost
 import { headers } from "next/headers"
 
 export type StaffGate =
-  | { ok: true; userId: string; email: string; role: string | null }
+  | {
+      ok: true
+      userId: string
+      email: string
+      /** The EFFECTIVE staff role (resolvePlatformRole: platform_role wins; the legacy
+       *  user_type='superadmin' marker still resolves). */
+      role: string | null
+      /** The RAW users.platform_role column (wave 141, lane 141D). `role` above can be non-null
+       *  while this is null — exactly when the caller was admitted by the legacy
+       *  user_type='superadmin' marker (0 live rows; platform staff live in platform_role,
+       *  CLAUDE.md §4). An operation the owner ruled "platform_role, never superadmin user_type"
+       *  (inbound CRM import) refuses on this being null without re-reading the users row. */
+      platformRole: string | null
+    }
   | { ok: false; error: string }
 
 /** Is the caller platform staff holding `capability`? Resolves the actor for audit. */
@@ -32,7 +45,10 @@ export async function gateStaffAction(capability: PlatformCapability): Promise<S
   if (!platformStaffCan(role, capability)) {
     return { ok: false, error: `Forbidden — requires platform '${capability}' capability` }
   }
-  return { ok: true, userId: user.id, email: (profile as any)?.email ?? user.email ?? "", role }
+  return {
+    ok: true, userId: user.id, email: (profile as any)?.email ?? user.email ?? "", role,
+    platformRole: ((profile as { platform_role?: string | null } | null)?.platform_role ?? null) || null,
+  }
 }
 
 /**

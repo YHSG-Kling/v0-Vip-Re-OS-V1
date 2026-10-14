@@ -643,7 +643,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
       agent_signed_off_by: auth.userId,
       agent_submitted_at: now,
       agent_submitted_by: auth.userId,
-      field_values: { ...submitPriorFieldValues, agent_esign: { mode: agentEsign.mode, provider: agentEsign.provider, loop_id: agentEsign.loopId ?? null, dispatched: agentEsign.dispatched, reason: agentEsign.reason, at: now }, disposition: disposition.route, ...(submitAudit ? { submit_audit: submitAudit } : {}) },
+      field_values: { ...submitPriorFieldValues, agent_esign: { mode: agentEsign.mode, provider: agentEsign.provider, envelope_id: agentEsign.envelopeId ?? null, status: agentEsign.status ?? null, handoff_url: agentEsign.handoffUrl ?? null, dispatched: agentEsign.dispatched, reason: agentEsign.reason, at: now }, disposition: disposition.route, ...(submitAudit ? { submit_audit: submitAudit } : {}) },
       updated_at: now,
     })
     .eq("id", cda.id)
@@ -930,10 +930,11 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
 
   const now = new Date().toISOString()
 
-  // Dispatch the formal e-signature on the filled CDA, per the brokerage's provider
-  // (Dotloop auto / other providers manual / in-app when none or no filled PDF). The
-  // in-app sign-off below is the authoritative state gate; e-sign is the transport on
-  // top and never blocks it (dispatch is best-effort).
+  // Dispatch the formal e-signature on the filled CDA through the broker's E-SIGN selection
+  // (user → team → brokerage, else the DocuSign default) via the canonical dispatch core —
+  // never a transaction-vendor read, never a Dotloop branch (wave 141). In-app when no certified
+  // provider or no filled PDF. The in-app sign-off below is the authoritative state gate; e-sign
+  // is the transport on top and never blocks it (dispatch is best-effort).
   const { data: txnRow } = await supabase
     .from("transactions")
     .select("property_address")
@@ -955,7 +956,7 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
     .update({
       broker_approved_at: now,
       broker_id: auth.userId,
-      field_values: { ...priorFieldValues, broker_esign: { mode: esign.mode, provider: esign.provider, loop_id: esign.loopId ?? null, dispatched: esign.dispatched, reason: esign.reason, at: now } },
+      field_values: { ...priorFieldValues, broker_esign: { mode: esign.mode, provider: esign.provider, envelope_id: esign.envelopeId ?? null, status: esign.status ?? null, handoff_url: esign.handoffUrl ?? null, dispatched: esign.dispatched, reason: esign.reason, at: now } },
       updated_at: now,
     })
     .eq("id", cda.id)

@@ -36,8 +36,33 @@ export interface CrmPullPage {
 const PAGE_SIZE = 100
 
 // ── PURE mappers: vendor record → CSV-export-shaped row ──────────────────────
-// Keys deliberately match IMPORT_FIELD_ALIASES; anything else keeps its vendor
-// key so the field steward routes it to notes (the gate, not a bypass).
+// THE EXPLICIT MAPPING (wave 141, lane 141D; owner: "External schemas never
+// write canonical fields directly"). Every key a mapper emits is a CSV-export
+// spelling the ONE parser (lib/platform/tenant-import-parser.ts) resolves onto
+// a field of the ONE registry (lib/kernel/schema-adaptation.ts
+// CRM_CONTACT_INGRESS_CONTRACT). Vendor-specific context — a stage, a lead type,
+// anything that is a VENDOR enum — is never offered under a canonical enum key:
+// it is written as TEXT into `Notes` ("<Vendor> stage: X"), where the human and
+// the Data Steward can read it and nothing downstream trusts it as a vocabulary.
+// The old CRM's own `source` label rides `Source` (→ contacts.source_subtype,
+// preserved as-is); tags ride `Tags` (the one segmentation that maps 1:1).
+//
+// TOMBSTONE (141D): the vendor-keyed context ("FUB Source", "FUB Tags",
+// "Lofty Stage", "Lofty Tags", "GHL Tags") and the bare `Type` key are gone.
+// They were written for the retired processImportRows path, whose field steward
+// routed unknown keys to notes; on the survivor pipeline (importParsedContacts)
+// an unknown key is DROPPED and only surfaced as `unmappedHeaders`, so every
+// migrated book silently lost its tags and stages. `Notes`/`Tags`/`Source` are
+// the keys the parser actually lands. scripts/crm-boundaries-guard.ts proves
+// every mapper key resolves (zero unmapped) and that a vendor-keyed row does not.
+
+/** PURE: vendor context lines → one Notes text (empty values dropped, "" when nothing). */
+function vendorNotes(vendor: string, pairs: Array<[string, unknown]>): string {
+  return pairs
+    .filter(([, v]) => v !== undefined && v !== null && String(v).trim() !== "")
+    .map(([k, v]) => `${vendor} ${k}: ${String(v).trim()}`)
+    .join("\n")
+}
 
 export function fubToRow(p: any): Record<string, unknown> {
   return {
@@ -49,10 +74,11 @@ export function fubToRow(p: any): Record<string, unknown> {
     City: p.addresses?.[0]?.city ?? "",
     State: p.addresses?.[0]?.state ?? "",
     Zip: p.addresses?.[0]?.code ?? "",
-    Type: p.stage ?? "",
-    // Vendor-specific context → notes via the steward (never onto the contact).
-    "FUB Source": p.source ?? "",
-    "FUB Tags": Array.isArray(p.tags) ? p.tags.join(", ") : "",
+    // The old CRM's own source label → contacts.source_subtype (preserved, never trusted as ours).
+    Source: p.source ?? "",
+    Tags: Array.isArray(p.tags) ? p.tags.join(", ") : "",
+    // A vendor STAGE is a vendor enum: text in notes, never a canonical status/type.
+    Notes: vendorNotes("Follow Up Boss", [["stage", p.stage]]),
   }
 }
 
@@ -66,9 +92,9 @@ export function loftyToRow(c: any): Record<string, unknown> {
     City: c.city ?? "",
     State: c.state ?? "",
     Zip: c.zipCode ?? c.zip ?? "",
-    Type: c.leadType ?? c.type ?? "",
-    "Lofty Stage": c.stage ?? "",
-    "Lofty Tags": Array.isArray(c.tags) ? c.tags.join(", ") : "",
+    Source: c.source ?? "",
+    Tags: Array.isArray(c.tags) ? c.tags.join(", ") : "",
+    Notes: vendorNotes("Lofty", [["lead type", c.leadType ?? c.type], ["stage", c.stage]]),
   }
 }
 
@@ -82,9 +108,40 @@ export function ghlToRow(c: any): Record<string, unknown> {
     City: c.city ?? "",
     State: c.state ?? "",
     Zip: c.postalCode ?? "",
-    Type: c.type ?? "",
-    "GHL Tags": Array.isArray(c.tags) ? c.tags.join(", ") : "",
+    Source: c.source ?? "",
+    Tags: Array.isArray(c.tags) ? c.tags.join(", ") : "",
+    Notes: vendorNotes("GoHighLevel", [["type", c.type]]),
   }
+}
+
+/**
+ * PURE — the CONTROLLED-COMMIT token (wave 141, lane 141D). A run may land rows only when it
+ * carries the token the PREVIEW handed back for the same target tenant, the same provider and the
+ * same explicit mapping (header → canonical) + ignored keys. The run recomputes it from the first
+ * page it pulls, so what was previewed is provably what lands; a mapper or vendor change between
+ * preview and import makes the token miss and the run refuses before touching a row. Not a
+ * secret (no HMAC): it binds the commit to a preview, it does not authenticate the caller — the
+ * staff gate does that.
+ */
+export function crmImportPreviewToken(input: {
+  provider: CrmImportProvider
+  brokerageId: string
+  mapping: Record<string, string>
+  ignoredKeys: string[]
+}): string {
+  const lines = [
+    `provider=${input.provider}`,
+    `brokerage=${input.brokerageId}`,
+    ...Object.entries(input.mapping).map(([k, v]) => `map:${k}=${v}`).sort(),
+    ...[...input.ignoredKeys].map((k) => `ignore:${k}`).sort(),
+  ]
+  // FNV-1a 64-bit over the canonical line list — deterministic, dependency-free, client-safe.
+  let h = 0xcbf29ce484222325n
+  for (const ch of lines.join("\n")) {
+    h ^= BigInt(ch.codePointAt(0) ?? 0)
+    h = (h * 0x100000001b3n) & 0xffffffffffffffffn
+  }
+  return `pv1-${h.toString(16).padStart(16, "0")}`
 }
 
 // ── Fetchers (one page each; cursor-resumable) ────────────────────────────────

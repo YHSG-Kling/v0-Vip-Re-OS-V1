@@ -2,12 +2,14 @@
 
 import { useState, useRef, useCallback, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { uploadBusinessCard, getRecentScans } from "@/app/actions/business-card/business-card-actions"
+import { uploadBusinessCard, getRecentScans, confirmBusinessCardScan } from "@/app/actions/business-card/business-card-actions"
 import { createPartner, createReferral } from "@/app/actions/referrals/referral-actions"
 import { enrollContactInSequence, listCampaignSequences } from "@/app/actions/campaign-sequences"
 import { createClient } from "@/lib/supabase/client"
 import { useToast } from "@/hooks/use-toast"
-import type { CardSubjectType } from "@/lib/contacts/card-classifier"
+// PURE module (no server-only): the field list and the confidence floor the action applies,
+// read here rather than re-typed so the surface and the rule cannot drift (wave 141F).
+import { CARD_FIELDS, CARD_FIELD_CONFIDENCE_FLOOR, type CardField, type CardSubjectType } from "@/lib/contacts/card-classifier"
 
 // wave 48 (owner ruling 2026-09-10): the picker on the card review surface —
 // "Auto-detect" (undefined) leaves the reader/notes/existing-match classifier
@@ -59,28 +61,41 @@ type ScanRow = {
   created_at: string
   extracted_data: Record<string, string>
   confidence_score: number
-  review_status: "approved" | "rejected"
+  review_status: "approved" | "pending" | "rejected"
   contact_id: string | null
   raw_image_url: string
-  /** users.id of a human reviewer — the writer only ever stamps null (see
-   *  getRecentScans in business-card-actions.ts); rendered honestly below. */
+  /** users.id of the human who confirmed the scan (confirmBusinessCardScan, wave 141F);
+   *  null when the automatic viability gate approved it. */
   reviewed_by: string | null
-  /** When the viability gate ran. */
+  /** When the viability gate ran, or when a human confirmed. */
   reviewed_at: string | null
   cardSubjectType: CardSubjectType | null
   subjectUserId: string | null
   subjectNotes: string | null
   classifiedBy: "picker" | "reader" | "notes" | "match" | "default" | null
+  fieldConfidence: Partial<Record<CardField, number | null>>
+  needsConfirmation: boolean
 }
 
 type ScanResult = {
   scanId: string
   contactId: string | null
   viable: boolean
-  extracted?: Record<string, string>
+  needsConfirmation: boolean
+  extracted: Record<string, string>
+  fieldConfidence: Partial<Record<CardField, number | null>>
+  lowFields: CardField[]
   confidence?: number
   cardSubjectType?: CardSubjectType
   subjectUserId?: string | null
+}
+
+/** What the review surface edits: the reader's fields, their confidence, and whether a contact already exists (correction mode). */
+type ConfirmTarget = {
+  scanId: string
+  fields: Partial<Record<CardField, string>>
+  fieldConfidence: Partial<Record<CardField, number | null>>
+  contactId: string | null
 }
 
 function ConfidenceBadge({ score }: { score: number }) {
@@ -93,6 +108,101 @@ function ConfidenceBadge({ score }: { score: number }) {
     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${color}`}>
       {pct}%
     </span>
+  )
+}
+
+const FIELD_LABEL: Record<CardField, string> = {
+  first_name: "First Name", last_name: "Last Name", email: "Email",
+  phone: "Phone", company: "Company", title: "Title",
+  address: "Address", website: "Website",
+}
+
+/**
+ * CONFIRM / CORRECT THE READING (wave 141F — owner: "human confirmation where
+ * needed … never overwrite higher-confidence data with weak extraction"). Every
+ * field is editable; the ones the reader was unsure of (below the floor) are
+ * marked. Confirming a HELD scan routes it; confirming a scan that already
+ * produced a contact applies the correction field by field under the merge rule
+ * and reports what was kept and why. Mobile: one column, 16 px inputs, 44 px taps.
+ */
+function CardConfirmForm({ target, onDone, onCancel }: { target: ConfirmTarget; onDone: (summary: { contactId: string | null; message: string }) => void; onCancel: () => void }) {
+  const [values, setValues] = useState<Record<CardField, string>>(() => {
+    const v = {} as Record<CardField, string>
+    for (const f of CARD_FIELDS) v[f] = target.fields[f] ?? ""
+    return v
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const floorPct = Math.round(CARD_FIELD_CONFIDENCE_FLOOR * 100)
+
+  const submit = async () => {
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await confirmBusinessCardScan({ scanId: target.scanId, fields: values })
+      if (!res.ok) { setError(res.error); return }
+      if (res.mode === "routed") {
+        const r = res.result
+        onDone({ contactId: r.contactId, message: r.contactId ? "Confirmed — contact created." : `Confirmed — filed as ${r.cardSubjectType.replace(/_/g, " ")}.` })
+      } else {
+        const applied = res.applied.length ? `updated ${res.applied.map((f) => FIELD_LABEL[f].toLowerCase()).join(", ")}` : "nothing needed updating"
+        const kept = res.kept.length ? `; kept ${res.kept.map((k) => `${FIELD_LABEL[k.field].toLowerCase()} (${k.reason.replace(/_/g, " ")})`).join(", ")}` : ""
+        onDone({ contactId: res.contactId, message: `Correction applied — ${applied}${kept}.` })
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not confirm the scan. Please try again.")
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-amber-300 bg-amber-50/40 p-4 space-y-3" aria-label={target.contactId ? "Correct the card reading" : "Confirm the card reading"}>
+      <div>
+        <p className="text-sm font-semibold text-foreground">
+          {target.contactId ? "Correct what the reader got wrong" : "Please confirm this card before it becomes a record"}
+        </p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {target.contactId
+            ? "Your correction overwrites the card's own reading; a value that came from a verified source or a person's own entry is kept and noted instead."
+            : `Fields the reader was less than ${floorPct}% sure of are marked. Nothing is written until you confirm.`}
+        </p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {CARD_FIELDS.map((f) => {
+          const conf = target.fieldConfidence[f]
+          const low = !!target.fields[f] && (conf ?? 0) < CARD_FIELD_CONFIDENCE_FLOOR
+          return (
+            <div key={f}>
+              <label htmlFor={`confirm-${f}`} className="flex items-center justify-between text-xs font-medium text-foreground mb-1">
+                <span>{FIELD_LABEL[f]}</span>
+                {target.fields[f] ? (
+                  <span className={`text-[11px] ${low ? "text-amber-700" : "text-muted-foreground"}`}>
+                    {conf == null ? "unsure" : `${Math.round(conf * 100)}% sure`}{low ? " — please check" : ""}
+                  </span>
+                ) : null}
+              </label>
+              <input
+                id={`confirm-${f}`}
+                value={values[f]}
+                onChange={(e) => setValues((p) => ({ ...p, [f]: e.target.value }))}
+                inputMode={f === "email" ? "email" : f === "phone" ? "tel" : f === "website" ? "url" : "text"}
+                className={`w-full min-h-[44px] rounded-md border bg-background px-3 py-2 text-base focus:outline-none focus:ring-1 focus:ring-ring ${low ? "border-amber-400" : "border-border"}`}
+              />
+            </div>
+          )
+        })}
+      </div>
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      <div className="flex flex-col sm:flex-row gap-2">
+        <button type="button" onClick={onCancel} disabled={submitting} className="min-h-[44px] flex-1 rounded-lg border border-border py-2 text-sm text-muted-foreground hover:bg-muted transition-colors disabled:opacity-60">
+          Not now
+        </button>
+        <button type="button" onClick={submit} disabled={submitting} className="min-h-[44px] flex-1 rounded-lg bg-foreground py-2 text-sm font-medium text-background hover:opacity-90 disabled:opacity-60 transition-opacity">
+          {submitting ? "Saving…" : target.contactId ? "Apply correction" : "Confirm and file"}
+        </button>
+      </div>
+    </section>
   )
 }
 
@@ -116,6 +226,10 @@ export default function BusinessCardsPage() {
   // Post-scan sheet state
   const [postScanContact, setPostScanContact] = useState<PostScanContact | null>(null)
   const [showNextSteps, setShowNextSteps] = useState(false)
+
+  // Wave 141F — the confirm / correct surface (a held low-confidence scan, or
+  // "Report extraction error" on a scan that already produced a contact).
+  const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null)
 
   // Option 1 — Referral partner form state
   const [showReferralForm, setShowReferralForm] = useState(false)
@@ -206,9 +320,8 @@ export default function BusinessCardsPage() {
       const history = await getRecentScans({ agentId, brokerageId, limit: 20 })
       setScans(history)
 
-      // Find extracted data from history
       const newScan = history.find((s) => s.id === res.scanId)
-      const extracted = newScan?.extracted_data ?? {}
+      const extracted = res.extracted
       setResult({
         ...res,
         extracted,
@@ -217,6 +330,11 @@ export default function BusinessCardsPage() {
       // Reset the review-surface inputs for the next scan.
       setCardNotes("")
       setCardSubjectPick("")
+
+      // A reading the reader was unsure of is HELD — open the confirmation form at once.
+      if (res.needsConfirmation) {
+        setConfirmTarget({ scanId: res.scanId, fields: res.extracted, fieldConfidence: res.fieldConfidence, contactId: null })
+      }
 
       // Trigger post-scan sheet only on viable scans that produced a contact
       if (res.viable && res.contactId) {
@@ -329,11 +447,34 @@ export default function BusinessCardsPage() {
     if (file) handleFile(file)
   }
 
-  const fields = ["first_name", "last_name", "email", "phone", "company", "title", "address", "website"]
-  const fieldLabel: Record<string, string> = {
-    first_name: "First Name", last_name: "Last Name", email: "Email",
-    phone: "Phone", company: "Company", title: "Title",
-    address: "Address", website: "Website",
+  const fields = CARD_FIELDS
+  const fieldLabel: Record<string, string> = FIELD_LABEL
+
+  /** After a confirm / correction: refresh history, tell the agent, and open next steps when a contact exists. */
+  const handleConfirmDone = async (summary: { contactId: string | null; message: string }) => {
+    setConfirmTarget(null)
+    toast({ title: summary.message })
+    if (agentId && brokerageId) {
+      const history = await getRecentScans({ agentId, brokerageId, limit: 20 })
+      setScans(history)
+      if (result) {
+        const refreshed = history.find((s) => s.id === result.scanId)
+        if (refreshed) {
+          setResult({ ...result, needsConfirmation: false, contactId: refreshed.contact_id, extracted: refreshed.extracted_data, confidence: refreshed.confidence_score, cardSubjectType: refreshed.cardSubjectType ?? result.cardSubjectType })
+        }
+      }
+    }
+    if (summary.contactId) {
+      const f = confirmTarget?.fields ?? {}
+      setPostScanContact({
+        id: summary.contactId,
+        name: [f.first_name, f.last_name].filter(Boolean).join(" "),
+        email: f.email ?? "",
+        company: f.company ?? "",
+        title: f.title ?? "",
+      })
+      setShowNextSteps(true)
+    }
   }
 
   return (
@@ -419,6 +560,11 @@ export default function BusinessCardsPage() {
         )}
       </section>
 
+      {/* Confirm / correct surface — a held scan, or a correction on a routed one */}
+      {confirmTarget && (
+        <CardConfirmForm target={confirmTarget} onDone={handleConfirmDone} onCancel={() => setConfirmTarget(null)} />
+      )}
+
       {/* Result */}
       {result && (
         <section className="border border-border rounded-xl p-6 space-y-4">
@@ -430,9 +576,9 @@ export default function BusinessCardsPage() {
                   {result.confidence !== undefined && <ConfidenceBadge score={result.confidence} />}
                 </div>
                 <span className={`text-xs px-2 py-1 rounded font-medium ${
-                  result.cardSubjectType === "unknown" ? "bg-yellow-100 text-yellow-800" : "bg-green-100 text-green-700"
+                  result.needsConfirmation || result.cardSubjectType === "unknown" ? "bg-yellow-100 text-yellow-800" : "bg-green-100 text-green-700"
                 }`}>
-                  {result.cardSubjectType ? SUBJECT_TYPE_LABEL[result.cardSubjectType] : "Contact created"}
+                  {result.needsConfirmation ? "Waiting for your confirmation" : result.cardSubjectType ? SUBJECT_TYPE_LABEL[result.cardSubjectType] : "Contact created"}
                 </span>
               </div>
 
@@ -440,9 +586,11 @@ export default function BusinessCardsPage() {
                 {fields.map((k) => {
                   const val = result.extracted?.[k]?.trim()
                   if (!val) return null
+                  const conf = result.fieldConfidence?.[k]
+                  const low = (conf ?? 0) < CARD_FIELD_CONFIDENCE_FLOOR
                   return (
                     <div key={k}>
-                      <p className="text-xs text-muted-foreground">{fieldLabel[k]}</p>
+                      <p className="text-xs text-muted-foreground">{fieldLabel[k]}{conf != null ? <span className={low ? " text-amber-700" : ""}> · {Math.round(conf * 100)}%</span> : null}</p>
                       <p className="text-sm text-foreground font-medium">{val}</p>
                     </div>
                   )
@@ -465,11 +613,16 @@ export default function BusinessCardsPage() {
                 Note: Physical business cards do not constitute TCPA digital consent. The contact will require explicit opt-in before receiving automated outreach.
               </p>
 
+              {/* WIRED (wave 141F): this used to show a toast and flag nothing. It now opens the
+                  correction form — the human's values are applied field by field under the
+                  merge rule (a human beats the card's reading; a verified or self-entered value
+                  is kept and noted). */}
               <button
-                className="text-xs text-muted-foreground underline underline-offset-2"
-                onClick={() => toast({ title: "Feedback received", description: "Extraction data flagged for review." })}
+                type="button"
+                className="min-h-[44px] text-xs text-muted-foreground underline underline-offset-2"
+                onClick={() => setConfirmTarget({ scanId: result.scanId, fields: result.extracted, fieldConfidence: result.fieldConfidence ?? {}, contactId: result.contactId })}
               >
-                Report extraction error
+                {result.needsConfirmation ? "Confirm the fields" : "Report extraction error"}
               </button>
             </>
           ) : (
@@ -538,6 +691,14 @@ export default function BusinessCardsPage() {
                           }`}>
                             {s.cardSubjectType ? SUBJECT_TYPE_LABEL[s.cardSubjectType] : "Contact created"}
                           </span>
+                        ) : s.review_status === "pending" ? (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmTarget({ scanId: s.id, fields: s.extracted_data as Partial<Record<CardField, string>>, fieldConfidence: s.fieldConfidence, contactId: s.contact_id })}
+                            className="min-h-[44px] text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-medium underline underline-offset-2"
+                          >
+                            Needs your confirmation — confirm
+                          </button>
                         ) : (
                           <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded font-medium">Viability failed</span>
                         )}
@@ -552,15 +713,15 @@ export default function BusinessCardsPage() {
                         {s.subjectNotes ? (
                           <p className="mt-1 text-[11px] text-muted-foreground italic">&ldquo;{s.subjectNotes}&rdquo;</p>
                         ) : null}
-                        {/* The status above is the automatic viability gate's verdict.
-                            No person reviews these scans today (reviewed_by is written
-                            as null by its only writer), and this says so rather than
-                            implying a reviewer. A non-null id has no resolver yet — by
-                            ruling, none is built for a column nothing sets. */}
+                        {/* The status above is the automatic viability gate's verdict unless a
+                            person confirmed the scan (confirmBusinessCardScan stamps reviewed_by,
+                            wave 141F) — said truthfully either way. */}
                         <p className="mt-1 text-[11px] text-muted-foreground">
                           {s.reviewed_by
-                            ? "reviewed by a person (name not resolved)"
-                            : `auto-gated${s.reviewed_at ? ` ${new Date(s.reviewed_at).toLocaleDateString()}` : ""} — not reviewed by a person`}
+                            ? `confirmed by a person${s.reviewed_at ? ` ${new Date(s.reviewed_at).toLocaleDateString()}` : ""}`
+                            : s.review_status === "pending"
+                              ? "held for your confirmation — nothing written yet"
+                              : `auto-gated${s.reviewed_at ? ` ${new Date(s.reviewed_at).toLocaleDateString()}` : ""} — not reviewed by a person`}
                         </p>
                       </td>
                       <td className="px-4 py-3">

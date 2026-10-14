@@ -155,7 +155,9 @@ export default function ProviderSettingsPage() {
               <div>
                 <p className="font-medium text-gray-900">D-ID + ElevenLabs <span className="ml-2 text-xs font-normal bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">Platform engine</span></p>
                 <p className="text-sm text-gray-500 mt-0.5">Agents use their own face and cloned voice. Cost-effective and personal.</p>
-                <p className="text-xs text-gray-400 mt-1">Requires: DID_API_KEY + ELEVENLABS_API_KEY in environment</p>
+                {/* Sanitized capability status only (owner, wave 141): a tenant never reads the platform's
+                    env-var names or provider configuration here — that detail lives on the superadmin console. */}
+                <p className="text-xs text-gray-400 mt-1">Included with your subscription — nothing to configure here.</p>
               </div>
             </div>
           </div>

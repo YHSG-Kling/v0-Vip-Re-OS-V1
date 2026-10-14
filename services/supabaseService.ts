@@ -337,11 +337,13 @@ export const supabaseService = {
   //
   // It had NO remaining caller. Its last one was app/api/leads/list/route.ts,
   // retired earlier this wave (see the tombstone at the top of this file). The
-  // only other mention in the tree is scripts/complete-migration.ts:58, a
-  // REPLACEMENT STRING in a codemod whose own header records that it has already
+  // only other mention in the tree WAS scripts/complete-migration.ts:58, a
+  // REPLACEMENT STRING in a codemod whose own header recorded that it had already
   // run and that both of its targets (services/airtableService.ts,
   // services/workflowService.ts) no longer exist — a historical record, not a
-  // call site and not a rule with anything left to match.
+  // call site and not a rule with anything left to match. That codemod is itself
+  // deleted now (wave 141, lane 141D: Airtable is retired; the record of what it
+  // rewrote lives in lib/migration-status.ts).
   //
   // If a caller ever genuinely wants the brokerage's LEADS through a service
   // object, the reader is app/actions/lead-management.ts:63 `getLeadsAdmin`,

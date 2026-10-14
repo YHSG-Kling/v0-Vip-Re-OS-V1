@@ -18,8 +18,12 @@ export const SNAPSHOT_VOICE_FIELDS = ["tone", "formality_level", "key_brand_mess
 export const SNAPSHOT_SITE_FIELDS = ["about_text", "bio_text", "primary_color", "recruiting_pitch", "recruiting_value_props", "offers_cda", "widget_enabled", "farm_mail_enabled"] as const
 
 /** Fields that must NEVER appear in a snapshot (defence-in-depth for the test + reviewers).
- *  `zapier_api_key` stays listed after m678 DROPS the column (lane 89E): the list guards the
- *  payload, not the schema, and a re-added column of that name must still never travel. */
+ *  `zapier_api_key` stays listed after m678 DROPS the column (lane 89E), and `airtable_api_key`
+ *  stays listed after m771 DROPS it (lane 141D, owner: "Airtable is RETIRED"): the list guards
+ *  the PAYLOAD, not the schema — a historical snapshot payload that still carries either name is
+ *  refused by payloadLeaksSecret below instead of being applied onto a dropped column (PGRST204
+ *  would refuse the whole global_settings row), and a re-added column of that name must still
+ *  never travel. These two strings are the ONLY Airtable/Zapier spellings left in runtime code. */
 export const SNAPSHOT_FORBIDDEN_FIELDS = ["smtp_password", "smtp_username", "smtp_host", "smtp_port", "ghl_api_key", "zapier_api_key", "airtable_api_key", "from_email", "from_name", "created_by_user_id"] as const
 /** brokerages identity/billing fields the site layer must NEVER carry or touch on apply. */
 export const SNAPSHOT_SITE_FORBIDDEN_FIELDS = ["id", "name", "slug", "email", "phone", "status", "plan_tier", "subscription_tier", "onboarding_status", "twilio_subaccount_sid", "billing_metadata", "trial_ends_at", "logo_url"] as const

@@ -3,6 +3,9 @@ import {
   getProviderOverrides,
 } from "@/app/actions/settings/integrations"
 import { IntegrationsClient } from "./integrations-client"
+// The kernel's platform defaults per capability (e-sign DocuSign · payments Stripe · accounting
+// QuickBooks — owner, wave 141), handed to the client as data: the ONE table, never restated.
+import { SYSTEM_DEFAULTS } from "@/lib/kernel/providers"
 
 export const metadata = { title: "Integrations | Settings" }
 
@@ -43,5 +46,5 @@ export default async function IntegrationsPage() {
     )
   }
 
-  return <IntegrationsClient credentials={credentials} overrides={overrides} />
+  return <IntegrationsClient credentials={credentials} overrides={overrides} defaults={{ ...SYSTEM_DEFAULTS }} />
 }

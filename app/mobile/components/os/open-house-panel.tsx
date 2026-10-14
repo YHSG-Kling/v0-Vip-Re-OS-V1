@@ -12,6 +12,8 @@ import { format } from "date-fns"
 import { toast } from "sonner"
 import { recordVisitor } from "@/app/actions/open-house-automation"
 import { previewOpenHouseQr } from "@/app/actions/kernel-bridges"
+// ONE encoding contract (wave 141F): the 4-module quiet zone + EC M the printed codes use.
+import { qrEncodeOptions } from "@/lib/marketing/qr-contract"
 
 interface OpenHouseEvent {
   id: string
@@ -50,11 +52,7 @@ function QRCanvas({ url }: { url: string }) {
     let cancelled = false
     import("qrcode").then((QRCode) => {
       if (cancelled || !canvasRef.current) return
-      QRCode.toCanvas(canvasRef.current, url, {
-        width: 220,
-        margin: 2,
-        color: { dark: "#000000", light: "#ffffff" },
-      })
+      QRCode.toCanvas(canvasRef.current, url, qrEncodeOptions(220))
     })
     return () => {
       cancelled = true

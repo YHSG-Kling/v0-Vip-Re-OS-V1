@@ -466,7 +466,7 @@ function BundleCard({ bundle, catalog, onEdit, onDeactivate, pending }: {
           {/* Performance row — populated daily by the
               bundle-attribution-rollup cron. Shown even when zero so
               the agent can see the bundle has never fired. */}
-          <div className="mt-2 grid grid-cols-4 gap-2 border-t pt-2">
+          <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 border-t pt-2">
             <Metric label="dispatches"  value={p.dispatch_count} />
             <Metric label="scans"       value={p.total_scans}    />
             <Metric label="leads"       value={p.total_leads}    />

@@ -9,7 +9,7 @@
 // invitation across tenants. Every mutation is superadmin-gated and audited (IP/UA).
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { inviteTenantMember, seatSubjectForEmail, type UserDomainRole } from "@/lib/kernel/users"
+import { inviteTenantMember, seatSubjectForEmail, redispatchInvitation, type UserDomainRole } from "@/lib/kernel/users"
 // `roleConsumesSeat` and `SEAT_ROLES` were imported here to count seats inline.
 // This file now calls the shared `seatGate`, which does that counting itself, so
 // both became DEAD IMPORTS — a reader with no writer, in the census's category 2.
@@ -314,6 +314,7 @@ export async function createTenantUserAction(params: {
     userType:     params.userType as UserDomainRole,
     callerUserId: auth.userId,
     redirectTo:   `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
+    door:         "platform_console",
   })
   if (!res.success || !res.userId) return { ok: false, error: res.error ?? "Failed to create user" }
 
@@ -378,20 +379,25 @@ export async function setTenantUserStatusAction(params: { userId: string; status
   return { ok: true }
 }
 
-/** Resend a pending/expired invitation (cross-tenant) — re-arms the 7-day window. */
-export async function resendTenantInviteAction(invitationId: string): Promise<{ ok: boolean; error?: string }> {
+/** Resend a pending / expired / failed invitation (cross-tenant) — THE ONE resend semantic
+ *  (lib/kernel/users.ts redispatchInvitation, shared with the tenant's own Resend): the email is
+ *  re-attempted in THIS request and its result READ (wave 141B); the window is re-armed only when the
+ *  dispatch did not fail. The tenant is the row's own brokerage, never a request body. */
+export async function resendTenantInviteAction(invitationId: string): Promise<{ ok: boolean; error?: string; dispatched?: boolean; note?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  const { data: inv } = await svc.from("user_invitations").select("brokerage_id, status").eq("id", invitationId).maybeSingle()
+  const { data: inv, error: readErr } = await svc.from("user_invitations").select("brokerage_id, status").eq("id", invitationId).maybeSingle()
+  if (readErr) return { ok: false, error: readErr.message }
   if (!inv) return { ok: false, error: "Invitation not found" }
   if ((inv as any).status === "accepted") return { ok: false, error: "Already accepted" }
-  const expires = new Date(Date.now() + 7 * 86_400_000).toISOString()
-  const { error } = await svc.from("user_invitations").update({ status: "pending", expires_at: expires, updated_at: new Date().toISOString() }).eq("id", invitationId)
-  if (error) return { ok: false, error: error.message }
-  await audit(auth.userId, auth.email, "invitation.resent", invitationId, { brokerage_id: (inv as any).brokerage_id, expires_at: expires })
-  if ((inv as any).brokerage_id) revalidatePath(`/dashboard/superadmin/brokerages/${(inv as any).brokerage_id}`)
-  return { ok: true }
+  const brokerageId = (inv as { brokerage_id?: string | null }).brokerage_id ?? null
+  if (!brokerageId) return { ok: false, error: "Invitation carries no brokerage — refusing to resend" }
+  const r = await redispatchInvitation(svc, { invitationId, brokerageId, actorUserId: auth.userId })
+  if (!r.ok) return { ok: false, error: r.error, dispatched: r.dispatched }
+  await audit(auth.userId, auth.email, "invitation.resent", invitationId, { brokerage_id: brokerageId, dispatched: r.dispatched })
+  revalidatePath(`/dashboard/superadmin/brokerages/${brokerageId}`)
+  return { ok: true, dispatched: r.dispatched, note: r.note }
 }
 
 /** Revoke a pending invitation (cross-tenant). */

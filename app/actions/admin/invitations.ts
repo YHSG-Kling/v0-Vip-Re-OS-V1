@@ -16,6 +16,7 @@ import { advanceBrokerageOnboarding } from "@/lib/onboarding/state-machine"
 import { revalidatePath } from "next/cache"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { bestEffort } from "@/lib/db/best-effort"
+import { redispatchInvitation } from "@/lib/kernel/users"
 
 async function requireBrokerageAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
@@ -40,7 +41,8 @@ export interface InvitationRow {
   first_name:       string | null
   last_name:        string | null
   user_type:        string
-  status:           "pending" | "accepted" | "expired" | "revoked"
+  /** `failed` (wave 141B, m779) = the invite email could not be dispatched in the creating request — Resend re-attempts it. */
+  status:           "pending" | "accepted" | "expired" | "revoked" | "failed"
   invited_by_name:  string | null
   invited_at:       string
   accepted_at:      string | null
@@ -99,31 +101,20 @@ export async function listPendingInvitationsAction(): Promise<
 }
 
 /**
- * Re-open a pending/expired invitation for another 7 days — the tenant-tier
- * mirror of superadmin resendTenantInviteAction (ONE resend semantic across
- * tiers). Scoped to the caller's brokerage; accepted invites are immutable.
+ * RESEND a pending / expired / revoked / failed invitation — THE ONE resend semantic across tiers
+ * (lib/kernel/users.ts redispatchInvitation, shared with the god console's resendTenantInviteAction):
+ * the invite email is re-attempted IN THIS REQUEST and its result READ (wave 141B); the 7-day window is
+ * re-armed only when the dispatch did not fail. Before, "resend" only re-opened the window and no email
+ * ever left. Scoped to the caller's brokerage; accepted invites are immutable.
  */
 export async function resendInvitationAction(
   invitationId: string,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; dispatched?: boolean; note?: string }> {
   const auth = await requireBrokerageAdmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  const { data: inv } = await svc
-    .from("user_invitations")
-    .select("status, email")
-    .eq("id", invitationId)
-    .eq("brokerage_id", auth.brokerageId)
-    .maybeSingle()
-  if (!inv) return { ok: false, error: "Invitation not found" }
-  if (inv.status === "accepted") return { ok: false, error: "Already accepted" }
-  const expires = new Date(Date.now() + 7 * 86_400_000).toISOString()
-  const { error } = await svc
-    .from("user_invitations")
-    .update({ status: "pending", expires_at: expires, updated_at: new Date().toISOString() })
-    .eq("id", invitationId)
-    .eq("brokerage_id", auth.brokerageId)
-  if (error) return { ok: false, error: error.message }
+  const r = await redispatchInvitation(svc, { invitationId, brokerageId: auth.brokerageId, actorUserId: auth.userId })
+  if (!r.ok) return { ok: false, error: r.error, dispatched: r.dispatched }
   // Audit on the tenant activity rail — same shape inviteUser writes
   // (activities has agent_user_id, NOT user_id; entity_type is required).
   await bestEffort(
@@ -133,15 +124,15 @@ export async function resendInvitationAction(
       brokerage_id: auth.brokerageId,
       entity_type: "invitation",
       entity_id: invitationId,
-      title: `Invitation re-opened: ${inv.email}`,
-      metadata: { invitation_id: invitationId, expires_at: expires, resent_by: auth.userId },
+      title: `Invitation resent (${r.dispatched ? "email sent" : "window re-opened"})`,
+      metadata: { invitation_id: invitationId, dispatched: r.dispatched, resent_by: auth.userId },
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }),
-    "the invitation row was already re-opened above and the error checked; this audit echo must not turn a resend that happened into a failure the admin sees",
+    "the invitation was already re-dispatched above and the error checked; this audit echo must not turn a resend that happened into a failure the admin sees",
   )
   revalidatePath("/dashboard/admin/users/invitations")
-  return { ok: true }
+  return { ok: true, dispatched: r.dispatched, note: r.note }
 }
 
 export async function revokeInvitationAction(

@@ -872,12 +872,17 @@ export function HomeValuePageBuilderClient({
                   <p className="text-sm mt-2" style={{ color: "#64748b" }}>
                     {config.subheadline || "Get a free AI-powered estimate in minutes."}
                   </p>
-                  <button
-                    className="mt-5 px-5 py-2.5 rounded-lg text-sm font-semibold text-white"
+                  {/* PREVIEW REPLICA, not a control (wave 141, lane 141I ui-wiring census): this is the
+                      builder's mock of the public page's CTA. It was a bare <button> with no handler — a dead
+                      click on the lead-magnet path. The live CTA is on the published page; here the mock is a
+                      non-interactive span so nothing reads as clickable and nothing silently does nothing. */}
+                  <span
+                    aria-hidden="true"
+                    className="inline-block mt-5 px-5 py-2.5 rounded-lg text-sm font-semibold text-white select-none"
                     style={{ background: config.primaryColor }}
                   >
                     {config.ctaButtonText || "Get My Free Estimate"}
-                  </button>
+                  </span>
                 </div>
 
                 {/* Questions preview */}

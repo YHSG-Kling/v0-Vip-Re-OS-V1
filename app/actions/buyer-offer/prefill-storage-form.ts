@@ -20,12 +20,13 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { prefillPropertyIntoPdf } from "@/lib/forms/prefill-property-into-pdf"
-import { fillPdfForm, readPdfTextFields, type PdfFieldValue } from "@/lib/forms/pdf-form-fill"
+import { fillPdfForm, readPdfTextFields, listPdfFields, type PdfFieldValue } from "@/lib/forms/pdf-form-fill"
 import { buildPartyPrefill, type DealParties } from "@/lib/forms/party-prefill"
 import { checkFormPathsInScope } from "@/lib/forms/form-path-scope"
 // ONE bucket name (§6): survivor lib/esign/dispatch-packet.ts::FORMS_BUCKET (lane 89E).
 import { FORMS_BUCKET } from "@/lib/esign/dispatch-packet"
 import { resolveKnownPropertyFacts } from "@/lib/intelligence/offer-property-prefill-runner"
+import { legalDescriptionRequirement, typedLegalDescription, resolveLegalDescriptionForForm } from "@/lib/forms/legal-description"
 
 const FILLED_BUCKET = "brokerage-forms" // filled copies live alongside, under a filled/ prefix
 
@@ -53,6 +54,11 @@ export interface PrefillStorageFormResult {
   unresolvedFields?: string[]
   /** Every TEXT field on the form with its current value — the wizard's editable panel. */
   fields?: PdfFieldValue[]
+  /** THE FORM IS INCOMPLETE (wave 141): a legal-description field this form carries has no value from
+   *  any legitimate source — a human was asked (the open task), and the send refuses until it exists. */
+  incomplete?: { field: "legal_description"; fields: string[]; reason: string; asked: boolean; taskId: string | null } | null
+  /** Who supplied the legal description that was filled (agent | rentcast), when one was. */
+  legalDescriptionSource?: string | null
   error?: string
 }
 
@@ -87,6 +93,27 @@ export async function prefillStorageFormAction(input: PrefillStorageFormInput): 
     }, svc)
     if (!facts.propertyCity && input.propertyCity?.trim()) facts.propertyCity = input.propertyCity.trim()
     if (!facts.propertyState && input.propertyState?.trim()) facts.propertyState = input.propertyState.trim()
+
+    // 2b. LEGAL DESCRIPTION (wave 141, lane 141C) — only when THIS form carries the field: the agent's
+    //     typed value wins and is saved on the record; else the record; else RentCast's property record
+    //     (the approved capability, metered inside rentcast.ts); else the form is INCOMPLETE and the
+    //     agent is asked through the task rail. Never invented.
+    let incomplete: PrefillStorageFormResult["incomplete"] = null
+    let legalDescriptionSource: string | null = null
+    const requirement = legalDescriptionRequirement(await listPdfFields(srcBytes), facts)
+    const typedLegal = typedLegalDescription(input.fieldValues)
+    if (requirement.required && (!requirement.satisfied || typedLegal)) {
+      const legal = await resolveLegalDescriptionForForm(svc, {
+        brokerageId: me.brokerage_id as string, userId: user.id,
+        listingId: input.listingId ?? null, transactionId: input.transactionId ?? null,
+        address: facts.address, city: facts.propertyCity, state: facts.propertyState, zip: facts.propertyZip,
+        typedValue: typedLegal,
+      })
+      if (legal.value) { facts.legalDescription = legal.value; legalDescriptionSource = legal.source }
+      else incomplete = { field: "legal_description", fields: requirement.fields, reason: legal.reason ?? "the legal description is not known", asked: legal.asked, taskId: legal.taskId }
+    } else if (requirement.required) {
+      legalDescriptionSource = "record"
+    }
 
     // 3. Fill the property-identification fields into the PDF.
     const result = await prefillPropertyIntoPdf(srcBytes, facts)
@@ -130,6 +157,8 @@ export async function prefillStorageFormAction(input: PrefillStorageFormInput): 
       filledFields: [...filledNames],
       unresolvedFields: [...unresolved],
       fields: await readPdfTextFields(bytes),
+      incomplete,
+      legalDescriptionSource,
     }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "prefill failed" }

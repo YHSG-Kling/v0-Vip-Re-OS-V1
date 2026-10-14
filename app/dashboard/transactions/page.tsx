@@ -226,7 +226,56 @@ export default async function TransactionsPage() {
             </div>
           </CardHeader>
           <CardContent className="p-0">
-            <div className="overflow-x-auto">
+            {/* MOBILE ADAPTS, never merely shrinks (owner, wave 141; lane 141I): below md each transaction is a
+                tappable card (address → detail, type · price · status · health · close date); the seven-column
+                table renders from md up. Same rows, same STATUS_CONFIG, same health map. */}
+            <div className="md:hidden divide-y">
+              {transactions.length > 0 ? (
+                transactions.map((tx) => {
+                  const statusConfig = STATUS_CONFIG[(tx.status ?? "").toLowerCase()] || STATUS_CONFIG.active
+                  const health = healthByTxId[tx.id]
+                  const healthScore = health?.overall_score
+                  const riskLevel = health?.risk_level?.toLowerCase()
+                  return (
+                    <Link key={tx.id} href={`/dashboard/transactions/${tx.id}`} className="block px-4 py-3 hover:bg-muted/50">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1">
+                          <p className="text-sm font-medium text-foreground truncate">{tx.property_address || "Pending Address"}</p>
+                          <p className="text-xs text-muted-foreground capitalize">
+                            {tx.deal_type || "purchase"} · ${tx.purchase_price?.toLocaleString() || "TBD"} · closes {tx.close_date ? new Date(tx.close_date).toLocaleDateString() : "TBD"}
+                          </p>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <Badge className={`${statusConfig.bgColor} ${statusConfig.color}`}>{statusConfig.label}</Badge>
+                            {healthScore !== undefined && (
+                              <span className="text-xs text-muted-foreground">Health {healthScore}/100{riskLevel ? ` · ${riskLevel.replace(/_/g, " ")}` : ""}</span>
+                            )}
+                          </div>
+                        </div>
+                        <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0 mt-1" />
+                      </div>
+                    </Link>
+                  )
+                })
+              ) : (
+                <div className="px-4 py-12 text-center">
+                  <FileText className="h-12 w-12 mx-auto text-muted-foreground/40 mb-4" />
+                  <p className="text-base font-medium text-foreground mb-1">No active transactions</p>
+                  <p className="text-sm text-muted-foreground mb-6">Start tracking your deals by creating a transaction.</p>
+                  <div className="flex items-center justify-center gap-3 flex-wrap">
+                    <Link href="/crm">
+                      <Button>
+                        <Plus className="h-4 w-4 mr-2" />
+                        Create from Contact
+                      </Button>
+                    </Link>
+                    <Link href="/crm?contact_type=buyer">
+                      <Button variant="outline">Convert from Offer</Button>
+                    </Link>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="hidden md:block overflow-x-auto">
               <table className="w-full">
                 <thead className="bg-muted/50">
                   <tr>

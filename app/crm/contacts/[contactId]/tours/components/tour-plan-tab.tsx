@@ -235,11 +235,11 @@ export function TourPlanTab({
       )}
       {/* Content wrapper — pointer events + keyboard interaction disabled when gate overlay is active */}
       <div
-        className={`flex gap-6 h-full min-h-0${disabled ? " pointer-events-none select-none" : ""}`}
+        className={`flex flex-col md:flex-row gap-6 h-full min-h-0${disabled ? " pointer-events-none select-none" : ""}`}
         {...(disabled ? { inert: true } : {})}
       >
-      {/* Left panel */}
-      <div className="w-72 flex-shrink-0 flex flex-col gap-4">
+      {/* Left panel — full width above the preview on phones, a 288px column from md up (wave 141, 141I mobile census) */}
+      <div className="w-full md:w-72 flex-shrink-0 flex flex-col gap-4">
         <div>
           <p className="text-sm font-medium text-foreground mb-2">
             Available Properties

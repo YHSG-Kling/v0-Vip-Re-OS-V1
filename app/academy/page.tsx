@@ -93,6 +93,12 @@ export default function AcademyPage() {
   const [performanceData, setPerformanceData] = useState<any | null>(null)
   // "My Templates" toggle — flips the marketplace grid to the user's own authored templates
   const [showMineOnly, setShowMineOnly] = useState(false)
+  // Resource-category filter — the three CategoryCards below were `cursor-pointer` cards with
+  // no handler (wave 141, lane 141I ui-wiring census): they counted SOPs / videos / scripts and
+  // did nothing when clicked. A click now narrows "Popular Resources" to that type; clicking the
+  // active card (or "Show all") clears it. Vocabulary is the academy content `type` column.
+  const [resourceType, setResourceType] = useState<"sop" | "loom_link" | "case_study" | null>(null)
+  const visibleResources = resourceType ? academyContent.filter((c) => c.type === resourceType) : academyContent
 
   // ── Template feedback (marketplace reviews) ──────────────────────────────
   // The Community tab's "Recent Feedback" card used to be a hardcoded empty
@@ -326,18 +332,24 @@ export default function AcademyPage() {
               title="SOPs & Guides"
               count={academyContent.filter((c) => c.type === "sop").length}
               description="Step-by-step procedures"
+              active={resourceType === "sop"}
+              onSelect={() => setResourceType((t) => (t === "sop" ? null : "sop"))}
             />
             <CategoryCard
               icon={Play}
               title="Video Training"
               count={academyContent.filter((c) => c.type === "loom_link").length}
               description="Watch and learn"
+              active={resourceType === "loom_link"}
+              onSelect={() => setResourceType((t) => (t === "loom_link" ? null : "loom_link"))}
             />
             <CategoryCard
               icon={BookOpen}
               title="Scripts & Templates"
               count={academyContent.filter((c) => c.type === "case_study").length}
               description="Ready-to-use content"
+              active={resourceType === "case_study"}
+              onSelect={() => setResourceType((t) => (t === "case_study" ? null : "case_study"))}
             />
           </div>
 
@@ -361,13 +373,24 @@ export default function AcademyPage() {
           </div>
 
           <div className="space-y-3">
-            <h3 className="text-lg font-semibold">Popular Resources</h3>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <h3 className="text-lg font-semibold">Popular Resources</h3>
+              {resourceType && (
+                <button
+                  type="button"
+                  onClick={() => setResourceType(null)}
+                  className="text-xs text-primary underline underline-offset-2 hover:no-underline"
+                >
+                  Showing {resourceType === "sop" ? "SOPs & Guides" : resourceType === "loom_link" ? "Video Training" : "Scripts & Templates"} · Show all
+                </button>
+              )}
+            </div>
             {loading ? (
               <p className="text-muted-foreground">Loading...</p>
-            ) : academyContent.length === 0 ? (
-              <p className="text-muted-foreground">No resources found</p>
+            ) : visibleResources.length === 0 ? (
+              <p className="text-muted-foreground">{resourceType ? "No resources in this category yet." : "No resources found"}</p>
             ) : (
-              academyContent
+              visibleResources
                 .slice(0, 10)
                 .map((content) => (
                   <ResourceCard
@@ -596,10 +619,18 @@ export default function AcademyPage() {
   )
 }
 
-// Component: Category Card
-function CategoryCard({ icon: Icon, title, count, description }: any) {
+// Component: Category Card — a real control: click filters "Popular Resources" to this type
+// (wave 141, lane 141I; it was a cursor-pointer card with no handler).
+function CategoryCard({ icon: Icon, title, count, description, active, onSelect }: any) {
   return (
-    <Card className="cursor-pointer hover:shadow-md transition-shadow">
+    <Card
+      role="button"
+      tabIndex={0}
+      aria-pressed={!!active}
+      onClick={onSelect}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect?.() } }}
+      className={`cursor-pointer hover:shadow-md transition-shadow outline-none focus-visible:ring-2 focus-visible:ring-ring ${active ? "border-primary ring-1 ring-primary" : ""}`}
+    >
       <CardContent className="pt-6">
         <div className="flex items-center gap-3 mb-3">
           <div className="p-2 bg-primary/10 rounded-lg">

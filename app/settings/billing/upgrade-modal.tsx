@@ -50,6 +50,12 @@ export function UpgradeModal({
 }: UpgradeModalProps) {
   const [selectedTierId, setSelectedTierId] = useState<string | null>(null)
   const [showCheckout, setShowCheckout] = useState(false)
+  // wave 141H — an optional discount code. Validated on Stripe by the server action
+  // (code → Stripe validation → eligibility) BEFORE a checkout exists; a refusal is
+  // shown here immediately and the checkout is not opened. Blank → Stripe's own page
+  // takes a promotion code (allow_promotion_codes).
+  const [discountCodeInput, setDiscountCodeInput] = useState("")
+  const [discountCodeError, setDiscountCodeError] = useState<string | null>(null)
 
   const currentTierIndex = tiers.findIndex(t => t.id === currentTierId)
 
@@ -71,13 +77,22 @@ export function UpgradeModal({
 
   const fetchClientSecret = useCallback(async () => {
     if (!selectedTierId) throw new Error("No tier selected")
-    const clientSecret = await startSubscriptionCheckout(
-      brokerageId,
-      selectedTierId,
-      isAnnual ? "annual" : "monthly"
-    )
-    return clientSecret ?? ""
-  }, [brokerageId, selectedTierId, isAnnual])
+    try {
+      const clientSecret = await startSubscriptionCheckout(
+        brokerageId,
+        selectedTierId,
+        isAnnual ? "annual" : "monthly",
+        discountCodeInput.trim() || null,
+      )
+      setDiscountCodeError(null)
+      return clientSecret ?? ""
+    } catch (err) {
+      // The server's sentence (a refused code, an unpriced plan) — said here, specifically.
+      setDiscountCodeError((err as Error)?.message ?? "The checkout could not be started")
+      setShowCheckout(false)
+      throw err
+    }
+  }, [brokerageId, selectedTierId, isAnnual, discountCodeInput])
 
   const handleCloseCheckout = () => {
     setShowCheckout(false)
@@ -126,6 +141,23 @@ export function UpgradeModal({
             </Button>
           </div>
         ) : (
+          <>
+          {/* Discount code (wave 141H) — checked on Stripe when the checkout starts; a bad code is refused before any charge. */}
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
+            <label htmlFor="upgrade-discount-code" className="text-sm text-muted-foreground">Have a discount code?</label>
+            <input
+              id="upgrade-discount-code"
+              className="h-9 rounded-md border bg-background px-3 text-sm sm:w-56"
+              placeholder="e.g. LAUNCH20"
+              value={discountCodeInput}
+              onChange={(e) => { setDiscountCodeInput(e.target.value.toUpperCase()); setDiscountCodeError(null) }}
+              aria-label="Discount code"
+            />
+            {discountCodeError && <p className="text-xs text-red-600">{discountCodeError}</p>}
+            {!discountCodeError && !discountCodeInput.trim() && (
+              <p className="text-xs text-muted-foreground">Leave blank to enter a code on the payment form.</p>
+            )}
+          </div>
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
             {tiers.map((tier, index) => {
               const isCurrent = tier.id === currentTierId
@@ -229,6 +261,7 @@ export function UpgradeModal({
               )
             })}
           </div>
+          </>
         )}
       </DialogContent>
     </Dialog>

@@ -3,6 +3,7 @@ import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from '@/lib/supabase/service'
 import { resolveWriteContext } from '@/lib/platform/acting-context'
 import { mintTrackedQr, QR_DESTINATION_TYPES, isQrPurpose } from '@/lib/marketing/tracked-qr'
+import { qrInAppDefaultPath } from '@/lib/marketing/qr-contract'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,25 +12,13 @@ export const dynamic = 'force-dynamic'
  *  and the writer can never disagree about the live vocabulary. */
 const VALID_DESTINATION_TYPES = new Set<string>(QR_DESTINATION_TYPES)
 
-/** Build a sensible default target_url when the caller doesn't supply
- *  one. For app-hosted destination_types (landing_page, cma_form,
- *  book_meeting) we route to existing app pages. For external types
- *  (video_avatar_tour, podcast_episode, anniversary_video, other) the
- *  caller must supply targetUrl — we fail validation otherwise. */
-function defaultUrlForDestination(
-  destinationType: string | null,
-  slug: string,
-  origin: string,
-): string | null {
-  if (!destinationType) return null
-  switch (destinationType) {
-    case 'landing_page':   return `${origin}/qr/${slug}/landing`
-    case 'cma_form':       return `${origin}/forms/cma?qr=${slug}`
-    case 'book_meeting':   return `${origin}/book?qr=${slug}`
-    case 'listing_detail': return null  // requires listing_id from caller
-    default:               return null  // external — caller supplies
-  }
-}
+// TOMBSTONE (wave 141F): this route's own default-URL table (`defaultUrlForDestination`)
+// is gone. It pointed landing_page at `/qr/<slug>/landing`, cma_form at `/forms/cma` and
+// book_meeting at `/book` — none of which is a route in this app — so every manually
+// created code of those three types was printed with a destination that 404s. The ONE
+// table is lib/marketing/qr-contract.ts qrInAppDefaultPath (shared with the marketing
+// material minter); `landing_page` needs no default at all because the minter already
+// points a code with no target at its own /qr/<slug> landing.
 
 /**
  * POST — create a QR code.
@@ -107,25 +96,45 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       marketingCampaignId = campaign.id as string
     }
 
-    // Explicit target_url precedence (unchanged), except the slug-bearing defaults which can only
-    // be built AFTER the minter assigns a slug — those are patched on below.
-    let resolvedUrl: string | null = (targetUrl ?? '').trim() || null
-    if (!resolvedUrl && destinationType === 'listing_detail' && listingId) {
-      resolvedUrl = `${origin}/listing/${listingId}`
-    }
-    const needsSlugDerivedDefault =
-      !resolvedUrl && !!destinationType && ['landing_page', 'cma_form', 'book_meeting'].includes(destinationType)
-    if (!resolvedUrl && !needsSlugDerivedDefault) {
-      return NextResponse.json({
-        success: false,
-        error: 'target_url is required (no app-hosted default exists for this destination type — provide a URL explicitly).',
-      }, { status: 400 })
-    }
-
     // qr_codes.agent_id FKs agents(id); tolerate callers already sending agents.id, else the session's.
     const agentId = agentUserId
       ? ((await resolveAgentId(supabase as any, agentUserId)) ?? agentUserId)
       : ctx.agentId
+
+    // Explicit target_url wins. Otherwise the ONE in-app default table (qr-contract.ts): the
+    // home-value funnel and the agent's public profile are keyed by the minting agent's own
+    // public slug (agents.public_slug — the column app/home-value/[agentSlug] and app/p/[agentSlug]
+    // resolve), read under the SESSION's brokerage. A type with no app-hosted default and no
+    // URL is refused — except the two that legitimately land on the code's OWN capture page
+    // (landing_page, and book_meeting with neither a listing nor a public profile), which the
+    // minter points at /qr/<slug> itself once the slug exists.
+    let resolvedUrl: string | null = (targetUrl ?? '').trim() || null
+    if (!resolvedUrl && destinationType) {
+      let agentSlug: string | null = null
+      if ((destinationType === 'cma_form' || destinationType === 'book_meeting') && agentId) {
+        const { data: agentRow, error: agentSlugError } = await supabase
+          .from('agents')
+          .select('public_slug')
+          .eq('id', agentId)
+          .eq('brokerage_id', ctx.brokerageId)
+          .maybeSingle()
+        if (agentSlugError) {
+          console.error('[admin/qr-codes] agent public_slug read refused:', agentSlugError.message)
+        }
+        agentSlug = (agentRow as { public_slug?: string | null } | null)?.public_slug ?? null
+      }
+      const defaultPath = qrInAppDefaultPath({ destinationType, listingId: listingId ?? null, agentSlug })
+      if (defaultPath) resolvedUrl = `${origin}${defaultPath}`
+    }
+    const landsOnOwnPage = !resolvedUrl && (destinationType === 'landing_page' || destinationType === 'book_meeting')
+    if (!resolvedUrl && !landsOnOwnPage) {
+      return NextResponse.json({
+        success: false,
+        error: destinationType === 'listing_detail'
+          ? 'Listing detail needs the listing id (or an explicit target URL).'
+          : 'target_url is required (no app-hosted default exists for this destination type — provide a URL explicitly).',
+      }, { status: 400 })
+    }
 
     const minted = await mintTrackedQr({
       brokerageId: ctx.brokerageId,
@@ -142,17 +151,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     if (!minted) {
       return NextResponse.json({ success: false, error: 'Failed to create QR code' }, { status: 500 })
-    }
-
-    if (needsSlugDerivedDefault) {
-      const derived = defaultUrlForDestination(destinationType ?? null, minted.slug, origin)
-      if (derived) {
-        const { error: patchError } = await supabase
-          .from('qr_codes').update({ target_url: derived }).eq('id', minted.qrCodeId)
-        if (patchError) {
-          return NextResponse.json({ success: false, error: patchError.message }, { status: 500 })
-        }
-      }
     }
 
     const { data: qrCode, error } = await supabase
@@ -190,11 +188,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
  * tenant is now resolved SERVER-SIDE from the session and the body value is NOT READ AT ALL —
  * comparing a caller-supplied identity is not a gate, it is a formality.
  *
- * NOTE ON target_url: the previous comment here claimed that editing it "REROUTES every printed
- * copy in the wild". It does not. app/api/qr/scan resolves the slug, records the scan, and
- * redirects to the public `/qr/<slug>` landing — it never reads target_url. target_url is the
- * SEMANTIC destination shown on the QR surfaces. Re-pointing the actual redirect is a separate
- * capability that does not exist yet; do not describe this as one.
+ * NOTE ON target_url (wave 141F): editing it NOW reroutes every printed copy on its next scan.
+ * app/api/qr/scan reads target_url fresh per scan and sends the scanner through the one
+ * allow-list resolver (lib/marketing/qr-contract.ts resolveQrScanDestination): an in-app public
+ * path is redirected to directly; an https host we do not own is offered on the landing page as
+ * a tap-through link, never auto-followed. (Until this wave the handler never read target_url
+ * and every scan landed on the generic /qr/<slug> form — the board's claim was false then.)
  */
 export async function PATCH(req: NextRequest): Promise<NextResponse> {
   try {

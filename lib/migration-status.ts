@@ -51,9 +51,30 @@
 //                    airtableService is gone.
 //   airtableService  REMOVED. services/airtableService.ts no longer exists.
 //                    All reads/writes go through services/supabaseService.ts.
-//                    The only surviving mentions are in
-//                    scripts/complete-migration.ts, the codemod that performed
-//                    the rewrite.
+//
+// AIRTABLE IS RETIRED (owner, wave 141; lane 141D, 2026-10-14) — the last four
+// OPERATIONAL Airtable paths are DELETED, each unreferenced by package.json,
+// by any import and by any guard baseline (proved by scripts/crm-boundaries-
+// guard.ts, which also holds the whole runtime tree Airtable-free):
+//   · scripts/complete-migration.ts + scripts/migrate-airtable-imports.sh — the
+//     codemods that rewrote `airtableService.*` → `supabaseService.*`. Both had
+//     already run; both of their targets were gone; the replacement table they
+//     carried is recorded in this file's prose above (services/supabaseService.ts
+//     is the survivor of every rewritten call).
+//   · scripts/011-migrate-airtable-to-supabase.ts — the one-off that READ the
+//     Airtable Contacts base and inserted `contacts` rows. The data it moved lives
+//     in `contacts`; moving a subscriber's OLD CRM in today is the platform-staff
+//     white-glove lane app/actions/lead-import/crm-pull-actions.ts →
+//     lib/platform/tenant-import.ts (Follow Up Boss / Lofty / GoHighLevel), never
+//     an Airtable read.
+//   · scripts/seed-test-contacts.ts — POSTed test contacts INTO Airtable. The
+//     Supabase-side survivor is scripts/011-seed-test-contacts.sql (+
+//     scripts/seed-showcase-tenant.ts for a whole showcase tenant).
+// Schema half: global_settings.airtable_api_key (no reader, no writer, 0 values
+// live) is dropped by supabase/migrations/m771-airtable-retired-drop-global-
+// settings-airtable-api-key.sql; lib/kernel/global-settings.ts no longer declares
+// it. lib/platform/config-snapshots.ts keeps the NAME in SNAPSHOT_FORBIDDEN_FIELDS
+// on purpose (a historical payload carrying it is refused, never applied).
 //   n8nService       REMOVED. services/workflowService.ts (which also exported
 //                    the n8nService alias) has been DELETED. The named
 //                    survivor is app/actions/workflows.ts — every non-stub

@@ -64,6 +64,16 @@ export default async function DomainCoherencePage() {
     )
   }
 
+  // ROLE SAFETY (wave 141B): an admitted caller with NO resolved platform role is refused, never
+  // rendered as superadmin by default.
+  if (!gate.role) {
+    return (
+      <div className="p-6 text-red-600">
+        Forbidden — your platform role could not be resolved.
+      </div>
+    )
+  }
+
   // All seven reads go through the gated server actions. If any is refused the
   // workspace renders that refusal rather than an empty, clean-looking audit.
   const [report, routes, ownership, duplicates, managers, providers, contracts] = await Promise.all([
@@ -80,7 +90,7 @@ export default async function DomainCoherencePage() {
     <div className="p-6 max-w-7xl mx-auto">
       <DomainCoherenceWorkspace
         initial={{ report, routes, ownership, duplicates, managers, providers, contracts }}
-        staffRole={gate.role ?? "superadmin"}
+        staffRole={gate.role}
       />
     </div>
   )

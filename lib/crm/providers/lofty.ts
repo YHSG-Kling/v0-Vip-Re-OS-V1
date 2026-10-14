@@ -14,7 +14,7 @@
 
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { VENDOR_CONTRACTS } from "@/lib/agentic-os/connector-registry"
-import type { CrmContactInput, CrmSyncOutResult } from "./followupboss"
+import type { CrmContactInput, CrmSyncOutResult, CrmSyncOutScope } from "./followupboss"
 
 /** ONE Lofty base URL (VENDOR_CONTRACTS.lofty) — read by the pull (lib/crm/import-pull.ts) too. */
 export const LOFTY_API_BASE = VENDOR_CONTRACTS.lofty.baseUrl
@@ -28,6 +28,7 @@ export async function syncContactToLofty(
   contact: CrmContactInput,
   apiKey: string | null,
   baseUrl?: string | null,
+  scope: CrmSyncOutScope = {},
 ): Promise<CrmSyncOutResult> {
   if (!apiKey) return { success: false, requiresConfiguration: true, error: "Lofty not connected (missing API token)" }
 
@@ -36,6 +37,8 @@ export async function syncContactToLofty(
     baseUrl: baseUrl || LOFTY_API_BASE,
     path: "leads",
     method: "POST",
+    // wave 141 (141D): the tenant's own-CRM traffic is booked to the tenant (api_response_logs).
+    brokerageId: scope.brokerageId ?? null,
     auth: loftyAuth(apiKey),
     body: {
       firstName: contact.firstName,

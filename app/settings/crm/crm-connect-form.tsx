@@ -21,9 +21,15 @@ const PROVIDERS: Array<{ key: CrmProvider; label: string; needsUrl?: boolean; hi
 export function CrmConnectForm({
   active,
   connected,
+  lastError = null,
+  lastSyncedAt = null,
 }: {
   active: string | null
   connected: CrmProvider[]
+  /** The provider's own refusal on the last push to the ACTIVE CRM (wave 141, lane 141D) —
+   *  shown with the fix next to the key the tenant controls. Null = no failure recorded. */
+  lastError?: string | null
+  lastSyncedAt?: string | null
 }) {
   const [keys, setKeys] = useState<Record<string, string>>({})
   // The SECOND HALF of a key+secret pair. Optional, and separate from `keys`
@@ -79,6 +85,18 @@ export function CrmConnectForm({
             </CardHeader>
             <CardContent className="space-y-2">
               <p className="text-xs text-muted-foreground">{p.hint}. Sync-out only — pushes contact updates.</p>
+              {/* THE TENANT'S OWN INTEGRATION, THE TENANT'S OWN ERROR (141D): the last push's
+                  refusal lands here, actionable — update the key below, or disconnect. */}
+              {active === p.key && lastError && (
+                <div className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
+                  <span className="font-medium">Last sync to {p.label} failed:</span> {lastError}
+                  <div className="text-amber-800">Contacts are still being queued. Fix: paste a current API key below and click
+                  &ldquo;Update + set active&rdquo;, or disconnect this CRM.</div>
+                </div>
+              )}
+              {active === p.key && !lastError && lastSyncedAt && (
+                <p className="text-xs text-muted-foreground">Last successful sync: {new Date(lastSyncedAt).toLocaleString()}</p>
+              )}
               <Input
                 type="password"
                 placeholder="API key"

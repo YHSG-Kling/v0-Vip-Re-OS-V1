@@ -73,7 +73,10 @@ async function requirePlatformStaff(): Promise<{ userId: string; role: string } 
   if (!gate.ok || !gate.userId) {
     return { error: gate.error ?? "Forbidden — platform staff only" }
   }
-  return { userId: gate.userId, role: gate.role ?? "superadmin" }
+  // ROLE SAFETY (wave 141B): a gate that admitted the caller but resolved NO role is refused here,
+  // never read as superadmin by default (unknown authority = refuse/escalate).
+  if (!gate.role) return { error: "Forbidden — platform role unresolved" }
+  return { userId: gate.userId, role: gate.role }
 }
 
 // ─── Action 1: Enumerate Domain Routes ───────────────────────────────────────

@@ -8,6 +8,9 @@ import type {
   QrLinkableCampaign,
   QrScopeKind,
 } from '@/app/actions/qr-management'
+// ONE encoding contract (wave 141F): the on-screen preview and the downloaded PNG carry the
+// same quiet zone / error correction / contrast as every printed code (lib/marketing/qr-contract.ts).
+import { qrEncodeOptions } from '@/lib/marketing/qr-contract'
 
 type QRCodeRow = QrManagerCode
 
@@ -51,7 +54,10 @@ function humanizePurpose(value: string): string {
 }
 
 /** m148 destination_type enum + human labels and per-type help text.
- *  Order matches the most-common-first UX heuristic for real estate. */
+ *  Order matches the most-common-first UX heuristic for real estate.
+ *  The app-hosted paths named here are the ones lib/marketing/qr-contract.ts
+ *  qrInAppDefaultPath actually builds (wave 141F — the old text named
+ *  /qr/{slug}/landing, /forms/cma and /book, none of which is a route). */
 const DESTINATION_OPTIONS: Array<{
   value: string
   label: string
@@ -59,10 +65,10 @@ const DESTINATION_OPTIONS: Array<{
   needsExternalUrl: boolean   // if true, the user MUST supply a target URL
 }> = [
   { value: '',                  label: '— Choose a destination —',           help: 'Pick how scanners land.', needsExternalUrl: false },
-  { value: 'landing_page',      label: 'Branded landing page',               help: 'App-hosted lead capture page at /qr/{slug}/landing.', needsExternalUrl: false },
-  { value: 'cma_form',          label: 'CMA / home value form',              help: 'App-hosted seller form at /forms/cma.', needsExternalUrl: false },
-  { value: 'book_meeting',      label: 'Book a meeting (calendar)',          help: 'App-hosted calendar at /book.', needsExternalUrl: false },
-  { value: 'listing_detail',    label: 'Listing detail page',                help: 'Routes to the specific listing — provide listing id below.', needsExternalUrl: false },
+  { value: 'landing_page',      label: 'Branded landing page',               help: 'This code’s own branded capture page at /qr/{slug}.', needsExternalUrl: false },
+  { value: 'cma_form',          label: 'CMA / home value form',              help: 'App-hosted home-value funnel at /home-value (your public profile slug when you have one).', needsExternalUrl: false },
+  { value: 'book_meeting',      label: 'Book a meeting',                     help: 'The listing’s public page (showing request) when you give a listing id; otherwise your public profile at /p/{your-slug}; otherwise this code’s own capture page.', needsExternalUrl: false },
+  { value: 'listing_detail',    label: 'Listing detail page',                help: 'Routes to the listing’s public page at /listings/{id} — provide the listing id below.', needsExternalUrl: false },
   { value: 'video_avatar_tour', label: 'Avatar video tour',                  help: 'Routes to a hosted video URL (paste the URL).', needsExternalUrl: true },
   { value: 'podcast_episode',   label: 'Podcast episode',                    help: 'Routes to a hosted podcast page (paste the URL).', needsExternalUrl: true },
   { value: 'anniversary_video', label: 'Anniversary / milestone video',      help: 'Custom celebration video URL.', needsExternalUrl: true },
@@ -77,11 +83,7 @@ function QRCanvas({ url }: { url: string }) {
     let cancelled = false
     import('qrcode').then((QRCode) => {
       if (cancelled || !canvasRef.current) return
-      QRCode.toCanvas(canvasRef.current, url, {
-        width: 200,
-        margin: 2,
-        color: { dark: '#000000', light: '#ffffff' },
-      })
+      QRCode.toCanvas(canvasRef.current, url, qrEncodeOptions(200))
     })
     return () => { cancelled = true }
   }, [url])
@@ -145,7 +147,8 @@ export default function QRCodesClient({
 
   function handleDownload(slug: string) {
     import('qrcode').then(async (QRCode) => {
-      const url = await QRCode.toDataURL(getQRUrl(slug), { width: 400, margin: 2 })
+      // The downloaded PNG is a PRINT asset — the contract's print size and quiet zone.
+      const url = await QRCode.toDataURL(getQRUrl(slug), qrEncodeOptions(600))
       const a = document.createElement('a')
       a.href = url
       a.download = `qr-${slug}.png`
@@ -682,8 +685,11 @@ export default function QRCodesClient({
 
       {/* Wave 36 — edit modal. The agent can repoint a printed QR's URL
           without reprinting the postcard. /api/qr/scan reads target_url
-          fresh on every scan, so updating here reroutes every printed
-          copy in the wild on the NEXT scan. */}
+          fresh on every scan (true since wave 141F — before that the route
+          never read it and this sentence was a promise nothing kept), so
+          updating here reroutes every printed copy in the wild on the NEXT
+          scan: an in-app page directly, an outside https link as a
+          tap-through on the landing page. */}
       {editingCode && (
         <EditQRModal
           code={editingCode}

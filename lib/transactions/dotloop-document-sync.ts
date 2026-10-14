@@ -68,7 +68,8 @@ export async function syncDotloopLoopDocuments(svc: any, input: DotloopDocumentS
     if (!t) return { success: false, error: "Forbidden: transaction not in your brokerage" }
   }
 
-  const sync = await syncLoopDocuments(loopId)
+  // The TENANT's Dotloop credential (wave 141, lane 141C) — never the platform env account.
+  const sync = await syncLoopDocuments(brokerageId, loopId)
   if (!sync.success) return { success: false, error: sync.error ?? "syncLoopDocuments failed" }
 
   let syncedCount = 0

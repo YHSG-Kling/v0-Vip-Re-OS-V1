@@ -12,6 +12,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { mintTrackedQr, normalizeOrigin, type MintedTrackedQr } from "./tracked-qr"
+import { qrInAppDefaultPath } from "./qr-contract"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export type MarketingQrKind =
@@ -32,31 +33,43 @@ export interface MarketingQrRefs {
 
 export interface MarketingQrDestination {
   destinationType: MarketingQrDestinationType
-  buildTargetUrl: (origin: string, refs: MarketingQrRefs) => string
+  /** The semantic URL the piece points at — null when nothing app-hosted fits the refs, in which
+   *  case the minter's own default (the code's `/qr/<slug>` capture landing) is the destination. */
+  buildTargetUrl: (origin: string, refs: MarketingQrRefs) => string | null
 }
 
-/** PURE: marketing material kind → destination_type + target-URL builder. No I/O. */
+/**
+ * PURE: marketing material kind → destination_type + target-URL builder. No I/O.
+ *
+ * The PATHS come from the one destination table (lib/marketing/qr-contract.ts
+ * qrInAppDefaultPath — wave 141F). This file used to spell its own: `/listings/<id>/rsvp`
+ * for the open-house flyer and `/listings` / `/book` as fallbacks — the first and last of
+ * which are not routes, and `/listings` redirects to the dashboard (a login wall for the
+ * stranger holding the flyer). A listing's public page carries the showing-request form
+ * and admits sold listings (app/listings/[listingId]), so the open-house flyer books
+ * through it; with no listing the code's own landing is the request form (null here).
+ */
 export function qrDestinationForMaterial(kind: MarketingQrKind): MarketingQrDestination {
+  const at = (origin: string, path: string | null): string | null => (path ? `${normalizeOrigin(origin)}${path}` : null)
   switch (kind) {
     case "listing_flyer":
     case "listing_packet":
     case "just_sold_flyer":
       return {
         destinationType: "listing_detail",
-        buildTargetUrl: (o, r) =>
-          r.listingId ? `${normalizeOrigin(o)}/listings/${r.listingId}` : `${normalizeOrigin(o)}/listings`,
+        buildTargetUrl: (o, r) => at(o, qrInAppDefaultPath({ destinationType: "listing_detail", listingId: r.listingId })),
       }
     case "open_house_flyer":
       return {
         destinationType: "book_meeting",
-        buildTargetUrl: (o, r) =>
-          r.listingId ? `${normalizeOrigin(o)}/listings/${r.listingId}/rsvp` : `${normalizeOrigin(o)}/book`,
+        buildTargetUrl: (o, r) => at(o, qrInAppDefaultPath({ destinationType: "book_meeting", listingId: r.listingId, agentSlug: r.agentSlug })),
       }
     case "cma":
       return {
+        // The CMA piece's landing IS the home-value funnel: the cma_form default path, filed
+        // under the landing_page destination type the video path already proved enum-valid.
         destinationType: "landing_page",
-        buildTargetUrl: (o, r) =>
-          r.agentSlug ? `${normalizeOrigin(o)}/home-value/${r.agentSlug}` : `${normalizeOrigin(o)}/home-value`,
+        buildTargetUrl: (o, r) => at(o, qrInAppDefaultPath({ destinationType: "cma_form", agentSlug: r.agentSlug })),
       }
   }
 }
@@ -155,6 +168,7 @@ export async function mintMarketingQr(
       agentId: args.agentId ?? null,
       label: `material:${args.kind}:${entity}`,
       destinationType: dest.destinationType,
+      // null → the minter points the code at its own /qr/<slug> capture landing.
       targetUrl: dest.buildTargetUrl(normalizeOrigin(args.origin), args),
       listingId: args.listingId ?? null,
       marketingCampaignId: args.marketingCampaignId ?? null,

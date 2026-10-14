@@ -10,14 +10,22 @@
 // Platform-staff surface. Pulling is taking a book of business out of another
 // system; the tenant's own CRM link runs the other way (sync-OUT only) and lives
 // on their Connections page.
+//
+// WAVE 141 (lane 141D) — the inbound chain is now visible and enforced here:
+// save key → PREVIEW (the explicit vendor-key → canonical-field mapping, the
+// ignored vendor keys, importable / problem / would-be-duplicate counts and a
+// sample — a dry run of the real lane, nothing written) → IMPORT, which carries
+// the preview's token; the server recomputes it from the first page it pulls
+// and refuses a commit whose mapping differs from what was reviewed.
 import { useEffect, useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Download, Loader2 } from "lucide-react"
+import { Download, Eye, Loader2 } from "lucide-react"
 import {
-  setCrmImportCredentialAction, runCrmImportAction, getCrmImportStatusAction,
+  setCrmImportCredentialAction, runCrmImportAction, getCrmImportStatusAction, previewCrmImportAction,
+  type CrmImportPreview,
 } from "@/app/actions/lead-import/crm-pull-actions"
 import type { CrmImportProvider } from "@/lib/crm/import-pull"
 
@@ -39,6 +47,7 @@ export function TenantCrmPullPanel({ brokerageId }: { brokerageId: string }) {
   const [apiKey, setApiKey] = useState("")
   const [extra, setExtra] = useState("")
   const [cursor, setCursor] = useState<string | null>(null)
+  const [preview, setPreview] = useState<CrmImportPreview | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [pending, start] = useTransition()
@@ -47,6 +56,10 @@ export function TenantCrmPullPanel({ brokerageId }: { brokerageId: string }) {
     getCrmImportStatusAction(brokerageId).then((r) => { if (r.ok) setConnected(r.connected) })
   }, [brokerageId])
   const meta = PROVIDERS.find((p) => p.key === provider)!
+
+  function pickProvider(p: CrmImportProvider) {
+    setProvider(p); setMsg(null); setErr(null); setCursor(null); setPreview(null)
+  }
 
   function connect() {
     setMsg(null); setErr(null)
@@ -57,17 +70,27 @@ export function TenantCrmPullPanel({ brokerageId }: { brokerageId: string }) {
         locationId: meta.extra === "locationId" ? extra || undefined : undefined,
       })
       if (!r.ok) { setErr(r.error ?? "Failed to save the key"); return }
-      setMsg(`${meta.label} connected for this subscriber — run the import when ready.`)
+      setMsg(`${meta.label} connected for this subscriber — preview the import when ready.`)
       setApiKey(""); setExtra("")
       const s = await getCrmImportStatusAction(brokerageId)
       if (s.ok) setConnected(s.connected)
     })
   }
 
+  function runPreview() {
+    setMsg(null); setErr(null); setPreview(null); setCursor(null)
+    start(async () => {
+      const r = await previewCrmImportAction({ brokerageId, provider })
+      if (!r.ok) { setErr(r.error ?? "Preview failed"); if (r.previewToken) setPreview(r); return }
+      setPreview(r)
+    })
+  }
+
   function run(resume = false) {
+    if (!preview?.previewToken) { setErr("Preview the import first."); return }
     setMsg(null); setErr(null)
     start(async () => {
-      const r = await runCrmImportAction({ brokerageId, provider, cursor: resume ? cursor : null })
+      const r = await runCrmImportAction({ brokerageId, provider, cursor: resume ? cursor : null, previewToken: preview.previewToken })
       setCursor(r.nextCursor)
       if (!r.ok && r.pagesPulled === 0) { setErr(r.error ?? "Import failed"); return }
       setMsg(
@@ -75,7 +98,8 @@ export function TenantCrmPullPanel({ brokerageId }: { brokerageId: string }) {
         (r.skippedDuplicates > 0 ? `, ${r.skippedDuplicates} skipped as duplicates` : "") +
         (r.failed > 0 ? `, ${r.failed} failed` : "") +
         (r.error ? ` — stopped early: ${r.error}` : "") +
-        (r.nextCursor ? " — more contacts remain, continue below." : " — all done."),
+        (r.evidenceImportId ? ` — recorded in the tenant's import history (${r.evidenceImportId.slice(0, 8)}…).` : "") +
+        (r.nextCursor ? " More contacts remain, continue below." : " All done."),
       )
     })
   }
@@ -92,12 +116,13 @@ export function TenantCrmPullPanel({ brokerageId }: { brokerageId: string }) {
           Connect this subscriber&apos;s Follow Up Boss, Lofty or GoHighLevel account and import
           their contacts straight into THIS tenant — the same safeguards as the CSV import above: names,
           emails, phones and addresses land on contacts, duplicates are skipped against the tenant&apos;s
-          existing book, and consent is never imported as opted-in. Every run is audit-logged.
+          existing book, and consent is never imported as opted-in. Preview the field mapping first;
+          the import is bound to the mapping you reviewed. Every preview and run is audit-logged.
         </p>
 
         <div className="flex flex-wrap gap-2">
           {PROVIDERS.map((p) => (
-            <button key={p.key} onClick={() => { setProvider(p.key); setMsg(null); setErr(null); setCursor(null) }}
+            <button key={p.key} onClick={() => pickProvider(p.key)}
               className={`rounded-md border px-3 py-1.5 text-sm ${provider === p.key ? "bg-slate-900 text-white" : ""}`}>
               {p.label}{connected.includes(p.key) ? " ✓" : ""}
             </button>
@@ -119,17 +144,72 @@ export function TenantCrmPullPanel({ brokerageId }: { brokerageId: string }) {
         )}
 
         {connected.includes(provider) && (
-          <div className="flex items-center gap-2">
-            <Button size="sm" className="gap-1.5" onClick={() => run(false)} disabled={pending}>
-              {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={runPreview} disabled={pending}>
+              {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
+              Preview from {meta.label}
+            </Button>
+            <Button size="sm" className="gap-1.5" onClick={() => run(false)} disabled={pending || !preview?.previewToken}>
+              <Download className="h-3.5 w-3.5" />
               Import from {meta.label}
             </Button>
             {cursor && (
-              <Button variant="outline" size="sm" onClick={() => run(true)} disabled={pending}>
+              <Button variant="outline" size="sm" onClick={() => run(true)} disabled={pending || !preview?.previewToken}>
                 Continue import
               </Button>
             )}
             <Badge variant="outline" className="text-[11px]">key saved</Badge>
+          </div>
+        )}
+
+        {/* PREVIEW — the explicit mapping + what a commit of the first page would do. Nothing written. */}
+        {preview && (
+          <div className="rounded-md border p-3 space-y-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">{preview.pageRows} row{preview.pageRows === 1 ? "" : "s"} on the first page</Badge>
+              <Badge variant="outline">{preview.wouldInsert} would import</Badge>
+              {preview.wouldSkipDuplicates > 0 && <Badge variant="outline">{preview.wouldSkipDuplicates} already in this tenant (skipped)</Badge>}
+              {preview.problemCount > 0 && <Badge className="bg-amber-100 text-amber-800">{preview.problemCount} row{preview.problemCount === 1 ? "" : "s"} with problems</Badge>}
+              {preview.moreRemain && <span className="text-muted-foreground">more pages follow — the import paginates</span>}
+            </div>
+            <div>
+              <div className="font-medium mb-1">Field mapping (their field → our contact field)</div>
+              <table className="w-full text-[11px]">
+                <tbody>
+                  {preview.mapping.map((m) => (
+                    <tr key={m.vendorKey} className="border-t">
+                      <td className="py-0.5 pr-3 font-mono">{m.vendorKey}</td>
+                      <td className="py-0.5 text-muted-foreground">→ {m.canonical}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {preview.ignoredKeys.length > 0 && (
+                <p className="mt-1 text-muted-foreground">Not imported (no matching contact field): {preview.ignoredKeys.join(", ")}</p>
+              )}
+            </div>
+            {preview.sample.length > 0 && (
+              <div>
+                <div className="font-medium mb-1">Sample</div>
+                <table className="w-full text-[11px]">
+                  <thead><tr className="text-left text-muted-foreground"><th className="pr-3">Name</th><th className="pr-3">Email</th><th className="pr-3">Phone</th><th>City/State</th></tr></thead>
+                  <tbody>
+                    {preview.sample.map((s, i) => (
+                      <tr key={i} className="border-t">
+                        <td className="py-0.5 pr-3">{s.name}</td><td className="py-0.5 pr-3">{s.email ?? "—"}</td>
+                        <td className="py-0.5 pr-3">{s.phone ?? "—"}</td><td className="py-0.5">{s.cityState ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {preview.problems.length > 0 && (
+              <div className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900 space-y-0.5">
+                {preview.problems.map((p, i) => (<div key={i}><span className="font-mono">row {p.line}</span>: {p.problem}</div>))}
+                {preview.problemCount > preview.problems.length && <div className="text-amber-700">…and {preview.problemCount - preview.problems.length} more</div>}
+              </div>
+            )}
           </div>
         )}
 

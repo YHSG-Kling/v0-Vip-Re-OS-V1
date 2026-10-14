@@ -12,7 +12,7 @@ import { revalidatePath } from "next/cache"
 // act-as.
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
-import { selectableConnectionsForScope, candidateProvider } from "@/lib/connections/scope"
+import { selectableConnectionsForScope, candidateProvider, providerSelectionVerdict } from "@/lib/connections/scope"
 import { canonicalProvider } from "@/lib/integrations/connection-manager"
 import { encryptSecret } from "@/lib/security/secret-crypto"
 import { publicCredentialSelect, CREDENTIAL_STORES } from "@/lib/security/credential-projection"
@@ -225,6 +225,14 @@ export async function upsertProviderOverride(params: {
     }
   }
 
+  // CAPABILITY SELECTION IS CERTIFIED (wave 141, lane 141C): an e-sign / transaction provider is
+  // selectable ONLY when the capability matrix certifies every required code path, and an
+  // accounting / payments provider only when it is connectable — refused here WITH the honest
+  // reason, so a direct call to this "use server" export cannot select what the menu lists as
+  // unavailable. ONE verdict, shared with the UI (lib/connections/scope.ts providerSelectionVerdict).
+  const verdict = providerSelectionVerdict(params.provider_type, params.provider_key)
+  if (!verdict.ok) return { success: false, error: verdict.reason }
+
   // ACT-AS WRITE SEAM — read_only refused; the write rides the acting db.
   const ctx = await resolveWriteContext()
   if (!ctx.ok) return { success: false, error: ctx.error }
@@ -331,6 +339,20 @@ export async function upsertPlatformCredential(params: {
     : await supabase.from("platform_credentials").insert(credRow)
 
   if (error) return { success: false, error: error.message }
+
+  // IMMEDIATE POST-CONDITION (wave 141B — provider_connection): re-read the credential row ON THIS
+  // TENANT and verify it is active; evidenced, and a failed verify is routed to the owning manager NOW
+  // and returned as a failure (never "saved" when the row did not verify). The tenant's own credential
+  // → the tenant sees the actionable sentence, nothing about platform internals.
+  const { verifyCredentialRow, reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
+  const verified = await verifyCredentialRow(supabase, { brokerageId, platform: params.platform })
+  await reportOperationOutcome(supabase, {
+    operation: "provider_connection", brokerageId, ok: verified.ok,
+    subjectType: "platform_credentials", subjectId: (verified.evidence.rowId as string | undefined) ?? null, actorUserId: ctx.userId, source: "ui",
+    evidence: { provider: canonical, scope: params.scope ?? "brokerage", ...verified.evidence }, error: verified.error,
+    tenantFacing: verified.ok ? null : `your ${params.platform} connection was saved but could not be verified as active — re-enter it from Settings › Integrations`,
+  })
+  if (!verified.ok) return { success: false, error: `${params.platform} was saved but did not verify as an active connection: ${verified.error}` }
   revalidatePath("/dashboard/settings/integrations")
   return { success: true }
 }

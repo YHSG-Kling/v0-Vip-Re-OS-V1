@@ -162,6 +162,9 @@ export async function POST(req: Request) {
       userType: "agent",
       callerUserId: user.id,
       redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding`,
+      // Wave 141B (owner 2026-10-14: the registered recruiting_manager owns recruiting-door events) — the
+      // survivor routes this door's post-condition outcomes to the Recruiting Manager.
+      door: "recruiting",
     })
     if (!provisioned.success || !provisioned.userId) {
       return NextResponse.json({ error: provisioned.error ?? "The recruit could not be provisioned." }, { status: 409 })

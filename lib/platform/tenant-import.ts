@@ -50,6 +50,11 @@ export interface TenantImportResult {
   totalDataRows: number
   /** agents.id every imported row was anchored to (when resolution succeeded). */
   agentId?: string
+  /** PREVIEW (wave 141, lane 141D): true when the lane ran everything BUT the insert — tenant
+   *  verified, owner agent resolved, dedupe scanned — and `wouldInsert` is what a commit would
+   *  land. `inserted` is 0 on a dry run by construction. */
+  dryRun?: boolean
+  wouldInsert?: number
 }
 
 // ─── Shared resolution helpers ───────────────────────────────────────────────
@@ -158,6 +163,10 @@ export async function importParsedContacts(params: {
   parsed: ParseContactsCsvResult
   /** What to call the source in the "nothing importable" message. */
   emptyLabel?: string
+  /** PREVIEW, not a commit (wave 141): run the whole lane — tenant check, owner-agent resolution,
+   *  dedupe against the TARGET tenant — and stop before the insert, reporting `wouldInsert`.
+   *  The staff CRM-pull panel previews a page this way before the controlled commit. */
+  dryRun?: boolean
 }): Promise<TenantImportResult> {
   const { svc, brokerageId, parsed } = params
   const label = params.emptyLabel ?? "source"
@@ -233,6 +242,11 @@ export async function importParsedContacts(params: {
         updated_at: now,
       },
     })
+  }
+
+  if (params.dryRun) {
+    // Nothing written: the preview reports exactly what a commit of THIS page would do.
+    return { ...base, ok: true, skippedDuplicates, agentId: agent.agentId, dryRun: true, wouldInsert: payloads.length }
   }
 
   if (payloads.length === 0) {

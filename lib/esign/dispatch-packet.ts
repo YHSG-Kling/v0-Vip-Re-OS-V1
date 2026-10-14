@@ -25,6 +25,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { resolveESignChoice } from "@/lib/integrations/resolve-esign-provider"
 import { supportsEmbeddedSend, providerPortalMode, getCatalogEntry } from "@/lib/integrations/providers/catalog"
 import type { SignatureTag } from "@/lib/integrations/providers/transaction-provider.interface"
+import { legalDescriptionGate } from "@/lib/forms/legal-description"
 
 export const FORMS_BUCKET = "brokerage-forms"
 
@@ -164,8 +165,33 @@ async function bytesFor(svc: SupabaseClient, docs: DispatchDoc[]): Promise<{ ok:
   return { ok: true, files }
 }
 
+/**
+ * THE INCOMPLETE-FORM GATE (wave 141, lane 141C; owner: "the form stays incomplete until the data
+ * exists"): before any envelope is cut, every library PDF in the packet is read and a blank
+ * legal-description field refuses the send by name (lib/forms/legal-description.ts
+ * legalDescriptionGate — PURE; the owner's "never invent it" has teeth here). Record URLs (an
+ * already-issued document) and non-PDF documents cannot be inspected and pass through — published
+ * blind spot. A document that cannot be loaded refuses, never "assumed complete".
+ */
+async function incompletePacketReason(svc: SupabaseClient, docs: DispatchDoc[]): Promise<string | null> {
+  const inspected: Array<{ name: string; fields: Array<{ name: string; value: string }> }> = []
+  for (const d of docs) {
+    if (!d.storagePath || !docLocator(d).endsWith(".pdf")) continue
+    const { data, error } = await svc.storage.from(FORMS_BUCKET).download(d.storagePath)
+    if (error || !data) return `could not read "${d.name}" to check it is complete: ${error?.message ?? "not found"}`
+    const { readPdfTextFields } = await import("@/lib/forms/pdf-form-fill")
+    inspected.push({ name: d.name, fields: await readPdfTextFields(new Uint8Array(await data.arrayBuffer())) })
+  }
+  const gate = legalDescriptionGate(inspected)
+  return gate.complete ? null : gate.reason
+}
+
 export async function dispatchEsignPacket(svc: SupabaseClient, input: DispatchPacketInput): Promise<DispatchPacketResult> {
   if (input.signers.length === 0) return { ok: false, error: "At least one signer with an email is required." }
+
+  // INCOMPLETE packets never leave (wave 141) — refused BEFORE the choice, the envelope or the Drive copy.
+  const incomplete = await incompletePacketReason(svc, input.documents)
+  if (incomplete) return { ok: false, error: incomplete }
 
   const choice = await resolveESignChoice({ brokerageId: input.brokerageId, userId: input.userId, teamId: input.teamId })
   if (!choice.ok) return { ok: false, error: choice.error }

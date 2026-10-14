@@ -27,6 +27,8 @@ import "server-only"
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
 import QRCode from "qrcode"
+// ONE encoding contract (wave 141F): a printed postcard gets the spec's 4-module quiet zone.
+import { qrEncodeOptions } from "@/lib/marketing/qr-contract"
 import { selectComposition, renderStill } from "@remotion/renderer"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { resolveBrandContext } from "@/lib/branding/resolve-brand-context"
@@ -105,12 +107,7 @@ export async function renderPostcardBothSides4x6(args: {
 
   let qrCodeDataUrl: string | null = null
   if (args.qrScanUrl) {
-    qrCodeDataUrl = await QRCode.toDataURL(args.qrScanUrl, {
-      width: 600,
-      margin: 1,
-      errorCorrectionLevel: "M",
-      color: { dark: "#000000", light: "#ffffff" },
-    })
+    qrCodeDataUrl = await QRCode.toDataURL(args.qrScanUrl, qrEncodeOptions(600))
   }
 
   const entry = path.join(process.cwd(), "remotion", "Root.tsx")
@@ -230,10 +227,7 @@ export async function renderPostcardBothSides6x9(args: {
 
   let qrCodeDataUrl: string | null = null
   if (args.qrScanUrl) {
-    qrCodeDataUrl = await QRCode.toDataURL(args.qrScanUrl, {
-      width: 720, margin: 1, errorCorrectionLevel: "M",
-      color: { dark: "#000000", light: "#ffffff" },
-    })
+    qrCodeDataUrl = await QRCode.toDataURL(args.qrScanUrl, qrEncodeOptions(720))
   }
 
   const entry = path.join(process.cwd(), "remotion", "Root.tsx")

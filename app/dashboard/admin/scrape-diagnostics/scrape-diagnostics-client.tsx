@@ -715,7 +715,7 @@ export function ScrapeDiagnosticsClient({
                   <button
                     onClick={handleVerifyCronDoor}
                     disabled={cronDoorLoading || !selectedMarketId}
-                    title="Exercises GET /api/admin/scrape-test — the Bearer CRON_SECRET door the scraping cron itself uses — through a server-side self-call so no secret ever reaches the browser."
+                    title="Exercises GET /api/admin/scrape-test — the bearer-secret cron door the scraping cron itself uses — through a server-side self-call so no secret ever reaches the browser."
                     className="rounded border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-medium text-zinc-400 transition-colors hover:bg-zinc-800 disabled:opacity-50"
                   >
                     {cronDoorLoading ? "Checking..." : "Verify Cron Door"}

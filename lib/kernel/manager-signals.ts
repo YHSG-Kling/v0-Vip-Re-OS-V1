@@ -24,6 +24,9 @@ import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
 // Pure predicate only (the engine itself stays a lazy import in the handler below, as before).
 import { isDeliberativeDomain } from "@/lib/managers/deliberation"
+// Wave 141B — IMMEDIATE OPERATIONS: the ONE consumer of a door's routed post-condition failure, keyed
+// per registered owning manager (lib/kernel/immediate-operations.ts; its survivors are lazy imports).
+import { handleOperationFailureEscalated, IMMEDIATE_OPERATION_CONSUMERS, OPERATION_SIGNAL_TYPE } from "@/lib/kernel/immediate-operations"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -428,6 +431,12 @@ async function proposeQualificationConfirmation(
 /** The registered conversations — to_manager:signal_type → handler. Handlers act by
  *  proposing GOVERNED deliverables (the gate), never autonomous sends. */
 export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
+  // ── Wave 141B — IMMEDIATE OPERATIONS: `<owner>:operation_failure_escalated` for every registered owning
+  //    manager (tenant creation, user creation, invitation, seat provisioning, brokerage transfer, website,
+  //    provider / transaction-provider connection, billing activation, phone/A2P). The handler RE-VERIFIES the
+  //    operation's readiness keys with repair (self-healing engine) or hands it to a human with the evidence.
+  //    Derived from IMMEDIATE_OPERATION_CONSUMERS so the owner map and the inbox can never drift (§6). ──
+  ...Object.fromEntries(IMMEDIATE_OPERATION_CONSUMERS.map((m) => [`${m}:${OPERATION_SIGNAL_TYPE}`, (signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc }) => handleOperationFailureEscalated(signal, ctx)])),
   // AI ISA → Shopping Agent: a qualified person asked for a later callback.
   "shopping_agent:qualification_call_requested": (signal, ctx) => proposeQualificationConfirmation(
     signal, ctx, "shopping_agent",

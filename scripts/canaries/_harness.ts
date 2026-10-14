@@ -59,13 +59,31 @@ registerHooks({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- node:module's ResolveHookSync shape (the repo's idiom)
   resolve(spec: string, ctx: any, next: any) {
     const stub = STUB_BY_SPEC[spec]
-    if (stub !== undefined) return { url: `data:text/javascript,${encodeURIComponent(stub)}`, shortCircuit: true }
+    // WAVE 141 (lane 141J): a stub may be a FILE (a `file:` URL to a .ts module that re-exports the real
+    // module and overrides one door) — the data: form cannot `export *`, and a named import of a missing
+    // export is a link-time error, not a runtime one.
+    if (stub !== undefined) return { url: stub.startsWith("file:") ? stub : `data:text/javascript,${encodeURIComponent(stub)}`, shortCircuit: true }
     return next(spec, ctx)
   },
 })
 export function setSvc(svc: unknown): void { G.__W140.svc = svc }
 
-export type CanarySvc = MemClient
+/**
+ * WAVE 141 (lane 141J): a canary may stub ONE more module by specifier BEFORE it first imports the graph
+ * that reaches it (the CRM sync-out canary stubs the connector gateway so the egress is RECORDED, never
+ * sent). The resolve hook reads the map on every resolution, so a stub installed after a module was
+ * already loaded does not reach that module's importers — a canary therefore ASSERTS the stub was hit.
+ * `source` is JavaScript text (data: URL) or a `file:` URL.
+ */
+export function stubModule(spec: string, source: string): void { STUB_BY_SPEC[spec] = source }
+
+/** WAVE 141 (lane 141J): what the stubbed Auth admin was asked to do, in order — the user-invite
+ *  canary proves the invite is attempted IN the request and its result READ. */
+export interface CanaryAuthCall { method: "inviteUserByEmail" | "createUser"; email: string; ok: boolean }
+/** Faults a canary injects ONCE (consumed on first use) to prove a refusal is read, never swallowed. */
+export interface CanaryControls { authCalls: CanaryAuthCall[]; faults: { inviteUserByEmail?: { message: string } | null } }
+
+export type CanarySvc = MemClient & { canary: CanaryControls }
 
 /**
  * The canary client. In-memory by default; the live service client under CANARY_LIVE.
@@ -77,18 +95,24 @@ export function canaryClient(seed: Record<string, Row[]> = {}): CanarySvc {
     const { createClient } = require("@supabase/supabase-js") as typeof import("@supabase/supabase-js")
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? ""
     const live = createClient(url, process.env.SUPABASE_SERVICE_ROLE_KEY ?? "", { auth: { autoRefreshToken: false, persistSession: false } })
+    ;(live as unknown as { canary: CanaryControls }).canary = { authCalls: [], faults: {} }
     return live as unknown as CanarySvc
   }
   const mem = memSupabase(seed, { stampCreatedAt: true, uuidIds: true })
   const authUsers: Array<{ id: string; email: string }> = []
+  const controls: CanaryControls = { authCalls: [], faults: {} }
   const admin = {
     // The auth user exists FIRST and the on_auth_user_created trigger seeds public.users with
     // the auth id (lib/kernel/users.ts provisionTenantOwner's invariant) — modelled here.
     inviteUserByEmail: async (email: string) => {
-      const id = uuid()
       const e = email.toLowerCase()
+      // An injected refusal (consumed once): the provider said no — no auth user, no trigger seed.
+      const fault = controls.faults.inviteUserByEmail
+      if (fault) { controls.faults.inviteUserByEmail = null; controls.authCalls.push({ method: "inviteUserByEmail", email: e, ok: false }); return { data: { user: null }, error: { message: fault.message, code: "canary_fault" } } }
+      const id = uuid()
       authUsers.push({ id, email: e })
       ;(mem.tables.users ??= []).push({ id, email: e, created_at: nowIso() })
+      controls.authCalls.push({ method: "inviteUserByEmail", email: e, ok: true })
       return { data: { user: { id, email: e } }, error: null }
     },
     // createUser — the ISA system actor (lib/auth/provision-isa-actor.ts) and any staff-created seat: same
@@ -96,10 +120,11 @@ export function canaryClient(seed: Record<string, Row[]> = {}): CanarySvc {
     createUser: async (attrs: { email?: string; user_metadata?: Record<string, unknown> }) => {
       const e = (attrs.email ?? `${uuid()}@${CANARY_EMAIL_DOMAIN}`).toLowerCase()
       const dup = authUsers.find((u) => u.email === e)
-      if (dup) return { data: { user: null }, error: { message: "A user with this email address has already been registered", code: "email_exists" } }
+      if (dup) { controls.authCalls.push({ method: "createUser", email: e, ok: false }); return { data: { user: null }, error: { message: "A user with this email address has already been registered", code: "email_exists" } } }
       const id = uuid()
       authUsers.push({ id, email: e })
       ;(mem.tables.users ??= []).push({ id, email: e, created_at: nowIso() })
+      controls.authCalls.push({ method: "createUser", email: e, ok: true })
       return { data: { user: { id, email: e, user_metadata: attrs.user_metadata ?? {} } }, error: null }
     },
     listUsers: async () => ({ data: { users: authUsers }, error: null }),
@@ -109,14 +134,19 @@ export function canaryClient(seed: Record<string, Row[]> = {}): CanarySvc {
     generateLink: async () => ({ data: null, error: { message: "canary: generateLink is not modelled" } }),
   }
   const m = mem as unknown as Record<string, unknown>
-  m.auth = { admin }
+  // signInWithOtp is the portal-invite email (captureContact's non-fatal portal invite): a PROVIDER REFUSAL,
+  // read by the kernel as an error — never a TypeError from a missing door (wave 141).
+  m.auth = { admin, signInWithOtp: async () => ({ data: { user: null, session: null }, error: { message: "canary: the portal invite (OTP email) is not sent", code: "canary_refused" } }) }
   m.rpc = async (fn: string) => ({ data: null, error: { message: `canary: rpc ${fn} is not modelled (refused, not faked)`, code: "42883" } })
   m.storage = { from: () => ({ upload: async () => ({ data: null, error: { message: "canary: storage is not modelled" } }), remove: async () => ({ data: null, error: null }) }) }
-  return mem
+  m.canary = controls
+  return mem as CanarySvc
 }
 
 // ── the report every canary publishes ───────────────────────────────────────────────
-export interface CanaryStep { step: string; ok: boolean; evidence: string }
+/** `hook` names the wave-141 lane whose contract this step is written against while that lane's module
+ *  is absent at HEAD: the step is PENDING (counted, printed ⏳, never a pass of the contract itself). */
+export interface CanaryStep { step: string; ok: boolean; evidence: string; hook?: string }
 export interface CanaryCleanup { table: string; deleted: number }
 export interface CanaryReport {
   chain: string
@@ -126,6 +156,8 @@ export interface CanaryReport {
   residual: number
   skipped: string | null
   passed: boolean
+  /** WAVE141 HOOK steps still pending (a lane's module absent) — published beside the RESULT line. */
+  hooks: number
 }
 
 export function canary(chain: string) {
@@ -137,10 +169,16 @@ export function canary(chain: string) {
       console.log(`    ${ok ? "✓" : "✗"} ${step}${evidence ? ` — ${evidence.slice(0, 200)}` : ""}`)
       return ok
     },
+    /** A step written against another lane's CONTRACT whose module does not exist at HEAD (wave 141):
+     *  recorded as pending — it does not fail the canary and it is NOT a pass; the release gate reads it. */
+    hook(lane: string, contract: string, evidence = ""): void {
+      steps.push({ step: `WAVE141 HOOK (${lane}): ${contract}`, ok: true, evidence, hook: lane })
+      console.log(`    ⏳ HOOK ${lane} — ${contract.slice(0, 160)}${evidence ? ` — ${evidence.slice(0, 120)}` : ""}`)
+    },
     blind(s: string) { blindSpots.push(s) },
     allOk: () => steps.every((s) => s.ok),
     report(cleanup: CanaryCleanup[], residual: number, skipped: string | null = null): CanaryReport {
-      return { chain, steps, blindSpots, cleanup, residual, skipped, passed: skipped !== null || (steps.every((s) => s.ok) && residual === 0) }
+      return { chain, steps, blindSpots, cleanup, residual, skipped, passed: skipped !== null || (steps.every((s) => s.ok) && residual === 0), hooks: steps.filter((s) => s.hook).length }
     },
   }
 }
@@ -149,6 +187,9 @@ export function canary(chain: string) {
 const CANARY_TENANT_TABLES = [
   "transparency_updates", "agent_client_messages", "outcome_reconciliations", "manager_signals", "self_heal_events",
   "agent_action_ledger", "activities", "lifecycle_events", "kernel_events", "lead_enrichment_queue", "lead_sla_tracking",
+  // wave 141 canaries (lane 141J): lead magnets, QR, domains, provider credentials, notifications, forms
+  "form_submissions", "valuation_requests", "qr_codes", "lead_capture_forms", "notifications", "tenant_custom_domains",
+  "platform_credentials", "brokerage_integrations", "provider_overrides", "brokerage_forms", "business_card_scans",
   "listings", "contacts", "leads", "user_role_assignments", "agent_onboarding", "agents", "user_invitations",
   "global_settings", "brokerage_brand_settings", "subscriptions", "users", "teams", "brokerages",
 ]

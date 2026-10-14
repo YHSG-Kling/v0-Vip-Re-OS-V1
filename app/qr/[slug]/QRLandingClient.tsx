@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useTransition } from 'react'
-import Image from 'next/image'
 
 interface Props {
   slug: string
@@ -11,6 +10,14 @@ interface Props {
   agentName: string | null
   agentPhoto: string | null
   listingAddress: string | null
+  /**
+   * The code's intended destination, when it is not this form (wave 141F): an
+   * allow-listed in-app path (a direct visitor to /qr/<slug> is offered it), or an
+   * https host the OS does not own — rendered as a link the person TAPS, never an
+   * automatic redirect (no open redirect by construction). Null = this form IS
+   * the destination.
+   */
+  continueTo?: { href: string; label: string; external: boolean } | null
 }
 
 interface FormState {
@@ -21,6 +28,29 @@ interface FormState {
   tcpa_checked: boolean
 }
 
+// MOBILE CONTRACT (wave 141F — "no broken mobile route": the landing renders and
+// works at 360–430 px): fluid width (`w-full max-w-md`, 16 px gutters), 16 px input
+// text (`text-base` — iOS Safari zooms the page on focus for anything smaller, and
+// a zoomed form is the single most common "the QR page is broken" report), and
+// 44 px minimum touch targets on every control.
+const INPUT_CLASS =
+  'w-full min-h-[44px] rounded-md border border-input bg-background px-3 py-2 text-base text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring'
+
+function ContinueLink({ to, prominent }: { to: { href: string; label: string; external: boolean }; prominent: boolean }) {
+  const cls = prominent
+    ? 'inline-flex min-h-[44px] w-full items-center justify-center rounded-md bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:opacity-90 transition-opacity'
+    : 'inline-flex min-h-[44px] items-center text-sm font-medium text-primary underline underline-offset-4'
+  return to.external ? (
+    <a href={to.href} className={cls} target="_blank" rel="noopener noreferrer">
+      {to.label}
+    </a>
+  ) : (
+    <a href={to.href} className={cls}>
+      {to.label}
+    </a>
+  )
+}
+
 export default function QRLandingClient({
   slug,
   qrCodeId,
@@ -29,6 +59,7 @@ export default function QRLandingClient({
   agentName,
   agentPhoto,
   listingAddress,
+  continueTo = null,
 }: Props) {
   const [form, setForm] = useState<FormState>({
     first_name: '',
@@ -101,6 +132,11 @@ export default function QRLandingClient({
           <p className="text-muted-foreground text-lg">
             We received your information and will be in touch shortly.
           </p>
+          {continueTo && (
+            <div className="pt-2">
+              <ContinueLink to={continueTo} prominent />
+            </div>
+          )}
         </div>
       </main>
     )
@@ -114,7 +150,9 @@ export default function QRLandingClient({
         {agentName && (
           <div className="flex items-center gap-4">
             {agentPhoto ? (
-              <Image
+              // eslint-disable-next-line @next/next/no-img-element -- a plain element: the page is
+              // public and session-free, and next/image's loader is not needed for one avatar.
+              <img
                 src={agentPhoto}
                 alt={agentName}
                 width={56}
@@ -143,6 +181,13 @@ export default function QRLandingClient({
           )}
         </div>
 
+        {/* The code's own destination, when it is not this form — offered, never forced. */}
+        {continueTo && (
+          <div className="rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+            This code also points somewhere: <ContinueLink to={continueTo} prominent={false} />
+          </div>
+        )}
+
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
@@ -158,7 +203,7 @@ export default function QRLandingClient({
                 required
                 value={form.first_name}
                 onChange={handleChange}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                className={INPUT_CLASS}
                 placeholder="Jane"
               />
             </div>
@@ -174,7 +219,7 @@ export default function QRLandingClient({
                 required
                 value={form.last_name}
                 onChange={handleChange}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                className={INPUT_CLASS}
                 placeholder="Doe"
               />
             </div>
@@ -188,10 +233,11 @@ export default function QRLandingClient({
               id="email"
               name="email"
               type="email"
+              inputMode="email"
               autoComplete="email"
               value={form.email}
               onChange={handleChange}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              className={INPUT_CLASS}
               placeholder="jane@example.com"
             />
           </div>
@@ -204,10 +250,11 @@ export default function QRLandingClient({
               id="phone"
               name="phone"
               type="tel"
+              inputMode="tel"
               autoComplete="tel"
               value={form.phone}
               onChange={handleChange}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              className={INPUT_CLASS}
               placeholder="(555) 000-0000"
             />
           </div>
@@ -220,7 +267,7 @@ export default function QRLandingClient({
               type="checkbox"
               checked={form.tcpa_checked}
               onChange={handleChange}
-              className="mt-0.5 h-4 w-4 rounded border-border accent-primary cursor-pointer"
+              className="mt-0.5 h-5 w-5 shrink-0 rounded border-border accent-primary cursor-pointer"
               required
             />
             <label htmlFor="tcpa_checked" className="text-xs text-muted-foreground leading-relaxed cursor-pointer">
@@ -239,7 +286,7 @@ export default function QRLandingClient({
           <button
             type="submit"
             disabled={isPending}
-            className="w-full rounded-md bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className="w-full min-h-[44px] rounded-md bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             {isPending ? 'Submitting...' : 'Get in Touch'}
           </button>

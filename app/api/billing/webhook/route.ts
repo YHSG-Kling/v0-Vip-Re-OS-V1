@@ -198,6 +198,25 @@ export async function POST(request: NextRequest) {
             if (resumed.resumable && !resumed.result.ok) console.error("[Billing Webhook] provisioning resume refused:", resumed.result.error)
             else if (resumed.resumable) console.log(`[Billing Webhook] provisioning resumed for ${brokerageId}: pending ${resumed.result.provisioning?.completed_at ? "none" : "still open"}`)
           } catch (err) { console.warn("[Billing Webhook] provisioning safety-repair failed:", (err as any)?.message) }
+          // IMMEDIATE POST-CONDITION (wave 141B — billing_activation), after the link + the safety net:
+          // re-read the tenant's subscription row and verify it carries THIS Stripe subscription in an
+          // operating state. Money: the consumer never auto-corrects it — the readiness subscription /
+          // billing checks are BLOCKED to Finance and a human is told NOW, not on the next drift sweep.
+          // The tenant sees only the activation sentence; the evidence row carries the Stripe ids.
+          try {
+            const { data: subRow, error: subErr } = await supabase.from("subscriptions").select("id, status, stripe_subscription_id, stripe_customer_id")
+              .eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(1).maybeSingle()
+            const row = subRow as { id: string; status: string | null; stripe_subscription_id: string | null; stripe_customer_id: string | null } | null
+            const linked = !!row && row.stripe_subscription_id === sub.id && (row.status === "active" || row.status === "trialing")
+            const { reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
+            await reportOperationOutcome(supabase, {
+              operation: "billing_activation", brokerageId, ok: !subErr && linked,
+              subjectType: "subscription", subjectId: row?.id ?? null, source: "webhook", platformVisible: true,
+              evidence: { stripe_event: event.id, expected_subscription: sub.id, row: row ? { id: row.id, status: row.status, linked_subscription: row.stripe_subscription_id === sub.id, has_customer: !!row.stripe_customer_id } : null },
+              error: subErr ? `subscription re-read refused: ${subErr.message}` : linked ? null : `subscription row ${row ? `is ${row.status ?? "null"} / linked ${row.stripe_subscription_id ?? "none"}` : "absent"} after activation`,
+              tenantFacing: !subErr && linked ? null : "your plan activation is being verified by Finance — you will hear from us if anything is needed",
+            })
+          } catch (verifyErr) { console.warn("[Billing Webhook] activation post-condition not reported:", (verifyErr as Error)?.message) }
         }
         break
       }
@@ -231,6 +250,19 @@ export async function POST(request: NextRequest) {
 
         if (error) {
           console.error("[Billing Webhook] Failed to update invoice:", error)
+        } else {
+          // RECONCILIATION (wave 141H, m777): the discount STRIPE applied, from the invoice's own
+          // total_discount_amounts — amount_cents above is already the discounted amount_paid. A
+          // SEPARATE write: until m777 is applied the column is absent and this UPDATE is refused
+          // entirely (PGRST204) — logged, and the invoice row above is untouched by it.
+          const { invoiceDiscountCents } = await import("@/lib/billing/discount-codes")
+          const discountCents = invoiceDiscountCents(invoice as any)
+          if (discountCents > 0) {
+            const { data: stamped, error: dErr } = await supabase.from("billing_invoices")
+              .update({ discount_cents: discountCents }).eq("stripe_invoice_id", stripeInvoiceId).eq("brokerage_id", brokerageId).select("id")
+            if (dErr) console.error("[Billing Webhook] invoice discount_cents not recorded (m777 applied?):", dErr.message)
+            else if ((stamped ?? []).length !== 1) console.error(`[Billing Webhook] invoice discount_cents matched ${(stamped ?? []).length} rows for ${stripeInvoiceId}`)
+          }
         }
         break
       }
@@ -304,6 +336,18 @@ export async function POST(request: NextRequest) {
         // cap-enforcement reflects upgrades/downgrades immediately. Failure
         // here is logged but doesn't fail the webhook.
         await syncBrokeragePlanTier(brokerageId)
+
+        // RECONCILIATION (wave 141H, m777): the coupon Stripe actually carries on this subscription
+        // stamps the tenant's redemption row (stripe_discount_id / stripe_applied_at) — the ledger
+        // learns from Stripe, never the other way round. Separate write; refused-and-logged until m777.
+        {
+          const { subscriptionDiscountCoupon, stampCouponStripeApplication } = await import("@/lib/billing/discount-codes")
+          const carried = subscriptionDiscountCoupon(subscription)
+          if (carried) {
+            const r = await stampCouponStripeApplication(supabase, { brokerageId, stripeCouponId: carried.stripeCouponId, stripeDiscountId: carried.stripeDiscountId, appliedAt: new Date().toISOString() })
+            if (!r.ok) console.error("[Billing Webhook] coupon redemption not reconciled to Stripe (m777 applied?):", r.error)
+          }
+        }
         break
       }
 

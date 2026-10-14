@@ -36,17 +36,25 @@
  *      renders "platform-covered"; the ruling-named 140J sites are a ratchet.
  *   X  READINESS MATRIX (wave 140, lane A+M) — docs/architecture/READINESS-MATRIX.md
  *      covers every census capability with status, action, lane and real cites.
+ *   G  RELEASE GATE (wave 141, lane 141J) — EVERY owner gate of the wave-141
+ *      ruling mapped to the proof(s) and canary(ies) that certify it; a gate
+ *      reads CERTIFIED only when every proof is registered, in a guard chain and
+ *      on disk, and every canary is in the roster with no WAVE141 HOOK pending —
+ *      otherwise NOT CERTIFIED with its reasons (never silently green). The
+ *      verdict line "RELEASE: READY / NOT READY" is the integrator's reading;
+ *      "guards green" alone is never READY.
  *
  * Measurement (CLAUDE.md §2): code tokens are read from stripComments +
  * blankStrings source; every absence assertion has a positive control.
  */
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs"
 import { join } from "node:path"
-import { stripComments, blankStrings, blankComments } from "./strip-comments"
+import { stripComments, blankStrings, blankComments, stringLiterals } from "./strip-comments"
 import { runtimeFiles } from "./runtime-roots"
 import { LIVE_TABLES } from "./live-tables"
+import { CANARY_KEYS, WAVE141_HOOKS, hookCensus } from "./canaries/_registry"
 import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
-import { CRON_MANAGER } from "../lib/kernel/manager-registry"
+import { CRON_MANAGER, MAINTENANCE_DOMAINS, MANAGERS } from "../lib/kernel/manager-registry"
 import { WEBHOOK_CONTRACT, type WebhookContractEntry } from "../lib/providers/webhook-contract"
 import { classifyProxyPath } from "../app/constants/auth"
 import { TENANT_POLICY_SETTINGS_KEYS } from "../lib/kernel/tenant-policy"
@@ -569,6 +577,53 @@ check("V4 POSITIVE CONTROL — JSX text and a string literal are caught (platfor
   tenantVocabHits(`const s = "Covered by the platform (not the tenant's cost)"`).length === 0)
 check("V5 the platform-staff exclusion is narrow (superadmin only) and the population is non-empty", tenantTsx.length > 100 && !PLATFORM_FACING.test("app/dashboard/admin/import/page.tsx") && PLATFORM_FACING.test("app/dashboard/superadmin/a2p/page.tsx"))
 
+/** V6 (wave 141, lane 141I — owner, PROVIDER VISIBILITY: "Never expose to a tenant: platform-paid /
+ *  platform-covered / internal credentials / internal provider billing or configuration"): the widened
+ *  vocabulary. An ENV-VAR-SHAPED secret name (FOO_API_KEY, FOO_SECRET, FOO_TOKEN) rendered in a string
+ *  literal or JSX text of a tenant-facing .tsx is platform configuration on a tenant screen. A
+ *  `process.env.X` read is code, not copy; NEXT_PUBLIC_* names are public by contract; a code identifier
+ *  (MANUAL_CHAIN_KEY) is not copy either — only literals and element text count. Measured at 01a71c3c2:
+ *  /settings/providers ("Requires: DID_API_KEY + ELEVENLABS_API_KEY in environment"), the Zoom join
+ *  fallback note (ZOOM_SDK_KEY/ZOOM_SDK_SECRET) and the ungated system-providers console — all three
+ *  fixed by the lane (wording → capability status; the console gated, see V7). */
+const ENV_SECRET_NAME = /\b(?!NEXT_PUBLIC_)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:API_KEY|KEY|SECRET|TOKEN)\b/g
+/** PURE — offending line numbers: env-var-shaped names inside string literals or JSX text (comments stripped). */
+function envNameHits(src: string): number[] {
+  const stripped = stripComments(src)
+  const ranges: Array<[number, number]> = stringLiterals(stripped).map((l) => [l.start, l.end])
+  for (const m of stripped.matchAll(/>([^<>{}]+)</g)) ranges.push([m.index! + 1, m.index! + 1 + m[1].length])
+  const out: number[] = []
+  for (const m of stripped.matchAll(ENV_SECRET_NAME)) {
+    const i = m.index!
+    const pre = stripped.slice(Math.max(0, i - 16), i)
+    if (/process\.env\.$|process\.env\[\s*["']$/.test(pre)) continue
+    if (!ranges.some(([s, e]) => i >= s && i + m[0].length <= e)) continue
+    const line = stripped.slice(0, i).split("\n").length
+    if (!out.includes(line)) out.push(line)
+  }
+  return out
+}
+/** Platform consoles that live OUTSIDE app/dashboard/superadmin/ and legitimately render provider config
+ *  — each named with the gate that keeps a tenant out; V7 proves the gate is real, not a label. */
+const PLATFORM_CONSOLES_OUTSIDE_SUPERADMIN: Record<string, { gatedBy: string; gateFile: string; gateCall: RegExp }> = {
+  "app/dashboard/admin/system/providers/system-providers-client.tsx": { gatedBy: "mounted only by ./page.tsx, which awaits requireSuperadmin() and redirects before rendering", gateFile: "app/dashboard/admin/system/providers/page.tsx", gateCall: /requireSuperadmin\(\)[\s\S]*redirect\([\s\S]*<SystemProvidersClient/ },
+}
+const envHits = tenantTsx.map((f) => ({ f, lines: envNameHits(read(f)) })).filter((h) => h.lines.length)
+const envNew = envHits.filter((h) => !PLATFORM_CONSOLES_OUTSIDE_SUPERADMIN[h.f])
+console.log(`    census (V6): ${envHits.length} tenant-facing .tsx render an env-var-shaped secret name in copy; ${Object.keys(PLATFORM_CONSOLES_OUTSIDE_SUPERADMIN).length} classified platform console(s) outside the superadmin path`)
+for (const h of envHits) console.log(`      ${h.f}:${h.lines.join(",")}${PLATFORM_CONSOLES_OUTSIDE_SUPERADMIN[h.f] ? "  (platform console — gated)" : "  NEW"}`)
+console.log("    BLIND SPOT: a name assembled from fragments, or read from a config object the page renders, is not seen; a provider's DISPLAY name (Twilio, SendGrid) is allowed — the rule is configuration and credentials, not vendor names.")
+check("V6 no tenant-facing .tsx renders an env-var-shaped secret name in a string literal or JSX text (platform configuration never reaches a tenant screen)", envNew.length === 0, envNew.map((h) => `${h.f}:${h.lines.join(",")}`).join(", "))
+const ungatedConsoles = Object.entries(PLATFORM_CONSOLES_OUTSIDE_SUPERADMIN).filter(([f, g]) => !existsSync(join(ROOT, f)) || !existsSync(join(ROOT, g.gateFile)) || !g.gateCall.test(codeOf(read(g.gateFile))) || !/import\s*\{[^}]*SystemProvidersClient[^}]*\}\s*from\s*["']\.\/system-providers-client["']/.test(stripComments(read(g.gateFile))) || /export\s+default/.test(codeOf(read(f))))
+check("V7 every classified platform console outside the superadmin path is REAL: its file exists, it exports no default page, and its named gate file awaits the platform gate and redirects before mounting it", ungatedConsoles.length === 0, ungatedConsoles.map(([f]) => f).join(", "))
+check("V8 POSITIVE CONTROL — an env name in JSX text and in a string literal is caught; a process.env read, a NEXT_PUBLIC_ name, a code identifier and a comment are not",
+  envNameHits(`export default function P() { return <p>Requires: DID_API_KEY in environment</p> }`).length === 1 &&
+  envNameHits(`const rows = [{ envKey: "ZENROWS_API_KEY" }]`).length === 1 &&
+  envNameHits(`const k = process.env.DID_API_KEY; const j = process.env["ELEVENLABS_API_KEY"]`).length === 0 &&
+  envNameHits(`const s = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!); const t = "NEXT_PUBLIC_MAPBOX_TOKEN"`).length === 0 &&
+  envNameHits(`const MANUAL_CHAIN_KEY = "listing-appt-prep"; run({ chainKey: MANUAL_CHAIN_KEY })`).length === 0 &&
+  envNameHits(`// needs DID_API_KEY\n/* and ZOOM_SDK_SECRET */\nconst x = 1`).length === 0)
+
 // ── X · READINESS MATRIX ─────────────────────────────────────────────────────
 console.log("\n[X · readiness matrix — docs/architecture/READINESS-MATRIX.md covers every capability, with status, action, lane and real citations]")
 const MATRIX = "docs/architecture/READINESS-MATRIX.md"
@@ -612,6 +667,146 @@ check("X6 POSITIVE CONTROL — a row with no status / no lane is incomplete; a h
     const r = parseMatrixRows("| Capability | S | C | Status | E | Action |\n|---|---|---|---|---|---|\n| specimen | `x.ts:1` | d | ok | e | FIX — 140J |\n| specimen2 | s | c | PARTIAL | e | BUILD — 140D |")
     return r.length === 2 && r[0].status === null && r[0].lane === "140J" && r[1].status === "PARTIAL" && r[1].action === "BUILD" && r[1].lane === "140D"
   })())
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 141 (lane 141J) — THE RELEASE GATE.
+// Owner (2026-10-14): "RELEASE GATE: READY requires every PASS in the owner's list (security, tenant
+// isolation, role safety, brokerage identity, subscriber migration, Stripe proration, provisioning,
+// users/invites, website, custom domain, transaction providers, e-sign, CDA, legal description, CRM
+// rules, lead magnets, AI creation, QR/barcode, business card scanner, coupons, A2P, provider
+// experience, UI wiring, mobile, self-healing, build/CI). Green guards alone are NOT READY."
+// Managers: only the ones registered in lib/kernel/manager-registry.ts MANAGERS at HEAD — the
+// registered recruiting_manager included (owner, 2026-10-14) — never an invented one.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── G · RELEASE GATE ─────────────────────────────────────────────────────────
+console.log("\n[G · release gate — every owner gate → the proofs + canaries that certify it; no proof ⇒ NOT CERTIFIED]")
+/** The owner's list, verbatim order (the ruling). */
+const OWNER_GATE_NAMES = ["security", "tenant isolation", "role safety", "brokerage identity", "subscriber migration", "Stripe proration", "provisioning", "users/invites", "website", "custom domain", "transaction providers", "e-sign", "CDA", "legal description", "CRM rules", "lead magnets", "AI creation", "QR/barcode", "business card scanner", "coupons", "A2P", "provider experience", "UI wiring", "mobile", "self-healing", "build/CI"] as const
+interface ReleaseGate {
+  gate: (typeof OWNER_GATE_NAMES)[number]
+  /** package.json test:* keys. Lanes 141A–I's keys are named by CONTRACT (their prompts): while a key is absent the gate reads NOT CERTIFIED. */
+  proofs: string[]
+  /** scripts/canaries roster keys (CANARY_KEYS); a canary with a WAVE141 HOOK still pending does not certify. */
+  canaries: string[]
+  /** Workflow files that must exist for the in-repo half of a CI gate. */
+  ci?: string[]
+  /** A verdict this guard cannot read (it lives outside the repo) — the gate can only reach EXTERNAL, never CERTIFIED, here. */
+  external?: string
+}
+const RELEASE_GATES: ReleaseGate[] = [
+  { gate: "security", proofs: ["test:secrets-rls", "test:credential-migration", "test:rls-public-grant", "test:rls-anon-escape", "test:webhook-contract", "test:production-readiness"], canaries: [] },
+  { gate: "tenant isolation", proofs: ["test:tenant-scope", "test:conditional-tenant-predicate", "test:sessionless-use-server-census", "test:brokerage-identity"], canaries: ["seat", "same-name-brokerage"] },
+  { gate: "role safety", proofs: ["test:role-vocabulary", "test:immediate-operations"], canaries: ["crm-inbound"] },
+  { gate: "brokerage identity", proofs: ["test:brokerage-identity"], canaries: ["solo-subscriber", "same-name-brokerage"] },
+  { gate: "subscriber migration", proofs: ["test:brokerage-identity"], canaries: ["brokerage-adoption"] },
+  { gate: "Stripe proration", proofs: ["test:coupons-and-handoff", "test:stripe-webhook-events"], canaries: ["brokerage-adoption"] },
+  { gate: "provisioning", proofs: ["test:subscriber-convergence", "test:tenant-readiness", "test:tenant-baseline", "test:tenant-provisioning-loops"], canaries: ["subscriber", "seat"] },
+  { gate: "users/invites", proofs: ["test:seat-user-convergence", "test:immediate-operations"], canaries: ["seat", "user-invite"] },
+  { gate: "website", proofs: ["test:tenant-baseline", "test:tenant-creation"], canaries: ["subscriber"] },
+  { gate: "custom domain", proofs: ["test:domain-api", "test:custom-domain-flow"], canaries: ["custom-domain"] },
+  { gate: "transaction providers", proofs: ["test:transaction-provider-matrix", "test:form-wizard-esign", "test:provider-adapter"], canaries: ["transaction-provider"] },
+  { gate: "e-sign", proofs: ["test:form-wizard-esign", "test:transaction-provider-matrix"], canaries: ["cda-esign", "transaction-provider"] },
+  { gate: "CDA", proofs: ["test:cda-flow", "test:cda-process-chain", "test:cda-esign", "test:transaction-provider-matrix"], canaries: ["cda-esign"] },
+  { gate: "legal description", proofs: ["test:transaction-provider-matrix"], canaries: ["legal-description"] },
+  { gate: "CRM rules", proofs: ["test:crm-boundaries", "test:crm-pull", "test:crm-sync-credential"], canaries: ["crm-outbound", "crm-inbound"] },
+  { gate: "lead magnets", proofs: ["test:lead-magnet-creation", "test:lead-magnet-flow", "test:lead-magnet-embed"], canaries: ["lead-magnet"] },
+  { gate: "AI creation", proofs: ["test:lead-magnet-creation", "test:ai-routing-coverage", "test:cost-completeness"], canaries: ["lead-magnet"] },
+  { gate: "QR/barcode", proofs: ["test:qr-and-card-scanner", "test:qr-registry", "test:marketing-qr"], canaries: ["lead-magnet"] },
+  { gate: "business card scanner", proofs: ["test:qr-and-card-scanner"], canaries: ["business-card"] },
+  { gate: "coupons", proofs: ["test:coupons-and-handoff", "test:plan-catalog"], canaries: ["coupon"] },
+  { gate: "A2P", proofs: ["test:phone-a2p-automation", "test:tenant-readiness"], canaries: [] },
+  { gate: "provider experience", proofs: ["test:ui-wiring-census", "test:integration-status", "test:provider-adapter", "test:production-readiness"], canaries: [] },
+  { gate: "UI wiring", proofs: ["test:ui-wiring-census", "test:no-dead-components", "test:dangling-links", "test:orphan-routes"], canaries: [] },
+  { gate: "mobile", proofs: ["test:ui-wiring-census", "test:mobile-readiness"], canaries: ["mobile"] },
+  { gate: "self-healing", proofs: ["test:self-healing", "test:os-health", "test:healing-policy"], canaries: ["self-healing"] },
+  { gate: "build/CI", proofs: ["test:proxy-graph-budget"], canaries: [], ci: [".github/workflows/build.yml", ".github/workflows/guards.yml"], external: "the build + guards workflow runs green on the RELEASE commit — read from GitHub by the integrator, never from this repo" },
+]
+type ProofState = "ok" | "absent" | "unchained" | "no-file"
+type CanaryState = "ok" | "unknown" | "pending"
+interface GateVerdict { gate: string; state: "CERTIFIED" | "NOT CERTIFIED" | "EXTERNAL"; owner: string; proofs: Array<{ key: string; state: ProofState }>; canaries: Array<{ key: string; state: CanaryState; lanes: string[] }>; reasons: string[] }
+interface GateEnv {
+  scripts: Record<string, string>
+  /** Every guard* chain joined — membership is the word-boundary rule, never a position. */
+  chain: string
+  fileExists: (rel: string) => boolean
+  roster: readonly string[]
+  /** Pending WAVE141 hooks by canary key → lanes. */
+  pending: Map<string, string[]>
+  /** proof key → accountable manager (MAINTENANCE_DOMAINS); the owner of a gate is the owner of its first registered proof. */
+  ownerOf: (proof: string) => string | null
+  managers: ReadonlySet<string>
+}
+/** PURE — one gate's verdict from the environment. */
+function certifyGate(g: ReleaseGate, env: GateEnv): GateVerdict {
+  const proofs = g.proofs.map((key) => {
+    const script = env.scripts[key]
+    if (!script) return { key, state: "absent" as ProofState }
+    if (!new RegExp(`npm run ${esc(key)}(\\s|&|$)`).test(env.chain)) return { key, state: "unchained" as ProofState }
+    const file = script.match(/(scripts\/[\w./\[\]-]+\.ts)/)?.[1]
+    if (file && !env.fileExists(file)) return { key, state: "no-file" as ProofState }
+    return { key, state: "ok" as ProofState }
+  })
+  const canaries = g.canaries.map((key) => {
+    if (!env.roster.includes(key)) return { key, state: "unknown" as CanaryState, lanes: [] }
+    const lanes = env.pending.get(key) ?? []
+    return { key, state: (lanes.length ? "pending" : "ok") as CanaryState, lanes }
+  })
+  const reasons: string[] = []
+  for (const p of proofs) if (p.state !== "ok") reasons.push(`${p.key} ${p.state === "absent" ? "not registered (lane contract not landed)" : p.state === "unchained" ? "registered but in NO guard chain (certifies nothing in CI)" : "script file missing"}`)
+  for (const c of canaries) if (c.state !== "ok") reasons.push(`canary ${c.key} ${c.state === "unknown" ? "not in the roster" : `WAVE141 HOOK pending (${c.lanes.join(", ")})`}`)
+  for (const f of g.ci ?? []) if (!env.fileExists(f)) reasons.push(`${f} missing`)
+  const ownerProof = proofs.find((p) => p.state !== "absent" && env.ownerOf(p.key))
+  const owner = ownerProof ? env.ownerOf(ownerProof.key)! : "unassigned (no registered proof)"
+  if (owner !== "unassigned (no registered proof)" && !env.managers.has(owner)) reasons.push(`owner ${owner} is not a registered manager`)
+  const clean = reasons.length === 0
+  return { gate: g.gate, state: clean ? (g.external ? "EXTERNAL" : "CERTIFIED") : "NOT CERTIFIED", owner, proofs, canaries, reasons: g.external && clean ? [`external verdict required: ${g.external}`] : reasons }
+}
+const guardChain = Object.entries(pkg.scripts).filter(([k]) => k.startsWith("guard")).map(([, v]) => v).join(" && ")
+const proofOwner = new Map<string, string>()
+for (const d of Object.values(MAINTENANCE_DOMAINS) as Array<{ manager: string; proof: string }>) if (!proofOwner.has(d.proof)) proofOwner.set(d.proof, d.manager)
+const census = hookCensus()
+const pendingByCanary = new Map<string, string[]>()
+for (const h of census.pending) pendingByCanary.set(h.canary, [...new Set([...(pendingByCanary.get(h.canary) ?? []), h.lane])])
+const gateEnv: GateEnv = { scripts: pkg.scripts, chain: guardChain, fileExists: (rel) => existsSync(join(ROOT, rel)), roster: CANARY_KEYS, pending: pendingByCanary, ownerOf: (p) => proofOwner.get(p) ?? null, managers: new Set(Object.keys(MANAGERS)) }
+const verdicts = RELEASE_GATES.map((g) => certifyGate(g, gateEnv))
+const certified = verdicts.filter((v) => v.state === "CERTIFIED"), external = verdicts.filter((v) => v.state === "EXTERNAL"), notCertified = verdicts.filter((v) => v.state === "NOT CERTIFIED")
+const mark = (s: ProofState | CanaryState) => (s === "ok" ? "✓" : s === "pending" ? "⏳" : "✗")
+for (const v of verdicts) console.log(`    ${v.state.padEnd(13)} ${v.gate.padEnd(22)} owner ${v.owner.padEnd(22)} proofs ${v.proofs.map((p) => `${p.key.replace(/^test:/, "")}${mark(p.state)}`).join(" ")}${v.canaries.length ? `  canaries ${v.canaries.map((c) => `${c.key}${mark(c.state)}${c.lanes.length ? `(${c.lanes.join("+")})` : ""}`).join(" ")}` : ""}${v.reasons.length ? `\n                  · ${v.reasons.join("\n                  · ")}` : ""}`)
+const allProofs = [...new Set(RELEASE_GATES.flatMap((g) => g.proofs))]
+const absentProofs = allProofs.filter((k) => !pkg.scripts[k]), unchainedProofs = allProofs.filter((k) => pkg.scripts[k] && !new RegExp(`npm run ${esc(k)}(\\s|&|$)`).test(guardChain))
+console.log(`    census: ${RELEASE_GATES.length} owner gates; ${allProofs.length} distinct proofs named — ${allProofs.length - absentProofs.length - unchainedProofs.length} registered+chained, ${unchainedProofs.length} registered but unchained (${unchainedProofs.join(", ") || "none"}), ${absentProofs.length} not landed (${absentProofs.join(", ") || "none"}); ${CANARY_KEYS.length} canaries in the roster; ${WAVE141_HOOKS.length} WAVE141 hooks — ${census.pending.length} pending, ${census.landed.length} landed`)
+console.log("    BLIND SPOT: a proof that is registered and chained certifies its gate only as far as its own assertions reach — this table is the MAP, the proofs are the evidence; a canary hook landing is read from stripped source (the lane's module exists), not from the canary having run.")
+check(`G1 the gate table names every owner gate exactly once (${OWNER_GATE_NAMES.length})`, RELEASE_GATES.length === OWNER_GATE_NAMES.length && OWNER_GATE_NAMES.every((n) => RELEASE_GATES.filter((g) => g.gate === n).length === 1), OWNER_GATE_NAMES.filter((n) => RELEASE_GATES.filter((g) => g.gate === n).length !== 1).join(", "))
+check("G2 every gate names at least one proof (a gate with no proof can never be certified — a table defect, not a reading)", RELEASE_GATES.every((g) => g.proofs.length > 0), RELEASE_GATES.filter((g) => !g.proofs.length).map((g) => g.gate).join(", "))
+check("G3 every canary a gate names is in the runner's roster and on disk", RELEASE_GATES.every((g) => g.canaries.every((c) => (CANARY_KEYS as readonly string[]).includes(c) && existsSync(join(ROOT, `scripts/canaries/${c}.ts`)))), RELEASE_GATES.flatMap((g) => g.canaries.filter((c) => !(CANARY_KEYS as readonly string[]).includes(c) || !existsSync(join(ROOT, `scripts/canaries/${c}.ts`)))).join(", "))
+check("G4 every roster canary exists on disk and every WAVE141 hook names a roster canary (the census cannot point at nothing)", CANARY_KEYS.every((k) => existsSync(join(ROOT, `scripts/canaries/${k}.ts`))) && WAVE141_HOOKS.every((h) => (CANARY_KEYS as readonly string[]).includes(h.canary)), "")
+check("G5 every REGISTERED proof the table names has a MAINTENANCE_DOMAINS owner that is a registered manager (the roster is the registry's, recruiting_manager included)", allProofs.filter((k) => pkg.scripts[k]).every((k) => !proofOwner.has(k) || Object.keys(MANAGERS).includes(proofOwner.get(k)!)), "")
+check("G6 POSITIVE CONTROL — a gate naming an unregistered proof is NOT CERTIFIED; one naming a registered+chained proof and a hook-free canary is CERTIFIED; an unchained proof is a reason; a pending hook is a reason; an invented owner is refused and recruiting_manager is accepted",
+  (() => {
+    const env: GateEnv = { scripts: { "test:spec": "tsx scripts/spec.ts", "test:unchained": "tsx scripts/spec.ts" }, chain: "npm run test:spec && npm run test:specialist", fileExists: () => true, roster: ["spec-canary", "hooked"], pending: new Map([["hooked", ["141Z"]]]), ownerOf: (p) => (p === "test:spec" ? "recruiting_manager" : null), managers: new Set(Object.keys(MANAGERS)) }
+    const a = certifyGate({ gate: "coupons", proofs: ["test:absent"], canaries: [] }, env)
+    const b = certifyGate({ gate: "coupons", proofs: ["test:spec"], canaries: ["spec-canary"] }, env)
+    const c2 = certifyGate({ gate: "coupons", proofs: ["test:unchained"], canaries: [] }, env)
+    const d = certifyGate({ gate: "coupons", proofs: ["test:spec"], canaries: ["hooked"] }, env)
+    const e = certifyGate({ gate: "coupons", proofs: ["test:spec"], canaries: [] }, { ...env, ownerOf: () => "growth_manager" })
+    return a.state === "NOT CERTIFIED" && b.state === "CERTIFIED" && b.owner === "recruiting_manager" && c2.state === "NOT CERTIFIED" && /NO guard chain/.test(c2.reasons[0]) && d.state === "NOT CERTIFIED" && /141Z/.test(d.reasons[0]) && e.state === "NOT CERTIFIED" && /not a registered manager/.test(e.reasons[0])
+  })())
+check("G7 POSITIVE CONTROL — the hook census reads STRIPPED source: a probe over a module that names its token only in a comment answers null (the harness strips before every probe)", (() => { const specimen = "// declared_affiliation\nexport const x = 1\n"; return !/\bdeclared_affiliation\b/.test(stripComments(specimen)) && /\bdeclared_affiliation\b/.test(specimen) })())
+/** PURE — the gate rows of the matrix's release-gate section: a FIVE-cell table (gate | proofs | canaries |
+ *  owner | reading) so section X's six-cell capability parser never reads a gate as a capability. */
+function parseGateRows(section: string): string[] {
+  return section.split("\n").filter((l) => l.startsWith("|")).map((l) => l.split("|").slice(1, -1).map((c) => c.trim()))
+    .filter((cells) => cells.length === 5 && !/^-+$/.test(cells[0]) && !/^gate$/i.test(cells[0])).map((cells) => cells[0].toLowerCase())
+}
+const gateDoc = matrix.split(/^## /m).find((s) => /^Wave 141 release gate/i.test(s)) ?? ""
+const gateRows = parseGateRows(gateDoc)
+const gateDocMissing = OWNER_GATE_NAMES.filter((n) => !gateRows.includes(n.toLowerCase()))
+check("G8a POSITIVE CONTROL — the gate-row parser reads a five-cell row, skips the header and the rule, and ignores a six-cell capability row", parseGateRows("| Gate | P | C | O | R |\n|---|---|---|---|---|\n| coupons | a | b | c | d |\n| six | a | b | c | d | e |").join() === "coupons" && parseMatrixRows("| coupons | a | b | c | d |").length === 0)
+check(`G8 docs/architecture/READINESS-MATRIX.md carries the release-gate table with a row per owner gate (${gateRows.length}/${OWNER_GATE_NAMES.length})`, gateDoc.length > 0 && gateDocMissing.length === 0, gateDocMissing.join(", "))
+check("G9 the production architecture doc names the release gate section", /release gate/i.test(doc))
+console.log(`\nRELEASE GATE: ${certified.length}/${RELEASE_GATES.length} certified, ${external.length} external-verdict, ${notCertified.length} not certified${notCertified.length ? ` — ${notCertified.map((v) => v.gate).join(", ")}` : ""}`)
+console.log(`RELEASE: ${notCertified.length === 0 && external.length === 0 ? "READY — every owner gate certified in-repo" : "NOT READY — " + (notCertified.length ? `${notCertified.length} gate(s) not certified` : "") + (external.length ? `${notCertified.length ? "; " : ""}${external.length} gate(s) await an external verdict (${external.map((v) => v.gate).join(", ")})` : "")}`)
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
 if (fail) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }

@@ -57,6 +57,8 @@ import { readRoleGrants, selectAgentId } from "@/lib/auth/role-grants"
 // platform_role, no live row carries user_type='superadmin', and the survivor also
 // refuses the ai_isa_system service account (lib/platform/platform-staff-roster.ts).
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+// Wave 141B — type only (the reporter itself is a lazy import inside reportOp, so this module's graph is unchanged).
+import type { OperationOutcomeInput, OperationOutcomeResult } from "./immediate-operations"
 // Runtime-safe both ways: seat-usage imports only TYPES from this module
 // (erased at compile time), so this is not a runtime cycle.
 import { seatGate } from "./seat-usage"
@@ -767,12 +769,17 @@ export async function repairIncompleteAccountSetup(
     tier = brk?.plan_tier ?? null
   }
 
+  // ROLE SAFETY (wave 141B): a users row with NO user_type is refused, never repaired AS a default
+  // role — a defaulted type mints records (an agents row, a role grant) nobody asked for.
+  if (!userData.user_type) {
+    return { success: false, repaired: [], error: "User row carries no user_type — refusing to repair it as a default role" }
+  }
   const result = await createOrRepairUserDomainRecords({
     userId,
     email:       userData.email ?? "",
     firstName:   userData.first_name ?? "",
     lastName:    userData.last_name ?? "",
-    userType:    (userData.user_type ?? "agent") as UserDomainRole,
+    userType:    userData.user_type as UserDomainRole,
     brokerageId: userData.brokerage_id ?? null,
     teamId:      userData.team_id ?? null,
     tier,
@@ -786,7 +793,7 @@ export async function repairIncompleteAccountSetup(
   if (result.domainRecordsCreated.length > 0) {
     await emitUserProvisionedEvent({
       userId,
-      userType:     userData.user_type ?? "agent",
+      userType:     userData.user_type,
       brokerageId:  userData.brokerage_id ?? null,
       callerUserId: userId,
       eventType:    KernelEvent.USER_ACCOUNT_REPAIRED,
@@ -867,6 +874,113 @@ export async function seatSubjectForEmail(
   return (data as Array<{ id: string }> | null)?.[0]?.id ?? null
 }
 
+// ─── IMMEDIATE OPERATION OUTCOMES (wave 141B) ─────────────────────────────────
+
+/** THE ONE reporter (lib/kernel/immediate-operations.ts composes emitKernelEvent + the manager bus),
+ *  lazy so this module's graph is unchanged. Never throws — the door already holds its own verdict. */
+async function reportOp(service: unknown, input: OperationOutcomeInput): Promise<OperationOutcomeResult | null> {
+  try {
+    const { reportOperationOutcome } = await import("./immediate-operations")
+    return await reportOperationOutcome(service, input)
+  } catch (err) {
+    console.warn(`[kernel/users] ${input.operation} outcome not reported:`, (err as Error)?.message)
+    return null
+  }
+}
+
+/** A refused invite DISPATCH leaves a user_invitations row the admin can SEE and RESEND (status 'failed',
+ *  m779 — written, read, a refusal logged; the evidence row + the routed signal carry the failure
+ *  regardless). One row per (tenant, email): a prior pending / failed row is re-stamped, never doubled. */
+async function recordInviteDispatchFailure(
+  service: ReturnType<typeof createServiceClient>,
+  p: { brokerageId: string; teamId: string | null; callerUserId: string; email: string; userType: string; firstName: string; lastName: string; error: string; owner: string | null; door: string | null },
+): Promise<void> {
+  const now = new Date().toISOString()
+  const { data: prior, error: priorErr } = await service.from("user_invitations").select("id")
+    .eq("brokerage_id", p.brokerageId).eq("email", p.email).in("status", ["pending", "failed"]).limit(1).maybeSingle()
+  if (priorErr) console.warn("[inviteTenantMember] failed-invite lookup refused:", priorErr.message)
+  const payload = { brokerage_id: p.brokerageId, team_id: p.teamId, invited_by: p.callerUserId, email: p.email, user_type: p.userType, first_name: p.firstName, last_name: p.lastName, status: "failed", updated_at: now }
+  const { data: rows, error: writeErr } = prior
+    ? await service.from("user_invitations").update(payload).eq("id", (prior as { id: string }).id).eq("brokerage_id", p.brokerageId).select("id")
+    : await service.from("user_invitations").insert(payload).select("id")
+  if (writeErr) console.warn("[inviteTenantMember] failed-invite row refused (m779 applied?):", writeErr.message)
+  else if ((rows ?? []).length !== 1) console.warn("[inviteTenantMember] failed-invite row matched no row")
+  await reportOp(service, {
+    operation: "invitation", brokerageId: p.brokerageId, ok: false,
+    subjectType: "user_invitation", subjectId: ((rows ?? []) as Array<{ id: string }>)[0]?.id ?? null, actorUserId: p.callerUserId, source: "ui", owner: p.owner,
+    evidence: { email: p.email, role: p.userType, door: p.door ?? "tenant_invite", dispatched: false, ledger_row: !writeErr && (rows ?? []).length === 1 },
+    error: p.error,
+    tenantFacing: `the invitation email to ${p.email} could not be sent — resend it from Users › Invitations`,
+  })
+}
+
+/**
+ * THE ONE RESEND SEMANTIC (wave 141B — tenant Resend and the god-console Resend both call it): re-attempt
+ * the auth invite email IN THIS REQUEST, READ its result, re-arm the 7-day window only when the dispatch
+ * did not fail, and evidence + route the outcome. A confirmed account ("already registered") needs no new
+ * email — the person signs in — and is reported honestly as not re-dispatched. Tenant pinned on every row.
+ */
+export async function redispatchInvitation(
+  service: ReturnType<typeof createServiceClient>,
+  p: { invitationId: string; brokerageId: string; actorUserId: string; redirectTo?: string },
+): Promise<{ ok: boolean; dispatched: boolean; status: "pending" | "failed" | null; note?: string; error?: string }> {
+  const { data: inv, error: readErr } = await service.from("user_invitations")
+    .select("id, email, status, user_type, team_id, first_name, last_name")
+    .eq("id", p.invitationId).eq("brokerage_id", p.brokerageId).maybeSingle()
+  if (readErr) return { ok: false, dispatched: false, status: null, error: readErr.message }
+  const row = inv as { id: string; email: string; status: string; user_type: string; team_id: string | null; first_name: string | null; last_name: string | null } | null
+  if (!row) return { ok: false, dispatched: false, status: null, error: "Invitation not found" }
+  if (row.status === "accepted") return { ok: false, dispatched: false, status: null, error: "Already accepted" }
+  const email = row.email.trim().toLowerCase()
+  const redirectTo = p.redirectTo ?? `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`
+
+  // DISPATCH — attempted now, result READ (supabase-js resolves a refusal; a throw is read the same way).
+  let dispatched = false, alreadyRegistered = false, dispatchError: string | null = null
+  try {
+    const { data, error } = await service.auth.admin.inviteUserByEmail(email, {
+      data: { first_name: row.first_name ?? "", last_name: row.last_name ?? "", user_type: row.user_type, brokerage_id: p.brokerageId, team_id: row.team_id },
+      redirectTo,
+    })
+    if (data?.user?.id) dispatched = true
+    else if (error?.message?.toLowerCase().includes("already registered")) alreadyRegistered = true
+    else if (error) dispatchError = error.message
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "invite failed"
+    if (msg.toLowerCase().includes("already registered")) alreadyRegistered = true
+    else dispatchError = msg
+  }
+
+  const now = new Date().toISOString()
+  if (dispatchError) {
+    const { data: marked, error: markErr } = await service.from("user_invitations").update({ status: "failed", updated_at: now })
+      .eq("id", row.id).eq("brokerage_id", p.brokerageId).select("id")
+    if (markErr) console.warn("[redispatchInvitation] failed status refused (m779 applied?):", markErr.message)
+    else if ((marked ?? []).length !== 1) console.warn("[redispatchInvitation] failed status matched no row")
+    await reportOp(service, {
+      operation: "invitation", brokerageId: p.brokerageId, ok: false,
+      subjectType: "user_invitation", subjectId: row.id, actorUserId: p.actorUserId, source: "ui",
+      evidence: { email, role: row.user_type, door: "resend", dispatched: false }, error: dispatchError,
+      tenantFacing: `the invitation email to ${email} could not be sent — try again, or check the address`,
+    })
+    return { ok: false, dispatched: false, status: "failed", error: `The invitation email could not be sent: ${dispatchError}` }
+  }
+
+  const expires = new Date(Date.now() + 7 * 86_400_000).toISOString()
+  const { data: reopened, error: reopenErr } = await service.from("user_invitations")
+    .update({ status: "pending", expires_at: expires, updated_at: now })
+    .eq("id", row.id).eq("brokerage_id", p.brokerageId).select("id")
+  const reopenedOk = !reopenErr && (reopened ?? []).length === 1
+  await reportOp(service, {
+    operation: "invitation", brokerageId: p.brokerageId, ok: reopenedOk,
+    subjectType: "user_invitation", subjectId: row.id, actorUserId: p.actorUserId, source: "ui",
+    evidence: { email, role: row.user_type, door: "resend", dispatched, mode: dispatched ? "invited" : alreadyRegistered ? "already_registered" : "unknown", reopened: reopenedOk },
+    error: reopenErr ? `re-open refused: ${reopenErr.message}` : reopenedOk ? null : "re-open matched no row",
+    tenantFacing: reopenedOk ? null : `the invitation to ${email} was sent but its row could not be re-opened`,
+  })
+  if (!reopenedOk) return { ok: false, dispatched, status: null, error: reopenErr ? `Sent, but the invitation row was not re-opened: ${reopenErr.message}` : "Sent, but the invitation row matched no row on this workspace" }
+  return { ok: true, dispatched, status: "pending", note: dispatched ? "Invitation email sent; window re-opened for 7 days." : alreadyRegistered ? "That account already exists — no new email; they can sign in. Window re-opened for 7 days." : "Window re-opened for 7 days." }
+}
+
 // ─── inviteTenantMember ───────────────────────────────────────────────────────
 
 export interface TenantMemberParams {
@@ -879,6 +993,12 @@ export interface TenantMemberParams {
   /** The admin/broker/team_lead/superadmin who triggered this. */
   callerUserId: string
   redirectTo?: string
+  /** Which door is adding the member — the recruiting door's outcomes route to the registered
+   *  recruiting_manager (owner 2026-10-14); every other door to the declared owner. */
+  door?: "tenant_invite" | "platform_console" | "recruiting"
+  /** CLIENT SEAM: the verified client the whole command writes through (a proof's in-memory client).
+   *  Never a request-body-derived client. Default: the service client. */
+  client?: ReturnType<typeof createServiceClient>
 }
 
 export interface TenantMemberResult {
@@ -898,9 +1018,11 @@ export interface TenantMemberResult {
  * (agents/onboarding/role). Same invariant as provisionTenantOwner: users.id === auth.id.
  */
 export async function inviteTenantMember(params: TenantMemberParams): Promise<TenantMemberResult> {
-  const service = createServiceClient()
+  const service = params.client ?? createServiceClient()
   const email = params.email.trim().toLowerCase()
   const { brokerageId, callerUserId, userType } = params
+  const door = params.door ?? "tenant_invite"
+  const opOwner = door === "recruiting" ? "recruiting_manager" : null
   const teamId = params.teamId ?? null
   const firstName = params.firstName ?? ""
   const lastName = params.lastName ?? ""
@@ -979,25 +1101,38 @@ export async function inviteTenantMember(params: TenantMemberParams): Promise<Te
     }
   }
 
+  // THE INVITATION DISPATCH (wave 141B — owner: "Invitations dispatch immediately after a successful valid
+  // creation"): the auth invite email is attempted IN THIS REQUEST and its result is READ. A refused
+  // dispatch is EVIDENCED (lifecycle_events), ROUTED to the owning manager, left visible to the admin as a
+  // FAILED invitation (user_invitations, m779) and returned as the failure it is — never a success.
+  let dispatched = false
   if (!authUserId) {
+    let dispatchError: string | null = null
     try {
       const { data, error } = await service.auth.admin.inviteUserByEmail(email, {
         data: { first_name: firstName, last_name: lastName, user_type: userType, brokerage_id: brokerageId, team_id: teamId },
         redirectTo,
       })
       authUserId = data?.user?.id ?? null
-      if (!authUserId && error && !error.message?.toLowerCase().includes("already registered")) {
-        return { success: false, userId: null, agentId: null, error: error.message }
-      }
+      if (authUserId) dispatched = true
+      else if (error && !error.message?.toLowerCase().includes("already registered")) dispatchError = error.message
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "invite failed"
-      if (!msg.toLowerCase().includes("already registered")) return { success: false, userId: null, agentId: null, error: msg }
+      if (!msg.toLowerCase().includes("already registered")) dispatchError = msg
+    }
+    if (dispatchError) {
+      await recordInviteDispatchFailure(service, { brokerageId, teamId, callerUserId, email, userType, firstName, lastName, error: dispatchError, owner: opOwner, door })
+      return { success: false, userId: null, agentId: null, error: dispatchError }
     }
     if (!authUserId) {
       try { const { data } = await service.auth.admin.listUsers(); authUserId = data?.users?.find((u) => u.email?.toLowerCase() === email)?.id ?? null } catch { /* best-effort */ }
     }
   }
   if (!authUserId) return { success: false, userId: null, agentId: null, error: "Could not resolve auth user id after invite" }
+  await reportOp(service, {
+    operation: "invitation", brokerageId, ok: true, subjectType: "user", subjectId: authUserId, actorUserId: callerUserId, source: "ui", owner: opOwner,
+    evidence: { email, role: userType, door, dispatched, mode: dispatched ? "invited" : linked ? "existing_auth_user" : "already_registered" },
+  })
 
   // READ (lane 87E, swallowed-refusal census): this row carries the invitee's
   // tenant and role. Refused, the member existed with no brokerage and no
@@ -1023,15 +1158,32 @@ export async function inviteTenantMember(params: TenantMemberParams): Promise<Te
     return { success: false, userId: authUserId, agentId: null, error: `The invite was sent, but the member's user row was refused: ${memberRowErr.message}` }
   }
 
+  // IMMEDIATE POST-CONDITION (wave 141B — user_creation): RE-READ the users row the upsert claims, ON THIS
+  // TENANT, with the type it wrote. A resolved write is not a verified row (CLAUDE.md §3); a mismatch is
+  // evidenced, routed to the owning manager now, and returned as the failure it is.
+  {
+    const { verifyUserRow } = await import("./immediate-operations")
+    const verified = await verifyUserRow(service, { userId: authUserId, brokerageId, userType })
+    await reportOp(service, {
+      operation: "user_creation", brokerageId, ok: verified.ok, subjectType: "user", subjectId: authUserId, actorUserId: callerUserId, source: "ui", owner: opOwner,
+      evidence: { email, role: userType, door, ...verified.evidence }, error: verified.error,
+      tenantFacing: verified.ok ? null : `${email}'s user record did not verify on this workspace`,
+    })
+    if (!verified.ok) {
+      return { success: false, userId: authUserId, agentId: null, error: `The invite was sent, but ${email}'s user record did not verify on this workspace: ${verified.error}. Retry the invite — it is idempotent.` }
+    }
+  }
+
   try {
     // pass 10: the only unique on user_invitations is a PARTIAL EXPRESSION
     // index — (brokerage_id, lower(email)) WHERE status='pending' — which a
     // plain onConflict string cannot target, so the old upsert errored every
     // time. The rule it encodes (one PENDING invite per brokerage+email) is
-    // enforced with an explicit find-pending → update-or-insert.
+    // enforced with an explicit find-pending → update-or-insert. A prior FAILED
+    // dispatch row (wave 141B) is adopted by the retry, never doubled.
     const invitePayload = { brokerage_id: brokerageId, team_id: teamId, invited_by: callerUserId, email, user_type: userType, first_name: firstName, last_name: lastName, status: "pending" }
     const { data: pending } = await service.from("user_invitations")
-      .select("id").eq("brokerage_id", brokerageId).ilike("email", email).eq("status", "pending").maybeSingle()
+      .select("id").eq("brokerage_id", brokerageId).ilike("email", email).in("status", ["pending", "failed"]).limit(1).maybeSingle()
     // The catch below only ever saw a THROW; supabase-js RESOLVES a refusal, so
     // the ledger write's error is read here and warned the same way (lane 87E).
     const { error: inviteLedgerErr } = pending
@@ -1054,6 +1206,16 @@ export async function inviteTenantMember(params: TenantMemberParams): Promise<Te
   // and the door emitted USER_INVITED. The invite email has gone out, so this
   // is not rolled back; it is REPORTED, and the retry is idempotent
   // (users/agents/grants are all keyed, see createOrRepairUserDomainRecords).
+  // IMMEDIATE POST-CONDITION (wave 141B — seat_provisioning): the one provisioning brain's own result IS
+  // the re-read (it reads back the agents / commission / onboarding / grant rows it keys on). Evidenced
+  // on success and failure; a failure is routed to the owning manager now (the readiness `seats` /
+  // `adminUser` checks re-verify and repair through repair_user_records) and returned as a failure.
+  await reportOp(service, {
+    operation: "seat_provisioning", brokerageId, ok: domain.success, subjectType: "user", subjectId: authUserId, actorUserId: callerUserId, source: "ui", owner: opOwner,
+    evidence: { email, role: userType, door, agentId: domain.agentId, coordinatorId: domain.coordinatorId, created: domain.domainRecordsCreated },
+    error: domain.success ? null : domain.error ?? "domain records refused",
+    tenantFacing: domain.success ? null : `${email}'s workspace records were not completed — the OS is repairing them`,
+  })
   if (!domain.success) {
     return {
       success: false,
@@ -1147,7 +1309,11 @@ export async function provisionTenantOwner(params: TenantOwnerParams): Promise<T
 
   // 2. Create the auth user FIRST. The trigger seeds public.users with the auth
   //    id from this metadata; we never pre-insert (that is the collision bug).
+  // THE OWNER'S INVITATION DISPATCH (wave 141B): attempted in THIS request, result READ; a refused
+  // dispatch is evidenced + routed (platform-visible: the tenant's creation is a platform concern) and
+  // returned as the failure it is.
   if (!authUserId) {
+    let dispatchError: string | null = null
     try {
       const { data: inviteData, error: inviteErr } = await service.auth.admin.inviteUserByEmail(email, {
         data: { first_name: firstName, last_name: lastName, brokerage_id: brokerageId, user_type: "admin" },
@@ -1157,14 +1323,20 @@ export async function provisionTenantOwner(params: TenantOwnerParams): Promise<T
       if (authUserId) {
         inviteSent = true
       } else if (inviteErr && !inviteErr.message?.toLowerCase().includes("already registered")) {
-        return { success: false, userId: null, agentId: null, teamId: null, inviteSent: false, inviteError: inviteErr.message, error: `Invite failed: ${inviteErr.message}` }
+        dispatchError = inviteErr.message
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "invite failed"
-      if (!msg.toLowerCase().includes("already registered")) {
-        return { success: false, userId: null, agentId: null, teamId: null, inviteSent: false, inviteError: msg, error: `Invite failed: ${msg}` }
-      }
-      inviteError = msg
+      if (!msg.toLowerCase().includes("already registered")) dispatchError = msg
+      else inviteError = msg
+    }
+    if (dispatchError) {
+      await reportOp(service, {
+        operation: "invitation", brokerageId, ok: false, subjectType: "brokerage", subjectId: brokerageId, actorUserId: callerUserId, source: "system", platformVisible: true,
+        evidence: { email, role: "admin", door: "tenant_owner", dispatched: false }, error: dispatchError,
+        tenantFacing: "the owner's invitation email could not be sent",
+      })
+      return { success: false, userId: null, agentId: null, teamId: null, inviteSent: false, inviteError: dispatchError, error: `Invite failed: ${dispatchError}` }
     }
   }
 
@@ -1178,6 +1350,10 @@ export async function provisionTenantOwner(params: TenantOwnerParams): Promise<T
   if (!authUserId) {
     return { success: false, userId: null, agentId: null, teamId: null, inviteSent, inviteError, error: "Could not resolve auth user id after invite" }
   }
+  await reportOp(service, {
+    operation: "invitation", brokerageId, ok: true, subjectType: "user", subjectId: authUserId, actorUserId: callerUserId, source: "system", platformVisible: true,
+    evidence: { email, role: "admin", door: "tenant_owner", dispatched: inviteSent, mode: inviteSent ? "invited" : linkedId ? "existing_auth_user" : "already_registered" },
+  })
 
   // 3. Pin/enrich the public.users row (trigger created it; guarantee id + fields).
   // THE OWNER'S SEAT. A refused pin used to proceed to team + domain records for

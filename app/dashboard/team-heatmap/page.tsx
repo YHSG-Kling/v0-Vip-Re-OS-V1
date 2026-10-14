@@ -399,8 +399,11 @@ function MapPlaceholder({ showConfigMessage = false }: { showConfigMessage?: boo
       <div className="text-center">
         <MapPin className="mx-auto h-12 w-12 text-muted-foreground/50" />
         <p className="mt-2 text-sm text-muted-foreground">
+          {/* Sanitized capability status (owner, wave 141): the map provider is platform-managed, so a
+              tenant reads WHAT is unavailable, never which platform env var to set — that instruction
+              lives on the superadmin providers console. */}
           {showConfigMessage
-            ? "No map provider is configured — set MAPBOX_PUBLIC_TOKEN (preferred) or NEXT_PUBLIC_GOOGLE_MAPS_API_KEY"
+            ? "Maps aren't available yet — the platform's map provider isn't configured. Your team's activity is still listed below."
             : "Loading map..."}
         </p>
       </div>

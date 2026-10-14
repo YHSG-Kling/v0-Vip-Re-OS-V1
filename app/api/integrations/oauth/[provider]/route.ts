@@ -510,6 +510,28 @@ export async function GET(
         }).catch(err => {
           console.error("[OAuth] Kernel event failed (non-blocking):", err)
         })
+
+        // IMMEDIATE POST-CONDITION (wave 141B): re-read the integration row ON THIS TENANT and verify it
+        // reads `connected`. A transaction / e-sign provider is the tenant's own TRANSACTION capability
+        // (owner: transaction and e-sign are different capabilities; the credentials are the tenant's) →
+        // routed to the Deal Coordinator; every other lane → provider_connection. A failed verify is
+        // evidenced and routed NOW (the credential itself is stored; the status row is what did not land)
+        // and the redirect carries the honest sentence instead of "connected".
+        try {
+          const { verifyIntegrationRow, reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
+          const verified = await verifyIntegrationRow(supabase, { brokerageId: stateData.brokerageId, providerName: provider })
+          const transactional = metadata.providerType === "transaction" || metadata.providerType === "esign"
+          await reportOperationOutcome(supabase, {
+            operation: transactional ? "transaction_provider_connection" : "provider_connection",
+            brokerageId: stateData.brokerageId, ok: verified.ok,
+            subjectType: "brokerage_integrations", subjectId: (verified.evidence.rowId as string | undefined) ?? null, source: "ui",
+            evidence: { provider, provider_type: metadata.providerType, owner_type: ownerType, ...verified.evidence }, error: verified.error,
+            tenantFacing: verified.ok ? null : `${provider} authorized, but its connection status did not verify — reconnect it from Settings › Integrations`,
+          })
+          if (!verified.ok) return redirectWithResult(baseUrl, false, provider, `${provider} authorized, but its connection status did not verify: ${verified.error}`)
+        } catch (verifyErr) {
+          console.error("[OAuth] post-condition verify failed (non-blocking):", (verifyErr as Error)?.message)
+        }
       }
 
       console.log(`[OAuth] Successfully connected ${provider} for ${ownerType} ${ownerId}`)

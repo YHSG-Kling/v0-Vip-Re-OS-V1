@@ -2,6 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { DEFAULT_ESIGN_PROVIDER } from "@/lib/integrations/providers/catalog"
+import { providerSelectionVerdict } from "@/lib/connections/scope"
 import { requireBrokerageAdmin } from "@/lib/auth/require-brokerage-admin"
 // ★ ACT-AS WRITE SEAM ★ — every export resolves the EFFECTIVE identity through
 // the seam (the impersonated seat when platform staff act as the tenant), so
@@ -165,6 +166,13 @@ export async function saveProviderOverride(
   }
 
   const fallback = SYSTEM_DEFAULTS[payload.provider_type] ?? payload.provider_type
+
+  // CAPABILITY SELECTION IS CERTIFIED (wave 141, lane 141C) — the same ONE verdict the
+  // integrations door and the menu read (lib/connections/scope.ts providerSelectionVerdict): an
+  // e-sign / transaction / accounting / payments pick the matrix or the Connection OS does not
+  // certify is refused by name, never stored.
+  const verdict = providerSelectionVerdict(payload.provider_type, payload.provider_key || fallback)
+  if (!verdict.ok) throw new Error(verdict.reason)
 
   // Upsert on (scope_type, scope_id, provider_type)
   const { error } = await supabase

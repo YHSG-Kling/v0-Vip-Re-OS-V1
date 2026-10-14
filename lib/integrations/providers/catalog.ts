@@ -190,3 +190,188 @@ export function getEsignProviders(): ProviderName[] {
 export function supportsEmbeddedSend(name?: string | null): boolean {
   return getCatalogEntry(name)?.capabilities.embeddedSend === true
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// THE FACTUAL CAPABILITY MATRIX (wave 141, lane 141C; owner verbatim: "TRANSACTION vs E-SIGN
+// are DIFFERENT capabilities; a provider may support forms-only, e-sign-only, or both … every
+// provider HEAD claims must actually function (credentials → settings → forms → transaction
+// creation → upload → fill → e-sign if supported → status → sync) or it is not offered").
+//
+// This EXTENDS the capability flags above (the one registry) — it is not a second catalog.
+// `capabilities` says what a provider CLAIMS; the matrix says what the CODE PATH behind each
+// claim is, cell by cell, with the file:line that proves it and, where the cell is not BUILT,
+// the honest reason. Every verdict below is DERIVED from these cells by one rule
+// (providerOfferVerdict) — nothing hand-sets "available".
+//
+//   BUILT    the path exists, is wired to a product surface with the TENANT's credential, and
+//            the vendor contract it speaks is documented (VENDOR_CONTRACTS / the adapter's docs
+//            root / a cited vendor page). "Manual by vendor design" (Google eSignature's
+//            signed-copy filing) is BUILT when it is the designed path, not a gap.
+//   PARTIAL  the path exists but its request/response shape is NOT the documented one, or the
+//            documented auth lifecycle (OAuth exchange / refresh) is not performed, or the
+//            vendor publishes no contract for it — it may or may not work live; unproven.
+//   UNWIRED  code exists but nothing reaches it with a tenant credential.
+//   MISSING  no code (or the vendor has no such capability — stated).
+//
+// EVIDENCE READ 2026-10-14: dotloop.github.io/public-api (v2 guide: §1.2 OAuth2 3-legged, 12-hour
+// access tokens + refresh; §5.3 POST /profile/:id/loop { name, status, transactionType } → data.id;
+// §7.1/§8.1 folders + documents { id, filename, created, updated } — no signature state; §8.3
+// multipart/form-data `file` upload to /folder/:folder_id/document/; §9.3 participant { fullName,
+// email, role }; §13.1 /profile/:id/loop-template; NO send-for-signature call is published);
+// apidocs.lwolf.com/doc/authentisign-api getting-started (Bearer token, base https://api.lwolf.com —
+// only the host is published there); DocuSign eSignature REST v2.1 (the adapter's docs root);
+// VENDOR_CONTRACTS (lib/agentic-os/connector-registry.ts) for SkySlope / Brokermint / Form
+// Simplicity (wave 140I). Line numbers are of the named files at HEAD of this lane.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+/** @proofSeam the steps the proof walks (scripts/transaction-provider-matrix-guard.ts §A); the product reads the matrix through providerOfferVerdict. */
+export const MATRIX_STEPS = [
+  "credentials", "settings", "forms", "transaction_creation", "document_upload", "form_fill", "esign", "status", "sync",
+] as const
+type MatrixStep = (typeof MATRIX_STEPS)[number]
+type CapabilityCellStatus = "BUILT" | "PARTIAL" | "UNWIRED" | "MISSING"
+interface ProviderMatrixCell {
+  status: CapabilityCellStatus
+  /** file:line (or the vendor page) that proves the status. */
+  evidence: string
+  /** Why the cell is not BUILT — the sentence the tenant reads when the provider is unavailable. */
+  reason?: string
+}
+type ProviderMatrixRow = Record<MatrixStep, ProviderMatrixCell>
+
+const B = (evidence: string): ProviderMatrixCell => ({ status: "BUILT", evidence })
+const P = (evidence: string, reason: string): ProviderMatrixCell => ({ status: "PARTIAL", evidence, reason })
+const M = (evidence: string, reason: string): ProviderMatrixCell => ({ status: "MISSING", evidence, reason })
+
+/** The in-platform fill is provider-agnostic (every library PDF's AcroForm fields, lib/forms/pdf-form-fill.ts);
+ *  the provider-WINDOW fill is an iframe only where the vendor documents framing (capabilities.embed). */
+const IN_APP_FILL = "lib/forms/pdf-form-fill.ts:64 fillPdfForm + app/actions/buyer-offer/prefill-storage-form.ts:59; provider window per providerPortalMode"
+const SETTINGS = "provider_overrides esign/transaction (lib/integrations/resolve-esign-provider.ts:145 readSelection; lib/integrations/providers/provider-resolver.ts getTransactionProvider; app/dashboard/settings/integrations/integrations-client.tsx PROVIDER_KEYS_BY_TYPE)"
+const TENANT_CRED = "platform_credentials owner-scoped (lib/connections/resolve-scoped.ts:190 agent → team → brokerage; written by app/actions/settings/integrations.ts:254 upsertPlatformCredential at brokerage scope)"
+
+/** @proofSeam the proof asserts the cells directly (§A); every product reader goes through providerOfferVerdict / esignCertified below. */
+export const PROVIDER_CAPABILITY_MATRIX: Record<ProviderName, ProviderMatrixRow> = {
+  docusign: {
+    credentials:          B(`${TENANT_CRED}; tenant OAuth app/api/integrations/oauth/[provider]/route.ts:77; the DEFAULT with nothing connected rides the platform's JWT account lib/esign/docusign-platform-account.ts (minted per use, default only). BLIND SPOT, published: a tenant's OWN DocuSign OAuth access token has no refresher (lib/social/token-refresh.ts covers social only) — after it lapses the tenant reconnects`),
+    settings:             B(SETTINGS),
+    forms:                B("lib/integrations/providers/docusign-provider.ts:311 listForms (GET /templates, documented) via app/api/forms/provider-library/route.ts:57"),
+    transaction_creation: B("lib/integrations/providers/docusign-provider.ts:80 createTransaction (POST /envelopes status created — eSignature REST v2.1)"),
+    document_upload:      B("lib/integrations/providers/docusign-provider.ts:104 attachForms / :282 uploadDocument (PUT /envelopes/{id}/documents, base64 — documented)"),
+    form_fill:            B(`${IN_APP_FILL}; embedded SENDER view places the tabs (docusign-provider.ts:196 prepareEmbeddedSend)`),
+    esign:                B("lib/integrations/providers/docusign-provider.ts:220 sendForSignature / :196 prepareEmbeddedSend through lib/esign/dispatch-packet.ts:279-299 (the ONE dispatch core)"),
+    status:               B("lib/integrations/providers/docusign-provider.ts:243 getSignatureStatus + webhook app/api/webhooks/docusign/route.ts"),
+    sync:                 B("lib/integrations/providers/docusign-provider.ts:357 syncDocuments via lib/transactions/sync-from-provider.ts:125 (tenant credential resolved in provider-resolver.ts getTransactionProvider — wired this lane)"),
+  },
+  google_esign: {
+    credentials:          B("no vendor credential by design (portal send): the agent's own Google connection + drive.file grant — lib/esign/google-esign-handoff.ts googleEsignReadiness; the manual Drive rail without it"),
+    settings:             B(SETTINGS),
+    forms:                M("PROVIDER_CATALOG.google_esign transactionForms:false", "not a transaction-forms provider — the platform library serves the forms"),
+    transaction_creation: M("PROVIDER_CATALOG.google_esign transactionForms:false", "not a transaction provider"),
+    document_upload:      B("lib/esign/dispatch-packet.ts:186-205 places the FILLED packet in the agent's Drive (lib/esign/google-drive-upload.ts buildDriveMultipartBody)"),
+    form_fill:            B(IN_APP_FILL),
+    esign:                B("lib/esign/dispatch-packet.ts:180-231 — the Drive hand-off (Google publishes no eSignature API: support.google.com/docs/answer/12315692); the agent requests the signature in the Drive window"),
+    status:               B("manual by vendor design (no API, no webhook): the signed copy is filed through the upload door — lib/esign/google-esign-completion.ts; the record reads awaiting_agent_send until then"),
+    sync:                 M("no Google eSignature API", "nothing to pull — the executed PDF is filed by the agent (status cell)"),
+  },
+  dotloop: {
+    credentials:          P(`${TENANT_CRED}; the shared DOTLOOP_API_KEY env fallback is REMOVED this lane (lib/integrations/providers/dotloop-provider.ts getCredentials, lib/providers/esign/index.ts)`, "Dotloop's documented auth is OAuth2 3-legged with 12-hour access tokens + refresh (v2 guide §1.2); the platform has no Dotloop OAuth route (app/api/integrations/oauth/[provider]/route.ts OAuthProvider), so a pasted token lapses in 12 hours and nothing refreshes it"),
+    settings:             B(SETTINGS),
+    forms:                P("lib/integrations/providers/dotloop-provider.ts:304 listForms → /profile/{id}/form", "the v2 guide publishes no /form endpoint; the documented library is loop templates (§13.1 /profile/:id/loop-template)"),
+    transaction_creation: P("lib/integrations/providers/dotloop-provider.ts:74 createTransaction", "posts { status:'Active', transaction_type:'Purchase', street_address } and reads data.loop_id; §5.3 documents { name, status, transactionType } with the PURCHASE_OFFER / LISTING_FOR_SALE and PRE_OFFER / PRE_LISTING constants and returns data.id"),
+    document_upload:      P("lib/integrations/providers/dotloop-provider.ts:103 attachForms / :233 uploadDocument", "posts JSON { name, file_url } to /folder/<folder NAME>/document; §8.3 documents a multipart/form-data `file` upload to /folder/:folder_id/document/ (a folder ID)"),
+    form_fill:            B(`${IN_APP_FILL}; Dotloop publishes no embed surface → popup`),
+    esign:                P("lib/integrations/providers/dotloop-provider.ts:131 sendForSignature", "adds participants ({ full_name } where §9.3 documents { fullName }) and returns success; the v2 guide publishes NO send-for-signature call — the signature request is made inside Dotloop"),
+    status:               P("lib/integrations/providers/dotloop-provider.ts:163 getSignatureStatus; webhook app/api/webhooks/dotloop/route.ts (HMAC-verified)", "reads doc.is_signed off /folder; §7.1/§8.1 document { id, filename, created, updated } with no signature state"),
+    sync:                 P("lib/integrations/providers/dotloop-provider.ts:258 syncDocuments via sync-from-provider.ts (tenant credential wired this lane)", "reads undocumented document_id / is_signed / url keys (§8.1 documents id / filename / created / updated)"),
+  },
+  skyslope: {
+    credentials:          B(`${TENANT_CRED} (api_key = the Partnership API token, account_id = the office id; VENDOR_CONTRACTS.skyslope names token POST /ext/token — the token is obtained by the tenant and pasted; the exchange is not automated, published as a blind spot)`),
+    settings:             B(SETTINGS),
+    forms:                P("lib/integrations/providers/skyslope-provider.ts:217 listForms → GET /forms?officeId", "not in the cited spec excerpt (VENDOR_CONTRACTS.skyslope contractSource) — shape unverified"),
+    transaction_creation: B("lib/integrations/providers/skyslope-provider.ts:82 createTransaction (POST /files — the published path, wave 140I)"),
+    document_upload:      B("lib/integrations/providers/skyslope-provider.ts:109 attachForms / :197 uploadDocument (POST /files/{id}/documents — the published path)"),
+    form_fill:            B(`${IN_APP_FILL}; the ONE frameable provider window — forms.skyslope.com iframe (capabilities.embed, SkySlope Forms Widget)`),
+    esign:                P("lib/integrations/providers/skyslope-provider.ts:131 sendForSignature → POST /files/{id}/signatures", "the spec names POST /files/{id}/envelopes (skyslope-provider.ts:9-11 open item) — the envelope path/body is unverified"),
+    status:               P("lib/integrations/providers/skyslope-provider.ts:160 getSignatureStatus; webhook app/api/webhooks/skyslope/route.ts", "reads /files/{id}/signatures (the same open item as the send)"),
+    sync:                 B("lib/integrations/providers/skyslope-provider.ts:245 syncDocuments (GET /files/{id}/documents — the published path) via sync-from-provider.ts (tenant credential wired this lane)"),
+  },
+  authentisign: {
+    credentials:          B(`${TENANT_CRED} (api_key = the Lone Wolf Bearer token obtained through Request Access, account_id = the account id; base host https://api.lwolf.com verified — apidocs.lwolf.com getting-started, 2026-10-14)`),
+    settings:             B(SETTINGS),
+    forms:                P("lib/integrations/providers/authentisign-provider.ts:221 listForms → /authentisign/v1/forms", "no published contract for the path (no contractSource; only the host is verified)"),
+    transaction_creation: P("lib/integrations/providers/authentisign-provider.ts:78 createTransaction → POST /authentisign/v1/signings", "endpoint paths and bodies are not verified against the published reference (only the host is)"),
+    document_upload:      P("lib/integrations/providers/authentisign-provider.ts:101 attachForms / :184 uploadDocument", "unverified path (as above)"),
+    form_fill:            B(`${IN_APP_FILL}; no published embed surface → popup`),
+    esign:                P("lib/integrations/providers/authentisign-provider.ts:118 sendForSignature (participants, then /send)", "unverified paths (as above)"),
+    status:               P("lib/integrations/providers/authentisign-provider.ts:147 getSignatureStatus; webhook app/api/webhooks/authentisign/route.ts", "unverified path (as above)"),
+    sync:                 P("lib/integrations/providers/authentisign-provider.ts:199 syncDocuments via sync-from-provider.ts (tenant credential wired this lane)", "unverified path (as above)"),
+  },
+  formsimplicity: {
+    credentials:          P(`${TENANT_CRED} (api_key = a pasted Bearer token)`, "the documented auth is OAuth2 client_credentials at /oauth/token (VENDOR_CONTRACTS.formsimplicity) — not performed, so a pasted token lapses; the vendor states the API is 'setup for internal use only at this time' (api.formsimplicity.com/docs/intro)"),
+    settings:             B(SETTINGS),
+    forms:                P("lib/integrations/providers/formsimplicity-provider.ts:196 listForms → GET /forms", "not in the published docs (formsimplicity-provider.ts:21-22)"),
+    transaction_creation: P("lib/integrations/providers/formsimplicity-provider.ts:80 createTransaction → POST /fsforms/addTrans (documented)", "the vendor requires stateID + agentNRDSID, which the request does not carry — the 400 is surfaced (formsimplicity-provider.ts:19-22)"),
+    document_upload:      P("lib/integrations/providers/formsimplicity-provider.ts:104 attachForms / :163 uploadDocument → /transactions/{id}/documents", "not in the published docs"),
+    form_fill:            B(`${IN_APP_FILL}; no published embed surface → popup`),
+    esign:                P("lib/integrations/providers/formsimplicity-provider.ts:120 sendForSignature → /transactions/{id}/signature-requests", "not in the published docs (e-sign rides the vendor's Authentisign integration)"),
+    status:               P("lib/integrations/providers/formsimplicity-provider.ts:137 getSignatureStatus; no webhook route", "not in the published docs; no completion webhook"),
+    sync:                 P("lib/integrations/providers/formsimplicity-provider.ts:176 syncDocuments via sync-from-provider.ts", "not in the published docs"),
+  },
+  brokermint: {
+    credentials:          B(`${TENANT_CRED} (api_key as the documented 'api_key' query parameter — VENDOR_CONTRACTS.brokermint, wave 140I)`),
+    settings:             B(SETTINGS),
+    forms:                M("lib/integrations/providers/brokermint-provider.ts:170 listForms returns [] honestly", "Brokermint exposes no state-association form library"),
+    transaction_creation: B("lib/integrations/providers/brokermint-provider.ts:78 createTransaction (POST /v2/transactions — the restated reference)"),
+    document_upload:      P("lib/integrations/providers/brokermint-provider.ts:99 attachForms / :137 uploadDocument → /v2/transactions/{id}/documents", "the document sub-resources are INFERRED, not in the restated reference (brokermint-provider.ts:10-12)"),
+    form_fill:            B(`${IN_APP_FILL}; no published embed surface → popup`),
+    esign:                M("lib/integrations/providers/brokermint-provider.ts:46 ESIGN_UNSUPPORTED (sendForSignature / getSignatureStatus refuse by name)", "Brokermint has no e-signature — pair an e-sign provider"),
+    status:               M("brokermint-provider.ts:120 getSignatureStatus refuses", "no e-sign, so no signature status"),
+    sync:                 P("lib/integrations/providers/brokermint-provider.ts:150 syncDocuments via sync-from-provider.ts", "the documents list is inferred (as above)"),
+  },
+}
+
+/** Which cells a capability NEEDS before a provider may be OFFERED for it. `forms` is not required
+ *  for the transaction capability (Brokermint is a transaction platform with no form library — the
+ *  platform library serves); `sync` is not required for e-sign (Google's signed copy is filed by hand).
+ *  @proofSeam the proof derives every verdict from this table (§B) — the product reads providerOfferVerdict. */
+export const CAPABILITY_REQUIRED_STEPS: Readonly<Record<"transaction" | "esign", readonly MatrixStep[]>> = Object.freeze({
+  transaction: ["credentials", "settings", "transaction_creation", "document_upload", "sync"],
+  esign:       ["credentials", "settings", "esign", "status"],
+})
+export type OfferCapability = keyof typeof CAPABILITY_REQUIRED_STEPS
+
+type ProviderOfferVerdict =
+  | { ok: true; provider: ProviderName }
+  | { ok: false; provider: string; step: MatrixStep | "unknown" | "capability"; reason: string }
+
+/**
+ * PURE — THE ONE RULE: a provider is offered for a capability only when the catalog claims it
+ * (capabilities.esign / transactionForms) AND every required cell is BUILT. The first non-BUILT
+ * required cell names the honest reason. Never hand-set.
+ */
+export function providerOfferVerdict(capability: OfferCapability, provider?: string | null): ProviderOfferVerdict {
+  const entry = getCatalogEntry(provider)
+  if (!entry) return { ok: false, provider: String(provider ?? ""), step: "unknown", reason: `'${provider ?? ""}' is not a provider this platform knows` }
+  const claims = capability === "esign" ? entry.capabilities.esign : entry.capabilities.transactionForms
+  if (!claims) return { ok: false, provider: entry.name, step: "capability", reason: `${entry.label} does not offer ${capability === "esign" ? "e-signature" : "transaction / forms management"}` }
+  const row = PROVIDER_CAPABILITY_MATRIX[entry.name]
+  for (const step of CAPABILITY_REQUIRED_STEPS[capability]) {
+    const cell = row[step]
+    if (cell.status !== "BUILT") {
+      return { ok: false, provider: entry.name, step, reason: `${entry.label} is unavailable for ${capability === "esign" ? "e-signature" : "transactions / forms"} — ${step.replace(/_/g, " ")} is ${cell.status}: ${cell.reason ?? cell.evidence}` }
+    }
+  }
+  return { ok: true, provider: entry.name }
+}
+
+// The menu (app/dashboard/settings/integrations/integrations-client.tsx) and every write door ask
+// providerOfferVerdict per provider through lib/connections/scope.ts providerSelectionVerdict — an
+// unavailable provider stays LISTED, disabled, with its reason. No separate "offerable list" door
+// exists on purpose: one rule, read per entry (the proof derives the lists from it, §B).
+
+/** PURE: may a provider FULFIL an e-signature (the CDA, lib/transactions/cda-esign.ts)? The e-sign
+ *  selection is honoured only when the matrix certifies its e-sign path — a transaction platform
+ *  that also claims e-sign fulfils it only when that path is BUILT (owner, wave 141). */
+export function esignCertified(provider?: string | null): boolean {
+  return providerOfferVerdict("esign", provider).ok
+}

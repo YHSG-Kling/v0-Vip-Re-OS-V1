@@ -5,6 +5,9 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
+// THE INTENDED DESTINATION, ON AN ALLOW-LIST (wave 141F) — pure, tenant-free: the only
+// scanner-controlled input it ever sees is the slug this route already resolved a row by.
+import { resolveQrScanDestination } from '@/lib/marketing/qr-contract'
 
 export const dynamic = 'force-dynamic'
 
@@ -52,7 +55,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // existed are different facts and get different answers.
     const { data: qr, error: qrError } = await supabase
       .from('qr_codes')
-      .select('id, brokerage_id, agent_id, scan_count, purpose, destination_type, is_active, expires_at')
+      .select('id, brokerage_id, agent_id, scan_count, purpose, destination_type, target_url, is_active, expires_at')
       .eq('slug', slug)
       .maybeSingle()
 
@@ -244,11 +247,34 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // downstream listener (analytics aggregator, marketing-agent
     // snapshot) can bucket scans by their semantic destination without
     // joining back to qr_codes.
+    // ── THE INTENDED ACTION (wave 141F) ───────────────────────────────────────
+    // This route used to redirect EVERY scan to the generic /qr/<slug> capture form
+    // and never read target_url — so a lead-magnet code never reached its magnet, an
+    // open-house code never reached the sign-in kiosk, a listing code never reached
+    // the listing, and the agent board's "updating the URL reroutes every printed
+    // copy" was a promise the handler did not keep. The destination is now decided
+    // by the one pure resolver: an allow-listed in-app public path (same host as the
+    // app or the request — a tenant's custom domain — under a real public route) is
+    // redirected to with `qr=<slug>` for attribution; an https destination on a host
+    // we do not own is OFFERED by the landing page as a tap-through link, never
+    // auto-followed; anything else lands on the landing. No open redirect: nothing
+    // in the request chooses the target, only the row the slug resolved.
+    const destination = resolveQrScanDestination({
+      slug,
+      targetUrl: qr.target_url ?? null,
+      appOrigins: [process.env.NEXT_PUBLIC_APP_URL ?? null, new URL(req.url).origin],
+    })
+
     const eventMeta = {
       slug,
       campaign_id:      campaignId,
       destination_type: qr.destination_type ?? null,
       purpose:          qr.purpose ?? null,
+      // Analytics: where this scan was actually sent (in_app = the intended action;
+      // landing = the capture form, with the reason), so a board can tell a code
+      // that routes from one whose destination is unreachable.
+      routed:           destination.kind,
+      routed_reason:    destination.reason,
     }
     await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
       brokerage_id: qr.brokerage_id,
@@ -270,10 +296,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       })
     } catch { /* non-blocking */ }
 
-    // ── Step 5: Redirect to landing page ─────────────────────────────────────
-    // No contact created. No consent. Scan is audit trail only.
-    const landingUrl = new URL(`/qr/${slug}`, req.url)
-    return NextResponse.redirect(landingUrl)
+    // ── Step 5: Redirect to the intended destination ──────────────────────────
+    // No contact created. No consent. Scan is audit trail only. `destination.path`
+    // is always a same-origin path (the resolver never returns a foreign host), so
+    // resolving it against the request URL cannot leave this app.
+    const redirectTo = new URL(destination.path, req.url)
+    return NextResponse.redirect(redirectTo, { status: 302, headers: { 'cache-control': 'no-store' } })
   } catch {
     return NextResponse.json({ error: 'Internal error' }, { status: 500 })
   }

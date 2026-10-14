@@ -1,0 +1,10 @@
+{
+  "_": "Shrink-only ratchets for scripts/ui-wiring-census-guard.ts (lane 141I, measured 2026-10-14 after the lane's fixes). dead.* = dead-surface hits OUTSIDE the critical paths (critical paths are a hard zero); mobile.* = static mobile findings on the critical flows that are published, not failed. Each may only fall; regenerate deliberately with --write-baseline and say why in the commit.",
+  "counts": {
+    "mobile.GRID_COLS_4PLUS_NO_BREAKPOINT": 1,
+    "mobile.GRID_COLS_3_NO_BREAKPOINT": 25,
+    "mobile.NOWRAP_FLEX_ROW": 2,
+    "mobile.SUB_TOUCH_BUTTON": 161,
+    "mobile.TABLE_NO_CARD_VARIANT": 27
+  }
+}

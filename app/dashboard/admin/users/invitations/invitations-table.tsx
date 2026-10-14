@@ -12,6 +12,8 @@ function defaultStatusBadge(s: string) {
     case "accepted": return <Badge className="bg-emerald-100 text-emerald-800"><CheckCircle2 className="h-3 w-3 mr-1" />Accepted</Badge>
     case "expired":  return <Badge className="bg-slate-100 text-slate-700"><AlertTriangle className="h-3 w-3 mr-1" />Expired</Badge>
     case "revoked":  return <Badge className="bg-red-100 text-red-800"><X className="h-3 w-3 mr-1" />Revoked</Badge>
+    // The invite email could not be sent in the creating request (wave 141B) — Resend re-attempts it.
+    case "failed":   return <Badge className="bg-red-100 text-red-800"><AlertTriangle className="h-3 w-3 mr-1" />Email failed</Badge>
     default:         return <Badge variant="outline">{s}</Badge>
   }
 }
@@ -46,11 +48,16 @@ export function InvitationsTable({
     startTransition(async () => {
       const r = await resendInvitationAction(id)
       setPendingId(null)
-      if (!r.ok) { setFeedback(`Resend failed: ${r.error}`); return }
+      if (!r.ok) {
+        // A refused dispatch leaves the row FAILED (the email did not leave) — the row says so.
+        if (r.dispatched === false) setRows(prev => prev.map(row => row.id === id ? { ...row, status: "failed", days_until_expiry: null } : row))
+        setFeedback(`Resend failed: ${r.error}`)
+        return
+      }
       setRows(prev => prev.map(row =>
         row.id === id ? { ...row, status: "pending", days_until_expiry: 7 } : row
       ))
-      setFeedback("Invitation re-opened for 7 days.")
+      setFeedback(r.note ?? "Invitation email sent; window re-opened for 7 days.")
     })
   }
 
@@ -63,7 +70,59 @@ export function InvitationsTable({
       {feedback && (
         <div className="mx-4 my-3 text-xs rounded border bg-muted/30 px-3 py-1.5">{feedback}</div>
       )}
-      <div className="overflow-x-auto">
+      {/* MOBILE ADAPTS, never merely shrinks (owner, wave 141; lane 141I): the invite list is a card
+          list below md with the same resend / revoke handlers; the six-column table renders from md up. */}
+      <div className="md:hidden divide-y">
+        {rows.map(r => (
+          <div key={r.id} className="px-4 py-3 space-y-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-medium truncate">{[r.first_name, r.last_name].filter(Boolean).join(" ") || "—"}</div>
+                <div className="text-xs text-muted-foreground truncate">{r.email}</div>
+              </div>
+              <div className="shrink-0">{statusBadge(r.status)}</div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+              <Badge variant="outline">{r.user_type}</Badge>
+              <span>Invited by {r.invited_by_name ?? "—"}</span>
+              <span>
+                {r.status === "pending"
+                  ? `Expires in ${r.days_until_expiry ?? 0}d`
+                  : r.accepted_at
+                  ? <span className="text-emerald-700">Accepted {new Date(r.accepted_at).toLocaleDateString()}</span>
+                  : null}
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              {(r.status === "pending" || r.status === "expired" || r.status === "revoked") && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={isPending && pendingId === r.id}
+                  onClick={() => handleResend(r.id)}
+                >
+                  {isPending && pendingId === r.id
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <><RefreshCw className="h-3.5 w-3.5 mr-1" />Resend</>}
+                </Button>
+              )}
+              {r.status === "pending" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={isPending && pendingId === r.id}
+                  onClick={() => handleRevoke(r.id)}
+                >
+                  {isPending && pendingId === r.id
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <><X className="h-3.5 w-3.5 mr-1" />Revoke</>}
+                </Button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="hidden md:block overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b bg-muted/10">
@@ -96,8 +155,8 @@ export function InvitationsTable({
                 </td>
                 <td className="px-4 py-2.5 text-right">
                   <div className="flex items-center justify-end gap-1">
-                    {/* Expired/revoked invites can be re-opened; pending can be extended or revoked */}
-                    {(r.status === "pending" || r.status === "expired" || r.status === "revoked") && (
+                    {/* Expired/revoked/failed invites can be re-sent; pending can be re-sent or revoked */}
+                    {(r.status === "pending" || r.status === "expired" || r.status === "revoked" || r.status === "failed") && (
                       <Button
                         size="sm"
                         variant="ghost"

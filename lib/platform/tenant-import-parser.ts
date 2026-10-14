@@ -13,6 +13,23 @@
 // Honesty rule: a row either parses cleanly and is returned in `rows`, or it
 // is reported in `errors` with its 1-based file line number. Nothing is
 // silently dropped — every input row is accounted for on one side or the other.
+//
+// THE REGISTRY (wave 141, lane 141D — owner: "explicit field mapping against the
+// canonical schema (required canonical fields for workflows/triggers named in
+// one registry)"): the canonical fields a header may map ONTO, and the identity
+// a row MUST carry, are read from lib/kernel/schema-adaptation.ts
+// CRM_CONTACT_INGRESS_CONTRACT / CRM_CONTACT_INGRESS_IDENTITY_ANY_OF — the same
+// file that holds the OUTBOUND contact contract, so both directions of one
+// capability live side by side. CONTACT_HEADER_ALIASES below is the SPELLING
+// map (vendor/CSV header → canonical key); an alias whose target is not a
+// registry key is ignored (the header surfaces as unmapped) rather than landing
+// a column the registry never named. That module is pure (no imports), so this
+// parser stays client-safe.
+
+import { CRM_CONTACT_INGRESS_CONTRACT, CRM_CONTACT_INGRESS_IDENTITY_ANY_OF } from "@/lib/kernel/schema-adaptation"
+
+/** The canonical contact-import fields, DERIVED from the one registry (never restated). */
+const CANONICAL_IMPORT_FIELDS: ReadonlySet<string> = new Set(CRM_CONTACT_INGRESS_CONTRACT.fields.map((f) => f.key))
 
 // ─── Low-level CSV records ───────────────────────────────────────────────────
 
@@ -71,6 +88,12 @@ function csvToRecords(text: string): CsvRecord[] {
 /** Normalize a header for alias matching: lowercase, strip everything non-alphanumeric. */
 function normHeader(h: string): string {
   return h.toLowerCase().replace(/[^a-z0-9]/g, "")
+}
+
+/** A header's canonical target, or null — ONLY a registry field is ever a target. */
+function canonicalContactField(header: string): string | null {
+  const key = CONTACT_HEADER_ALIASES[normHeader(header)] ?? null
+  return key && CANONICAL_IMPORT_FIELDS.has(key) ? key : null
 }
 
 /** Canonical contact fields ← common CRM/spreadsheet header spellings (normalized). */
@@ -136,6 +159,9 @@ export interface ParseContactsCsvResult {
   headers: string[]
   /** Headers that matched no known alias (their data is not imported — surfaced, never hidden). */
   unmappedHeaders: string[]
+  /** THE EXPLICIT MAPPING (wave 141): source header → canonical registry field, for every header
+   *  that mapped. What staff preview is exactly this table; what lands is exactly this table. */
+  mapping: Record<string, string>
   /** Total data records seen (rows.length + row-level errors). */
   totalDataRows: number
 }
@@ -156,18 +182,20 @@ const clean = (v: string | undefined): string | null => {
 export function parseContactsCsv(csvText: string): ParseContactsCsvResult {
   const records = csvToRecords(csvText)
   if (records.length === 0) {
-    return { rows: [], errors: [{ line: 1, problem: "File is empty" }], headers: [], unmappedHeaders: [], totalDataRows: 0 }
+    return { rows: [], errors: [{ line: 1, problem: "File is empty" }], headers: [], unmappedHeaders: [], mapping: {}, totalDataRows: 0 }
   }
 
   const headerRec = records[0]
   const headers = headerRec.cells.map((h) => h.trim())
-  const mapping: (string | null)[] = headers.map((h) => CONTACT_HEADER_ALIASES[normHeader(h)] ?? null)
+  const mapping: (string | null)[] = headers.map(canonicalContactField)
   const unmappedHeaders = headers.filter((_, i) => mapping[i] === null)
+  const mappingTable: Record<string, string> = {}
+  headers.forEach((h, i) => { if (mapping[i]) mappingTable[h] = mapping[i] as string })
 
   if (!mapping.some((m) => m !== null)) {
     return {
-      rows: [], headers, unmappedHeaders, totalDataRows: records.length - 1,
-      errors: [{ line: headerRec.line, problem: `No recognizable columns. Found: ${headers.join(", ") || "(none)"}. Expected headers like first_name, last_name, email, phone, address, city, state, zip, source, notes, tags.` }],
+      rows: [], headers, unmappedHeaders, mapping: mappingTable, totalDataRows: records.length - 1,
+      errors: [{ line: headerRec.line, problem: `No recognizable columns. Found: ${headers.join(", ") || "(none)"}. Expected headers like ${[...CANONICAL_IMPORT_FIELDS].join(", ")}.` }],
     }
   }
 
@@ -193,7 +221,7 @@ export function parseContactsCsv(csvText: string): ParseContactsCsvResult {
     else rows.push(out)
   }
 
-  return { rows, errors, headers, unmappedHeaders, totalDataRows: records.length - 1 }
+  return { rows, errors, headers, unmappedHeaders, mapping: mappingTable, totalDataRows: records.length - 1 }
 }
 
 /**
@@ -225,8 +253,17 @@ function parseContactFields(
   const digits = phone ? phone.replace(/\D/g, "") : ""
   const phoneDigits = digits.length >= 7 ? digits : null
 
-  if (!firstName && !lastName && !email && !phoneDigits) {
-    return { line, problem: "Row has no name, email, or usable phone" }
+  // THE REGISTRY'S IDENTITY RULE, not a hand-written one (wave 141): the row must carry at least
+  // one member of each CRM_CONTACT_INGRESS_IDENTITY_ANY_OF group. `phone` counts only when USABLE
+  // (>= 7 digits — the platform's dedupe key); `full_name` was split into first/last above, so the
+  // canonical view below carries what the row ends up as, not what the header said.
+  const canonical: Record<string, string | null> = {
+    first_name: firstName, last_name: lastName, full_name: firstName || lastName ? null : (field.full_name ?? null),
+    email, phone: phoneDigits ? phone : null,
+  }
+  const missingIdentity = CRM_CONTACT_INGRESS_IDENTITY_ANY_OF.find((group) => !group.some((k) => !!canonical[k]))
+  if (missingIdentity) {
+    return { line, problem: `Row has no name, email, or usable phone (needs one of: ${missingIdentity.join(", ")})` }
   }
 
   const tags = field.tags
@@ -256,13 +293,15 @@ export function parseContactRecords(records: Record<string, unknown>[]): ParseCo
   const errors: CsvRowError[] = []
   const headerSet = new Set<string>()
   const unmapped = new Set<string>()
+  const mappingTable: Record<string, string> = {}
 
   records.forEach((rec, i) => {
     const field: Record<string, string | null> = {}
     for (const [rawKey, rawVal] of Object.entries(rec)) {
       headerSet.add(rawKey)
-      const key = CONTACT_HEADER_ALIASES[normHeader(rawKey)] ?? null
+      const key = canonicalContactField(rawKey)
       if (!key) { unmapped.add(rawKey); continue }
+      mappingTable[rawKey] = key
       const val = clean(rawVal == null ? "" : String(rawVal))
       if (val !== null && field[key] == null) field[key] = val
     }
@@ -275,6 +314,7 @@ export function parseContactRecords(records: Record<string, unknown>[]): ParseCo
     rows, errors,
     headers: [...headerSet],
     unmappedHeaders: [...unmapped],
+    mapping: mappingTable,
     totalDataRows: records.length,
   }
 }

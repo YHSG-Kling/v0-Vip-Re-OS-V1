@@ -7,6 +7,7 @@ import {
   type BrokerageIdentity,
 } from '@/app/actions/settings/brokerage-identity';
 import { GeneralSettingsForm } from '@/app/components/settings/GeneralSettingsForm';
+import { BrokerageAffiliationCard } from './brokerage-affiliation-card';
 
 export default function GeneralSettingsPage() {
   const [settings, setSettings] = useState<any>(null);
@@ -65,6 +66,8 @@ export default function GeneralSettingsPage() {
         initialIdentity={identity}
         identityError={identityError}
       />
+      {/* Solo / team workspaces only: the declared affiliation + adoption requests (wave 141A). */}
+      <BrokerageAffiliationCard />
     </div>
   );
 }

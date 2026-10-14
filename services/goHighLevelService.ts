@@ -33,6 +33,10 @@ const GHL_API_VERSION = "2021-07-28"
 interface GHLConfig {
   apiKey: string
   locationId: string
+  /** Wave 141 (lane 141D): the TENANT a tenant-credentialed call is made for. Lands on the
+   *  gateway's api_response_logs row so the tenant's own-GHL traffic is booked to them. Absent
+   *  on the platform env credential (the system-default location) — platform scope, as before. */
+  brokerageId?: string | null
 }
 
 function getGHLConfig(): GHLConfig | null {
@@ -82,6 +86,7 @@ async function ghlFetch(endpoint: string, options: RequestInit = {}, configOverr
     body,
     headers: { Version: GHL_API_VERSION, ...(options.headers as Record<string, string> | undefined) },
     auth: { style: "bearer", token: config.apiKey },
+    brokerageId: config.brokerageId ?? null,
   })
 
   if (!res.ok) {

@@ -443,6 +443,18 @@ export enum KernelEvent {
   SUBSCRIPTION_TRIAL_EXPIRED         = 'subscription_trial_expired',
   SUBSCRIPTION_STATUS_CHANGED        = 'subscription_status_changed',
   SUBSCRIPTION_REMINDER_SENT         = 'subscription_reminder_sent',
+  // BROKERAGE IDENTITY + the transfer rail (wave 141A) — audit rows with lineage (auditOnly), emitted by
+  // lib/kernel/brokerage-identity.ts (the declaration) and lib/kernel/brokerage-transfer.ts (request →
+  // consent / decline / cancel → stalled / completed; the source tenant archived, never deleted). Humans
+  // are reached through TRANSFER_HUMAN_ROUTES (registered managers) in the same calls, not by a reactor.
+  BROKERAGE_AFFILIATION_DECLARED     = 'brokerage_affiliation_declared',
+  BROKERAGE_TRANSFER_REQUESTED       = 'brokerage_transfer_requested',
+  BROKERAGE_TRANSFER_CONSENTED       = 'brokerage_transfer_consented',
+  BROKERAGE_TRANSFER_DECLINED        = 'brokerage_transfer_declined',
+  BROKERAGE_TRANSFER_CANCELLED       = 'brokerage_transfer_cancelled',
+  BROKERAGE_TRANSFER_STALLED         = 'brokerage_transfer_stalled',
+  BROKERAGE_TRANSFER_COMPLETED       = 'brokerage_transfer_completed',
+  BROKERAGE_ARCHIVED                 = 'brokerage_archived',
   BILLING_INVOICE_GENERATED          = 'billing_invoice_generated',
   USAGE_THRESHOLD_REACHED            = 'usage_threshold_reached',
   RECRUITING_ROI_CALCULATED          = 'recruiting_roi_calculated',
@@ -730,4 +742,18 @@ export enum KernelEvent {
   // streak, last success and the ledger id. The reactor has no rule; the tenant admins are told by
   // notifyBrokerageAdmins and the decision is ledgered (withActionLedger).
   WEBHOOK_SUBSCRIPTION_AUTO_DISABLED = 'webhook_subscription_auto_disabled',
+  // ── Layer 9 — white-label custom domains (wave 141G) ────────────────────────
+  // Audit rows (auditOnly) written by lib/platform/custom-domains.ts reportCustomDomainOutcome —
+  // the rail's ONE emission voice — after the IMMEDIATE post-condition of a tenant's connect /
+  // verify / detach (the row re-read under its tenant in a status the state machine admits;
+  // app/actions/custom-domains.ts confirmDomainRowPostCondition). entity_type
+  // 'tenant_custom_domain'; metadata carries domain, status, phase, the DNS probe verdict and the
+  // routing layer's error CODE — never its raw message (tenant_custom_domains.error_detail keeps
+  // that for staff). The reactor has no rule: the readers are the tenant webhook catalogue
+  // (website.domain_verified, lib/platform/tenant-webhooks-core.ts) and the governed bus lines
+  // custom_domain_verified / custom_domain_error; a DNS/ownership error is fixed by the human at
+  // their DNS provider — nothing in-OS can change third-party DNS.
+  CUSTOM_DOMAIN_CONNECTED            = 'custom_domain_connected',
+  CUSTOM_DOMAIN_VERIFIED             = 'custom_domain_verified',
+  CUSTOM_DOMAIN_ERROR                = 'custom_domain_error',
 }

@@ -8,7 +8,20 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { VENDOR_CATEGORY_OTHER } from "@/lib/kernel/vendor-categories"
 import { requireCallerWithAgent as requireCaller } from "@/lib/auth/require-caller"
-import type { CardSubjectType } from "@/lib/contacts/card-classifier"
+import {
+  CARD_FIELDS,
+  CARD_FIELD_TO_CONTACT_COLUMN,
+  assessCardExtraction,
+  cardStampsForContact,
+  confidentCardFields,
+  decideCardFieldWrite,
+  humanConfirmedExtraction,
+  parseCardExtraction,
+  unconfirmedCardNote,
+  type CardExtraction,
+  type CardField,
+  type CardSubjectType,
+} from "@/lib/contacts/card-classifier"
 
 // Was trusting caller-supplied agentId + brokerageId. Caller could
 // upload business cards attributed to any agent in any brokerage
@@ -18,6 +31,46 @@ import type { CardSubjectType } from "@/lib/contacts/card-classifier"
 // TOMBSTONE: local requireCaller merged onto lib/auth/require-caller.ts:185
 // requireCallerWithAgent (imported above as `requireCaller`) — §1/§6 SAME BODY
 // census round 3, 2026-09-09.
+
+// ─── THE VISION CALL'S ECONOMICS (wave 141F) ─────────────────────────────────
+// ONE vision path — gatewayChat through the Vercel AI Gateway (owner: AI is ALL
+// through the gateway; no second OCR system). It was the one gateway caller that
+// booked NOTHING on ai_tool_usage: every card scan was an unmetered model call on
+// a platform-covered ledger that feeds meter_readings.ai_tokens and the overage
+// projection (CLAUDE.md §5 — a wrong number there is a wrong invoice; zero is a
+// wrong number). The gateway's own `usage` is booked when it reports one; else an
+// ESTIMATE, labelled as such on the row. mayUseAndAfford gates the call first.
+const CARD_VISION_MODEL = "anthropic/claude-sonnet-4-20250514"
+/** A typical phone photo of a card (≤ ~1.2 MP after the browser resizes) costs about this many
+ *  image tokens on the Anthropic tokenizer (w × h / 750) — used ONLY when the gateway reports no usage. */
+const CARD_IMAGE_TOKEN_ESTIMATE = 1600
+const CARD_VISION_MAX_OUTPUT_TOKENS = 500
+const CARD_VISION_PROMPT =
+  "Read this business card. Return ONLY a JSON object whose keys are first_name,last_name,email,phone,company,title,address,website. " +
+  "Each key's value is an object {\"value\": string, \"confidence\": number} where confidence is 0 to 1 — how sure you are the value is exactly what is printed " +
+  "(lower it for glare, blur, handwriting, ambiguous characters such as 0/O, 1/l, rn/m). Use an empty string value when a field is not on the card. No other text."
+
+type ScanResultShape = {
+  scanId: string
+  contactId: string | null
+  vendorId: string | null
+  recruitId: string | null
+  /** back-compat 3-way projection of cardSubjectType (sphere/potential_contact/
+   *  unknown all report "contact" here — no contacts row is implied by it; read
+   *  cardSubjectType for the real classification). */
+  target: "contact" | "vendor" | "recruit"
+  cardSubjectType: CardSubjectType
+  subjectUserId: string | null
+  viable: boolean
+  /** Wave 141F — the reading is viable but an identity field is below the confidence floor:
+   *  NOTHING was routed or written to a contact; the scan row waits (review_status 'pending')
+   *  for confirmBusinessCardScan. */
+  needsConfirmation: boolean
+  /** The reader's values (normalised) and per-field confidence, for the review surface. */
+  extracted: Record<CardField, string>
+  fieldConfidence: Record<CardField, number | null>
+  lowFields: CardField[]
+}
 
 export async function uploadBusinessCard(params: {
   imageBase64: string
@@ -35,19 +88,7 @@ export async function uploadBusinessCard(params: {
    *  `subjectType` itself is not passed. TOMBSTONE: the 3-way CardTarget this
    *  mirrored was merged onto CardSubjectType, lib/contacts/card-classifier.ts:38. */
   target?: "contact" | "vendor" | "recruit"
-}): Promise<{
-  scanId: string
-  contactId: string | null
-  vendorId: string | null
-  recruitId: string | null
-  /** back-compat 3-way projection of cardSubjectType (sphere/potential_contact/
-   *  unknown all report "contact" here — no contacts row is implied by it; read
-   *  cardSubjectType for the real classification). */
-  target: "contact" | "vendor" | "recruit"
-  cardSubjectType: CardSubjectType
-  subjectUserId: string | null
-  viable: boolean
-}> {
+}): Promise<ScanResultShape> {
   const auth = await requireCaller()
   if (!auth.ok) throw new Error(auth.error)
   const brokerageId = auth.brokerageId
@@ -59,6 +100,15 @@ export async function uploadBusinessCard(params: {
   const scanId = crypto.randomUUID()
   const now = new Date().toISOString()
 
+  // 0) ENTITLEMENT BEFORE THE PAID CALL (fail closed): the tenant must be allowed
+  //    to spend AI tokens and have budget for this scan.
+  const { mayUseAndAfford } = await import("@/lib/billing/billing-access")
+  const estPromptTokens = CARD_IMAGE_TOKEN_ESTIMATE + Math.ceil(CARD_VISION_PROMPT.length / 4)
+  const gate = await mayUseAndAfford({ brokerageId, capability: "ai.generate", estTokens: estPromptTokens + CARD_VISION_MAX_OUTPUT_TOKENS })
+  if (!gate.allowed) {
+    throw new Error(gate.message ?? `Business-card scanning is not available right now (${gate.reason}).`)
+  }
+
   // 1) Upload image to Supabase storage
   const buffer = Buffer.from(params.imageBase64, "base64")
   const path = `${brokerageId}/${scanId}.jpg`
@@ -68,43 +118,63 @@ export async function uploadBusinessCard(params: {
   const { data: pub } = supabase.storage.from("business-cards").getPublicUrl(path)
   const raw_image_url = pub.publicUrl
 
-  // 2) Call Claude Vision — JSON extraction only
+  // 2) Call Claude Vision — JSON extraction only, PER-FIELD CONFIDENCE asked for.
   // Claude Vision OCR via the Vercel AI Gateway (image passed as a data URL).
+  const startedAt = Date.now()
   const response = await gatewayChat({
-    model: "anthropic/claude-sonnet-4-20250514",
-    maxTokens: 300,
+    model: CARD_VISION_MODEL,
+    maxTokens: CARD_VISION_MAX_OUTPUT_TOKENS,
     temperature: 0,
     messages: [
       {
         role: "user",
         content: [
           { type: "image_url", image_url: { url: `data:${params.mimeType};base64,${params.imageBase64}` } },
-          { type: "text", text: "Return ONLY a JSON object with keys: first_name,last_name,email,phone,company,title,address,website. No other text." },
+          { type: "text", text: CARD_VISION_PROMPT },
         ],
       },
     ],
   })
 
-  let extracted: Record<string, string> = {}
+  // 2b) BOOK THE COST — the gateway's count when it gave one, an estimate (and said so) otherwise.
+  try {
+    const { logAIUsage } = await import("@/lib/ai/cost-tracking")
+    const outputText = response.content ?? ""
+    const tokenBasis = response.usage ? "gateway_usage" : "estimated"
+    await logAIUsage({
+      userId: auth.userId,
+      brokerageId,
+      agentId,
+      model: "claude-sonnet",
+      inputTokens: response.usage?.inputTokens ?? estPromptTokens,
+      outputTokens: response.usage?.outputTokens ?? Math.ceil(outputText.length / 4),
+      feature: "business_card_vision",
+      manager: "data_steward",
+      executionTimeMs: Date.now() - startedAt,
+      success: response.ok,
+      contextExtra: { scan_id: scanId, token_basis: tokenBasis, image_token_estimate: response.usage ? null : CARD_IMAGE_TOKEN_ESTIMATE },
+    })
+  } catch (err) {
+    console.error("[business-card] ai_tool_usage not booked:", err instanceof Error ? err.message : String(err))
+  }
+
+  let extraction: CardExtraction
   try {
     const text = response.content ?? "{}"
     const match = text.match(/\{[\s\S]*\}/)
-    extracted = JSON.parse(match ? match[0] : "{}") as Record<string, string>
+    extraction = parseCardExtraction(JSON.parse(match ? match[0] : "{}"))
   } catch {
-    extracted = {}
+    extraction = parseCardExtraction({})
   }
 
-  // 3) Confidence score = filled fields / 8
-  const keys = ["first_name", "last_name", "email", "phone", "company", "title", "address", "website"]
-  const filled = keys.filter((k) => (extracted[k] ?? "").toString().trim()).length
-  const confidence_score = filled / 8
+  // 3) Confidence = the reader's own per-field confidence (mean over the fields it read) —
+  //    no longer `filled fields / 8`, which was a completeness ratio wearing a confidence badge.
+  const assessment = assessCardExtraction(extraction)
+  const { viable, needsConfirmation } = assessment
 
-  // 4) Viability gate
-  const hasName = !!((extracted.first_name ?? "").trim() || (extracted.last_name ?? "").trim())
-  const hasContact = !!((extracted.email ?? "").trim() || (extracted.phone ?? "").trim())
-  const viable = hasName && hasContact
-
-  // 5) Always insert scan row (audit trail regardless of viability)
+  // 4) Always insert scan row (audit trail regardless of viability). A viable reading with a
+  //    doubtful identity field waits as 'pending' (live CHECK: approved | pending | rejected) —
+  //    nothing is routed and no contact is touched until a human confirms the fields.
   const { data: scan, error: scanRowErr } = await supabase
     .from("business_card_scans")
     .insert({
@@ -112,11 +182,11 @@ export async function uploadBusinessCard(params: {
       brokerage_id: brokerageId,
       agent_id: agentId,
       raw_image_url,
-      extracted_data: extracted,
-      confidence_score,
-      review_status: viable ? "approved" : "rejected",
+      extracted_data: { ...extraction.fields, field_confidence: extraction.confidence, needs_confirmation: needsConfirmation },
+      confidence_score: assessment.overall,
+      review_status: !viable ? "rejected" : needsConfirmation ? "pending" : "approved",
       reviewed_by: null,
-      reviewed_at: now,
+      reviewed_at: needsConfirmation ? null : now,
     })
     .select("id")
     .single()
@@ -132,8 +202,15 @@ export async function uploadBusinessCard(params: {
     entityType:  "business_card",
     entityId:    scan!.id,
     agentId,
-    metadata:    { confidence: confidence_score, viable },
+    metadata:    { confidence: assessment.overall, viable, needs_confirmation: needsConfirmation, low_fields: assessment.lowFields },
   }).catch((err) => console.error("[businessCardUpload] BUSINESS_CARD_UPLOADED emit failed:", err))
+
+  const base = {
+    scanId: scan!.id,
+    extracted: extraction.fields,
+    fieldConfidence: extraction.confidence,
+    lowFields: assessment.lowFields,
+  }
 
   if (!viable) {
     // Notify agent of failed extraction
@@ -158,8 +235,65 @@ export async function uploadBusinessCard(params: {
       }), { table: "notifications", flow: "business_card_actions_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     }
 
-    return { scanId: scan!.id, contactId: null, vendorId: null, recruitId: null, target: "contact", cardSubjectType: "unknown", subjectUserId: null, viable: false }
+    return { ...base, contactId: null, vendorId: null, recruitId: null, target: "contact", cardSubjectType: "unknown", subjectUserId: null, viable: false, needsConfirmation: false }
   }
+
+  if (needsConfirmation) {
+    // HUMAN CONFIRMATION WHERE CONFIDENCE IS LOW (owner ruling): the reading is shown to the
+    // scanning agent on the review surface with the doubtful fields marked; a bell is left
+    // in case they navigate away. confirmBusinessCardScan routes it once a human has said so.
+    const { data: agentRow } = await supabase.from("agents").select("user_id").eq("id", agentId).single()
+    if (agentRow?.user_id) {
+      await sentinelWrite(supabase, supabase.from("notifications").insert({
+        user_id: agentRow.user_id,
+        brokerage_id: brokerageId,
+        type: "business_card_scan",
+        title: "A scanned business card needs your confirmation",
+        body: `The reader was unsure about: ${assessment.lowFields.map((f) => f.replace(/_/g, " ")).join(", ")}. Confirm the fields on the Business Card Scanner page before it becomes a record.`,
+        entity_type: "business_card",
+        entity_id: scan!.id,
+        priority: "low",
+        channel: "in_app",
+        is_read: false,
+      }), { table: "notifications", flow: "business_card_actions_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
+    }
+    return { ...base, contactId: null, vendorId: null, recruitId: null, target: "contact", cardSubjectType: "unknown", subjectUserId: null, viable: true, needsConfirmation: true }
+  }
+
+  return routeClassifiedCard({
+    supabase, brokerageId, agentId, actorUserId: auth.userId, scanId: scan!.id, extraction,
+    notes: params.notes ?? null, subjectTypePick: params.subjectType, legacyTarget: params.target, human: false, base,
+  })
+}
+
+/**
+ * THE ROUTING BODY — one for both doors (the confident auto path of uploadBusinessCard and the
+ * human path of confirmBusinessCardScan). Module-private: a "use server" file's exports are
+ * all public async endpoints, and this takes a service client.
+ *
+ * Structured columns (vendors / recruits / contacts) only ever receive readings at or above
+ * the confidence floor (confidentCardFields — a human confirmation is 1.0 everywhere);
+ * doubtful readings ride the notes as "unconfirmed" so nothing read is thrown away and
+ * nothing doubtful becomes a record.
+ */
+async function routeClassifiedCard(args: {
+  supabase: ReturnType<typeof createServiceClient>
+  brokerageId: string
+  agentId: string
+  actorUserId: string | null
+  scanId: string
+  extraction: CardExtraction
+  notes: string | null
+  subjectTypePick?: CardSubjectType
+  legacyTarget?: "contact" | "vendor" | "recruit"
+  human: boolean
+  base: Pick<ScanResultShape, "scanId" | "extracted" | "fieldConfidence" | "lowFields">
+}): Promise<ScanResultShape> {
+  const { supabase, brokerageId, agentId, scanId, extraction, base } = args
+  const extracted = extraction.fields
+  const confident = confidentCardFields(extraction)
+  const unconfirmedNote = unconfirmedCardNote(extraction)
+  const scanRef = { id: scanId }
 
   // 6) CLASSIFY the card's subject (owner ruling 2026-09-10 — never assume
   // 'contact'). Priority 1 (reader fields) and 2 (notes) are the PURE
@@ -168,21 +302,22 @@ export async function uploadBusinessCard(params: {
   // review surface (params.subjectType) always wins outright over all three.
   const { classifyCardSubject } = await import("@/lib/contacts/card-classifier")
   const detected = classifyCardSubject({
-    title: extracted.title ?? null,
-    company: extracted.company ?? null,
-    notes: params.notes ?? null,
+    title: extracted.title || null,
+    company: extracted.company || null,
+    notes: args.notes ?? null,
   })
 
   // Pre-wave-48 callers may still pass the old 3-way `target` override —
   // honored only when the new `subjectType` override is absent.
   const legacyOverride: CardSubjectType | null =
-    params.target === "recruit" ? "agent" : params.target === "vendor" ? "vendor" : params.target === "contact" ? "contact" : null
+    args.legacyTarget === "recruit" ? "agent" : args.legacyTarget === "vendor" ? "vendor" : args.legacyTarget === "contact" ? "contact" : null
 
   // Priority 3 — an existing platform user / contact / vendor matched by
   // email or phone. The ONLY tier that can attach a real subject_user_id
   // (owner ruling: "should be a userid user type"), and it can upgrade an
   // otherwise-UNKNOWN card — never overrides a signal the reader or the
-  // notes already gave.
+  // notes already gave. Matched on CONFIDENT readings only: a doubtful email
+  // must not attach somebody else's seat to this card.
   let subjectUserId: string | null = null
   // The owner's own words: "should be a userid user type" — the card carries a
   // USER ID *and* USER TYPE. A matched `users` row is resolved with its real
@@ -193,8 +328,8 @@ export async function uploadBusinessCard(params: {
   let subjectUserType: string | null = null
   let matchedContactId: string | null = null
   let matchedVendorId: string | null = null
-  const cardEmail = (extracted.email ?? "").trim().toLowerCase()
-  const cardPhone = (extracted.phone ?? "").trim()
+  const cardEmail = (confident.email ?? "").trim().toLowerCase()
+  const cardPhone = (confident.phone ?? "").trim()
   if (cardEmail || cardPhone) {
     const userQuery = supabase.from("users").select("id, user_type").eq("brokerage_id", brokerageId)
     const { data: matchedUser } = await (cardEmail ? userQuery.eq("email", cardEmail) : userQuery.eq("phone", cardPhone)).maybeSingle()
@@ -234,41 +369,47 @@ export async function uploadBusinessCard(params: {
     else if (legacyOverride) { cardSubjectType = legacyOverride; classifiedBy = "picker" }
   }
   // Priority 4 — the explicit review-surface picker wins outright.
-  if (params.subjectType) { cardSubjectType = params.subjectType; classifiedBy = "picker" }
+  if (args.subjectTypePick) { cardSubjectType = args.subjectTypePick; classifiedBy = "picker" }
 
   const category = cardSubjectType === "vendor" ? (detected.category ?? VENDOR_CATEGORY_OTHER) : null
+  const classificationColumns = {
+    card_subject_type: cardSubjectType,
+    subject_user_id: subjectUserId,
+    subject_notes: args.notes ?? null,
+    classified_by: classifiedBy,
+  }
+  const resultBase = { ...base, cardSubjectType, subjectUserId, viable: true, needsConfirmation: false }
 
   if (cardSubjectType === "vendor") {
-    const fullName = [extracted.first_name, extracted.last_name].filter(Boolean).join(" ").trim()
+    const fullName = [confident.first_name, confident.last_name].filter(Boolean).join(" ").trim()
     // vendors.category/status CHECK vocabularies verified live; a scanned
     // vendor lands PENDING — the vendor verification rail vets it before use.
     const { data: vendor, error: vendorError } = await supabase.from("vendors").insert({
       brokerage_id: brokerageId,
-      name: (extracted.company ?? "").trim() || fullName || "Scanned vendor",
+      name: (confident.company ?? "").trim() || fullName || "Scanned vendor",
       category,
-      email: extracted.email ?? null,
-      phone: extracted.phone ?? null,
-      website: extracted.website ?? null,
+      email: confident.email ?? null,
+      phone: confident.phone ?? null,
+      website: confident.website ?? null,
       status: "pending",
       notes: [
         `Scanned from a business card.`,
-        fullName ? `Contact person: ${fullName}${extracted.title ? ` (${extracted.title})` : ""}.` : null,
-        extracted.address ? `Address on card: ${extracted.address}.` : null,
+        fullName ? `Contact person: ${fullName}${confident.title ? ` (${confident.title})` : ""}.` : null,
+        confident.address ? `Address on card: ${confident.address}.` : null,
+        unconfirmedNote || null,
       ].filter(Boolean).join(" "),
     }).select("id").single()
     if (vendorError || !vendor) throw new Error(`Vendor create failed: ${vendorError?.message ?? "no data"}`)
 
     // Classification rides the typed m617 columns (card_subject_type/
     // subject_user_id/subject_notes/classified_by) now that the migration is
-    // APPLIED live — extracted_data keeps only the raw card fields plus the
-    // routed_to/vendor_id keys no typed column exists for yet.
+    // APPLIED live — extracted_data keeps only the raw card fields (+ the
+    // per-field confidence) plus the routed_to/vendor_id keys no typed column
+    // exists for yet.
     const { error: scanUpdateVendorError } = await supabase.from("business_card_scans").update({
-      extracted_data: { ...extracted, routed_to: "vendor", vendor_id: vendor.id },
-      card_subject_type: cardSubjectType,
-      subject_user_id: subjectUserId,
-      subject_notes: params.notes ?? null,
-      classified_by: classifiedBy,
-    }).eq("id", scan!.id)
+      extracted_data: { ...extracted, field_confidence: extraction.confidence, routed_to: "vendor", vendor_id: vendor.id },
+      ...classificationColumns,
+    }).eq("id", scanRef.id)
     if (scanUpdateVendorError) console.error("[businessCardUpload] scan classification update (vendor) failed:", scanUpdateVendorError)
 
     // Wave 102C (owner ruling: one emit where the row metadata is a SUPERSET the reactor reads by named
@@ -282,11 +423,11 @@ export async function uploadBusinessCard(params: {
       entityType: "vendor",
       entityId: vendor.id,
       event: KernelEvent.BUSINESS_CARD_APPROVED,
-      metadata: { scanId: scan!.id, routed_to: "vendor", category, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy },
+      metadata: { scanId: scanRef.id, routed_to: "vendor", category, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy, human_confirmed: args.human },
       agentUserId: null,
     }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
-    return { scanId: scan!.id, contactId: null, vendorId: vendor.id, recruitId: null, target: "vendor", cardSubjectType, subjectUserId, viable: true }
+    return { ...resultBase, contactId: null, vendorId: vendor.id, recruitId: null, target: "vendor" }
   }
 
   if (cardSubjectType === "agent") {
@@ -296,29 +437,27 @@ export async function uploadBusinessCard(params: {
     const { data: recruit, error: recruitError } = await supabase.from("recruits").insert({
       brokerage_id: brokerageId,
       recruiter_agent_id: agentId,
-      first_name: extracted.first_name ?? null,
-      last_name: extracted.last_name ?? null,
-      email: extracted.email ?? null,
-      phone: extracted.phone ?? null,
-      current_brokerage: extracted.company ?? null,
+      first_name: confident.first_name ?? null,
+      last_name: confident.last_name ?? null,
+      email: confident.email ?? null,
+      phone: confident.phone ?? null,
+      current_brokerage: confident.company ?? null,
       status: "prospect",
       referral_source: "business_card",
       notes: [
         `Scanned from a business card.`,
-        extracted.title ? `Title on card: ${extracted.title}.` : null,
-        extracted.website ? `Website: ${extracted.website}` : null,
-        params.notes ? `Agent notes: ${params.notes}` : null,
+        confident.title ? `Title on card: ${confident.title}.` : null,
+        confident.website ? `Website: ${confident.website}` : null,
+        unconfirmedNote || null,
+        args.notes ? `Agent notes: ${args.notes}` : null,
       ].filter(Boolean).join(" "),
     }).select("id").single()
     if (recruitError || !recruit) throw new Error(`Recruit create failed: ${recruitError?.message ?? "no data"}`)
 
     const { error: scanUpdateAgentError } = await supabase.from("business_card_scans").update({
-      extracted_data: { ...extracted, routed_to: "recruit", recruit_id: recruit.id },
-      card_subject_type: cardSubjectType,
-      subject_user_id: subjectUserId,
-      subject_notes: params.notes ?? null,
-      classified_by: classifiedBy,
-    }).eq("id", scan!.id)
+      extracted_data: { ...extracted, field_confidence: extraction.confidence, routed_to: "recruit", recruit_id: recruit.id },
+      ...classificationColumns,
+    }).eq("id", scanRef.id)
     if (scanUpdateAgentError) console.error("[businessCardUpload] scan classification update (agent) failed:", scanUpdateAgentError)
 
     // ONE EMIT (wave 101C): the audit row + its fan-out are one emitKernelEvent; the metadata is the
@@ -328,10 +467,10 @@ export async function uploadBusinessCard(params: {
       entityType: "recruit",
       entityId: recruit.id,
       event: KernelEvent.BUSINESS_CARD_APPROVED,
-      metadata: { scanId: scan!.id, routed_to: "recruit", card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy },
+      metadata: { scanId: scanRef.id, routed_to: "recruit", card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy, human_confirmed: args.human },
     }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
-    return { scanId: scan!.id, contactId: null, vendorId: null, recruitId: recruit.id, target: "recruit", cardSubjectType, subjectUserId, viable: true }
+    return { ...resultBase, contactId: null, vendorId: null, recruitId: recruit.id, target: "recruit" }
   }
 
   if (cardSubjectType === "sphere" || cardSubjectType === "unknown") {
@@ -339,24 +478,21 @@ export async function uploadBusinessCard(params: {
     // whole point. The card stays a business_card_scans row; the warm-intro
     // (sphere) / classify-me (unknown) handler reads it directly off the scan.
     const { error: scanUpdateSphereError } = await supabase.from("business_card_scans").update({
-      extracted_data: { ...extracted },
-      card_subject_type: cardSubjectType,
-      subject_user_id: subjectUserId,
-      subject_notes: params.notes ?? null,
-      classified_by: classifiedBy,
-    }).eq("id", scan!.id)
+      extracted_data: { ...extracted, field_confidence: extraction.confidence },
+      ...classificationColumns,
+    }).eq("id", scanRef.id)
     if (scanUpdateSphereError) console.error("[businessCardUpload] scan classification update (sphere/unknown) failed:", scanUpdateSphereError)
 
     // ONE EMIT (wave 101C) — same rule as the recruit branch above.
     await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
       brokerageId: brokerageId,
       entityType: "business_card",
-      entityId: scan!.id,
+      entityId: scanRef.id,
       event: KernelEvent.BUSINESS_CARD_APPROVED,
-      metadata: { scanId: scan!.id, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy },
+      metadata: { scanId: scanRef.id, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy, human_confirmed: args.human },
     }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
-    return { scanId: scan!.id, contactId: null, vendorId: null, recruitId: null, target: "contact", cardSubjectType, subjectUserId, viable: true }
+    return { ...resultBase, contactId: null, vendorId: null, recruitId: null, target: "contact" }
   }
 
   // cardSubjectType is 'contact' or 'potential_contact' — the only two classes
@@ -364,25 +500,30 @@ export async function uploadBusinessCard(params: {
   // always (a physical card is not TCPA digital consent). Owner agent resolves
   // via brokerage assignment rules — the scanner doesn't own the contact just
   // because they scanned it. Company/title/website from the card ride the
-  // notes (previously extracted then DROPPED).
-  const { contactId } = await captureContact({
+  // notes (previously extracted then DROPPED). ONLY CONFIDENT READINGS reach
+  // the columns; captureContact's own dedup/merge (lib/contact-pipeline/
+  // contact-capture.ts — fill-if-empty, conflicts preserved in notes, never an
+  // overwrite) is the identity layer every capture door shares.
+  const { contactId, action: captureAction } = await captureContact({
     brokerageId: brokerageId,
     ownerAgentId: null,
     source: "business_card",
-    first_name: extracted.first_name ?? null,
-    last_name: extracted.last_name ?? null,
-    email: extracted.email ?? null,
-    phone: extracted.phone ?? null,
+    first_name: confident.first_name ?? null,
+    last_name: confident.last_name ?? null,
+    email: confident.email ?? null,
+    phone: confident.phone ?? null,
+    address: confident.address ?? null,
     // 'prospect' is the live contacts.contact_type CHECK value for a not-yet-
     // qualified potential client (scripts/check-vocabularies.ts:538) — leaving
     // it unset for 'contact' keeps captureContact's own default.
     contact_type: cardSubjectType === "potential_contact" ? "prospect" : undefined,
     notes: [
-      extracted.title || extracted.company
-        ? `From their card: ${[extracted.title, extracted.company].filter(Boolean).join(" @ ")}.`
+      confident.title || confident.company
+        ? `From their card: ${[confident.title, confident.company].filter(Boolean).join(" @ ")}.`
         : null,
-      extracted.website ? `Website: ${extracted.website}` : null,
-      params.notes ? `Agent notes: ${params.notes}` : null,
+      confident.website ? `Website: ${confident.website}` : null,
+      unconfirmedNote || null,
+      args.notes ? `Agent notes: ${args.notes}` : null,
     ].filter(Boolean).join("\n") || undefined,
     tcpa_consent: false,
     tcpa_consent_date: null,
@@ -393,14 +534,16 @@ export async function uploadBusinessCard(params: {
     .from("business_card_scans")
     .update({
       contact_id: contactId,
-      extracted_data: { ...extracted },
-      card_subject_type: cardSubjectType,
-      subject_user_id: subjectUserId,
-      subject_notes: params.notes ?? null,
-      classified_by: classifiedBy,
+      extracted_data: { ...extracted, field_confidence: extraction.confidence },
+      ...classificationColumns,
     })
-    .eq("id", scan!.id)
+    .eq("id", scanRef.id)
   if (scanUpdateContactError) console.error("[businessCardUpload] scan classification update (contact) failed:", scanUpdateContactError)
+
+  // 7b) EVIDENCE PER FIELD (wave 141F): the columns the contact now holds from this card are
+  // stamped with the reading's confidence (or the confirming human), by value equality —
+  // never over an existing stamp (a provider match or a staff edit outranks a card).
+  await stampCardProvenance(supabase, { brokerageId, contactId, extraction, human: args.human, actor: args.actorUserId })
 
   // ONE EMIT (wave 101C) — same rule as the recruit branch above.
   await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
@@ -408,27 +551,195 @@ export async function uploadBusinessCard(params: {
     entityType: "contact",
     entityId: contactId,
     event: KernelEvent.BUSINESS_CARD_APPROVED,
-    metadata: { scanId: scan!.id, autoApproved: true, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy },
+    metadata: { scanId: scanRef.id, autoApproved: !args.human, capture_action: captureAction, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy, human_confirmed: args.human },
   }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
-  return { scanId: scan!.id, contactId, vendorId: null, recruitId: null, target: "contact", cardSubjectType, subjectUserId, viable: true }
+  return { ...resultBase, contactId, vendorId: null, recruitId: null, target: "contact" }
+}
+
+/** Read the contact back and stamp provenance on the columns that now carry the card's reading. */
+async function stampCardProvenance(
+  supabase: ReturnType<typeof createServiceClient>,
+  args: { brokerageId: string; contactId: string; extraction: CardExtraction; human: boolean; actor: string | null },
+): Promise<void> {
+  try {
+    const { data: row, error } = await supabase
+      .from("contacts")
+      .select("first_name, last_name, email, phone, address, enrichment_profile")
+      .eq("id", args.contactId)
+      .eq("brokerage_id", args.brokerageId)
+      .maybeSingle()
+    if (error || !row) {
+      if (error) console.error("[business-card] provenance read refused:", error.message)
+      return
+    }
+    const { fieldProvenanceOf } = await import("@/lib/lead-pipeline/enrichment-column-map")
+    const stamps = cardStampsForContact(args.extraction, row as Record<string, unknown>, fieldProvenanceOf((row as { enrichment_profile?: Record<string, unknown> | null }).enrichment_profile), { human: args.human, actor: args.actor })
+    if (Object.keys(stamps).length === 0) return
+    const { persistFieldProvenance } = await import("@/lib/enrichment/field-provenance-store")
+    const stamped = await persistFieldProvenance(supabase as any, { table: "contacts", id: args.contactId, brokerageId: args.brokerageId }, stamps)
+    if (!stamped.ok) console.error(`[business-card] provenance not stamped for ${args.contactId}: ${stamped.error}`)
+  } catch (err) {
+    console.error("[business-card] provenance stamping threw:", err instanceof Error ? err.message : String(err))
+  }
+}
+
+type ConfirmBusinessCardResult =
+  | { ok: true; mode: "routed"; result: ScanResultShape }
+  | { ok: true; mode: "corrected"; contactId: string; applied: CardField[]; kept: Array<{ field: CardField; reason: string }> }
+  | { ok: false; error: string }
+
+/**
+ * HUMAN CONFIRMATION (wave 141F) — the scanning agent confirms or corrects the reader's fields.
+ * Two cases, one door:
+ *   · a scan HELD as 'pending' (an identity field below the floor): the confirmed fields are
+ *     confidence 1.0 and the card is routed exactly as a confident scan would have been;
+ *   · a scan that already produced a contact ("Report extraction error" on the review surface):
+ *     each corrected column is written ONLY where the field-level merge rule allows it —
+ *     a human beats a card reading, never a provider match, a staff edit or the contact's own
+ *     portal entry (decideCardFieldWrite); what was kept is reported with its reason.
+ * Tenant from the session; the scan is read under it (fail closed). Ledgered (withActionLedger
+ * business_card.confirm, HUMAN_REQUESTED) — who confirmed what, and which columns moved.
+ */
+export async function confirmBusinessCardScan(params: {
+  scanId: string
+  fields: Partial<Record<CardField, string>>
+  notes?: string | null
+  subjectType?: CardSubjectType
+}): Promise<ConfirmBusinessCardResult> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { ok: false, error: auth.error }
+  const brokerageId = auth.brokerageId
+  const agentId = auth.agentId
+  if (!agentId) return { ok: false, error: "No agent profile for this user yet — finish account setup." }
+  if (!params?.scanId) return { ok: false, error: "No scan id supplied." }
+
+  const supabase = createServiceClient()
+  const { data: scan, error: scanError } = await supabase
+    .from("business_card_scans")
+    .select("id, agent_id, contact_id, review_status, extracted_data, subject_notes")
+    .eq("id", params.scanId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (scanError) return { ok: false, error: `Could not read the scan: ${scanError.message}` }
+  if (!scan) return { ok: false, error: "That scan is not in your brokerage." }
+  const row = scan as { id: string; agent_id: string | null; contact_id: string | null; review_status: string | null; extracted_data: Record<string, unknown> | null; subject_notes: string | null }
+  if (row.review_status !== "pending" && !row.contact_id) {
+    return { ok: false, error: "This scan was already routed (to a vendor, a recruiting prospect, or left unfiled) — there is nothing to confirm on it." }
+  }
+
+  const extraction = humanConfirmedExtraction(params.fields ?? {})
+  const assessment = assessCardExtraction(extraction)
+  if (!assessment.viable) return { ok: false, error: "A name and an email or phone number are required." }
+
+  const now = new Date().toISOString()
+  const corrected = CARD_FIELDS.filter((f) => extraction.fields[f] !== ((row.extracted_data?.[f] as string | undefined) ?? ""))
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+
+  return withActionLedger<ConfirmBusinessCardResult>(
+    {
+      brokerageId,
+      action: "business_card.confirm",
+      actor: { type: "user", userId: auth.userId, agentId },
+      subject: { type: "business_card_scan", id: row.id },
+      reasonCode: "HUMAN_REQUESTED",
+      reasonDetail: row.contact_id ? "the scanning agent corrected a card reading on an existing contact" : "the scanning agent confirmed a card reading the reader was unsure of",
+      idempotencyKey: `business_card_confirm:${row.id}:${now}`,
+      riskClass: "LOW_RISK_WRITE",
+      systemSource: "business-card-actions",
+      detail: { mode: row.contact_id ? "corrected" : "routed", corrected_fields: corrected, previous_status: row.review_status },
+    },
+    async () => {
+      const scanPatch = {
+        extracted_data: { ...(row.extracted_data ?? {}), ...extraction.fields, field_confidence: extraction.confidence, needs_confirmation: false },
+        confidence_score: 1,
+        review_status: "approved",
+        reviewed_by: auth.userId,
+        reviewed_at: now,
+        ...(params.notes !== undefined ? { subject_notes: params.notes ?? null } : {}),
+      }
+
+      if (row.contact_id) {
+        // ── CORRECTION on an existing contact — the field-level merge rule, per column ──
+        const { data: contact, error: contactError } = await supabase
+          .from("contacts")
+          .select("id, first_name, last_name, email, phone, address, enrichment_profile, notes")
+          .eq("id", row.contact_id)
+          .eq("brokerage_id", brokerageId)
+          .maybeSingle()
+        if (contactError) return { ok: false as const, error: `Could not read the contact: ${contactError.message}` }
+        if (!contact) return { ok: false as const, error: "The contact this scan produced is no longer in your brokerage." }
+        const c = contact as Record<string, unknown>
+        const { fieldProvenanceOf } = await import("@/lib/lead-pipeline/enrichment-column-map")
+        const provenance = fieldProvenanceOf(c.enrichment_profile as Record<string, unknown> | null)
+        const patch: Record<string, unknown> = {}
+        const applied: CardField[] = []
+        const kept: Array<{ field: CardField; reason: string }> = []
+        for (const f of CARD_FIELDS) {
+          const column = CARD_FIELD_TO_CONTACT_COLUMN[f]
+          if (!column) continue
+          const decision = decideCardFieldWrite({
+            field: f, existingValue: c[column], existingStamp: (provenance[column] as { source: string; matchConfidence: string | null } | undefined) ?? null,
+            incomingValue: extraction.fields[f], incomingConfidence: 1, incomingHuman: true,
+          })
+          if (decision.write) { patch[column] = extraction.fields[f]; applied.push(f) }
+          else if (decision.reason !== "no_incoming" && decision.reason !== "same_value") kept.push({ field: f, reason: decision.reason })
+        }
+        const keptLine = kept.length
+          ? `[card correction ${now.slice(0, 10)}] kept over the card: ${kept.map((k) => `${k.field.replace(/_/g, " ")} (${k.reason.replace(/_/g, " ")}: card said "${extraction.fields[k.field]}")`).join("; ")}`
+          : null
+        if (Object.keys(patch).length > 0 || keptLine) {
+          const { data: updated, error: updateError } = await supabase
+            .from("contacts")
+            .update({ ...patch, ...(keptLine ? { notes: [c.notes as string | null, keptLine].filter(Boolean).join("\n") } : {}), updated_at: now })
+            .eq("id", row.contact_id)
+            .eq("brokerage_id", brokerageId)
+            .select("id")
+          if (updateError) return { ok: false as const, error: `Could not apply the correction: ${updateError.message}` }
+          if (!Array.isArray(updated) || updated.length !== 1) return { ok: false as const, error: "The correction matched no contact row in your brokerage." }
+        }
+        await stampCardProvenance(supabase, { brokerageId, contactId: row.contact_id, extraction, human: true, actor: auth.userId })
+        const { error: scanUpdateError } = await supabase.from("business_card_scans").update(scanPatch).eq("id", row.id).eq("brokerage_id", brokerageId)
+        if (scanUpdateError) console.error("[business-card] confirmed scan row update failed:", scanUpdateError.message)
+        return { ok: true as const, mode: "corrected" as const, contactId: row.contact_id, applied, kept }
+      }
+
+      // ── A HELD scan — approve it, then route it exactly as a confident reading ──
+      const { data: approved, error: approveError } = await supabase
+        .from("business_card_scans")
+        .update(scanPatch)
+        .eq("id", row.id)
+        .eq("brokerage_id", brokerageId)
+        .select("id")
+      if (approveError) return { ok: false as const, error: `Could not approve the scan: ${approveError.message}` }
+      if (!Array.isArray(approved) || approved.length !== 1) return { ok: false as const, error: "The scan matched no row in your brokerage." }
+
+      const result = await routeClassifiedCard({
+        supabase, brokerageId, agentId: row.agent_id ?? agentId, actorUserId: auth.userId, scanId: row.id, extraction,
+        notes: params.notes ?? row.subject_notes ?? null, subjectTypePick: params.subjectType, human: true,
+        base: { scanId: row.id, extracted: extraction.fields, fieldConfidence: extraction.confidence, lowFields: [] },
+      })
+      return { ok: true as const, mode: "routed" as const, result }
+    },
+    {
+      settle: (r) => r.ok
+        ? { status: "executed", outcome: r.mode, provider: null }
+        : { status: "failed", outcome: "refused", error: r.error },
+      replay: () => ({ ok: false, error: "This confirmation was already recorded." }),
+    },
+    { client: supabase },
+  )
 }
 
 /**
- * WHO REVIEWED THE SCAN — nobody, and the row says so honestly.
- *
- * `business_card_scans.reviewed_by` FKs users(id) (scripts/schema-fk-map.ts),
- * and its ONLY writer is uploadBusinessCard above, which stamps a LITERAL
- * `null` beside `reviewed_at: now` (verified 2026-09-02: no other
- * `.from("business_card_scans")` insert/update in app/ or lib/ names the
- * column). There is no human review lane: `review_status` is the VIABILITY
- * GATE's verdict (name + a contact method present), and `reviewed_at` is the
- * moment that gate ran. A name resolver for a column no code path ever sets
- * would resolve nothing forever and read as a working feature — so none is
- * built. Both columns are read and returned so the surface can render
- * "auto-gated, not reviewed by a person" instead of implying a reviewer. If a
- * writer is ever added, the value arrives here non-null and the page's text
- * changes on its own — that is the moment to build the resolver, not before.
+ * WHO REVIEWED THE SCAN. `business_card_scans.reviewed_by` FKs users(id)
+ * (scripts/schema-fk-map.ts). Its writers: uploadBusinessCard above stamps a
+ * LITERAL `null` (the viability gate is automatic, `reviewed_at` is the moment
+ * it ran) and — since wave 141F — confirmBusinessCardScan stamps the confirming
+ * user's id and the moment they confirmed. `review_status` is the gate's
+ * verdict: approved (routed), pending (held for a human), rejected (not viable).
+ * Both columns are read and returned so the surface can render "confirmed by
+ * you" versus "auto-gated, not reviewed by a person" truthfully.
  */
 export async function getRecentScans(params: {
   agentId?: string  // ignored — derived from session
@@ -439,12 +750,12 @@ export async function getRecentScans(params: {
   created_at: string
   extracted_data: Record<string, string>
   confidence_score: number
-  review_status: "approved" | "rejected"
+  review_status: "approved" | "pending" | "rejected"
   contact_id: string | null
   raw_image_url: string
-  /** Always null today — see the note above this function. */
+  /** users.id of the human who confirmed the scan (confirmBusinessCardScan); null when auto-gated. */
   reviewed_by: string | null
-  /** When the viability gate ran (not a human review timestamp). */
+  /** When the viability gate ran, or when a human confirmed. */
   reviewed_at: string | null
   /** Read off the typed m617 column business_card_scans.card_subject_type
    *  (lib/contacts/card-classifier.ts CardSubjectType — one vocabulary, §6,
@@ -457,6 +768,10 @@ export async function getRecentScans(params: {
    *  rendered on the review surface beside class + classifiedBy. */
   subjectNotes: string | null
   classifiedBy: "picker" | "reader" | "notes" | "match" | "default" | null
+  /** Wave 141F — per-field reader confidence (extracted_data.field_confidence); {} for older scans. */
+  fieldConfidence: Partial<Record<CardField, number | null>>
+  /** Wave 141F — held for a human (review_status 'pending'). */
+  needsConfirmation: boolean
 }[]> {
   const auth = await requireCaller()
   if (!auth.ok) return []
@@ -484,12 +799,14 @@ export async function getRecentScans(params: {
 
   return ((data ?? []) as any[]).map((s) => {
     const ed = (s.extracted_data ?? {}) as Record<string, unknown>
+    const { field_confidence, needs_confirmation: _nc, ...rest } = ed
+    const fieldConfidence = (field_confidence && typeof field_confidence === "object" ? field_confidence : {}) as Partial<Record<CardField, number | null>>
     return {
       id: s.id as string,
       created_at: s.created_at as string,
-      extracted_data: ed as Record<string, string>,
+      extracted_data: rest as Record<string, string>,
       confidence_score: Number(s.confidence_score ?? 0),
-      review_status: s.review_status as "approved" | "rejected",
+      review_status: s.review_status as "approved" | "pending" | "rejected",
       contact_id: (s.contact_id as string | null) ?? null,
       raw_image_url: s.raw_image_url as string,
       reviewed_by: (s.reviewed_by as string | null) ?? null,
@@ -498,6 +815,8 @@ export async function getRecentScans(params: {
       subjectUserId: (s.subject_user_id as string | null | undefined) ?? null,
       subjectNotes: (s.subject_notes as string | null | undefined) ?? null,
       classifiedBy: (s.classified_by as "picker" | "reader" | "notes" | "match" | "default" | null | undefined) ?? null,
+      fieldConfidence,
+      needsConfirmation: s.review_status === "pending",
     }
   })
 }

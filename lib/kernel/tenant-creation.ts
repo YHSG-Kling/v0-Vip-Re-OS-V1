@@ -100,6 +100,7 @@
 import type { ProspectConversionResult } from "@/lib/platform/prospect-conversion"
 import type { TenantOwnerParams, TenantOwnerResult, UserProvisioningParams, ProvisioningResult } from "@/lib/kernel/users"
 import type { ActivationCheckoutInput, ActivationCheckoutResult } from "@/lib/billing/subscription-activation"
+import type { DeclaredAffiliationInput } from "@/lib/kernel/brokerage-identity"
 
 export type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
 export const CANONICAL_TIERS: readonly CanonicalTier[] = ["solo_agent", "team", "brokerage", "multi_location"]
@@ -153,6 +154,13 @@ export interface TenantCreationInput {
   /** Solo-agent only: is their managing brokerage / team also on the platform? */
   brokerageOnPlatform?: boolean
   teamOnPlatform?: boolean
+  /** BROKERAGE IDENTITY (wave 141A): the affiliated brokerage a solo/team subscriber DECLARES —
+   *  a name (+ optional licence / location / reference) stored on THEIR OWN tenant for business
+   *  context. CONTEXT ONLY: it never selects, merges or routes to another tenant (lib/kernel/
+   *  brokerage-identity.ts). Written AFTER the brokerage row exists, best-effort and reported
+   *  (extrasSkipped) — creation never fails on it, and a PGRST204 before m765 is applied is
+   *  reported, never swallowed. Ignored for an org tier (it IS the brokerage). */
+  declaredAffiliation?: DeclaredAffiliationInput | null
   /** Staff-picked platform_config_snapshots.id; null/omitted → the tier's live funnel snapshot. */
   snapshotId?: string | null
   /** The staff actor (users.id) or null for the self-serve signer. */
@@ -261,7 +269,10 @@ export interface TenantCreationDeps {
   /** The readiness contract (lib/kernel/tenant-readiness.ts evaluateTenantReadiness) — evaluated, never repaired, at the end of provisioning. */
   readiness?: (svc: any, brokerageId: string) => Promise<TenantReadinessVerdict>
   /** Lane 140D/E's operating-baseline initializer (lib/kernel/tenant-operating-baseline.ts). */
-  operatingBaseline?: (svc: any, brokerageId: string, opts: { actorUserId?: string | null }) => Promise<{ ok: boolean; websitePath: string | null; snapshotVersion: string | null; items: Array<{ key: string; status: string }>; refused: string[]; preserved: string[] }>
+  operatingBaseline?: (svc: any, brokerageId: string, opts: { actorUserId?: string | null }) => Promise<{ ok: boolean; websitePath: string | null; snapshotVersion: string | null; items: Array<{ key: string; status: string; detail?: string | null }>; refused: string[]; preserved: string[] }>
+  /** Wave 141B — the immediate-operations reporter (lib/kernel/immediate-operations.ts reportOperationOutcome):
+   *  the tenant_creation + website_creation post-condition verdicts, evidenced and routed. */
+  reportOutcome?: (svc: any, input: Record<string, unknown>) => Promise<unknown>
 }
 
 const DEFAULT_TRIAL_DAYS = 14
@@ -503,6 +514,14 @@ export async function createTenantCore(service: any, input: TenantCreationInput,
       steps: { tenant_core: { status: "done", at: nowIso, detail: slug }, admin_user: { status: "done", at: nowIso, detail: input.adoptExistingOwner ? "adopted" : (owner.inviteSent ? "invited" : "pinned") } },
     }
     await persistProvisioningRecord(service, brokerageId, record)
+
+    // THE DECLARED AFFILIATION (wave 141A) — on the subscriber's OWN row, context only, never a
+    // tenant link; an org tier has nothing to declare. Reported by name when refused.
+    if (input.declaredAffiliation && (input.tier === "solo_agent" || input.tier === "team")) {
+      const { declareBrokerageAffiliation } = await import("@/lib/kernel/brokerage-identity")
+      const declared = await declareBrokerageAffiliation(service, brokerageId, input.declaredAffiliation as DeclaredAffiliationInput & Record<string, unknown>, { userId, source: "signup" })
+      if (!declared.ok) { extrasSkipped.push("declared_affiliation"); console.warn("[tenant-creation] declared affiliation not stored (non-fatal):", declared.error, { brokerageId }) }
+    }
 
     const out = await runProvisioningSteps({ service, input, deps, brokerageId, userId, slug, brokerageName, adminEmail, tierId: tierId as string, waiver, record, extrasSkipped })
     return {
@@ -840,6 +859,7 @@ async function runProvisioningSteps(ctx: ProvisioningCtx): Promise<StepOutputs> 
   //    feature flags, managers and communications defaults, with evidence in
   //    brokerage_settings.settings.operating_baseline. Dynamic import: that
   //    module imports tenantWebsitePath/resolveUniqueTenantSlug from here.
+  let websiteItem: { status: string; detail?: string | null } | null = null
   await step("operating_baseline", async () => {
     const repair = deps.accountRepair ?? (await import("@/lib/kernel/users")).repairIncompleteAccountSetup
     const r = await repair(userId)
@@ -847,6 +867,8 @@ async function runProvisioningSteps(ctx: ProvisioningCtx): Promise<StepOutputs> 
     const baselineMod = await import("@/lib/kernel/tenant-operating-baseline")
     const baseline = deps.operatingBaseline ?? baselineMod.initializeTenantOperatingBaseline
     const base = await baseline(service, brokerageId, { actorUserId: input.callerUserId ?? userId })
+    // The WEBSITE item is the website_creation post-condition (reported below, after the verdict).
+    websiteItem = base.items.find((i) => i.key === "website") ?? null
     // The items the tenant cannot WORK without fail the step (resume re-runs it); a
     // best-effort item (isa_actor, starter assistant, comms defaults — the same class
     // steps 8a/8b already treat as non-fatal) is recorded, and the readiness
@@ -871,6 +893,36 @@ async function runProvisioningSteps(ctx: ProvisioningCtx): Promise<StepOutputs> 
   out.readiness = record.readiness
   if (provisioningComplete(record)) record.completed_at = nowIso()
   await persistProvisioningRecord(service, brokerageId, record)
+
+  // 11. IMMEDIATE OPERATION OUTCOME (wave 141B). The verdict above IS the post-condition re-read (every
+  //     readiness check re-reads the owning service's rows). Evidenced on lifecycle_events (success AND
+  //     failure) and, on failure, routed NOW to the owning manager — the 30-minute os-health sweep stays
+  //     the safety net. A thrown reporter never fails provisioning (the record already holds the truth).
+  try {
+    const report = deps.reportOutcome ?? (await import("@/lib/kernel/immediate-operations")).reportOperationOutcome
+    const pendingSteps = provisioningStepsPending(record)
+    const failedSteps = TENANT_PROVISIONING_STEPS.filter((s) => record.steps[s]?.status === "failed").map((s) => `${s}: ${record.steps[s]?.error ?? "refused"}`)
+    const ready = !!record.readiness?.ready
+    await report(service, {
+      operation: "tenant_creation", brokerageId, ok: pendingSteps.length === 0 && ready,
+      subjectType: "brokerage", subjectId: brokerageId, actorUserId: input.callerUserId ?? null, source: "system", platformVisible: true,
+      evidence: { provisioning_key: record.key, door: record.door, attempt: record.attempts, pending_steps: pendingSteps, failed_steps: failedSteps, readiness: record.readiness ?? null },
+      error: pendingSteps.length || !ready ? [failedSteps.join("; "), ...(record.readiness?.blockers ?? [])].filter(Boolean).join(" | ").slice(0, 500) || "not ready" : null,
+      tenantFacing: pendingSteps.length ? `workspace setup is still finishing (${pendingSteps.join(", ")}) — the OS is completing it` : ready ? null : "workspace setup needs a check before it is fully ready",
+    })
+    if (websiteItem) {
+      const w = websiteItem as { status: string; detail?: string | null }
+      await report(service, {
+        operation: "website_creation", brokerageId, ok: w.status !== "refused",
+        subjectType: "brokerage", subjectId: brokerageId, actorUserId: input.callerUserId ?? null, source: "system", platformVisible: true,
+        evidence: { website: w, website_path: tenantWebsitePath(slug) },
+        error: w.status === "refused" ? w.detail ?? "website slug refused" : null,
+        tenantFacing: w.status === "refused" ? "your website address could not be minted yet — the OS is retrying" : null,
+      })
+    }
+  } catch (err) {
+    console.warn("[tenant-creation] immediate operation outcome not reported:", (err as Error)?.message)
+  }
   return out
 }
 

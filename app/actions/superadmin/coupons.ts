@@ -92,6 +92,11 @@ export interface CouponListRow extends PlatformCoupon {
   last_redeemed_by_name: string | null
   last_redeemed_by_state: "resolved" | "unresolved" | "not_recorded" | "lookup_refused"
   last_redeemed_by_platform_staff: boolean
+  /** Redemptions Stripe CONFIRMED applying (platform_coupon_redemptions.stripe_applied_at,
+   *  m777 — stamped by the billing webhook). null = the column is not live yet. */
+  stripe_applied_redemptions: number | null
+  /** The Stripe discount id (di_…) most recently seen for this coupon (platform_coupon_redemptions.stripe_discount_id, m777). */
+  last_stripe_discount_id: string | null
   summary: string
 }
 
@@ -103,9 +108,12 @@ export async function listCouponsAction(): Promise<
   if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
   const svc = createServiceClient()
 
-  const [couponsRes, redemptionsRes] = await Promise.all([
+  // stripe_applied_at (m777, wave 141H) is read through a SECOND select so the list keeps
+  // working before the migration is applied: a refused column read falls back to "unknown".
+  const [couponsRes, redemptionsRes, stripeAppliedRes] = await Promise.all([
     svc.from("platform_coupons").select(COUPON_COLS).order("created_at", { ascending: false }),
     svc.from("platform_coupon_redemptions").select("coupon_id, redeemed_at, redeemed_by, brokerage_id"),
+    svc.from("platform_coupon_redemptions").select("coupon_id, stripe_applied_at, stripe_discount_id").not("stripe_applied_at", "is", null),
   ])
   if (couponsRes.error) return { ok: false, error: couponsRes.error.message }
   // The ledger's error is read: a refused ledger read used to render every
@@ -144,6 +152,17 @@ export async function listCouponsAction(): Promise<
     }
   }
 
+  // How many of a coupon's redemptions Stripe has CONFIRMED applying (the webhook's reconciliation
+  // stamp) — null = the column is not there yet (m777 not applied), never a silent 0.
+  const stripeAppliedByCoupon = new Map<string, number>()
+  const lastStripeDiscountByCoupon = new Map<string, string>()
+  if (!stripeAppliedRes.error) {
+    for (const r of (stripeAppliedRes.data ?? []) as Array<{ coupon_id: string; stripe_discount_id: string | null }>) {
+      stripeAppliedByCoupon.set(r.coupon_id, (stripeAppliedByCoupon.get(r.coupon_id) ?? 0) + 1)
+      if (r.stripe_discount_id) lastStripeDiscountByCoupon.set(r.coupon_id, r.stripe_discount_id)
+    }
+  }
+
   const coupons = ((couponsRes.data ?? []) as any[]).map((c) => {
     const agg = byCoupon.get(c.id) ?? { count: 0, last: null, lastBy: null, lastBrokerageId: null }
     const redeemer = agg.lastBy ? redeemerById.get(agg.lastBy) ?? null : null
@@ -162,6 +181,8 @@ export async function listCouponsAction(): Promise<
       // Platform staff = carries a platform_role AND is not a member of the
       // brokerage the redemption landed on.
       last_redeemed_by_platform_staff: !!redeemer && !!redeemer.platformRole && redeemer.brokerageId !== agg.lastBrokerageId,
+      stripe_applied_redemptions: stripeAppliedRes.error ? null : (stripeAppliedByCoupon.get(c.id) ?? 0),
+      last_stripe_discount_id: lastStripeDiscountByCoupon.get(c.id) ?? null,
       summary: describeCoupon(c),
     } as CouponListRow
   })
@@ -300,21 +321,14 @@ export async function redeemCouponForBrokerageAction(couponId: string, brokerage
   const check = validateCouponForRedemption(coupon, { tier, now: new Date(), existingRedemption: !!existingRes.data })
   if (!check.ok) return { ok: false, error: check.message }
 
-  // 1) Redemption row first — the unique constraint is the concurrency guard.
-  const { error: insErr } = await svc.from("platform_coupon_redemptions").insert({
-    coupon_id: couponId,
-    brokerage_id: brokerageId,
-    redeemed_by: gate.userId,
-  })
-  if (insErr) {
-    if ((insErr as any).code === "23505") return { ok: false, error: `This tenant already redeemed ${coupon.code}` }
-    return { ok: false, error: insErr.message }
-  }
-
-  // 2) redeemed_count = COUNT(ledger) — derived from the source of truth.
-  const { count } = await svc.from("platform_coupon_redemptions").select("id", { count: "exact", head: true }).eq("coupon_id", couponId)
-  const { error: cntErr } = await svc.from("platform_coupons").update({ redeemed_count: count ?? coupon.redeemed_count + 1 }).eq("id", couponId)
-  if (cntErr) console.error("[coupons] redeemed_count sync failed (ledger row exists):", cntErr.message)
+  // 1+2) Redemption row first (the unique constraint is the concurrency guard), then
+  // redeemed_count = COUNT(ledger). The two-write idiom that stood here is the ORIGINAL;
+  // it now lives ONCE in lib/billing/discount-codes.ts recordCouponRedemption (wave 141H),
+  // shared with the tenant save-offer and the checkout/live-subscription appliers.
+  const { recordCouponRedemption } = await import("@/lib/billing/discount-codes")
+  const redemption = await recordCouponRedemption(svc, { couponId, brokerageId, redeemedBy: gate.userId ?? null, fallbackCount: coupon.redeemed_count })
+  if (!redemption.ok) return { ok: false, error: redemption.error ?? "The redemption could not be recorded" }
+  if (redemption.already) return { ok: false, error: `This tenant already redeemed ${coupon.code}` }
 
   await audit(gate.userId!, "coupon.redeem", couponId, {
     code: coupon.code,

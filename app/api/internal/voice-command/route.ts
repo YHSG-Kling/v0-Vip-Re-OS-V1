@@ -747,14 +747,20 @@ Respond with ONLY the intent string, nothing else.`,
         if (!ex.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ex.email)) {
           spokenResponse = "I need a valid email to create the user — try 'create an agent named Jane Doe at jane@example.com'."
         } else {
-          // Resolve the target brokerage: a named one (by name), else the superadmin's own.
+          // TOMBSTONE (wave 141A — owner: "BROKERAGE NAME MATCH IS NEVER PROOF OF SAME TENANT; never
+          // merge by name; identity uses canonical IDs"): this branch resolved a SPOKEN brokerage name
+          // to a tenant id with an `.ilike("name", …)` read on brokerages — the one name-equality router
+          // in lib/ + app/, and a cross-tenant write keyed on a label (two tenants may share a brand).
+          // DELETED; survivor: lib/kernel/brokerage-identity.ts (the rule). A named brokerage is now
+          // refused with the canonical route: act as that tenant in the god console and run the command
+          // there, so the session tenant is the target. The superadmin's own session tenant stays the
+          // only implicit target.
           let targetBrokerageId: string | null = brokerageId
-          if (ex.brokerageName) {
-            const { data: brk } = await service.from("brokerages").select("id, name").ilike("name", `%${ex.brokerageName}%`).is("deleted_at", null).limit(1).maybeSingle()
-            targetBrokerageId = (brk as any)?.id ?? null
-          }
+          if (ex.brokerageName) targetBrokerageId = null
           if (!targetBrokerageId) {
-            spokenResponse = ex.brokerageName ? `I couldn't find a brokerage matching "${ex.brokerageName}".` : "Which brokerage should I add them to?"
+            spokenResponse = ex.brokerageName
+              ? `A brokerage name isn't an identity — two tenants can share one. Open "${ex.brokerageName}" in the god console and act as that tenant, then ask me again.`
+              : "Which brokerage should I add them to?"
           } else {
             const res = await createTenantUserAction({
               brokerageId: targetBrokerageId, email: ex.email,

@@ -67,7 +67,7 @@ export function TeamHeatmapPanel({
           {sortedMembers.slice(0, 20).map((member) => (
             <div
               key={member.id}
-              className={`h-6 w-6 rounded ${getActivityColor(member.activityScore)} cursor-pointer transition-transform hover:scale-110`}
+              className={`h-6 w-6 rounded ${getActivityColor(member.activityScore)} transition-transform hover:scale-110`}
               title={`${member.name}: ${member.activityScore}% activity`}
             />
           ))}

@@ -52,6 +52,10 @@ export interface SignupBrokerageInput {
   /** Solo-agent only: is the agent's managing brokerage / team also on the platform? */
   brokerageOnPlatform?: boolean
   teamOnPlatform?:      boolean
+  /** Solo/team only (wave 141A): the brokerage they are affiliated with, DECLARED for business
+   *  context on their own tenant — never a lookup, never a merge (lib/kernel/brokerage-identity.ts).
+   *  Edited later under Settings → General → Brokerage affiliation. */
+  affiliatedBrokerage?: { name: string; licenseNumber?: string | null; licenseState?: string | null; city?: string | null; state?: string | null } | null
   /**
    * @deprecated NOT USED to choose the snapshot any more, and deliberately so.
    *
@@ -223,6 +227,9 @@ export async function signupBrokerageAction(
     billing,
     brokerageOnPlatform: input.brokerageOnPlatform,
     teamOnPlatform: input.teamOnPlatform,
+    declaredAffiliation: input.affiliatedBrokerage?.name?.trim()
+      ? { name: input.affiliatedBrokerage.name, licenseNumber: input.affiliatedBrokerage.licenseNumber ?? null, licenseState: input.affiliatedBrokerage.licenseState ?? null, city: input.affiliatedBrokerage.city ?? null, state: input.affiliatedBrokerage.state ?? null }
+      : null,
     callerUserId: null,
   })
   if (!created.ok || !created.brokerageId || !created.userId) {

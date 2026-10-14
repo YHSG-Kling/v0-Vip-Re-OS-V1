@@ -244,13 +244,18 @@ export async function retrySubscriberInvite(params: {
     }
   }
 
+  // ROLE SAFETY (wave 141B): the invite metadata seeds users.user_type through the auth trigger. A target
+  // row with no user_type is REFUSED — it is never re-mailed as an admin by default.
+  const targetType = (target.user_type as string | null) ?? null
+  if (!targetType) return { success: false, error: "That user's row carries no user type — refusing to resend an admin invite by default. Fix the users row first." }
+
   // supabase-js RESOLVES a refused invite with { error } — it does not throw, so
   // the old bare try/catch returned {success:true} for sends that never happened.
   try {
     const { error: sendErr } = await service.auth.admin.inviteUserByEmail(email, {
       data: {
         brokerage_id: params.brokerageId,
-        user_type: (target.user_type as string | null) ?? "admin",
+        user_type: targetType,
       },
       redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
     })
@@ -259,7 +264,7 @@ export async function retrySubscriberInvite(params: {
     // it belongs in the same audit trail as the provisioning that preceded it.
     await auditStaffAction(gate, "subscriber.invite.resent", params.brokerageId, {
       admin_email: email,
-      user_type: (target.user_type as string | null) ?? "admin",
+      user_type: targetType,
     })
     return { success: true }
   } catch (err: any) {

@@ -565,12 +565,20 @@ export default function PortalSettingsPage({ contact, contactId, languageOptions
               <CardDescription>Control your data and privacy preferences</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="flex items-center justify-between">
+              {/* HONEST STATE, not a dead toggle (wave 141, lane 141I ui-wiring census): these two
+                  switches were `<Switch defaultChecked />` with no handler and no reader anywhere —
+                  a client flipped them and nothing changed. No preference column or enforcing
+                  reader exists for either (the agent sees portal activity by design, CLAUDE.md §5),
+                  so the control is shown disabled with the truth beside it rather than pretending
+                  to save. Wiring it is an OWNER call (a privacy rule across every agent surface),
+                  recorded in the lane notes. */}
+              <div className="flex items-center justify-between gap-4">
                 <div className="space-y-0.5">
                   <Label className="text-base">Share Activity with Agent</Label>
-                  <p className="text-sm text-muted-foreground">Allow your agent to see your property search activity</p>
+                  <p className="text-sm text-muted-foreground">Your agent can see your property search activity so they can help with your search.</p>
+                  <p className="text-xs text-muted-foreground">Not available yet — this preference can&apos;t be changed from the portal.</p>
                 </div>
-                <Switch defaultChecked />
+                <Switch defaultChecked disabled aria-label="Share activity with agent (not available yet)" />
               </div>
 
               <Separator />
@@ -578,12 +586,13 @@ export default function PortalSettingsPage({ contact, contactId, languageOptions
               {/* Family Search Visibility - Only for family-oriented personas */}
               {["first_time_buyer", "military_buyer", "upsizing", "relocating"].includes(contact.contact_persona || "") && (
                 <>
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-4">
                     <div className="space-y-0.5">
                       <Label className="text-base">Family Search Visibility</Label>
-                      <p className="text-sm text-muted-foreground">Allow family members to see your ratings and comments</p>
+                      <p className="text-sm text-muted-foreground">Family members you invite can see your ratings and comments.</p>
+                      <p className="text-xs text-muted-foreground">Not available yet — this preference can&apos;t be changed from the portal.</p>
                     </div>
-                    <Switch defaultChecked />
+                    <Switch defaultChecked disabled aria-label="Family search visibility (not available yet)" />
                   </div>
 
                   <Separator />

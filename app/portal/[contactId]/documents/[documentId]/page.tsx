@@ -128,7 +128,7 @@ export default function DocumentViewerPage() {
   const isPdf = document.file_type?.includes("pdf")
 
   return (
-    <div className="flex h-[calc(100vh-4rem)]">
+    <div className="flex flex-col lg:flex-row lg:h-[calc(100vh-4rem)]">
       {/* Left: Document Preview */}
       <div className="flex-1 bg-muted/30 p-6 overflow-auto">
         <div className="mb-4">
@@ -151,8 +151,8 @@ export default function DocumentViewerPage() {
         </div>
       </div>
 
-      {/* Right: Educational Sidebar */}
-      <div className="w-96 bg-background border-l overflow-auto">
+      {/* Right: Educational Sidebar — stacks under the preview on phones (wave 141, 141I mobile census) */}
+      <div className="w-full lg:w-96 bg-background border-t lg:border-t-0 lg:border-l overflow-auto">
         <div className="p-6 space-y-6">
           {/* Document Info */}
           <div>

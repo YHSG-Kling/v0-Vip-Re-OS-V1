@@ -145,13 +145,21 @@ export interface ActivationCheckoutInput {
   customerEmail?: string | null
   /** A platform-staff waiver the caller has ALREADY audited (tenant-creation.ts). */
   waiveSetupFee?: boolean
+  /** wave 141H: a discount code typed for this checkout. Absent → the signup coupon on
+   *  brokerages.billing_metadata.coupon is applied when one exists; with neither, the hosted
+   *  page takes a Stripe promotion code itself (allow_promotion_codes). */
+  discountCode?: string | null
 }
 
 export type ActivationCheckoutResult =
-  | { ok: true; url: string; sessionId: string; setupFeeCents: number; setupFeeWaived: boolean; recurringCents: number }
+  | { ok: true; url: string; sessionId: string; setupFeeCents: number; setupFeeWaived: boolean; recurringCents: number
+      /** The discount Stripe will apply (code + "20% off for 3 months"), or null. The AMOUNT is Stripe's invoice. */
+      discount: { code: string; summary: string } | null }
   /** `priceNotConfigured` (wave 140J): the catalogue row holds no price for the cycle — refused
-   *  BEFORE Stripe, platform incident raised, `error` is the tenant's sentence. */
-  | { ok: false; error: string; notConfigured?: boolean; customPricing?: boolean; priceNotConfigured?: boolean }
+   *  BEFORE Stripe, platform incident raised, `error` is the tenant's sentence.
+   *  `discountRefused` (wave 141H): the code is invalid / expired / ineligible — refused BEFORE any
+   *  session exists, `error` names why in the tenant's words. */
+  | { ok: false; error: string; notConfigured?: boolean; customPricing?: boolean; priceNotConfigured?: boolean; discountRefused?: boolean }
 
 export async function createActivationCheckout(svc: any, input: ActivationCheckoutInput): Promise<ActivationCheckoutResult> {
   const { data: tier, error: tierErr } = await svc
@@ -195,6 +203,20 @@ export async function createActivationCheckout(svc: any, input: ActivationChecko
   const recurringCents = input.billingCycle === "annual"
     ? Number((tier as { annual_price_cents?: number | null }).annual_price_cents ?? 0)
     : Number((tier as { monthly_price_cents?: number | null }).monthly_price_cents ?? 0)
+
+  // DISCOUNT (wave 141H) — code → Stripe validation → eligibility → `discounts`, through the ONE
+  // resolver (lib/billing/discount-codes.ts). A refused code is an IMMEDIATE, specific refusal
+  // BEFORE any session exists; a signup coupon rides along without the tenant retyping it; with
+  // neither, Stripe's own page takes a promotion code (allow_promotion_codes — Stripe validates).
+  // The line items are ad-hoc price_data (no catalogue product id), so a product-restricted
+  // coupon is refused as such rather than silently dropped by Stripe at session creation.
+  const { resolveDiscountForCheckout } = await import("./discount-codes")
+  const discount = await resolveDiscountForCheckout(svc, {
+    brokerageId: input.brokerageId, tier: String((tier as { tier_name: string }).tier_name), code: input.discountCode ?? null,
+    productIds: [], amountCents: recurringCents + setupFeeCents, currency: "usd", customerId, isFirstTransaction: customerId ? null : true,
+  })
+  if (discount.status === "refused") return { ok: false, error: discount.message, discountRefused: true }
+  const discountParams = discount.status === "applied" ? discount.params : { allow_promotion_codes: true as const }
   const metadata = {
     brokerage_id: input.brokerageId,
     tier_id: input.tierId,
@@ -215,13 +237,18 @@ export async function createActivationCheckout(svc: any, input: ActivationChecko
       // One-time prices in subscription-mode line_items land on the initial
       // invoice only (Stripe Checkout docs) — that IS the setup fee.
       line_items: [...lineItems, ...addInvoiceItems] as never,
+      // `discounts` and `allow_promotion_codes` are mutually exclusive on a Checkout Session.
+      ...(discountParams as unknown as Record<string, never>),
       subscription_data: { metadata },
       metadata,
       success_url: input.successUrl,
       cancel_url: input.cancelUrl,
     })
     if (!session.url) return { ok: false, error: "Stripe returned no hosted checkout URL" }
-    return { ok: true, url: session.url, sessionId: session.id, setupFeeCents, setupFeeWaived: input.waiveSetupFee === true, recurringCents }
+    return {
+      ok: true, url: session.url, sessionId: session.id, setupFeeCents, setupFeeWaived: input.waiveSetupFee === true, recurringCents,
+      discount: discount.status === "applied" ? { code: discount.code, summary: discount.summary } : null,
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     // No platform Stripe credential is an honest "not configured", not a bug —

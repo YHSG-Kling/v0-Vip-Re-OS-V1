@@ -523,9 +523,9 @@ export function KnowledgeBaseClient({
   }
 
   return (
-    <div className="flex h-full">
-      {/* Left Sidebar - Category Filter */}
-      <div className="w-64 shrink-0 border-r bg-muted/30 p-4">
+    <div className="flex flex-col md:flex-row h-full">
+      {/* Left Sidebar - Category Filter (stacks above the content on phones — wave 141, 141I mobile census) */}
+      <div className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r bg-muted/30 p-4">
         {/* EMBEDDING QUEUE — ported from the removed /dashboard/admin/knowledge, the
             second "Knowledge Base" screen. An article is only searchable by the AI
             once its embedding lands, so a stuck queue explains "I uploaded it and
@@ -878,7 +878,7 @@ export function KnowledgeBaseClient({
 
       {/* Edit/Create Sheet */}
       <Sheet open={isSheetOpen} onOpenChange={setIsSheetOpen}>
-        <SheetContent className="w-[500px] sm:max-w-[500px]">
+        <SheetContent className="w-full sm:w-[500px] sm:max-w-[500px]">
           <SheetHeader>
             <SheetTitle>
               {editingArticle ? 'Edit Article' : 'New Article'}
@@ -986,7 +986,7 @@ export function KnowledgeBaseClient({
 
       {/* Knowledge Article editor (knowledge_articles) */}
       <Sheet open={isArticleSheetOpen} onOpenChange={setIsArticleSheetOpen}>
-        <SheetContent className="w-[560px] sm:max-w-[560px] overflow-y-auto">
+        <SheetContent className="w-full sm:w-[560px] sm:max-w-[560px] overflow-y-auto">
           <SheetHeader>
             <SheetTitle>
               {editingKnowledgeId ? 'Edit Knowledge Article' : 'New Knowledge Article'}

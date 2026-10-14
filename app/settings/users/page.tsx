@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { UsersManagementClient } from "./users-management-client"
 import { SsoConnectionCard } from "./sso-connection-card"
+import { BrokerageAdoptionCard } from "./brokerage-adoption-card"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 // Read on the SERVER so the ~1600-line generated vocabulary cache stays out of
 // the client bundle; only the ~15 admissible user_type strings cross.
@@ -73,6 +74,8 @@ export default async function SettingsUsersPage() {
         tier={planTier}
         storableUserTypes={CHECK_VOCABULARIES.users?.user_type}
       />
+      {/* Adoption of an independent agent / team — roster work (wave 141A); hidden on a solo plan. */}
+      <BrokerageAdoptionCard />
       {/* SSO / SAML — team access policy lives with team management. */}
       <SsoConnectionCard />
     </div>

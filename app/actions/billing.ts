@@ -149,21 +149,13 @@ export async function acceptCancellationSaveOfferAction(): Promise<
       return { ok: false, error: detail || "No save-offer is available for this account" }
     }
 
-    // 1) Redemption row first — the unique constraint is the double-redeem guard.
-    const { error: insErr } = await svc.from("platform_coupon_redemptions").insert({
-      coupon_id: coupon.id,
-      brokerage_id: gate.brokerageId,
-      redeemed_by: gate.userId,
-    })
-    if (insErr) {
-      if ((insErr as any).code === "23505") return { ok: false, error: "This offer was already redeemed for your account" }
-      return { ok: false, error: insErr.message }
-    }
-
-    // 2) redeemed_count = COUNT(ledger) — derived, never a stale +1.
-    const { count } = await svc.from("platform_coupon_redemptions").select("id", { count: "exact", head: true }).eq("coupon_id", coupon.id)
-    const { error: cntErr } = await svc.from("platform_coupons").update({ redeemed_count: count ?? (coupon.redeemed_count ?? 0) + 1 }).eq("id", coupon.id)
-    if (cntErr) console.error("[save-offer] redeemed_count sync failed (ledger row exists):", cntErr.message)
+    // 1+2) Redemption row first (UNIQUE is the double-redeem guard), then redeemed_count =
+    // COUNT(ledger) — the ONE writer (wave 141H: lib/billing/discount-codes.ts
+    // recordCouponRedemption; the inline two-write copy that stood here is TOMBSTONED there).
+    const { recordCouponRedemption } = await import("@/lib/billing/discount-codes")
+    const redemption = await recordCouponRedemption(svc, { couponId: coupon.id, brokerageId: gate.brokerageId, redeemedBy: gate.userId, fallbackCount: coupon.redeemed_count ?? 0 })
+    if (!redemption.ok) return { ok: false, error: redemption.error ?? "The offer could not be recorded" }
+    if (redemption.already) return { ok: false, error: "This offer was already redeemed for your account" }
 
     // 3) Push the discount to Stripe (skips honestly when mock/unlinked).
     const { stripeApplyCoupon } = await import("@/lib/billing/stripe-subscription-ops")
@@ -290,7 +282,12 @@ export async function getInvoiceHistory(_brokerageId?: string, year?: number) {
 export async function startSubscriptionCheckout(
   _brokerageId: string, // ignored — derived from session
   tierId: string,
-  billingCycle: "monthly" | "annual"
+  billingCycle: "monthly" | "annual",
+  /** wave 141H: a discount code typed in the upgrade modal. Absent → the signup coupon on the
+   *  account applies when one exists; with neither, the embedded page takes a Stripe promotion
+   *  code itself (allow_promotion_codes). A refused code THROWS the tenant's sentence before any
+   *  Stripe customer or session exists. */
+  discountCode?: string | null,
 ) {
   // AUTH GATE — was creating Stripe checkout sessions on any brokerage id,
   // letting a caller initiate paid subscription changes for tenants they
@@ -359,6 +356,18 @@ export async function startSubscriptionCheckout(
 
   let customerId = existingSub?.stripe_customer_id
 
+  // DISCOUNT (wave 141H): code → Stripe validation → eligibility → `discounts`, through the ONE
+  // resolver (lib/billing/discount-codes.ts) — BEFORE a customer or session exists, so a refusal
+  // has no side effect. Ad-hoc price_data lines carry no catalogue product (productIds []).
+  const { resolveDiscountForCheckout } = await import("@/lib/billing/discount-codes")
+  const discount = await resolveDiscountForCheckout(createServiceClient(), {
+    brokerageId, tier: String(tier.tier_name ?? ""), code: discountCode ?? null, productIds: [],
+    amountCents: Number(billingCycle === "annual" ? tier.annual_price_cents : tier.monthly_price_cents) + Number(tier.setup_fee_cents ?? 0),
+    currency: "usd", customerId: customerId ?? null, isFirstTransaction: customerId ? null : true,
+  })
+  if (discount.status === "refused") throw new Error(discount.message)
+  const discountParams = discount.status === "applied" ? discount.params : { allow_promotion_codes: true as const }
+
   // Create customer if not exists
   if (!customerId) {
     const { stripe } = await import("@/lib/stripe")
@@ -393,6 +402,8 @@ export async function startSubscriptionCheckout(
     // subscription_data.add_invoice_items, a parameter Checkout Sessions reject
     // — see lib/billing/subscription-activation.ts CheckoutConfig.
     line_items: [...lineItems, ...addInvoiceItems] as any,
+    // `discounts` and `allow_promotion_codes` are mutually exclusive on a Checkout Session.
+    ...(discountParams as any),
     subscription_data: {
       metadata: {
         brokerage_id: brokerageId,
@@ -824,4 +835,77 @@ export async function changePlanTierAction(newTier: string): Promise<
 
   await auditSeatDoor(svc, auth, "subscription.tier_changed_by_tenant", auth.brokerageId, { from: fromTier, to: newTier, direction, stripe_applied: stripeApplied, stripe_skipped: stripeSkipped, producers: usage.seatCount })
   return { ok: true, from: fromTier, to: newTier, direction, stripeApplied, stripeSkipped }
+}
+
+/**
+ * APPLY A DISCOUNT CODE TO THE LIVE SUBSCRIPTION (wave 141H) — the door for
+ * "seat packages" and every later invoice: a Stripe subscription-level discount
+ * reaches the plan item, the seat-package item (stripeSetSeatPackages above) and
+ * the renewals, per Stripe's own applies_to rules. code → Stripe validation →
+ * eligibility (the subscription's actual product ids) → stripeApplyCoupon (the
+ * save-offer's survivor) → redemption ledger → action ledger + audit. Tenant from
+ * the SESSION, COMMERCE roster (it moves the bill). Refuses IMMEDIATELY and
+ * specifically; never computes a price — the next Stripe invoice is the amount.
+ */
+export async function applyDiscountCodeAction(code: string): Promise<
+  | { ok: true; code: string; summary: string; stripeApplied: boolean }
+  | { ok: false; error: string }
+> {
+  const auth = await requireTenantCommerceAdmin()
+  if (!auth.ok) return auth
+  const typed = String(code ?? "").trim()
+  if (!typed) return { ok: false, error: "Enter a code to apply it" }
+  const svc = createServiceClient()
+
+  const { data: brokerage, error: bErr } = await svc.from("brokerages").select("plan_tier").eq("id", auth.brokerageId).maybeSingle()
+  if (bErr || !brokerage) return { ok: false, error: `Your plan could not be read${bErr ? ` (${bErr.message})` : ""} — nothing changed.` }
+  const { data: subRow, error: sErr } = await svc.from("subscriptions").select("id, stripe_subscription_id, stripe_customer_id, status")
+    .eq("brokerage_id", auth.brokerageId).in("status", ["active", "trialing", "past_due", "paused"]).order("updated_at", { ascending: false }).limit(1).maybeSingle()
+  if (sErr) return { ok: false, error: `Your subscription could not be read (${sErr.message}) — nothing changed.` }
+  const stripeSubId = (subRow as { stripe_subscription_id?: string | null } | null)?.stripe_subscription_id ?? null
+  if (!subRow || !stripeSubId) return { ok: false, error: "Your plan is not linked to Stripe yet — a code is applied at checkout when you add billing." }
+
+  // The products actually on the subscription — a product-restricted coupon is judged against them.
+  const { stripeRetrieveSubscription, stripeApplyCoupon } = await import("@/lib/billing/stripe-subscription-ops")
+  const live = await stripeRetrieveSubscription(stripeSubId)
+  const productIds: string[] = live.ok
+    ? (((live.sub as any)?.items?.data ?? []) as Array<{ price?: { product?: string | { id?: string } } }>)
+        .map((it) => (typeof it.price?.product === "string" ? it.price.product : it.price?.product?.id ?? null))
+        .filter((p): p is string => !!p)
+    : []
+
+  const { resolveDiscountForCheckout, recordCouponRedemption } = await import("@/lib/billing/discount-codes")
+  const discount = await resolveDiscountForCheckout(svc, {
+    brokerageId: auth.brokerageId, tier: (brokerage as { plan_tier?: string | null }).plan_tier ?? null, code: typed, productIds,
+    customerId: (subRow as { stripe_customer_id?: string | null }).stripe_customer_id ?? null, isFirstTransaction: false,
+  })
+  if (discount.status === "refused") return { ok: false, error: discount.message }
+  if (discount.status === "skipped") return { ok: false, error: discount.message }
+  if (discount.status !== "applied") return { ok: false, error: "Enter a code to apply it" }
+
+  // Consequential (FINANCIAL): claimed → applied on Stripe → settled, once per (code, subscription).
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const subscriptionId = (subRow as { id: string }).id
+  const op = await withActionLedger<{ applied: boolean; skipped: boolean; error?: string; replayed?: boolean }>(
+    { brokerageId: auth.brokerageId, action: "billing.subscription.apply_discount_code", actor: { type: "user", userId: auth.userId },
+      subject: { type: "subscription", id: subscriptionId, ref: discount.code }, cycle: `discount:${discount.code}:${stripeSubId}`,
+      reasonCode: "HUMAN_REQUESTED", reasonDetail: `discount code ${discount.code} applied by the tenant`, riskClass: "FINANCIAL",
+      systemSource: "billing_lifecycle", detail: { code: discount.code, source: discount.source, stripe_coupon_id: discount.stripeCouponId, promotion_code_id: discount.promotionCodeId, product_ids: productIds } },
+    () => stripeApplyCoupon(stripeSubId, discount.stripeCouponId, { promotionCodeId: discount.promotionCodeId }),
+    {
+      settle: (r) => ({ status: r.applied ? "executed" : "failed", outcome: r.applied ? "applied" : r.skipped ? "stripe_unconfigured" : "stripe_refused", provider: "stripe", providerRef: discount.promotionCodeId ?? discount.stripeCouponId, error: r.error ?? null }),
+      replay: () => ({ applied: true, skipped: false, replayed: true }),
+    },
+  )
+  if (!op.applied) return { ok: false, error: op.skipped ? "Payments are not configured in this environment — the code could not be applied." : `Stripe refused the code: ${op.error ?? "unknown"}. Nothing changed.` }
+
+  // The redemption ledger (platform coupons only; a Stripe-only promotion code has no platform row).
+  if (discount.couponId) {
+    const r = await recordCouponRedemption(svc, { couponId: discount.couponId, brokerageId: auth.brokerageId, redeemedBy: auth.userId })
+    if (!r.ok) console.error("[billing] discount applied on Stripe but the redemption ledger refused:", r.error)
+  }
+  await auditSeatDoor(svc, auth, "subscription.discount_code_applied", auth.brokerageId, { code: discount.code, source: discount.source, stripe_subscription_id: stripeSubId, promotion_code_id: discount.promotionCodeId, stripe_coupon_id: discount.stripeCouponId, replayed: op.replayed === true })
+  const { revalidatePath } = await import("next/cache")
+  revalidatePath("/settings/billing")
+  return { ok: true, code: discount.code, summary: discount.summary, stripeApplied: true }
 }

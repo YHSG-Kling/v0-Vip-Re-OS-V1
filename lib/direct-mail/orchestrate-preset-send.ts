@@ -29,6 +29,8 @@ import "server-only"
 // fetches unauthenticated (lib/providers/dispatch.ts hands Lob these URLs).
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import QRCode from "qrcode"
+// ONE encoding contract (wave 141F): a printed postcard gets the spec's 4-module quiet zone.
+import { qrEncodeOptions } from "@/lib/marketing/qr-contract"
 import { selectComposition, renderStill } from "@remotion/renderer"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { dispatchDirectMail } from "@/lib/providers/dispatch"
@@ -136,10 +138,7 @@ export async function orchestratePresetSend(
 
       let qrCodeDataUrl: string | null = null
       if (args.qrScanUrl) {
-        qrCodeDataUrl = await QRCode.toDataURL(args.qrScanUrl, {
-          width: 720, margin: 1, errorCorrectionLevel: "M",
-          color: { dark: "#000000", light: "#ffffff" },
-        })
+        qrCodeDataUrl = await QRCode.toDataURL(args.qrScanUrl, qrEncodeOptions(720))
       }
 
       const entry = path.join(process.cwd(), "remotion", "Root.tsx")

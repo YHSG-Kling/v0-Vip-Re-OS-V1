@@ -172,6 +172,67 @@ export function UsersManagementClient({ users: initialUsers, currentUserId, brok
           </div>
         </CardHeader>
         <CardContent className="p-0">
+          {/* MOBILE ADAPTS, never merely shrinks (owner, wave 141; lane 141I): below md the seat list is a
+              card list with the same two actions; the table below is the ≥ md rendering. One data source,
+              one pair of handlers, two layouts. */}
+          <div className="md:hidden divide-y">
+            {filtered.length === 0 ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">No users found</p>
+            ) : (
+              filtered.map(u => (
+                <div key={u.id} className="flex items-start justify-between gap-3 px-4 py-3">
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium truncate">
+                        {[u.first_name, u.last_name].filter(Boolean).join(" ") || "—"}
+                      </span>
+                      {u.id === currentUserId && (
+                        <Badge variant="outline" className="text-xs">You</Badge>
+                      )}
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${ROLE_COLORS[u.user_type ?? "agent"] ?? "bg-gray-100 text-gray-800"}`}>
+                        {u.user_type ?? "agent"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground truncate">{u.email}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Joined {u.created_at ? new Date(u.created_at).toLocaleDateString() : "—"}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => {
+                        setEditingUser(u)
+                        setEditRole(u.user_type ?? "agent")
+                        setError(null)
+                      }}
+                      disabled={u.id === currentUserId}
+                      title="Edit role"
+                      aria-label="Edit role"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => {
+                        setDeletingUser(u)
+                        setError(null)
+                      }}
+                      disabled={u.id === currentUserId}
+                      className="text-destructive hover:text-destructive"
+                      title="Remove user"
+                      aria-label="Remove user"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="hidden md:block">
           <Table>
             <TableHeader>
               <TableRow>
@@ -249,6 +310,7 @@ export function UsersManagementClient({ users: initialUsers, currentUserId, brok
               )}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
 

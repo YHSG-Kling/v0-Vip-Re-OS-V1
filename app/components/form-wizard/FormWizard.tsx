@@ -1371,7 +1371,7 @@ function StatePackagePanel({ mode, stateCode, myForms, selected, onSelect }: {
 
 // ─── Step 3 — Fill Forms ─────────────────────────────────────────────────────
 
-interface FilledFormState { loading: boolean; filledPath?: string; previewUrl?: string; filledFields?: string[]; unresolvedFields?: string[]; fields?: Array<{ name: string; value: string }>; error?: string }
+interface FilledFormState { loading: boolean; filledPath?: string; previewUrl?: string; filledFields?: string[]; unresolvedFields?: string[]; fields?: Array<{ name: string; value: string }>; incomplete?: { field: string; fields: string[]; reason: string; asked: boolean; taskId: string | null } | null; legalDescriptionSource?: string | null; error?: string }
 
 function Step3Fill({ state, mode, agentName, providerInfo, update }: {
   state: WizardState
@@ -1411,7 +1411,7 @@ function Step3Fill({ state, mode, agentName, providerInfo, update }: {
       fieldValues: typed,
     }).then(res => {
       setFilled(prev => ({ ...prev, [ref]: res.success
-        ? { loading: false, filledPath: res.filledPath, previewUrl: res.previewUrl, filledFields: res.filledFields, unresolvedFields: res.unresolvedFields, fields: res.fields }
+        ? { loading: false, filledPath: res.filledPath, previewUrl: res.previewUrl, filledFields: res.filledFields, unresolvedFields: res.unresolvedFields, fields: res.fields, incomplete: res.incomplete ?? null, legalDescriptionSource: res.legalDescriptionSource ?? null }
         : { ...(prev[ref] ?? {}), loading: false, error: res.error } }))
       if (res.success) setDrafts(prev => { const n = { ...prev }; delete n[ref]; return n })
     }).catch((e: unknown) => setFilled(prev => ({ ...prev, [ref]: { ...(prev[ref] ?? {}), loading: false, error: e instanceof Error ? e.message : "fill failed" } })))
@@ -1439,7 +1439,7 @@ function Step3Fill({ state, mode, agentName, providerInfo, update }: {
       }).then(res => {
         if (cancelled) return
         setFilled(prev => ({ ...prev, [f.formRef]: res.success
-          ? { loading: false, filledPath: res.filledPath, previewUrl: res.previewUrl, filledFields: res.filledFields, unresolvedFields: res.unresolvedFields, fields: res.fields }
+          ? { loading: false, filledPath: res.filledPath, previewUrl: res.previewUrl, filledFields: res.filledFields, unresolvedFields: res.unresolvedFields, fields: res.fields, incomplete: res.incomplete ?? null, legalDescriptionSource: res.legalDescriptionSource ?? null }
           : { loading: false, error: res.error } }))
       }).catch(() => {
         if (!cancelled) setFilled(prev => ({ ...prev, [f.formRef]: { loading: false, error: "prefill failed" } }))
@@ -1535,6 +1535,17 @@ function Step3Fill({ state, mode, agentName, providerInfo, update }: {
                     </div>
                     {fs.unresolvedFields && fs.unresolvedFields.length > 0 && (
                       <p className="text-xs text-muted-foreground">Still blank: {fs.unresolvedFields.join(", ")}{mode === "offer" ? ", plus the offer terms" : ", plus the listing terms"}.</p>
+                    )}
+                    {/* LEGAL DESCRIPTION (wave 141): this form needs it, no record or approved property-data
+                        source has it, and it is never invented — the form is INCOMPLETE (the send refuses)
+                        until the agent enters it below; a task was raised on the agent's list. */}
+                    {fs.incomplete && (
+                      <p className="text-xs text-amber-700 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5">
+                        <strong>Incomplete — legal description required</strong> ({fs.incomplete.fields.join(", ")}). {fs.incomplete.reason}{fs.incomplete.asked ? " A task was added to your list; enter it in the fields below and Apply." : ""}
+                      </p>
+                    )}
+                    {!fs.incomplete && fs.legalDescriptionSource && (
+                      <p className="text-[11px] text-muted-foreground">Legal description {fs.legalDescriptionSource === "rentcast" ? "from the property record (RentCast)" : fs.legalDescriptionSource === "agent" ? "as you entered it" : "from the record"}.</p>
                     )}
                     {/* THE FIELDS, IN OUR WINDOW (lane 88C). Typing into the browser's PDF viewer
                         above changed nothing the send could carry. These inputs are the form's own

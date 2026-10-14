@@ -30,7 +30,14 @@ export type GlobalSettingsRow = {
   // zapier_api_key: RETIRED — dropped by m678 (lane 89E). Its only reader was the
   // inbound Zapier door deleted in wave 87 (Zapier is outbound-only; tombstone in
   // lib/providers/webhook-contract.ts). Not declared so no writer can target it.
-  airtable_api_key: string | null
+  // airtable_api_key: RETIRED (owner, wave 141: "Airtable is RETIRED") — dropped by
+  // supabase/migrations/m771-airtable-retired-drop-global-settings-airtable-api-key.sql
+  // (lane 141D). It had NO reader and NO writer anywhere in lib/ app/ services/ (the
+  // Airtable → Supabase migration finished long ago; lib/migration-status.ts is the
+  // record), 0 rows carried a value live, and the settings UI never exposed it. Not
+  // declared so no writer can target a dropped column (PGRST204 refuses the whole row).
+  // CRM contacts live in `contacts`; a subscriber's OLD CRM is migrated in by platform
+  // staff through app/actions/lead-import/crm-pull-actions.ts, never read from Airtable.
   additional_settings: Record<string, unknown> | null
   created_by_user_id: string | null
   created_at: string | null

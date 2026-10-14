@@ -85,7 +85,10 @@ export async function getTenantSetupReadinessAction(brokerageId: string): Promis
     .limit(1).maybeSingle()
 
   let ownerUserId = (owner as any)?.id ?? null
-  let ownerType = (owner as any)?.user_type ?? "admin"
+  // ROLE SAFETY (wave 141B): an owner row with no user_type is refused, never evaluated AS an admin —
+  // an unknown type defaulting to a privileged role is the escalation shape the owner banned.
+  if (ownerUserId && !(owner as any)?.user_type) return { ok: false, error: "This tenant's owner row carries no user type — refusing to evaluate readiness as an admin. Fix the users row first." }
+  let ownerType: string = (owner as any)?.user_type ?? "agent"
   let ownerName = owner ? [(owner as any).first_name, (owner as any).last_name].filter(Boolean).join(" ") || null : null
   let agentId: string | null = null
 

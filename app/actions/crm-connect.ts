@@ -252,9 +252,19 @@ export async function syncContactNowAction(contactId: string): Promise<
   return { ok: true, providerKey: result.providerKey, action: result.action, contactId: result.contactId }
 }
 
-/** Which CRM is connected/active in the caller's scope. */
+/** Which CRM is connected/active in the caller's scope — and how its LAST push went (wave 141,
+ *  lane 141D: the sync layer stamps every tenant-credentialed outcome on the credential row,
+ *  lib/crm/sync.ts crmSyncOutcomePatch; this read hands it to the settings page so a failing
+ *  integration is the TENANT's to see and fix, never a silent `.catch(() => {})`). */
 export async function getCrmStatusAction(): Promise<
-  { ok: true; scope: "agent" | "brokerage"; active: string | null; connected: CrmProvider[] } | { ok: false; error: string }
+  | {
+      ok: true; scope: "agent" | "brokerage"; active: string | null; connected: CrmProvider[]
+      /** The provider's own refusal on the last push (null = the last push succeeded or none ran). */
+      lastError: string | null
+      /** When the active CRM last accepted a push (null = never recorded). */
+      lastSyncedAt: string | null
+    }
+  | { ok: false; error: string }
 > {
   const gate = await requireMember()
   if (!gate.ok) return gate
@@ -264,12 +274,18 @@ export async function getCrmStatusAction(): Promise<
   if (member.agentScoped) {
     const { data } = await supabase
       .from("agent_api_credentials")
-      .select("service_name, is_active")
+      .select("service_name, is_active, error_message, last_verified_at")
       .eq("agent_id", member.agentId)
       .eq("service_type", "crm_sync")
       .in("service_name", CRM_PROVIDERS)
-    const connected = (data ?? []).filter((c) => c.is_active).map((c) => c.service_name as CrmProvider)
-    return { ok: true, scope: "agent", active: connected[0] ?? null, connected }
+    const activeRows = (data ?? []).filter((c) => c.is_active)
+    const connected = activeRows.map((c) => c.service_name as CrmProvider)
+    const activeRow = activeRows[0] ?? null
+    return {
+      ok: true, scope: "agent", active: connected[0] ?? null, connected,
+      lastError: (activeRow?.error_message as string | null) ?? null,
+      lastSyncedAt: (activeRow?.last_verified_at as string | null) ?? null,
+    }
   }
 
   const { data: creds } = await supabase
@@ -279,11 +295,15 @@ export async function getCrmStatusAction(): Promise<
     .in("provider_name", CRM_PROVIDERS)
   const { data: active } = await supabase
     .from("brokerage_integrations")
-    .select("provider_name, status")
+    .select("provider_name, status, last_error, last_health_check_at")
     .eq("brokerage_id", member.brokerageId)
     .eq("provider_type", "crm")
     .eq("status", INTEGRATION_STATUS_CONNECTED)
     .maybeSingle()
   const connected = (creds ?? []).filter((c) => c.is_active).map((c) => c.provider_name as CrmProvider)
-  return { ok: true, scope: "brokerage", active: active?.provider_name ?? null, connected }
+  return {
+    ok: true, scope: "brokerage", active: active?.provider_name ?? null, connected,
+    lastError: (active?.last_error as string | null) ?? null,
+    lastSyncedAt: active?.last_error ? null : ((active?.last_health_check_at as string | null) ?? null),
+  }
 }

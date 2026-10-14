@@ -449,10 +449,16 @@ export default function ImportPage() {
           now lives on the subscriber's console. A tenant's own CRM link runs the other
           way (sync-OUT only) and is on Connections. This page stays the tenant's own
           CSV upload. */}
+      {/* HubSpot is NOT an inbound source (wave 72A: "hubspot is only sync out to hubspot.") —
+          the sentence below names exactly the three providers lib/crm/import-pull.ts can pull
+          (CRM_IMPORT_PROVIDERS). A tenant trying to run that pull from their own account is
+          refused with the same explanation (app/actions/lead-import/crm-pull-actions.ts). */}
       <p className="mt-6 text-xs text-muted-foreground">
-        Moving in from another CRM? Your onboarding contact can pull Follow Up Boss, Lofty,
-        HubSpot or GoHighLevel directly into your account — ask them to run the migration.
-        To keep an outside CRM in sync going forward, connect it on{' '}
+        Moving in from another CRM? Importing from an outside CRM is run by VIPAgents staff during
+        your onboarding, not from your account — your onboarding contact can pull Follow Up Boss,
+        Lofty or GoHighLevel directly into your account after you preview and approve the field
+        mapping with them. To keep an outside CRM in sync going forward (contacts flow OUT only),
+        connect it on{' '}
         <a href="/settings/connections" className="text-blue-600 hover:underline">Connections</a>.
       </p>
     </main>

@@ -70,6 +70,9 @@
  */
 
 import QRCode from "qrcode"
+// ONE encoding contract (wave 141F): the opt-out square keeps its higher error correction (Q)
+// and inherits the spec's 4-module quiet zone it used to print without (margin 1).
+import { qrEncodeOptions } from "@/lib/marketing/qr-contract"
 import {
   normalizeMailUnsubToken,
   buildMailUnsubscribeUrl,
@@ -106,12 +109,7 @@ export const MAIL_OPT_OUT_QR_PX = 280
  * different in kind: a missed marketing scan is a lost lead, a missed opt-out
  * scan is somebody who asked to be left alone and was not.
  */
-export const MAIL_OPT_OUT_QR_OPTIONS = {
-  width: MAIL_OPT_OUT_QR_PX,
-  margin: 1,
-  errorCorrectionLevel: "Q" as const,
-  color: { dark: "#000000", light: "#ffffff" },
-}
+export const MAIL_OPT_OUT_QR_OPTIONS = qrEncodeOptions(MAIL_OPT_OUT_QR_PX, { errorCorrectionLevel: "Q" })
 
 export interface MailOptOutAffordance {
   /** The canonical 14-character token this affordance belongs to. */

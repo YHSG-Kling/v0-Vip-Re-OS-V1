@@ -186,7 +186,11 @@ export async function requireBrokerageAdmin(
   if (error) throw new Error(`Could not resolve the caller's brokerage: ${error.message}`)
 
   if (user?.brokerage_id) {
-    const userType = String((user as { user_type?: string | null }).user_type ?? "admin")
+    // ROLE SAFETY (wave 141B): a tenant row with NO user_type used to read as "admin" here and pass the
+    // roster check below — an unknown type defaulting to a privileged role. Refuse it instead.
+    const rawType = (user as { user_type?: string | null }).user_type ?? null
+    if (!rawType) throw new Error("Forbidden: the caller's row carries no user type")
+    const userType = String(rawType)
     const platformRole = (user as { platform_role?: string | null }).platform_role ?? null
 
     if (!BROKERAGE_ADMIN_USER_TYPES.has(userType) && !isPlatformSuperadminIdentity(userType, platformRole)) {

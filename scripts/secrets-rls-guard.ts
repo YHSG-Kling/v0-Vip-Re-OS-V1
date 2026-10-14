@@ -361,7 +361,12 @@ async function browserBoundaryLayer() {
   check("resolveTransactionFormsProvider's result type and body carry has_access_token (a handle) and NO access_token / decryptSecret", /has_access_token: boolean/.test(resolver) && !/access_token:\s*decryptSecret/.test(resolver) && !/access_token: string \| null/.test(resolver))
   const loader = forms.slice(forms.indexOf("export async function loadTransactionFormsCredential"))
   check("loadTransactionFormsCredential is the ONE decryptor of the forms token", /access_token: decryptSecret\(/.test(loader) && (forms.match(/decryptSecret\(/g) ?? []).length === 1)
-  const loaderCallers = ["app/actions/admin/commission-agreement.ts", "lib/transactions/cda-esign.ts"]
+  // Wave 141 (lane 141C): lib/transactions/cda-esign.ts left this list — the CDA now dispatches
+  // through lib/esign/dispatch-packet.ts (the e-sign selection's credential, resolved by
+  // resolve-esign-provider.ts), so it has no forms-credential egress at all. The RULE below is
+  // unchanged: every caller that still signs a request from the forms credential loads it here.
+  const loaderCallers = ["app/actions/admin/commission-agreement.ts"]
+  check("lib/transactions/cda-esign.ts no longer reads the forms credential or the resolver's token at all (its e-sign rides dispatch-packet)", !/loadTransactionFormsCredential\(|resolveTransactionFormsProvider\(/.test(code("lib/transactions/cda-esign.ts")) && /dispatchEsignPacket\(/.test(code("lib/transactions/cda-esign.ts")))
   /** PURE — the variables a file binds to resolveTransactionFormsProvider(...) that are later read for `.data?.access_token` / `.data.access_token`. */
   const resolverTokenReads = (src: string): string[] => {
     const names = [...src.matchAll(/const\s+(\w+)\s*=\s*await\s+resolveTransactionFormsProvider\(/g)].map((m) => m[1])

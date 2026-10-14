@@ -37,6 +37,9 @@
  */
 
 import type { VendorCategory } from "@/lib/kernel/vendor-categories"
+// PURE (no imports of its own) — THE one provenance stamp shape (wave 100C). A card reading is
+// evidence about a contact field; it carries the reader's confidence as the stamp's matchConfidence.
+import { stampFieldProvenance, type FieldProvenance } from "@/lib/lead-pipeline/enrichment-column-map"
 
 export type CardSubjectType = "sphere" | "agent" | "potential_contact" | "contact" | "vendor" | "unknown"
 
@@ -201,4 +204,242 @@ export function classifyCardSubject(input: {
   // was auto-filed as a CRM contact. The caller still gets one more chance (an
   // existing-user/contact/vendor match by email/phone) before settling here.
   return { subjectType: "unknown", category: null, source: "default" }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTRACTION CONFIDENCE + FIELD-LEVEL MERGE RULE — wave 141, lane 141F
+// (owner ruling, verbatim: "scan → AI vision extraction → confidence → human
+// confirmation where needed → identity/dedup → canonical contact → attribution/
+// source → follow-up. No second OCR system; never overwrite higher-confidence data
+// with weak extraction.")
+//
+// What existed: ONE vision path (gatewayChat through the Vercel AI Gateway) whose
+// "confidence" was `filled fields / 8` — a COMPLETENESS ratio, not a confidence:
+// a card read as "Jhon Smlth / jhon@exmaple.com" with every field populated
+// scored 100% and auto-created a contact. Nothing asked the reader how sure it
+// was of each field, nothing held a doubtful reading back for a human, and the
+// "Report extraction error" button on the review surface showed a toast and did
+// nothing. These pure rules are the missing half; the action
+// (app/actions/business-card/business-card-actions.ts) applies them and the
+// proof (scripts/qr-and-card-scanner-guard.ts) holds them with positive controls.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** The eight card fields the reader is asked for, in the order the surface lists them. */
+export const CARD_FIELDS = ["first_name", "last_name", "email", "phone", "company", "title", "address", "website"] as const
+export type CardField = (typeof CARD_FIELDS)[number]
+
+/** The fields that IDENTIFY the person — a doubt here is what a human must confirm. */
+const CARD_IDENTITY_FIELDS: readonly CardField[] = ["first_name", "last_name", "email", "phone"]
+
+/** A reading below this per-field confidence is held back from every structured column and
+ *  shown to the scanning agent to confirm. 0.75: vision readers report ~0.9+ for clean print,
+ *  0.5–0.7 for glare, handwriting and ambiguous glyphs (0/O, 1/l, rn/m). */
+export const CARD_FIELD_CONFIDENCE_FLOOR = 0.75
+
+/** Contact columns a card field lands on (company / title / website ride notes — no column). */
+export const CARD_FIELD_TO_CONTACT_COLUMN: Readonly<Partial<Record<CardField, string>>> = {
+  first_name: "first_name", last_name: "last_name", email: "email", phone: "phone", address: "address",
+}
+
+/** The provenance `source` a reading / a human confirmation stamps (decideCardFieldWrite reads the
+ *  `business_card` prefix). @proofSeam asserted by name in scripts/qr-and-card-scanner-guard.ts. */
+export const CARD_PROVENANCE_SOURCE_VISION = "business_card_vision"
+export const CARD_PROVENANCE_SOURCE_HUMAN = "business_card_confirmed"
+const CARD_PROVENANCE_CAPABILITY = "contact.business_card_scan"
+
+export interface CardExtraction {
+  /** Trimmed values; "" when the reader saw nothing. Email lower-cased. */
+  fields: Record<CardField, string>
+  /** 0..1 per field; null when the reader stated no confidence (treated as BELOW the floor). */
+  confidence: Record<CardField, number | null>
+}
+
+function emptyExtraction(): CardExtraction {
+  const fields = {} as Record<CardField, string>
+  const confidence = {} as Record<CardField, number | null>
+  for (const f of CARD_FIELDS) { fields[f] = ""; confidence[f] = null }
+  return { fields, confidence }
+}
+
+/** PURE — the value as it is compared and stored: email lower-cased, phone digits-only
+ *  (last ten — a US card's dashes, dots, parentheses and +1 are formatting), others
+ *  whitespace-collapsed. @proofSeam asserted directly; the product reaches it through
+ *  parseCardExtraction / decideCardFieldWrite / cardStampsForContact. */
+export function normalizeCardValue(field: CardField, value: unknown): string {
+  const s = typeof value === "string" ? value : value == null ? "" : String(value)
+  const collapsed = s.replace(/\s+/g, " ").trim()
+  if (field === "email") return collapsed.toLowerCase()
+  if (field === "phone") { const d = collapsed.replace(/\D/g, ""); return d.length > 10 ? d.slice(-10) : d }
+  return collapsed
+}
+
+function clampConfidence(v: unknown): number | null {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN
+  if (!Number.isFinite(n)) return null
+  return Math.max(0, Math.min(1, n))
+}
+
+/**
+ * PURE — the reader's JSON → a CardExtraction. Accepts the per-field shape the prompt asks
+ * for (`{ first_name: { value, confidence } }`) AND the legacy flat shape (`{ first_name: "x" }`)
+ * an older model turn may still return — a flat value carries NO stated confidence (null), which
+ * the floor treats as doubtful: an unstated confidence is never promoted to a sure one.
+ */
+export function parseCardExtraction(raw: unknown): CardExtraction {
+  const out = emptyExtraction()
+  if (!raw || typeof raw !== "object") return out
+  const obj = raw as Record<string, unknown>
+  for (const f of CARD_FIELDS) {
+    const v = obj[f]
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const o = v as { value?: unknown; confidence?: unknown }
+      out.fields[f] = normalizeCardValue(f, o.value)
+      out.confidence[f] = out.fields[f] ? clampConfidence(o.confidence) : null
+    } else {
+      out.fields[f] = normalizeCardValue(f, v)
+      out.confidence[f] = null
+    }
+  }
+  return out
+}
+
+/** PURE — a human typed/confirmed these values: every non-empty field is confidence 1. */
+export function humanConfirmedExtraction(fields: Partial<Record<CardField, unknown>>): CardExtraction {
+  const out = emptyExtraction()
+  for (const f of CARD_FIELDS) {
+    out.fields[f] = normalizeCardValue(f, fields[f])
+    out.confidence[f] = out.fields[f] ? 1 : null
+  }
+  return out
+}
+
+interface CardExtractionAssessment {
+  /** A name AND a contact method were read (at any confidence) — the viability gate. */
+  viable: boolean
+  /** Viable, but at least one PRESENT identity field is below the floor (or unstated) — a human confirms before anything is written. */
+  needsConfirmation: boolean
+  /** Present fields below the floor, identity first. */
+  lowFields: CardField[]
+  /** Mean stated confidence over the present fields (unstated = 0); 0 when nothing was read. */
+  overall: number
+  filledFields: CardField[]
+}
+
+/** PURE — what the reading is worth. */
+export function assessCardExtraction(x: CardExtraction, floor: number = CARD_FIELD_CONFIDENCE_FLOOR): CardExtractionAssessment {
+  const filledFields = CARD_FIELDS.filter((f) => !!x.fields[f])
+  const hasName = !!(x.fields.first_name || x.fields.last_name)
+  const hasContact = !!(x.fields.email || x.fields.phone)
+  const viable = hasName && hasContact
+  const lowFields = filledFields.filter((f) => (x.confidence[f] ?? 0) < floor)
+  const lowIdentity = lowFields.filter((f) => CARD_IDENTITY_FIELDS.includes(f))
+  const overall = filledFields.length === 0 ? 0 : filledFields.reduce((s, f) => s + (x.confidence[f] ?? 0), 0) / filledFields.length
+  return {
+    viable,
+    needsConfirmation: viable && lowIdentity.length > 0,
+    lowFields: [...lowIdentity, ...lowFields.filter((f) => !CARD_IDENTITY_FIELDS.includes(f))],
+    overall: Math.round(overall * 100) / 100,
+    filledFields,
+  }
+}
+
+/** PURE — only the readings a structured column may take: present AND at/above the floor. */
+export function confidentCardFields(x: CardExtraction, floor: number = CARD_FIELD_CONFIDENCE_FLOOR): Partial<Record<CardField, string>> {
+  const out: Partial<Record<CardField, string>> = {}
+  for (const f of CARD_FIELDS) if (x.fields[f] && (x.confidence[f] ?? 0) >= floor) out[f] = x.fields[f]
+  return out
+}
+
+/** PURE — the doubtful readings, as ONE notes line (nothing read is thrown away; nothing
+ *  doubtful reaches a column). Empty string when every reading cleared the floor. */
+export function unconfirmedCardNote(x: CardExtraction, floor: number = CARD_FIELD_CONFIDENCE_FLOOR): string {
+  const parts = CARD_FIELDS.filter((f) => x.fields[f] && (x.confidence[f] ?? 0) < floor)
+    .map((f) => `${f.replace(/_/g, " ")}: ${x.fields[f]} (${Math.round((x.confidence[f] ?? 0) * 100)}%)`)
+  return parts.length ? `Unconfirmed from the card (below the ${Math.round(floor * 100)}% reading floor): ${parts.join("; ")}.` : ""
+}
+
+type CardFieldWriteReason =
+  | "no_incoming" | "fill_empty" | "same_value" | "human_over_card" | "higher_confidence"
+  | "not_higher_confidence" | "stronger_provenance" | "unknown_provenance" | "below_floor"
+
+interface CardFieldWriteDecision {
+  write: boolean
+  reason: CardFieldWriteReason
+}
+
+/**
+ * PURE — THE FIELD-LEVEL MERGE RULE ("never overwrite higher-confidence data with weak
+ * extraction"), decided per contact column against the column's EXISTING provenance stamp
+ * (enrichment_profile.field_provenance[column] — the one stamp shape every writer uses):
+ *
+ *   incoming empty                                    → keep (no_incoming)
+ *   incoming below the floor (and not human)          → keep (below_floor)
+ *   existing empty                                    → write (fill_empty)
+ *   same value                                        → keep (same_value)
+ *   existing stamped by a card reading (vision/human) → human incoming wins (human_over_card);
+ *                                                       otherwise only a strictly HIGHER stated
+ *                                                       confidence wins (higher_confidence /
+ *                                                       not_higher_confidence)
+ *   existing stamped by anything else (a provider match, a staff edit, the contact's own
+ *   portal entry)                                     → keep (stronger_provenance) — a card never
+ *                                                       overwrites a verified or human-entered value
+ *   existing value with NO stamp (legacy / unknown)   → a human confirmation writes; a reading
+ *                                                       keeps (unknown_provenance) — fail closed
+ */
+export function decideCardFieldWrite(input: {
+  field: CardField
+  existingValue: unknown
+  existingStamp: Pick<FieldProvenance, "source" | "matchConfidence"> | null | undefined
+  incomingValue: string
+  incomingConfidence: number | null
+  incomingHuman: boolean
+  floor?: number
+}): CardFieldWriteDecision {
+  const floor = input.floor ?? CARD_FIELD_CONFIDENCE_FLOOR
+  const incoming = normalizeCardValue(input.field, input.incomingValue)
+  if (!incoming) return { write: false, reason: "no_incoming" }
+  const incomingConf = input.incomingHuman ? 1 : (input.incomingConfidence ?? 0)
+  if (!input.incomingHuman && incomingConf < floor) return { write: false, reason: "below_floor" }
+  const existing = normalizeCardValue(input.field, input.existingValue)
+  if (!existing) return { write: true, reason: "fill_empty" }
+  if (existing === incoming) return { write: false, reason: "same_value" }
+  const stamp = input.existingStamp ?? null
+  if (!stamp) return input.incomingHuman ? { write: true, reason: "human_over_card" } : { write: false, reason: "unknown_provenance" }
+  const fromCard = typeof stamp.source === "string" && stamp.source.startsWith("business_card")
+  if (!fromCard) return { write: false, reason: "stronger_provenance" }
+  if (input.incomingHuman) return { write: true, reason: "human_over_card" }
+  const existingConf = clampConfidence(stamp.matchConfidence) ?? 0
+  return incomingConf > existingConf ? { write: true, reason: "higher_confidence" } : { write: false, reason: "not_higher_confidence" }
+}
+
+/**
+ * PURE — the provenance stamps a card reading earns on a contact row, by VALUE EQUALITY: a
+ * column is stamped only when the contact now holds the card's reading (the capture filled it,
+ * or it was already identical) AND carries no stamp yet (an existing stamp — a provider match,
+ * a staff edit — is never overwritten by a reading). A human confirmation stamps as
+ * staff_edit with the actor; a reading stamps as acquisition with the reader's confidence.
+ */
+export function cardStampsForContact(
+  x: CardExtraction,
+  contact: Record<string, unknown>,
+  existingProvenance: Record<string, unknown>,
+  opts: { human: boolean; actor: string | null; retrievedAt?: string },
+): Record<string, FieldProvenance> {
+  const out: Record<string, FieldProvenance> = {}
+  for (const f of CARD_FIELDS) {
+    const column = CARD_FIELD_TO_CONTACT_COLUMN[f]
+    if (!column || !x.fields[f]) continue
+    if (existingProvenance[column] && typeof existingProvenance[column] === "object") continue
+    if (normalizeCardValue(f, contact[column]) !== x.fields[f]) continue
+    const stamp = stampFieldProvenance([column], {
+      source: opts.human ? CARD_PROVENANCE_SOURCE_HUMAN : CARD_PROVENANCE_SOURCE_VISION,
+      capability: CARD_PROVENANCE_CAPABILITY,
+      purpose: opts.human ? "staff_edit" : "acquisition",
+      matchConfidence: opts.human ? 1 : x.confidence[f],
+      actor: opts.human ? opts.actor : null,
+      retrievedAt: opts.retrievedAt,
+    })
+    out[column] = stamp[column]
+  }
+  return out
 }

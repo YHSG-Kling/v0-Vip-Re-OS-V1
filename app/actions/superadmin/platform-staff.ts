@@ -22,9 +22,13 @@ import { requireSuperadmin } from "@/lib/auth/platform-guard"
 // Map a platform role → the (user_type, platform_role) columns coherently. platform_role
 // carries the platform role for all staff; user_type is the CHECK-valid base type
 // ('marketing' isn't a user_type, so marketing staff are user_type 'system').
+// ROLE SAFETY (wave 141B, CLAUDE.md §4): PLATFORM STAFF LIVE IN platform_role — the superadmin seat
+// is (user_type='admin', platform_role='superadmin'), the shape the platform's one live superadmin
+// carries. This map used to MINT user_type='superadmin' (a value no live row has and every gate
+// reads as dead), so a promoted staffer's base type disagreed with the roster the gates resolve.
 function roleColumns(role: string): { user_type: string; platform_role: string } {
   switch (role) {
-    case "superadmin": return { user_type: "superadmin", platform_role: "superadmin" }
+    case "superadmin": return { user_type: "admin", platform_role: "superadmin" }
     case "admin":      return { user_type: "admin", platform_role: "admin" }
     case "support":    return { user_type: "support", platform_role: "support" }
     default:           return { user_type: "system", platform_role: "marketing" } // marketing

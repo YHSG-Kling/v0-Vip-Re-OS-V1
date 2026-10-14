@@ -170,8 +170,10 @@ export async function sendForDotloopSignature(data: {
     // Add participants to the loop via provider — surface a Dotloop failure to the agent rather
     // than silently swallowing it (a missing credential used to be hidden by the addParticipant
     // mock that returned success: true; now it returns an explicit error).
+    // The SESSION tenant's own Dotloop credential signs every call (wave 141, lane 141C).
     for (const signer of data.signers) {
       const r = await addParticipant({
+        brokerageId: ctx.brokerageId,
         loopId: data.loopId,
         email: signer.email,
         name: signer.name,
@@ -183,6 +185,7 @@ export async function sendForDotloopSignature(data: {
     // Upload document to Dotloop if not already there
     if (!document.dotloop_document_id) {
       const uploadResult = await uploadLoopDocument({
+        brokerageId: ctx.brokerageId,
         loopId: data.loopId,
         documentName: document.document_name,
         fileUrl: document.document_url,
@@ -422,7 +425,7 @@ export async function getDotloopDocumentStatus(loopId: string, documentId?: stri
       return { success: false, error: "Forbidden: loop not in your brokerage" }
     }
 
-    const activityRes = await getLoopActivity(loopId)
+    const activityRes = await getLoopActivity(ctx.brokerageId, loopId)
     if (!activityRes.success) return { success: false, error: activityRes.error ?? "getLoopActivity failed" }
     const allActivities = activityRes.activities
 

@@ -38,6 +38,9 @@
 import "server-only"
 import QRCode from "qrcode"
 import { createServiceClient } from "@/lib/supabase/service"
+// THE ENCODING CONTRACT (wave 141F): quiet zone, error correction, contrast — one option
+// builder every encoder (server + client) shares. lib/marketing/qr-contract.ts is pure.
+import { qrEncodeOptions, QR_RENDER_DEFAULTS } from "./qr-contract"
 
 type AnyClient = ReturnType<typeof createServiceClient>
 
@@ -180,14 +183,12 @@ export interface MintedTrackedQr {
   created: boolean
 }
 
-/** PNG encode of any URL. The ONLY QR image source in the tree — no third-party HTTP renderer. */
-export async function renderQrPng(url: string, width = 600): Promise<string> {
-  return QRCode.toDataURL(url, {
-    width,
-    margin: 1,
-    errorCorrectionLevel: "M",
-    color: { dark: "#000000", light: "#ffffff" },
-  })
+/** PNG encode of any URL. The ONLY QR image source in the tree — no third-party HTTP renderer.
+ *  Options come from the one contract (lib/marketing/qr-contract.ts): a 4-module quiet zone
+ *  (this used to pass `margin: 1`, a quarter of the spec's quiet zone, on every printed piece),
+ *  error correction M, black on white. */
+export async function renderQrPng(url: string, width: number = QR_RENDER_DEFAULTS.printWidth): Promise<string> {
+  return QRCode.toDataURL(url, qrEncodeOptions(width))
 }
 
 export async function mintTrackedQr(

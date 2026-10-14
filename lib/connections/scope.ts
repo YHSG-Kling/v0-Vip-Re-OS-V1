@@ -11,7 +11,7 @@
 //
 // Pure — no I/O — so cascade + gating are unit-tested. The live read lives in resolve-scoped.ts.
 
-import { getTransactionFormProviders, getEsignProviders } from "@/lib/integrations/providers/catalog"
+import { getTransactionFormProviders, getEsignProviders, providerOfferVerdict, type OfferCapability } from "@/lib/integrations/providers/catalog"
 
 export type ConnectionScope = "platform" | "brokerage" | "team" | "agent" | "vendor" | "contact"
 
@@ -126,6 +126,44 @@ export const CANDIDATE_PROVIDERS: readonly CandidateProvider[] = [
  *  UI answer "we support that, it just isn't switched on" instead of "no". */
 export function candidateProvider(providerId: string): CandidateProvider | null {
   return CANDIDATE_PROVIDERS.find((c) => c.provider === providerId) ?? null
+}
+
+/**
+ * PURE — MAY A TENANT SELECT THIS PROVIDER FOR THIS CAPABILITY? (wave 141, lane 141C; owner:
+ * "Tenant settings select by capability: TRANSACTION/FORMS provider · E-SIGN provider · ACCOUNTING
+ * provider · PAYMENTS provider … every provider HEAD claims must actually function … or it is not
+ * offered"). ONE verdict read by every door that writes a provider_overrides selection
+ * (app/actions/settings/integrations.ts upsertProviderOverride, app/actions/settings/
+ * provider-settings-actions.ts saveProviderOverride) and by the settings UI, so the menu and the
+ * write can never disagree:
+ *   · esign / transaction → the catalog's capability MATRIX (providerOfferVerdict — every required
+ *     code path BUILT); a selection that is not certified is refused WITH the honest reason;
+ *   · accounting / payment → CONNECTOR_PROVIDERS.financial (QuickBooks, Stripe — the owner's
+ *     defaults); a BUILT-but-parked candidate (Xero) answers with what blocks it; an unknown
+ *     name is refused;
+ *   · "none" (the UI's disable sentinel) is always allowed — it selects nothing;
+ *   · every other provider_type keeps its own existing allow-list (not this verdict's job).
+ */
+type ProviderSelectionVerdict = { ok: true } | { ok: false; reason: string }
+
+const CAPABILITY_SETTING_TYPES: Readonly<Record<string, OfferCapability>> = Object.freeze({ esign: "esign", transaction: "transaction" })
+const FINANCIAL_SETTING_TYPES: ReadonlySet<string> = new Set(["accounting", "payment"])
+
+export function providerSelectionVerdict(providerType: string, providerKey: string): ProviderSelectionVerdict {
+  const key = (providerKey ?? "").toLowerCase()
+  if (key === "none") return { ok: true }
+  const capability = CAPABILITY_SETTING_TYPES[providerType]
+  if (capability) {
+    const v = providerOfferVerdict(capability, key)
+    return v.ok ? { ok: true } : { ok: false, reason: v.reason }
+  }
+  if (FINANCIAL_SETTING_TYPES.has(providerType)) {
+    if (CONNECTOR_PROVIDERS.financial.includes(key)) return { ok: true }
+    const candidate = candidateProvider(key)
+    if (candidate) return { ok: false, reason: `'${key}' is supported but not enabled yet — ${candidate.blockedBy}` }
+    return { ok: false, reason: `'${key}' is not a connectable ${providerType} provider. Available: ${CONNECTOR_PROVIDERS.financial.join(", ")}` }
+  }
+  return { ok: true }
 }
 
 /** Pure: may this owner scope connect a given connector domain? Vendor/contact are leaf actors

@@ -530,8 +530,18 @@ export default function VideoKanbanBoard() {
                   const streamStatus = streamingStatuses[video.id]
                   const thumbnailUrl = video.video_metadata?.thumbnail_url || video.provider_metadata?.thumbnail_url
 
+                  // The card itself opens the Video Studio — the menu's first action (wave 141, lane 141I:
+                  // it was a cursor-pointer card whose only live control was the ⋮ menu). The trigger
+                  // stops propagation so opening the menu never also opens the studio.
                   return (
-                    <Card key={video.id} className="cursor-pointer hover:shadow-md transition-shadow">
+                    <Card
+                      key={video.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setStudioDialog({ open: true, video })}
+                      onKeyDown={(e) => { if (e.key === "Enter") setStudioDialog({ open: true, video }) }}
+                      className="cursor-pointer hover:shadow-md transition-shadow outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
                       <CardContent className="p-4">
                         <div className="flex items-start justify-between">
                           <div className="flex-1 min-w-0">
@@ -542,7 +552,7 @@ export default function VideoKanbanBoard() {
                           </div>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="icon" className="h-8 w-8">
+                              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(e) => e.stopPropagation()}>
                                 <MoreVertical className="h-4 w-4" />
                               </Button>
                             </DropdownMenuTrigger>

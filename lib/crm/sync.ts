@@ -37,6 +37,72 @@ export interface CRMSyncResult {
 }
 
 /**
+ * WHERE the sync-out's outcome is recorded (wave 141, lane 141D — owner: "errors shown to the
+ * tenant as actionable (it is their integration)"): the credential row the provider was resolved
+ * FROM, so the tenant's own settings surface can show "last sync failed: …" next to the key they
+ * can fix. Null = the system-default GHL (platform env credential): platform-managed, so the
+ * tenant sees sanitized capability status only and the evidence stays on api_response_logs.
+ */
+export type CrmCredentialRef =
+  | { table: "agent_api_credentials"; match: { agent_id: string; service_name: string } }
+  | { table: "brokerage_integrations"; match: { brokerage_id: string; provider_name: string } }
+  | { table: "platform_credentials"; match: { owner_type: string; owner_id: string; platform: string } }
+
+/**
+ * PURE — the patch a sync-out outcome writes onto its credential row. Each table keeps ITS OWN
+ * columns (no second vocabulary): agent_api_credentials.error_message / is_verified /
+ * last_verified_at, brokerage_integrations.last_error / last_health_check_at (status is NOT
+ * flipped — 'error' is the provider TEST's verdict on a credential, lib/integrations/
+ * integration-status.ts; a transient push failure must not demote the tenant's CRM so the
+ * next contact silently goes to the system default instead), platform_credentials.sync_error /
+ * last_synced_at. A `requiresConfiguration` result is "nothing connected", not a failure of a
+ * connection, and writes nothing.
+ */
+export function crmSyncOutcomePatch(
+  table: CrmCredentialRef["table"],
+  result: Pick<CRMSyncResult, "success" | "error" | "requiresConfiguration">,
+  now: Date = new Date(),
+): Record<string, unknown> | null {
+  if (result.requiresConfiguration) return null
+  const iso = now.toISOString()
+  const failure = result.success ? null : (result.error ?? "sync failed").slice(0, 500)
+  switch (table) {
+    case "agent_api_credentials":
+      return result.success
+        ? { error_message: null, is_verified: true, last_verified_at: iso, updated_at: iso }
+        : { error_message: failure, updated_at: iso }
+    case "brokerage_integrations":
+      return { last_error: failure, last_health_check_at: iso, updated_at: iso }
+    case "platform_credentials":
+      return result.success
+        ? { sync_error: null, last_synced_at: iso, updated_at: iso }
+        : { sync_error: failure, updated_at: iso }
+  }
+}
+
+/** Apply crmSyncOutcomePatch to the resolved credential row. Best-effort by construction (the
+ *  push already happened and is reported either way) but READ: a refused or zero-row stamp is
+ *  logged with the table, never swallowed (CLAUDE.md §3 — a no-match resolves too). */
+async function stampCrmSyncOutcome(
+  client: { from: (t: string) => any },
+  ref: CrmCredentialRef | null,
+  result: Pick<CRMSyncResult, "success" | "error" | "requiresConfiguration" | "providerKey">,
+): Promise<void> {
+  if (!ref) return
+  const patch = crmSyncOutcomePatch(ref.table, result)
+  if (!patch) return
+  try {
+    let q = client.from(ref.table).update(patch)
+    for (const [col, v] of Object.entries(ref.match)) q = q.eq(col, v)
+    const { data, error } = await q.select("id")
+    if (error) console.error(`[crm-sync] outcome stamp on ${ref.table} (${result.providerKey}) was refused: ${error.message}`)
+    else if (!data || (data as unknown[]).length === 0) console.error(`[crm-sync] outcome stamp on ${ref.table} (${result.providerKey}) matched no row`)
+  } catch (e) {
+    console.error(`[crm-sync] outcome stamp on ${ref.table} threw:`, e instanceof Error ? e.message : String(e))
+  }
+}
+
+/**
  * Resolves the active CRM provider for a brokerage, then syncs the contact.
  * Falls through gracefully if no CRM is configured — never throws.
  */
@@ -67,9 +133,13 @@ export async function syncContactToCRM(
   // ── Resolve active CRM provider: the AGENT's own CRM first (per-agent stack), then the
   //    brokerage default (brokerage_integrations), then the system default. ───────────────
   let providerKey = "ghl" // system default
+  // The row the provider was resolved FROM — where this push's outcome is recorded (141D).
+  let credentialRef: CrmCredentialRef | null = null
+  let stampClient: { from: (t: string) => any } | null = null
 
   try {
     const supabase = await createClient()
+    stampClient = supabase
 
     if (payload.agentId) {
       const { data: agentCrm } = await supabase
@@ -80,7 +150,10 @@ export async function syncContactToCRM(
         .eq("is_active", true)
         .limit(1)
         .maybeSingle()
-      if (agentCrm?.service_name) providerKey = agentCrm.service_name
+      if (agentCrm?.service_name) {
+        providerKey = agentCrm.service_name
+        credentialRef = { table: "agent_api_credentials", match: { agent_id: payload.agentId, service_name: agentCrm.service_name } }
+      }
     }
 
     if (providerKey === "ghl") {
@@ -93,6 +166,7 @@ export async function syncContactToCRM(
         .maybeSingle()
       if (integration?.provider_name) {
         providerKey = integration.provider_name
+        credentialRef = { table: "brokerage_integrations", match: { brokerage_id: brokerageId, provider_name: integration.provider_name } }
       }
     }
 
@@ -122,6 +196,7 @@ export async function syncContactToCRM(
           .maybeSingle()
         if (scopedCrm?.platform) {
           providerKey = scopedCrm.platform === "gohighlevel" ? "ghl" : scopedCrm.platform
+          credentialRef = { table: "platform_credentials", match: { owner_type: owner.ownerType, owner_id: owner.ownerId, platform: scopedCrm.platform } }
           break
         }
       }
@@ -141,7 +216,7 @@ export async function syncContactToCRM(
       // (agent → team → brokerage → platform_credentials, legacy fallback), so a
       // GHL connected via the Connection Center or /settings/crm dispatches with
       // the tenant's key + locationId instead of only the platform env credential.
-      let ghlOverride: { apiKey: string; locationId: string } | undefined
+      let ghlOverride: { apiKey: string; locationId: string; brokerageId: string } | undefined
       try {
         let agentUserId: string | null = null
         if (payload.agentId) {
@@ -156,7 +231,8 @@ export async function syncContactToCRM(
           (conn?.config?.location_id as string | undefined) ??
           null
         if (conn?.apiKey && locationId) {
-          ghlOverride = { apiKey: conn.apiKey, locationId }
+          // The tenant's OWN GHL: book the call to the tenant (api_response_logs.brokerage_id).
+          ghlOverride = { apiKey: conn.apiKey, locationId, brokerageId }
         }
       } catch { /* fall back to the platform env credential */ }
 
@@ -174,13 +250,17 @@ export async function syncContactToCRM(
         return { success: false, providerKey, requiresConfiguration: true, error: result.error }
       }
 
-      return {
+      const out: CRMSyncResult = {
         success: result.success,
         contactId: result.contactId,
         action: result.action as "created" | "updated" | undefined,
         providerKey,
         error: result.error,
       }
+      // Only a TENANT-credentialed push is stamped on the tenant's row; the system-default
+      // (platform env) push has no tenant row to carry it and the tenant sees status only.
+      if (ghlOverride && stampClient) await stampCrmSyncOutcome(stampClient, credentialRef, out)
+      return out
     } catch (err: any) {
       return { success: false, providerKey, error: err?.message ?? "GHL sync failed" }
     }
@@ -205,13 +285,17 @@ export async function syncContactToCRM(
       source: payload.source ?? "kernel",
       tags: payload.tags ?? [],
     }
+    // The tenant's own CRM: every gateway call is booked to the tenant (api_response_logs).
+    // HubSpot rides its official SDK adapter (lib/providers/hubspot/client.ts), which does not
+    // pass through the gateway — its outcome is still stamped on the tenant's row below.
+    const scope = { brokerageId }
     const result =
       providerKey === "followupboss"
-        ? await syncContactToFollowUpBoss(contact, conn?.apiKey ?? null)
+        ? await syncContactToFollowUpBoss(contact, conn?.apiKey ?? null, scope)
         : providerKey === "hubspot"
           ? await syncContactToHubSpot(contact, conn?.apiKey ?? null)
-          : await syncContactToLofty(contact, conn?.apiKey ?? null, conn?.apiUrl ?? null)
-    return {
+          : await syncContactToLofty(contact, conn?.apiKey ?? null, conn?.apiUrl ?? null, scope)
+    const out: CRMSyncResult = {
       success: result.success,
       contactId: result.contactId,
       action: result.action,
@@ -219,12 +303,18 @@ export async function syncContactToCRM(
       error: result.error,
       requiresConfiguration: result.requiresConfiguration,
     }
+    if (stampClient) await stampCrmSyncOutcome(stampClient, credentialRef, out)
+    return out
   }
 
-  // Future CRM providers (Salesforce, etc.) go here
-  return {
+  // Future CRM providers (Salesforce, etc.) go here — HONESTLY UNAVAILABLE: a provider name a
+  // tenant row carries but this layer cannot dispatch is reported as unsupported, never silently
+  // routed to the system default. The outcome is stamped on the tenant's row so they see it.
+  const unsupported: CRMSyncResult = {
     success: false,
     providerKey,
     error: `CRM provider "${providerKey}" is not yet supported in the sync layer.`,
   }
+  if (stampClient) await stampCrmSyncOutcome(stampClient, credentialRef, unsupported)
+  return unsupported
 }

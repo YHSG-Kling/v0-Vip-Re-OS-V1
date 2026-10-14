@@ -86,7 +86,22 @@ export async function saveTenantConnectionAction(input: {
   const { error } = existing
     ? await svc.from("platform_credentials").update(row).eq("id", (existing as any).id)
     : await svc.from("platform_credentials").insert(row)
-  return error ? { ok: false, error: error.message } : { ok: true }
+  if (error) return { ok: false, error: error.message }
+
+  // IMMEDIATE POST-CONDITION (wave 141B — provider_connection): re-read the credential row ON THIS
+  // TENANT and verify it is active; evidence lands on lifecycle_events, a failed verify is routed to
+  // the owning manager NOW and returned as a failure — never "saved" when the row did not verify.
+  // Tenant-owned credential → the tenant sees the actionable sentence (no platform internals).
+  const { verifyCredentialRow, reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
+  const verified = await verifyCredentialRow(svc, { brokerageId: ctx.brokerageId, platform: input.platform })
+  await reportOperationOutcome(svc, {
+    operation: "provider_connection", brokerageId: ctx.brokerageId, ok: verified.ok,
+    subjectType: "platform_credentials", subjectId: (verified.evidence.rowId as string | undefined) ?? null, actorUserId: ctx.userId, source: "ui",
+    evidence: { slot: slot.key, label: slot.label, ...verified.evidence }, error: verified.error,
+    tenantFacing: verified.ok ? null : `your ${slot.label} credential was saved but could not be verified as active — re-enter it from Settings › Connections`,
+  })
+  if (!verified.ok) return { ok: false, error: `${slot.label} was saved but did not verify as an active connection: ${verified.error}` }
+  return { ok: true }
 }
 
 export interface TenantConnectionStatus {

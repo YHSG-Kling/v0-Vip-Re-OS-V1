@@ -258,6 +258,11 @@ export function CouponsManager({ initialCoupons, brokerages, stripeConfigured, i
                       {c.last_redeemed_by_state === 'not_recorded' && ' · redeemer not recorded'}
                     </span>
                   )}
+                  {typeof c.stripe_applied_redemptions === "number" && c.ledger_redemptions > 0 && (
+                    <Badge variant="outline" className="text-[10px]" title={`Redemptions the billing webhook saw Stripe apply (reconciliation, m777)${c.last_stripe_discount_id ? ` · last Stripe discount ${c.last_stripe_discount_id}` : ""}`}>
+                      Stripe applied {c.stripe_applied_redemptions}/{c.ledger_redemptions}
+                    </Badge>
+                  )}
                   {c.stripe_coupon_id
                     ? isMockStripeCouponId(c.stripe_coupon_id)
                       ? <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-300">Stripe: mock (no creds)</Badge>
