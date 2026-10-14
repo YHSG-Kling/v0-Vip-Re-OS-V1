@@ -92,11 +92,21 @@ async function stampCrmSyncOutcome(
   const patch = crmSyncOutcomePatch(ref.table, result)
   if (!patch) return
   try {
-    // One LITERAL chain per store (the column census attributes a dynamic-key write to a table only when it can
-    // see the table name; `.from(ref.table)` hid agent_api_credentials.error_message / last_verified_at's writer).
-    let q = ref.table === "agent_api_credentials" ? client.from("agent_api_credentials").update(patch)
-      : ref.table === "brokerage_integrations" ? client.from("brokerage_integrations").update(patch)
-      : client.from("platform_credentials").update(patch)
+    // One LITERAL chain per store with a LITERAL column object at each write site (the column census
+    // attributes a write to a table only when it can see the table name — `.from(ref.table)` hid
+    // agent_api_credentials.error_message / last_verified_at's writer — and the credential-migration
+    // census judges a credential-store write by the KEYS it can see: a call-built payload is opaque).
+    // The keys are exactly the ones crmSyncOutcomePatch computes (outcome columns, never a token);
+    // the values come from that one pure builder so there is still ONE spelling of the outcome.
+    let q = ref.table === "agent_api_credentials"
+      ? (result.success
+          ? client.from("agent_api_credentials").update({ error_message: null, is_verified: true, last_verified_at: patch.last_verified_at, updated_at: patch.updated_at })
+          : client.from("agent_api_credentials").update({ error_message: patch.error_message, updated_at: patch.updated_at }))
+      : ref.table === "brokerage_integrations"
+        ? client.from("brokerage_integrations").update({ last_error: patch.last_error, last_health_check_at: patch.last_health_check_at, updated_at: patch.updated_at })
+        : (result.success
+            ? client.from("platform_credentials").update({ sync_error: null, last_synced_at: patch.last_synced_at, updated_at: patch.updated_at })
+            : client.from("platform_credentials").update({ sync_error: patch.sync_error, updated_at: patch.updated_at }))
     for (const [col, v] of Object.entries(ref.match)) q = q.eq(col, v)
     const { data, error } = await q.select("id")
     if (error) console.error(`[crm-sync] outcome stamp on ${ref.table} (${result.providerKey}) was refused: ${error.message}`)
