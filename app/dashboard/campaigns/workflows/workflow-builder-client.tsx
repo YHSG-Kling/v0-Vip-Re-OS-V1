@@ -7,8 +7,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
-import { WORKFLOW_TRIGGERS } from "@/lib/workflow/triggers"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { WORKFLOW_TRIGGERS, toTriggerSelectValue, fromTriggerSelectValue } from "@/lib/workflow/triggers"
+import { Card, CardContent } from "@/components/ui/card"
 import {
   Select,
   SelectContent,
@@ -24,20 +24,12 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import {
-  Mail,
-  MessageSquare,
-  Clock,
-  GitBranch,
   Trash2,
   Plus,
   Save,
   Rocket,
   GripVertical,
   ArrowLeft,
-  FileText,
-  CheckSquare,
-  Tag,
-  UserMinus,
   Eye,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -50,26 +42,37 @@ import {
   launchCampaignSequence,
 } from "@/app/actions/campaign-sequences"
 import { cn } from "@/lib/utils"
+import { StepTypeSelect, StepTypeDescription, stepIcon } from "@/app/components/campaigns/step-type-select"
+import { StepFieldsEditor } from "@/app/components/campaigns/step-fields-editor"
+import { STEP_PALETTE, paletteByGroup, stepSpec, type StepGroup } from "@/lib/workflow/step-palette"
 
-const STEP_TYPES = [
-  { value: "email",                 label: "Send Email",           icon: Mail,          color: "bg-blue-100 text-blue-700" },
-  { value: "sms",                   label: "Send SMS",             icon: MessageSquare, color: "bg-green-100 text-green-700" },
-  { value: "direct_mail",           label: "Send Direct Mail",     icon: FileText,      color: "bg-amber-100 text-amber-700" },
-  { value: "wait",                  label: "Wait",                 icon: Clock,         color: "bg-gray-100 text-gray-600" },
-  { value: "condition",             label: "Condition",            icon: GitBranch,     color: "bg-purple-100 text-purple-700" },
-  { value: "assign_task",           label: "Assign Task",          icon: CheckSquare,   color: "bg-orange-100 text-orange-700" },
-  { value: "add_to_segment",        label: "Add to Segment",       icon: Tag,           color: "bg-teal-100 text-teal-700" },
-  { value: "remove_from_campaign",  label: "Remove from Campaign", icon: UserMinus,     color: "bg-red-100 text-red-600" },
-] as const
+// The step list comes from lib/workflow/step-palette.ts. It was a local array of
+// eight here while the sequence builder kept its own array of seven — and both
+// edit the SAME campaign_sequence_steps rows, so a step created in one was
+// invisible in the other and eleven registered adapters had no UI anywhere.
+//
+// Group tint for the "Add step" rail: colour by what the step DOES, so a
+// "Produce an asset" step (which contacts nobody) never looks like a send.
+const GROUP_COLOR: Record<StepGroup, string> = {
+  deliver:  "bg-blue-100 text-blue-700",
+  publish:  "bg-teal-100 text-teal-700",
+  produce:  "bg-purple-100 text-purple-700",
+  transact: "bg-amber-100 text-amber-700",
+  flow:     "bg-gray-100 text-gray-600",
+}
 
 // Canonical trigger catalog (KernelEvent-derived WORKFLOW_TRIGGERS) — only triggers that an emitted
 // event actually matches. Previously a hardcoded list with values like "showing_completed" /
 // "open_house_attended" that no event ever emits, so those selections were silently dead.
 const TRIGGER_EVENTS = WORKFLOW_TRIGGERS.map(t => ({ value: t.value, label: t.label }))
 
-type StepChannel = typeof STEP_TYPES[number]["value"]
+/** Any channel the shared palette offers — which is exactly what the CHECK admits. */
+type StepChannel = string
 
 interface LocalStep {
+  // Carries whatever the selected step type declares in the shared palette; the
+  // named fields below are just the ones this file touches directly.
+  [field: string]: unknown
   id?: string
   step_number: number
   step_name: string
@@ -78,11 +81,6 @@ interface LocalStep {
   delay_hours: number
   subject?: string
   body?: string
-  condition_field?: string
-  condition_operator?: string
-  condition_value?: string
-  task_description?: string
-  segment_name?: string
   isNew?: boolean
 }
 
@@ -126,7 +124,7 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
   function addStep(channel: StepChannel) {
     const newStep: LocalStep = {
       step_number: steps.length + 1,
-      step_name: STEP_TYPES.find((t) => t.value === channel)?.label ?? "Step",
+      step_name: stepSpec(channel)?.label ?? "Step",
       channel,
       delay_days: steps.length === 0 ? 0 : 1,
       delay_hours: 0,
@@ -173,18 +171,33 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
         sid = res.sequence.id
         setSequenceId(sid)
       } else {
-        await updateCampaignSequence(sid, {
+        // The create path above checks its result and aborts; this one discarded
+        // it entirely. Changing an existing workflow's trigger to a value the
+        // column refuses reported "Workflow saved" and changed nothing — the
+        // trigger silently stayed whatever it was, so the workflow kept firing on
+        // the old signal (or never firing at all).
+        const res = await updateCampaignSequence(sid, {
           name: name.trim(),
           description: description.trim() || undefined,
           trigger_event: triggerEvent,
         })
+        if (res?.error) {
+          toast.error(res.error); return
+        }
       }
 
       // Save steps
+      let stepFailed = false
       for (let i = 0; i < steps.length; i++) {
         const s = steps[i]
+        // Send the WHOLE step. The actions take the palette as their allow-list,
+        // so every per-channel field the editor collected is persisted and
+        // nothing outside the palette can reach a column. Listing the fields
+        // here by hand is what dropped an ad budget or a gift occasion on save.
+        const { id: _id, isNew: _isNew, step_number: _n, ...fields } = s
         if (s.isNew || !s.id) {
           const res = await createSequenceStep({
+            ...fields,
             sequence_id: sid,
             step_number: i + 1,
             step_name: s.step_name,
@@ -194,22 +207,30 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
             subject: s.subject || undefined,
             body: s.body || undefined,
           })
+          if (res.error) { toast.error(res.error); stepFailed = true }
           if (res.step) {
             setSteps((prev) => prev.map((ps, pi) => pi === i ? { ...ps, id: res.step!.id, isNew: false } : ps))
           }
         } else {
-          await updateSequenceStep(s.id, sid, {
+          const res = await updateSequenceStep(s.id, sid, {
+            ...fields,
             step_name: s.step_name,
             channel: s.channel,
             delay_days: s.delay_days,
             delay_hours: s.delay_hours,
             subject: s.subject || undefined,
             body: s.body || undefined,
-            condition_field: s.condition_field || undefined,
-            condition_operator: s.condition_operator || undefined,
-            condition_value: s.condition_value || undefined,
           })
+          if (res.error) { toast.error(res.error); stepFailed = true }
         }
+      }
+
+      // A step that failed to save used to be toasted and then immediately
+      // contradicted by "Workflow saved" — and the redirect took the agent away
+      // from the editor holding the only copy of the step that did not persist.
+      if (stepFailed) {
+        toast.error("Some steps did not save — fix the errors above before leaving this page.")
+        return
       }
 
       toast.success("Workflow saved")
@@ -236,8 +257,18 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
     }
   }
 
-  const stepTypeInfo = (channel: StepChannel) =>
-    STEP_TYPES.find((t) => t.value === channel) ?? STEP_TYPES[0]
+  // Falls back to the palette's first entry only so the canvas can still render a
+  // row whose channel predates the palette — never so a bad value looks valid.
+  const stepTypeInfo = (channel: StepChannel) => {
+    const spec = stepSpec(channel) ?? STEP_PALETTE[0]
+    return {
+      value: spec.channel,
+      label: spec.label,
+      icon: stepIcon(spec.channel),
+      color: GROUP_COLOR[spec.group],
+      description: spec.description,
+    }
+  }
 
   const editingIndex = editingStep ? steps.findIndex((s) => s === editingStep || (s.step_number === editingStep?.step_number && !s.id)) : -1
 
@@ -295,13 +326,16 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
             </div>
             <div>
               <Label className="text-xs mb-1 block">Trigger</Label>
-              <Select value={triggerEvent} onValueChange={setTriggerEvent}>
+              <Select
+                value={toTriggerSelectValue(triggerEvent)}
+                onValueChange={(v) => setTriggerEvent(fromTriggerSelectValue(v))}
+              >
                 <SelectTrigger className="h-9 text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   {TRIGGER_EVENTS.map((t) => (
-                    <SelectItem key={t.value} value={t.value} className="text-xs">{t.label}</SelectItem>
+                    <SelectItem key={toTriggerSelectValue(t.value)} value={toTriggerSelectValue(t.value)} className="text-xs">{t.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -313,11 +347,18 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  {/* campaign_sequences.sequence_type admits exactly: drip |
+                      nurture | post_close | re_engagement | transaction. Three
+                      of the five options here (onboarding, retention, event)
+                      were not among them, so choosing any of them produced a
+                      workflow the database refused to save — while post_close
+                      and re_engagement, the two the business actually runs,
+                      could not be chosen at all. */}
                   <SelectItem value="drip" className="text-xs">Drip sequence</SelectItem>
                   <SelectItem value="nurture" className="text-xs">Nurture campaign</SelectItem>
-                  <SelectItem value="onboarding" className="text-xs">Onboarding</SelectItem>
-                  <SelectItem value="retention" className="text-xs">Retention</SelectItem>
-                  <SelectItem value="event" className="text-xs">Event-based</SelectItem>
+                  <SelectItem value="transaction" className="text-xs">Transaction</SelectItem>
+                  <SelectItem value="post_close" className="text-xs">Post-close</SelectItem>
+                  <SelectItem value="re_engagement" className="text-xs">Re-engagement</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -325,22 +366,30 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
 
           <div>
             <p className="text-xs font-medium mb-2 text-muted-foreground uppercase tracking-wide">Add step</p>
-            <div className="space-y-1.5">
-              {STEP_TYPES.map((t) => {
-                const Icon = t.icon
-                return (
-                  <button
-                    key={t.value}
-                    onClick={() => addStep(t.value)}
-                    className="w-full flex items-center gap-2.5 rounded-md border bg-background px-3 py-2 text-xs hover:bg-muted transition-colors text-left"
-                  >
-                    <span className={cn("rounded p-1", t.color)}>
-                      <Icon className="h-3 w-3" />
-                    </span>
-                    {t.label}
-                  </button>
-                )
-              })}
+            <div className="space-y-3">
+              {paletteByGroup().map((group) => (
+                <div key={group.group} className="space-y-1.5">
+                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                    {group.label}
+                  </p>
+                  {group.steps.map((s) => {
+                    const Icon = stepIcon(s.channel)
+                    return (
+                      <button
+                        key={s.channel}
+                        onClick={() => addStep(s.channel)}
+                        title={s.description}
+                        className="w-full flex items-center gap-2.5 rounded-md border bg-background px-3 py-2 text-xs hover:bg-muted transition-colors text-left"
+                      >
+                        <span className={cn("rounded p-1", GROUP_COLOR[s.group])}>
+                          <Icon className="h-3 w-3" />
+                        </span>
+                        {s.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              ))}
             </div>
           </div>
         </aside>
@@ -449,25 +498,18 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
                 />
               </div>
               <div>
-                <Label className="text-xs mb-1 block">Channel</Label>
-                <Select
+                <Label className="text-xs mb-1 block">Step type</Label>
+                <StepTypeSelect
                   value={editingStep.channel}
-                  onValueChange={(v) => {
-                    const ch = v as StepChannel
+                  onChange={(ch) => {
                     const updated = { ...editingStep, channel: ch }
                     setEditingStep(updated)
                     updateLocalStep(editingIndex, { channel: ch })
                   }}
-                >
-                  <SelectTrigger className="h-9 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {STEP_TYPES.map((t) => (
-                      <SelectItem key={t.value} value={t.value} className="text-xs">{t.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                />
+                <div className="mt-1">
+                  <StepTypeDescription channel={editingStep.channel} />
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -498,119 +540,22 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
                   />
                 </div>
               </div>
-              {(editingStep.channel === "email" || editingStep.channel === "sms" || editingStep.channel === "direct_mail") && (
-                <>
-                  {editingStep.channel === "email" && (
-                    <div>
-                      <Label className="text-xs mb-1 block">Subject line</Label>
-                      <Input
-                        value={editingStep.subject ?? ""}
-                        onChange={(e) => {
-                          setEditingStep({ ...editingStep, subject: e.target.value })
-                          updateLocalStep(editingIndex, { subject: e.target.value })
-                        }}
-                        placeholder="Email subject…"
-                      />
-                    </div>
-                  )}
-                  <div>
-                    <Label className="text-xs mb-1 block">
-                      {editingStep.channel === "email" ? "Email body" : editingStep.channel === "sms" ? "SMS message" : "Mail copy"}
-                    </Label>
-                    <Textarea
-                      rows={6}
-                      value={editingStep.body ?? ""}
-                      onChange={(e) => {
-                        setEditingStep({ ...editingStep, body: e.target.value })
-                        updateLocalStep(editingIndex, { body: e.target.value })
-                      }}
-                      placeholder="Message content… Use {{first_name}}, {{agent_name}}, {{property_address}} as variables"
-                    />
-                  </div>
-                </>
-              )}
-              {editingStep.channel === "condition" && (
-                <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                  <p className="text-xs font-medium">Condition (if/then branch)</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <Select
-                      value={editingStep.condition_field ?? "email_opened"}
-                      onValueChange={(v) => {
-                        setEditingStep({ ...editingStep, condition_field: v })
-                        updateLocalStep(editingIndex, { condition_field: v })
-                      }}
-                    >
-                      <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="email_opened" className="text-xs">Opened email</SelectItem>
-                        <SelectItem value="replied" className="text-xs">Replied to message</SelectItem>
-                        <SelectItem value="stage_changed" className="text-xs">Stage changed</SelectItem>
-                        <SelectItem value="tag" className="text-xs">Has tag</SelectItem>
-                        <SelectItem value="contact_type" className="text-xs">Contact type</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Select
-                      value={editingStep.condition_operator ?? "is_true"}
-                      onValueChange={(v) => {
-                        setEditingStep({ ...editingStep, condition_operator: v })
-                        updateLocalStep(editingIndex, { condition_operator: v })
-                      }}
-                    >
-                      <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="is_true" className="text-xs">is true</SelectItem>
-                        <SelectItem value="is_false" className="text-xs">is false</SelectItem>
-                        <SelectItem value="equals" className="text-xs">equals</SelectItem>
-                        <SelectItem value="not_equals" className="text-xs">not equals</SelectItem>
-                        <SelectItem value="contains" className="text-xs">contains</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Input
-                      placeholder="Value (if applicable)"
-                      className="text-xs"
-                      value={editingStep.condition_value ?? ""}
-                      onChange={(e) => {
-                        setEditingStep({ ...editingStep, condition_value: e.target.value })
-                        updateLocalStep(editingIndex, { condition_value: e.target.value })
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
-              {editingStep.channel === "assign_task" && (
-                <div className="space-y-2">
-                  <Label className="text-xs mb-1 block">Task description</Label>
-                  <Textarea
-                    rows={3}
-                    placeholder="Describe the task to assign to the agent… e.g., 'Call contact to confirm appointment'"
-                    value={editingStep.task_description ?? ""}
-                    onChange={(e) => {
-                      setEditingStep({ ...editingStep, task_description: e.target.value })
-                      updateLocalStep(editingIndex, { task_description: e.target.value })
-                    }}
-                  />
-                  <p className="text-xs text-muted-foreground">The task will appear in the agent's task queue with a due date equal to the step's wait duration.</p>
-                </div>
-              )}
-              {editingStep.channel === "add_to_segment" && (
-                <div className="space-y-2">
-                  <Label className="text-xs mb-1 block">Segment name or ID</Label>
-                  <Input
-                    placeholder="e.g., hot-leads, post-close-followup"
-                    value={editingStep.segment_name ?? ""}
-                    onChange={(e) => {
-                      setEditingStep({ ...editingStep, segment_name: e.target.value })
-                      updateLocalStep(editingIndex, { segment_name: e.target.value })
-                    }}
-                  />
-                  <p className="text-xs text-muted-foreground">The contact will be added to this segment when this step runs.</p>
-                </div>
-              )}
-              {editingStep.channel === "remove_from_campaign" && (
-                <div className="rounded-lg border bg-amber-50 p-3 text-xs text-amber-800">
-                  When this step runs, the contact will be unenrolled from this workflow and no further steps will execute. Use as a terminal exit node (e.g., after a conversion goal is met).
-                </div>
-              )}
+              {/* Per-step fields, rendered from lib/workflow/step-palette.ts.
+                  These used to be hand-written per channel, and only for the
+                  eight this builder knew about. Two of them wrote to columns
+                  that do not exist — task_description and segment_name — so
+                  every "Task description" and "Segment name" a broker typed was
+                  dropped on save. The real columns are task_title /
+                  task_notes_prompt, and the segment adapter reads body. */}
+              <StepFieldsEditor
+                channel={editingStep.channel}
+                values={editingStep as unknown as Record<string, unknown>}
+                onChange={(name, value) => {
+                  const updated = { ...editingStep, [name]: value }
+                  setEditingStep(updated)
+                  updateLocalStep(editingIndex, { [name]: value })
+                }}
+              />
             </div>
           )}
           <DialogFooter>
@@ -665,15 +610,20 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
                           Subject: "{step.subject}"
                         </p>
                       )}
-                      {step.task_description && (
-                        <p className="text-xs text-muted-foreground mt-0.5 truncate">Task: {step.task_description}</p>
+                      {/* The real columns: task_title (not task_description) and
+                          body for the segment (not segment_name). The previews
+                          below read what the step actually stores. */}
+                      {!!step.task_title && (
+                        <p className="text-xs text-muted-foreground mt-0.5 truncate">Task: {String(step.task_title)}</p>
                       )}
-                      {step.segment_name && (
-                        <p className="text-xs text-muted-foreground mt-0.5">→ Segment: <strong>{step.segment_name}</strong></p>
-                      )}
-                      {step.condition_field && (
+                      {(step.channel === "add_to_segment" || step.channel === "remove_from_segment") && !!step.body && (
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          If {step.condition_field} {step.condition_operator} {step.condition_value || "—"}
+                          {step.channel === "add_to_segment" ? "→" : "←"} Segment: <strong>{String(step.body)}</strong>
+                        </p>
+                      )}
+                      {!!step.condition_field && (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          If {String(step.condition_field)} {String(step.condition_operator ?? "")} {String(step.condition_value || "—")}
                         </p>
                       )}
                     </div>

@@ -8,11 +8,9 @@
  * Placed in the right column of buyer-overview-client.tsx below BuyerInsightsPanel.
  */
 
-import React, { useState, useTransition } from "react"
+import { useState, useTransition } from "react"
 import { useRouter }               from "next/navigation"
-import { Badge }                   from "@/components/ui/badge"
 import { Button }                  from "@/components/ui/button"
-import { Progress }                from "@/components/ui/progress"
 import {
   getBuyerFatigueScore,
   getBuyerFatigueAlerts,
@@ -27,7 +25,11 @@ interface Props {
   agentUserId: string
 }
 
-type RiskLevel = "fresh" | "watch" | "warning" | "critical"
+// VOCABULARY: the four values the live CHECK on buyer_fatigue_scores.risk_level
+// admits — fresh | moderate | high | critical. This file used to filter on
+// watch/warning, written by a second scorer whose rows the database rejected
+// outright, so these columns and filter tabs were permanently empty.
+type RiskLevel = "fresh" | "moderate" | "high" | "critical"
 
 interface FatigueScoreRow {
   fatigue_score:         number
@@ -52,8 +54,8 @@ interface FatigueAlertRow {
 
 const RISK_CONFIG: Record<RiskLevel, { label: string; bar: string; badge: string }> = {
   fresh:    { label: "Fresh",    bar: "bg-emerald-500", badge: "bg-emerald-100 text-emerald-800" },
-  watch:    { label: "Watch",    bar: "bg-amber-400",   badge: "bg-amber-100 text-amber-800" },
-  warning:  { label: "Warning",  bar: "bg-orange-500",  badge: "bg-orange-100 text-orange-800" },
+  moderate: { label: "Watch",    bar: "bg-amber-400",   badge: "bg-amber-100 text-amber-800" },
+  high:     { label: "Warning",  bar: "bg-orange-500",  badge: "bg-orange-100 text-orange-800" },
   critical: { label: "Critical", bar: "bg-red-600",     badge: "bg-red-100 text-red-800" },
 }
 
@@ -209,7 +211,10 @@ export function FatigueWidget({ contactId, brokerageId, agentUserId }: Props) {
           <div className="rounded-md border border-orange-200 bg-orange-50 p-3 space-y-2">
             <div className="flex items-start justify-between gap-2">
               <p className="text-xs font-semibold text-orange-900">
-                {alert.alert_type === "fatigue_critical" ? "Critical Alert" : "Fatigue Warning"}
+                {/* Severity comes from risk_level. This read alert_type === "fatigue_critical",
+                    a value the fatigue_alerts CHECK forbids (the only type ever written is
+                    fatigue_threshold_crossed), so a critical alert always rendered as a warning. */}
+                {alert.risk_level === "critical" ? "Critical Alert" : "Fatigue Warning"}
               </p>
               <button
                 onClick={handleDismiss}

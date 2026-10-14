@@ -12,7 +12,9 @@
 
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
+import { isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
 import TransactionFormsClient from "./transaction-forms-client"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -20,8 +22,6 @@ export const metadata = {
   title: "Transaction Form Library | Admin",
   description: "Upload and manage state-specific transaction forms used by the AI form-fill engine.",
 }
-
-const ADMIN_ROLES = new Set(["admin", "superadmin", "broker", "broker_admin"])
 
 export default async function TransactionFormsPage() {
   const supabase = await createClient()
@@ -31,9 +31,11 @@ export default async function TransactionFormsPage() {
   const { data: userRow } = await supabase
     .from("users").select("brokerage_id, user_type, platform_role").eq("id", user.id).maybeSingle()
   const brokerageId = userRow?.brokerage_id
-  const role = userRow?.user_type ?? userRow?.platform_role
-  if (!brokerageId || !role || !ADMIN_ROLES.has(role)) {
-    redirect("/dashboard")
+  // Tenant-admin config with platform staff admitted — user_type and platform_role
+  // each answer their own half, never coalesced (same gate as the API route).
+  if (!brokerageId) redirect("/dashboard/onboarding")
+  if (!isTenantAdminOrPlatformStaff(userRow ?? {})) {
+    return <RoleGateNotice surface="Transaction forms" audience="brokerage admins and platform staff" />
   }
 
   const { data: forms } = await supabase

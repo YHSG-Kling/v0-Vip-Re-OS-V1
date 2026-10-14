@@ -4,8 +4,17 @@ import { useEffect, useState } from "react"
 import Link from "next/link"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Layers, AlertTriangle, CheckCircle2 } from "lucide-react"
-import { canBuyerSubmitOffer, getBuyerActiveOffers } from "@/app/actions/buyer-offer/handle-multi-offer"
+import { Layers, AlertTriangle, CheckCircle2, ShieldAlert } from "lucide-react"
+// The LIMIT gate — "how many offers are already PENDING for this buyer?". The
+// other offer gate is `checkBuyerOfferEligibility` in buyer-lifecycle-core.ts
+// ("may this buyer be making offers at all?"). Both are real and they answer
+// different questions; they were `canBuyerSubmitOffer` / `canBuyerSubmitOffers`
+// until wave 14 C4 renamed them — see the note at the top of
+// handle-multi-offer.ts.
+import {
+  checkPendingOfferLimit,
+  getBuyerActiveOffers,
+} from "@/app/actions/buyer-offer/handle-multi-offer"
 import { MAX_PENDING_OFFERS, limitProximity, type LimitProximity } from "@/lib/offers/multi-offer-rules"
 
 interface ActiveOffer { offer_id: string; listing_id: string; listing_address: string; state: string }
@@ -17,29 +26,84 @@ const STYLE: Record<LimitProximity, { card: string; icon: typeof Layers; label: 
 }
 
 /**
- * Multi-offer governance status for a buyer (System 7.1A Domain 2). Read-only:
- * surfaces how many of the buyer's MAX_PENDING_OFFERS pending slots are used so the
- * agent sees the limit BEFORE starting another offer. Does not block creation.
+ * Multi-offer governance status for a buyer (System 7.1A Domain 2).
+ *
+ * READ-ONLY, AND HONEST ABOUT BEING READ-ONLY. It surfaces how many of the
+ * buyer's MAX_PENDING_OFFERS pending slots are used so the agent sees the limit
+ * BEFORE starting another offer. It does not block creation and never could —
+ * this is a browser. The cap is ENFORCED where the offer row is actually
+ * written, app/actions/buyer-offers.ts:createOffer, which binds this same limit
+ * gate plus the lifecycle gate.
+ *
+ * BOTH SERVER ACTIONS BEHIND THIS ARE NOW SESSION- AND TENANT-GATED. They were
+ * not: `getBuyerActiveOffers` was called from here with a bare `contactId` and
+ * read through a service-role client with no auth at all, which made this
+ * component's own endpoint a way for any signed-in browser to read another
+ * brokerage's buyer's live offers. Gating them means they can now REFUSE, and a
+ * refusal must not render as a clean "0 pending" — every table is empty
+ * pre-rollout, so a silent empty is exactly what a refusal looks like.
  */
 export function MultiOfferStatusBanner({ contactId }: { contactId: string }) {
   const [pending, setPending] = useState<number | null>(null)
   const [canSubmit, setCanSubmit] = useState(true)
   const [active, setActive] = useState<ActiveOffer[]>([])
+  /** The limit check did not run. Never rendered as a count. */
+  const [limitError, setLimitError] = useState<string | null>(null)
+  /** The active-offer list did not run — an empty list here means nothing. */
+  const [listError, setListError] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const [limit, list] = await Promise.all([canBuyerSubmitOffer(contactId), getBuyerActiveOffers(contactId)])
+      const [limit, list] = await Promise.all([checkPendingOfferLimit(contactId), getBuyerActiveOffers(contactId)])
       if (cancelled) return
-      if (limit.success) { setPending(limit.pending_count ?? 0); setCanSubmit(limit.can_submit) }
-      if (list.success && list.offers) setActive(list.offers as ActiveOffer[])
+      if (limit.success) {
+        setPending(limit.pending_count ?? 0)
+        setCanSubmit(limit.can_submit)
+        setLimitError(null)
+      } else {
+        setPending(null)
+        setLimitError(limit.reason ?? "the pending-offer check did not run")
+      }
+      if (list.success && list.offers) {
+        setActive(list.offers as ActiveOffer[])
+        setListError(null)
+      } else if (!list.success) {
+        setActive([])
+        setListError(list.error ?? "this buyer's active offers could not be read")
+      }
+      setLoaded(true)
     })()
     return () => { cancelled = true }
   }, [contactId])
 
-  if (pending === null) return null
+  if (!loaded) return null
 
-  const proximity = limitProximity(pending)
+  // THE CHECK DID NOT RUN. Say so, and say where the limit still binds — showing
+  // nothing at all would read as "no pending offers", which is the one thing an
+  // unreadable count cannot tell us.
+  if (limitError !== null) {
+    return (
+      <Card className="border-amber-200 bg-amber-50/60">
+        <CardContent className="py-3">
+          <div className="flex items-start gap-2">
+            <ShieldAlert className="h-4 w-4 mt-0.5 text-amber-600 shrink-0" />
+            <div className="text-sm">
+              <span className="font-medium">Pending-offer status unavailable</span>
+              <span className="text-muted-foreground"> — {limitError}.</span>
+              <div className="text-xs text-muted-foreground mt-1">
+                This is not a count of zero. The {MAX_PENDING_OFFERS}-offer limit is still enforced when the
+                offer is created, and creation will refuse while the count cannot be read.
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const proximity = limitProximity(pending ?? 0)
   const meta = STYLE[proximity]
   const Icon = meta.icon
 
@@ -53,7 +117,9 @@ export function MultiOfferStatusBanner({ contactId }: { contactId: string }) {
             <Badge variant="outline" className="text-xs gap-1"><Icon className="h-3 w-3" />{meta.label}</Badge>
           </div>
           {!canSubmit && (
-            <span className="text-xs text-red-600">Resolve a pending offer before submitting another.</span>
+            <span className="text-xs text-red-600">
+              Withdraw or resolve a pending offer before submitting another — creating one will be refused.
+            </span>
           )}
         </div>
         {active.length > 0 && (
@@ -67,6 +133,12 @@ export function MultiOfferStatusBanner({ contactId }: { contactId: string }) {
                 {o.listing_address} · {o.state.replace(/_/g, " ").toLowerCase()}
               </Link>
             ))}
+          </div>
+        )}
+        {listError !== null && (
+          <div className="mt-2 text-xs text-amber-700">
+            The list of this buyer&apos;s active offers could not be read ({listError}), so none are shown —
+            that is not the same as having none.
           </div>
         )}
       </CardContent>

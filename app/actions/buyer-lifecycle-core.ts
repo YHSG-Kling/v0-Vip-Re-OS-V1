@@ -10,6 +10,7 @@
 "use server"
 
 import { isValidUUID } from "@/lib/validations"
+import { createClient } from "@/lib/supabase/server"
 import {
   validateStateTransition,
   validateRollback,
@@ -24,7 +25,6 @@ import {
   isTourAllowed,
   isOfferAllowed,
   getEnabledGatesForBuyer,
-  isGateEnabled,
   checkFinancialVerification,
   emitFinancialVerificationEvent,
   getFinancialVerificationStatus,
@@ -36,6 +36,39 @@ import {
   type FinancialVerificationStatus,
   type BuyerState,
 } from "@/lib/buyer-lifecycle"
+
+/**
+ * Resolve the ACTOR and the TENANT from the session.
+ *
+ * The two brokerage-wide readers below used to take `brokerageId` as a
+ * parameter and hand it straight to lib/buyer-lifecycle, which reads through a
+ * SERVICE-ROLE client (RLS does not apply). Any signed-in user could therefore
+ * pass any other brokerage's uuid and receive that brokerage's buyer counts and
+ * its contact ids. Wiring them to a screen without closing that first would
+ * have shipped the hole, not the feature.
+ *
+ * users.id is the auth identity; users.brokerage_id is the tenant. Neither is
+ * ever accepted from the caller.
+ */
+async function requireBrokerage(): Promise<
+  { ok: true; userId: string; brokerageId: string } | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+
+  // Destructure the error: a refused read must not read as "no brokerage".
+  const { data: row, error } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  if (error) return { ok: false, error: `Could not resolve your brokerage: ${error.message}` }
+  if (!row?.brokerage_id) return { ok: false, error: "Your account is not attached to a brokerage" }
+
+  return { ok: true, userId: user.id, brokerageId: row.brokerage_id }
+}
 
 /**
  * Validate a buyer lifecycle state transition
@@ -242,9 +275,23 @@ export async function canBuyerScheduleTours(contactId: string): Promise<GatingRe
 }
 
 /**
- * Check if buyer can submit offers
+ * THE LIFECYCLE ELIGIBILITY GATE — "is this buyer far enough along, and
+ * financially verified, to be making offers AT ALL?"
+ *
+ * Renamed from `canBuyerSubmitOffers` (wave 14, C4). There is a SECOND, entirely
+ * different offer gate — app/actions/buyer-offer/handle-multi-offer.ts
+ * :checkPendingOfferLimit, the LIMIT gate ("how many offers does this buyer
+ * already have PENDING, and is that under the cap?"). The two used to be called
+ * `canBuyerSubmitOffers` and `canBuyerSubmitOffer`: one character apart, two
+ * different questions, and a call site that read the wrong one looked correct.
+ * Both are real, both are enforced at app/actions/buyer-offers.ts:createOffer,
+ * and neither is a duplicate of the other — a buyer can pass either and fail the
+ * other. The names now say WHICH question each answers.
+ *
+ * This one knows nothing about how many offers are already out; it answers from
+ * lib/buyer-lifecycle/gating-helpers.ts:isOfferAllowed.
  */
-export async function canBuyerSubmitOffers(contactId: string): Promise<GatingResult> {
+export async function checkBuyerOfferEligibility(contactId: string): Promise<GatingResult> {
   if (!isValidUUID(contactId)) {
     return { allowed: false, reason: "Invalid contact ID" }
   }
@@ -263,21 +310,18 @@ export async function getBuyerEnabledGates(contactId: string): Promise<string[]>
   return await getEnabledGatesForBuyer(contactId)
 }
 
-/**
- * Check if specific gate is enabled for buyer
- */
-export async function isBuyerGateEnabled(params: {
-  contactId: string
-  gateName: string
-}): Promise<boolean> {
-  const { contactId, gateName } = params
-
-  if (!isValidUUID(contactId)) {
-    return false
-  }
-
-  return await isGateEnabled(contactId, gateName)
-}
+// CONSOLIDATED AWAY — isBuyerGateEnabled({ contactId, gateName }): Promise<boolean>.
+//
+// Named survivor: app/actions/buyer-lifecycle-core.ts:getBuyerEnabledGates — same module,
+// same input, already wired at app/crm/contacts/[contactId]/page.tsx:5, and it returns the
+// WHOLE enabled-gate set instead of one yes/no.
+//
+// This is a merge, not a judgement call about usage. lib/buyer-lifecycle/lifecycle-definitions.ts
+// defines isSystemGateEnabled(state, gate) as `getEnabledSystemGates(state).includes(gate)` —
+// literally the survivor's answer, filtered. So `isBuyerGateEnabled({contactId, gateName})`
+// === `(await getBuyerEnabledGates(contactId)).includes(gateName)`, with no branch, no read
+// and no validation the survivor lacks. There was nothing to port: the deleted wrapper did
+// strictly less with the same data.
 
 /**
  * FINANCIAL VERIFICATION
@@ -366,38 +410,61 @@ export async function recordBuyerFinancialVerification(params: {
  */
 
 /**
- * Get lifecycle statistics for brokerage
+ * Buyer lifecycle statistics for the CALLER'S OWN brokerage.
+ *
+ * The tenant is resolved from the session — see requireBrokerage above for why
+ * accepting it as an argument was an authorization hole against a service-role
+ * reader.
+ *
+ * KNOWN LIMIT, stated rather than hidden: lib/buyer-lifecycle/lifecycle-logger.ts
+ * :getLifecycleStatistics logs a failed read and returns a ZEROED result, so a
+ * refused query and a brokerage with no buyers are indistinguishable from here.
+ * That swallow lives outside this action and is reported, not papered over — the
+ * surface must not phrase a zero as proof of "no buyers".
  */
-export async function getBuyerLifecycleStatistics(params: {
-  brokerageId: string
+export async function getBuyerLifecycleStatistics(params?: {
   startDate?: Date
   endDate?: Date
-}): Promise<LifecycleStatistics> {
-  const { brokerageId, startDate, endDate } = params
+}): Promise<
+  | { ok: true; brokerageId: string; statistics: LifecycleStatistics }
+  | { ok: false; error: string }
+> {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return { ok: false, error: ctx.error }
 
-  if (!isValidUUID(brokerageId)) {
-    return {
-      totalBuyers: 0,
-      byState: {} as Record<BuyerState, number>,
-    }
-  }
+  const statistics = await getLifecycleStatistics(ctx.brokerageId, {
+    startDate: params?.startDate,
+    endDate: params?.endDate,
+  })
 
-  return await getLifecycleStatistics(brokerageId, { startDate, endDate })
+  return { ok: true, brokerageId: ctx.brokerageId, statistics }
 }
 
 /**
- * Get buyers in specific state
+ * The contact ids of the caller's own buyers currently in one lifecycle state.
+ *
+ * Same tenancy rule as above. `state` is validated against the compiled state
+ * table before it reaches the reader, so an unknown state name comes back as a
+ * refusal rather than as an empty cohort that looks like "nobody is here".
  */
 export async function getBuyersInSpecificState(params: {
-  brokerageId: string
   state: BuyerState
   limit?: number
-}): Promise<string[]> {
-  const { brokerageId, state, limit } = params
+}): Promise<
+  | { ok: true; state: BuyerState; contactIds: string[] }
+  | { ok: false; error: string }
+> {
+  const ctx = await requireBrokerage()
+  if (!ctx.ok) return { ok: false, error: ctx.error }
 
-  if (!isValidUUID(brokerageId)) {
-    return []
+  const { getStateDefinition } = await import("@/lib/buyer-lifecycle/lifecycle-definitions")
+  if (!getStateDefinition(params.state)) {
+    return { ok: false, error: `Unknown buyer lifecycle state: ${String(params.state)}` }
   }
 
-  return await getBuyersInState(brokerageId, state, { limit })
+  const contactIds = await getBuyersInState(ctx.brokerageId, params.state, {
+    limit: params.limit,
+  })
+
+  return { ok: true, state: params.state, contactIds }
 }

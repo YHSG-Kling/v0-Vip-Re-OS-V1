@@ -25,13 +25,28 @@ import { disconnectProvider as disconnectOwnerScoped } from "@/app/actions/conne
 import { CheckCircle2, XCircle, Loader2, ExternalLink, Info, MinusCircle } from "lucide-react"
 import { toast } from "sonner"
 
-export type AccountingCardScope = "platform" | "brokerage" | "team" | "agent" | "vendor"
+// TOMBSTONE (§1.1 / §6, 2026-08-29): `AccountingCardScope` — a byte-identical
+// second spelling of the scope ladder — is DELETED.
+// SURVIVOR: lib/connections/accounting-scopes.ts:46 `AccountingScope`, which is
+// the one the OFFERING MATRIX is keyed on (`ACCOUNTING_OFFERINGS:
+// Record<AccountingScope, …>`) and which `ACCOUNTING_SCOPES` enumerates. There
+// was nothing to merge onto it — the two lists carried the same five arms — but
+// only one of them can be the vocabulary, and a card cannot be the authority on
+// a ladder whose matrix lives elsewhere: add a sixth scope to the matrix and the
+// old copy would have gone on type-checking while rendering nothing for it.
+// The `status` prop's inline union was the same defect one line down; its
+// doc-comment already NAMED the survivor it was refusing to import.
+//
+// Type-only import ON PURPOSE: accounting-scopes.ts pulls in the connector
+// gateway at runtime, and this is a "use client" file. `import type` is erased,
+// so the vocabulary is shared without dragging server code into the bundle.
+import type { AccountingScope, AccountingOfferingStatus } from "@/lib/connections/accounting-scopes"
 
 interface ProviderConnectionCardProps {
   provider: "quickbooks" | "xero" | "stripe" | "zoom"
-  scope: AccountingCardScope
+  scope: AccountingScope
   /** Offering status from lib/connections/accounting-scopes.ts. */
-  status: "connectable" | "managed-elsewhere" | "not-offered"
+  status: AccountingOfferingStatus
   connected: boolean
   /** Company / account label when connected (QBO account name, acct_… id, …). */
   companyName?: string | null

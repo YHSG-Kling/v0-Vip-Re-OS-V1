@@ -1,6 +1,8 @@
 import { redirect } from 'next/navigation'
+import { RoleGateNotice } from '@/app/components/shared/role-gate-notice'
 import { createClient } from '@/lib/supabase/server'
 import LeadLineageClient, { type Lead } from './lead-lineage-client'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = 'force-dynamic'
 
@@ -24,8 +26,8 @@ export default async function LeadLineagePage() {
     .eq('id', user.id)
     .single()
 
-  if (!['admin', 'broker', 'superadmin'].includes(profile?.user_type ?? '')) {
-    redirect('/dashboard')
+  if (!isAdminOrBroker({ user_type: profile?.user_type ?? '' })) {
+    return <RoleGateNotice surface="Lead lineage" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   const brokerageId = profile!.brokerage_id!
@@ -64,8 +66,8 @@ export default async function LeadLineagePage() {
         id,
         qualification_score,
         stage,
-        qualification_notes,
-        created_at,
+        notes,
+        qualified_at,
         last_outreach_at,
         assigned_to_agent_id
       ),

@@ -21,7 +21,7 @@ import {
 import { Truck, Package, CheckCircle, AlertCircle, Clock, QrCode, ScanLine } from "lucide-react"
 import { formatDistanceToNow, format } from "date-fns"
 import type { Campaign, TrackingRecord } from "../mail-dashboard"
-import { getCampaignQrScans, type QrScanEvent } from "@/app/actions/direct-mail"
+import { getCampaignQrScans } from "@/app/actions/direct-mail"
 
 interface TrackingTabProps {
   tracking: TrackingRecord[]

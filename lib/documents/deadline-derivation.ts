@@ -223,9 +223,10 @@ export async function deriveDeadlinesFromDocument(
     } else if (verdict.decision === "green" && verdict.recommendedAction === "stamp_source_provenance") {
       // The document confirms the tracked date — record where the evidence lives.
       if (existing && !existing.source_document_id) {
-        await svc.from("transaction_deadlines")
+        const { error: provenanceErr } = await svc.from("transaction_deadlines")
           .update({ source_document_id: input.documentId, source_field_key: c.fieldKey })
           .eq("id", existing.id)
+        if (provenanceErr) console.error(`[deadline-derivation] source-document provenance not stamped on the deadline: ${provenanceErr.message}`)
       }
       result.confirmed++
     } else if (verdict.decision === "amber") {

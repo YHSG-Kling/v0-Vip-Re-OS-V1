@@ -113,8 +113,12 @@ interface IntelligenceOSClientProps {
   pointsData: {
     points: number
     currentTier: string
-    nextTier: string
+    /** Null at the top of the threshold ladder — Diamond is conferred by a broker. */
+    nextTier: string | null
     pointsToNextTier: number
+    progressPercent: number
+    /** Retention radar has this agent under strain — the rail shows support, not a push (wave 103). */
+    underStrain?: boolean
   }
   recentBadges: Array<{
     id: string
@@ -231,7 +235,7 @@ export function IntelligenceOSClient({
             {/* Center Column - Patterns & Exceptions */}
             <div className="space-y-6">
               <BehaviorPatternsPanel patterns={filteredPatterns} />
-              <ExceptionPatternsPanel exceptions={exceptionPatterns as any} />
+              <ExceptionPatternsPanel exceptions={exceptionPatterns} />
             </div>
 
             {/* Right Column - Motivation & Leaderboard */}
@@ -241,6 +245,8 @@ export function IntelligenceOSClient({
                 currentTier={pointsData.currentTier}
                 nextTier={pointsData.nextTier}
                 pointsToNextTier={pointsData.pointsToNextTier}
+                tierProgress={pointsData.progressPercent}
+                underStrain={pointsData.underStrain === true}
                 recentBadges={recentBadges}
                 nextBadgeProgress={nextBadgeProgress}
                 pointDrivers={pointDrivers}
@@ -258,7 +264,7 @@ export function IntelligenceOSClient({
         <TabsContent value="patterns" className="space-y-6">
           <div className="grid gap-6 lg:grid-cols-2">
             <BehaviorPatternsPanel patterns={filteredPatterns} />
-            <ExceptionPatternsPanel exceptions={exceptionPatterns as any} />
+            <ExceptionPatternsPanel exceptions={exceptionPatterns} />
           </div>
           <OperationalInsightsPanel
             insights={operationalInsights}

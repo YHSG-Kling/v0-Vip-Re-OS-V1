@@ -10,6 +10,10 @@ interface NewOfferPageClientProps {
   contactId:        string
   brokerageId:      string
   agentUserId:      string
+  /** Resolved server-side via lib/kernel/resolve-user-team.ts (THE ONE answer
+   *  for "which team is this agent on") — scopes FormWizard's e-sign
+   *  template/provider resolution to the agent's team. */
+  teamId:           string | null
   contactName:      string
   contactEmail:     string
   /** Full contacts row required by FormWizard. */
@@ -20,12 +24,17 @@ interface NewOfferPageClientProps {
   /** When set, mount FormWizard with the AI-staged packet preloaded
    *  (voice → intake → forms → email → review here). */
   documentId:       string | null
+  /** offer_intents.id when this wizard was opened from the agent's Buyer
+   *  offer requests queue ("Start Offer") — threaded to OfferInitiationFlow so
+   *  createOffer can bridge the intent once the real offer is created. */
+  prefillOfferIntentId?: string | null
 }
 
 export function NewOfferPageClient({
   contactId,
   brokerageId,
   agentUserId,
+  teamId,
   contactName,
   contactEmail,
   contactFull,
@@ -33,6 +42,7 @@ export function NewOfferPageClient({
   prefillAddress,
   prefillPhone,
   documentId,
+  prefillOfferIntentId = null,
 }: NewOfferPageClientProps) {
   const router = useRouter()
   const [wizardOpen, setWizardOpen] = useState<boolean>(Boolean(documentId))
@@ -75,6 +85,7 @@ export function NewOfferPageClient({
             contact={contactFull}
             brokerageId={brokerageId}
             agentUserId={agentUserId}
+            teamId={teamId}
             agentName=""
             agentEmail=""
             open={wizardOpen}
@@ -120,6 +131,7 @@ export function NewOfferPageClient({
           initialAddress={prefillAddress ?? undefined}
           initialBuyerPhone={prefillPhone ?? undefined}
           initialBuyerEmail={contactEmail || undefined}
+          initialOfferIntentId={prefillOfferIntentId ?? undefined}
         />
       </div>
     </main>

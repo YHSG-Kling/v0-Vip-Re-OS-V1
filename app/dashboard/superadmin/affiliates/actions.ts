@@ -15,9 +15,12 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import {
   PERIOD_RE,
+  isAffiliateStatus,
   referralActive,
   referralWindowEnd,
   validateAffiliateInput,
+  type AffiliateStatus,
+  type CommissionStatus,
 } from "@/lib/platform/affiliates"
 
 const AFFILIATES_PATH = "/dashboard/superadmin/affiliates"
@@ -74,7 +77,8 @@ export interface AffiliateRow {
   code: string
   commission_percent: number
   duration_months: number
-  status: "active" | "paused" | "ended"
+  /** Typed to the canonical vocabulary (lib/platform/affiliates.ts) instead of an inline copy. */
+  status: AffiliateStatus
   payout_details: Record<string, unknown> | null
   notes: string | null
   created_at: string
@@ -152,7 +156,9 @@ export async function listAffiliatesAction(): Promise<
     const byPeriod = new Map<string, AffiliatePeriodRow>()
     let totalAccrued = 0
     let totalPaid = 0
-    for (const e of ((evtR.data ?? []) as any[]).filter((e) => e.affiliate_id === a.id)) {
+    // status typed to the canonical CommissionStatus vocabulary (backed by the
+    // affiliate_commission_events.status CHECK) instead of `any`.
+    for (const e of ((evtR.data ?? []) as Array<{ affiliate_id: string; period: string; commission_cents: number | null; status: CommissionStatus }>).filter((e) => e.affiliate_id === a.id)) {
       const row = byPeriod.get(e.period) ?? { period: e.period, accrued_cents: 0, paid_cents: 0, void_cents: 0, events: 0 }
       const cents = Number(e.commission_cents) || 0
       if (e.status === "paid") { row.paid_cents += cents; totalPaid += cents }
@@ -236,14 +242,16 @@ export async function updateAffiliateAction(id: string, patch: {
   code: string
   commissionPercent: number
   durationMonths: number
-  status: "active" | "paused" | "ended"
+  /** Typed to the canonical vocabulary; the isAffiliateStatus check below stays because this is
+   *  a public endpoint and the runtime payload is untrusted regardless of the annotation. */
+  status: AffiliateStatus
   payoutNotes?: string
   notes?: string
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   const gate = await requirePlatformCapability("billing", { requireWrite: true })
   if (!gate.ok || !gate.userId) return { ok: false, error: gate.error ?? "Forbidden" }
   if (!id) return { ok: false, error: "Affiliate id required." }
-  if (!["active", "paused", "ended"].includes(patch.status)) return { ok: false, error: "Invalid status." }
+  if (!isAffiliateStatus(patch.status)) return { ok: false, error: "Invalid status." }
 
   const check = validateAffiliateInput(patch)
   if (!check.ok) return check

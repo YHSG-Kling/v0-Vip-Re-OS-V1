@@ -1,16 +1,15 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { CompetitiveMonitorClient } from "./competitive-monitor-client"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import {
   getCompetitorAds,
   getCompetitorPosts,
   getAdInsights,
   getTrendAlerts,
-  type CompetitorAd,
-  type CompetitorPost,
-  type AdInsight,
-  type TrendAlert,
 } from "@/lib/ads/ad-monitor"
+import { loadBrandListeningReading } from "@/lib/competitive-intel/brand-listening"
+import { BrandListeningCard } from "./brand-listening-card"
 
 export const dynamic = "force-dynamic"
 
@@ -30,6 +29,13 @@ export default async function CompetitiveMonitorPage() {
     redirect("/login")
   }
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Get user's brokerage_id
   const { data: userData } = await supabase
     .from("users")
@@ -44,11 +50,14 @@ export default async function CompetitiveMonitorPage() {
   const brokerageId = userData.brokerage_id
 
   // Fetch initial data
-  const [adsResult, postsResult, insightsResult, alertsResult] = await Promise.all([
+  // Brand listening (wave 139H) reads brand_mentions through THIS session client — RLS-scoped to the
+  // session's brokerage, with the tenant predicate pinned as well (lib/competitive-intel/brand-listening.ts).
+  const [adsResult, postsResult, insightsResult, alertsResult, listening] = await Promise.all([
     getCompetitorAds(brokerageId),
     getCompetitorPosts(brokerageId),
     getAdInsights(brokerageId),
     getTrendAlerts(brokerageId),
+    loadBrandListeningReading(supabase, brokerageId),
   ])
 
   return (
@@ -59,6 +68,8 @@ export default async function CompetitiveMonitorPage() {
           Track competitor ads and posts, analyze trends, and get AI-powered recommendations
         </p>
       </div>
+
+      <BrandListeningCard reading={listening} />
 
       <CompetitiveMonitorClient
         brokerageId={brokerageId}

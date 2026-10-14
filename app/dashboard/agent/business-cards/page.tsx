@@ -2,11 +2,45 @@
 
 import { useState, useRef, useCallback, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { uploadBusinessCard, getRecentScans } from "@/app/actions/business-card/business-card-actions"
+import { uploadBusinessCard, getRecentScans, confirmBusinessCardScan } from "@/app/actions/business-card/business-card-actions"
 import { createPartner, createReferral } from "@/app/actions/referrals/referral-actions"
 import { enrollContactInSequence, listCampaignSequences } from "@/app/actions/campaign-sequences"
 import { createClient } from "@/lib/supabase/client"
 import { useToast } from "@/hooks/use-toast"
+// PURE module (no server-only): the field list and the confidence floor the action applies,
+// read here rather than re-typed so the surface and the rule cannot drift (wave 141F).
+import { CARD_FIELDS, CARD_FIELD_CONFIDENCE_FLOOR, type CardField, type CardSubjectType } from "@/lib/contacts/card-classifier"
+
+// wave 48 (owner ruling 2026-09-10): the picker on the card review surface —
+// "Auto-detect" (undefined) leaves the reader/notes/existing-match classifier
+// in charge; any other choice is an EXPLICIT override that wins outright.
+const SUBJECT_TYPE_OPTIONS: Array<{ value: CardSubjectType | ""; label: string }> = [
+  { value: "", label: "Auto-detect" },
+  { value: "sphere", label: "Sphere of influence (someone I know)" },
+  { value: "agent", label: "Fellow agent (recruiting prospect)" },
+  { value: "potential_contact", label: "Potential client" },
+  { value: "contact", label: "Contact (ready client)" },
+  { value: "vendor", label: "Vendor / service provider" },
+]
+
+// Reader for business_card_scans.classified_by (m617 typed column) — which
+// determination tier decided the class (lib/contacts/card-classifier.ts).
+const CLASSIFIED_BY_LABEL: Record<"picker" | "reader" | "notes" | "match" | "default", string> = {
+  picker: "you picked it",
+  reader: "read off the card",
+  notes: "from your notes",
+  match: "matched an existing record",
+  default: "unclassified",
+}
+
+const SUBJECT_TYPE_LABEL: Record<CardSubjectType, string> = {
+  sphere: "Sphere of influence",
+  agent: "Fellow agent — recruiting prospect",
+  potential_contact: "Potential client",
+  contact: "Contact created",
+  vendor: "Vendor bench candidate",
+  unknown: "Unclassified — needs a human to pick",
+}
 
 type PostScanContact = {
   id: string
@@ -27,17 +61,41 @@ type ScanRow = {
   created_at: string
   extracted_data: Record<string, string>
   confidence_score: number
-  review_status: "approved" | "rejected"
+  review_status: "approved" | "pending" | "rejected"
   contact_id: string | null
   raw_image_url: string
+  /** users.id of the human who confirmed the scan (confirmBusinessCardScan, wave 141F);
+   *  null when the automatic viability gate approved it. */
+  reviewed_by: string | null
+  /** When the viability gate ran, or when a human confirmed. */
+  reviewed_at: string | null
+  cardSubjectType: CardSubjectType | null
+  subjectUserId: string | null
+  subjectNotes: string | null
+  classifiedBy: "picker" | "reader" | "notes" | "match" | "default" | null
+  fieldConfidence: Partial<Record<CardField, number | null>>
+  needsConfirmation: boolean
 }
 
 type ScanResult = {
   scanId: string
   contactId: string | null
   viable: boolean
-  extracted?: Record<string, string>
+  needsConfirmation: boolean
+  extracted: Record<string, string>
+  fieldConfidence: Partial<Record<CardField, number | null>>
+  lowFields: CardField[]
   confidence?: number
+  cardSubjectType?: CardSubjectType
+  subjectUserId?: string | null
+}
+
+/** What the review surface edits: the reader's fields, their confidence, and whether a contact already exists (correction mode). */
+type ConfirmTarget = {
+  scanId: string
+  fields: Partial<Record<CardField, string>>
+  fieldConfidence: Partial<Record<CardField, number | null>>
+  contactId: string | null
 }
 
 function ConfidenceBadge({ score }: { score: number }) {
@@ -53,6 +111,101 @@ function ConfidenceBadge({ score }: { score: number }) {
   )
 }
 
+const FIELD_LABEL: Record<CardField, string> = {
+  first_name: "First Name", last_name: "Last Name", email: "Email",
+  phone: "Phone", company: "Company", title: "Title",
+  address: "Address", website: "Website",
+}
+
+/**
+ * CONFIRM / CORRECT THE READING (wave 141F — owner: "human confirmation where
+ * needed … never overwrite higher-confidence data with weak extraction"). Every
+ * field is editable; the ones the reader was unsure of (below the floor) are
+ * marked. Confirming a HELD scan routes it; confirming a scan that already
+ * produced a contact applies the correction field by field under the merge rule
+ * and reports what was kept and why. Mobile: one column, 16 px inputs, 44 px taps.
+ */
+function CardConfirmForm({ target, onDone, onCancel }: { target: ConfirmTarget; onDone: (summary: { contactId: string | null; message: string }) => void; onCancel: () => void }) {
+  const [values, setValues] = useState<Record<CardField, string>>(() => {
+    const v = {} as Record<CardField, string>
+    for (const f of CARD_FIELDS) v[f] = target.fields[f] ?? ""
+    return v
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const floorPct = Math.round(CARD_FIELD_CONFIDENCE_FLOOR * 100)
+
+  const submit = async () => {
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await confirmBusinessCardScan({ scanId: target.scanId, fields: values })
+      if (!res.ok) { setError(res.error); return }
+      if (res.mode === "routed") {
+        const r = res.result
+        onDone({ contactId: r.contactId, message: r.contactId ? "Confirmed — contact created." : `Confirmed — filed as ${r.cardSubjectType.replace(/_/g, " ")}.` })
+      } else {
+        const applied = res.applied.length ? `updated ${res.applied.map((f) => FIELD_LABEL[f].toLowerCase()).join(", ")}` : "nothing needed updating"
+        const kept = res.kept.length ? `; kept ${res.kept.map((k) => `${FIELD_LABEL[k.field].toLowerCase()} (${k.reason.replace(/_/g, " ")})`).join(", ")}` : ""
+        onDone({ contactId: res.contactId, message: `Correction applied — ${applied}${kept}.` })
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not confirm the scan. Please try again.")
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-amber-300 bg-amber-50/40 p-4 space-y-3" aria-label={target.contactId ? "Correct the card reading" : "Confirm the card reading"}>
+      <div>
+        <p className="text-sm font-semibold text-foreground">
+          {target.contactId ? "Correct what the reader got wrong" : "Please confirm this card before it becomes a record"}
+        </p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {target.contactId
+            ? "Your correction overwrites the card's own reading; a value that came from a verified source or a person's own entry is kept and noted instead."
+            : `Fields the reader was less than ${floorPct}% sure of are marked. Nothing is written until you confirm.`}
+        </p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {CARD_FIELDS.map((f) => {
+          const conf = target.fieldConfidence[f]
+          const low = !!target.fields[f] && (conf ?? 0) < CARD_FIELD_CONFIDENCE_FLOOR
+          return (
+            <div key={f}>
+              <label htmlFor={`confirm-${f}`} className="flex items-center justify-between text-xs font-medium text-foreground mb-1">
+                <span>{FIELD_LABEL[f]}</span>
+                {target.fields[f] ? (
+                  <span className={`text-[11px] ${low ? "text-amber-700" : "text-muted-foreground"}`}>
+                    {conf == null ? "unsure" : `${Math.round(conf * 100)}% sure`}{low ? " — please check" : ""}
+                  </span>
+                ) : null}
+              </label>
+              <input
+                id={`confirm-${f}`}
+                value={values[f]}
+                onChange={(e) => setValues((p) => ({ ...p, [f]: e.target.value }))}
+                inputMode={f === "email" ? "email" : f === "phone" ? "tel" : f === "website" ? "url" : "text"}
+                className={`w-full min-h-[44px] rounded-md border bg-background px-3 py-2 text-base focus:outline-none focus:ring-1 focus:ring-ring ${low ? "border-amber-400" : "border-border"}`}
+              />
+            </div>
+          )
+        })}
+      </div>
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      <div className="flex flex-col sm:flex-row gap-2">
+        <button type="button" onClick={onCancel} disabled={submitting} className="min-h-[44px] flex-1 rounded-lg border border-border py-2 text-sm text-muted-foreground hover:bg-muted transition-colors disabled:opacity-60">
+          Not now
+        </button>
+        <button type="button" onClick={submit} disabled={submitting} className="min-h-[44px] flex-1 rounded-lg bg-foreground py-2 text-sm font-medium text-background hover:opacity-90 disabled:opacity-60 transition-opacity">
+          {submitting ? "Saving…" : target.contactId ? "Apply correction" : "Confirm and file"}
+        </button>
+      </div>
+    </section>
+  )
+}
+
 export default function BusinessCardsPage() {
   const router = useRouter()
   const { toast } = useToast()
@@ -65,13 +218,28 @@ export default function BusinessCardsPage() {
   const [agentId, setAgentId] = useState<string | null>(null)
   const [brokerageId, setBrokerageId] = useState<string | null>(null)
 
+  // wave 48 — card review surface: free-text notes (priority-2 classification
+  // source) + an explicit picker (wins outright over the auto-classifier).
+  const [cardNotes, setCardNotes] = useState("")
+  const [cardSubjectPick, setCardSubjectPick] = useState<CardSubjectType | "">("")
+
   // Post-scan sheet state
   const [postScanContact, setPostScanContact] = useState<PostScanContact | null>(null)
   const [showNextSteps, setShowNextSteps] = useState(false)
 
+  // Wave 141F — the confirm / correct surface (a held low-confidence scan, or
+  // "Report extraction error" on a scan that already produced a contact).
+  const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null)
+
   // Option 1 — Referral partner form state
   const [showReferralForm, setShowReferralForm] = useState(false)
-  const [referralPartnerType, setReferralPartnerType] = useState<"agent_to_agent" | "vendor" | "lender" | "title" | "other">("agent_to_agent")
+  // referral_partners.partner_type CHECK — the UI used to offer agent_to_agent /
+  // vendor / lender / title, NONE of which the column accepts, so every scanned
+  // card failed on insert and the agent just saw "Please try again" forever.
+  const [referralPartnerType, setReferralPartnerType] = useState<
+    "real_estate_agent" | "mortgage_broker" | "title_company" | "home_inspector"
+    | "contractor" | "insurance_agent" | "attorney" | "property_manager" | "other"
+  >("real_estate_agent")
   const [referralNotes, setReferralNotes] = useState("")
   const [referralSubmitting, setReferralSubmitting] = useState(false)
   const [referralDone, setReferralDone] = useState(false)
@@ -118,7 +286,19 @@ export default function BusinessCardsPage() {
   }, [])
 
   const processFile = useCallback(async (file: File) => {
-    if (!agentId || !brokerageId) return
+    // Don't silently swallow the drop ("file won't add" from the walkthrough) — a
+    // signed-in but not-yet-provisioned account (agent record / brokerage still
+    // being set up by the login-time self-heal) gets clear feedback instead of
+    // nothing. Once /dashboard has provisioned the records, the ids resolve and
+    // the scan works.
+    if (!agentId || !brokerageId) {
+      toast({
+        title: "Finishing your account setup",
+        description: "We're still setting up your agent profile — refresh in a moment, then add your card.",
+        variant: "destructive",
+      })
+      return
+    }
     setScanning(true)
     setResult(null)
     try {
@@ -130,20 +310,31 @@ export default function BusinessCardsPage() {
         "image/jpeg"
       ) as "image/jpeg" | "image/png" | "image/webp"
 
-      const res = await uploadBusinessCard({ imageBase64: base64, mimeType, agentId, brokerageId })
+      const res = await uploadBusinessCard({
+        imageBase64: base64, mimeType, agentId, brokerageId,
+        notes: cardNotes.trim() || undefined,
+        subjectType: cardSubjectPick || undefined,
+      })
 
       // Reload history
       const history = await getRecentScans({ agentId, brokerageId, limit: 20 })
       setScans(history)
 
-      // Find extracted data from history
       const newScan = history.find((s) => s.id === res.scanId)
-      const extracted = newScan?.extracted_data ?? {}
+      const extracted = res.extracted
       setResult({
         ...res,
         extracted,
         confidence: newScan?.confidence_score,
       })
+      // Reset the review-surface inputs for the next scan.
+      setCardNotes("")
+      setCardSubjectPick("")
+
+      // A reading the reader was unsure of is HELD — open the confirmation form at once.
+      if (res.needsConfirmation) {
+        setConfirmTarget({ scanId: res.scanId, fields: res.extracted, fieldConfidence: res.fieldConfidence, contactId: null })
+      }
 
       // Trigger post-scan sheet only on viable scans that produced a contact
       if (res.viable && res.contactId) {
@@ -166,7 +357,7 @@ export default function BusinessCardsPage() {
     } finally {
       setScanning(false)
     }
-  }, [agentId, brokerageId])
+  }, [agentId, brokerageId, cardNotes, cardSubjectPick])
 
   const dismissSheet = () => {
     setShowNextSteps(false)
@@ -182,7 +373,8 @@ export default function BusinessCardsPage() {
       const partnerResult = await createPartner({
         partnerName: postScanContact.name,
         partnerType: referralPartnerType,
-        agreementType: "referral_fee",
+        agreementType: "informal",
+        notes: referralNotes.trim() || undefined,
       })
 
       // Step 2: log the referral, linking the scanned contact as the referred person
@@ -255,16 +447,78 @@ export default function BusinessCardsPage() {
     if (file) handleFile(file)
   }
 
-  const fields = ["first_name", "last_name", "email", "phone", "company", "title", "address", "website"]
-  const fieldLabel: Record<string, string> = {
-    first_name: "First Name", last_name: "Last Name", email: "Email",
-    phone: "Phone", company: "Company", title: "Title",
-    address: "Address", website: "Website",
+  const fields = CARD_FIELDS
+  const fieldLabel: Record<string, string> = FIELD_LABEL
+
+  /** After a confirm / correction: refresh history, tell the agent, and open next steps when a contact exists. */
+  const handleConfirmDone = async (summary: { contactId: string | null; message: string }) => {
+    setConfirmTarget(null)
+    toast({ title: summary.message })
+    if (agentId && brokerageId) {
+      const history = await getRecentScans({ agentId, brokerageId, limit: 20 })
+      setScans(history)
+      if (result) {
+        const refreshed = history.find((s) => s.id === result.scanId)
+        if (refreshed) {
+          setResult({ ...result, needsConfirmation: false, contactId: refreshed.contact_id, extracted: refreshed.extracted_data, confidence: refreshed.confidence_score, cardSubjectType: refreshed.cardSubjectType ?? result.cardSubjectType })
+        }
+      }
+    }
+    if (summary.contactId) {
+      const f = confirmTarget?.fields ?? {}
+      setPostScanContact({
+        id: summary.contactId,
+        name: [f.first_name, f.last_name].filter(Boolean).join(" "),
+        email: f.email ?? "",
+        company: f.company ?? "",
+        title: f.title ?? "",
+      })
+      setShowNextSteps(true)
+    }
   }
 
   return (
     <main className="max-w-3xl mx-auto p-6 space-y-8">
       <h1 className="text-2xl font-semibold text-foreground">Business Card Scanner</h1>
+
+      {/* Card review surface (wave 48): a card is never assumed a contact —
+          classify it from context before (or after) you scan. Auto-detect
+          reads the printed title/company, then these notes, then an existing
+          match; picking a class here overrides all of that. */}
+      <section className="space-y-3 rounded-xl border border-border p-4">
+        <div>
+          <label htmlFor="card-notes" className="block text-xs font-medium text-foreground mb-1">
+            Notes on this card (optional)
+          </label>
+          <textarea
+            id="card-notes"
+            value={cardNotes}
+            onChange={(e) => setCardNotes(e.target.value)}
+            rows={2}
+            placeholder="e.g. &quot;old friend from the block party&quot;, &quot;fellow agent at another shop&quot;, &quot;interested in selling next year&quot;..."
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
+        <div>
+          <label htmlFor="card-subject-type" className="block text-xs font-medium text-foreground mb-1">
+            Who is this?
+          </label>
+          <select
+            id="card-subject-type"
+            value={cardSubjectPick}
+            onChange={(e) => setCardSubjectPick(e.target.value as CardSubjectType | "")}
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {SUBJECT_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            A scanned card is never assumed a client — it might be someone you know, a fellow agent, or just met.
+            Auto-detect reads the card and your notes; picking a class here overrides it.
+          </p>
+        </div>
+      </section>
 
       {/* Upload zone */}
       <section
@@ -306,6 +560,11 @@ export default function BusinessCardsPage() {
         )}
       </section>
 
+      {/* Confirm / correct surface — a held scan, or a correction on a routed one */}
+      {confirmTarget && (
+        <CardConfirmForm target={confirmTarget} onDone={handleConfirmDone} onCancel={() => setConfirmTarget(null)} />
+      )}
+
       {/* Result */}
       {result && (
         <section className="border border-border rounded-xl p-6 space-y-4">
@@ -316,16 +575,22 @@ export default function BusinessCardsPage() {
                   <span className="text-sm font-medium text-foreground">Extraction confidence</span>
                   {result.confidence !== undefined && <ConfidenceBadge score={result.confidence} />}
                 </div>
-                <span className="text-xs text-green-700 bg-green-100 px-2 py-1 rounded font-medium">Contact created</span>
+                <span className={`text-xs px-2 py-1 rounded font-medium ${
+                  result.needsConfirmation || result.cardSubjectType === "unknown" ? "bg-yellow-100 text-yellow-800" : "bg-green-100 text-green-700"
+                }`}>
+                  {result.needsConfirmation ? "Waiting for your confirmation" : result.cardSubjectType ? SUBJECT_TYPE_LABEL[result.cardSubjectType] : "Contact created"}
+                </span>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 {fields.map((k) => {
                   const val = result.extracted?.[k]?.trim()
                   if (!val) return null
+                  const conf = result.fieldConfidence?.[k]
+                  const low = (conf ?? 0) < CARD_FIELD_CONFIDENCE_FLOOR
                   return (
                     <div key={k}>
-                      <p className="text-xs text-muted-foreground">{fieldLabel[k]}</p>
+                      <p className="text-xs text-muted-foreground">{fieldLabel[k]}{conf != null ? <span className={low ? " text-amber-700" : ""}> · {Math.round(conf * 100)}%</span> : null}</p>
                       <p className="text-sm text-foreground font-medium">{val}</p>
                     </div>
                   )
@@ -348,11 +613,16 @@ export default function BusinessCardsPage() {
                 Note: Physical business cards do not constitute TCPA digital consent. The contact will require explicit opt-in before receiving automated outreach.
               </p>
 
+              {/* WIRED (wave 141F): this used to show a toast and flag nothing. It now opens the
+                  correction form — the human's values are applied field by field under the
+                  merge rule (a human beats the card's reading; a verified or self-entered value
+                  is kept and noted). */}
               <button
-                className="text-xs text-muted-foreground underline underline-offset-2"
-                onClick={() => toast({ title: "Feedback received", description: "Extraction data flagged for review." })}
+                type="button"
+                className="min-h-[44px] text-xs text-muted-foreground underline underline-offset-2"
+                onClick={() => setConfirmTarget({ scanId: result.scanId, fields: result.extracted, fieldConfidence: result.fieldConfidence ?? {}, contactId: result.contactId })}
               >
-                Report extraction error
+                {result.needsConfirmation ? "Confirm the fields" : "Report extraction error"}
               </button>
             </>
           ) : (
@@ -416,10 +686,43 @@ export default function BusinessCardsPage() {
                       </td>
                       <td className="px-4 py-3">
                         {s.review_status === "approved" ? (
-                          <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded font-medium">Contact created</span>
+                          <span className={`text-xs px-2 py-0.5 rounded font-medium ${
+                            s.cardSubjectType === "unknown" ? "bg-yellow-100 text-yellow-800" : "bg-green-100 text-green-800"
+                          }`}>
+                            {s.cardSubjectType ? SUBJECT_TYPE_LABEL[s.cardSubjectType] : "Contact created"}
+                          </span>
+                        ) : s.review_status === "pending" ? (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmTarget({ scanId: s.id, fields: s.extracted_data as Partial<Record<CardField, string>>, fieldConfidence: s.fieldConfidence, contactId: s.contact_id })}
+                            className="min-h-[44px] text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-medium underline underline-offset-2"
+                          >
+                            Needs your confirmation — confirm
+                          </button>
                         ) : (
                           <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded font-medium">Viability failed</span>
                         )}
+                        {/* business_card_scans.classified_by (m617 typed column) — which
+                            tier decided the class, so a picker override reads differently
+                            from an auto-detect. */}
+                        {s.review_status === "approved" && s.classifiedBy ? (
+                          <p className="mt-1 text-[11px] text-muted-foreground">{CLASSIFIED_BY_LABEL[s.classifiedBy]}</p>
+                        ) : null}
+                        {/* business_card_scans.subject_notes — the free-text note typed on
+                            the review surface at scan time. */}
+                        {s.subjectNotes ? (
+                          <p className="mt-1 text-[11px] text-muted-foreground italic">&ldquo;{s.subjectNotes}&rdquo;</p>
+                        ) : null}
+                        {/* The status above is the automatic viability gate's verdict unless a
+                            person confirmed the scan (confirmBusinessCardScan stamps reviewed_by,
+                            wave 141F) — said truthfully either way. */}
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {s.reviewed_by
+                            ? `confirmed by a person${s.reviewed_at ? ` ${new Date(s.reviewed_at).toLocaleDateString()}` : ""}`
+                            : s.review_status === "pending"
+                              ? "held for your confirmation — nothing written yet"
+                              : `auto-gated${s.reviewed_at ? ` ${new Date(s.reviewed_at).toLocaleDateString()}` : ""} — not reviewed by a person`}
+                        </p>
                       </td>
                       <td className="px-4 py-3">
                         {s.contact_id ? (
@@ -527,10 +830,14 @@ export default function BusinessCardsPage() {
                       onChange={(e) => setReferralPartnerType(e.target.value as typeof referralPartnerType)}
                       className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
                     >
-                      <option value="agent_to_agent">Agent to Agent</option>
-                      <option value="vendor">Vendor</option>
-                      <option value="lender">Lender</option>
-                      <option value="title">Title</option>
+                      <option value="real_estate_agent">Real estate agent</option>
+                      <option value="mortgage_broker">Lender / mortgage broker</option>
+                      <option value="title_company">Title company</option>
+                      <option value="home_inspector">Home inspector</option>
+                      <option value="contractor">Contractor</option>
+                      <option value="insurance_agent">Insurance agent</option>
+                      <option value="attorney">Attorney</option>
+                      <option value="property_manager">Property manager</option>
                       <option value="other">Other</option>
                     </select>
                   </div>

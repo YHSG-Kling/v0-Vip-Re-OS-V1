@@ -210,7 +210,7 @@ export function WakeWordCard({ wakeName, onCommand }: WakeWordCardProps) {
           <div className="flex items-start gap-2 rounded-md bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
             <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
             <span>
-              Voice recognition requires Chrome or Edge browser. VAPI calls work in all browsers.
+              Wake-word listening requires Chrome or Edge. Placing AI calls works in every browser.
             </span>
           </div>
         )}

@@ -1,6 +1,7 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel"
 import type { OptOutChannel } from "@/lib/ai-isa/opt-out-utils"
@@ -157,8 +158,23 @@ export async function processOptOut(params: OptOutParams): Promise<{
     return { success: false, channelsSuppressed: [], globalDNC: false, error: updateError.message }
   }
 
-  // Compliance audit — always write, never block on failure
-  await supabase
+  // Compliance audit — always write, never block on failure.
+  //
+  // "Never block on failure" was the intent; dropping the result was the
+  // implementation. supabase-js resolves a rejected insert, so a failed write to
+  // the OPT-OUT audit record — the row proving the OS honoured a consumer's
+  // request to be left alone — produced no error, no log, and no row. bestEffort
+  // keeps it non-blocking AND makes the failure visible, which is what
+  // "tolerated" is supposed to mean.
+  //
+  // sentinelWrite rather than bestEffort: `supabase` here is createServiceClient(),
+  // so the loss reaches self_heal_events and the weekly repair digest RANKS it,
+  // instead of a console.warn nobody greps. The split is a precondition, not a
+  // preference — on a user-scoped client the ledger insert is RLS-refused and the
+  // sentinel would be WEAKER (lib/kernel/write-sentinel.ts).
+  await sentinelWrite(
+    supabase,
+    supabase
     .from("compliance_events")
     .insert({
       brokerage_id: brokerageId,
@@ -170,7 +186,14 @@ export async function processOptOut(params: OptOutParams): Promise<{
       entity_type: entityType,
       entity_id: entityId,
       message_type: channel,
-    })
+    }),
+    {
+      table: "compliance_events",
+      flow: "opt_out_audit",
+      brokerageId,
+      reason: "opt-out compliance audit row — the suppression itself is written above and error-checked; this is the proof-of-honouring echo, and it must never block a consumer's request to be left alone",
+    },
+  )
 
   // Agent notification via activities (uses notes: text, not metadata)
   const { data: entity } = await supabase
@@ -187,7 +210,10 @@ export async function processOptOut(params: OptOutParams): Promise<{
       channels_suppressed: channelsSuppressed,
     })
 
-    await supabase
+    // THE consumer-facing compliance record of an opt-out. This is the row a
+    // broker would hand a regulator to show the request was received and acted
+    // on, so it does not get to fail quietly.
+    const { error: optOutActivityError } = await supabase
       .from("activities")
       .insert({
         agent_id: entity.agent_id,
@@ -204,6 +230,9 @@ export async function processOptOut(params: OptOutParams): Promise<{
         priority: "high",
         notes: notesPayload,
       })
+    if (optOutActivityError) {
+      console.error("[processOptOut] opt-out activity REJECTED — the suppression is applied but has no timeline record:", optOutActivityError.message)
+    }
   }
 
   // Kernel event — downstream automation stops automatically

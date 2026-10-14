@@ -1,7 +1,8 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
+import Link from "next/link"
 import {
   Card,
   CardContent,
@@ -67,7 +68,6 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Legend,
 } from "recharts"
 import {
   addMarketSource,
@@ -81,6 +81,7 @@ import {
   generateMarketUpdateEmail,
 } from "@/app/actions/market-insight-actions"
 import { predictMarketShift } from "@/app/actions/ai-predictions"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 
 interface MarketInsightsDashboardClientProps {
   brokerageId: string
@@ -99,7 +100,7 @@ interface MarketInsightsDashboardClientProps {
 export function MarketInsightsDashboardClient({
   brokerageId,
   agentId,
-  sources: initialSources,
+  sources,
   initialMarketArea,
   initialInsight,
   initialMarketData,
@@ -108,7 +109,11 @@ export function MarketInsightsDashboardClient({
   suggestedZip = null,
 }: MarketInsightsDashboardClientProps) {
   const router = useRouter()
-  const [sources, setSources] = useState(initialSources)
+  // TOMBSTONE — `const [sources, setSources] = useState(initialSources)`.
+  // setSources was never called and handleAddMarket ends in router.refresh();
+  // a useState initializer is read once, so the market the agent just added
+  // never appeared in the selector (nor did the empty-state ever clear) until a
+  // hard reload. The PROP `sources` is the survivor and follows every refresh.
   const [selectedMarket, setSelectedMarket] = useState(initialMarketArea)
   const [insight, setInsight] = useState(initialInsight)
   const [marketData, setMarketData] = useState(initialMarketData)
@@ -138,14 +143,42 @@ export function MarketInsightsDashboardClient({
     setLoadingContacts(true)
     try {
       const supabase = createClient()
-      const { data } = await supabase
-        .from("contacts")
-        .select("id, first_name, last_name, email, contact_type")
-        .eq("agent_id", agentId)
-        .in("contact_type", ["seller", "lifetime", "buyer"])
-        .not("email", "is", null)
-        .limit(50)
-      setShareContacts(data ?? [])
+      // THE BUTTON SAYS "SEND TO SELLERS" ABOUT ONE MARKET, and this list is
+      // every contact the agent owns in any market. getSellersInMarket
+      // (app/actions/market-insight-actions.ts:212) is the half that was built
+      // and never wired: the BROKERAGE-scoped, session-derived read of the
+      // active sellers whose address actually falls in the market this insight
+      // is about. It is used here to PRE-SELECT them — the full roster still
+      // renders underneath so a buyer or past client can be added by hand, and
+      // nothing sends until the agent saves the drafts.
+      //
+      // Tenancy note: the roster query below filters on the `agentId` PROP,
+      // while the action derives its brokerage from the SESSION
+      // (getAgentContext) — CLAUDE.md §4. The pre-selection therefore cannot be
+      // widened by a tampered prop.
+      const [rosterRes, inMarketSellers] = await Promise.all([
+        supabase
+          .from("contacts")
+          .select("id, first_name, last_name, email, contact_type")
+          .eq("agent_id", agentId)
+          .in("contact_type", ["seller", LIFETIME_CUSTOMER_TYPE, "buyer"])
+          .not("email", "is", null)
+          .limit(50),
+        selectedMarket
+          ? getSellersInMarket(selectedMarket).catch(() => [] as any[])
+          : Promise.resolve([] as any[]),
+      ])
+      const roster = rosterRes.data ?? []
+      // Union, roster first, deduped by id — an in-market seller the roster
+      // query missed (a different owning agent inside the same brokerage) is
+      // still offered rather than silently dropped.
+      const seen = new Set(roster.map((c: any) => c.id))
+      const extra = (inMarketSellers as any[])
+        .filter((c) => c?.email && !seen.has(c.id))
+        .map((c) => ({ id: c.id, first_name: c.first_name, last_name: c.last_name, email: c.email, contact_type: "seller" }))
+      setShareContacts([...roster, ...extra])
+      const inMarketIds = (inMarketSellers as any[]).filter((c) => c?.email).map((c) => c.id)
+      if (inMarketIds.length > 0) setSelectedIds(inMarketIds)
     } catch {
       toast.error("Failed to load contacts")
     } finally {
@@ -227,6 +260,83 @@ export function MarketInsightsDashboardClient({
       toast.error("Failed to refresh market data")
     } finally {
       setIsRefreshing(false)
+    }
+  }
+
+  // ── DURABLE REFRESH — the Workflow DevKit lane, now with a reader ──────────
+  // POST /api/workflows/market-insight starts the durable run (refresh THEN
+  // regenerate, each step retried independently) and hands back a runId;
+  // GET /api/workflows/market-insight/[runId] is the status reader that id used
+  // to lack. The insight itself is never taken from the reader: on completion
+  // the page re-reads through the same session-scoped actions every other
+  // button uses (loadMarketData), so the tenant predicate is the actions', not
+  // the poller's. The synchronous "Refresh Data" / "Regenerate" buttons stay —
+  // this is the one-click-both-with-retry path, not a replacement.
+  const [durableRun, setDurableRun] = useState<{ runId: string; status: string } | null>(null)
+  const [isDurableRefreshing, setIsDurableRefreshing] = useState(false)
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  const handleDurableRefresh = async () => {
+    if (!selectedMarket || isDurableRefreshing) return
+    setIsDurableRefreshing(true)
+    setDurableRun(null)
+    try {
+      const startRes = await fetch("/api/workflows/market-insight", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ marketArea: selectedMarket }),
+      })
+      const started = await startRes.json().catch(() => null)
+      if (!startRes.ok || !started?.runId) {
+        toast.error(started?.error || "The durable refresh could not be started")
+        return
+      }
+      const runId: string = started.runId
+      setDurableRun({ runId, status: started.status ?? "started" })
+
+      // Poll every 2 s for up to 5 minutes. Every non-2xx from the reader is a
+      // stop, not a retry — a 404 means "not yours or not there" and will not
+      // change by asking again.
+      const deadline = Date.now() + 5 * 60_000
+      while (Date.now() < deadline && mountedRef.current) {
+        await new Promise((r) => setTimeout(r, 2000))
+        const pollRes = await fetch(`/api/workflows/market-insight/${encodeURIComponent(runId)}`)
+        const poll = await pollRes.json().catch(() => null)
+        if (!mountedRef.current) return
+        if (!pollRes.ok || !poll?.status) {
+          setDurableRun({ runId, status: "unreadable" })
+          toast.error(poll?.error || "Lost track of the durable refresh run")
+          return
+        }
+        setDurableRun({ runId, status: poll.status })
+        if (poll.status === "completed") {
+          toast.success(
+            poll.result?.cached
+              ? `Market data refreshed via ${poll.result.source}; insight already current`
+              : `Market data refreshed via ${poll.result?.source ?? "unknown"} and insight regenerated`,
+          )
+          await loadMarketData(selectedMarket)
+          return
+        }
+        if (poll.status === "failed" || poll.status === "cancelled") {
+          toast.error(`The durable refresh ${poll.status}`)
+          return
+        }
+      }
+      if (mountedRef.current) {
+        setDurableRun({ runId, status: "timed_out" })
+        toast.error("The durable refresh is still running — check back shortly")
+      }
+    } catch (error: any) {
+      toast.error(error?.message || "The durable refresh failed")
+    } finally {
+      if (mountedRef.current) setIsDurableRefreshing(false)
     }
   }
 
@@ -484,6 +594,19 @@ export function MarketInsightsDashboardClient({
             <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
             Refresh Data
           </Button>
+          <Button
+            variant="outline"
+            onClick={handleDurableRefresh}
+            disabled={isDurableRefreshing || !selectedMarket}
+            title="Refresh market data and regenerate the insight as one durable run — each step retries on a transient vendor or AI failure"
+          >
+            {isDurableRefreshing ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Sparkles className="mr-2 h-4 w-4" />
+            )}
+            Refresh + regenerate (durable)
+          </Button>
         </div>
       </div>
 
@@ -495,6 +618,27 @@ export function MarketInsightsDashboardClient({
           <Badge variant="outline" className="ml-2">
             {marketData.source_type || "unknown"}
           </Badge>
+        </div>
+      )}
+
+      {/* Durable run status — the reader side of the runId the POST returns */}
+      {durableRun && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          {isDurableRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckSquare className="h-4 w-4" />}
+          Durable refresh
+          <Badge
+            variant={
+              durableRun.status === "completed"
+                ? "default"
+                : durableRun.status === "failed" || durableRun.status === "cancelled" || durableRun.status === "unreadable"
+                  ? "destructive"
+                  : "secondary"
+            }
+            className="capitalize"
+          >
+            {durableRun.status.replace(/_/g, " ")}
+          </Badge>
+          <span className="font-mono text-xs">run …{durableRun.runId.slice(-8)}</span>
         </div>
       )}
 
@@ -800,7 +944,10 @@ export function MarketInsightsDashboardClient({
                 {cmaReports.map((report) => (
                   <TableRow key={report.id}>
                     <TableCell className="font-medium">
-                      {report.property_address}
+                      {/* Opens the report by its own id (app/dashboard/cma/[cmaId], wave 26). */}
+                      <Link href={`/dashboard/cma/${report.id}`} className="hover:underline">
+                        {report.property_address}
+                      </Link>
                     </TableCell>
                     <TableCell className="text-right">
                       ${report.estimated_value?.toLocaleString() || "—"}

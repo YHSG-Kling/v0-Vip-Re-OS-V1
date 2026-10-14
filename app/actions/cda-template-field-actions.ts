@@ -18,7 +18,10 @@ import {
 import { aiClassifyCdaFields, type SuggestedBinding } from "@/lib/transactions/cda-field-classifier"
 import { listPdfFields } from "@/lib/forms/pdf-form-fill"
 
-const FIELD_ADMIN_ROLES = new Set(["compliance_officer", "broker", "broker_admin", "admin", "superadmin"])
+// SCOPE LADDER (kept inline — admits compliance_officer): 'superadmin' removed
+// — dead as users.user_type (0 live rows); broker_owner added — storable seat
+// with CDA (finance) authority per m472.
+const FIELD_ADMIN_ROLES = new Set(["compliance_officer", "broker", "broker_owner", "broker_admin", "admin"])
 
 // Build the resolve context for a CDA from the waterfall + the transaction.
 async function buildContext(
@@ -98,10 +101,11 @@ export async function saveCdaFieldInputsAction(input: { cdaId: string; agentInpu
   // Persist: the resolved values (for rendering/audit) + the raw agent inputs (re-editable).
   const valuesByKey: Record<string, string> = {}
   for (const f of resolution.fields) valuesByKey[f.field_key] = f.formatted
-  await supabase
+  const { error: fieldSaveErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({ field_values: { resolved: valuesByKey, agent_inputs: ctx.agentInputs }, updated_at: new Date().toISOString() })
     .eq("id", cda.id)
+  if (fieldSaveErr) return { success: false, error: `Could not save the CDA field values: ${fieldSaveErr.message}` }
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   return { success: true, resolution }
@@ -187,7 +191,8 @@ export async function saveCdaTemplateFieldDefsAction(input: {
   if (!template || template.brokerage_id !== auth.brokerageId) return { success: false, error: "not_found" }
 
   // Replace the template's field set atomically-ish (delete + insert).
-  await supabase.from("brokerage_cda_template_fields").delete().eq("template_id", input.templateId)
+  const { error: fieldsClearErr } = await supabase.from("brokerage_cda_template_fields").delete().eq("template_id", input.templateId)
+  if (fieldsClearErr) return { success: false, error: `Could not replace the template fields: ${fieldsClearErr.message}` }
   const rows = input.fields.map((f, i) => ({
     brokerage_id: auth.brokerageId,
     template_id: input.templateId,
@@ -250,7 +255,7 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
 
   const { buildCdaFillValues } = await import("@/lib/transactions/cda-pdf-fill")
   const { fillPdfForm } = await import("@/lib/forms/pdf-form-fill")
-  const { put } = await import("@vercel/blob")
+  const { uploadBufferToBucket } = await import("@/lib/storage/buckets")
 
   const plan = buildCdaFillValues(resolution.fields)
   if (plan.values.length === 0) return { success: false, error: "nothing_to_fill" }
@@ -271,23 +276,27 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
     return { success: false, error: e instanceof Error ? `pdf_fill_failed: ${e.message}` : "pdf_fill_failed" }
   }
 
-  // Store the filled PDF + record it on the CDA.
-  let url: string
-  try {
-    const blob = await put(`cda-filled/${cda.id}-${cda.transaction_id}.pdf`, Buffer.from(filledBytes), {
-      access: "public",
-      contentType: "application/pdf",
-      addRandomSuffix: true,
-    })
-    url = blob.url
-  } catch (e) {
-    return { success: false, error: e instanceof Error ? `pdf_store_failed: ${e.message}` : "pdf_store_failed" }
-  }
+  // Store the filled PDF in Supabase Storage (platform buckets) + record it on the CDA.
+  const stored = await uploadBufferToBucket({
+    bucket: "cda-filled",
+    path: `${cda.id}-${cda.transaction_id}-${crypto.randomUUID()}.pdf`,
+    buffer: Buffer.from(filledBytes),
+    contentType: "application/pdf",
+    // The follow-up the previous comment promised. A FILLED closing-disclosure
+    // agreement carries the commission split — a brokerage financial, and
+    // commission is off agent-facing display entirely (CLAUDE.md §5). It was
+    // being stored `public: true`, i.e. at a permanent unauthenticated URL that
+    // was then persisted to closing_disclosure_agreement.generated_pdf_url.
+    public: false,
+  })
+  if (!stored.ok) return { success: false, error: `pdf_store_failed: ${stored.error}` }
+  const url: string = stored.url
 
-  await supabase
+  const { error: pdfStampErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({ generated_pdf_url: url, generated_pdf_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", cda.id)
+  if (pdfStampErr) return { success: false, error: `PDF generated but not attached to the CDA: ${pdfStampErr.message}` }
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   return { success: true, url, filled, skipped, unmapped: plan.unmapped }

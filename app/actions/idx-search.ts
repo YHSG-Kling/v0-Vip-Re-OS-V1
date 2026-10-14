@@ -1,7 +1,13 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
+// The ONE natural-language buyer-criteria parser (lane 91C) — smartSearch's
+// inline model prompt was merged onto it (tombstone in smartSearch below).
+import { parseBuyerCriteria } from "@/lib/buyer-search/parse-buyer-criteria"
+// THE SPEND ACTOR. Every export in this "use server" file is a public HTTP
+// endpoint, so the AI cost ledger's tenant can only come from the SESSION
+// (CLAUDE.md §4) — never from an id the caller supplied.
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
@@ -57,6 +63,8 @@ export async function smartSearch(data: {
   contactId: string
 }) {
   try {
+    // Tenant for the AI cost ledger — SESSION (§4).
+    const spendActor = await getAgentContext()
     const supabase = await createClient()
 
     // Get contact details
@@ -76,64 +84,101 @@ export async function smartSearch(data: {
       .order("created_at", { ascending: false })
       .limit(10)
 
-    const interpretPrompt = `Convert this natural language property search into structured filters:
-
-Query: "${data.naturalLanguageQuery}"
-
-Buyer context:
-- Persona: ${contact.contact_persona || "not specified"}
-- Budget: ${contact.budget_min || contact.budget_max ? `$${contact.budget_min ?? "?"}–$${contact.budget_max ?? "?"}` : "not specified"}
-- Timeline: ${contact.timeline || "not specified"}
-- Previous searches: ${searchHistory?.map((s) => JSON.stringify(s.extracted_filters)).join(", ") || "none"}
-
-Extract:
-- Price range (min/max in dollars)
-- Beds (minimum number)
-- Baths (minimum number)
-- Property types (array: single_family, condo, townhouse, multi_family)
-- Location (city, zip, neighborhood)
-- Special requirements (pool, garage, schools, etc.)
-- Keywords for description search
-- Intent level: "serious" | "browsing" | "researching"
-
-Output ONLY valid JSON with this exact structure:
-{
-  "minPrice": number or null,
-  "maxPrice": number or null,
-  "beds": number or null,
-  "baths": number or null,
-  "propertyType": ["single_family"] or null,
-  "city": "string" or null,
-  "keywords": "string" or null,
-  "intent": "serious"
-}`
-
-    const interpretation = await generateText({
-      model: "openai/gpt-4o-mini",
-      prompt: interpretPrompt,
+    // TOMBSTONE (lane 91C, §1/§6): an inline "convert this natural language
+    // property search into structured filters" prompt lived here — a SECOND
+    // NL parser with its own JSON shape, called with no `feature` key, so every
+    // buyer search ran on the 'unspecified' Sonnet row (and it asked the model
+    // for "schools" as a requirement, which the one parser refuses to infer).
+    // Survivor: lib/buyer-search/parse-buyer-criteria.ts parseBuyerCriteria —
+    // rules first (free), the Haiku lane buyer_criteria_parse only for a gap,
+    // every model value re-checked against the buyer's words. The buyer
+    // context the prompt carried is honoured where it is a FACT the buyer gave
+    // us: the contact's saved budget fills a price the query did not state.
+    const parsed = await parseBuyerCriteria(data.naturalLanguageQuery, {
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
     })
+    const c = parsed.criteria
+    const filters: PropertyFilters & { intent?: string; zipCodes?: string[]; state?: string; features?: string[]; notes?: string[] } = {
+      minPrice: c.minPrice ?? (c.maxPrice == null && contact.budget_min ? Number(contact.budget_min) : undefined),
+      maxPrice: c.maxPrice ?? (c.minPrice == null && contact.budget_max ? Number(contact.budget_max) : undefined),
+      beds: c.minBeds,
+      baths: c.minBaths,
+      propertyType: c.propertyTypes,
+      city: c.cities?.[0],
+      zip: c.zipCodes?.[0],
+      state: c.state,
+      zipCodes: c.zipCodes,
+      features: c.features,
+      keywords: c.features?.length ? c.features.join(" ") : undefined,
+      intent: parsed.confidence === "high" ? "serious" : "browsing",
+      notes: parsed.notes,
+    }
+    void searchHistory // read for the log's continuity; no longer fed to a prompt
 
-    let filters: PropertyFilters & { intent?: string }
-    try {
-      filters = JSON.parse(interpretation.text)
-    } catch (parseError) {
-      // Fallback to basic filter extraction
-      filters = {
-        keywords: data.naturalLanguageQuery,
-        intent: "browsing",
+    // Search using extracted filters — the tenant's IDX API when configured;
+    // otherwise THE ONE listing router (searchExternalListings: the tenant's
+    // own IDX board, else the platform's RentCast — windowed to recent
+    // listings). Before lane 91C an unconfigured IDX env ended the buyer's
+    // natural-language search with "IDX API not configured" even though the
+    // platform provider the owner named ("we use rentcast for property
+    // listings … even nlp") was available.
+    let searchResult: { success: boolean; properties: any[]; error?: string; requiresConfiguration?: boolean } = await searchProperties(filters)
+    if (!searchResult.success && searchResult.requiresConfiguration && spendActor.brokerageId) {
+      const { searchExternalListings } = await import("@/lib/property/external-listings-search")
+      const { BUYER_LISTING_RECENCY_DAYS } = await import("@/lib/property-alerts/alert-cadence")
+      let state = filters.state
+      if (!state && filters.city && !filters.zip) {
+        const { data: brokerage, error: brokerageError } = await supabase.from("brokerages").select("state").eq("id", spendActor.brokerageId).maybeSingle()
+        if (brokerageError) console.error("[smartSearch] brokerage state read refused:", brokerageError.message)
+        state = (brokerage as { state?: string | null } | null)?.state ?? undefined
       }
+      const ext = (filters.city && state) || filters.zip
+        ? await searchExternalListings({
+            brokerageId: spendActor.brokerageId,
+            city: filters.zip ? undefined : filters.city,
+            state: filters.zip ? undefined : state,
+            zipCode: filters.zip,
+            bedroomsMin: filters.beds ?? undefined,
+            bathroomsMin: filters.baths ?? undefined,
+            priceMin: filters.minPrice ?? undefined,
+            priceMax: filters.maxPrice ?? undefined,
+            propertyType: filters.propertyType?.[0],
+            listingType: parsed.criteria.listingType === "rent" ? "rental" : "sale",
+            contactId: data.contactId,
+            listedWithinDays: BUYER_LISTING_RECENCY_DAYS,
+            limit: 25,
+          })
+        : { listings: [], source: "none" as const, error: "Tell me a city or ZIP to search — the listing feed searches one area at a time." }
+      searchResult = {
+        success: ext.source !== "none" || ext.listings.length > 0,
+        error: ext.error,
+        properties: ext.listings.map((l) => ({
+          id: `ext_${l.source}_${l.externalId}`,
+          mls_number: `${l.source}-${l.externalId}`, mlsNumber: `${l.source}-${l.externalId}`,
+          address: l.address, city: l.city, state: l.state, zip: l.zip,
+          price: l.price, list_price: l.price,
+          beds: l.bedrooms, bedrooms: l.bedrooms, baths: l.bathrooms, bathrooms: l.bathrooms,
+          sqft: l.squareFeet, property_type: l.propertyType,
+          daysOnMarket: l.daysOnMarket, days_on_market: l.daysOnMarket,
+          primary_photo_url: l.photoUrl, photos: l.photoUrl ? [l.photoUrl] : [],
+          status: "Active", source: l.source, listing_type: l.listingType,
+        })),
+      }
+      if (!searchResult.success) return { success: false, error: ext.error ?? "No listing source could be searched.", properties: [], filters }
     }
 
-    // Search using extracted filters
-    const searchResult = await searchProperties(filters)
-
-    await supabase.from("property_search_log").insert({
+    // THE ERROR IS READ (§3): this log is the "previous searches" history the
+    // agent's search screen reads; a refused write is reported, not swallowed.
+    // It never fails the buyer's search — the results below are real.
+    const { error: searchLogError } = await supabase.from("property_search_log").insert({
       contact_id: data.contactId,
       query_text: data.naturalLanguageQuery,
       extracted_filters: filters,
       result_count: searchResult.properties?.length || 0,
       metadata: { intent: filters.intent || "browsing" },
     })
+    if (searchLogError) console.error("[smartSearch] property_search_log NOT recorded:", searchLogError.message)
 
     return {
       success: true,
@@ -232,7 +277,40 @@ export async function saveProperty(data: {
       return { success: false, error: insertErr.message }
     }
 
-    revalidatePath("/properties/saved")
+    // BEHAVIOURAL EVENT LOG — a favorite is a scored intent signal
+    // (property_save, 12 points in lib/lead-scoring/behavioral-events). The
+    // recorder runs on the service client, so the tenant is NOT taken from the
+    // body or the contact row this action read under RLS: it goes through
+    // requireContactAccess, which proves the caller is the contact themselves
+    // (session/invite) or same-brokerage staff and yields the contact's real
+    // brokerage. A caller the gate refuses still saved the property under RLS
+    // above — they just don't move a lead score. Best-effort.
+    try {
+      const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+      const access = await requireContactAccess(data.contactId)
+      if (access.ok) {
+        const { recordBehavioralEvent } = await import("@/lib/lead-scoring/record-behavioral-event")
+        await recordBehavioralEvent({
+          brokerageId: access.brokerageId,
+          contactId: data.contactId,
+          eventType: "property_save",
+          eventData: {
+            source: resolvedSource,
+            mls_number: data.mlsNumber ?? null,
+            listing_id: data.listingId ?? null,
+          },
+        })
+      } else {
+        console.error("[idx-search] property_save behavioural event NOT recorded — caller is not on this contact:", access.error)
+      }
+    } catch (e) {
+      console.error("[idx-search] property_save behavioural event NOT recorded:", e)
+    }
+
+    // Repointed off the DELETED /properties/saved (orphan-route sweep, lane G):
+    // the surviving reader is the portal Properties tab. See the tombstone at
+    // app/components/portal/PersonaPropertiesDashboard.tsx (Saved tab).
+    revalidatePath(`/portal/${data.contactId}/properties`)
     return { success: true, message: "Property saved successfully" }
   } catch (error: any) {
     console.error("Save property error:", error)
@@ -245,38 +323,218 @@ export async function unsaveProperty(data: {
   contactId: string
   mlsNumber: string
 }) {
-  try {
-    const supabase = await createClient()
+  const supabase = await createClient()
 
-    await supabase.from("saved_properties").delete().eq("contact_id", data.contactId).eq("mls_number", data.mlsNumber)
+  // The result of this delete used to be discarded entirely, inside a try/catch
+  // that could never fire: supabase-js RESOLVES a rejected write rather than
+  // throwing, so an RLS refusal returned normally and the action reported
+  // "Property removed from saved" for a row that was still there. The caller
+  // dropped the card from local state, and the property reappeared on refresh.
+  const { data: removed, error } = await supabase
+    .from("saved_properties")
+    .delete()
+    .eq("contact_id", data.contactId)
+    .eq("mls_number", data.mlsNumber)
+    .select("id")
 
-    revalidatePath("/properties/saved")
-    return { success: true, message: "Property removed from saved" }
-  } catch (error: any) {
-    return { success: false, error: error.message }
+  if (error) return { success: false, error: error.message }
+  if (!removed?.length) {
+    return { success: false, error: "That property is not in your saved list" }
   }
+
+  // Repointed off the DELETED /properties/saved (orphan-route sweep, lane G):
+  // the surviving reader — and now this action's only caller — is the portal
+  // Properties tab's Saved list.
+  revalidatePath(`/portal/${data.contactId}/properties`)
+  return { success: true, message: "Property removed from saved" }
 }
 
-// Track property view for engagement scoring
+/**
+ * Track property view for engagement scoring.
+ *
+ * GATED AND TENANT-STAMPED, both of which were missing.
+ *
+ * All four live `property_views` policies (select / insert-check /
+ * update-both-clauses / delete), granted to `authenticated`, read
+ * `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`. A NULL
+ * brokerage_id SATISFIES that predicate for EVERY tenant, so an unstamped view row —
+ * which names a buyer and how long they stared at a home — was published to, and
+ * editable and deletable by, every signed-in user of every other brokerage.
+ *
+ * `contactId` arrives from a `?contactId=` QUERY PARAM on a page that needs no
+ * session, straight into a `"use server"` export. The tenant is therefore NOT looked
+ * up from it and stamped — that would let the caller choose the brokerage. It goes
+ * through `requireContactAccess`, which proves the caller is either that contact or
+ * staff in the contact's brokerage and only then yields the brokerage id. This also
+ * closes the intent_score write below, which previously let any caller move a lead
+ * score on any contact in any brokerage.
+ *
+ * Service client after the gate, matching `trackPortalActivity` in
+ * app/actions/collaborative-search.ts: the caller here is often the portal contact
+ * themselves, whose `current_user_brokerage_id()` need not be the contact's
+ * brokerage, so they may satisfy neither the stamped INSERT check nor the `contacts`
+ * update under RLS. Every service-client statement is re-scoped by
+ * `access.brokerageId`, so the bypass can only ever touch the tenant the gate proved.
+ */
 export async function trackPropertyView(data: {
   contactId: string
   mlsNumber: string
   timeSpent: number
 }) {
   try {
-    const supabase = await createClient()
+    const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+    const access = await requireContactAccess(data.contactId)
+    if (!access.ok) {
+      console.error("Track view NOT recorded — caller is not on this contact:", access.error)
+      return { success: false, error: access.error }
+    }
 
-    await supabase.from("property_views").insert({
-      contact_id: data.contactId,
-      time_spent_seconds: data.timeSpent,
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+
+    // WHICH HOME WAS VIEWED — the column this row was missing.
+    //
+    // WHAT WAS BROKEN. This insert recorded WHO viewed and FOR HOW LONG and
+    // never WHAT: `property_id` was left null on every row, and nothing else in
+    // the repo writes it. Two live readers depend on it and both were answering
+    // with a fixed wrong number:
+    //
+    //   · lib/listings/listing-metrics-rollup.ts:48 sums view_count filtered by
+    //     `.eq("property_id", l.id)`, so EVERY listing's `listing_metrics.views`
+    //     rolled up as 0 while its saves, inquiries and showings — keyed on
+    //     listing_id, which IS written — came back real. An agent's listing
+    //     performance card therefore read "0 views, 4 saves, 2 showings", which
+    //     is not merely incomplete, it is self-contradictory.
+    //   · app/actions/ai-property-matching.ts:90 feeds the buyer's viewing
+    //     history to the matcher as (property_id, view_count, …), so the model
+    //     received a list of views of nothing.
+    //
+    // The caller identifies the home by MLS number, so it is resolved to the
+    // listing here. `property_id` carries no foreign key (live schema), and the
+    // one reader that filters on it compares against `listings.id` — so that is
+    // what goes in it. An MLS number this brokerage has no listing for leaves it
+    // null, which is the honest state for an off-market IDX result, and the
+    // row still records the dwell time.
+    let propertyId: string | null = null
+    if (data.mlsNumber) {
+      const { data: listingRow, error: listingError } = await svc
+        .from("listings")
+        .select("id")
+        .eq("brokerage_id", access.brokerageId)
+        .eq("mls_number", data.mlsNumber)
+        .limit(1)
+        .maybeSingle()
+      if (listingError) {
+        console.error("Track view — listing lookup refused:", listingError.message)
+      } else {
+        propertyId = (listingRow as { id: string } | null)?.id ?? null
+      }
+    }
+
+    // ONE ROW PER (contact, property), COUNTED — not one row per view.
+    // `view_count` DEFAULT 1 with no writer meant a repeat visit appended a
+    // second row that also said "1", so the rollup's SUM happened to be right by
+    // accident while the count column itself never recorded anything. There is
+    // no unique index on (contact_id, property_id) to upsert against, so this is
+    // the same read-then-write shape ensureCompetitorProfile uses.
+    type PriorView = { id: string; view_count: number | null; time_spent_seconds: number | null }
+    let existingView: PriorView | null = null
+    if (propertyId) {
+      const { data: prior, error: priorError } = await svc
+        .from("property_views")
+        .select("id, view_count, time_spent_seconds")
+        .eq("brokerage_id", access.brokerageId)
+        .eq("contact_id", data.contactId)
+        .eq("property_id", propertyId)
+        .limit(1)
+        .maybeSingle()
+      if (priorError) {
+        console.error("Track view — prior-view lookup refused:", priorError.message)
+      } else {
+        existingView = prior as PriorView | null
+      }
+    }
+
+    // The result was discarded entirely. supabase-js RESOLVES a refused write rather
+    // than throwing, so the surrounding try/catch never saw an RLS denial and the
+    // action reported success for a row that was never written.
+    if (existingView) {
+      // `.select("id")` and COUNT it: an UPDATE that matches nothing resolves
+      // with error null and an empty array, byte-identical to one that worked.
+      const { data: bumped, error: bumpError } = await svc.from("property_views")
+        .update({
+          view_count: (existingView.view_count ?? 1) + 1,
+          time_spent_seconds: (existingView.time_spent_seconds ?? 0) + data.timeSpent,
+          last_viewed_at: new Date().toISOString(),
+        })
+        .eq("id", existingView.id)
+        .select("id")
+      if (bumpError) {
+        console.error("Track view error:", bumpError.message)
+        return { success: false, error: bumpError.message }
+      }
+      if (!bumped?.length) {
+        console.error("Track view — repeat-view update matched 0 rows for", existingView.id)
+        return { success: false, error: "Property view was not recorded" }
+      }
+    } else {
+      const { error: viewError } = await svc.from("property_views").insert({
+        brokerage_id: access.brokerageId,
+        contact_id: data.contactId,
+        property_id: propertyId,
+        view_count: 1,
+        time_spent_seconds: data.timeSpent,
+      })
+      if (viewError) {
+        console.error("Track view error:", viewError.message)
+        return { success: false, error: viewError.message }
+      }
+    }
+
+    // BEHAVIOURAL EVENT LOG — the stream the canonical scorer's 30% behavioural
+    // refinement actually reads (lead_behavioral_data, folded by
+    // lib/lead-scoring/behavioral-events). property_views feeds the analytics
+    // surface; without this second write a buyer could view a hundred homes and
+    // their lead_score would never move. Identity/tenant are the gate's, never
+    // the body's. Best-effort: the recorder logs its own refusals.
+    const { recordBehavioralEvent } = await import("@/lib/lead-scoring/record-behavioral-event")
+    await recordBehavioralEvent({
+      brokerageId: access.brokerageId,
+      contactId: data.contactId,
+      eventType: "property_view",
+      eventData: { mls_number: data.mlsNumber, time_spent_seconds: data.timeSpent },
     })
 
     if (data.timeSpent > 120) {
-      const { data: contact } = await supabase.from("contacts").select("intent_score").eq("id", data.contactId).single()
+      // `error` is destructured: a refused read used to arrive as `data: null`, which
+      // `(contact?.intent_score || 0)` then laundered into a score of 0 — and the line
+      // below wrote 5 back over whatever the real score was. A failed read must not
+      // become a score reset, so it aborts the bump instead.
+      const { data: contact, error: contactError } = await svc
+        .from("contacts")
+        .select("intent_score")
+        .eq("id", data.contactId)
+        .eq("brokerage_id", access.brokerageId)
+        .maybeSingle()
 
-      const newScore = Math.min((contact?.intent_score || 0) + 5, 100)
+      if (contactError || !contact) {
+        console.error(
+          "Intent score NOT raised — current score unreadable:",
+          contactError?.message ?? "contact not found in this brokerage",
+        )
+        return { success: true }
+      }
 
-      await supabase.from("contacts").update({ intent_score: newScore }).eq("id", data.contactId)
+      const newScore = Math.min((contact.intent_score || 0) + 5, 100)
+
+      const { error: scoreError } = await svc
+        .from("contacts")
+        .update({ intent_score: newScore })
+        .eq("id", data.contactId)
+        .eq("brokerage_id", access.brokerageId)
+      if (scoreError) {
+        console.error("Intent score NOT raised:", scoreError.message)
+      }
     }
 
     return { success: true }
@@ -302,6 +560,117 @@ export async function getSavedProperties(contactId: string) {
     return { success: true, properties: data || [] }
   } catch (error: any) {
     return { success: false, error: error.message, properties: [] }
+  }
+}
+
+/**
+ * The facts a PUBLIC property page is allowed to show. Deliberately a narrow,
+ * hand-picked column list rather than `select("*")` — this is read with the
+ * service client on an unauthenticated route, so anything not named here never
+ * leaves the server.
+ */
+export interface PublicPropertyFacts {
+  /** OUR listings.id — set only for an in-house listing. Never an MLS number. */
+  listingId:        string
+  mlsNumber:        string | null
+  address:          string | null
+  city:             string | null
+  state:            string | null
+  zip:              string | null
+  price:            number | null
+  beds:             number | null
+  baths:            number | null
+  sqft:             number | null
+  propertyType:     string | null
+  status:           string | null
+  description:      string | null
+  yearBuilt:        number | null
+  lotSize:          number | null
+  photos:           string[]
+  listingDate:      string | null
+  daysOnMarket:     number | null
+  listingAgentName: string | null
+  /** Present so an anonymous visitor has a real way to reach the listing side. */
+  listingAgentEmail: string | null
+}
+
+/** Statuses that mean the home is publicly marketed and may be shown to anyone. */
+const PUBLICLY_MARKETED_STATUSES = ["active", "coming_soon", "pending"] as const
+
+/**
+ * Resolve a property page from the MLS number in the URL.
+ *
+ * `/properties/<mlsNumber>` is reachable WITHOUT a session — PortalSocialHub
+ * hands that exact URL out as a listing's shareable link — so authorization
+ * here is the publication state of the row, checked BEFORE the service client
+ * returns anything: a listing that is soft-deleted or in a non-public status is
+ * reported as not found rather than rendered.
+ *
+ * Only OUR OWN `listings` rows are resolvable this way. `saved_properties` is
+ * per-contact private data and is never served from a public URL, even when it
+ * happens to carry the same MLS number.
+ */
+export async function getPublicPropertyByMlsNumber(mlsNumber: string): Promise<
+  { success: true; property: PublicPropertyFacts } | { success: false; error: string }
+> {
+  const mls = (mlsNumber ?? "").trim()
+  if (!mls) return { success: false, error: "No MLS number was supplied." }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  const { data, error } = await svc
+    .from("listings")
+    .select("id, mls_number, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, status, public_remarks, year_built, lot_size, primary_photo_url, photos, listing_date, listing_agent_name, listing_agent_email")
+    .eq("mls_number", mls)
+    .is("deleted_at", null)
+    .in("status", PUBLICLY_MARKETED_STATUSES as unknown as string[])
+    .order("listing_date", { ascending: false })
+    .limit(1)
+
+  if (error) return { success: false, error: error.message }
+
+  const row = data?.[0]
+  if (!row) {
+    return {
+      success: false,
+      error: `No publicly marketed listing was found for MLS #${mls}.`,
+    }
+  }
+
+  const photoList = Array.isArray(row.photos)
+    ? (row.photos as unknown[]).map((p) => (typeof p === "string" ? p : (p as any)?.url)).filter(Boolean)
+    : []
+  const photos = [row.primary_photo_url, ...photoList].filter(Boolean) as string[]
+
+  const daysOnMarket = row.listing_date
+    ? Math.max(0, Math.floor((Date.now() - new Date(row.listing_date).getTime()) / 86_400_000))
+    : null
+
+  return {
+    success: true,
+    property: {
+      listingId:         row.id,
+      mlsNumber:         row.mls_number,
+      address:           row.address,
+      city:              row.city,
+      state:             row.state,
+      zip:               row.zip,
+      price:             row.list_price == null ? null : Number(row.list_price),
+      beds:              row.bedrooms,
+      baths:             row.bathrooms == null ? null : Number(row.bathrooms),
+      sqft:              row.sqft,
+      propertyType:      row.property_type,
+      status:            row.status,
+      description:       row.public_remarks,
+      yearBuilt:         row.year_built,
+      lotSize:           row.lot_size == null ? null : Number(row.lot_size),
+      photos:            [...new Set(photos)],
+      listingDate:       row.listing_date,
+      daysOnMarket,
+      listingAgentName:  row.listing_agent_name,
+      listingAgentEmail: row.listing_agent_email,
+    },
   }
 }
 

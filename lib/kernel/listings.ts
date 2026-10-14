@@ -9,14 +9,26 @@
  *   both app/actions/listings-kernel.ts (Server Actions) and RSC pages.
  * - AI ISA assignment is NEVER triggered from listing commands — it fires
  *   only from the CRM lead pipeline (lib/kernel/crm.ts).
- * - Stage transitions ALWAYS delegate to executeListingTransition in
- *   app/actions/listing-lifecycle-core.ts — never written directly.
+ * - Stage transitions do NOT live here. This module's own `updateListingStage`
+ *   (→ executeListingTransition) was REMOVED as the orphaned half of a
+ *   TWO-WRITER hazard — see the tombstone at the old call site, ~line 709.
+ *   SURVIVOR: lib/application/listing-lifecycle.ts:advanceListingStageService,
+ *   reached from the UI via stage-pipeline.tsx → app/actions/listing-lifecycle.ts
+ *   :advanceListingStage. That is the ONLY way stage changes happen now.
  */
 
 import { createClient } from "@/lib/supabase/server"
-import { createServiceClient } from "@/lib/supabase/service"
-import { isValidUUID } from "@/lib/validations"
-import { resolveDealType } from "@/lib/transactions/deal-type-resolver"
+import { isValidUUID, validateProperty } from "@/lib/validations"
+import { canonicalPropertyType, PROPERTY_TYPES } from "@/lib/constants"
+// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
+// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+// `server-only` (it holds the service client and the paid PeopleData/OSINT
+// clients), and a static import here would pull that into every module graph
+// that reaches this file — including the plain `tsx` guard simulators, which are
+// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
+// already used the dynamic form for exactly this reason; these call sites were
+// the inconsistency. The queue call is best-effort and already awaited/voided,
+// so deferring the import costs nothing.
 import { KernelEvent } from "./events"
 import type { ListingStage as LifecycleListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 
@@ -29,6 +41,44 @@ export type KernelResult<T> =
 // ─── Listing types ────────────────────────────────────────────────────────────
 
 export type ListingStage = LifecycleListingStage
+
+/**
+ * THE TWO ENTITY SPACES A LISTING'S HISTORY IS WRITTEN INTO.
+ *
+ * `lifecycle_events` is keyed by (entity_type, entity_id) and a listing's id
+ * appears under TWO different entity_types, written by two different producers:
+ *
+ *   "listing_stage_machine"  ENTITY_MAP in lib/kernel/lifecycle.ts routes the
+ *                            listing STAGE machine here — every transition made
+ *                            through transitionLifecycle / logStageTransition
+ *                            (lib/listing-lifecycle/lifecycle-logger.ts:56).
+ *                            This is where stage history lives.
+ *
+ *   "listing"                everything else that happens TO a listing, written
+ *                            directly: createListingRecord (this file, ~line
+ *                            179), launchListing (this file, ~line 517), the
+ *                            manual stage OVERRIDE audit row
+ *                            (app/actions/listing-lifecycle.ts:165,
+ *                            "listing.stage_overridden"), seller updates, open
+ *                            houses, neighborhood reports, CMA generation,
+ *                            predictive pricing, and the compliance
+ *                            listing-auto-create chain.
+ *
+ * loadListingWorkspace read ONLY "listing", so its timeline never contained a
+ * single stage transition. Swapping it to "listing_stage_machine" would have
+ * been the mirror-image bug — it would have dropped the create, the launch and
+ * the override audit row, which are the rows a workspace most needs. BOTH are
+ * genuine producers, so the workspace reads BOTH.
+ *
+ * VERIFIED LIVE (project hrvaqgvukzxfskkcrwbt): lifecycle_events carries no
+ * CHECK on entity_type — both spellings are admissible, so neither producer was
+ * ever refused. The live table holds 284 rows across entity_type user(221),
+ * contact(49), buyer_lifecycle(8), ai_daily_briefing(3), ad_campaign(2),
+ * agent(1) — and ZERO under either listing spelling, which is what "the
+ * workspace history is empty for every listing" looks like from the database
+ * side. Reading both is what makes the next listing event visible here.
+ */
+export const LISTING_TIMELINE_ENTITY_TYPES = ["listing", "listing_stage_machine"] as const
 
 export interface CreateListingInput {
   agentId: string
@@ -99,16 +149,11 @@ export interface ListingFormPrefill {
   brokerageLicense?: string
 }
 
-export interface MediaAttachmentInput {
-  listingId: string
-  brokerageId: string
-  fileUrl: string
-  mediaType: "photo" | "video" | "document" | "virtual_tour"
-  uploadedBy: string
-  isPrimary?: boolean
-  caption?: string
-  sort_order?: number
-}
+// MediaAttachmentInput + attachMediaToListing were REMOVED as duplicates
+// (merge-then-delete, owner-sanctioned). SURVIVOR:
+// app/actions/listing-media.ts:uploadListingMedia — wired and strictly more
+// complete (MLS branding rule, attribution flags, brand compliance check,
+// hero-photo fan-out; expresses all eight admitted media types, not four).
 
 // ─── 1. createListingRecord ───────────────────────────────────────────────────
 
@@ -117,7 +162,8 @@ export interface MediaAttachmentInput {
  * Input: CreateListingInput
  * Output: { listing }
  * Writes: listings (INSERT) + lifecycle_events (LISTING_AGREEMENT_INITIATED stage entry)
- * Validates: agentId UUID, sellerContactId UUID, brokerageId UUID, address required
+ * Validates: agentId UUID, sellerContactId UUID, brokerageId UUID, address required,
+ *            and the PROPERTY FACTS (list price, zip, bedrooms, bathrooms)
  */
 export async function createListingRecord(
   input: CreateListingInput
@@ -128,6 +174,38 @@ export async function createListingRecord(
   if (!input.address?.trim())               return { success: false, error: "Address is required" }
   if (!input.city?.trim())                  return { success: false, error: "City is required" }
   if (!input.state?.trim())                 return { success: false, error: "State is required" }
+
+  // ── PROPERTY FACTS (orphan burn-down, lane O — validateProperty WIRED) ──────
+  // The six checks above all guard IDENTITY; the numbers a listing is actually
+  // sold on had no gate at all. A negative or NaN `list_price`, a zip that is
+  // not a zip, or a 300-bedroom house all inserted cleanly and then propagated —
+  // list_price feeds the CMA, the seller net sheet and the commission forecast;
+  // zip is the market key for comps. validateProperty (lib/validations/index.ts)
+  // is the only property-fact validator in the tree and had zero callers; this
+  // is the entrance it was written for. It is ADDITIVE by construction — each
+  // field is checked only when the caller supplied it, so every existing
+  // partial-input path is unchanged. The joined message names the field that
+  // actually failed.
+  const propertyFacts = validateProperty({
+    zip: input.zip,
+    price: input.listPrice,
+    bedrooms: input.bedrooms,
+    bathrooms: input.bathrooms,
+  })
+  if (!propertyFacts.valid) return { success: false, error: propertyFacts.errors.join("; ") }
+
+  // PROPERTY TYPE (wave 93, lane 93D — found live). The default here was
+  // "residential", which listings_property_type_check has never admitted
+  // (single_family|condo|townhouse|multi_family|land|commercial|other, or NULL),
+  // so every listing created WITHOUT a type was refused 23514 in its entirety,
+  // and any display spelling ("Single Family") was refused the same way. Absent
+  // now stores NULL (the CHECK admits it); a supplied value is folded through
+  // the one canonicalizer, and an unrecognised one is refused by name instead
+  // of by a constraint code nobody reads.
+  const propertyType = input.propertyType?.trim() ? canonicalPropertyType(input.propertyType) : null
+  if (input.propertyType?.trim() && !propertyType) {
+    return { success: false, error: `Unknown property type "${input.propertyType}" — expected one of ${PROPERTY_TYPES.join(", ")}` }
+  }
 
   try {
     const supabase = await createClient()
@@ -146,11 +224,25 @@ export async function createListingRecord(
         bedrooms:          input.bedrooms    ?? null,
         bathrooms:         input.bathrooms   ?? null,
         sqft:              input.sqft        ?? null,
-        property_type:     input.propertyType ?? "residential",
+        property_type:     propertyType,
         // A listing is created from a seller contact by an assigned agent who is
         // about to run the listing agreement — so it starts at agreement-initiation,
         // not LEAD (LEAD is the pre-assignment lead-pipeline stage on `leads`).
-        status:            "active",
+        //
+        // AND IT IS A DRAFT. A listing is not taken on until the listing agreement
+        // is SIGNED and the compliance check has reviewed every required document,
+        // initial and signature. This row exists so the agreement has something to
+        // hang off — it is NOT a live listing, and `draft` is what keeps it out of
+        // buyer search, the public pages and the MLS-ready surfaces.
+        //
+        // Promotion out of draft is NOT this function's job and must never be done
+        // by hand here: app/actions/documents.ts verifies agent+seller signatures
+        // AND initials on the listing agreement, then requires auditListingDocuments
+        // to report zero blocking gaps, and only then emits
+        // `compliance.listing_agreement_passed`. The chain
+        // lib/workflow-orchestrator/chains/compliance-listing-auto-create.ts adopts
+        // this draft and moves it to coming_soon / LISTING_AGREEMENT_SIGNED.
+        status:            "draft",
         lifecycle_stage:   "LISTING_AGREEMENT_INITIATED",
       })
       .select()
@@ -158,30 +250,52 @@ export async function createListingRecord(
 
     if (error) return { success: false, error: error.message }
 
-    // Emit lifecycle event
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        entity_type:  "listing",
-        entity_id:    listing.id,
-        event_type:   KernelEvent.LISTING_CREATED ?? "listing_created",
-        brokerage_id: input.brokerageId,
+    // Emit lifecycle event. `.then(() => {})` swallowed the outcome — a
+    // refused insert and a written row looked identical, and the listing's
+    // history silently began empty. Non-fatal (the listing exists either way)
+    // but never silent.
+    const kernelEmit = await import("@/lib/kernel/emit")
+    const { error: eventError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+        entityType:  "listing",
+        entityId:    listing.id,
+        event:   KernelEvent.LISTING_CREATED ?? "listing_created",
+        brokerageId: input.brokerageId,
         metadata:     { stage: "LISTING_AGREEMENT_INITIATED", agent_id: input.agentId },
-        created_at:   new Date().toISOString(),
-      })
-      .then(() => {})
+        createdAt:   new Date().toISOString(),
+        auditOnly: true,
+      }))
+    if (eventError) {
+      console.error("[createListingRecord] lifecycle_events insert failed — this listing has no creation row:", eventError.message)
+    }
 
     // Portal fan-out: the seller sees "Your listing is being prepared".
-    const { fanOutKernelEvent } = await import("./event-fanout")
-    await fanOutKernelEvent({
+    // Row already written above → skipInsert (fan-out only).
+    //
+    // `agentUserId` is a USERS.id (event-fanout maps it back through agents.user_id);
+    // input.agentId is an AGENTS.id and the two are DISJOINT (CLAUDE.md §3). Passing
+    // the agents.id made the fan-out look up `agents.user_id = <agents.id>`, find no
+    // one, and attribute every listing-created portal row to nobody (found live,
+    // wave 93, lane 93D). Resolve the agent's login first; a miss stays unattributed
+    // (the column is nullable) but is no longer silent.
+    const { data: agentRow, error: agentRowError } = await supabase
+      .from("agents")
+      .select("user_id")
+      .eq("id", input.agentId)
+      .maybeSingle()
+    if (agentRowError || !agentRow?.user_id) {
+      console.error("[createListingRecord] agent login not resolved — listing fan-out is unattributed:", agentRowError?.message ?? `agents.id=${input.agentId} has no user_id`)
+    }
+    const { emitKernelEvent } = await import("./emit")
+    await emitKernelEvent({
       event:           KernelEvent.LISTING_CREATED,
       brokerageId:     input.brokerageId,
       entityType:      "listing",
       entityId:        listing.id as string,
       sellerContactId: input.sellerContactId,
       listingId:       listing.id as string,
-      agentUserId:     input.agentId,
+      agentUserId:     (agentRow?.user_id as string | undefined) ?? undefined,
       metadata:        { stage: "LISTING_AGREEMENT_INITIATED" },
+      skipInsert:      true,
     }).catch(() => {})
 
     return { success: true, listing }
@@ -210,25 +324,30 @@ export async function createOrAttachSellerContact(
   try {
     const supabase = await createClient()
 
-    // Search by email first, then phone
+    // Search by email first, then phone.
+    // A FAILED dedupe read must NOT fall through to the insert below: an
+    // unchecked `{ data: existing }` turns a refused lookup into "no match",
+    // and this function's whole contract is "never create a duplicate".
     if (input.email) {
-      const { data: existing } = await supabase
+      const { data: existing, error: emailLookupError } = await supabase
         .from("contacts")
         .select("id")
         .eq("brokerage_id", input.brokerageId)
         .eq("email", input.email.toLowerCase().trim())
         .maybeSingle()
+      if (emailLookupError) return { success: false, error: `Could not check for an existing contact by email: ${emailLookupError.message}` }
       if (existing?.id) return { success: true, contactId: existing.id, created: false }
     }
 
     if (input.phone) {
       // phone_digits is a generated column — query using the phone column directly
-      const { data: existing } = await supabase
+      const { data: existing, error: phoneLookupError } = await supabase
         .from("contacts")
         .select("id")
         .eq("brokerage_id", input.brokerageId)
         .eq("phone", input.phone.trim())
         .maybeSingle()
+      if (phoneLookupError) return { success: false, error: `Could not check for an existing contact by phone: ${phoneLookupError.message}` }
       if (existing?.id) return { success: true, contactId: existing.id, created: false }
     }
 
@@ -253,6 +372,26 @@ export async function createOrAttachSellerContact(
       .single()
 
     if (error) return { success: false, error: error.message }
+
+    // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). A seller contact
+    // created alongside a listing is the case the ruling's "just before" is
+    // about: the listing exists but has not been signed, so the seller is still
+    // a prospect and enrichment is exactly what should happen now. If the
+    // listing is already at LISTING_AGREEMENT_SIGNED or beyond,
+    // queueContactEnrichment's live-deal check declines and the contact is
+    // picked up after the deal ends instead. The decision is the predicate's,
+    // not this call site's. Voided — listing setup must not fail on enrichment.
+    void import("@/lib/enrichment/contact-enrichment-core")
+      .then((m) =>
+        m.queueContactEnrichment({
+          contactId: contact.id,
+          brokerageId: input.brokerageId,
+          triggerType: "listing_seller_intake",
+          supabase,
+        }),
+      )
+      .catch(() => {})
+
     return { success: true, contactId: contact.id, created: true }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "createOrAttachSellerContact failed" }
@@ -307,19 +446,44 @@ export async function loadListingWorkspace(input: {
         .from("lifecycle_events")
         .select("*")
         .eq("entity_id", input.listingId)
-        .eq("entity_type", "listing")
+        // BOTH producers — see LISTING_TIMELINE_ENTITY_TYPES. Reading one of the
+        // two is how this timeline came back empty for every listing.
+        .in("entity_type", [...LISTING_TIMELINE_ENTITY_TYPES])
         .order("created_at", { ascending: false })
         .limit(30),
     ])
 
-    if (!listingResult.data) return { success: false, error: "Listing not found" }
+    // EVERY read is checked. supabase-js RESOLVES a refused query, so
+    // `{ data }` alone turns an RLS refusal into an empty list that reads
+    // exactly like "this listing has no history / no photos / no tasks". A
+    // failed read is now a named failure, never a quiet absence.
+    if (listingResult.error)  return { success: false, error: `Could not read the listing: ${listingResult.error.message}` }
+    if (!listingResult.data)  return { success: false, error: "Listing not found" }
+    if (mediaResult.error)    return { success: false, error: `Could not read the listing's media: ${mediaResult.error.message}` }
+    if (tasksResult.error)    return { success: false, error: `Could not read the listing's tasks: ${tasksResult.error.message}` }
+    if (timelineResult.error) return { success: false, error: `Could not read the listing's history: ${timelineResult.error.message}` }
 
-    // Derive current stage from most recent lifecycle_event or listings.lifecycle_stage
-    const latestEvent = (timelineResult.data ?? []).find(
-      (e: any) => e.event_type?.startsWith("listing_stage")
-    )
-    const currentStage = (latestEvent as any)?.metadata?.stage
-      ?? (listingResult.data as any)?.lifecycle_stage
+    // CURRENT STAGE. listings.lifecycle_stage is the column the database
+    // maintains and CHECK-constrains to the canonical stages; it is the
+    // authority (same ruling as resolveCurrentStage in
+    // app/actions/listing-lifecycle-core.ts). The event log is the FALLBACK for
+    // the case where the column is somehow empty.
+    //
+    // The old derivation could not have worked either way round: it looked for
+    // `event_type.startsWith("listing_stage")` and then read `metadata.stage`,
+    // but transitionLifecycle — the only writer of stage rows — stores
+    // event_type as `lifecycle.${eventType}` and puts the stage in
+    // `metadata.to_state`. Both halves missed.
+    const latestStageEvent = (timelineResult.data ?? []).find((e: any) => {
+      const meta = (e?.metadata ?? {}) as Record<string, unknown>
+      return typeof meta.to_state === "string" || typeof meta.stage === "string"
+    })
+    const eventStage =
+      ((latestStageEvent as any)?.metadata?.to_state as string | undefined)
+      ?? ((latestStageEvent as any)?.metadata?.stage as string | undefined)
+
+    const currentStage = ((listingResult.data as any)?.lifecycle_stage as string | null)
+      ?? eventStage
       ?? "LEAD"
 
     return {
@@ -385,14 +549,29 @@ export async function saveListingDraft(input: {
 
 /**
  * Check whether the listing meets the minimum requirements to launch.
- * Input: { listingId }
+ * Input: { listingId, suppliedMlsNumber? }
  * Output: { ready: boolean, blockers: string[] }
  * Reads: listings, listing_media
- * Blockers: no seller contact, no list price, fewer than 5 photos
+ * Blockers: no seller contact, no list price, no MLS number, fewer than 5 photos
  * NOTE: public_remarks exists (m194); this check is intentionally omitted here.
+ *
+ * suppliedMlsNumber closes a DEADLOCK. launchListing is the only writer of
+ * listings.mls_number on the launch path — it takes the number as input and
+ * stamps it on the row. But it calls this gate FIRST, and the gate read the
+ * STORED mls_number. A listing that had never been launched had no stored
+ * number, so the gate blocked, so the write never ran, so the number never got
+ * stored. The one function that fills the field could never get past the check
+ * for the field being empty.
+ *
+ * The number the caller is launching WITH satisfies the requirement just as
+ * well as one already on the row — it is about to become the stored one. So the
+ * gate accepts either. Callers that are only *reporting* readiness (the
+ * lifecycle page) pass nothing and keep the strict stored-value semantics,
+ * which is what a checklist should show.
  */
 export async function validateListingLaunchReadiness(input: {
   listingId: string
+  suppliedMlsNumber?: string
 }): Promise<KernelResult<{ ready: boolean; blockers: string[] }>> {
   if (!isValidUUID(input.listingId)) return { success: false, error: "Invalid listing ID" }
 
@@ -412,14 +591,21 @@ export async function validateListingLaunchReadiness(input: {
         .eq("media_type", "photo"),
     ])
 
-    if (!listingResult.data) return { success: false, error: "Listing not found" }
+    // A launch gate that could not READ is not a gate that passed — and a
+    // failed photo COUNT would otherwise come back as `count ?? 0` and be
+    // reported to the agent as "you have no photos", sending them to re-upload
+    // media that is already there.
+    if (listingResult.error)   return { success: false, error: `Could not read the listing: ${listingResult.error.message}` }
+    if (!listingResult.data)   return { success: false, error: "Listing not found" }
+    if (mediaCountResult.error) return { success: false, error: `Could not count the listing's photos: ${mediaCountResult.error.message}` }
 
     const listing = listingResult.data
     const blockers: string[] = []
 
     if (!listing.seller_contact_id) blockers.push("No seller contact linked")
     if (!listing.list_price)        blockers.push("No list price set")
-    if (!listing.mls_number)        blockers.push("No MLS number entered")
+    if (!(listing.mls_number?.trim() || input.suppliedMlsNumber?.trim()))
+      blockers.push("No MLS number entered")
 
     const photoCount = mediaCountResult.count ?? 0
     if (photoCount < 5) blockers.push(`Photos: need at least 5 (${photoCount} uploaded)`)
@@ -445,17 +631,73 @@ export async function launchListing(input: {
   mlsNumber: string
   mlsLink?: string
   actorUserId: string
+  /**
+   * THE SESSION'S brokerage, resolved by the caller's own auth gate
+   * (app/actions/listings-kernel.ts::launchListingAction → resolveCallerContext).
+   * REQUIRED, because the compliance gate below cannot run without a tenant
+   * anchor and "no anchor" must refuse rather than pass (CLAUDE.md §4).
+   *
+   * It cannot WIDEN scope: this function reads through the request-scoped client
+   * (RLS applies) and the gate re-reads listings.brokerage_id and refuses a
+   * mismatch, so a wrong value can only narrow to a refusal.
+   */
+  brokerageId: string
 }): Promise<KernelResult<{ listing: Record<string, unknown> }>> {
   if (!isValidUUID(input.listingId))   return { success: false, error: "Invalid listing ID" }
   if (!input.mlsNumber?.trim())        return { success: false, error: "MLS number is required" }
 
   // Gate: validate launch readiness first
-  const readiness = await validateListingLaunchReadiness({ listingId: input.listingId })
+  // Pass the number we are launching WITH — see the note on the gate. Without
+  // this, the only writer of mls_number can never satisfy the mls_number check.
+  const readiness = await validateListingLaunchReadiness({
+    listingId: input.listingId,
+    suppliedMlsNumber: input.mlsNumber,
+  })
   if (!readiness.success) return { success: false, error: readiness.error }
   if (!readiness.ready)   return { success: false, error: readiness.blockers[0] ?? "Launch blockers present" }
 
   try {
     const supabase = await createClient()
+
+    // ── THE COMPLIANCE GATE (owner's ruling, 2026-09-04) ───────────────────
+    //
+    // "same compliance gate when a listing becomes an active listing."
+    //
+    // THIS IS THE SECOND DOOR TO ACTIVE, and it is the one that does not go
+    // through the stage machine at all: the UPDATE below writes BOTH
+    // `status:'active'` and `lifecycle_stage:'MLS_ACTIVE'` straight onto the
+    // row, so neither transitionLifecycle nor any readinessCheck ever sees it.
+    // Gating only activateMLS would have left the front door locked and this one
+    // open — the launch dialog (app/dashboard/listings/[id]/components/launch/)
+    // reaches it through launchListingAction.
+    //
+    // validateListingLaunchReadiness above is NOT this check and does not
+    // overlap it: it asks for a seller contact, a list price, an MLS number and
+    // five photos. It has never asked whether a single required document exists,
+    // whether anything was signed, or whether an initial is outstanding.
+    //
+    // IMPORTED DYNAMICALLY, for the reason this file already documents at the
+    // top: the gate reaches lib/compliance/required-documents.ts, which is
+    // `server-only`, and a static import would pull that into every module graph
+    // touching this file — including the plain `tsx` guard simulators, which are
+    // not server components and crash on `server-only` at load.
+    const { assertListingActivationAllowed } = await import("@/lib/listings/listing-activation-gate")
+    const complianceGate = await assertListingActivationAllowed(supabase as any, {
+      brokerageId: input.brokerageId,
+      listingId:   input.listingId,
+      door:        "listing launch",
+    })
+    if (!complianceGate.allowed) {
+      // Same as activateMLS: the refusal reaches the TC, compliance officer and agent
+      // with the missing items named, deduped on the blocker set. Never advances.
+      try {
+        const { runListingComplianceLoop } = await import("@/lib/listings/listing-compliance-loop")
+        await runListingComplianceLoop(supabase as any, { brokerageId: input.brokerageId, listingId: input.listingId, trigger: "activation_refused", actorUserId: null })
+      } catch (err: any) {
+        console.error("[launchListing] compliance-loop notification failed (non-fatal):", err?.message ?? err)
+      }
+      return { success: false, error: complianceGate.reason }
+    }
 
     const { data: listing, error } = await supabase
       .from("listings")
@@ -475,17 +717,20 @@ export async function launchListing(input: {
 
     // Emit lifecycle event — brokerage_id is NOT NULL (pass 5): the launch
     // event never landed without it. The updated listing row carries it.
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: (listing as any)?.brokerage_id ?? null,
-        entity_type:  "listing",
-        entity_id:    input.listingId,
-        event_type:   "listing_stage_active",
-        metadata:     { mls_number: input.mlsNumber, actor: input.actorUserId },
-        created_at:   new Date().toISOString(),
-      })
-      .then(() => {})
+    // `to_state` is the key transitionLifecycle uses and the key every timeline
+    // reader looks for; `stage` is kept alongside it for the older readers.
+    const kernelEmit = await import("@/lib/kernel/emit")
+    const { error: launchEventError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+        brokerageId: (listing as any)?.brokerage_id ?? null,
+        entityType:  "listing",
+        entityId:    input.listingId,
+        event:   "listing_stage_active",
+        metadata:     { mls_number: input.mlsNumber, actor: input.actorUserId, to_state: "MLS_ACTIVE", stage: "MLS_ACTIVE" },
+        createdAt:   new Date().toISOString(),
+      }))
+    if (launchEventError) {
+      console.error("[launchListing] lifecycle_events insert failed — the launch is not in the listing's history:", launchEventError.message)
+    }
 
     return { success: true, listing }
   } catch (err) {
@@ -493,275 +738,113 @@ export async function launchListing(input: {
   }
 }
 
-// ─── 7. updateListingStage ────────────────────────────────────────────────────
+// ─── 7. (updateListingStage removed) ──────────────────────────────────────────
+//
+// REMOVED as the orphaned half of a TWO-WRITER hazard (orphan doctrine §1: the
+// functionality already lives elsewhere). This was reachable ONLY through
+// app/actions/listings-kernel.ts:updateListingStageAction (also removed, same
+// tombstone), which nothing in app/ components/ or hooks/ ever called. It wrote
+// listings.lifecycle_stage down a SECOND path — executeListingTransition
+// (app/actions/listing-lifecycle-core.ts) — independent of the one the UI
+// actually reaches, keeping no listing_stage_history and firing a kernel-event
+// fanout + the seller-to-lifetime handoff that the live path never got.
+//
+// SURVIVOR: lib/application/listing-lifecycle.ts:advanceListingStageService
+// (reached from stage-pipeline.tsx → app/actions/listing-lifecycle.ts
+// :advanceListingStage). It now does everything this path did AND MORE: the
+// same stage-table-derived gate, PLUS listing_stage_history (which this path
+// never wrote), PLUS — merged onto it in this pass — the LISTING_STAGE_CHANGED
+// kernel-event emit (with metadata), the seller-to-lifetime transition on
+// CLOSED, and the back-on-market manager-signal handoff that used to live only
+// on this orphaned path. Nothing this function did is missing on the survivor.
+// Do not reintroduce a second listings.lifecycle_stage writer.
 
-/**
- * Single gate for all listing stage changes.
- * Input: { listingId, targetStage, actorUserId, notes?, overrideReason? }
- * Output: { transition }
- * Delegates to: executeListingTransition (listing-lifecycle-core.ts)
- * Rule: this is the ONLY way stage changes happen — never update current_stage directly.
- */
-export async function updateListingStage(input: {
-  listingId: string
-  targetStage: ListingStage
-  actorUserId: string
-  notes?: string
-  overrideReason?: string
-}): Promise<KernelResult<{ fromStage: string | null; toStage: string; enabledSystemGates: string[] }>> {
-  if (!isValidUUID(input.listingId))   return { success: false, error: "Invalid listing ID" }
-  if (!input.targetStage)              return { success: false, error: "Target stage is required" }
+// ─── 8. (attachMediaToListing removed — see note above MediaAttachmentInput) ──
 
-  try {
-    // Dynamic import to avoid circular dependency — lifecycle-core imports supabase
-    const { executeListingTransition } = await import(
-      "@/app/actions/listing-lifecycle-core"
-    )
-    const result = await executeListingTransition({
-      listingId:      input.listingId,
-      targetStage:    input.targetStage,
-      notes:          input.notes,
-      overrideReason: input.overrideReason,
-    })
+// ─── 9. (generateListingDescription removed) ──────────────────────────────────
+//
+// REMOVED as a DUPLICATE writer (lane 87B, §1.1 + §6 — merge-then-delete). It was the
+// second AI listing-description writer beside the server-only core: a bare
+// generateText on a hard-coded model (off the routing table and the ai_tool_usage
+// cost ledger), no compliance block in the writing prompt (§5 compliance-first), a
+// guardContent grade that fed an agents.id where the brand-voice resolver wants a
+// users.id, and a "family" style that is a familial-status framing. Its one caller
+// was app/actions/listings-kernel.ts generateListingDescriptionAction.
+// What it had that the core lacked — reading the listing by id and composing the
+// property facts from it — was merged FIRST onto
+//   lib/listings/listing-description-tool.ts::draftListingDescriptionForListing
+// (tenant-pinned listing read → lib/listings/listing-description-core.ts
+// ::generateListingDescriptions), which that action now calls. Like this function,
+// the survivor never writes public_remarks: the agent saves the text through
+// saveListingDraft.
 
-    if (!result.success) return { success: false, error: result.error ?? "Stage transition failed" }
-    return {
-      success: true,
-      fromStage:          result.transition?.fromStage ?? null,
-      toStage:            result.transition?.toStage ?? input.targetStage,
-      enabledSystemGates: result.transition?.enabledSystemGates ?? [],
-    }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "updateListingStage failed" }
-  }
-}
+// ─── 10. (createTransactionShellFromAcceptedOffer removed) ───────────────────
+//
+// REMOVED as a duplicate (merge-then-delete, owner-sanctioned). SURVIVOR:
+// lib/transactions/offer-bridge.ts:createTransactionFromOffer — the documented
+// single source of truth for transaction creation, live on three paths
+// (seller-offers.ts acceptOffer, buyer-offer/convert-to-transaction.ts,
+// buyer-offer/submit-to-compliance.ts). The shell omitted the readiness gate,
+// contract facts, milestone seeding, the offers.transaction_id back-link and
+// the cost breakdown, and stamped buyer_contact_id unconditionally — a defect
+// the bridge already fixed. Nothing it did is missing on the survivor.
 
-// ─── 8. attachMediaToListing ─────────────────────────────────────────────────
-
-/**
- * Attach a media asset to a listing.
- * Input: MediaAttachmentInput
- * Output: { mediaId: string }
- * Writes: listing_media (INSERT)
- */
-export async function attachMediaToListing(
-  input: MediaAttachmentInput
-): Promise<KernelResult<{ mediaId: string }>> {
-  if (!isValidUUID(input.listingId))   return { success: false, error: "Invalid listing ID" }
-  if (!input.fileUrl?.trim())          return { success: false, error: "File URL is required" }
-
-  try {
-    const supabase = await createClient()
-
-    const { data: media, error } = await supabase
-      .from("listing_media")
-      .insert({
-        listing_id:   input.listingId,
-        brokerage_id: input.brokerageId,
-        file_url:     input.fileUrl.trim(),
-        media_type:   input.mediaType,
-        uploaded_by:  input.uploadedBy,
-        is_primary:   input.isPrimary ?? false,
-        caption:      input.caption   ?? null,
-        sort_order:   input.sort_order ?? 0,
-      })
-      .select("id")
-      .single()
-
-    if (error) return { success: false, error: error.message }
-    return { success: true, mediaId: media.id }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "attachMediaToListing failed" }
-  }
-}
-
-// ─── 9. generateListingDescription ───────────────────────────────────────────
-
-/**
- * Generate an AI listing description for a property.
- * Input: { listingId, agentId, style? }
- * Output: { description: string }
- * Reads: listings (for context)
- * Does NOT write — returns text for caller to save via saveListingDraft.
- */
-export async function generateListingDescription(input: {
-  listingId: string
-  agentId: string
-  style?: "luxury" | "family" | "investment" | "standard"
-}): Promise<KernelResult<{ description: string }>> {
-  if (!isValidUUID(input.listingId)) return { success: false, error: "Invalid listing ID" }
-
-  try {
-    const supabase = await createClient()
-
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, showing_instructions, brokerage_id")
-      .eq("id", input.listingId)
-      .maybeSingle()
-
-    if (!listing) return { success: false, error: "Listing not found" }
-
-    const { generateText } = await import("ai")
-    const { resolveModel } = await import("@/lib/ai/resolve-model")
-
-    const styleContext = {
-      luxury:     "Use elevated, aspirational language for a luxury buyer audience.",
-      family:     "Emphasize warmth, family-friendly features, and community.",
-      investment: "Highlight income potential, location advantages, and ROI.",
-      standard:   "Clear, professional real estate copy for a broad audience.",
-    }[input.style ?? "standard"]
-
-    const prompt = `You are a professional real estate copywriter. Write a compelling MLS listing description.
-
-Property:
-- Address: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
-- Price: $${listing.list_price?.toLocaleString() ?? "TBD"}
-- Beds: ${listing.bedrooms ?? "N/A"} | Baths: ${listing.bathrooms ?? "N/A"} | Sqft: ${listing.sqft?.toLocaleString() ?? "N/A"}
-- Type: ${listing.property_type ?? "Residential"}
-${listing.showing_instructions ? `- Notes: ${listing.showing_instructions}` : ""}
-
-Style: ${styleContext}
-
-Write 2-3 paragraphs (150-250 words). No address in the first sentence. Lead with a compelling hook.`
-
-    const { text } = await generateText({
-      model:  resolveModel("openai/gpt-4o-mini"),
-      prompt,
-    })
-
-    const rawDescription = text.trim()
-
-    // Apply brand voice + compliance check (non-blocking)
-    let finalDescription = rawDescription
-    try {
-      const { guardContent } = await import("@/lib/content-guardian")
-      const brokerageId = (listing as any).brokerage_id as string | undefined
-      if (brokerageId) {
-        const guarded = await guardContent({
-          content: rawDescription,
-          agentId: input.agentId,
-          brokerageId,
-          contentType: "listing_description",
-        })
-        finalDescription = guarded.content
-      }
-    } catch {
-      // Non-fatal — return raw description if guardian fails
-    }
-
-    return { success: true, description: finalDescription }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "generateListingDescription failed" }
-  }
-}
-
-// ─── 10. createTransactionShellFromAcceptedOffer ─────────────────────────────
-
-/**
- * Create a transaction shell when an offer is accepted.
- * Input: { listingId, offerId, agentId, brokerageId }
- * Output: { transactionId: string }
- * Validates: offer.status === 'accepted', listing.seller_contact_id present
- * Writes: transactions (INSERT)
- */
-export async function createTransactionShellFromAcceptedOffer(input: {
-  listingId:   string
-  offerId:     string
-  agentId:     string
-  brokerageId: string
-}): Promise<KernelResult<{ transactionId: string }>> {
-  if (!isValidUUID(input.listingId))   return { success: false, error: "Invalid listing ID" }
-  if (!isValidUUID(input.offerId))     return { success: false, error: "Invalid offer ID" }
-  if (!isValidUUID(input.agentId))     return { success: false, error: "Invalid agent ID" }
-  if (!isValidUUID(input.brokerageId)) return { success: false, error: "Invalid brokerage ID" }
-
-  try {
-    const supabase = await createClient()
-
-    // Validate offer is accepted
-    const { data: offer } = await supabase
-      .from("offers")
-      .select("id, status, offer_price, contact_id")
-      .eq("id", input.offerId)
-      .maybeSingle()
-
-    if (!offer)                       return { success: false, error: "Offer not found" }
-    if (offer.status !== "accepted")  return { success: false, error: "Offer is not in accepted status" }
-
-    // Get listing seller contact
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("id, seller_contact_id, address, city, state, zip, list_price")
-      .eq("id", input.listingId)
-      .maybeSingle()
-
-    if (!listing)                        return { success: false, error: "Listing not found" }
-    if (!listing.seller_contact_id)      return { success: false, error: "Listing has no seller contact" }
-
-    // This shell is always created from OUR listing (seller side). It's DUAL when the buyer is also our
-    // client (in our buyer pipeline → buyer_stage); else seller-only (outside buyer). Mirrors offer-bridge.
-    let ourBuyer = false
-    if (offer.contact_id) {
-      const { data: bc } = await supabase.from("contacts").select("buyer_stage").eq("id", offer.contact_id).maybeSingle()
-      ourBuyer = !!(bc as { buyer_stage?: string | null } | null)?.buyer_stage
-    }
-
-    const { data: transaction, error } = await supabase
-      .from("transactions")
-      .insert({
-        agent_id:          input.agentId,
-        brokerage_id:      input.brokerageId,
-        listing_id:        input.listingId,
-        offer_id:          input.offerId,
-        // contact_id = primary in-house client; this transaction is created from
-        // OUR listing, so the in-house client is the seller. Live column is
-        // deal_type (buyer|seller|dual) — "transaction_type"/"seller_side" did
-        // not exist / failed the CHECK, so the insert silently errored.
-        contact_id:        listing.seller_contact_id,
-        seller_contact_id: listing.seller_contact_id,
-        buyer_contact_id:  offer.contact_id ?? null,
-        // Our listing → 'seller', UNLESS the buyer is also our client → 'dual' (covers single- AND
-        // two-agent dual). Mirrors offer-bridge's deal-type-resolver.
-        deal_type:         resolveDealType({ ourListing: true, ourBuyer }),
-        status:            "under_contract",
-        stage:             "UNDER_CONTRACT",
-        purchase_price:    offer.offer_price ?? listing.list_price,
-        deal_name:         [listing.address, listing.city, listing.state].filter(Boolean).join(", ") || `Transaction ${input.offerId.slice(0, 8)}`,
-        property_address:  [listing.address, listing.city, listing.state].filter(Boolean).join(", "),
-      })
-      .select("id")
-      .single()
-
-    if (error) return { success: false, error: error.message }
-    return { success: true, transactionId: transaction.id }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "createTransactionShellFromAcceptedOffer failed" }
-  }
-}
-
-// ─── 11. closeListingLifecycle ────────────────────────────────────────────────
-
-/**
- * Close a listing and convert seller to lifetime customer.
- * Input: { listingId, actorUserId }
- * Output: void
- * Delegates to updateListingStage(CLOSED) which triggers handleSellerToLifetimeTransition.
- */
-export async function closeListingLifecycle(input: {
-  listingId: string
-  actorUserId: string
-}): Promise<KernelResult<object>> {
-  const result = await updateListingStage({
-    listingId:   input.listingId,
-    targetStage: "CLOSED",
-    actorUserId: input.actorUserId,
-  })
-  if (!result.success) return { success: false, error: result.error }
-  return { success: true }
-}
+// ─── 11. (closeListingLifecycle removed) ──────────────────────────────────────
+//
+// REMOVED — its only caller was app/actions/listings-kernel.ts:closeListingAction
+// (also removed, same tombstone) and its only job was updateListingStage(CLOSED)
+// (removed immediately above), so it went with it. CLOSED is, and always was, an
+// ordinary target stage on the stage pipeline (see MILESTONE_STAGES in
+// app/components/dashboard/listings/lifecycle/stage-pipeline.tsx) — there was no
+// missing "close this listing" control to build; the generic advance-to-CLOSED
+// flow IS the close flow, and it now carries the seller-to-lifetime conversion
+// this function used to be the only path to.
+//
+// SURVIVOR: advance a listing to CLOSED via
+// lib/application/listing-lifecycle.ts:advanceListingStageService (same path
+// named on the updateListingStage tombstone above).
 
 // ─── 12. prefillListingFormFromRecord ────────────────────────────────────────
+
+/**
+ * Compose a brokerage's office address the way it should read on a form:
+ * "123 Main St, Suite 200, Pensacola, FL 32501".
+ *
+ * Every column is nullable and both live brokerages currently hold NULL for
+ * street and zip, so this NEVER emits a placeholder, an empty string or a bare
+ * comma: parts that are missing are dropped, the city/state/zip line collapses
+ * to whichever of them exist ("FL 32501", "Pensacola", "32501"), and an address
+ * with no parts at all comes back `undefined` so the caller writes NULL rather
+ * than printing punctuation into a contract.
+ *
+ * Whitespace-only values count as missing — a column holding " " would
+ * otherwise contribute a comma and nothing else.
+ */
+function composeBrokerageAddress(brokerage: {
+  address?: string | null
+  address_line2?: string | null
+  city?: string | null
+  state?: string | null
+  zip?: string | null
+} | null | undefined): string | undefined {
+  const clean = (value: unknown): string | null =>
+    typeof value === "string" && value.trim().length > 0 ? value.trim() : null
+
+  const street = clean(brokerage?.address)
+  const suite  = clean(brokerage?.address_line2)
+  const city   = clean(brokerage?.city)
+  const state  = clean(brokerage?.state)
+  const zip    = clean(brokerage?.zip)
+
+  // City and state are comma-separated; the postcode follows the state with a
+  // SPACE, not a comma — "Pensacola, FL 32501".
+  const locality = [[city, state].filter(Boolean).join(", "), zip]
+    .filter((part) => part && part.length > 0)
+    .join(" ")
+
+  const parts = [street, suite, locality].filter((part) => part && part.length > 0)
+  return parts.length > 0 ? parts.join(", ") : undefined
+}
 
 /**
  * Load all context needed to prefill listing-side forms.
@@ -779,7 +862,7 @@ export async function prefillListingFormFromRecord(input: {
   try {
     const supabase = await createClient()
 
-    const { data: listing } = await supabase
+    const { data: listing, error: prefillError } = await supabase
       .from("listings")
       .select(`
         id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type,
@@ -788,12 +871,17 @@ export async function prefillListingFormFromRecord(input: {
           id, brokerage_id,
           users:user_id(first_name, last_name, email),
           license_number, license_state,
-          brokerage:brokerage_id(name, address, phone, license_number)
+          brokerage:brokerage_id(name, address, address_line2, city, state, zip, phone, license_number)
         )
       `)
       .eq("id", input.listingId)
       .maybeSingle()
 
+    // This payload carries a seller's name, email and phone plus the brokerage's
+    // licence block. A refused read must say so — reporting it as "Listing not
+    // found" sends the agent looking for a listing that is plainly there while
+    // the form they are about to send goes out with an empty licence block.
+    if (prefillError) return { success: false, error: `Could not read the listing: ${prefillError.message}` }
     if (!listing) return { success: false, error: "Listing not found" }
 
     const seller  = (listing as any).seller  ?? {}
@@ -822,7 +910,24 @@ export async function prefillListingFormFromRecord(input: {
       agentLicenseNumber: agent.license_number,
       agentLicenseState:  agent.license_state,
       brokerageName:      brokerage.name,
-      brokerageAddress:   brokerage.address,
+      // The brokerage's OFFICE ADDRESS, composed from the columns the table now
+      // actually has. History, because it decides what this line may and may not
+      // do: this embed once asked for `brokerages.address` when no such column
+      // existed — PostgREST rejects an unknown column in a nested select, and the
+      // whole prefill (agent name, agent licence, brokerage name, phone, licence)
+      // failed for EVERY listing, silently, because the error was swallowed into a
+      // generic result shape. m456 added the real columns (`address`,
+      // `address_line2`, `zip`, verified in information_schema), so the street line
+      // is read rather than guessed at, and `brokerage_address` — a REQUIRED brand
+      // field for email and direct mail (lib/brand-template-registry/
+      // brand-requirements.ts:90,127) — can finally carry a physical address.
+      //
+      // NOTHING IS INVENTED. Every part is optional in the schema and both live
+      // brokerages currently store NULL for street and zip. A form that prints
+      // ", ," is worse than a blank one, so parts that are null are dropped and an
+      // address with no parts at all is `undefined`, never "" and never a stray
+      // comma. See composeBrokerageAddress above.
+      brokerageAddress:   composeBrokerageAddress(brokerage),
       brokeragePhone:     brokerage.phone,
       brokerageLicense:   brokerage.license_number,
     }

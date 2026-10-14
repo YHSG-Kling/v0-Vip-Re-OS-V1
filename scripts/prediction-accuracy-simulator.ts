@@ -88,6 +88,7 @@ import {
   accuracyHold,
 } from "../lib/managers/accuracy-gate"
 import { autonomyDecision } from "../lib/managers/autonomy-gate"
+import { ACCURACY_LINE_LABELS } from "../lib/offers/closing-cost-accuracy"
 import { recruitingPitchSpec, type RecruitingPitchFacts } from "../lib/recruiting/recruiting-pitch-kit"
 import { composeQuarterlyReview, type QuarterFacts } from "../lib/intelligence/quarterly-review"
 
@@ -117,8 +118,10 @@ async function main() {
   console.log("\n[Layer 1 · rail math + refuse-to-invent]")
 
   // — closing costs (the merged round-34 rail) —
+  // The label comes from the module's own map, not a hand-copied string: a
+  // fixture that retypes the label proves nothing about what the writer emits.
   const ccLine = (deltaFromMid: number, withinBand: boolean) => ({
-    key: "owner_title" as const, label: "Owner's title insurance",
+    key: "owner_title" as const, label: ACCURACY_LINE_LABELS.owner_title,
     estimateLow: 1000, estimateHigh: 2000, actual: 1500 + deltaFromMid, deltaFromMid, withinBand,
   })
   const cc = summarizeClosingCostRows([
@@ -136,6 +139,41 @@ async function main() {
   check("closing costs: empty ledger → available:false with a why", ccEmpty.available === false && !!ccEmpty.why && ccEmpty.observations === 0)
   check("closing costs: empty ledger → NO accuracy numbers", ccEmpty.medianError === null && ccEmpty.withinRate === null)
 
+  // — the SAMPLE PROFILE beside the number (lane H5) —
+  // extraction_verified / extracted_field_keys / purchase_price / loan_amount /
+  // total_closing_costs were written by both observation writers and read by
+  // NOTHING, while the rail's first honest note already asserted the provenance
+  // rule they record. Each line below is measured off the rows or ABSENT — a
+  // missing column must never render as a fabricated zero.
+  const ccProv = summarizeClosingCostRows([
+    { state: "GA", lines: [ccLine(100, true)], created_at: "2026-01-01T00:00:00Z",
+      extraction_verified: true,  extracted_field_keys: ["owner_title_premium", "settlement_fee"],
+      purchase_price: 250_000, loan_amount: 200_000, total_closing_costs: 8_000 },
+    { state: "GA", lines: [ccLine(-300, false)], created_at: "2026-02-01T00:00:00Z",
+      extraction_verified: false, extracted_field_keys: ["owner_title_premium"],
+      purchase_price: 750_000, loan_amount: null,    total_closing_costs: 12_000 },
+  ])
+  const provNotes = ccProv.honestNotes.join(" | ")
+  check("sample profile: human-verified share is stated (1 of 2)",
+    /Provenance: 1 of 2 observation\(s\) used at least one HUMAN-VERIFIED/.test(provNotes), provNotes)
+  check("sample profile: extraction coverage names the denominator",
+    /Extraction coverage: median 1\.5 provenance-usable field\(s\).*2 distinct CD field key\(s\)/.test(provNotes), provNotes)
+  check("sample profile: the price range the accuracy was measured on is stated",
+    provNotes.includes("$250,000 to $750,000") && provNotes.includes("median $500,000"), provNotes)
+  check("sample profile: loan-known count explains a thin lender line (1 of 2)",
+    /1 of 2 observation\(s\) had a known loan amount/.test(provNotes), provNotes)
+  check("sample profile: the error is scaled by the CD's OWN section-J total, never compared to the estimate total",
+    /% of the median[\s\S]*CD section-J total \(\$10,000\)/.test(provNotes) && provNotes.includes("NEVER compared to the estimate total"), provNotes)
+  // POSITIVE CONTROL (§2): with the columns absent, NONE of those lines may
+  // appear — a blind read and an honest one must not look the same.
+  const ccNoProv = summarizeClosingCostRows([
+    { state: "GA", lines: [ccLine(100, true)], created_at: "2026-01-01T00:00:00Z" },
+  ])
+  const noProvNotes = ccNoProv.honestNotes.join(" | ")
+  check("sample profile CONTROL: no provenance columns → no provenance claims",
+    !noProvNotes.includes("Provenance:") && !noProvNotes.includes("Extraction coverage:") &&
+    !noProvNotes.includes("known loan amount") && !noProvNotes.includes("section-J"), noProvNotes)
+
   // — net sheet —
   const ns = (variance: number, level: string): NetSheetReconRow => ({
     estimated_net: 200_000, actual_net: 200_000 + variance, variance_amount: variance,
@@ -149,6 +187,39 @@ async function main() {
   check("net sheet: median |gap| = $1,200", nsRail.medianError?.value === 1_200, String(nsRail.medianError?.value))
   const nsUngraded = summarizeNetSheetRows([{ estimated_net: null, actual_net: 1, variance_amount: null, surprise_level: "none", created_at: null }])
   check("net sheet: rows without both sides → available:false", nsUngraded.available === false && !!nsUngraded.why)
+
+  // — DID THE SURPRISE REACH A HUMAN? (lane H5) —
+  // net_sheet_reconciliations.escalated was written on every reconciliation and
+  // read by nothing, so a run where every escalation was REFUSED rendered
+  // exactly like one where every escalation landed.
+  const nsEsc = summarizeNetSheetRows([
+    { ...ns(-20_000, "severe"),      escalated: true,  variance_pct: -0.1,
+      line_item_deltas: [{ key: "commission", label: "Commission", netImpact: -18_000 }, { key: "title_escrow", label: "Title & escrow", netImpact: -2_000 }], offer_id: "o1" },
+    { ...ns(-6_000, "concerning"),   escalated: false, variance_pct: -0.03,
+      line_item_deltas: [{ key: "title_escrow", label: "Title & escrow", netImpact: -6_000 }], offer_id: null },
+    { ...ns(-500, "none"),           escalated: false, variance_pct: -0.0025, line_item_deltas: [], offer_id: "o3" },
+  ])
+  const escNotes = nsEsc.honestNotes.join(" | ")
+  check("escalation: denominator is the MATERIAL surprises only (2), not every reconciliation",
+    /Escalation: 1 of 2 materially-negative surprise\(s\) actually reached a human/.test(escNotes), escNotes)
+  check("escalation: the ones that did NOT reach a human are named as such",
+    escNotes.includes("1 did NOT, and the seller was not armed"), escNotes)
+  check("net sheet: recorded variance percentage is reported beside the dollar median",
+    /Median recorded variance: 3% of the promised net across 3 reconciliation\(s\)/.test(escNotes), escNotes)
+  check("net sheet: promise provenance (offer on file) is counted, not assumed",
+    /2 of 3 reconciliation\(s\) name the offer/.test(escNotes), escNotes)
+  check("net sheet: top-driver breakdown folds the ONE line that hurt each surprise most",
+    nsEsc.breakdown?.length === 2 &&
+    nsEsc.breakdown.some((b) => b.group === "Commission" && b.observations === 1 && b.medianError === 18_000) &&
+    nsEsc.breakdown.some((b) => b.group === "Title & escrow" && b.observations === 1),
+    JSON.stringify(nsEsc.breakdown))
+  // POSITIVE CONTROL (§2): with the flag absent the rail must say UNKNOWN, not
+  // report a clean escalation record it never observed.
+  const nsNoFlag = summarizeNetSheetRows([ns(-20_000, "severe"), ns(-6_000, "concerning")])
+  const noFlagNotes = nsNoFlag.honestNotes.join(" | ")
+  check("escalation CONTROL: no flag → 'UNKNOWN, not fine', and no escalation rate is claimed",
+    noFlagNotes.includes("carry no escalation flag") && noFlagNotes.includes('UNKNOWN, not "fine"') &&
+    !noFlagNotes.includes("actually reached a human"), noFlagNotes)
 
   // — listing price + DOM (pre-sale-only grading) —
   const pair = (over: Partial<PricePredictionPair>): PricePredictionPair => ({
@@ -394,14 +465,15 @@ async function main() {
   ]
   const asg = (over: Partial<AssignedCohortRow>): AssignedCohortRow => ({
     key: "lead:l1", brokerageId: "b1", contactId: "c1", leadId: "l1",
-    ruleId: "ra", method: "geo_based", assignedAt: "2026-01-01T00:00:00Z", ...over,
+    ruleId: "ra", method: "geo_based", assignedAt: "2026-01-01T00:00:00Z",
+    claimedAt: null, scoreAtAssignment: null, ...over,
   })
   const apCohort: AssignedCohortRow[] = [
     asg({}),                                                                                 // ruleA — appt on c1 at day 9 → hit
     asg({ key: "lead:l1", assignedAt: "2026-02-01T00:00:00Z" }),                             // duplicate identity — first assignment wins
     asg({ key: "lead:l2", leadId: "l2", contactId: "c2" }),                                  // ruleA — no appt, window elapsed → miss
     asg({ key: "lead:l3", leadId: "l3", contactId: null, ruleId: "rb", method: "round_robin" }),      // ruleB — appt joins via the LEAD entity at day 59 → miss (past horizon)
-    asg({ key: "lead:l4", leadId: "l4", contactId: "c4", ruleId: "rb", method: "round_robin" }),      // ruleB — appt day 4 → hit
+    asg({ key: "lead:l4", leadId: "l4", contactId: "c4", ruleId: "rb", method: "round_robin", claimedAt: "2026-01-01T02:00:00Z", scoreAtAssignment: 82 }),      // ruleB — appt day 4 → hit; claimed 2h later at score 82
     asg({ key: "lead:l5", leadId: "l5", contactId: "c5", ruleId: null, method: "load_balance", assignedAt: "2026-07-10T00:00:00Z" }), // fallback — open window → pending
     asg({ key: "lead:l6", leadId: "l6", contactId: "c6" }),                                  // appt BEFORE assignment → refused
     asg({ key: "contact:c9", leadId: null, contactId: "c9", ruleId: "rb", method: "round_robin", assignedAt: "2026-01-20T00:00:00Z" }), // Track-B contact — appt day 12 → hit
@@ -426,6 +498,14 @@ async function main() {
     apRail.honestNotes.some((n) => n.includes("still inside the window")) && apRail.honestNotes.some((n) => n.includes("refused")), JSON.stringify(apRail.honestNotes))
   check("assignment policy: an appointment joining via the LEAD entity grades (no contact row required)",
     (() => { const r = computePolicyOutcomes(apCohort, apRules, apEvents, NOW); return r.stats.find((s) => s.policyKey === "rule:rb")?.observations === 3 })())
+  check("assignment policy: speed-to-claim + score-at-assignment surface on the graded breakdown (one claimed row, 120min, score 82)",
+    (() => {
+      const r = computePolicyOutcomes(apCohort, apRules, apEvents, NOW)
+      const rb = r.stats.find((s) => s.policyKey === "rule:rb")
+      return rb?.claimedCount === 1 && rb?.medianClaimMinutes === 120 && rb?.avgScoreAtAssignment === 82
+    })())
+  check("assignment policy: breakdown row's note names the claim time and score when present",
+    Boolean(apRail.breakdown?.[0]?.note?.includes("2h") && apRail.breakdown?.[0]?.note?.includes("82")), apRail.breakdown?.[0]?.note ?? "")
   check("assignment policy: empty cohort → available:false with a why", summarizeAssignmentPolicyRows([], apRules, [], NOW).available === false)
   const apPendingOnly = summarizeAssignmentPolicyRows([asg({ key: "lead:l9", leadId: "l9", contactId: "c99", assignedAt: "2026-07-15T00:00:00Z" })], apRules, [], NOW)
   check("assignment policy: open windows only → available:false (never graded early)",
@@ -438,7 +518,8 @@ async function main() {
   // — the divergence detector (the deliberation feed's trigger) —
   const stat = (over: Partial<PolicyOutcomeStat>): PolicyOutcomeStat => ({
     policyKey: "rule:ra", ruleId: "ra", isActiveRule: true, label: "A",
-    observations: 10, hits: 6, rate: 0.6, pending: 0, ...over,
+    observations: 10, hits: 6, rate: 0.6, pending: 0,
+    medianClaimMinutes: null, claimedCount: 0, avgScoreAtAssignment: null, ...over,
   })
   const divergent = findDivergentRulePair([
     stat({}), stat({ policyKey: "rule:rb", ruleId: "rb", label: "B", hits: 2, rate: 0.2 }),

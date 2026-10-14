@@ -20,6 +20,8 @@ import { firstTouchDecision, DEFAULT_AGENT_GRACE_MINUTES } from "@/lib/ai-isa/sp
 import type { FirstTouchConsentInput } from "@/lib/ai-isa/speed-to-lead-policy"
 import { initiateAIISAEngagement } from "@/app/actions/ai-isa/initiate-engagement"
 import { engageContact }           from "@/app/actions/ai-isa/engage-contact"
+import { excludeConvertedLeads }   from "@/lib/contact-promotion/conversion-finality"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -69,18 +71,28 @@ export async function runSpeedToLead(
   // leg is what starts AI ISA engagement for a freshly un-parked lead.
   const leadCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
 
-  const { data: leads, error: leadsError } = await supabase
-    .from("leads")
-    .select(
-      `id, brokerage_id, created_at, first_touched_at,
+  //
+  // CONVERSION FINALITY: this sweep had NEITHER a `contact_id` filter NOR an
+  // `is_active` one — its only gate was `ai_isa_owner=true`, and the manual
+  // converter (lib/kernel/crm.ts) left BOTH `ai_isa_owner` and `is_active`
+  // untouched. So a lead converted through the lead desk was still a first-touch
+  // candidate: the sweep would dispatch an ISA first touch at a person who had
+  // already become a client, then stamp `first_touched_at` on their dead lead
+  // row. `contact_id` is the marker; the sweep no longer selects them.
+  const { data: leads, error: leadsError } = await excludeConvertedLeads(
+    supabase
+      .from("leads")
+      .select(
+        `id, brokerage_id, created_at, first_touched_at,
        email_verified, email_opt_out, mailing_address_verified,
        ai_isa_owner, lifecycle_state`,
-    )
-    .eq("brokerage_id", brokerageId)
-    .eq("ai_isa_owner", true)
-    .is("first_touched_at", null)
-    .or(`created_at.gte.${leadCutoff},distributed_at.gte.${leadCutoff}`)
-    .limit(50) // safety cap per sweep
+      )
+      .eq("brokerage_id", brokerageId)
+      .eq("ai_isa_owner", true)
+      .is("first_touched_at", null)
+      .or(`created_at.gte.${leadCutoff},distributed_at.gte.${leadCutoff}`)
+      .limit(50), // safety cap per sweep
+  )
 
   if (leadsError) {
     await logError(supabase, brokerageId, "speed_to_lead_leads_query", leadsError.message)
@@ -108,11 +120,13 @@ export async function runSpeedToLead(
       }
 
       // Dispatch via the canonical entry — already consent/channel gated
-      const result = await doLeadEngagement(lead.id)
+      // Lane 86E: the cron has no session — it PRESENTS the internal secret
+      // (the engagement door no longer treats the env var's presence as one).
+      const result = await doLeadEngagement(lead.id, { internalSecret: process.env.CRON_SECRET })
 
       if (result?.success !== false) {
         // Stamp first touch
-        await supabase
+        const { error: firstTouchErr } = await supabase
           .from("leads")
           .update({
             first_touched_at:    now.toISOString(),
@@ -120,7 +134,8 @@ export async function runSpeedToLead(
             updated_at:          now.toISOString(),
           })
           .eq("id", lead.id)
-          .is("first_touched_at", null) // idempotency guard at DB layer
+          .is("first_touched_at", null)
+        if (firstTouchErr) console.error(`[speed-to-lead] first touch NOT stamped (speed-to-lead SLA will read as untouched): ${firstTouchErr.message}`) // idempotency guard at DB layer
 
         leadsTouched++
       } else {
@@ -198,15 +213,25 @@ export async function runSpeedToLead(
       })
 
       if (result?.success !== false) {
-        await supabase
-          .from("contacts")
-          .update({
-            first_touched_at:    now.toISOString(),
-            first_touch_channel: decision.channel,
-            updated_at:          now.toISOString(),
-          })
-          .eq("id", contact.id)
-          .is("first_touched_at", null) // idempotency guard
+        await sentinelWrite(
+          supabase,
+          supabase
+            .from("contacts")
+            .update({
+              first_touched_at:    now.toISOString(),
+              first_touch_channel: decision.channel,
+              updated_at:          now.toISOString(),
+            })
+            .eq("id", contact.id)
+            .is("first_touched_at", null), // idempotency guard
+          {
+            table: "contacts",
+            flow: "speed_to_lead_first_touch_claim",
+            brokerageId: contact.brokerage_id,
+            reason:
+              "first-touch ledger claim, written AFTER the engagement already went out; the `.is(null)` guard means a lost claim only risks a second stand-down race with the drip lane, never an extra unconsented touch (dispatch re-gates every send)",
+          },
+        )
 
         contactsTouched++
       } else {
@@ -237,7 +262,7 @@ async function logError(
   context?: Record<string, unknown>,
 ): Promise<void> {
   try {
-    await supabase.from("automation_errors").insert({
+    await sentinelWrite(supabase, supabase.from("automation_errors").insert({
       brokerage_id:  brokerageId,
       workflow_name: workflow,
       error_message: message,
@@ -245,7 +270,7 @@ async function logError(
       severity:      "medium",
       status:        "open",
       created_at:    new Date().toISOString(),
-    })
+    }), { table: "automation_errors", flow: "automation_errors_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   } catch {
     // never throw from the error logger
   }

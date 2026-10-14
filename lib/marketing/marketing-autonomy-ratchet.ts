@@ -31,7 +31,8 @@ type Svc = SupabaseClient<any, any, any>
 /** Outward-facing brand surface — a higher bar than the deal-file ratchet's 10. */
 export const MARKETING_RATCHET_MIN_APPROVALS = 20
 
-export const socialShapeKey = (postType: string): string => `social_post:${postType}`
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+const socialShapeKey = (postType: string): string => `social_post:${postType}`
 
 export interface SocialDecisionRow {
   post_type: string | null

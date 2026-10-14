@@ -1,13 +1,15 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "@/lib/ai/generate"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
-import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
+import { SPHERE_CONTACT_TYPES } from "@/lib/contact-types"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_sphere_management")
 
 /**
  * AI Sphere of Influence Management System
@@ -26,16 +28,27 @@ export async function aiScoreSphereEngagement(params: { agentId: string }) {
   const supabase = await createClient()
 
   try {
-    // Get all contacts in sphere
+    // TWO DEAD EMBEDS ON ONE SELECT, and either alone killed the whole query.
+    //
+    //  · `interactions(...)` named a table that DOES NOT EXIST. The canonical
+    //    per-contact activity log is `activities` (FK activities.contact_id);
+    //    its columns are activity_type / created_at, not interaction_type /
+    //    interaction_date, so the consumers below were renamed with it.
+    //  · `transactions(...)` bare is AMBIGUOUS: transactions carries THREE FKs
+    //    to contacts (contact_id, buyer_contact_id, seller_contact_id), so
+    //    PostgREST refuses with PGRST201 rather than picking one. Named by
+    //    constraint, the same way line 437 already named the referrals embed.
+    //
+    // This sphere score has therefore never been computed from real data.
     const { data: contacts } = await supabase
       .from("contacts")
       .select(`
         *,
-        interactions(id, interaction_type, interaction_date, outcome),
-        transactions(id, status, close_date)
+        activities(id, activity_type, outcome, created_at),
+        transactions!transactions_contact_id_fkey(id, status, close_date)
       `)
       .eq("agent_id", params.agentId)
-      .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere", "referral_partner"])
+      .in("contact_type", [...SPHERE_CONTACT_TYPES])
 
     if (!contacts || contacts.length === 0) {
       return { success: true, data: [] }
@@ -43,13 +56,13 @@ export async function aiScoreSphereEngagement(params: { agentId: string }) {
 
     const scoredContacts = await Promise.all(
       contacts.map(async (contact) => {
-        const lastInteraction = contact.interactions?.[0]?.interaction_date
+        const lastInteraction = contact.activities?.[0]?.created_at
         const daysSinceContact = lastInteraction
           ? Math.floor((Date.now() - new Date(lastInteraction).getTime()) / (1000 * 60 * 60 * 24))
           : 999
 
         const totalTransactions = contact.transactions?.length || 0
-        const totalInteractions = contact.interactions?.length || 0
+        const totalInteractions = contact.activities?.length || 0
 
         // AI-enhanced scoring
         const { object: scoring } = await generateObject({
@@ -71,7 +84,7 @@ Total transactions with us: ${totalTransactions}
 Total interactions logged: ${totalInteractions}
 Home purchase/sale anniversary: ${contact.home_anniversary || "Unknown"}
 Birthday: ${contact.birthday || "Unknown"}
-Last interaction type: ${contact.interactions?.[0]?.interaction_type || "None"}
+Last interaction type: ${contact.activities?.[0]?.activity_type || "None"}
 
 Provide engagement score (0-100), referral potential, risk level, and recommended next action.`,
         })
@@ -108,89 +121,56 @@ export async function aiGenerateTouchpoint(params: {
   agentId: string
   contactId: string
   touchpointType: "anniversary" | "birthday" | "check_in" | "market_update" | "holiday" | "referral_ask"
+  /** ISO date or datetime. Defaults to today — a touchpoint with no date is a
+   *  touchpoint nothing can ever show; see the note on the insert below. */
+  scheduledFor?: string
+  /**
+   * What the agent typed about WHY this person would act — the referral drafter
+   * collected exactly this ("Why would {name} refer you?") and had nowhere to
+   * send it, so the box was decoration. Optional: existing callers are unchanged.
+   */
+  additionalContext?: string
+  /** friend | family | lifetime-customer | colleague — steers register. */
+  relationshipType?: string
 }) {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.contactId)) {
     return { success: false, error: "Invalid IDs" }
   }
 
-  const supabase = await createClient()
+  // SESSION GATE (lane 86E) — this export took agentId from its caller with no
+  // gate (§4: a "use server" export is a public endpoint). The tenant is the
+  // SESSION's; another agent's id is honoured only for tenant staff, and the
+  // core refuses any agent or contact outside that brokerage.
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  if (params.agentId !== ctx.agentId) {
+    const { TENANT_ADMIN_USER_TYPES } = await import("@/lib/auth/resolve-user-role")
+    if (!TENANT_ADMIN_USER_TYPES.has(ctx.userType)) return { success: false, error: "Forbidden: a touchpoint is drafted for your own agent record" }
+  }
 
+  // THE BODY MOVED (§1 — one core, two doors): lib/sphere-resonance/touchpoint-
+  // draft.ts::draftSphereTouchpoint. The autonomous resonance scan has no cookie
+  // and got "Contact not found" through this door's cookie client on every life
+  // event; it calls the core with the brokerage it is scanning. Every rule the
+  // calendar depends on (scheduled_date defaulting to today, the tenant anchor,
+  // a read insert error that still returns the draft) moved with it.
   try {
-    // Get contact details
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select(`
-        *,
-        transactions(property_address, close_date, sale_price),
-        interactions(interaction_type, notes, interaction_date)
-      `)
-      .eq("id", params.contactId)
-      .single()
-
-    if (!contact) {
-      return { success: false, error: "Contact not found" }
-    }
-
-    // Get agent's brand voice
-    const { data: brandVoice } = await supabase
-      .from("brand_voice_profile")
-      .select("*")
-      .eq("agent_id", params.agentId)
-      .maybeSingle()
-
-    const lastTransaction = contact.transactions?.[0]
-
-    const { object: touchpoint } = await generateObject({
-      model: "openai/gpt-4o",
-      schema: z.object({
-        subject: z.string(),
-        message: z.string(),
-        callScript: z.string().optional(),
-        textMessage: z.string().optional(),
-        giftSuggestion: z.object({
-          item: z.string(),
-          estimatedCost: z.number(),
-          reason: z.string(),
-        }).optional(),
-        personalizedDetails: z.array(z.string()),
-      }),
-      prompt: `Generate a personalized ${params.touchpointType} touchpoint for this lifetime customer:
-
-Contact: ${contact.first_name} ${contact.last_name}
-Relationship: ${contact.contact_type}
-Last property: ${lastTransaction?.property_address || "Unknown"}
-Close date: ${lastTransaction?.close_date || "Unknown"}
-Interests/Notes: ${contact.notes || "None recorded"}
-Recent interactions: ${JSON.stringify(contact.interactions?.slice(0, 3) || [])}
-
-Brand voice: ${brandVoice?.tone || "Professional yet warm"}
-Agent specialty: ${brandVoice?.specialties || "Residential real estate"}
-
-Generate:
-1. Email subject and message
-2. Optional call script (if personal call appropriate)
-3. Text message version (keep under 160 chars)
-4. Gift suggestion if appropriate for ${params.touchpointType}
-5. 3-5 personalized details to reference`,
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { draftSphereTouchpoint } = await import("@/lib/sphere-resonance/touchpoint-draft")
+    const r = await draftSphereTouchpoint(createServiceClient(), {
+      brokerageId: ctx.brokerageId,
+      agentId: params.agentId,
+      contactId: params.contactId,
+      touchpointType: params.touchpointType,
+      scheduledFor: params.scheduledFor,
+      additionalContext: params.additionalContext,
+      relationshipType: params.relationshipType,
     })
-
-    // Save the touchpoint — use schema-correct columns only.
-    // scheduled_touchpoints uses message_template (text) not content (jsonb).
-    const { data: savedTouchpoint } = await supabase
-      .from("scheduled_touchpoints")
-      .insert({
-        agent_id:         params.agentId,
-        contact_id:       params.contactId,
-        touchpoint_type:  params.touchpointType,
-        message_template: JSON.stringify(touchpoint),
-        status:           "scheduled",
-        ai_generated:     true,
-      })
-      .select()
-      .single()
+    if (!r.success) return { success: false, error: r.error, data: r.data }
 
     revalidatePath("/sphere")
-    return { success: true, data: touchpoint, touchpointId: savedTouchpoint?.id }
+    return { success: true, data: r.data, touchpointId: r.touchpointId }
   } catch (error) {
     return handleError(error, "aiGenerateTouchpoint")
   }
@@ -203,6 +183,10 @@ Generate:
 export async function aiOptimizeReferralAsk(params: {
   agentId: string
   contactId: string
+  /** The agent's own words on why this person would refer them. Optional. */
+  additionalContext?: string
+  /** friend | family | lifetime-customer | colleague. Optional. */
+  relationshipType?: string
 }) {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.contactId)) {
     return { success: false, error: "Invalid IDs" }
@@ -214,7 +198,7 @@ export async function aiOptimizeReferralAsk(params: {
     // Load contact — load referrals separately to avoid FK name guessing
     const { data: contact } = await supabase
       .from("contacts")
-      .select("*, transactions(close_date, sale_price)")
+      .select("*, transactions!transactions_contact_id_fkey(close_date, purchase_price)")
       .eq("id", params.contactId)
       .single()
 
@@ -228,7 +212,7 @@ export async function aiOptimizeReferralAsk(params: {
     }
 
     const pastReferrals = referrals?.length || 0
-    const transactionValue = contact.transactions?.[0]?.sale_price || 0
+    const transactionValue = contact.transactions?.[0]?.purchase_price || 0
 
     const { object: referralStrategy } = await generateObject({
       model: "openai/gpt-4o",
@@ -258,7 +242,9 @@ Client: ${contact.first_name} ${contact.last_name}
 Transaction value: $${transactionValue.toLocaleString()}
 Time since close: ${contact.transactions?.[0]?.close_date ? Math.floor((Date.now() - new Date(contact.transactions[0].close_date).getTime()) / (1000 * 60 * 60 * 24)) : "Unknown"} days
 Past referrals given: ${pastReferrals}
+Relationship to agent: ${params.relationshipType || contact.contact_type || "Past client"}
 Satisfaction indicators: ${contact.notes || "Not recorded"}
+Agent's own read on why they would refer: ${params.additionalContext?.trim() || "Not specified"}
 
 Generate:
 1. Referral readiness score (0-100)
@@ -297,7 +283,7 @@ export async function aiGetUpcomingMilestones(params: {
       .select(`
         id, first_name, last_name, email, phone,
         birthday, home_anniversary,
-        transactions(close_date, property_address)
+        transactions!transactions_contact_id_fkey(close_date, property_address)
       `)
       .eq("agent_id", params.agentId)
 
@@ -388,11 +374,11 @@ export async function aiSegmentSphere(params: { agentId: string }) {
       .from("contacts")
       .select(`
         *,
-        transactions(sale_price, property_type, close_date),
+        transactions!transactions_contact_id_fkey(purchase_price, close_date),
         referrals:referrals!referrer_contact_id(id)
       `)
       .eq("agent_id", params.agentId)
-      .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere", "referral_partner"])
+      .in("contact_type", [...SPHERE_CONTACT_TYPES])
 
     if (!contacts || contacts.length === 0) {
       return { success: true, data: { segments: [] } }
@@ -415,7 +401,7 @@ export async function aiSegmentSphere(params: { agentId: string }) {
       prompt: `Segment this sphere of influence for targeted marketing:
 
 Contacts:
-${contacts.map(c => `- ${c.first_name} ${c.last_name}: ${c.contact_type}, ${c.transactions?.length || 0} transactions, ${c.referrals?.length || 0} referrals, avg price: $${(c.transactions?.[0]?.sale_price || 0).toLocaleString()}`).join("\n")}
+${contacts.map(c => `- ${c.first_name} ${c.last_name}: ${c.contact_type}, ${c.transactions?.length || 0} transactions, ${c.referrals?.length || 0} referrals, avg price: $${(c.transactions?.[0]?.purchase_price || 0).toLocaleString()}`).join("\n")}
 
 Create strategic segments based on:
 1. Transaction history and value

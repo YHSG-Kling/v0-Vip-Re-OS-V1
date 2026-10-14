@@ -14,6 +14,7 @@ import {
   Eye,
 } from "lucide-react"
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
 interface DocumentStatus {
@@ -26,15 +27,48 @@ interface DocumentStatus {
   uploadedAt?: string
   fileUrl?: string
   rejectionReason?: string
+  /** The transaction this document belongs to — lets the default Upload
+   *  action (see uploadHrefFor below) send the caller to the RIGHT deal's
+   *  upload page on an aggregate, multi-transaction dashboard mount. */
+  transactionId?: string
 }
 
 interface ExternalDocStatusPanelProps {
   partnerType: "vendor" | "lender" | "title"
   partnerId: string
+  /**
+   * optional by design: this scopes the whole panel to ONE transaction. Both
+   * live mounts (app/title/dashboard/page.tsx, app/lender/dashboard/page.tsx)
+   * are aggregate dashboards showing a partner's documents across ALL of
+   * their transactions on purpose — a per-transaction portal view is where
+   * this would be passed, and none exists yet for either partner type.
+   */
   transactionId?: string
   documents: DocumentStatus[]
+  /**
+   * optional by design: `void`-returning, so it can never be a Server Action
+   * (Next.js only allows an `async` function to cross the Server→Client
+   * Component prop boundary), and both live mounts are Server Component
+   * pages — there is no working value either page could ever pass here. The
+   * component supplies its own default (uploadHrefFor, below) when this is
+   * absent; the prop stays for a future Client Component caller.
+   */
   onUpload?: (docType: string, context: { partnerId: string; partnerType: string }) => void
+  /**
+   * optional by design: same `void`-return / Server Component boundary as
+   * onUpload. Defaults to the identical signed-URL open that onDownload
+   * already falls back to (handleDownload, below) — View and Download are
+   * the same safe action, they only differ in icon/intent.
+   */
   onView?: (docId: string, context: { partnerId: string; partnerType: string }) => void
+  /**
+   * optional by design: defaults to the session-authorized
+   * GET /api/external-portal/documents/download route (downloadViaPortalRoute,
+   * below) when no override is supplied — see that route's own header for why
+   * partnerId/partnerType are deliberately not sent back to it. Kept as a
+   * Promise-returning override point since, unlike onUpload/onView, this
+   * signature COULD cross from a Server Component as a real Server Action.
+   */
   onDownload?: (docId: string, context: { partnerId: string; partnerType: string }) => Promise<{ success: boolean; error?: string }>
 }
 
@@ -47,27 +81,85 @@ export function ExternalDocStatusPanel({
   onView,
   onDownload,
 }: ExternalDocStatusPanelProps) {
+  const router = useRouter()
   const [expandedDoc, setExpandedDoc] = useState<string | null>(null)
   const [downloading, setDownloading] = useState<string | null>(null)
 
   // Kernel OS contract: scoped to specific transaction per partner
   // Filter documents to only show those for this transaction if transactionId is provided
-  const scopedDocuments = transactionId 
-    ? documents.filter(doc => (doc as any).transactionId === transactionId)
+  const scopedDocuments = transactionId
+    ? documents.filter(doc => doc.transactionId === transactionId)
     : documents
 
+  // Default destination for the Upload button when no onUpload override is
+  // supplied (see the prop's own JSDoc — this is the only working path from
+  // either live, Server Component mount). Each of these pages already has
+  // the real upload UI + storage flow built (LenderDocumentUpload /
+  // TitleDocumentUpload — react-dropzone + lib/storage/put-and-sign + the
+  // matching uploadXDocument action), so this navigates there rather than
+  // re-implementing a second upload surface inline.
+  const uploadHrefFor = (doc: DocumentStatus): string | null => {
+    if (!doc.transactionId) return null
+    switch (partnerType) {
+      case "lender": return `/portal/lender/${doc.transactionId}`
+      case "title": return `/portal/title/${doc.transactionId}`
+      case "vendor": return `/portal/vendor?jobId=${doc.transactionId}`
+      default: return null
+    }
+  }
+
+  // ── THE ROUTE HAD NO CALLER AND THE BUTTON HAD NO HANDLER (wave H5) ───────
+  // GET /api/external-portal/documents/download is fully built and hardened —
+  // its header records a live-verified IDOR that was closed by making the
+  // SESSION the authorization subject, and it writes a document_downloads audit
+  // row on every hand-off. Nothing in the tree addressed it, and the Download
+  // button here only rendered when an `onDownload` prop was supplied, which
+  // NEITHER mount does (app/title/dashboard/page.tsx:218,
+  // app/lender/dashboard/page.tsx:184). Two halves of one capability, each
+  // waiting on the other.
+  //
+  // The default path is implemented HERE rather than threaded as a prop from
+  // those pages: both are server components, so an async prop would have to
+  // become a server action, and the route already IS the server half. The
+  // `onDownload` prop is kept and still wins where a mount supplies one.
+  //
+  // NO partnerId / partnerType IS SENT. The route deliberately removed both
+  // query parameters — they named the access SUBJECT without proving the caller
+  // was it — so sending them back would reintroduce the exact shape that was
+  // repaired. The caller's session is the subject; docId is the only input.
+  const downloadViaPortalRoute = async (
+    docId: string,
+  ): Promise<{ success: boolean; error?: string; fileUrl?: string }> => {
+    try {
+      const res = await fetch(`/api/external-portal/documents/download?docId=${encodeURIComponent(docId)}`)
+      const body = await res.json().catch(() => null)
+      if (!res.ok || !body?.success) {
+        // The route answers 401 / 404 / 503 with distinct meanings and never
+        // leaks whether the document exists; its message is passed through as
+        // written rather than flattened into "failed".
+        return { success: false, error: body?.error ?? `Download refused (${res.status})` }
+      }
+      return { success: true, fileUrl: body?.document?.fileUrl as string | undefined }
+    } catch (error) {
+      console.error("[external-portal] download request failed:", error)
+      return { success: false, error: "The download request could not be sent." }
+    }
+  }
+
   const handleDownload = async (doc: DocumentStatus) => {
-    if (!onDownload) return
-    
     setDownloading(doc.id)
     try {
-      // Pass partnerId context to backend for access control
-      const result = await onDownload(doc.id, {
-        partnerId,
-        partnerType,
-      })
+      // Pass partnerId context to a caller-supplied handler (legacy prop path);
+      // otherwise go straight to the session-authorized portal route.
+      const result = onDownload
+        ? await onDownload(doc.id, { partnerId, partnerType })
+        : await downloadViaPortalRoute(doc.id)
       if (result.success) {
-        toast.success("Document downloaded")
+        const fileUrl = (result as { fileUrl?: string }).fileUrl
+        if (fileUrl) window.open(fileUrl, "_blank", "noopener,noreferrer")
+        // "Downloaded" is only claimed when a URL actually came back; a success
+        // with no file is reported as what it is.
+        toast.success(fileUrl ? "Document opened" : "Document released, but no file URL was returned")
       } else {
         toast.error(result.error || "Failed to download document")
       }
@@ -174,14 +266,16 @@ export function ExternalDocStatusPanel({
                     </div>
                     <div className="flex items-center gap-2">
                       {getStatusBadge(doc.status)}
-                      {doc.status === "pending" && onUpload && (
+                      {doc.status === "pending" && (onUpload || uploadHrefFor(doc)) && (
                         <Button
                           variant="outline"
                           size="sm"
                           className="h-7"
                           onClick={(e) => {
                             e.stopPropagation()
-                            onUpload(doc.type, { partnerId, partnerType })
+                            if (onUpload) { onUpload(doc.type, { partnerId, partnerType }); return }
+                            const href = uploadHrefFor(doc)
+                            if (href) router.push(href)
                           }}
                         >
                           <Upload className="h-3 w-3 mr-1" />
@@ -196,27 +290,35 @@ export function ExternalDocStatusPanel({
                             className="h-7 w-7 p-0"
                             onClick={(e) => {
                               e.stopPropagation()
-                              onView?.(doc.id, { partnerId, partnerType })
+                              // onView is void-returning (see its own JSDoc) — when a
+                              // caller supplies one, it wins; otherwise View opens the
+                              // document the SAME safe way Download does (they were a
+                              // no-op here before: this button called onView unconditionally
+                              // and neither live mount ever passed one).
+                              if (onView) { onView(doc.id, { partnerId, partnerType }); return }
+                              void handleDownload(doc)
                             }}
+                            disabled={downloading === doc.id}
                             title="View document"
                           >
                             <Eye className="h-4 w-4" />
                           </Button>
-                          {onDownload && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 w-7 p-0"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleDownload(doc)
-                              }}
-                              disabled={downloading === doc.id}
-                              title="Download document"
-                            >
-                              <Download className="h-4 w-4" />
-                            </Button>
-                          )}
+                          {/* Always rendered now: the panel has its own
+                              session-authorized download path, so the control
+                              is no longer gated on a prop nothing passes. */}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void handleDownload(doc)
+                            }}
+                            disabled={downloading === doc.id}
+                            title="Download document"
+                          >
+                            <Download className="h-4 w-4" />
+                          </Button>
                         </>
                       )}
                     </div>

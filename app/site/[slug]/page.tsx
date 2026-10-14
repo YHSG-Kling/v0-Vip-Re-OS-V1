@@ -64,7 +64,12 @@ async function loadSite(slug: string) {
   ])
   const magnetRows = (magnets ?? []) as any[]
   const valuationMagnet = magnetRows.find((m) => String(m.magnet_type ?? "").toLowerCase().includes("valuation") || String(m.magnet_type ?? "").toLowerCase().includes("home_value")) ?? null
-  return { b, assistantName: (identity as any)?.assistant_name ?? null, listings: listings ?? [], agents: agents ?? [], posts: posts ?? [], magnets: magnetRows, openHouses: openHouses ?? [], valuationMagnet }
+  // D-ID Express v4 live agent AS AN OPTION on the public website (owner
+  // ruling, wave 58) — resolves an active, tenant-configured embed rather
+  // than fabricating one; null falls back to text-only unchanged.
+  const { resolveSiteLiveAgentEmbed } = await import("@/lib/embed/resolve-site-embed")
+  const liveEmbed = await resolveSiteLiveAgentEmbed(svc, { brokerageId: b.id }).catch(() => null)
+  return { b, assistantName: (identity as any)?.assistant_name ?? null, listings: listings ?? [], agents: agents ?? [], posts: posts ?? [], magnets: magnetRows, openHouses: openHouses ?? [], valuationMagnet, livePublicId: liveEmbed?.publicId ?? null }
 }
 
 export async function generateMetadata({ params }: PageProps) {
@@ -85,7 +90,7 @@ export default async function TenantSitePage({ params }: PageProps) {
   const { slug } = await params
   const data = await loadSite(slug)
   if (!data) notFound()
-  const { b, assistantName, listings, agents, posts, magnets, openHouses, valuationMagnet } = data as any
+  const { b, assistantName, listings, agents, posts, magnets, openHouses, valuationMagnet, livePublicId } = data as any
   const primary = /^#[0-9a-fA-F]{6}$/.test(b.primary_color ?? "") ? (b.primary_color as string) : "#0F172A"
   const base = siteUrl()
   const pageUrl = `${base}/site/${b.slug}`
@@ -253,7 +258,7 @@ export default async function TenantSitePage({ params }: PageProps) {
       {/* LIVE AI — the site ANSWERS questions (the tenant's own assistant,
           same inventory-aware gated chat that answers their phone) */}
       {b.widget_enabled !== false && (
-        <SiteChatLauncher brokerageSlug={b.slug} accentColor={primary} assistantLabel={assistantName} />
+        <SiteChatLauncher brokerageSlug={b.slug} accentColor={primary} assistantLabel={assistantName} livePublicId={livePublicId} />
       )}
 
       {/* COMPLIANCE FOOTER */}

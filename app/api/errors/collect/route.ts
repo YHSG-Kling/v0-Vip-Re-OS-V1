@@ -67,10 +67,12 @@ export async function POST(request: NextRequest) {
     }
 
     // Get classification for response
+    // The stack is not handed to the classifier: it never read one, and
+    // collectError() above has already parsed it into the stack-trace row.
+    // See the tombstone at lib/errors/error-classifier.ts:54.
     const classification = classifyError(
       params.errorMessage,
-      params.workflowName,
-      params.stack
+      params.workflowName
     )
 
     return NextResponse.json({

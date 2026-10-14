@@ -3,7 +3,7 @@
  *
  * Wave 37 — Asset Manager Agent. 7th Managed Agent kind. Reviews the
  * brokerage's full asset library each week:
- *   - listing_photos hero coverage (is_hero flag set?)
+ *   - listing_media photo hero coverage (is_primary flag set on a photo row?)
  *   - agent_avatar_assets currency (any agents missing avatar?)
  *   - asset_persona_renders gaps (assets missing per-persona variants)
  *   - content_asset_persona_performance under-performers (asset_type ×
@@ -26,6 +26,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { spawnManagedAgentSession, type AgentTemplate } from "./spawn-helper"
 import { buildOutcomeFor, buildDefineOutcomeEvent } from "./outcomes"
+import { resolvePlanTier } from "@/lib/billing/plan-tier"
 
 const ASSET_MANAGER_SYSTEM = `\
 You are the Asset Manager Agent for a real estate brokerage's media + brand library.
@@ -61,10 +62,31 @@ interface AssetSnapshot {
   listingsMissingHero:    number
   agentsMissingHeadshot:  number
   agentsMissingAvatar:    number
-  // Persona variant coverage — assets that have at least one persona
-  // variant rendered vs assets that should have them but don't.
+  // Persona variant coverage — assets that have at least one COMPLETED persona
+  // variant vs assets that should have them but don't.
   assetsWithPersonaVariants:     number
   assetsLackingPersonaVariants:  number
+  /**
+   * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+   *
+   * `asset_persona_renders.failure_reason` and `.completed_at` were written by
+   * lib/video/persona-variant-post-pass.ts (:146 skipped-on-compliance, :207
+   * completed, :240 failed) and read by NOBODY — the three code readers of this
+   * table select `asset_id` (this file, :264), a bare id list, or update it.
+   *
+   * The consequence was worse than an unread column: coverage was counted as
+   * "this asset has A ROW in asset_persona_renders", so an asset whose every
+   * persona variant FAILED counted as covered, and the manager's own
+   * `rerender_persona_variants` action — the fix for exactly that — was never
+   * proposed for it. The reader closes both halves: coverage now means a
+   * COMPLETED variant, and the failures are named with their reason.
+   */
+  personaVariantsFailed:    number
+  personaVariantsCompleted: number
+  /** Distinct failure_reason values, most frequent first (max 5). */
+  personaVariantFailureReasons: Array<{ reason: string; count: number }>
+  /** The newest completed_at across persona variants — "when did this last work". */
+  personaVariantLastCompletedAt: string | null
   // Performance — under-performing (topic × persona) cells from
   // content_asset_persona_performance over the last 28d.
   underperformingTopicPersonaCount: number
@@ -179,6 +201,10 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
     agentsMissingAvatar: 0,
     assetsWithPersonaVariants: 0,
     assetsLackingPersonaVariants: 0,
+    personaVariantsFailed: 0,
+    personaVariantsCompleted: 0,
+    personaVariantFailureReasons: [],
+    personaVariantLastCompletedAt: null,
     underperformingTopicPersonaCount: 0,
     underperformingExamples: [],
     staleBrandAssetsCount: 0,
@@ -215,9 +241,10 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
       .eq("status", "active")
     snap.totalActiveListings = activeCount ?? 0
 
-    // Listings with NO is_hero flagged photo — the canonical hero gap
-    // signal. Done via two queries because the LEFT JOIN-NOT-EXISTS
-    // shape isn't expressible in one PostgREST call.
+    // Listings with NO is_primary flagged PHOTO — the canonical hero gap
+    // signal. is_primary on a media_type='photo' row is the MLS hero (m368
+    // absorbed listing_photos.is_hero). Done via two queries because the LEFT
+    // JOIN-NOT-EXISTS shape isn't expressible in one PostgREST call.
     const { data: activeListings } = await svc
       .from("listings")
       .select("id")
@@ -226,13 +253,22 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
       .limit(2000)
     const listingIds = ((activeListings ?? []) as Array<{ id: string }>).map((r) => r.id)
     if (listingIds.length > 0) {
-      const { data: heroPhotos } = await svc
-        .from("listing_photos")
+      // media_type pinned: a primary VIDEO is not an MLS hero photo, and
+      // counting one would hide a real hero gap.
+      const { data: heroPhotos, error: heroError } = await svc
+        .from("listing_media")
         .select("listing_id")
         .in("listing_id", listingIds)
-        .eq("is_hero", true)
-      const heroSet = new Set(((heroPhotos ?? []) as Array<{ listing_id: string }>).map((r) => r.listing_id))
-      snap.listingsMissingHero = listingIds.filter((id) => !heroSet.has(id)).length
+        .eq("media_type", "photo")
+        .eq("is_primary", true)
+      // A refused read resolves empty, which would report EVERY active listing
+      // as missing its hero and flood the manager with invented work.
+      if (heroError) {
+        console.error("[asset-manager] hero coverage read failed:", heroError.message)
+      } else {
+        const heroSet = new Set(((heroPhotos ?? []) as Array<{ listing_id: string }>).map((r) => r.listing_id))
+        snap.listingsMissingHero = listingIds.filter((id) => !heroSet.has(id)).length
+      }
     }
 
     // Agents missing photo_url or avatar.
@@ -247,15 +283,61 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
       if (!a.avatar_id) snap.agentsMissingAvatar++
     }
 
-    // Persona variant coverage — count (asset_id) DISTINCT in
-    // asset_persona_renders to see which assets have ANY variants.
-    const { data: personaRenderRows } = await svc
+    // Persona variant coverage — DISTINCT asset_id in asset_persona_renders,
+    // counted only where a variant actually COMPLETED (§1.2, 2026-09-04: a row
+    // that failed is not coverage, and reading status/failure_reason/completed_at
+    // is what tells the two apart).
+    const { data: personaRenderRows, error: personaRenderErr } = await svc
       .from("asset_persona_renders")
-      .select("asset_id")
+      .select("asset_id, status, failure_reason, completed_at")
       .eq("brokerage_id", brokerageId)
       .limit(5000)
-    const assetsWithVariants = new Set(((personaRenderRows ?? []) as Array<{ asset_id: string }>).map((r) => r.asset_id))
+    // §3 — supabase-js RESOLVES refusals. A swallowed one here would report
+    // "no variants anywhere" and send the manager off re-rendering the world.
+    if (personaRenderErr) {
+      console.error("[asset-manager] asset_persona_renders unreadable:", personaRenderErr.message)
+    }
+    const personaRows = (personaRenderRows ?? []) as Array<{
+      asset_id: string
+      status: string | null
+      failure_reason: string | null
+      completed_at: string | null
+    }>
+    const assetsWithVariants = new Set(
+      personaRows.filter((pv) => pv.status === "completed").map((pv) => pv.asset_id),
+    )
     snap.assetsWithPersonaVariants = assetsWithVariants.size
+
+    // The failure half, which had no reader at all.
+    //
+    // The loop variable is `pv`, NOT the file's usual `r`: scripts/check-vocabulary-guard.ts
+    // resolves an in-memory enum comparison to a table BY RECEIVER NAME across
+    // the whole file, and `r` is already bound to a remotion_composition_renders
+    // row at :538 (`r.status === "succeeded"`). Reusing it here — now that this
+    // select finally names `status` on asset_persona_renders — made the guard
+    // read that unrelated comparison as a persona-render status and fail on a
+    // value that column genuinely cannot hold. A distinct name is the honest
+    // fix; silencing the guard would not be.
+    const reasonTally = new Map<string, number>()
+    for (const pv of personaRows) {
+      if (pv.status === "completed") {
+        snap.personaVariantsCompleted++
+        if (pv.completed_at && (!snap.personaVariantLastCompletedAt || pv.completed_at > snap.personaVariantLastCompletedAt)) {
+          snap.personaVariantLastCompletedAt = pv.completed_at
+        }
+      }
+      // 'skipped' carries a failure_reason too (a hook the compliance gate
+      // refused) — it is a variant that did not ship, so it counts here.
+      if (pv.status === "failed" || pv.status === "skipped") {
+        snap.personaVariantsFailed++
+        const reason = (pv.failure_reason ?? "no reason recorded").slice(0, 160)
+        reasonTally.set(reason, (reasonTally.get(reason) ?? 0) + 1)
+      }
+    }
+    snap.personaVariantFailureReasons = [...reasonTally.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([reason, count]) => ({ reason, count }))
 
     // Total marketing_assets in the brokerage that COULD have variants.
     const { count: maCount } = await svc
@@ -422,12 +504,10 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
     // The brokerage's subscription tier determines which compositions
     // are reachable. Resolve the tier from the brokerages row, then
     // walk the registry against it.
-    const { data: brokerageTierRow } = await svc.from("brokerages")
-      .select("subscription_tier")
-      .eq("id", brokerageId)
-      .maybeSingle()
-    const subscriptionTier = ((brokerageTierRow as { subscription_tier: string | null } | null)
-      ?.subscription_tier ?? "solo_agent") as
+    // plan_tier — the column with writers. This read brokerages
+    // .subscription_tier, which nothing maintains, so the Remotion composition
+    // catalog a tenant was offered came from a stale value (m306 drops it).
+    const subscriptionTier = await resolvePlanTier(svc, brokerageId) as
       "solo_agent" | "team" | "brokerage" | "multi_location" | "platform"
 
     const { listCompositionsForTier } = await import("@/lib/remotion/registry")
@@ -526,8 +606,14 @@ function buildKickoffPrompt(snap: AssetSnapshot): string {
     `Listings WITHOUT a hero photo:    ${snap.listingsMissingHero} ← request_listing_hero_photo candidates`,
     `Agents without a headshot:        ${snap.agentsMissingHeadshot} ← request_agent_headshot candidates`,
     `Agents without a D-ID avatar:     ${snap.agentsMissingAvatar}`,
-    `Marketing assets WITH persona variants: ${snap.assetsWithPersonaVariants}`,
+    `Marketing assets WITH persona variants: ${snap.assetsWithPersonaVariants} (completed variants only)`,
     `Marketing assets MISSING variants:      ${snap.assetsLackingPersonaVariants} ← rerender_persona_variants candidates`,
+    `Persona variants completed / failed:    ${snap.personaVariantsCompleted} / ${snap.personaVariantsFailed}` +
+      (snap.personaVariantLastCompletedAt ? ` · last completed ${snap.personaVariantLastCompletedAt.slice(0, 10)}` : " · none ever completed"),
+    snap.personaVariantFailureReasons.length === 0
+      ? "Persona variant failures: (none)"
+      : "Persona variant failures ← rerender_persona_variants candidates:\n" +
+        snap.personaVariantFailureReasons.map((f) => `  · ${f.reason} (×${f.count})`).join("\n"),
     "",
     "──── PERFORMANCE — UNDER-PERFORMERS (perf score < 30, ≥ 5 samples) ────",
     `Under-performer count: ${snap.underperformingTopicPersonaCount}`,
@@ -624,7 +710,7 @@ function buildKickoffPrompt(snap: AssetSnapshot): string {
     "",
     "  { action_type: 'request_listing_hero_photo',",
     "    action_input: { listing_id: '<uuid>' },",
-    "    rationale: 'this listing has no is_hero=true photo; the agent should pick one' }",
+    "    rationale: 'this listing has no is_primary=true photo in listing_media; the agent should pick one' }",
     "",
     "  { action_type: 'request_agent_headshot',",
     "    action_input: { agent_id: '<uuid>' },",

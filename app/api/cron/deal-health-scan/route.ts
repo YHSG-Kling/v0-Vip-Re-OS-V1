@@ -1,8 +1,10 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
 NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { calculateDealHealth } from "@/lib/deal-health/health-scorer"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -71,12 +73,14 @@ export async function GET(request: NextRequest) {
       try {
         const result = await calculateDealHealth({ transactionId: tx.id, brokerageId: tx.brokerage_id })
 
-        // Log DEAL_HEALTH_SCORE_UPDATED event
-        await supabase.from("lifecycle_events").insert({
-          event_type: KernelEvent.DEAL_HEALTH_SCORE_UPDATED,
-          entity_type: "transaction",
-          entity_id: tx.id,
-          brokerage_id: tx.brokerage_id,
+        // DEAL_HEALTH_SCORE_UPDATED — audit row + reactor (the bare insert reached nothing).
+        await emitKernelEvent({
+          event: KernelEvent.DEAL_HEALTH_SCORE_UPDATED,
+          entityType: "transaction",
+          entityId: tx.id,
+          brokerageId: tx.brokerage_id,
+          transactionId: tx.id,
+          source: "cron",
           metadata: {
             overall_score: result.overallScore,
             risk_level: result.riskLevel,
@@ -87,12 +91,14 @@ export async function GET(request: NextRequest) {
 
         // Check for at-risk or critical status
         if (result.riskLevel === "critical" || result.riskLevel === "at_risk") {
-          // Log DEAL_AT_RISK_DETECTED event
-          await supabase.from("lifecycle_events").insert({
-            event_type: KernelEvent.DEAL_AT_RISK_DETECTED,
-            entity_type: "transaction",
-            entity_id: tx.id,
-            brokerage_id: tx.brokerage_id,
+          // DEAL_AT_RISK_DETECTED — audit row + reactor.
+          await emitKernelEvent({
+            event: KernelEvent.DEAL_AT_RISK_DETECTED,
+            entityType: "transaction",
+            entityId: tx.id,
+            brokerageId: tx.brokerage_id,
+            transactionId: tx.id,
+            source: "cron",
             metadata: {
               overall_score: result.overallScore,
               risk_level: result.riskLevel,
@@ -115,7 +121,7 @@ export async function GET(request: NextRequest) {
               .slice(0, 3)
               .join(", ") || "Deal health score below threshold"
 
-            await supabase.from("proactive_interventions").insert({
+            await sentinelWrite(supabase, supabase.from("proactive_interventions").insert({
               transaction_id: tx.id,
               brokerage_id: tx.brokerage_id,
               issue_detected: issueDetected,
@@ -123,7 +129,7 @@ export async function GET(request: NextRequest) {
               ai_recommendation: result.aiNarrative || null,
               client_impacted: true,
               resolved: false,
-            })
+            }), { table: "proactive_interventions", flow: "proactive_interventions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
           }
         }
 
@@ -238,12 +244,13 @@ export async function POST(request: NextRequest) {
     // Calculate health score
     const result = await calculateDealHealth({ transactionId: tx.id, brokerageId: tx.brokerage_id })
 
-    // Log DEAL_HEALTH_SCORE_UPDATED event
-    await supabase.from("lifecycle_events").insert({
-      event_type: KernelEvent.DEAL_HEALTH_SCORE_UPDATED,
-      entity_type: "transaction",
-      entity_id: tx.id,
-      brokerage_id: tx.brokerage_id,
+    // DEAL_HEALTH_SCORE_UPDATED — audit row + reactor.
+    await emitKernelEvent({
+      event: KernelEvent.DEAL_HEALTH_SCORE_UPDATED,
+      entityType: "transaction",
+      entityId: tx.id,
+      brokerageId: tx.brokerage_id,
+      transactionId: tx.id,
       metadata: {
         overall_score: result.overallScore,
         risk_level: result.riskLevel,
@@ -255,11 +262,12 @@ export async function POST(request: NextRequest) {
 
     // Check for at-risk status
     if (result.riskLevel === "critical" || result.riskLevel === "at_risk") {
-      await supabase.from("lifecycle_events").insert({
-        event_type: KernelEvent.DEAL_AT_RISK_DETECTED,
-        entity_type: "transaction",
-        entity_id: tx.id,
-        brokerage_id: tx.brokerage_id,
+      await emitKernelEvent({
+        event: KernelEvent.DEAL_AT_RISK_DETECTED,
+        entityType: "transaction",
+        entityId: tx.id,
+        brokerageId: tx.brokerage_id,
+        transactionId: tx.id,
         metadata: {
           overall_score: result.overallScore,
           risk_level: result.riskLevel,
@@ -281,7 +289,7 @@ export async function POST(request: NextRequest) {
           .slice(0, 3)
           .join(", ") || "Deal health score below threshold"
 
-        await supabase.from("proactive_interventions").insert({
+        await sentinelWrite(supabase, supabase.from("proactive_interventions").insert({
           transaction_id: tx.id,
           brokerage_id: tx.brokerage_id,
           issue_detected: issueDetected,
@@ -289,7 +297,7 @@ export async function POST(request: NextRequest) {
           ai_recommendation: result.aiNarrative || null,
           client_impacted: true,
           resolved: false,
-        })
+        }), { table: "proactive_interventions", flow: "proactive_interventions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       }
     }
 

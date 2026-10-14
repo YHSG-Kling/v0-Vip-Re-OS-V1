@@ -5,6 +5,7 @@
 // ad_manager_actions carries no agent_id and spend is a broker decision. Pure policy
 // in stuck-ad-action-policy.ts.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyStuckAdAction, AD_ACTION_STUCK_HOURS } from "./stuck-ad-action-policy"
 
@@ -21,7 +22,7 @@ async function resolveAdSpendOwners(svc: Svc, brokerageId: string): Promise<stri
     .from("users")
     .select("id, user_type")
     .eq("brokerage_id", brokerageId)
-    .in("user_type", ["broker", "broker_admin", "admin"])
+    .in("user_type", ["broker", "admin"])
     .limit(20)
   return ((data ?? []) as Array<{ id: string }>).map((u) => u.id)
 }
@@ -69,7 +70,7 @@ export async function reapStuckAdActions(
 
     const actionType = (row.action_type ?? "ad action").toString().replace(/_/g, " ")
     for (const userId of owners) {
-      await svc.from("notifications").insert({
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: userId,
         brokerage_id: brokerageId,
         type: "ad_action_unlaunched",
@@ -79,7 +80,7 @@ export async function reapStuckAdActions(
         entity_id: row.id,
         priority: "high",
         is_read: false,
-      })
+      }), { table: "notifications", flow: "stuck_ad_action_reaper_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     }
     result.escalated++
   }

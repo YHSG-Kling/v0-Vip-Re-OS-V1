@@ -21,7 +21,13 @@ interface RefinanceIndicatorCardProps {
   closeDate: string | null
   /** the closed transaction — lets the card re-source the loan from its transaction_lenders row */
   transactionId?: string | null
+  /** optional by design: the component already re-sources the real market benchmark from
+   *  market_rate_snapshots itself (see the doc comment above) — this is a caller override
+   *  for a future surface with a better quote, not something every caller must supply. */
   estimatedCurrentRate?: number | null  // current 30yr fixed benchmark (override)
+  /** optional by design: the component already re-sources the real locked rate from
+   *  transaction_lenders itself — this is a caller override for a future surface with a
+   *  better estimate, not something every caller must supply. */
   estimatedOriginalRate?: number | null // estimated rate at time of purchase (override)
 }
 

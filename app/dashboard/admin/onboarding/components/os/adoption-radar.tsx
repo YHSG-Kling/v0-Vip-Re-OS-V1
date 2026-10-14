@@ -1,6 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
-import { Users, TrendingUp, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { Users, AlertCircle, CheckCircle2 } from 'lucide-react'
 
 interface AdoptionRadarProps {
   avgCompletion: number

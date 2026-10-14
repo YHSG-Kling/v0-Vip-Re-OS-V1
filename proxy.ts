@@ -1,5 +1,32 @@
 /**
- * proxy.ts (root) — Next.js 16 unified edge middleware.
+ * proxy.ts (root) — Next.js 16 unified proxy (formerly "middleware").
+ *
+ * RUNTIME — corrected 2026-08-26 against the version-matched docs. This header used
+ * to call the file "edge middleware", and the caches below still say "per edge
+ * isolate". That is wrong for Next 16, and the difference is load-bearing:
+ *
+ *   "Proxy defaults to using the Node.js runtime. The `runtime` config option is not
+ *    available in Proxy files. Setting the `runtime` config option in Proxy will throw
+ *    an error."
+ *   — https://nextjs.org/docs/app/api-reference/file-conventions/proxy  (v16.3.3)
+ *
+ * So on Vercel this deploys as a Node.js function, not an Edge Function. Consequences
+ * that were being reasoned about backwards: createServiceClient() (plain supabase-js,
+ * not the ssr package) is fully supported here and reads SUPABASE_SERVICE_ROLE_KEY from
+ * the runtime environment; there is no Edge bundle-size ceiling to respect; and the
+ * module-level Maps below are per Node instance, not per edge isolate. They are still
+ * only TTL'd caches, so a cold instance is correct-but-slower — which is what the docs
+ * mean by "you should not attempt relying on shared modules or globals."
+ *
+ * THIS FILE IS NOT THE SECURITY BOUNDARY, and the docs are explicit about why:
+ *   "Server Functions are not separate routes in this chain. They are handled as POST
+ *    requests to the route where they are used, so a Proxy matcher that excludes a path
+ *    will also skip Proxy coverage. […] Always verify authentication and authorization
+ *    inside each Server Function rather than relying on Proxy alone."
+ *   — same page
+ * That is CLAUDE.md §4 in Vercel's words. Every tenant-writing action gates on
+ * lib/platform/acting-context.ts's seam for exactly this reason; the auth gate below is
+ * a redirect convenience, not the authorization.
  *
  * Next 16 only allows one of middleware.ts / proxy.{js,ts}; we consolidated
  * both prior surfaces into this single file:
@@ -20,7 +47,7 @@
  *      www.theirbrokerage.com at their /site/[slug] storefront. When the
  *      request host is NOT one of the platform's own hosts (env-derived) we
  *      look up tenant_custom_domains (status='active', 60s in-memory TTL
- *      cache per edge isolate) and rewrite "/" (and bare /site) to
+ *      cache per Node instance) and rewrite "/" (and bare /site) to
  *      /site/[slug]. App/auth surfaces on a vanity host bounce to the
  *      canonical origin; a vanity host can never serve ANOTHER tenant's
  *      /site. SAFETY RULE: every custom-domain branch only RETURNS when it
@@ -35,15 +62,16 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createServerClient } from "@supabase/ssr"
 import { createServiceClient } from "@/lib/supabase/service"
-import { PROTECTED_ROUTES, PUBLIC_ROUTES } from "@/app/constants/auth"
+import { PROTECTED_ROUTES, classifyProxyPath } from "@/app/constants/auth"
 import { siteUrl } from "@/lib/platform/site-url"
+import { isPaywalledPath, resolveRequestAccess } from "@/lib/billing/billing-access"
 
 export default async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname
 
   // ── 0) White-label custom domains ──────────────────────────────────────
   // Only engages when the host is NOT platform-owned; static/asset paths are
-  // skipped so the edge lookup never runs for them. Branches RETURN only when
+  // skipped so the tenant lookup never runs for them. Branches RETURN only when
   // they act — everything else falls through to the existing pipeline.
   const host = (request.headers.get("host") ?? "").toLowerCase().split(":")[0]
   if (
@@ -114,7 +142,12 @@ export default async function proxy(request: NextRequest) {
   }
 
   // ── 2) Public route pass-through ───────────────────────────────────────
-  if (PUBLIC_ROUTES.some((route) => pathname.startsWith(route))) {
+  // classifyProxyPath (app/constants/auth.ts) is the ONE decision: public
+  // entries match on a path-segment boundary (lane 88E — '/v' used to make
+  // /vendor/** and /video-assistant public by accident), and the sessionless
+  // provider doors (Twilio, D-ID custom-LLM, the public form submit…) are
+  // public by name so a provider is never answered with a 307 to /login.
+  if (classifyProxyPath(pathname) === "public") {
     return NextResponse.next()
   }
 
@@ -128,7 +161,7 @@ export default async function proxy(request: NextRequest) {
   }
 
   // ── 4) Auth gate on protected routes ───────────────────────────────────
-  const isProtected = PROTECTED_ROUTES.some((route) => pathname.startsWith(route))
+  const isProtected = classifyProxyPath(pathname) === "protected"
   if (!isProtected) return NextResponse.next()
 
   let response = NextResponse.next({ request: { headers: request.headers } })
@@ -138,13 +171,27 @@ export default async function proxy(request: NextRequest) {
     {
       cookies: {
         getAll() { return request.cookies.getAll() },
-        setAll(cookiesToSet) {
+        // `headers` is the SECOND argument @supabase/ssr passes from 0.10.0 on
+        // (types.d.ts `SetAllCookies`). It arrives ONLY on the call that writes
+        // auth cookies, and carries:
+        //   Cache-Control: private, no-cache, no-store, must-revalidate, max-age=0
+        //   Expires: 0
+        //   Pragma: no-cache
+        // Applying it here is the whole point of the bump: this callback is the
+        // one place that owns the response the refreshed JWT is written onto.
+        setAll(cookiesToSet, headers) {
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value)
           )
+          // NOTE: this REPLACES `response`, discarding anything set on the old
+          // one — so the headers must be applied after the reassignment, not
+          // before it.
           response = NextResponse.next({ request })
           cookiesToSet.forEach(({ name, value, options }) =>
             response.cookies.set(name, value, options)
+          )
+          Object.entries(headers ?? {}).forEach(([key, value]) =>
+            response.headers.set(key, value)
           )
         },
       },
@@ -154,6 +201,80 @@ export default async function proxy(request: NextRequest) {
   const { data: { user }, error } = await supabase.auth.getUser()
   if (error || !user) {
     return NextResponse.redirect(new URL("/login", request.url))
+  }
+
+  // ── SESSION-LEAK GUARD, required on Vercel specifically ───────────────────
+  // getUser() above can REFRESH the session, and @supabase/ssr then writes the new
+  // JWT onto this response as Set-Cookie (the setAll callback right above). Supabase's
+  // own SSR advanced guide, verbatim:
+  //
+  //   "When @supabase/ssr refreshes a session token server-side, it writes the updated
+  //    JWT to the HTTP response via a Set-Cookie header. If your CDN (e.g. Vercel Edge,
+  //    Cloudflare) caches that response and serves it to a different user, that user's
+  //    browser will store the cached token and be signed in as the wrong person."
+  //   — https://supabase.com/docs/guides/auth/server-side/advanced-guide
+  //
+  // This matters more here than in a normal app: a support seat acting-as a tenant is
+  // the request most likely to be refreshed mid-investigation, and leaking THAT token
+  // hands a tenant user platform-staff credentials.
+  //
+  // STATUS after the @supabase/ssr 0.8.0 → 0.10.2 bump: the automatic path now EXISTS
+  // and is wired — setAll above applies the library's second-argument headers. But it
+  // does NOT replace this line, and this block is deliberately KEPT. Two facts, both
+  // read off the installed 0.10.2 dist:
+  //
+  //   1. setAll fires ONLY when auth cookies are actually written. Every server-side
+  //      write routes through `applyServerStorage`, which passes the real headers
+  //      (dist/main/cookies.js:344-348); the empty-header call at cookies.js:190 is in
+  //      the `!isServerClient` browser branch, where there is no response to poison.
+  //      So on a NON-refresh request — the overwhelming majority — setAll never runs
+  //      and the library contributes no header at all.
+  //   2. The Set-Cookie leak is not the only leak. Every response here is an
+  //      AUTHENTICATED, TENANT-PRIVATE payload (dashboard, leads, CRM). A shared CDN
+  //      caching one brokerage's response and serving it to another is a cross-tenant
+  //      read that has nothing to do with token refresh, and the library never guards
+  //      it. CLAUDE.md §4: fail closed.
+  //
+  // The library agrees at 0.10.2 — its own `setAll` JSDoc still instructs:
+  //   "If your app is behind a CDN or reverse proxy (e.g. CloudFront, Vercel Edge,
+  //    Cloudflare), set `Cache-Control: private, no-store` on routes that handle
+  //    authentication (typically your middleware) to prevent these responses from
+  //    being cached."
+  //   — node_modules/@supabase/ssr/dist/main/types.d.ts, CookieMethodsServer.setAll
+  //
+  // So this is the unconditional FLOOR for every authenticated response. It must not
+  // clobber the library's header on a refresh response: that one is strictly stronger
+  // (adds no-cache/must-revalidate/max-age=0 plus Expires and Pragma), so set the
+  // fallback only when setAll did not already speak.
+  if (!response.headers.has("Cache-Control")) {
+    response.headers.set("Cache-Control", "private, no-store")
+  }
+
+  // ── 5) Paywall at the request boundary (wave 99A, LAW 2) ─────────────────
+  // The paywall used to run ONLY when the post-login route was computed
+  // (lib/kernel/onboarding.ts), so a tenant whose trial lapsed mid-session — or
+  // anyone who typed a dashboard URL — never met it. Every paywalled dashboard
+  // request now asks the ONE resolver (lib/billing/billing-access.ts
+  // resolveRequestAccess → mayUseAndAfford 'app.access'), with the tenant taken
+  // from the SESSION user. Public routes, webhooks and crons returned above and
+  // never reach this. A gate that throws refuses (§4 fail closed).
+  if (isPaywalledPath(pathname)) {
+    let gate: { allowed: boolean; reason: string; redirectTo: string | null }
+    try {
+      gate = await resolveRequestAccess(createServiceClient(), user.id)
+    } catch (e) {
+      gate = { allowed: false, reason: `paywall_threw`, redirectTo: "/dashboard/admin/billing" }
+      console.error("[proxy] paywall check threw — refusing:", (e as Error)?.message)
+    }
+    if (!gate.allowed && gate.redirectTo) {
+      const target = new URL(gate.redirectTo, request.url)
+      target.searchParams.set("paywall", gate.reason.split(":")[0])
+      const refused = NextResponse.redirect(target)
+      // Carry any refreshed session cookie and the no-store floor onto the redirect.
+      response.cookies.getAll().forEach((c) => refused.cookies.set(c))
+      refused.headers.set("Cache-Control", response.headers.get("Cache-Control") ?? "private, no-store")
+      return refused
+    }
   }
   return response
 }
@@ -246,7 +367,7 @@ function isPlatformHost(host: string): boolean {
 }
 
 /** host → brokerage site slug for ACTIVE custom domains, cached in-memory per
- *  edge isolate (60s TTL, negatives cached too; 5s on lookup failure so a
+ *  Node instance (60s TTL, negatives cached too; 5s on lookup failure so a
  *  transient DB error can't pin a bad answer). Middleware talks to Supabase
  *  the same way the embed-CSP path above does — createServiceClient. */
 const DOMAIN_CACHE_TTL_MS = 60_000

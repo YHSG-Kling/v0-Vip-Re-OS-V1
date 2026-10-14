@@ -23,6 +23,7 @@ import {
   type SsoPanel,
   type SsoConnectionView,
 } from "@/app/actions/tenant-sso"
+import { StatusChip } from "@/app/components/shared/StatusChip"
 
 const STATUS_CHIP: Record<string, { label: string; cls: string }> = {
   pending:  { label: "Pending",  cls: "bg-amber-50 text-amber-700 border-amber-200" },
@@ -31,14 +32,9 @@ const STATUS_CHIP: Record<string, { label: string; cls: string }> = {
   error:    { label: "Error",    cls: "bg-red-50 text-red-700 border-red-200" },
 }
 
-function StatusChip({ status }: { status: string }) {
-  const chip = STATUS_CHIP[status] ?? { label: status, cls: "bg-gray-50 text-gray-600 border-gray-200" }
-  return (
-    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${chip.cls}`}>
-      {chip.label}
-    </span>
-  )
-}
+// `StatusChip` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to app/components/shared/StatusChip.tsx (imported above).
+// This file's own STATUS_CHIP map stays local — only the component moved.
 
 export function SsoConnectionCard() {
   const [panel, setPanel] = useState<SsoPanel | null>(null)
@@ -107,7 +103,7 @@ export function SsoConnectionCard() {
         <div className="flex items-center gap-2">
           <KeyRound className="h-4 w-4 text-indigo-600" />
           <CardTitle className="text-base">SSO / SAML</CardTitle>
-          {conn && <StatusChip status={conn.status} />}
+          {conn && <StatusChip status={conn.status} map={STATUS_CHIP} />}
         </div>
         <CardDescription>
           Let everyone on your brokerage's email domain sign in through your identity provider
@@ -134,7 +130,7 @@ export function SsoConnectionCard() {
               <div className="rounded border p-3 space-y-2">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-medium">{conn.emailDomain}</span>
-                  <StatusChip status={conn.status} />
+                  <StatusChip status={conn.status} map={STATUS_CHIP} />
                   {panel.canManage && (
                     <span className="ml-auto flex items-center gap-2">
                       <button

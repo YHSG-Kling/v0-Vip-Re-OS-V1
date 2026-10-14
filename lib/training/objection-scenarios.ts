@@ -17,6 +17,10 @@ export interface ObjectionScenario {
   systemPrompt: string
   /** What the agent should ideally accomplish — used by the scorer */
   successCriteria: string[]
+  /** "library" = static catalog below; "call" = AI-generated from a real call. */
+  source?: "library" | "call"
+  /** For call-sourced scenarios: the objections the AI heard on the real call. */
+  sourceObjections?: string[]
 }
 
 export const OBJECTION_SCENARIOS: ObjectionScenario[] = [
@@ -120,4 +124,56 @@ export const OBJECTION_SCENARIOS: ObjectionScenario[] = [
 
 export function getScenarioByKey(key: string): ObjectionScenario | undefined {
   return OBJECTION_SCENARIOS.find((s) => s.key === key)
+}
+
+// ── THE ASSESSMENT SESSION (wave 106, lane 106D) ─────────────────────────────────────────────
+// The owner's "AI coaching / simulation → assessment" step is THIS library + the practice session
+// (app/actions/objection-training.ts): scenario prompt + rubric (successCriteria), scored per turn,
+// result stored on objection_training_sessions (total_score, completed_at). What was missing:
+// (1) which COMPETENCY a scenario assesses — the category → competency map below, on the ONE
+// vocabulary (lib/education/skill-freshness.ts COMPETENCY_SKILLS); (2) compliance FIRST — fair
+// housing lives in the WRITING prompt (CLAUDE.md §5), not only in a post-hoc scan.
+
+import type { CompetencySkill } from "@/lib/education/skill-freshness"
+
+/** Which competency each scenario CATEGORY assesses (one vocabulary; the proof asserts every value is a COMPETENCY_SKILLS key). */
+export const SCENARIO_CATEGORY_COMPETENCY: Record<ObjectionScenario["category"], CompetencySkill> = {
+  listing:     "listing_presentation",
+  buyer:       "buyer_consultation",
+  fsbo:        "lead_conversion",
+  investor:    "pricing",
+  negotiation: "negotiation",
+}
+
+/** The competency a scenario assesses. */
+export function scenarioCompetency(s: Pick<ObjectionScenario, "category">): CompetencySkill {
+  return SCENARIO_CATEGORY_COMPETENCY[s.category]
+}
+
+/**
+ * COMPLIANCE-FIRST: prepended to every role-play / scoring prompt the simulation sends, so the
+ * prospect never baits the agent into a fair-housing violation and the rubric SCORES one as a
+ * failure. Written into the prompt, not only scanned afterwards (CLAUDE.md §5 — the video-script
+ * ruling applied to coaching).
+ */
+export const COMPLIANCE_FIRST_PREAMBLE =
+  "COMPLIANCE FIRST (Fair Housing Act, state law, REALTOR Code of Ethics): never reference or invite " +
+  "discussion of race, color, religion, national origin, sex, familial status, disability or any other " +
+  "protected class; never characterize a neighborhood by who lives there, school 'quality' or 'safety' " +
+  "as a proxy for demographics; never suggest steering, blockbusting or discriminatory lending. If the " +
+  "agent's response does any of these, score that turn 0 and name the violation in the feedback. Keep " +
+  "the role-play realistic without ever modeling a violation yourself.\n\n"
+
+/**
+ * PURE — the assessment session for a competency: the library scenario (hardest first, so an
+ * assessment is a test, not a warm-up) with the compliance-first prompt composed in and the rubric
+ * the scorer applies. Null when the library has no scenario for that competency (honest: the loop
+ * then recommends education without a simulation, and says so).
+ * @proofSeam scripts/adaptive-development-guard.ts asserts the compliance-first prompt and the null case.
+ */
+export function composeAssessment(competency: CompetencySkill, library: readonly ObjectionScenario[] = OBJECTION_SCENARIOS): { competency: CompetencySkill; scenarioKey: string; label: string; systemPrompt: string; rubric: string[] } | null {
+  const rank: Record<Difficulty, number> = { hard: 0, medium: 1, easy: 2 }
+  const match = library.filter((s) => scenarioCompetency(s) === competency).sort((a, b) => rank[a.difficulty] - rank[b.difficulty] || a.key.localeCompare(b.key))[0]
+  if (!match) return null
+  return { competency, scenarioKey: match.key, label: match.label, systemPrompt: COMPLIANCE_FIRST_PREAMBLE + match.systemPrompt, rubric: [...match.successCriteria] }
 }

@@ -10,12 +10,14 @@
  * the three things that matter today" — this powers the audio half.
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { ordinalWord } from "@/lib/format/ordinal"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import {
   synthesizeSpeech,
   audioBufferToDataUrl,
 } from "@/lib/voice/elevenlabs-tts"
 import { resolveSelfVoice } from "@/lib/voice/voice-resolver"
+import { elevenLabsModelForLane, withNaturalPauses } from "@/lib/video/realism-profile"
 import type { UserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 
 export interface BriefAudioResult {
@@ -32,8 +34,8 @@ export interface BriefAudioResult {
 export async function generateBriefAudio(params: {
   brief: UserTypeBrief
 }): Promise<BriefAudioResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -50,9 +52,15 @@ export async function generateBriefAudio(params: {
   }
   const resolved = await resolveSelfVoice(ctx.userId)
 
+  // MODEL + PACING through the ONE selector (lane 77C): a morning brief is a
+  // scripted read the listener cannot interrupt — the narration register
+  // (eleven_v3), paced at sentence boundaries like every other narration lane.
+  // Before this it named no model and rode the primitive's monolingual_v1 default.
+  const modelId = elevenLabsModelForLane("brief_narration")
   const result = await synthesizeSpeech({
-    text: script,
+    text: withNaturalPauses(script, modelId),
     voiceId: resolved.voiceId,
+    modelId,
     voiceSettings: { stability: 0.55, similarity_boost: 0.8, style: 0.15, use_speaker_boost: true },
     brokerageId: ctx.brokerageId,
   })
@@ -97,7 +105,7 @@ function composeBriefScript(brief: UserTypeBrief): string {
         : `Your top ${top.length} priorities:`
     )
     top.forEach((p, i) => {
-      const lead = top.length === 1 ? "" : `${ordinal(i + 1)}, `
+      const lead = top.length === 1 ? "" : `${ordinalWord(i + 1)}, `
       parts.push(`${lead}${p.title}. ${stripMarkdown(p.body)}`)
     })
   }
@@ -118,9 +126,9 @@ function composeBriefScript(brief: UserTypeBrief): string {
   return parts.join(" ")
 }
 
-function ordinal(n: number): string {
-  return ["First", "Second", "Third", "Fourth", "Fifth"][n - 1] ?? `Number ${n}`
-}
+// TOMBSTONE (§6 ordinal consolidation): a private `ordinal(n)` lived here — the
+// SPOKEN register ("First", "Second", …), not the display "1st/2nd" the other
+// two copies spelled. Survivor: lib/format/ordinal.ts:41 `ordinalWord`.
 
 function stripMarkdown(s: string): string {
   return s

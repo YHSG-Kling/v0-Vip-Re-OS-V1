@@ -3,7 +3,9 @@
 // MAILING-ADDRESS CASS GATE — makes leads.mailing_address_verified HONEST at the direct-mail
 // chokepoint. The flag is set true at promotion merely because an address STRING exists
 // ("canonical eligibility just confirmed it" in lead-promoter / pipeline-processor) or falls back to
-// hasMailingData in enrichment — it is NEVER CASS/USPS-verified. But dispatchDirectMail (and every
+// hasMailingData in enrichment — it is NEVER CASS/USPS-verified. [WAVE 14: no longer true upstream —
+// that fallback is deleted and the promotion gate now CASS-verifies at the gate when a record has no
+// other reachable channel. This gate remains the dispatch-time chokepoint and is still correct.] But dispatchDirectMail (and every
 // caller it funnels: AI-ISA speed-to-lead, lead_nurture postcards, lead_intro_reel_play) trusts the
 // flag "so we don't pay Lob for an undeliverable piece" — a guarantee the naive flag can't make. So a
 // cold scraped lead gets mailed to an unstandardized/undeliverable address: Lob spend burned, and the

@@ -133,7 +133,7 @@ export async function orderGiftSelectionAction(input: {
   if (!agentId) return { ok: false, error: "No agent to assign the purchase task to — assign an agent to this contact first" }
 
   // The order row — the studio's ledger (dedupe key for the queue).
-  await svc.from("client_gifts").insert({
+  const { error: giftLedgerErr } = await svc.from("client_gifts").insert({
     brokerage_id: m.brokerageId,
     agent_id: agentId,
     contact_id: input.contactId,
@@ -144,7 +144,8 @@ export async function orderGiftSelectionAction(input: {
     occasion: input.occasion ?? "closing",
     status: "ordered",
     source: "gift_studio",
-  }).then(() => {}, () => {})
+  })
+  if (giftLedgerErr) console.error(`[gift-studio] gift order row NOT recorded (dedupe key lost — may re-queue): ${giftLedgerErr.message}`)
 
   // The purchase task — personalization block + pre-scoped buy links inline.
   const { error } = await svc.from("tasks").insert({

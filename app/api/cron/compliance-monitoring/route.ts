@@ -1,7 +1,12 @@
-import {
-type NextRequest, NextResponse } from "next/server"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { type NextRequest, NextResponse } from "next/server"
+import { rawRoleVariantsFor } from "@/lib/security/types"
 import { createServiceClient } from "@/lib/supabase/service"
-import { trackCertificationExpirationService, monitorTRIDComplianceService } from "@/lib/application"
+import {
+  trackCertificationExpirationService,
+  monitorTRIDComplianceService,
+  applyDocumentRetentionService,
+} from "@/lib/application"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -45,6 +50,8 @@ export async function GET(request: NextRequest) {
       cold_lead_violations_detected: 0,
       license_readiness_reminded: 0,
       license_readiness_blocked: 0,
+      retention_transactions_processed: 0,
+      retention_documents_stamped: 0,
     }
 
     // AGENT LICENSE / CE / ETHICS READINESS — autonomously warn agents BEFORE a lapse and escalate a
@@ -65,12 +72,19 @@ export async function GET(request: NextRequest) {
       const ret = await runRetentionRadarAll(supabase)
       ;(results as any).retention_at_risk = ret.atRisk
       ;(results as any).retention_save_plays = ret.savePlays
+      // Wave 89 (lane 89C): support nudges raised on lit agent-fatigue signals (broker / team lead only).
+      ;(results as any).retention_support_nudged = ret.supportNudged
     } catch (e) {
       console.error("[ComplianceMonitoring] retention radar:", e)
     }
 
-    // Check all agent certifications
-    const { data: agents } = await supabase.from("users").select("id").eq("role", "agent")
+    // Check all agent certifications.
+    // This filtered users.role, which is NULL on almost every live row — so the
+    // certification sweep silently examined a handful of accounts (or none) and
+    // reported a clean run. user_type is the CHECK-constrained column.
+    const { data: agents, error: agentsError } = await supabase
+      .from("users").select("id").in("user_type", rawRoleVariantsFor(["agent"]))
+    if (agentsError) console.error("[ComplianceMonitoring] agent roster read failed:", agentsError.message)
 
     for (const agent of agents || []) {
       const status = await trackCertificationExpirationService(agent.id, supabase)
@@ -87,7 +101,7 @@ export async function GET(request: NextRequest) {
       .from("transactions")
       .select("id, brokerage_id")
       .not("brokerage_id", "is", null)
-      .in("status", ["under_contract", "pending"])
+      .in("status", ["under_contract"])
 
     const txnsByBrokerage = new Map<string, string[]>()
     for (const txn of (transactions || []) as Array<{ id: string; brokerage_id: string }>) {
@@ -102,6 +116,38 @@ export async function GET(request: NextRequest) {
           results.trid_violations += compliance.violations.length
         }
       }
+    }
+
+    // DOCUMENT RETENTION (lane E2 2026-08-28: applyDocumentRetentionService
+    // WIRED — its action wrapper had zero reachable callers, so no
+    // document_retention row had ever been stamped). Sweep transactions closed
+    // in the last 30 days and upsert their retention schedule; the upsert is
+    // idempotent on document_id, so re-sweeping an already-stamped deal is a
+    // no-op rather than a duplicate.
+    try {
+      const retentionWindowStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+        .toISOString().split("T")[0]
+      // tenant anchor (same idiom as the TRID sweep above): the platform sweep
+      // carries each row's brokerage and excludes orphan rows without a tenant.
+      const { data: closedTxns, error: closedErr } = await supabase
+        .from("transactions")
+        .select("id, brokerage_id")
+        .not("brokerage_id", "is", null)
+        .not("close_date", "is", null)
+        .gte("close_date", retentionWindowStart)
+      if (closedErr) {
+        console.error("[ComplianceMonitoring] closed-transaction sweep read failed:", closedErr.message)
+      }
+      for (const txn of (closedTxns ?? []) as Array<{ id: string; brokerage_id: string }>) {
+        const retention = await applyDocumentRetentionService(txn.id, supabase)
+        if (retention.success) {
+          results.retention_transactions_processed++
+          results.retention_documents_stamped +=
+            "documents_processed" in retention ? (retention.documents_processed ?? 0) : 0
+        }
+      }
+    } catch (e) {
+      console.error("[ComplianceMonitoring] document retention sweep:", e)
     }
 
     // FORWARD-LOOKING TRID DISCLOSURE CLOCK — per brokerage, warn BEFORE the Closing
@@ -129,7 +175,7 @@ export async function GET(request: NextRequest) {
 
     if (expiredContent && expiredContent.length > 0) {
       const expiredIds = expiredContent.map((c) => c.id)
-      await supabase.from("approved_content_library").update({ is_active: false }).in("id", expiredIds)
+      await sentinelWrite(supabase, supabase.from("approved_content_library").update({ is_active: false }).in("id", expiredIds), { table: "approved_content_library", flow: "approved_content_library_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       results.expired_content_deactivated = expiredContent.length
     }
 
@@ -163,7 +209,9 @@ export async function GET(request: NextRequest) {
         detected_at: new Date().toISOString(),
       }))
 
-      await supabase.from("compliance_flags").insert(violations)
+      // A refused flag insert used to report the violations as recorded.
+      const { error: coldFlagErr } = await supabase.from("compliance_flags").insert(violations)
+      if (coldFlagErr) console.error(`[compliance-monitoring] ${violations.length} cold-lead compliance flag(s) NOT recorded: ${coldFlagErr.message}`)
       results.cold_lead_violations_detected = coldLeadViolations.length
     }
 
@@ -190,7 +238,8 @@ export async function GET(request: NextRequest) {
         detected_at: new Date().toISOString(),
       }))
 
-      await supabase.from("compliance_flags").insert(violations)
+      const { error: unapprovedFlagErr } = await supabase.from("compliance_flags").insert(violations)
+      if (unapprovedFlagErr) console.error(`[compliance-monitoring] ${violations.length} unapproved-content compliance flag(s) NOT recorded: ${unapprovedFlagErr.message}`)
     }
 
     // CROSS-CHANNEL CONSISTENCY GUARDIAN — flag any queued client message whose

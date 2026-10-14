@@ -12,7 +12,12 @@ import { Loader2, Palette, Radar, Save, X } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { setProductBrandAction, addTopicAction, dismissTopicAction, listTopicsAction, harvestCompetitorTopicsAction } from '@/app/actions/superadmin/platform-brand'
 
-interface Brand { name: string; tagline: string; primaryColor: string; accentColor: string; ctaUrl: string }
+// Lane 77B — the platform's OWN live agent is part of the brand kit (its face
+// and voice): a D-ID presenter id, an optional ElevenLabs voice, a name, the
+// greeting, and the pre-rendered sample clip the agent may play on "show me".
+// Never a tenant's twin. didAgentId is server-written (cache) — read-only here.
+interface LiveAgent { presenterId: string | null; voiceId: string | null; name: string; greeting: string; personality: string | null; demoClipUrl: string | null; didAgentId: string | null }
+interface Brand { name: string; tagline: string; primaryColor: string; accentColor: string; ctaUrl: string; liveAgent: LiveAgent }
 interface Topic { id: string; source: string; topic: string; url: string | null; status: string }
 
 export function BrandTopicsCard({ initialBrand, initialTopics }: { initialBrand: Brand; initialTopics: Topic[] }) {
@@ -58,6 +63,22 @@ export function BrandTopicsCard({ initialBrand, initialTopics }: { initialBrand:
             </Button>
           </div>
           <p className="text-[11px] text-muted-foreground">Every post, reel, pitch and the /get-started page resolve this — rename the product with zero code changes.</p>
+
+          <div className="border-t pt-2 mt-2 space-y-2">
+            <p className="text-xs font-semibold">Live agent (the platform&apos;s own D-ID Express v4 agent on /get-started and /demo)</p>
+            <div className="grid grid-cols-2 gap-2">
+              <div><Label className="text-xs">D-ID presenter id</Label><Input className="h-8 text-xs" placeholder="public_x@avt_… or avt_…" value={brand.liveAgent.presenterId ?? ''} onChange={(e) => setBrand({ ...brand, liveAgent: { ...brand.liveAgent, presenterId: e.target.value || null } })} /></div>
+              <div><Label className="text-xs">ElevenLabs voice id (optional)</Label><Input className="h-8 text-xs" value={brand.liveAgent.voiceId ?? ''} onChange={(e) => setBrand({ ...brand, liveAgent: { ...brand.liveAgent, voiceId: e.target.value || null } })} /></div>
+              <div><Label className="text-xs">Agent name</Label><Input className="h-8 text-xs" value={brand.liveAgent.name} onChange={(e) => setBrand({ ...brand, liveAgent: { ...brand.liveAgent, name: e.target.value } })} /></div>
+              <div><Label className="text-xs">Sample clip URL (https, mp4 — rendered once)</Label><Input className="h-8 text-xs" value={brand.liveAgent.demoClipUrl ?? ''} onChange={(e) => setBrand({ ...brand, liveAgent: { ...brand.liveAgent, demoClipUrl: e.target.value || null } })} /></div>
+            </div>
+            <div><Label className="text-xs">Greeting</Label><Input className="h-8 text-xs" value={brand.liveAgent.greeting} onChange={(e) => setBrand({ ...brand, liveAgent: { ...brand.liveAgent, greeting: e.target.value } })} /></div>
+            <div><Label className="text-xs">Personality (optional)</Label><Input className="h-8 text-xs" value={brand.liveAgent.personality ?? ''} onChange={(e) => setBrand({ ...brand, liveAgent: { ...brand.liveAgent, personality: e.target.value || null } })} /></div>
+            <p className="text-[11px] text-muted-foreground">
+              Use a D-ID stock Expressive presenter (no likeness consent needed) or one trained under the platform&apos;s own account — never a subscriber&apos;s twin. No presenter → the pages show the text assistant only.
+              {brand.liveAgent.didAgentId ? ` D-ID agent record: ${brand.liveAgent.didAgentId} (kept in sync by the did-agent-sync cron).` : ' No D-ID agent record yet — it is created on the first visitor session.'}
+            </p>
+          </div>
         </CardContent>
       </Card>
 

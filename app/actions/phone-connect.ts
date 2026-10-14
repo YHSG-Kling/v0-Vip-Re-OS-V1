@@ -8,15 +8,18 @@
 //
 // No stub — what this writes is what dispatch (sendSMS/placeCall) actually uses.
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { writeScopeFor } from "@/lib/connections/scope"
+import { encryptSecret } from "@/lib/security/secret-crypto"
 
 export type PhonePlatform = "twilio" | "telnyx" | "bandwidth"
 const PHONE_PLATFORMS: PhonePlatform[] = ["twilio", "telnyx", "bandwidth"]
-const BROKERAGE_ROLES = ["superadmin", "admin", "broker", "broker_owner"]
+// SCOPE LADDER (kept inline — this array decides WHERE credentials are scoped,
+// agent vs brokerage): 'superadmin' removed — dead as users.user_type (0 live
+// rows store it).
+const BROKERAGE_ROLES = ["admin", "broker", "broker_owner"]
 
 interface Member { userId: string; brokerageId: string; agentScoped: boolean }
 
@@ -57,13 +60,21 @@ export async function connectPhoneAction(params: {
     owner_id: owner?.ownerId ?? null,
     platform,
     scope: member.agentScoped ? "agent" : "brokerage",
-    api_key: params.accountSid.trim(),
+    api_key: encryptSecret(params.accountSid.trim()),
     config: { auth_token: params.authToken.trim(), from_number: params.fromNumber.trim() },
     is_active: true,
     updated_at: new Date().toISOString(),
   }
 
-  // Owner-keyed update-or-insert (unique key is (owner_type, owner_id, platform)).
+  // Owner-keyed update-or-insert. The unique key is (owner_type, owner_id,
+  // platform) and it is REAL — VERIFIED LIVE, not assumed: m104 created it as
+  // `platform_credentials_owner_uniq`, a PARTIAL UNIQUE INDEX
+  // `WHERE owner_type IS NOT NULL`, and a duplicate insert is refused with 23505.
+  // It is spelled out here because it lives in pg_index and NOT in pg_constraint:
+  // a check that dumps pg_constraint for this table sees only the two FKs and the
+  // three CHECKs, reads the key as absent, and reports this comment as a lie. It
+  // is not. A concurrent OAuth callback racing this read-then-write cannot
+  // duplicate the credential — the second writer gets 23505, not a second row.
   const ownerType = owner?.ownerType ?? (member.agentScoped ? "agent" : "brokerage")
   const ownerId = owner?.ownerId ?? (member.agentScoped ? member.userId : member.brokerageId)
   const { data: existing } = await svc

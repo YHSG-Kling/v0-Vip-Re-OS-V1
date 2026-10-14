@@ -31,6 +31,11 @@ import { upsertCampaignPreset, deactivateCampaignPreset, type PresetChannel } fr
 import type { PlaybookScore } from "@/app/actions/creative-playbooks"
 import { installCreativePlaybook } from "@/app/actions/creative-playbooks"
 import { CREATIVE_PLAYBOOKS } from "@/lib/marketing/creative-playbooks"
+import { EstimateStillsCard } from "./estimate-stills-card"
+import { EstimateComparisonCard } from "./estimate-comparison-card"
+import { PublicPageStillsCard } from "./public-page-stills-card"
+import { LearnedVisualRulesCard } from "./learned-visual-rules-card"
+import { TopicVideoCadenceCard } from "./topic-video-cadence-card"
 
 interface AccessProp {
   canEditAgent:     boolean
@@ -309,6 +314,14 @@ export function CampaignBundlesClient({
               </div>
             ))}
           </div>
+          {/* Wave 80D — the Zestimate Challenge's still: tenant-picked source + address, pending approval. */}
+          <EstimateStillsCard />
+          <EstimateComparisonCard />
+          {/* Wave 85A — general public-page stills (listing / own site / market / community pages): every use once approved. */}
+          <PublicPageStillsCard />
+          <LearnedVisualRulesCard />
+          {/* Wave 83B — the autonomous topic-video cadence (default 3/week). */}
+          <TopicVideoCadenceCard />
         </section>
       )}
 
@@ -453,7 +466,7 @@ function BundleCard({ bundle, catalog, onEdit, onDeactivate, pending }: {
           {/* Performance row — populated daily by the
               bundle-attribution-rollup cron. Shown even when zero so
               the agent can see the bundle has never fired. */}
-          <div className="mt-2 grid grid-cols-4 gap-2 border-t pt-2">
+          <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 border-t pt-2">
             <Metric label="dispatches"  value={p.dispatch_count} />
             <Metric label="scans"       value={p.total_scans}    />
             <Metric label="leads"       value={p.total_leads}    />

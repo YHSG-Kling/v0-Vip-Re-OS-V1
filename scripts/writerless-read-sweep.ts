@@ -17,7 +17,9 @@
  * Run: npx tsx scripts/writerless-read-sweep.ts  (npm run test:writerless-reads)
  * Tighten: GUARD_WRITE_BASELINE=1 npx tsx scripts/writerless-read-sweep.ts
  */
-import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
+import { blankComments } from "./strip-comments"
 import { join } from "node:path"
 
 const BASELINE = join(process.cwd(), "scripts/writerless-read-baseline.json")
@@ -28,12 +30,14 @@ const SEEDED_REFERENCE = new Set([
   "subscription_tiers", "state_protected_classes", "state_appraiser_adjustment_rates",
   "tax_categories", "global_settings", "platform_settings", "achievements",
   "gamification_badges", "onboarding_steps", "milestone_template_items",
-  "training_courses", "training_videos", "onboarding_quizzes", "brokerage_fee_types",
-  "compliance_rules", "prohibited_phrases", "journey_blueprints",
+  "training_videos", "onboarding_quizzes", "brokerage_fee_types",
+  "compliance_rules", "journey_blueprints",
   "offer_strategy_templates", "listing_task_templates", "transaction_milestone_templates",
   "email_templates", "newsletter_templates", "video_templates", "brand_templates",
   "content_templates", "document_templates", "chat_templates",
-  "thank_you_note_templates", "remotion_compositions", "ai_prompt_templates",
+  // ai_prompt_templates left this list when m578 dropped the table (2026-08-28;
+  // prompts live in code beside their actions — see the migration header).
+  "thank_you_note_templates", "remotion_compositions",
   "ai_agent_templates", "template_marketplace", "vendor_plans", "journey_tools",
   "local_news_sources", "neighborhood_data_sources", "market_data_sources",
   "content_topic_sources",
@@ -45,6 +49,28 @@ const SEEDED_REFERENCE = new Set([
   // classifications is the routing RULE set (brokerage_id-null global default
   // rows); form_field_maps is per-form-template field mapping.
   "behavioral_patterns", "brokerage_forms", "document_classifications", "form_field_maps",
+  // W45 REMOVED prohibited_phrases from this list, and the removal is the point.
+  // It sat here honestly for as long as the table was a platform-only catalogue.
+  // The owner then ruled that a brokerage may add its own prohibited words in
+  // settings, so m454 gave the table a tenant layer and
+  // app/actions/compliance-phrases.ts gave it REAL runtime writers. An exemption
+  // that says "a runtime writer is not expected" is now false, and a false
+  // exemption is worse than none: it would keep passing this table even if every
+  // one of those writers were later deleted. Dropping it puts the table back
+  // under the guard, which now has something true to check.
+  //
+  // W44: the THIRD sibling of compliance_rules + prohibited_phrases (the latter
+  // has since earned its way off this list, see above). It only escaped this
+  // list because lib/seed-compliance-rules.ts was its
+  // runtime writer — and that file could never actually run (see m450: zero rows,
+  // a severity the CHECK forbids, and an upsert carrying a column that does not
+  // exist). Now seeded by m452 and asserted by m453, and the classification is
+  // right on its own terms twice over: it has NO brokerage_id, SELECT `true` to
+  // authenticated and writes gated on is_platform_admin() — a platform catalogue
+  // by construction; and lib/compliance/vendor-respa.ts:294 reads it purely as an
+  // OVERRIDE store, with hardcoded fallbacks that guarantee real RESPA language
+  // when a row is absent. A runtime writer is not expected here and never was.
+  "required_disclosures",
 ])
 
 /** Database VIEWS — written through their base tables by definition; a read
@@ -68,18 +94,34 @@ const VARIABLE_TABLE_WRITERS: Record<string, string> = {
   social_cadence_policy: "app/actions/marketing-cadence-policy.ts (CHANNEL_TABLE upsert)",
 }
 
-function walk(dir: string, acc: string[]) {
-  for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name === ".next" || name === ".git") continue
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) walk(p, acc)
-    else if (/\.(ts|tsx)$/.test(name)) acc.push(p)
-  }
+/** Tables whose writer is a DATABASE FUNCTION the app calls through .rpc(), which
+ *  a `.from("x").insert(` scan cannot see by construction. Each entry names both
+ *  the function and the module that calls it, so the exemption stays auditable. */
+const DB_FUNCTION_WRITERS: Record<string, string> = {
+  // m484 moved the points award into ONE transaction inside the database, because
+  // six app writers advancing agents.gamification_points by read-modify-write could
+  // never keep the total and the ledger in agreement. The app no longer inserts into
+  // this table anywhere — that is the fix, not a missing writer.
+  agent_points_log: "public.award_agent_points() (m484), called via lib/gamification/award-points.ts",
 }
 
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, acc)` that stood here
+// was one of 82 copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// This sweep decides whether a column is READ WITH NO WRITER. A file it cannot
+// open therefore produces a PHANTOM finding, not a gap — and the one file it could
+// never open is `proxy.ts`, the edge middleware, which reads blog_posts,
+// brokerages, users and tenant_custom_domains with a SERVICE client on every
+// request. `walk()` enumerated DIRECTORIES and a root FILE is not a directory.
+// `rootRuntimeFiles()` from the same survivor supplies them.
+
 function main() {
-  const files: string[] = []
-  for (const d of ["app", "lib"]) { try { walk(join(process.cwd(), d), files) } catch {} }
+  const files: string[] = [
+    ...walkTs(join(process.cwd(), "app")),
+    ...walkTs(join(process.cwd(), "lib")),
+    ...rootRuntimeFiles(process.cwd()),
+  ]
 
   const readers = new Map<string, Set<string>>()
   const writers = new Set<string>()
@@ -87,7 +129,26 @@ function main() {
   // multiline chains and interleaved option args.
   const FROM = /\.from\(\s*["'`]([a-z_][a-z0-9_]*)["'`]\s*\)/g
   for (const f of files) {
-    const s = readFileSync(f, "utf8")
+    // `blankComments`, NOT the raw source, and NOT `stripComments`.
+    //
+    // WHY IT MUST BE STRIPPED AT ALL: this sweep decides whether a table has a
+    // reader with no writer. A §1 TOMBSTONE — the comment naming a survivor that
+    // the orphan doctrine REQUIRES when a read is re-pointed — contains the very
+    // `.from("x").select(…)` text it retired. Read raw, the tombstone counts as a
+    // live reader, so a table correctly moved OFF becomes a "NEW writer-less
+    // read" and the sweep accuses the repo of the thing the comment records
+    // having fixed. lib/listing-health/health-scorer.ts:207 is exactly that: a
+    // JSDoc block explaining that OPEN_HOUSE is now scored off
+    // `open_house_events`, quoting the old query verbatim.
+    //
+    // WHY `blankComments` SPECIFICALLY: this scanner is POSITION-DEPENDENT — it
+    // slices a 160-char window from `m.index` to decide whether the verb beside a
+    // `.from()` is a write or a read. `stripComments` REMOVES bytes and would
+    // shift every subsequent offset, pulling unrelated code into that window and
+    // silently reclassifying reads as writes. `blankComments` overwrites comment
+    // bodies with spaces, so every offset is preserved (CLAUDE.md §2 names which
+    // helper each case wants; this is the match-index case).
+    const s = blankComments(readFileSync(f, "utf8"))
     let m: RegExpExecArray | null
     while ((m = FROM.exec(s))) {
       const table = m[1]
@@ -102,7 +163,7 @@ function main() {
   }
 
   const offenders = [...readers.keys()]
-    .filter((t) => !writers.has(t) && !SEEDED_REFERENCE.has(t) && !DB_VIEWS.has(t) && !(t in VARIABLE_TABLE_WRITERS))
+    .filter((t) => !writers.has(t) && !SEEDED_REFERENCE.has(t) && !DB_VIEWS.has(t) && !(t in VARIABLE_TABLE_WRITERS) && !(t in DB_FUNCTION_WRITERS))
     .sort()
 
   if (process.env.GUARD_WRITE_BASELINE === "1") {

@@ -148,10 +148,18 @@ ALTER TABLE fair_housing_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE trid_timeline ENABLE ROW LEVEL SECURITY;
 ALTER TABLE compliance_alerts ENABLE ROW LEVEL SECURITY;
 
+-- NOTE: Role gating uses the canonical table-driven SECURITY DEFINER helpers
+-- from migration 033 (public.is_brokerage_admin / is_compliance_officer_role /
+-- is_platform_admin). These resolve role + tenant from public.users via
+-- auth.uid() and require NO custom JWT claims. Do NOT reintroduce
+-- `auth.jwt() ->> 'user_role'` — nothing mints that claim and it always
+-- evaluates to NULL. See migration m276 for the rationale.
+
 -- Audit logs: Admins see all, agents see their own
 CREATE POLICY "Audit logs viewable by role" ON audit_logs FOR SELECT USING (
-  auth.jwt() ->> 'user_role' IN ('admin', 'broker') OR
-  user_id = (auth.jwt() ->> 'sub')::uuid
+  public.is_brokerage_admin()
+  OR public.is_platform_admin()
+  OR user_id = auth.uid()
 );
 
 -- Compliance checklists: Agents see their transactions
@@ -159,19 +167,24 @@ CREATE POLICY "Compliance checklists viewable by transaction access" ON complian
   EXISTS (
     SELECT 1 FROM transactions
     WHERE transactions.id = compliance_checklists.transaction_id
-    AND transactions.agent_id = (auth.jwt() ->> 'sub')::uuid
-  ) OR auth.jwt() ->> 'user_role' IN ('admin', 'broker')
+    AND transactions.agent_id = auth.uid()
+  )
+  OR public.is_brokerage_admin()
+  OR public.is_platform_admin()
 );
 
 -- Agent certifications: Agents see their own, admins see all
 CREATE POLICY "Agent certifications viewable by owner or admin" ON agent_certifications FOR SELECT USING (
-  agent_id = (auth.jwt() ->> 'sub')::uuid OR
-  auth.jwt() ->> 'user_role' IN ('admin', 'broker')
+  agent_id = auth.uid()
+  OR public.is_brokerage_admin()
+  OR public.is_platform_admin()
 );
 
 -- Fair housing logs: Admins and compliance officers only
 CREATE POLICY "Fair housing logs viewable by compliance" ON fair_housing_logs FOR SELECT USING (
-  auth.jwt() ->> 'user_role' IN ('admin', 'broker', 'compliance_officer')
+  public.is_brokerage_admin()
+  OR public.is_compliance_officer_role()
+  OR public.is_platform_admin()
 );
 
 -- TRID timeline: Transaction participants
@@ -179,8 +192,10 @@ CREATE POLICY "TRID timeline viewable by transaction access" ON trid_timeline FO
   EXISTS (
     SELECT 1 FROM transactions
     WHERE transactions.id = trid_timeline.transaction_id
-    AND transactions.agent_id = (auth.jwt() ->> 'sub')::uuid
-  ) OR auth.jwt() ->> 'user_role' IN ('admin', 'broker')
+    AND transactions.agent_id = auth.uid()
+  )
+  OR public.is_brokerage_admin()
+  OR public.is_platform_admin()
 );
 
 -- Compliance alerts: Transaction participants
@@ -188,8 +203,10 @@ CREATE POLICY "Compliance alerts viewable by transaction access" ON compliance_a
   EXISTS (
     SELECT 1 FROM transactions
     WHERE transactions.id = compliance_alerts.transaction_id
-    AND transactions.agent_id = (auth.jwt() ->> 'sub')::uuid
-  ) OR auth.jwt() ->> 'user_role' IN ('admin', 'broker')
+    AND transactions.agent_id = auth.uid()
+  )
+  OR public.is_brokerage_admin()
+  OR public.is_platform_admin()
 );
 
 -- Trigger for updated_at

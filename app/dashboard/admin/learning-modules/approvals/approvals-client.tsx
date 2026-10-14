@@ -10,13 +10,15 @@ import {
   approveLearningModuleAction,
   rejectLearningModuleAction,
   type PendingModuleRow,
+  type RecentDecisionRow,
 } from "@/app/actions/learning-modules-approvals"
 
 interface Props {
   initialRows: PendingModuleRow[]
+  recentDecisions?: RecentDecisionRow[]
 }
 
-export function ApprovalsClient({ initialRows }: Props) {
+export function ApprovalsClient({ initialRows, recentDecisions = [] }: Props) {
   const [rows, setRows] = useState<PendingModuleRow[]>(initialRows)
   const [rejectingId, setRejectingId] = useState<string | null>(null)
   const [reason, setReason] = useState("")
@@ -138,6 +140,30 @@ export function ApprovalsClient({ initialRows }: Props) {
           </Card>
         ))}
       </div>
+
+      {recentDecisions.length > 0 && (
+        <div className="flex flex-col gap-2 mt-4">
+          <h2 className="text-sm font-medium text-muted-foreground">Recent decisions</h2>
+          <div className="rounded-md border divide-y">
+            {recentDecisions.map(d => (
+              <div key={d.id} className="flex flex-col gap-1 px-3 py-2 text-sm">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge variant={d.status === "published" ? "secondary" : "destructive"} className="text-xs">
+                    {d.status === "published" ? "approved" : "rejected"}
+                  </Badge>
+                  <span className="font-medium">{d.title}</span>
+                  <span className="text-xs text-muted-foreground ml-auto">
+                    {d.decided_by_name ?? "—"} · {new Date(d.approved_at ?? d.rejected_at ?? "").toLocaleDateString()}
+                  </span>
+                </div>
+                {d.rejection_reason && (
+                  <p className="text-xs text-muted-foreground">Reason: {d.rejection_reason}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

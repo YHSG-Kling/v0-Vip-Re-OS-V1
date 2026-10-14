@@ -31,11 +31,68 @@ export interface ConciergeAction {
   detail:             string | null
   suggestedRecipient: Recipient | null
   createdAt:          string
+  /**
+   * TRUE when transaction_pending_actions.dispatched_email_id is stamped — an
+   * email for this action has already gone out through dispatchConciergeActionEmail.
+   *
+   * THE AUDIT TRAIL THAT NOBODY COULD SEE. The stamp exists precisely so "the
+   * agent actually sent something" is on the record (see the doc on the dispatch
+   * helper below), and every read of this table selected around it — so the board
+   * showed a still-open action with a "Draft email" button and no sign that one
+   * had already been sent. Chasing a lender twice about the same blocker is the
+   * cost.
+   *
+   * A FLAG, NOT AN ID, AND DELIBERATELY SO: the writer stamps the ACTION'S OWN id
+   * into the column, not the dispatched message's, so the value identifies
+   * nothing beyond its own presence. Surfacing it as a boolean is the honest
+   * reading of what is actually stored; see the note at the write site.
+   */
+  emailDispatched:    boolean
+}
+
+/** One deal in the brokerage's closing window, distilled from its war room. */
+export interface ConciergeClosing {
+  transactionId: string
+  label:         string
+  closingDate:   string | null
+  daysToClose:   number | null
+  ready:         boolean
+  blockers:      number
+}
+
+/**
+ * A CLOSED-OUT ACTION — the record of what was done about a blocker.
+ *
+ * resolveConciergeAction / dismissConciergeAction have always written
+ * resolved_at, resolved_by and resolution_note, and the board only ever read
+ * `status = "open"` rows — so the note an agent typed to explain how a closing
+ * blocker was handled, and the name of whoever handled it, went straight into
+ * the table and out of reach. On a transaction lane that is not bookkeeping: it
+ * is the answer to "who cleared this, and what did they say" when a deal is
+ * audited after the fact.
+ */
+export interface ConciergeResolvedAction {
+  id:              string
+  transactionId:   string
+  transactionLabel:string
+  actionType:      string
+  headline:        string
+  severity:        Severity
+  /** "resolved" or "dismissed" — a dismissal is not a fix and must not read as one. */
+  status:          string
+  resolvedAt:      string | null
+  /** Display name of the user in resolved_by; null when the id no longer resolves. */
+  resolvedByName:  string | null
+  resolutionNote:  string | null
 }
 
 export interface ConciergeBoard {
   actions: ConciergeAction[]
   summary: { urgent: number; high: number; medium: number; low: number }
+  /** Deals closing in the next 14 days with their war-room readiness verdicts. */
+  closings: ConciergeClosing[]
+  /** Recently closed-out actions — the reader for the resolution record. */
+  recentlyResolved: ConciergeResolvedAction[]
 }
 
 const SEV_ORDER: Record<Severity, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
@@ -54,7 +111,7 @@ export async function loadClosingConciergeBoard(): Promise<ConciergeBoard | { er
     .from("transaction_pending_actions")
     .select(`
       id, transaction_id, action_type, severity, due_date, headline, detail,
-      suggested_recipient, created_at,
+      suggested_recipient, created_at, dispatched_email_id,
       transaction:transaction_id (id, deal_name, property_address, close_date, contract_date)
     `)
     .eq("agent_id", agentRow.id)
@@ -76,6 +133,7 @@ export async function loadClosingConciergeBoard(): Promise<ConciergeBoard | { er
     detail:             a.detail ?? null,
     suggestedRecipient: a.suggested_recipient ?? null,
     createdAt:          a.created_at,
+    emailDispatched:    a.dispatched_email_id != null,
   }))
 
   // Defensive re-sort (Supabase severity ordering is lexicographic)
@@ -93,7 +151,76 @@ export async function loadClosingConciergeBoard(): Promise<ConciergeBoard | { er
     { urgent: 0, high: 0, medium: 0, low: 0 } as Record<Severity, number>
   )
 
-  return { actions: rows, summary }
+  // CLOSING WINDOW — the brokerage's deals closing in the next 14 days,
+  // distilled through the read-only war-room fan-out (loadBrokerageClosingWarRooms,
+  // the "all closings" surface it was written for). Best-effort: a failure here
+  // leaves the strip empty and never blocks the action board.
+  let closings: ConciergeClosing[] = []
+  try {
+    const { loadBrokerageClosingWarRooms } = await import("@/lib/kernel/closing-war-room")
+    const { warRooms } = await loadBrokerageClosingWarRooms(
+      agentRow.brokerage_id, { windowDays: 14, limit: 20 }, svc,
+    )
+    closings = warRooms.map((w) => ({
+      transactionId: w.transactionId,
+      label:         w.dealName || w.propertyAddress || "Transaction",
+      closingDate:   w.closingDate,
+      daysToClose:   w.daysToClose,
+      ready:         w.readiness.ready,
+      blockers:      w.readiness.blockers.length,
+    }))
+  } catch (err) {
+    console.error("[closing-concierge] war-room fan-out failed (non-fatal):", err)
+  }
+
+  // ── WHAT WAS CLEARED, BY WHOM, AND WHY ──────────────────────────────────
+  // The closed-out half of the same board. Same agent scope as the open list.
+  // §3: `error` is read — a refused history must not render as "nothing has
+  // ever been resolved", which is the exact shape of a clean bill of health.
+  let recentlyResolved: ConciergeResolvedAction[] = []
+  const { data: closedRows, error: closedErr } = await svc
+    .from("transaction_pending_actions")
+    .select(`
+      id, transaction_id, action_type, severity, headline, status,
+      resolved_at, resolved_by, resolution_note,
+      transaction:transaction_id (deal_name, property_address)
+    `)
+    .eq("agent_id", agentRow.id)
+    .in("status", ["resolved", "dismissed"])
+    .not("resolved_at", "is", null)
+    .order("resolved_at", { ascending: false })
+    .limit(20)
+  if (closedErr) {
+    console.error("[closing-concierge] resolved-action history read refused:", closedErr.message)
+  } else {
+    const resolverIds = [...new Set(((closedRows ?? []) as any[]).map((r) => r.resolved_by).filter(Boolean) as string[])]
+    const nameById = new Map<string, string>()
+    if (resolverIds.length > 0) {
+      // resolved_by is a users.id (written from auth.getUser()), NOT an agents.id
+      // — the two classes are disjoint, so this looks up `users` and nothing else.
+      const { data: resolvers, error: resolverErr } = await svc
+        .from("users").select("id, first_name, last_name, email").in("id", resolverIds)
+      if (resolverErr) console.error("[closing-concierge] resolver name lookup failed:", resolverErr.message)
+      for (const u of (resolvers ?? []) as any[]) {
+        const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+        if (label) nameById.set(u.id as string, label as string)
+      }
+    }
+    recentlyResolved = ((closedRows ?? []) as any[]).map((r) => ({
+      id:               r.id,
+      transactionId:    r.transaction_id,
+      transactionLabel: r.transaction?.deal_name ?? r.transaction?.property_address ?? "Transaction",
+      actionType:       r.action_type,
+      headline:         r.headline,
+      severity:         r.severity as Severity,
+      status:           r.status,
+      resolvedAt:       r.resolved_at ?? null,
+      resolvedByName:   r.resolved_by ? nameById.get(r.resolved_by as string) ?? null : null,
+      resolutionNote:   r.resolution_note ?? null,
+    }))
+  }
+
+  return { actions: rows, summary, closings, recentlyResolved }
 }
 
 export async function resolveConciergeAction(
@@ -245,7 +372,15 @@ export async function dispatchConciergeActionEmail(args: {
   if (!action) return { success: false, error: "Action not found" }
 
   const { data: agentUser } = await svc.from("users").select("email").eq("id", user.id).maybeSingle()
-  const fromEmail = agentUser?.email ?? "noreply@example.com"
+  // The agent's own mailbox, else the tenant's configured sender. Never a
+  // placeholder: "noreply@example.com" both fails SendGrid's verified-sender
+  // check and OVERRIDES the brokerage's real from-address, because sendEmail
+  // resolves params.from first.
+  const { resolveOutboundSender, formatSenderOrUndefined, isUsableSender } =
+    await import("@/lib/providers/outbound-sender")
+  const fromEmail = isUsableSender(agentUser?.email)
+    ? (agentUser!.email as string)
+    : formatSenderOrUndefined(await resolveOutboundSender(svc as any, action.brokerage_id))
 
   const result = await dispatchEmail({
     brokerageId:    action.brokerage_id,
@@ -263,11 +398,37 @@ export async function dispatchConciergeActionEmail(args: {
 
   if (!result.success) return { success: false, error: result.error }
 
-  // Stamp the dispatch on the action so the agent's resolve UI can show it
-  await svc
+  // Stamp the dispatch on the action so the agent's board can show it. The
+  // reader is loadClosingConciergeBoard above, which surfaces it as
+  // ConciergeAction.emailDispatched.
+  //
+  // KNOWN DEFECT, RECORDED RATHER THAN GUESSED AT: the value written is the
+  // ACTION'S OWN id, not the dispatched message's — `result.messageId` is the
+  // provider's handle and it is a provider string (SendGrid message id), not a
+  // uuid, and this column's type is not knowable from the generated schema
+  // caches (scripts/schema-snapshot.ts records column NAMES only) and there is no
+  // FK on it (scripts/schema-fk-map.ts:740). Writing a provider string into a
+  // uuid column would be refused whole (22P02) and take the stamp with it. So the
+  // column is honestly a PRESENCE FLAG today and is read as exactly that; making
+  // it a real message handle needs the column type confirmed against the live
+  // database first, which a lane may not query.
+  //
+  // §3: supabase-js RESOLVES a refused update, and an unread refusal here is a
+  // dispatch that happened with no record that it did.
+  const { data: stamped, error: stampErr } = await svc
     .from("transaction_pending_actions")
     .update({ dispatched_email_id: action.id, updated_at: new Date().toISOString() })
     .eq("id", action.id)
+    .select("id")
+  if (stampErr) {
+    console.error("[closing-concierge] dispatch stamp refused:", stampErr.message)
+  } else if ((stamped ?? []).length !== 1) {
+    // An UPDATE matching nothing resolves exactly like one that worked.
+    console.error(
+      `[closing-concierge] dispatch stamp matched ${(stamped ?? []).length} rows for action ${action.id} — ` +
+      "the email WAS sent and the board will not show it.",
+    )
+  }
 
   return { success: true, providerKey: result.providerKey }
 }

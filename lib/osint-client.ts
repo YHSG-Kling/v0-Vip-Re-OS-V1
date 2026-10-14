@@ -52,6 +52,37 @@ export const ALL_RECORD_TYPES = [...DISTRESS_RECORD_TYPES, ...BUYER_RECORD_TYPES
  * from a court-records search results page. Defensive across common result-row
  * structures; returns only rows with at least a party name. No network.
  */
+/**
+ * Lane 88G — PURE. Which party of a case caption is the prospective SELLER for a filing type.
+ *   eviction          → the PLAINTIFF (the landlord filing is the tired-landlord signal; the evicted
+ *                       tenant is not a seller)
+ *   foreclosure / pre_foreclosure / tax_lien → the DEFENDANT (the owner the lender / county sues)
+ *   bankruptcy        → the debtor ("In re Jane Doe")
+ *   probate / estate  → the decedent named after "Estate of" (the estate is the seller; enrichment
+ *                       and the probate record resolve the personal representative downstream)
+ *   divorce and every other type → the first party (the petitioner)
+ * Captions with no "v." keep the whole caption minus "In re" / "In the matter of" prefixes. Returns
+ * null when nothing name-like survives.
+ */
+export function partyForRecordType(caption: string, recordType: string): string | null {
+  let c = String(caption ?? "").replace(/\s+/g, " ").trim()
+  if (!c) return null
+  const estate = /estate of\s+(.+?)(?:,?\s+deceased|,?\s+dec'?d\.?|$)/i.exec(c)
+  if ((recordType === "probate" || recordType === "estate") && estate?.[1]) return estate[1].trim()
+  c = c.replace(/^(in re(?: the marriage of)?|in the matter of(?: the marriage of)?|matter of)\s*:?\s*/i, "")
+  const sides = c.split(/\s+(?:v\.?|vs\.?|versus)\s+/i)
+  let party = sides[0]
+  if (sides.length > 1) {
+    const defendantTypes = new Set(["foreclosure", "pre_foreclosure", "tax_lien"])
+    party = defendantTypes.has(recordType) ? sides[1] : sides[0]
+  } else if (recordType === "divorce") {
+    // "John Doe and Jane Doe" — the first spouse named.
+    party = c.split(/\s+(?:and|&)\s+/i)[0]
+  }
+  party = party.replace(/,?\s+(et al\.?|et ux\.?|petitioner|respondent|plaintiff|defendant|debtor)\b.*$/i, "").trim()
+  return /[a-z]{2,}/i.test(party) ? party : null
+}
+
 export function parseTerritoryCourtRecords(html: string, recordType: string): CourtFiling[] {
   const $ = cheerio.load(html)
   const filings: CourtFiling[] = []
@@ -69,15 +100,21 @@ export function parseTerritoryCourtRecords(html: string, recordType: string): Co
     const caseNumber = block.find('.case-number, [class*="case-no"], [class*="docket"]').first().text().trim() || null
     const date = block.find('.date, [class*="filed"], time').first().text().trim() || null
 
+    // Lane 88G — a case CAPTION names two parties ("Oak Ridge LLC v. Jane Doe"); the whole caption
+    // used to be split as one name (first "Oak", last "Doe"). partyForRecordType picks the party who
+    // is the prospective SELLER for this filing type.
+    const party = partyForRecordType(name, recordType)
+    if (!party) return
+
     // "Last, First" or "First Last"
     let firstName: string | null = null
     let lastName: string | null = null
-    if (name.includes(",")) {
-      const [ln, fn] = name.split(",").map((s) => s.trim())
+    if (party.includes(",")) {
+      const [ln, fn] = party.split(",").map((s) => s.trim())
       lastName = ln || null
       firstName = (fn ?? "").split(/\s+/)[0] || null
     } else {
-      const parts = name.split(/\s+/).filter(Boolean)
+      const parts = party.split(/\s+/).filter(Boolean)
       firstName = parts[0] ?? null
       lastName = parts.length > 1 ? parts[parts.length - 1] : null
     }

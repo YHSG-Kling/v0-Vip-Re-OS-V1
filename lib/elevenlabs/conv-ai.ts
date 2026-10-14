@@ -24,8 +24,10 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { CONTACT_STATUSES } from "@/lib/contact-promotion/qualification"
 
 const ELEVENLABS_API_BASE = "https://api.elevenlabs.io"
 
@@ -113,10 +115,10 @@ export async function ensureAssistantAgent(
   }
 
   // Persist the cache
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("agents")
     .update({ conv_ai_agent_id: data.agent_id })
-    .eq("id", params.agentId)
+    .eq("id", params.agentId), { table: "agents", flow: "conv_ai_agent_cache", reason: "cache of the provider agent id just created and returned; a lost cache means the next call re-resolves it" })
 
   return { ok: true, convAiAgentId: data.agent_id, created: true }
 }
@@ -191,10 +193,10 @@ export async function ensureStaffAssistantAgent(
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
   const existing = (gs?.additional_settings as Record<string, unknown> | null) ?? {}
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("global_settings")
     .update({ additional_settings: { ...existing, staff_assistant_conv_ai_agent_id: data.agent_id } })
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", params.brokerageId), { table: "global_settings", flow: "staff_assistant_conv_ai_cache", reason: "cache of the provider agent id just created and returned" })
 
   return { ok: true, convAiAgentId: data.agent_id, created: true }
 }
@@ -285,15 +287,37 @@ You are role-playing a real estate prospect for training purposes. STAY IN CHARA
     }
   }
 
-  await supabase
+  // Tenant for the cache row comes from the AGENT it is provisioned for
+  // (agents.brokerage_id). Although the SCENARIO catalogue (key, label,
+  // prompt, opening line) is platform-wide and lives in code, a ROW here is
+  // not: migration 1025 re-keyed the table on (scenario_key, agent_id) and
+  // stores that agent's own prospect_voice_id, so each row is one agent's
+  // provisioned ElevenLabs agent — tenant data. agent_id is an agents.id, not
+  // a tenant; the id spaces are disjoint. Unstamped, the row is readable AND
+  // writable by every brokerage under the table's
+  // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` policy,
+  // which would let one tenant repoint another's practice session at an
+  // arbitrary ElevenLabs agent.
+  const { data: agentRow, error: agentErr } = await supabase
+    .from("agents")
+    .select("brokerage_id")
+    .eq("id", params.agentId)
+    .maybeSingle()
+  if (agentErr) return { ok: false, error: `Could not resolve brokerage for agent: ${agentErr.message}` }
+  if (!agentRow?.brokerage_id) {
+    return { ok: false, error: "Could not resolve brokerage for agent — practice unavailable." }
+  }
+
+  await sentinelWrite(supabase, supabase
     .from("objection_scenario_agents")
     .upsert({
+      brokerage_id: agentRow.brokerage_id,
       scenario_key: params.scenarioKey,
       agent_id: params.agentId,
       conv_ai_agent_id: data.agent_id,
       prospect_voice_id: params.voiceId,
       updated_at: new Date().toISOString(),
-    })
+    }), { table: "objection_scenario_agents", flow: "objection_scenario_agents_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return { ok: true, convAiAgentId: data.agent_id, created: true }
 }
@@ -517,13 +541,19 @@ function buildToolsConfig() {
     {
       type: "webhook",
       name: "update_contact_status",
-      description: "Change a contact's status field (e.g., 'active', 'cold', 'closed', 'unsubscribed'). Confirm with the user before invoking.",
+      // The examples DERIVE from the canonical vocabulary (CONTACT_STATUSES,
+      // lib/contact-promotion/qualification.ts) so this advertisement cannot
+      // drift from what the server accepts. It used to offer 'cold', 'closed'
+      // and 'unsubscribed' — values canonicalContactStatus refuses and the
+      // m587 CHECK cannot store, so the model was being coached to compose
+      // calls that could only fail (or worse, silently no-op pre-gate).
+      description: `Change a contact's lifecycle status. The only valid values are: ${CONTACT_STATUSES.map((s) => `'${s}'`).join(", ")} — the server refuses anything else. Confirm with the user before invoking.`,
       url: webhookUrl,
       method: "POST",
       auth,
       parameters: {
         contact_id: { type: "string", description: "Contact UUID" },
-        status: { type: "string", description: "New status value" },
+        status: { type: "string", description: `New status — one of: ${CONTACT_STATUSES.join(", ")}` },
       },
       required: ["contact_id", "status"],
     },
@@ -722,7 +752,7 @@ function buildToolsConfig() {
       parameters: {
         campaign_name: { type: "string", description: "Internal name — required" },
         target_audience: { type: "string", description: "Who to mail to — required" },
-        piece_type: { type: "string", description: "postcard_4x6 | postcard_6x9 | postcard_6x11 | letter | handwritten | thank_you_note" },
+        piece_type: { type: "string", description: "postcard | letter | handwritten_letter | thank_you_note (a size like postcard_6x9 is accepted and filed as postcard)" },
         budget: { type: "number", description: "Budget in dollars (determines quantity)" },
         send_date: { type: "string", description: "Mailing date (YYYY-MM-DD)" },
         copy_text: { type: "string", description: "Initial copy if dictated" },

@@ -12,6 +12,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { computeVendorSla, slaTier } from "@/lib/kernel/vendor-sla"
+import type { BenchVendorCategory } from "@/lib/kernel/vendor-categories"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -19,17 +20,17 @@ type Svc = ReturnType<typeof createServiceClient>
  *  thin data — an unproven vendor is presumed reliable, not a breacher). */
 export const COVERAGE_MIN_SAMPLE = 3
 
-export type VendorCategory = "Lender" | "Inspector" | "Title Company" | "Contractor" | "Stager"
+export type VendorCategory = BenchVendorCategory
 
 /** Which vendor categories each live pipeline stage implies over the near term. Aligned with the
  *  orchestration stage→gap logic, but forward-looking (ALL categories the stage will need, not just the
  *  first uncovered one). Stager is settings-gated elsewhere and deliberately omitted from the forecast. */
 export const STAGE_VENDOR_NEEDS: Record<string, VendorCategory[]> = {
-  UNDER_CONTRACT: ["Inspector"],
-  INSPECTION: ["Inspector", "Contractor"],
-  APPRAISAL: ["Lender"],
-  FINANCING_PENDING: ["Lender"],
-  CLOSING_PREP: ["Title Company"],
+  UNDER_CONTRACT: ["inspector"],
+  INSPECTION: ["inspector", "contractor"],
+  APPRAISAL: ["lender"],
+  FINANCING_PENDING: ["lender"],
+  CLOSING_PREP: ["title"],
 }
 
 /** PURE: forecast upcoming vendor demand per category from the deals in the pipeline. */

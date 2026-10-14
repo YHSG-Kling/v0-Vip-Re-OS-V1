@@ -7,8 +7,10 @@
  * for the broker-visible /dashboard/settings/usage page.
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext } from "@/lib/platform/acting-context"
+import { currentUsagePeriod } from "@/lib/usage/period"
 import { createServiceClient } from "@/lib/supabase/service"
+import { toPlanTier } from "@/lib/billing/plan-tier"
 
 export interface MetricSnapshot {
   metric: string
@@ -51,24 +53,34 @@ const METRIC_LABELS: Record<string, string> = {
   tts_characters: "Voice synthesis (chars)",
   voice_clones_created: "Twin voices created",
   avatars_created: "Twin avatars created",
-  vapi_minutes: "AI calling (min)",
+  ai_voice_minutes: "AI calling (min)",
 }
 
-const VIEWER_ROLES = ["broker", "admin", "superadmin", "team_lead"]
+// TRUE ADMIN GATE (operational usage view, team_lead already included) —
+// repointed to the ONE tenant roster (isAdminOrBroker below). 'superadmin' was
+// dead: 0 live rows store that users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function loadUsageOverview(): Promise<{
   ok: boolean
   data?: UsageOverview
   error?: string
 }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
-  if (!VIEWER_ROLES.includes(ctx.userType)) return { ok: false, error: "Forbidden" }
+  const ctx = await resolveActingContext()
+  // FAIL CLOSED on a tenantless session (§4). The retired lib/kernel/identity.ts handed
+  // this surface "the first brokerage ordered by created_at" when the session had none,
+  // so a seat with no tenant read ANOTHER brokerage's meter. Refusing is the correct
+  // answer — and without it every query below runs `.eq(…, null)`, which resolves as
+  // zero rows with `error: null` and reports an empty invoice as a real one.
+  if (!ctx.ok || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
 
   const supabase = createServiceClient()
   const now = new Date()
-  const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
-  const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
+  // Canonical UTC period — lib/usage/period.ts (#190).
+  const { periodStartIso: _ps, periodEndIso: _pe } = currentUsagePeriod(now)
+  const periodStart = new Date(_ps)
+  const periodEnd = new Date(_pe)
 
   // 1. Plan tier
   const { data: brokerage } = await supabase
@@ -76,16 +88,32 @@ export async function loadUsageOverview(): Promise<{
     .select("plan_tier")
     .eq("id", ctx.brokerageId)
     .maybeSingle()
-  const planTier = brokerage?.plan_tier ?? "starter"
+  // 'starter' is the RETIRED vocabulary (scripts/1023-align-plan-tier-vocabulary.sql
+  // mapped starter → solo_agent). `plan_limits` holds exactly the four canonical
+  // tiers — MEASURED live: solo_agent / team / brokerage / multi_location, 17
+  // metrics each and no 'starter' row — so a NULL plan_tier fell back to a value
+  // the limits join can never match, and the meter rendered every metric with no
+  // limit at all. toPlanTier is the ONE normalizer (§6) and it falls to the
+  // TIGHTEST tier, which is the direction lib/billing/plan-tier.ts documents.
+  const planTier = toPlanTier(brokerage?.plan_tier)
 
   // 2. Counters + limits — pull both, join in memory
   const [{ data: counters }, { data: limits }] = await Promise.all([
+    // READERS FILTER ON period_start ALONE — lib/usage/period.ts states the rule
+    // verbatim: "the start identifies the month, and keying reads on the end is
+    // how the old rows became unreachable". period_end is part of the row's
+    // IDENTITY (UNIQUE brokerage_id, period_start, period_end, metric), so a
+    // reader that pins it can only ever match rows written under the exact same
+    // end convention — which is precisely the join that read zero AI tokens
+    // forever before m474. Carried here from lib/usage.ts:135 (checkLimit),
+    // which held the correct key and whose orphaned siblings were removed in the
+    // lane-E burn-down; the survivor must not inherit the defect the duplicate
+    // had already fixed.
     supabase
       .from("usage_counters")
       .select("metric, value")
       .eq("brokerage_id", ctx.brokerageId)
-      .eq("period_start", periodStart.toISOString())
-      .eq("period_end", periodEnd.toISOString()),
+      .eq("period_start", periodStart.toISOString()),
     supabase
       .from("plan_limits")
       .select("metric, limit_value, soft_limit_threshold")
@@ -134,7 +162,7 @@ export async function loadUsageOverview(): Promise<{
     .lt("created_at", periodEnd.toISOString())
     .in("metric", [
       "live_avatar_minutes", "live_avatar_sessions", "tts_characters",
-      "voice_clones_created", "avatars_created", "vapi_minutes",
+      "voice_clones_created", "avatars_created", "ai_voice_minutes",
     ])
 
   // Aggregate per (agent_id, metric)

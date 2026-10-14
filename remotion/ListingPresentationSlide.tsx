@@ -57,13 +57,10 @@
  * inject whatever it needs without forking compositions.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
+import { AvatarPIP } from "./components/AvatarPIP"
+import { cinemaDisclosureStyle, cinemaFrame, cinemaSlideFooterStack, SLIDE_PRESENTER_PIP, slideDisclosureText } from "../lib/video/cinema-finish"
 
 export type SlideKind = "title" | "image" | "comps" | "chart" | "closing"
 
@@ -106,7 +103,18 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
   agentPhotoUrl, agentName, brand,
 }) => {
   const surface = brand.surfaceColor ?? "#FFFFFF"
-  const showEho = brand.showEhoMark ?? true
+  // WAVE 90 (lane 90E — the lane's real render): the footer, the nameplate and
+  // the body's bottom edge come from the ONE slide stack (lib/video/cinema-
+  // finish.ts cinemaSlideFooterStack) — the disclosure ON the safe inset in
+  // readable type, the nameplate above it, the caption band above both, the
+  // body clear of all three. They were a 40 px bar at the bottom edge in 12 px
+  // type, a nameplate 32 px from the edge and a body that ran under the captions.
+  // The stack is laid out for THIS disclosure text (a real-length line wraps
+  // beside the presenter ring; the rows above stand on all of its lines).
+  const { width, height } = useVideoConfig()
+  const disclosure = slideDisclosureText(brand)
+  const stack = cinemaSlideFooterStack(width, height, disclosure)
+  const { safe } = cinemaFrame(width, height)
 
   return (
     <AbsoluteFill style={{
@@ -119,10 +127,10 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
         position: "absolute", top: 0, left: 0, right: 0, height: 80,
         backgroundColor: brand.primaryColor, color: "#fff",
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "0 48px",
+        padding: `0 ${safe.left}px`,
       }}>
         {brand.logoUrl ? (
-          <Img src={brand.logoUrl} style={{ height: 40, objectFit: "contain" }} />
+          <SafeImg src={brand.logoUrl} style={{ height: 40, objectFit: "contain" }} />
         ) : (
           <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: 2 }}>{brand.brokerageName}</div>
         )}
@@ -131,10 +139,10 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
         </div>
       </div>
 
-      {/* Body region — varies by slide kind */}
+      {/* Body region — varies by slide kind; its bottom edge clears the footer stack. */}
       <div style={{
-        position: "absolute", top: 80, left: 0, right: 0, bottom: 120,
-        padding: "48px 56px",
+        position: "absolute", top: safe.top, left: 0, right: 0, bottom: stack.bodyBottom,
+        padding: `24px ${safe.left}px 16px`,
       }}>
         {kind === "title" && (
           <TitleSlideBody title={title} body={body} accentColor={brand.accentColor} />
@@ -152,9 +160,10 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
         )}
       </div>
 
-      {/* Avatar PIP — bottom-right. ~280×280 with brand-accent ring.
-          The slide's avatar slice plays underneath; the homeowner
-          sees a continuous narration even as slide content cuts. */}
+      {/* Avatar PIP — bottom-right, SLIDE_PRESENTER_PIP (the footer stack reserves
+          its column from the same numbers). The slide's avatar slice plays
+          underneath; the homeowner sees a continuous narration even as slide
+          content cuts. */}
       <AvatarPIP
         avatarVideoUrl={avatarVideoUrl}
         agentPhotoUrl={agentPhotoUrl}
@@ -163,27 +172,29 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
         endFrame={avatarEndFrame}
         accentColor={brand.accentColor}
         primaryColor={brand.primaryColor}
+        position="bottom-right"
+        size={SLIDE_PRESENTER_PIP.size}
+        ringWidth={SLIDE_PRESENTER_PIP.ringWidth}
       />
 
-      {/* Bottom-left agent name plate */}
+      {/* Bottom-left agent name plate — one line above the disclosure, on the safe side inset. */}
       <div style={{
-        position: "absolute", bottom: 32, left: 56,
+        position: "absolute", bottom: stack.nameplateBottom, left: safe.left,
         display: "flex", alignItems: "center", gap: 12,
       }}>
         <div style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: brand.accentColor }} />
-        <div style={{ fontSize: 18, fontWeight: 600, color: brand.primaryColor }}>{agentName}</div>
+        <div style={{ fontSize: 22, fontWeight: 600, color: brand.primaryColor }}>{agentName}</div>
       </div>
 
-      {/* Footer attribution */}
+      {/* Footer: the decorative brand bar fills the unsafe band (no text in it); the
+          disclosure line sits ON the safe inset at the caption type step, centred in
+          the width LEFT of the presenter ring (stack.presenterRight) — never under it. */}
       <div style={{
-        position: "absolute", bottom: 0, left: 0, right: 0, height: 40,
-        backgroundColor: brand.primaryColor, color: "#fff", opacity: 0.85,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 12, letterSpacing: 1,
-      }}>
-        {brand.brokerageName}
-        {showEho && " · Equal Housing Opportunity"}
-        {brand.licenseLine && ` · ${brand.licenseLine}`}
+        position: "absolute", bottom: 0, left: 0, right: 0, height: stack.footerBarHeight,
+        backgroundColor: brand.primaryColor, opacity: 0.9,
+      }} />
+      <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), bottom: stack.disclosureBottom, right: stack.presenterRight, color: brand.primaryColor, opacity: 0.9 }}>
+        {disclosure}
       </div>
     </AbsoluteFill>
   )
@@ -200,17 +211,17 @@ const TitleSlideBody: React.FC<{ title: string; body: string[]; accentColor: str
     }}>
       <div style={{
         width: 64, height: 4, backgroundColor: accentColor, marginBottom: 32,
-        opacity: interpolate(frame, [0, 12], [0, 1]),
+        opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
       }} />
       <div style={{
         fontSize: 84, fontWeight: 800, lineHeight: 1.05, marginBottom: 24,
-        opacity: interpolate(frame, [6, 24], [0, 1]),
+        opacity: interpolate(frame, [6, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
       }}>
         {title}
       </div>
       {body.map((p, i) => (
         <div key={i} style={{
-          fontSize: 28, opacity: interpolate(frame, [18 + i * 6, 36 + i * 6], [0, 0.8]),
+          fontSize: 28, opacity: interpolate(frame, [18 + i * 6, 36 + i * 6], [0, 0.8], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           maxWidth: 1200, lineHeight: 1.45,
         }}>{p}</div>
       ))}
@@ -218,23 +229,22 @@ const TitleSlideBody: React.FC<{ title: string; body: string[]; accentColor: str
   )
 }
 
+// WAVE 91 (lane 91E — the first real render of the hero-image kind): with no hero
+// image the 58 % photo box printed the words "Photo placeholder" on a grey panel —
+// shipped to a client — and the text column kept its 42 % beside an empty box.
+// No photo → no box: the copy takes the whole body width (the title kind's
+// reading measure). The photo box, when there is a photo, is unchanged.
 const ImageSlideBody: React.FC<{
   title: string; body: string[]; heroImageUrl: string | null; accentColor: string
 }> = ({ title, body, heroImageUrl, accentColor }) => {
   return (
     <div style={{ height: "100%", display: "flex", gap: 48 }}>
-      <div style={{ width: "58%", height: "100%", borderRadius: 12, overflow: "hidden", backgroundColor: "#E5E7EB" }}>
-        {heroImageUrl ? (
-          <Img src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-        ) : (
-          <div style={{
-            width: "100%", height: "100%", display: "flex",
-            alignItems: "center", justifyContent: "center",
-            color: "#9CA3AF", fontSize: 24,
-          }}>Photo placeholder</div>
-        )}
-      </div>
-      <div style={{ width: "42%", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+      {heroImageUrl && (
+        <div style={{ width: "58%", height: "100%", borderRadius: 12, overflow: "hidden", backgroundColor: "#E5E7EB" }}>
+          <SafeImg src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        </div>
+      )}
+      <div style={{ width: heroImageUrl ? "42%" : "100%", maxWidth: heroImageUrl ? undefined : 1200, display: "flex", flexDirection: "column", justifyContent: "center" }}>
         <div style={{ width: 48, height: 4, backgroundColor: accentColor, marginBottom: 20 }} />
         <div style={{ fontSize: 48, fontWeight: 800, lineHeight: 1.1, marginBottom: 24 }}>
           {title}
@@ -299,52 +309,12 @@ const ClosingSlideBody: React.FC<{
   )
 }
 
-/* ─────────── avatar PIP ─────────── */
-
-const AvatarPIP: React.FC<{
-  avatarVideoUrl: string | null
-  agentPhotoUrl:  string | null
-  agentName:      string
-  startFrame:     number
-  endFrame:       number
-  accentColor:    string
-  primaryColor:   string
-}> = ({ avatarVideoUrl, agentPhotoUrl, agentName, startFrame, endFrame, accentColor, primaryColor }) => {
-  const ring: React.CSSProperties = {
-    position: "absolute", bottom: 64, right: 56,
-    width: 280, height: 280,
-    borderRadius: 140,
-    boxShadow: `0 0 0 5px ${accentColor}, 0 24px 48px rgba(0,0,0,0.18)`,
-    overflow: "hidden",
-    backgroundColor: primaryColor,
-  }
-  if (avatarVideoUrl) {
-    return (
-      <div style={ring}>
-        <Video
-          src={avatarVideoUrl}
-          startFrom={startFrame}
-          endAt={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
-      </div>
-    )
-  }
-  if (agentPhotoUrl) {
-    return (
-      <div style={ring}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-    )
-  }
-  return (
-    <div style={{
-      ...ring,
-      backgroundColor: accentColor,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: 100, color: primaryColor, fontWeight: 800,
-    }}>
-      {(agentName[0] ?? "A").toUpperCase()}
-    </div>
-  )
-}
+// TOMBSTONE (§1 orphan doctrine — duplicate exists, merge onto survivor
+// first): the private `AvatarPIP` that stood here (bottom-right, 280×280,
+// `trimBefore={startFrame} trimAfter={endFrame}` with NO freeze/fade guard)
+// was byte-identical to BuyerConsultationSlide.tsx's own private duplicate
+// and a `position`-less subset of the shared survivor. Wave 61 re-audit:
+// merged its "bottom-right" geometry onto remotion/components/AvatarPIP.tsx
+// (position="bottom-right" | size=280 | ringWidth=5), which also gives this
+// slide the avatarPipWindowFade freeze guard the private copy never had.
+// Survivor: remotion/components/AvatarPIP.tsx:52.

@@ -1,12 +1,13 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
-import { determinePortalView } from "@/lib/kernel/portal"
+import { resolvePortalLayouts, clientTransactionFilter, portalDealClient, scopeToDealTenant } from "@/lib/kernel/portal"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
 import { ArrowLeft, Phone, Mail, Building2, Briefcase, MessageSquare, Star } from "lucide-react"
 import { RequestBookingButton } from "./request-booking-button"
+import { RateBookingStars } from "./rate-booking-stars"
 import {
   resolveContactVendors,
   buildVendorAudienceTags,
@@ -44,8 +45,8 @@ export default async function ClientVendorsPage({
 
   // Kernel decides the portal view (buyer / seller / lifetime). All three
   // get the marketplace — the resolver below filters per view.
-  const portalViewOutput = await determinePortalView(supabase, { contactId })
-  const portalView = portalViewOutput.view
+  // (wave 94: the kernel's layouts — the marketplace is headed by the PRIMARY layout.)
+  const portalView = (await resolvePortalLayouts(supabase, { contactId })).primary
 
   // Hard guard: if the kernel can't decide a view at all, bounce back.
   if (!portalView) {
@@ -63,15 +64,22 @@ export default async function ClientVendorsPage({
     redirect("/portal?error=contact_not_found")
   }
 
-  // Active transaction (used for both stage derivation + assignments list)
-  const { data: transaction } = await supabase
-    .from("transactions")
-    .select("id, contact_id, status, close_date")
-    .or(`buyer_contact_id.eq.${contactId},contact_id.eq.${contactId}`)
-    .not("status", "in", "(cancelled)")
+  // Active transaction (used for both stage derivation + assignments list). Read
+  // through the kernel's gate-then-service deal client (lib/kernel/portal.ts
+  // portalDealClient): the client's own session sees none of its deals.
+  const { client: dealDb, brokerageId: dealTenant } = await portalDealClient(supabase, contactId)
+  const { data: transaction, error: txError } = await scopeToDealTenant(
+    dealDb
+      .from("transactions")
+      .select("id, contact_id, status, close_date")
+      .or(clientTransactionFilter(contactId))
+      .not("status", "in", "(cancelled)"),
+    dealTenant,
+  )
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
+  if (txError) console.error("[portal/vendors] deal read refused:", txError.message)
 
   // Build audience + stage tags for the resolver
   const { audienceTags, stage } = buildVendorAudienceTags({
@@ -83,10 +91,16 @@ export default async function ClientVendorsPage({
     closeDate:          transaction?.close_date ?? null,
   })
 
-  // Three reads in parallel — assignments + curated list + agent info.
-  const [assignedRes, curatedVendors, agentRes] = await Promise.all([
+  // Four reads in parallel — assignments + curated list + agent info + the
+  // contact's OWN bookings. The bookings read is the missing render half of the
+  // contact-request loop: requestContactVendorBooking has written
+  // vendor_bookings rows with request_origin='contact' since the portal button
+  // shipped, and NO portal surface ever read them back — this page read
+  // vendor_assignments only, so a client who requested a service never saw it
+  // again (and the completed rows are where the client-rating door lives).
+  const [assignedRes, curatedVendors, agentRes, bookingsRes] = await Promise.all([
     transaction
-      ? supabase
+      ? scopeToDealTenant(dealDb
           .from("vendor_assignments")
           .select(`
             id,
@@ -96,7 +110,7 @@ export default async function ClientVendorsPage({
             vendors:vendor_id(id, name, category, phone, email),
             vendor_jobs:vendor_jobs(id, status, cost_estimate, cost_actual)
           `)
-          .eq("transaction_id", transaction.id)
+          .eq("transaction_id", transaction.id), dealTenant)
           .order("scheduled_date", { ascending: false, nullsFirst: false })
       : Promise.resolve({ data: [] as never[] }),
     resolveContactVendors(supabase, {
@@ -109,6 +123,15 @@ export default async function ClientVendorsPage({
     contact.agent_id
       ? supabase.from("agents").select("id, users(first_name, last_name)").eq("id", contact.agent_id).maybeSingle()
       : Promise.resolve({ data: null }),
+    // Scoped by BOTH contact_id and brokerage_id (§4 — the tenant predicate is
+    // the contact row's own, never a caller field).
+    supabase
+      .from("vendor_bookings")
+      .select("id, service_type, status, completed_at, client_rating, vendors:vendor_id(name, category)")
+      .eq("contact_id", contactId)
+      .eq("brokerage_id", contact.brokerage_id ?? "")
+      .order("completed_at", { ascending: false, nullsFirst: false })
+      .limit(20),
   ])
 
   const assignedVendors = (assignedRes.data ?? []) as Array<{
@@ -120,6 +143,20 @@ export default async function ClientVendorsPage({
     vendor_jobs: Array<{ id: string; status: string | null; cost_estimate: number | null; cost_actual: number | null }> | null
   }>
   const agent = (agentRes as { data?: { users?: { first_name?: string | null; last_name?: string | null } | null } | null }).data ?? null
+
+  // §3: supabase-js RESOLVES refusals — without this read, a refused bookings
+  // query renders as "you haven't requested any services" instead of an error.
+  if (bookingsRes.error) {
+    console.error("[portal/vendors] vendor_bookings read refused:", bookingsRes.error.message)
+  }
+  const myBookings = (bookingsRes.data ?? []) as Array<{
+    id: string
+    service_type: string | null
+    status: string | null
+    completed_at: string | null
+    client_rating: number | null
+    vendors: { name?: string | null; category?: string | null } | null
+  }>
 
   // RESPA disclosure resolution — a preferred / settlement-service vendor shown to a client must carry
   // the required disclosure (and AfBA vendors must be acknowledged before contact info is revealed).
@@ -251,6 +288,71 @@ export default async function ClientVendorsPage({
         </Card>
       )}
 
+      {/* Section 1.5: the contact's OWN bookings — request → status → rate loop.
+          Row anchors (booking-{id}) are the landing spot for the vendor-loop
+          review request's deep link (/portal/{contactId}/vendors#booking-{id}). */}
+      {myBookings.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Star className="h-5 w-5" />
+              Services You Requested
+            </CardTitle>
+            <CardDescription>
+              Your booking requests and completed services — rate a completed service to help
+              your agent keep only the best pros on your team.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {myBookings.map((b) => (
+                <div key={b.id} id={`booking-${b.id}`} className="p-4 border rounded-lg scroll-mt-24">
+                  <div className="flex items-start justify-between gap-4 mb-2">
+                    <div className="min-w-0">
+                      <h3 className="font-semibold truncate">{b.vendors?.name ?? "Vendor"}</h3>
+                      <p className="text-xs text-muted-foreground">
+                        {b.service_type ?? b.vendors?.category ?? "Service"}
+                        {b.completed_at && ` · completed ${new Date(b.completed_at).toLocaleDateString()}`}
+                      </p>
+                    </div>
+                    {b.status && (
+                      <Badge
+                        variant="outline"
+                        className={`text-xs shrink-0 ${
+                          b.status === "completed"
+                            ? "bg-green-50 text-green-700 border-green-200"
+                            : b.status === "cancelled"
+                              ? "bg-red-50 text-red-700 border-red-200"
+                              : "bg-blue-50 text-blue-700 border-blue-200"
+                        }`}
+                      >
+                        {b.status.replace(/_/g, " ")}
+                      </Badge>
+                    )}
+                  </div>
+                  {b.status === "completed" && !b.client_rating && (
+                    <RateBookingStars contactId={contactId} bookingId={b.id} />
+                  )}
+                  {b.client_rating != null && (
+                    <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-0.5">
+                        {[1, 2, 3, 4, 5].map((n) => (
+                          <Star
+                            key={n}
+                            className={`h-3 w-3 ${n <= (b.client_rating ?? 0) ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground"}`}
+                          />
+                        ))}
+                      </div>
+                      <span className="text-xs text-muted-foreground">Your rating</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Section 2: curated marketplace (grouped by category, persona-filtered) */}
       {curatedVendors.length > 0 && (
         <Card>
@@ -265,7 +367,13 @@ export default async function ClientVendorsPage({
           </CardHeader>
           <CardContent className="space-y-5">
             {Array.from(byCategory.entries()).map(([category, vendors]) => (
-              <div key={category}>
+              // The category heading carries an anchor id so another surface can
+              // link a client straight to a vendor's SPOT here — e.g. the deal's
+              // Hazard Insurance panel deep-links to #vendor-category-insurance.
+              // Linking here rather than reproducing vendor contact details
+              // elsewhere is deliberate: this page is where the RESPA / AfBA
+              // acknowledgment gate lives, and it must not be stepped around.
+              <div key={category} id={`vendor-category-${category}`} className="scroll-mt-24">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
                   {category}
                 </h3>
@@ -340,7 +448,7 @@ export default async function ClientVendorsPage({
         </Card>
       )}
 
-      {curatedVendors.length === 0 && assignedVendors.length === 0 && (
+      {curatedVendors.length === 0 && assignedVendors.length === 0 && myBookings.length === 0 && (
         <Card className="bg-blue-50 border-blue-200">
           <CardContent className="pt-6">
             <p className="text-sm text-blue-900">

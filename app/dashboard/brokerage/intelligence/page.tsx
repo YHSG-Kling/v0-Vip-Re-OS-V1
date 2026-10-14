@@ -5,8 +5,16 @@ import { createClient } from "@/lib/supabase/server"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
+// Lane 90C (89D P2-8 / §7): the ISA's response-time SLA and the three proof
+// numbers competitors publish — ONE reader (getSpeedToLeadMetrics) and ONE
+// strip (IsaProofNumbersStrip), shared with /dashboard/isa, never a second copy.
+import { getSpeedToLeadMetrics } from "@/app/actions/ai-isa/speed-to-lead-metrics"
+import { IsaProofNumbersStrip } from "@/app/dashboard/isa/components/speed-to-lead-panel"
 import {
   Brain,
+  Zap,
   Activity,
   Map,
   Plug,
@@ -42,8 +50,18 @@ function relativeTime(dateStr: string): string {
 export default async function BrokerageIntelligencePage() {
   const context = await getAgentContext()
   if (!context?.brokerageId) redirect("/login")
-  if (context.userType !== "admin" && context.userType !== "broker" && context.userType !== "superadmin") {
-    redirect("/dashboard")
+  // Lane 89D: was `!== "admin" && !== "broker" && !== "superadmin"` — the
+  // third arm is dead (no live row stores user_type='superadmin', §4) and the
+  // first two miss broker_owner / broker_admin / compliance_officer, so the
+  // owner seat the broker and admin sidebars send here ("Intelligence Center")
+  // was bounced to /dashboard. ONE roster predicate; refusal stated in place.
+  if (!isAdminOrBroker({ user_type: context.userType })) {
+    return (
+      <RoleGateNotice
+        surface="The Intelligence Center"
+        audience="your broker, brokerage admins, team leads and compliance officer"
+      />
+    )
   }
 
   const { brokerageId } = context
@@ -54,7 +72,7 @@ export default async function BrokerageIntelligencePage() {
   const last24h = new Date(Date.now() - 86_400_000).toISOString()
   const last7d = new Date(Date.now() - 7 * 86_400_000).toISOString()
 
-  // All 7 data sources loaded in parallel
+  // All 8 data sources loaded in parallel (the 8th, lane 90C: the ISA's own ledgers)
   const [
     systemErrorsResult,
     farmMetricsResult,
@@ -63,6 +81,7 @@ export default async function BrokerageIntelligencePage() {
     patternCountResult,
     latestMarketInsightResult,
     recruitingCostsResult,
+    speedToLead,
   ] = await Promise.all([
     // 1. System: unresolved automation errors in last 24h
     supabase
@@ -117,6 +136,9 @@ export default async function BrokerageIntelligencePage() {
       .select("amount")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", startOfMonth),
+
+    // 8. AI-ISA response SLA + proof numbers (session-resolved brokerageId, RLS client)
+    getSpeedToLeadMetrics(brokerageId),
   ])
 
   const systemErrors = systemErrorsResult.data || []
@@ -494,6 +516,32 @@ export default async function BrokerageIntelligencePage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* AI-ISA response — the SLA meter + the three proof numbers (lane 90C) */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Zap className="h-4 w-4" />
+              AI-ISA Response
+              <span className="text-xs font-normal text-muted-foreground ml-1">
+                first touch: {speedToLead.recent.medianSeconds === null ? "—" : `${speedToLead.recent.medianSeconds < 90 ? `${speedToLead.recent.medianSeconds}s` : `${Math.round(speedToLead.recent.medianSeconds / 60)}m`} median`}
+                {speedToLead.recent.pctWithinSla !== null ? ` · ${Math.round(speedToLead.recent.pctWithinSla * 100)}% within 5 min` : ""}
+                {" · "}{speedToLead.awaitingLeads + speedToLead.awaitingContacts} awaiting
+              </span>
+            </CardTitle>
+            <Link href="/dashboard/isa">
+              <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs">
+                <ExternalLink className="h-3 w-3" />
+                ISA Console
+              </Button>
+            </Link>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <IsaProofNumbersStrip proof={speedToLead.proof} refused={speedToLead.refused} compact />
+        </CardContent>
+      </Card>
 
       {/* Provider Status Row */}
       <Card>

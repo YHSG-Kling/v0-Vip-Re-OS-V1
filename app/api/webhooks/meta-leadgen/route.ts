@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ingestMetaLeadByRef } from "@/lib/ads/ad-lead-intake"
+import { metaSubscriptionHandshake, verifyMetaSignature } from "@/lib/meta/verify-signature"
 
 /**
  * app/api/webhooks/meta-leadgen/route.ts
@@ -10,27 +11,36 @@ import { ingestMetaLeadByRef } from "@/lib/ads/ad-lead-intake"
  * unconsented `leads` row — which is what unlocks avatar-video follow-up and
  * ad-audience membership downstream.
  *
- * GET  — Meta subscription verification (hub.challenge echo).
+ * THAT IS EXACTLY WHY THE POST MUST BE VERIFIED. Until 2026-09-03 this handler
+ * parsed `request.json()` from ANYONE and minted consented contacts from it —
+ * an unauthenticated caller could fabricate TCPA consent for any phone number
+ * and enrol it in outbound follow-up. Verification now runs through the ONE
+ * Meta verifier (lib/meta/verify-signature.ts — X-Hub-Signature-256 over the
+ * raw body, keyed by the App Secret; 503 when the secret is unset, 401 on a
+ * mismatch; fail closed). The "non-Meta callers / tests may post field_data
+ * inline" affordance survives only for a caller that signs with the App
+ * Secret — a test must sign its fixture the way Meta would.
+ *
+ * GET  — Meta subscription verification (hub.challenge echo against the ONE
+ *        verify token, META_WEBHOOK_VERIFY_TOKEN; fallbacks documented in the
+ *        verifier).
  * POST — leadgen change events. Meta sends a leadgen_id; the full field_data is
- *        fetched from the Graph API with the page token (resolveLeadFields). For
- *        non-Meta callers / tests, field_data may be posted inline.
+ *        fetched from the Graph API with the page token (resolveLeadFields).
  */
 export const dynamic = "force-dynamic"
 
 export async function GET(request: Request) {
-  const url = new URL(request.url)
-  const mode = url.searchParams.get("hub.mode")
-  const token = url.searchParams.get("hub.verify_token")
-  const challenge = url.searchParams.get("hub.challenge")
-  if (mode === "subscribe" && token && token === process.env.META_WEBHOOK_VERIFY_TOKEN) {
-    return new NextResponse(challenge ?? "", { status: 200 })
-  }
-  return new NextResponse("forbidden", { status: 403 })
+  return metaSubscriptionHandshake(request)
 }
 
 export async function POST(request: Request) {
+  // Raw body FIRST — the signature is over the exact bytes Meta sent.
+  const rawBody = await request.text()
+  const verdict = verifyMetaSignature(rawBody, request.headers.get("x-hub-signature-256"))
+  if (!verdict.ok) return new NextResponse(verdict.reason, { status: verdict.status })
+
   let body: any
-  try { body = await request.json() } catch { return NextResponse.json({ ok: false, error: "bad json" }, { status: 400 }) }
+  try { body = JSON.parse(rawBody) } catch { return NextResponse.json({ ok: false, error: "bad json" }, { status: 400 }) }
 
   const svc = createServiceClient()
   const entries = Array.isArray(body?.entry) ? body.entry : []

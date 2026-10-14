@@ -14,7 +14,16 @@ type QuizState =
   | { phase: 'loading' }
   | { phase: 'loaded'; quizId: string; quizName: string; passingScore: number; questions: QuizQuestion[] }
   | { phase: 'submitting' }
-  | { phase: 'result'; score: number; passed: boolean; passingScore: number }
+  | {
+      phase: 'result'
+      score: number
+      passed: boolean
+      passingScore: number
+      correctCount: number
+      totalQuestions: number
+      attemptNumber: number
+      message: string
+    }
   | { phase: 'error'; message: string }
 
 type Props = {
@@ -56,7 +65,16 @@ export function OnboardingQuizClient({ stepId, onPassAndComplete }: Props) {
     startTransition(async () => {
       try {
         const result = await submitQuiz(quizId, answers as Record<string, unknown>)
-        setState({ phase: 'result', score: result.score, passed: result.passed, passingScore })
+        setState({
+          phase: 'result',
+          score: result.score,
+          passed: result.passed,
+          passingScore: result.passingScore ?? passingScore,
+          correctCount: result.correctCount,
+          totalQuestions: result.totalQuestions,
+          attemptNumber: result.attemptNumber,
+          message: result.message,
+        })
       } catch {
         setState({ phase: 'error', message: 'Failed to submit quiz. Please try again.' })
       }
@@ -102,10 +120,13 @@ export function OnboardingQuizClient({ stepId, onPassAndComplete }: Props) {
     return (
       <div className={`mt-3 rounded-lg p-4 ${state.passed ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
         <p className={`font-semibold ${state.passed ? 'text-green-800' : 'text-red-800'}`}>
-          {state.passed ? 'Quiz passed!' : 'Quiz not passed'}
+          {state.message}
         </p>
         <p className="text-sm text-gray-700 mt-1">
-          Score: {state.score}% (passing: {state.passingScore}%)
+          {state.correctCount} of {state.totalQuestions} correct &middot; {state.score}% (passing: {state.passingScore}%)
+        </p>
+        <p className="text-xs text-gray-500 mt-1">
+          Attempt {state.attemptNumber}
         </p>
         {state.passed ? (
           <button

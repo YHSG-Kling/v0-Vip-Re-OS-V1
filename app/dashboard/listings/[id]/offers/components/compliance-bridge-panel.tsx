@@ -60,7 +60,7 @@ interface ComplianceBridgePanelProps {
 }
 
 // ─── Server-action wrappers ───────────────────────────────────────────────────
-// Imported via dynamic import → "use server" RPC stubs. Keeps kernel/* +
+// Imported via dynamic import → "use server" RPC stubs. Keeps kernel modules +
 // compliance-gate (server-only chains) out of the client bundle.
 
 async function runAcceptOfferConditionally(params: {

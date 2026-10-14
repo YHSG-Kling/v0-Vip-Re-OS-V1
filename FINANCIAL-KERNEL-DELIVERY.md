@@ -58,7 +58,7 @@
 ✅ **Full Kernel Ownership** — All mutations flow through 11 explicit commands  
 ✅ **Status Transitions Enforced** — calculated → approved → paid (invalid transitions blocked)  
 ✅ **Permissions Guarded** — Only broker/admin/superadmin can approve/pay  
-✅ **Schema Guardrails** — business_expenses filtered by agent_id only, agent_cap_tracking is truth  
+✅ **Schema Guardrails** — business_expenses is scoped by brokerage_id AND agent_id (corrected 2026-08-22: this line said "filtered by agent_id only"; the table has carried brokerage_id and team_id since m516, which closed brokerage_id NOT NULL), agent_cap_tracking is truth  
 ✅ **Audit Trail** — Every mutation emits KernelEvent to lifecycle_events  
 ✅ **Complete Type Safety** — Full TypeScript contracts for all commands  
 ✅ **Production Ready** — Error handling, role-based access, no mock data  

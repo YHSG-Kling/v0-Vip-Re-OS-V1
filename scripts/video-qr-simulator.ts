@@ -117,11 +117,18 @@ async function main() {
   check("Director stages a per-situation qrCaption", /qrCaption:\s*qrCaptionForSituation\(situation\.kind\)/.test(director))
   check("qrKindForSituation maps the non-listing kinds to their OWN destination (not the just_listed fallback)",
     /case "market_update": return "market_update"/.test(director) && /case "cma":\s*return "cma"/.test(director) && /case "neighborhood":\s*return "neighborhood"/.test(director))
+  // Wave 91 (lane 91E): the RULE is "imports the badge and renders it with the flat prop" — an
+  // import that also names shouldRenderQrBadge (ComingSoonReel's end-card clearance) is the same
+  // import. The finder was pinned to the exact `import { QrOutroBadge }` spelling.
+  const IMPORTS_BADGE = /import \{[^}]*\bQrOutroBadge\b[^}]*\} from "\.\/components\/QrOutroBadge"/
   for (const comp of ["MarketUpdateReel", "CMAReel", "AgentExplainerReel", "TestimonialReel", "NeighborhoodSpotlightReel", "ComingSoonReel", "ExplainerAnimReel", "AffordabilitySnapshotReel", "BuyerConsultationSlide"]) {
     const c = src(`remotion/${comp}.tsx`)
     check(`${comp} renders <QrOutroBadge> reading the flat qrCodeDataUrl prop`,
-      /import \{ QrOutroBadge \}/.test(c) && /<QrOutroBadge[\s\S]*?qrCodeDataUrl=\{/.test(c))
+      IMPORTS_BADGE.test(c) && /<QrOutroBadge[\s\S]*?qrCodeDataUrl=\{/.test(c))
   }
+  check("CONTROL: the import finder refuses a composition that never imports the badge, and accepts a multi-name import",
+    !IMPORTS_BADGE.test(`import { CaptionLayer } from "./components/CaptionLayer"`)
+    && IMPORTS_BADGE.test(`import { QrOutroBadge, shouldRenderQrBadge } from "./components/QrOutroBadge"`))
 
   // Builders degrade gracefully when the entity ref is missing (no crash, still a URL).
   const noRefs = {}

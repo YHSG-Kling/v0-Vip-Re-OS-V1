@@ -13,20 +13,17 @@
 // brokerage (no unique indexes, live-verified).
 
 import "server-only"
+// TOMBSTONE (§1.1, 2026-09-07) — a private `zipFromAddress` (any 5-digit run,
+// so a house number read as a ZIP) stood here. Survivor:
+// lib/intelligence/negotiation-bands.ts:zipFromAddress, which gained this
+// file's one missing case (a ZIP before a trailing ", USA") on merge.
+import { zipFromAddress } from "@/lib/intelligence/negotiation-bands"
 
 type Svc = { from: (table: string) => any }
 
-const ZIP_RE = /\b(\d{5})(?:-\d{4})?\b/
-
-export function zipFromAddress(address: string | null | undefined): string | null {
-  if (!address) return null
-  const m = ZIP_RE.exec(address)
-  return m ? m[1] : null
-}
-
 export interface DerivedSnapshotsResult { insightsRows: number; heatmapRows: number }
 
-export async function runPropertySmartInsights(svc: Svc, brokerageId: string, now: Date): Promise<number> {
+async function runPropertySmartInsights(svc: Svc, brokerageId: string, now: Date): Promise<number> {
   // Live columns: list_price / listing_date (NOT price / list_date — the
   // drift guard caught the phantom names before this ever shipped).
   const { data: listings } = await svc
@@ -39,7 +36,8 @@ export async function runPropertySmartInsights(svc: Svc, brokerageId: string, no
   const rows = (listings ?? []) as Array<{ id: string; mls_number: string; list_price: number | null; created_at: string; listing_date: string | null }>
   if (rows.length === 0) return 0
 
-  await svc.from("property_smart_insights").delete().eq("brokerage_id", brokerageId)
+  const { error: insightsClearErr } = await svc.from("property_smart_insights").delete().eq("brokerage_id", brokerageId)
+  if (insightsClearErr) console.error(`[derived-snapshots] prior property insights NOT cleared (duplicates possible): ${insightsClearErr.message}`)
   let written = 0
   for (const l of rows) {
     const listedAt = l.listing_date ?? l.created_at
@@ -65,7 +63,7 @@ export async function runPropertySmartInsights(svc: Svc, brokerageId: string, no
   return written
 }
 
-export async function runTeamHeatmapSnapshots(svc: Svc, brokerageId: string, now: Date): Promise<number> {
+async function runTeamHeatmapSnapshots(svc: Svc, brokerageId: string, now: Date): Promise<number> {
   const snapshotDate = now.toISOString().slice(0, 10)
   const since = new Date(now.getTime() - 90 * 86_400_000).toISOString()
 
@@ -98,7 +96,8 @@ export async function runTeamHeatmapSnapshots(svc: Svc, brokerageId: string, now
   for (const s of ((shows ?? []) as any[])) bump(s.agent_id, zipFromAddress(s.listings?.address), "buyer", 0)
   if (agg.size === 0) return 0
 
-  await svc.from("team_heatmap_snapshots").delete().eq("brokerage_id", brokerageId).eq("snapshot_date", snapshotDate)
+  const { error: heatmapClearErr } = await svc.from("team_heatmap_snapshots").delete().eq("brokerage_id", brokerageId).eq("snapshot_date", snapshotDate)
+  if (heatmapClearErr) console.error(`[derived-snapshots] prior heatmap rows NOT cleared (duplicates possible): ${heatmapClearErr.message}`)
   const rows = [...agg.values()].map((a) => ({
     brokerage_id: brokerageId,
     snapshot_date: snapshotDate,

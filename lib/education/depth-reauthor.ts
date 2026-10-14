@@ -91,10 +91,11 @@ export async function recoverTopicForModule(
   }
 }
 
-export interface DepthReauthorResult { scanned: number; reauthored: number }
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+interface DepthReauthorResult { scanned: number; reauthored: number }
 
 /** Re-author every pre-upgrade shallow AI module for one brokerage (capped per run). */
-export async function reauthorShallowModules(svc: Svc, brokerageId: string): Promise<DepthReauthorResult> {
+async function reauthorShallowModules(svc: Svc, brokerageId: string): Promise<DepthReauthorResult> {
   const out: DepthReauthorResult = { scanned: 0, reauthored: 0 }
 
   const { data: b } = await svc.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()

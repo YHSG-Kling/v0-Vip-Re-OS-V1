@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { createClient } from "@/lib/supabase/server"
+import { resolveReportScope } from "@/lib/kernel/reporting-scope"
 import { getSourcePerformance } from "@/app/actions/source-analytics"
 import { SourceAnalyticsClient } from "./source-analytics-client"
 
@@ -11,18 +13,39 @@ export const metadata = {
 }
 
 export default async function SourceAnalyticsPage() {
-  const ctx = await getAgentContext()
+  // Self-healing identity: an agent who reached this page without a brokerage/agents row is
+  // PROVISIONED in place rather than bounced to onboarding (the "bounce" class in the live
+  // walkthrough). The redirect below now only fires for an account that genuinely cannot
+  // self-provision — a pending brokerage invite, or a staff user whose brokerage comes from
+  // their org. Idempotent: a no-op for an already-anchored user.
+  const ctx = await ensureAgentContextInPlace()
   if (!ctx.isAuthenticated) redirect("/login")
   if (!ctx.brokerageId) redirect("/dashboard/onboarding")
 
-  const isBrokerOrAdmin = ctx.userType === "broker" || ctx.userType === "admin" || ctx.userType === "superadmin"
+  // Lane 90A (89D P1-5): the scope is the ONE resolver (lib/kernel/egress-scope.ts
+  // through reporting-scope) — broker / owner / admin / compliance → the whole
+  // brokerage, a location admin → their location, team_lead → THEIR TEAM ("teams
+  // see only their own board", CLAUDE.md §4), everyone else → own work. The
+  // `userType === "broker" || "admin" || "superadmin"` literal it replaces gave a
+  // broker OWNER the agent view — and that agent view filtered contacts.agent_id
+  // (an agents.id) by ctx.userId (a users.id): a query that matched nothing (§3).
+  const supabase = await createClient()
+  const scope = await resolveReportScope(supabase, {
+    userType: ctx.userType,
+    userId: ctx.userId,
+    agentId: ctx.agentId ?? "",
+    brokerageId: ctx.brokerageId,
+    teamId: ctx.teamId,
+  })
+  // null = brokerage-wide; a seat with no agents row narrows to nobody, never to everybody.
+  const scopeAgentIds = scope.agentIds ? scope.agentIds.filter(Boolean) : null
 
   // Initial data load — last 90 days, all source families
   const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
 
   const initialResult = await getSourcePerformance({
     brokerageId: ctx.brokerageId,
-    agentId: isBrokerOrAdmin ? undefined : ctx.userId,
+    agentIds: scopeAgentIds,
     dateFrom: ninetyDaysAgo,
     sortBy: "volume",
   })
@@ -40,10 +63,9 @@ export default async function SourceAnalyticsPage() {
         </div>
       </div>
       <SourceAnalyticsClient
-        userId={ctx.userId}
         brokerageId={ctx.brokerageId}
-        userType={ctx.userType}
-        agentId={isBrokerOrAdmin ? null : ctx.agentId}
+        scopeAgentIds={scopeAgentIds}
+        agentId={scopeAgentIds?.length === 1 ? scopeAgentIds[0] : null}
         initialSources={initialResult.sources}
         initialSummary={initialResult.summary}
       />

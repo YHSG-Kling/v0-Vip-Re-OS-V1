@@ -5,6 +5,7 @@
 // stuck deal never sits silently. Mirrors the other reapers (scan → classify →
 // idempotent escalate); the pure policy lives in closing-overdue-policy.ts.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   classifyOverdueClosing,
@@ -70,7 +71,7 @@ export async function reapOverdueClosings(
     if (!agentUserId) continue
 
     const overdueDays = daysOverdue(row.estimated_close_date, now)
-    await svc.from("notifications").insert({
+    await sentinelWrite(svc, svc.from("notifications").insert({
       user_id: agentUserId,
       brokerage_id: brokerageId,
       type: "deal_closing_overdue",
@@ -80,7 +81,7 @@ export async function reapOverdueClosings(
       entity_id: row.id,
       priority: "high",
       is_read: false,
-    })
+    }), { table: "notifications", flow: "closing_overdue_reaper_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     result.escalated++
   }
 

@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -15,7 +15,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
-import { BookOpen, Plus, Sparkles, Trash2, Loader2, CheckCircle2, Users, GraduationCap, ChevronDown, ChevronUp } from "lucide-react"
+import { BookOpen, Plus, Sparkles, Trash2, Loader2, CheckCircle2, GraduationCap, ChevronDown, ChevronUp } from "lucide-react"
 import {
   getEducationModules,
   createEducationModule,
@@ -74,14 +74,20 @@ export function EducationContentClient({ brokerageId, initialModules }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ topic: aiTopic, targetRoles, brokerageId }),
       })
-      if (res.ok) {
-        const data = await res.json()
-        if (data.title) setTitle(data.title)
-        if (data.description) setDescription(data.description)
-        if (data.content) setContentBody(data.content)
-        if (data.questions?.length) setQuestions(data.questions)
-        toast.success("Module content generated")
+      // `if (res.ok) {…}` with no else was the whole bug: a 404 is not a
+      // network error, so the catch never fired either. The spinner cleared and
+      // the admin got nothing at all — no content, no error, no clue.
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null)
+        toast.error(detail?.error ?? `Generation failed (${res.status})`)
+        return
       }
+      const data = await res.json()
+      if (data.title) setTitle(data.title)
+      if (data.description) setDescription(data.description)
+      if (data.content) setContentBody(data.content)
+      if (data.questions?.length) setQuestions(data.questions)
+      toast.success("Module content generated")
     } catch {
       toast.error("AI generation failed — try again")
     } finally {

@@ -118,6 +118,15 @@ export interface ResolveBrandArgs {
   agentUserId?: string | null
 }
 
+// TOMBSTONE (orphan doctrine §1.1, 2026-09-03, wave 26 lane L3):
+// `lib/branding/resolve-brokerage-brand.ts` — `resolveBrokerageBrandContext(brokerageId)`
+// and the re-exported type alias `BrokerageBrandContext` — is DELETED. It was a
+// self-declared deprecated shim over THIS function (`resolveBrandContext({ brokerageId })`)
+// kept "so we don't churn the 7 existing call sites"; all seven had migrated here
+// (zero importers left in app/ or lib/; the direct-mail producers call this
+// function directly, lib/direct-mail/render-postcard.ts). Nothing merged: the
+// alias added no behaviour, only the brokerage-tier-only default this function
+// already gives when teamId/agentUserId are omitted.
 export async function resolveBrandContext(args: ResolveBrandArgs): Promise<BrandContext> {
   const svc = createServiceClient()
 

@@ -106,6 +106,12 @@ export function NegotiationCoPilotCard() {
                       {s.recommendedAction.replace(/_/g, " ")}
                     </Badge>
                     <Badge variant="outline" className="text-xs">{s.side}-side</Badge>
+                    {/* generated_by attribution — who authored this strategy. */}
+                    {s.generatedBy && (
+                      <Badge variant="outline" className="text-xs text-purple-700">
+                        {s.generatedBy === "ai" ? "AI-generated" : s.generatedBy}
+                      </Badge>
+                    )}
                     {winPct != null && <Badge variant="outline" className="text-xs">win {winPct}%</Badge>}
                     {confPct != null && <Badge variant="outline" className="text-xs">conf {confPct}%</Badge>}
                     {s.recommendedCounterPrice != null && (
@@ -126,6 +132,32 @@ export function NegotiationCoPilotCard() {
                       <div className="prose prose-sm max-w-none whitespace-pre-wrap text-sm">
                         {s.agentStrategyMd}
                       </div>
+
+                      {/* WHY this strategy — curated rationale_signals (never the raw JSON;
+                          see StrategyRationale in app/actions/negotiation-strategy.ts). */}
+                      {s.rationale && (
+                        <div className="rounded-md border bg-muted/30 p-2 text-xs space-y-1">
+                          <p className="font-medium">Why this strategy</p>
+                          {s.rationale.keyRisks.length > 0 && (
+                            <ul className="list-disc pl-4 text-muted-foreground">
+                              {s.rationale.keyRisks.map((risk, i) => <li key={i}>{risk}</li>)}
+                            </ul>
+                          )}
+                          {s.rationale.agentTrackRecord && (
+                            <p className="text-muted-foreground">Your track record: {s.rationale.agentTrackRecord}</p>
+                          )}
+                          {s.rationale.peerPatternKeys.length > 0 && (
+                            <p className="text-muted-foreground">
+                              Peer patterns: {s.rationale.peerPatternKeys.map(k => k.replace(/_/g, " ")).join(", ")}
+                            </p>
+                          )}
+                          {s.rationale.priorRoundsCount != null && s.rationale.priorRoundsCount > 0 && (
+                            <p className="text-muted-foreground">
+                              {s.rationale.priorRoundsCount} prior negotiation round{s.rationale.priorRoundsCount === 1 ? "" : "s"} considered
+                            </p>
+                          )}
+                        </div>
+                      )}
 
                       {s.draftedCounterLanguage && (
                         <details className="rounded-md border bg-muted/30 p-2">

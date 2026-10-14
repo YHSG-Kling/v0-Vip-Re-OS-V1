@@ -4,7 +4,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Sparkles, Phone, MessageSquare, Mail, Home, FileText, FilePlus } from "lucide-react"
-import Link from "next/link"
 
 interface SuggestedAction {
   action: string

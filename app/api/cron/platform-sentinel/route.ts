@@ -25,6 +25,7 @@ import {
 } from "@/lib/platform/platform-sentinel"
 import { NPS_DETRACTOR_MAX_SCORE } from "@/lib/platform/nps"
 import { assessA2pStall } from "@/lib/platform/provider-posture"
+import { runSaasOperations } from "@/lib/platform/saas-operations"
 import type { A2pState } from "@/lib/voice/a2p-registration"
 
 export const dynamic = "force-dynamic"
@@ -113,7 +114,21 @@ export async function GET(request: NextRequest) {
       inserted = count ?? 0
     }
 
+    // ── PLATFORM SELF-OPERATION (wave 108B): per-tenant SaaS signals → usage anomaly → deterministic
+    // diagnosis → a PROPOSED support mission owned by platform_sentinel (lib/platform/saas-operations.ts).
+    // Reuses THIS sweep's engagement + connection facts (one sign-in read). Its failure is reported in
+    // the summary and never sinks the sentinel's own proposals, which are already upserted above.
+    let saasOperations: Record<string, unknown>
+    try {
+      const saas = await runSaasOperations(svc, now, { write: true, sentinel: { engagement: facts.engagement, connections: facts.connections } })
+      saasOperations = { ...saas.counts, blindSpots: saas.blindSpots, readersRefused: saas.readers.filter((r) => !r.ok).map((r) => r.reader) }
+    } catch (e) {
+      saasOperations = { error: e instanceof Error ? e.message : String(e) }
+      console.error("[platform-sentinel] saas-operations step failed:", saasOperations.error)
+    }
+
     const summary = {
+      saasOperations,
       composed: composed.length,
       afterLearning: proposed.length,
       inserted,
@@ -275,11 +290,17 @@ async function loadSentinelFacts(svc: any, now: Date): Promise<SentinelFacts> {
     }))
 
   // ── Support SLA: the support console's own pure clock over open tickets ────
-  const { data: tickets } = await svc
+  // LANE-FILTERED. The platform sentinel reports on the PLATFORM's obligations, and
+  // a user_to_brokerage ticket is a conversation between a brokerage and its own
+  // agents that the platform neither answers nor can answer. Counting those here
+  // made the sentinel report breaches nobody at the platform could clear.
+  const { data: tickets, error: ticketErr } = await svc
     .from("support_tickets")
     .select("id, subject, brokerage_id, created_at, priority, status, first_response_at, resolved_at")
+    .eq("lane", "tenant_to_platform")
     .in("status", ["open", "in_progress"])
     .limit(500)
+  if (ticketErr) console.error("[platform-sentinel] support ticket read refused:", ticketErr.message)
   const slaBreaches = ((tickets ?? []) as any[])
     .map((t) => ({ t, sla: evaluateTicketSla(t, now) }))
     .filter(({ sla }) => sla.breaches.length > 0)

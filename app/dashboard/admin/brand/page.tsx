@@ -3,6 +3,8 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { createClient } from "@/lib/supabase/server"
 import { getBrandTemplateStatisticsAction } from "@/app/actions/brand-template-registry"
 import { BrandComplianceClient } from "./brand-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -15,8 +17,18 @@ export default async function BrandCompliancePage() {
   const context = await getAgentContext()
 
   if (!context?.brokerageId) redirect("/login")
-  if (context.userType !== "admin" && context.userType !== "broker" && context.userType !== "superadmin") {
-    redirect("/dashboard")
+  // Lane 89D: same defect as /dashboard/brokerage/intelligence — two live
+  // spellings plus a dead 'superadmin' arm, so broker_owner / broker_admin /
+  // compliance_officer (the officer "is the one that deals with marketing",
+  // owner ruling in app/config/navigation-config.ts) were bounced from the
+  // brand & compliance surface the admin sidebar links. ONE roster predicate.
+  if (!isAdminOrBroker({ user_type: context.userType })) {
+    return (
+      <RoleGateNotice
+        surface="Brand & Compliance"
+        audience="your broker, brokerage admins, team leads and compliance officer"
+      />
+    )
   }
 
   const supabase = await createClient()

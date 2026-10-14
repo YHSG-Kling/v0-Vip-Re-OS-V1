@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge"
 import { Users, Phone, Mail, Building2, Lock } from "lucide-react"
 import { listVendorAssignedContactsAction } from "@/app/actions/vendor-contact-access"
 import { createClient } from "@/lib/supabase/server"
+import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 import { redirect } from "next/navigation"
 import { ContactMessagePanel } from "./contact-message-panel"
 
@@ -25,13 +26,19 @@ export default async function VendorContactsPage() {
 
   // Resolve the calling vendor's own id so the message panel can address the
   // vendor↔contact thread (same role-assignment lookup the list action uses).
-  const { data: roleRow } = await supabase
-    .from("user_role_assignments")
-    .select("vendor_id")
-    .eq("user_id", user.id)
-    .not("vendor_id", "is", null)
-    .maybeSingle()
-  const vendorId = (roleRow?.vendor_id as string | null) ?? null
+  //
+  // It must resolve the vendor the SAME way the list action does — that action
+  // already reads every grant and chooses (app/actions/vendor-contact-access.ts).
+  // Leaving this page on `.maybeSingle()` meant the two could disagree for a user
+  // with two vendor-bearing grants: the list would render its contacts while the
+  // message panel silently vanished, with no error anywhere to explain it.
+  const grantsResult = await readRoleGrants(supabase, user.id)
+  if (!grantsResult.ok) {
+    console.error("[portal/vendor/contacts] role grant read failed:", grantsResult.error)
+  }
+  const { vendorId } = grantsResult.ok
+    ? selectVendorId(grantsResult.grants)
+    : { vendorId: null }
 
   const r = await listVendorAssignedContactsAction()
   if (!r.ok) {
@@ -69,7 +76,10 @@ export default async function VendorContactsPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {r.rows.map(c => (
-            <Card key={c.assignment_id}>
+            // A contact reached through the PAID bench-wide door has NO
+            // assignment row, so assignment_id is null there and cannot be the
+            // key — every paid row would collide on `null`.
+            <Card key={c.assignment_id ?? `paid:${c.contact_id}`}>
               <CardHeader className="pb-3">
                 <div className="flex justify-between items-start">
                   <CardTitle className="text-base">{c.contact_name}</CardTitle>
@@ -95,8 +105,13 @@ export default async function VendorContactsPage() {
                     {c.contact_phone}
                   </a>
                 )}
+                {/* Say which door this contact came through. "Assigned" on a row
+                    reached by bench-wide access would be a false provenance —
+                    nobody assigned it, and there is nothing to revoke. */}
                 <p className="text-[10px] text-muted-foreground pt-1">
-                  Assigned {new Date(c.granted_at).toLocaleDateString()}
+                  {c.door === "assignment"
+                    ? `Assigned ${new Date(c.granted_at).toLocaleDateString()}`
+                    : "Included in your brokerage-wide contact access"}
                 </p>
                 {vendorId && (
                   <ContactMessagePanel

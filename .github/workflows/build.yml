@@ -28,19 +28,512 @@ concurrency:
 
 jobs:
   next-build:
-    runs-on: ubuntu-latest
+    # OWNER RULING 2026-10-03 ("Both"): a LARGER runner unblocks the compile ceiling recorded at
+    # 08282ad6c, and a graph cut follows. GitHub larger runners are created by an org/repo admin
+    # (Settings → Actions → Runners → New runner → GitHub-hosted, e.g. 8-core / 32 GB) under a label
+    # of the admin's choosing; set repo variable BUILD_RUNNER to that label and BUILD_HEAP_MB to the
+    # matching heap (e.g. 24576). Unset → today's runner and cap, unchanged.
+    runs-on: ${{ vars.BUILD_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 40
     env:
       NEXT_TELEMETRY_DISABLED: "1"
-      # Single-process webpack build (no build worker — see next.config.ts). Give
-      # that one process a large heap; on a 16 GB runner one process at ~10 GB +
-      # OS/native overhead fits, whereas parallel workers did not.
-      NODE_OPTIONS: "--max-old-space-size=10240"
-      # NO max-old-space-size override: `next build` uses Turbopack (Rust), which
-      # holds the heavy compile state in NATIVE memory. Reserving a large V8 old
-      # space steals from that native budget and pushed total RSS past the 16 GB
-      # GitHub-hosted runner ceiling — the runner was killed ("shutdown signal")
-      # ~4.5 min into compile. Letting V8 self-manage leaves room for Turbopack.
+      # Single-process webpack build (no build worker) AND single-worker page-data
+      # collection (experimental.cpus:1 — see next.config.ts).
+      #
+      # This value is EMPIRICALLY BRACKETED, not guessed. `next build` runs two
+      # phases with materially different memory profiles and only ONE NODE_OPTIONS
+      # between them, because page-data collection is a child process that inherits
+      # it. Every number below is from a CI log on this branch:
+      #
+      #   12288, 3 workers (os.cpus()-1 default)
+      #       → runner shutdown 19-73s into page-data collection
+      #   12288, cpus:1
+      #       → compile OK in 8.4-9.2 min; "Collecting page data using 1 worker";
+      #         survived 3m10s, then runner shutdown. RSS, not heap: the cap is
+      #         old space only, and new space + code + native add ~2-4 GB on a
+      #         graph this size, so a 12 GB cap lets one process approach the
+      #         16 GB runner ceiling.
+      #    8192, cpus:1
+      #       → COMPILE ITSELF aborted at 6 min, exit 134 (SIGABRT),
+      #         "Ineffective mark-compacts near heap limit", heap at
+      #         7161 MB used / 7773 MB committed. Too low: this broke a phase
+      #         that had been working.
+      #   10240, cpus:1, commit 5115d4e (2026-08-20)
+      #       → compile aborted at 6m58s, exit 134, same message, heap at
+      #         8461 MB used / 9186 MB committed. RE-RUN OF THE SAME COMMIT,
+      #         UNCHANGED, PASSED in 14m34s. So this is the intermittent failure
+      #         this workflow has always had, NOT a new floor — but note WHERE it
+      #         landed: compile, not page-data. Both compile aborts above died
+      #         with COMMITTED heap at ~90% of the cap (7773/8192, 9186/10240),
+      #         which is what "ineffective mark-compacts" means — V8 gives up
+      #         while still short of the cap. Read that as the useful signal: the
+      #         effective compile ceiling is ~90% of whatever is set here, so
+      #         10240 buys ~9.2 GB, not 10 GB, and compile's own demand has grown
+      #         from 7.2 GB to 8.5 GB between those two measurements. When a
+      #         compile abort STOPS being recoverable by re-running, that headroom
+      #         is gone and the answer is the runner, not the number.
+      #
+      #   10240, cpus:1, commit 36f0500 (2026-08-21)
+      #       → compile aborted at 6m57s, exit 134, same message, heap at
+      #         8460 MB used / 9250 MB committed. RE-RUN OF THE SAME COMMIT,
+      #         UNCHANGED, PASSED in 17m10s.
+      #         WHY THIS ONE IS WORTH RECORDING even though it says the same
+      #         thing: it is the CONTROL for the previous line. That reading
+      #         (8461/9186) was a single sample, so "compile's demand has grown
+      #         from 7.2 to 8.5 GB" could equally have been one outlier. This
+      #         one lands within 1 MB used and 64 MB committed of it, a day
+      #         later, carrying the whole wave-15 diff — sixteen role rosters
+      #         folded into one resolver, a new conversion guard wired at 14
+      #         sites, two new lib modules and four new simulators. Demand did
+      #         NOT move. So the 8.5 GB figure is the real floor rather than a
+      #         spike, the ~90%-of-cap abort threshold reproduces exactly, and
+      #         10240 is still the right number — not by argument, by a second
+      #         measurement agreeing with the first.
+      #         Failure rate at this commit: 1 abort, then green. Consistent
+      #         with the intermittent flake, NOT with a hard ceiling.
+      #
+      #   10240, cpus:1, commit b3235fd4 (2026-08-25)
+      #       → compile aborted at 7m19s, exit 134, same message, heap at
+      #         8723.5 MB used / 9402.5 MB committed.
+      #         THIS IS THE FIRST READING THAT MOVED, and the direction is the
+      #         finding. The two measurements above agreed within 1 MB used and
+      #         64 MB committed across a day and a whole wave's diff, which is
+      #         what made 8.5 GB trustworthy as a floor rather than a spike.
+      #         This one is +263 MB used and +152 MB committed against both, and
+      #         committed is now 91.8% of the cap — past the ~90% abort threshold
+      #         the two earlier aborts established, which is precisely why it
+      #         aborted. Compile demand has grown from 8.46 GB to 8.72 GB.
+      #
+      #         WHAT THE WAVE ACTUALLY ADDED, so the next reader can attribute it:
+      #         117 application files gained error-checking on previously-silent
+      #         database writes (177 of them), which is real code in the graph.
+      #         A remotion skill re-vendor added ~7 MB across .claude/ and
+      #         .agents/ — DISCOUNTED AS A CAUSE, and the check is worth keeping
+      #         because it is counter-intuitive: tsconfig `include` uses wildcard
+      #         globs, which do NOT match dot-directories, so nothing under
+      #         .claude/ or .agents/ enters the program. Verified with
+      #         `tsc --noEmit --listFilesOnly | grep -c '\.claude/skills'` → 0.
+      #         Do not "fix" a future OOM by excluding those; they were never in.
+      #
+      #         ATTEMPT 2 OF THE SAME COMMIT, UNCHANGED: aborted again at 7m08s,
+      #         exit 134, heap at 8730.5 MB used / 9459.2 MB committed — 7 MB from
+      #         attempt 1's used figure. THIS IS THE READING THAT CHANGES THE
+      #         DIAGNOSIS, and it is why it is recorded rather than just re-run.
+      #         Every prior abort in this bracket recovered on an unchanged re-run;
+      #         that is the entire basis for calling it intermittent. This one did
+      #         not. Two aborts at ONE commit landing within 7 MB of each other is
+      #         a REPRODUCIBLE ceiling, not a flake — the same reasoning the
+      #         2026-08-21 entry used in the other direction, where two readings
+      #         agreeing was what made 8.46 GB trustworthy as a floor.
+      #         Committed is now 92.4% of cap, and compile's demand has settled at
+      #         8.73 GB against a ~9.2 GB effective ceiling.
+      #
+      #         So the condition this file already names has arrived: "when a
+      #         compile abort STOPS being recoverable by re-running, that headroom
+      #         is gone and the answer is the runner, not the number." A third
+      #         unchanged attempt was queued to meet §8's three-strike threshold
+      #         before escalating, because the rule is the rule — but the two
+      #         readings above are already the evidence, and raising the cap is
+      #         NOT the fix available here: 12288 was measured to make page-data's
+      #         RSS fatal on a 16 GB runner, so there is no room to buy compile
+      #         more old space without re-breaking the phase after it. The levers
+      #         are a larger runner (the owner's cost decision) or a smaller
+      #         module graph.
+      #
+      #         Original attempt-1 note kept below, since it records the remedy
+      #         that was correct to try first:
+      #         Re-run of the same commit, unchanged, was queued per §8 rather
+      #         than tuning the number — the remedy this bracket documents. But
+      #         note what the margin now is: ~2.4 GB of headroom in the prose
+      #         above was measured against 8.46 GB, and at 8.72 GB against a
+      #         ~9.2 GB effective ceiling the real headroom is under 500 MB. The
+      #         line above about "when a compile abort STOPS being recoverable by
+      #         re-running, the answer is the runner" is no longer hypothetical;
+      #         it is one or two waves away. Deleting genuinely dead code is the
+      #         only lever that moves this in the right direction without buying
+      #         a bigger runner, which is the owner's cost decision.
+      #
+      #   10240, cpus:1, commit df5494e6 (2026-08-26) — run 33011780731
+      #       → compile aborted at 8m10s, exit 134, same message. Last GC line:
+      #         Mark-Compact 8750.4 (9472.0) -> 8740.4 (9456.5) MB.
+      #         THE THIRD STRIKE. §8 says re-run unchanged and escalate only after
+      #         three consecutive failures; b3235fd4 supplied two, this is a third
+      #         at a LATER commit, so the escalation condition this file has been
+      #         predicting is met. Demand moved again: 8.75 GB used / 9.47 GB
+      #         committed = 92.5% OF CAP, past the ~90% abort threshold, up from
+      #         8.72/9.40 (91.8%) at b3235fd4 and 8.46/9.19 (89.7%) at 5115d4e.
+      #         Three readings, one direction, no reversals.
+      #
+      #   12288, cpus:1, commit 840795b4 (2026-09-17) — runs 35250637701 attempts 1+2
+      #       → compile aborted TWICE on the same commit, unchanged re-run,
+      #         exit 134 / SIGABRT, heap at 10466 MB used / 11209 MB committed
+      #         (91% of the 12288 cap). NOT a re-run case any more: wave 70
+      #         added five official server SDKs (twilio, @elevenlabs/elevenlabs-js
+      #         102 MB on disk, apify-client, zenrows, exa-js) and webpack was
+      #         bundling all of them into server chunks. Fix: externalised the
+      #         five in next.config.ts (serverExternalPackages + the webpack
+      #         externals pin beside sharp) so they are require()d from
+      #         node_modules at runtime — the compile graph shrinks by roughly
+      #         the size of those packages and the cap stays 12288.
+      #
+      # ── 2026-08-26: WHERE THE HEAP ACTUALLY GOES, AND THE ONE LEVER THAT MOVED IT
+      #
+      # METHOD (so the numbers below can be trusted or discarded on their merits):
+      # the whole job was reproduced LOCALLY on a 4-core / 16 GB Linux box — the
+      # same shape as ubuntu-latest for a PUBLIC repo — with this file's exact
+      # NODE_OPTIONS, the same placeholder env, `rm -rf .next` before each run,
+      # and the page cache dropped between runs. Heap was sampled every 5s from
+      # inside every process in the build (v8.getHeapStatistics via a
+      # NODE_OPTIONS --require preload, which children inherit), alongside the
+      # cgroup's own memory.max_usage_in_bytes.
+      #
+      # BLIND SPOTS OF THAT METHOD, stated beside the numbers as §2 requires:
+      #   · The local cgroup ceiling is 13.34 GiB, roughly 1.7 GB TIGHTER than a
+      #     GitHub runner, so locally the build dies of SIGKILL from the cgroup OOM
+      #     killer (137) where CI dies of V8's SIGABRT (134). The heap figures are
+      #     still comparable — local baseline 9356 MB committed vs CI's 9472 MB,
+      #     within 1.2% — but no local run REACHED THE END. Everything below is
+      #     measured during the SERVER compile; the edge-server compile, the client
+      #     compile and page-data collection are UNMEASURED under the new setting.
+      #   · The 5s sampler misses peaks inside long synchronous stretches (the
+      #     main thread went 95s without yielding during seal), so every "peak
+      #     heap" here is a LOWER BOUND.
+      #   · The local tree carried ~59 files of other lanes' uncommitted work; CI's
+      #     8750/9472 is the clean HEAD figure. They agree closely, but they are
+      #     not the same tree.
+      #
+      # WHAT THE COMPILE IS ACTUALLY CHEWING — a census of the graph, not a guess:
+      #   996 webpack entry points under app/ (532 page.tsx, 424 route.ts, plus
+      #   layouts/loading/error), and 4,333 first-party files totalling 45.01 MB of
+      #   TS/TSX REACHABLE from them (of 4,656 / 47.31 MB on disk; 323 files /
+      #   2.30 MB are reachable from no entry). node_modules is NOT the story:
+      #   every server-only heavyweight that is imported but not externalized
+      #   — pdf-lib (0.75 MB of JS), the ai + @ai-sdk packages (2.1 MB), zod
+      #   (1.51 MB), stripe (0.23 MB), cheerio (0.10 MB) — comes to under 5 MB of
+      #   ALREADY-BUILT JS against 45 MB of first-party TSX that SWC must parse and
+      #   transform. @zoom/meetingsdk looks alarming at 108 MB on disk but only its
+      #   3 MB embedded UMD bundle is reachable, behind a dynamic import.
+      #   optimizePackageImports is already doing its job: 1,161 files import
+      #   lucide-react but only 305 DISTINCT icons, and lucide-react/date-fns/
+      #   recharts are in Next's built-in default list anyway (see
+      #   next/dist/server/config.js), so the two names listed in next.config.ts
+      #   add only `zustand`.
+      #
+      # THE LEVER: experimental.webpackBuildWorker, now set true in next.config.ts.
+      # It had been OFF because next/dist/build/index.js:850 only defaults it on
+      # when there is NO custom webpack function, and withWorkflow() installs one
+      # unconditionally — so it could never have turned itself on here. The comment
+      # in next.config.ts that said it "spawns one worker PER CORE" was wrong; the
+      # per-core pool is page-data collection, which `cpus: 1` already bounds. The
+      # full argument, with the source it was read from, is in next.config.ts
+      # beside the flag.
+      #
+      #   10240, cpus:1, webpackBuildWorker OFF (the configuration CI has been
+      #   failing with), local:
+      #       → peak 8413 MB used / 9356 MB committed (91.4% of cap) / 13291 MB RSS
+      #         in ONE process holding all three compilers. Killed at 8m08s.
+      #   10240, cpus:1, webpackBuildWorker ON, local, TWO runs:
+      #       → parent process drops to 134-138 MB heap / ~448 MB RSS; the compile
+      #         moves into a jest-worker child that is torn down before the next
+      #         compiler starts.
+      #       → server compiler peak: 7968 MB used / 8921 MB committed (87.1%)
+      #                        run 2: 7972 MB used / 8933 MB committed (87.2%)
+      #         Two readings agreeing within 4 MB used and 12 MB committed, which
+      #         is the same standard the 2026-08-21 entry above used to promote a
+      #         single sample to a floor. So: −424 MB of committed heap against the
+      #         local baseline, moving the binding number from 91.4% of cap to
+      #         87.2% — from above V8's ~90% give-up threshold to below it.
+      #
+      # HONEST LIMIT OF THAT CLAIM: neither ON run finished. Both died on the local
+      # box's smaller ceiling during the server compile, so this predicts CI clears
+      # the ~90% abort threshold; it does not prove the build goes green. CI is the
+      # oracle and it is free on this repo — run it.
+      # AND ONE READING THAT DOES NOT SUPPORT THE LEVER, recorded because leaving
+      # it out would make this entry propaganda: with the local cgroup temporarily
+      # raised to 15.2 GB, the single ON-run worker reached 13870 MB RSS while its
+      # heap stayed pinned at 8933 MB committed. RSS is NOT clearly improved by
+      # this flag — only the heap is. ~5 GB of that worker is off-heap
+      # (webpack-sources buffers, SWC native, pack-file-cache serialization), and
+      # off-heap is what made 12288 fatal in the entry above. If CI now fails as a
+      # RUNNER SHUTDOWN rather than exit 134, that is this reading coming true and
+      # the answer is the runner, not another knob.
+      #
+      # MEASURED AND REJECTED — cache.maxMemoryGenerations = 0.
+      # Next hardcodes `maxMemoryGenerations: dev ? 0 : Infinity` for the
+      # production filesystem cache, so nothing is ever evicted from the heap; with
+      # per-compiler workers that memory cache can never be re-read, so dropping it
+      # looks free. It is the worst configuration tried: 9718 MB used / 10263 MB
+      # committed = 100.2% OF CAP, FATAL ERROR at 4m51s — nearly twice the heap in
+      # half the time — with `average mu = 0.072`, i.e. 93% of wall time in GC.
+      # Evicting a pack-file-cache entry forces immediate serialization; the
+      # serializer's buffers cost more than the records saved. Do not re-derive it;
+      # the tombstone is in next.config.ts beside the webpack cache block.
+      #
+      # WHAT DELETING DEAD ROUTES WOULD BUY (for the orphan lane to aim at).
+      # Measured on the closure above: 420 handlers under app/api, of which 91 have
+      # ZERO mention of their URL path anywhere in first-party source or
+      # vercel.json (finder positive-controlled: it flags a planted route nothing
+      # references and does NOT flag /api/cron/dispatch, /api/embed/script,
+      # /api/meetings/sdk-signature, /api/cron/poll-did-videos). Removing all 91
+      # takes out 109 files / 0.59 MB — 1.30% of the reachable first-party graph —
+      # but 91 of 996 = 9.1% of webpack ENTRY POINTS. The mean route handler owns
+      # 11.5 KB across 1.6 files exclusively (a page owns 34.2 KB across 3.6), so
+      # the widely-quoted 81 routes ≈ 0.91 MB of source and 8.1% of entries. Which
+      # of the two dimensions the heap tracks is UNMEASURED — worth one CI run to
+      # find out, and it is the only free lever left after the flag above.
+      #
+      # THE RUNNER OPTION, PRESENTED AND NOT TAKEN (it is the owner's money).
+      # This repo is PUBLIC and owned by a personal account, so `ubuntu-latest` is
+      # 4 vCPU / 16 GB / 14 GB SSD and free and unlimited. Larger runners are
+      # ORG-ONLY (GitHub Team or Enterprise Cloud) and are NOT free on public
+      # repos, so taking this option means moving the repo to an organization AND
+      # paying per minute. Sizes and prices, both from GitHub's docs on 2026-08-26:
+      #   linux_8_core   8 vCPU / 32 GB / 300 GB   $0.022/min
+      #   linux_16_core 16 vCPU / 64 GB / 600 GB   $0.042/min
+      #   (docs.github.com/en/actions/reference/runners/larger-runners and
+      #    docs.github.com/en/billing/reference/actions-runner-pricing)
+      # At the ~16 min this job takes when green, that is ~$0.35/build on 8-core
+      # and ~$0.67 on 16-core; this workflow is at run_number 673 since ~March, so
+      # roughly 100-140 builds/month → ~$35-50/month (8-core) or ~$70-95/month
+      # (16-core), plus GitHub Team at $4/user/month. What 32 GB actually buys is
+      # NOT more V8 old space by itself — the abort threshold is ~90% of
+      # max-old-space-size, which is a flag, not RAM. It buys the ability to RAISE
+      # that flag: on 32 GB, 16384 gives a ~14.7 GB effective compile ceiling
+      # against a measured 8.75 GB demand (~68% headroom versus today's ~5%) while
+      # leaving room for the ~5 GB of off-heap and for page-data's inherited cap —
+      # the exact constraint that made 12288 fatal on 16 GB.
+      #
+      # So compile demonstrably needs >7.8 GB, and page-data demonstrably cannot
+      # be given 12 GB on a 16 GB runner. 10240 is the value that clears compile's
+      # measured demand while staying under the ceiling that made page-data's RSS
+      # fatal. It is UNCHANGED by the 2026-08-26 work: the fix attempted there is
+      # to lower demand (one compiler per process), not to re-tune this number,
+      # because there is no room left to re-tune it in either direction.
+      #
+      # If this is still killed, the phases genuinely do not fit one runner and the
+      # answer is a larger runner — a cost decision for the repo owner, not
+      # something to keep bisecting here. (Kept verbatim from before 2026-08-26.
+      # It is now costed out in the runner section above rather than left as a
+      # gesture at "a bigger machine": what it takes on this repo is moving to an
+      # organization, GitHub Team, and ~$35-50/month at the 8-core size.)
+      # ── 2026-08-27, runs 33037848958 attempts 1+2 (commit ad314a0c): 10240 RAN
+      # OUT. Two consecutive heap aborts at the same commit, both the classic
+      # "Ineffective mark-compacts near heap limit":
+      #   attempt 1 — died 5m46s in, last GC 8780.5 used / 9530.1 committed = 93.1% of cap
+      #   attempt 2 — died 8m13s in, last GC 8691.7 used / 9317.5 committed = 91.0% of cap
+      # The previous commit (0d16ad52) went GREEN on this exact config, and its
+      # local worker reading was 87.2% committed — so the wave between them
+      # (+~1,000 lines of first-party TS) moved committed demand onto the ~90%
+      # abort threshold, where runs flip between green and abort on GC timing.
+      # Re-running a third time is a coin toss on a knife edge, not a measurement.
+      #
+      # WHY RAISING THE CAP IS NOW SAFE WHEN 12288 WAS FATAL. The entry below
+      # records 12288 killing the MACHINE via page-data RSS on 16 GB — but that
+      # reading predates two structural changes: the compile now runs in ONE
+      # sequential build worker (not sharing the parent), and the runner now has
+      # an 8 GiB swapfile that demonstrably absorbed a 13.9 GB worker RSS on the
+      # green run. The RSS ceiling that made 12288 fatal has a cushion the old
+      # bracket never had. 11264 is one measured step, not a leap: effective
+      # abort ceiling ~10.1 GB against 8.7-8.9 GB committed demand ≈ 12%
+      # headroom, where 10240 gave ~5% and lost it.
+      #
+      # vercel.json still carries 10240 DELIBERATELY: Vercel's standard build
+      # container is smaller than this runner and has no swap step, so raising
+      # it there is a separate measurement, not a copy-paste.
+      # ── 2026-09-11, run 34548154185 attempts 1+2 (commit 844546ce): 11264 RAN
+      # OUT, the same way 10240 did on 2026-08-27. Two consecutive heap aborts at
+      # ONE commit, both "Ineffective mark-compacts near heap limit":
+      #   attempt 1 — died ~8m05s in, last GC 9157.6 used / 10197.6 committed = 90.5% of cap
+      #   attempt 2 — died ~8m in, same message (SIGABRT from the build worker)
+      # Commit 361ca2f8 (one wave earlier) went GREEN on this exact config and
+      # 00b9229f (two waves earlier) aborted once and recovered — the knife-edge
+      # pattern the 10240 entry describes, now at 11264. Compile demand has
+      # moved 8.7 GB → 9.16 GB used across waves 51-55 (kernel-event readers,
+      # signal-routing, the offer-intent and callback loops, the realism
+      # profile: all first-party TS in the graph).
+      # SAME ONE-STEP REMEDY AS 2026-08-27, for the same reason it was safe
+      # then: the compile runs in ONE sequential build worker and the 8 GiB
+      # swapfile below absorbs the post-compile RSS spike (attempt 1 shows both
+      # swapfiles mounted: /swapfile 3G + /mnt/swapfile-ci 8G). 12288 gives an
+      # effective abort ceiling of ~11.0 GB against 10.2 GB committed ≈ 8%
+      # headroom, where 11264 gave ~0% and lost it. If THIS aborts twice at one
+      # commit, the lever is the runner (costed above), not 13312.
+      #
+      #   13312, cpus:1, commit 08282ad6c (2026-10-03, wave 99: fail-closed billing
+      #   resolver + trial lifecycle + AVM capability + memory on 5 surfaces, 58 files)
+      #       → compile aborted ~9m in, exit 134, "Ineffective mark-compacts near heap
+      #         limit", heap 10.74 GB used / 11.76 GB committed (88% of cap) — THREE
+      #         consecutive attempts at the same commit, identical reading. The previous
+      #         push (5fdebe24e) built green. Per the rule above this is no longer the
+      #         intermittent flake: compile demand crossed the 13312 ceiling. ESCALATED
+      #         to the owner: larger runner, or a first-party graph cut.
+      # vercel.json still carries 10240 deliberately (no swap there).
+      # ── 2026-09-24, run 35963710912 attempts 1+2+3 (commit 83a26b75): 12288 RAN
+      # OUT. THREE consecutive heap aborts at ONE commit, all "Ineffective
+      # mark-compacts near heap limit" / SIGABRT from the build worker:
+      #   attempt 1 — died ~9m15s in, last GC 10226.4 used / 11156.7 committed = 90.8% of cap
+      #   attempt 2 — died ~10m in, same message (log tail only)
+      #   attempt 3 — died ~10m26s in, last GC 10221.5 used / 11038.0 committed = 89.8% of cap
+      # Commit 2f4ed0fe (one wave earlier, 2026-09-23) went GREEN on this exact
+      # config at attempt 1. Between them wave 81 added 4,994 lines across 105
+      # files under lib/ app/ remotion/, but first-party TS on disk moved only
+      # 54.3 → 54.6 MB (+0.6%) — so 2f4ed0fe was already on the knife edge and
+      # this wave did not move demand, it removed the last of the GC-timing luck.
+      # The 2026-09-17 remedy (externalise bundled server SDKs) is EXHAUSTED: the
+      # five SDKs added since (@hubspot/api-client 50 MB, facebook-nodejs-business-sdk
+      # 33 MB, intuit-oauth, peopledatalabs, @remotion/google-fonts) are already
+      # in serverExternalPackages + the externals pin; two of them have no
+      # importer at all. What remains in the graph is first-party TSX.
+      # The 2026-09-11 entry said "if this aborts twice at one commit, the lever
+      # is the runner, not 13312". That still stands as the DURABLE answer — the
+      # runner is a cost decision for the repo owner (costed above) — but with
+      # production pressure and no owner decision yet, 13312 is taken as ONE
+      # measured step for the same reason 11264→12288 was: the compile runs in
+      # ONE sequential build worker and the swap step below mounts 8 GiB beside
+      # the runner's own 3 GiB, so the post-compile RSS spike (worker RSS ≈
+      # committed heap + ~5 GB off-heap ≈ 16-17 GB) has ~11 GiB of swap to land
+      # in. 13312 gives an effective abort ceiling of ~12.0 GB against 11.0-11.2 GB
+      # committed ≈ 7-8% headroom, where 12288 gave ~0% and lost it three times.
+      # If 13312 aborts at one commit, STOP re-tuning: the next lever is the
+      # larger runner or a first-party graph cut (a route/page census — 996 entry
+      # points), and either is an owner decision.
+      # vercel.json still carries 10240 deliberately (no swap there).
+      # ── 2026-10-03, commit 08282ad6c (wave 99): 13312 ABORTED 3x AT ONE COMMIT,
+      # "Ineffective mark-compacts near heap limit", last GC 10.74 GB used /
+      # 11.76 GB committed (88% of cap). Commit 5fdebe24e (one wave earlier) built
+      # GREEN on this exact config. The owner ruled the GRAPH CUT (the runner is
+      # being configured separately); cap left at 13312.
+      # ATTRIBUTION — measured, not guessed, with a first-party import-graph walk
+      # (static AND dynamic import() edges, since webpack compiles both; comments
+      # blanked via scripts/strip-comments.ts; `import type` not followed):
+      #                         5fdebe24e   08282ad6c   after cut
+      #   proxy.ts entry              4         827          18
+      #   app/layout.tsx            922         931         931
+      #   union of 992 app entries 4806        4815        4816
+      #   client graph (stops at
+      #   "use server")            1454        1459        1459
+      # The app graph moved +9; the PROXY moved +823. proxy.ts is compiled by its
+      # OWN webpack compiler, so every module it reaches is compiled a second
+      # time on top of the app graph. Wave 99 made proxy.ts import
+      # lib/billing/billing-access.ts, which imported three pure helpers from
+      # ./dunning; dunning's runDunningSweep lazy-imports @/lib/providers/messaging,
+      # and that ONE edge pulled the kernel, video, transactions, AI-ISA and AI-SDK
+      # graphs into the proxy compile.
+      # THE CUT (wave 100D, no behaviour change): PAST_DUE_GRACE_DAYS, daysBetween
+      # and episodeAnchor moved verbatim into the leaf lib/billing/past-due-clock.ts
+      # (imports only lib/format/dates.ts); billing-access reads the leaf; dunning
+      # imports and re-exports it, so its importers are unchanged. Proxy entry
+      # 827 → 18 first-party modules. The other wave-99 edges were measured and
+      # left in place: billing-access's lazy fair-use (4) and budget-gate (3)
+      # are small, and lib/ai/models.ts → billing-access adds nothing to the
+      # union. next.config already sets optimizePackageImports +
+      # serverExternalPackages.
+      # EXPECTED: committed heap back toward the 5fdebe24e level. TO BE CONFIRMED
+      # BY CI on the commit carrying this cut; add the GC reading here. If it
+      # still aborts, the next lever is the runner (owner, in progress), not
+      # another cap step.
+      # ── 2026-10-05, run 37372736027 attempts 1+3 (commit 03b78f3ac, wave 103): 13312 RAN OUT
+      # on ubuntu-latest. Attempt 1 — last GC 10814.9 used / 11877.7 committed (89.2% of cap),
+      # exit 134 at 9m30s. Attempt 2 — the runner itself received a shutdown signal at 9m14s
+      # (not a heap abort). Attempt 3 — 10816.6 used / 11859.1 committed (89.1%), exit 134 at
+      # 9m52s. Two heap aborts within 20 MB of each other = the measurement, not a coin toss:
+      # compile demand is now ~10.8 GB against the ~11.9 GB effective ceiling of 13312 on a
+      # 16 GB runner, and the proxy.ts graph is unchanged at 23 modules (the wave-100 cut
+      # held). The first-party graph grew (waves 101-103: policy versions, replay, identity,
+      # relationship graph, competency, capacity, gamification). There is no room to raise
+      # the cap on 16 GB (page-data RSS, above). THE ANSWER IS THE LARGER RUNNER: set the repo
+      # variables BUILD_RUNNER (an 8-core / 32 GB label) and BUILD_HEAP_MB (16384) — the
+      # owner's "Both" ruling of 2026-10-03 already chose this; the graph cut half was done.
+      # ── 2026-10-06, run 37401062161 (commit 8d341c53a, wave 104): 13312 RAN OUT AGAIN —
+      # last GC 10832.9 used / 11865.6 committed (89.1% of cap), exit 134 at 8m57s. Third heap
+      # abort at the same ~10.8 GB demand across two commits: deterministic, not GC timing.
+      # Guards CI is green at this commit; only next-build needs the larger runner.
+      # ── 2026-10-06, run 37404071865 job 112077580883 (commit 0865cda9b, wave 104 merge):
+      # 13312 RAN OUT A FOURTH TIME. Build worker SIGABRT after
+      #   Mark-Compact (reduce) 10815.5 (11865.1) -> 10803.2 (11839.9) MB at 623969 ms;
+      #   last scavenge 10823.5 (11887.7) MB → committed 89.2% of cap, node 22.23.3,
+      #   "Next.js build worker exited with code: null and signal: SIGABRT".
+      # Four aborts across three commits within 30 MB of each other (10.81-10.83 GB
+      # used / 11.84-11.89 GB committed): deterministic. The owner ruled (wave 105,
+      # ruling 2): SPLIT THE BUILD INTO SMALLER BUILDS. What this file now does:
+      #
+      # WHICH WORKER ABORTS. webpackBuildWorker runs the three compilers
+      # SEQUENTIALLY, one jest-worker child each (server → edge-server → client,
+      # next/dist/build/webpack-build/index.js ORDERED_COMPILER_NAMES), and the
+      # child inherits this NODE_OPTIONS (next/dist/lib/worker.js spreads
+      # process.env and strips max-old-space-size only for isolatedMemory workers,
+      # which the build worker is not). The abort is the SERVER compiler, by
+      # three readings: (1) it runs FIRST and no "✓ Compiled" line precedes any
+      # abort; (2) the 2026-08-26 local sampler attributed the peak to the server
+      # worker (7968/8921 MB) while the parent sat at ~135 MB; (3) size — the
+      # server compile holds the union of 992 entries = 4841 first-party modules
+      # (lane105F-census, 0865cda9b) in TWO layers (rsc + ssr: the 1462-module
+      # client graph is compiled again for SSR), the edge-server compile is
+      # proxy.ts = 23 modules, the client compile is 1462. BLIND SPOT: the CI log
+      # carried no per-compiler marker, so this was inferred, not read. The
+      # compile step below sets DEBUG=next:build:webpack-build* so the worker's
+      # own "starting server compiler" / "server compiler finished Nms" lines
+      # (webpack-build/impl.js:223-275) land in the log and the NEXT abort is
+      # attributed by reading, not reasoning.
+      #
+      # THE SPLIT (lever c, verified against the pinned next@16.2.7:
+      # `npx next build --help` → "--experimental-build-mode [mode] … choices:
+      # compile, generate, generate-env"). Two steps in ONE job, sharing .next on
+      # disk, each with its OWN NODE_OPTIONS:
+      #   compile  — webpack only (build/index.js:872 `if (!isGenerateMode)` runs
+      #              the compilers; :1668 `if (!isCompileMode)` SKIPS static
+      #              generation, so NO page-data worker ever inherits this cap).
+      #   generate — page data + prerender only (webpack skipped; :537 skips the
+      #              dist clean; BUILD_ID is read back from .next).
+      # This dissolves the constraint every entry above ran into — "page-data RSS
+      # forbids raising the cap on 16 GB" was true only because ONE NODE_OPTIONS
+      # served both phases. The compile cap now reaches the build worker and
+      # nothing else; the generate cap is the last value page-data (cpus:1) was
+      # measured green under, 10240.
+      #   compile cap 14336 — ONE measured step above 13312, for the reason the
+      #   split exists: effective abort ceiling ~12.9 GB (90%) against 11.9 GB
+      #   committed ≈ 8% headroom where 13312 gave ~0% four times. Worker RSS
+      #   grows ≤1 GB over the 13312 green runs that the 11 GiB of swap below
+      #   already absorbed. If THIS aborts at one commit, STOP re-tuning the
+      #   number: the next lever is (d) below or the larger runner.
+      #   generate cap 10240 — page data + prerender never needed more: every
+      #   green run of this workflow collected page data under ≤13312 with
+      #   cpus:1, and the 10240 bracket's green runs did it under 10240.
+      # Lever (a), the same commit: five server-only packages externalised in
+      # next.config.ts (pdf-lib, puppeteer-core, @modelcontextprotocol/sdk,
+      # stripe, cheerio — ~10.3 MB of built JS the server compiler stops
+      # parsing, ×2 layers). Lever (b), outputFileTracingExcludes, was evaluated
+      # and NOT taken: file tracing runs AFTER compile in its own trace worker
+      # or the parent (build/index.js:903-914 → collect-build-traces.js), not in
+      # the aborting webpack worker, so it moves nothing here; it becomes relevant only if a run dies as a runner
+      # shutdown AFTER "server compiler finished".
+      # (d) THE NEXT CUT, PROPOSED NOT IMPLEMENTED, with the numbers to size it:
+      # `next build --debug-build-paths "<globs>"` (route-discovery.js:271-323
+      # filters app/ entries to the globs) can build the tree in halves —
+      # app/dashboard/** is 328 entries reaching 3189 first-party modules,
+      # app/api/** is 408 entries reaching 2141, everything else 256 entries
+      # reaching ~1300 — so a two-job matrix would put ~3.2k modules in the
+      # largest server compile instead of 4.8k. It is a CI-only gate (the
+      # partial .next is never deployed) and carries an experimental flag whose
+      # partial manifests are untested here; take it only after the two levers
+      # above have been READ in a CI log and found short.
+      # TO BE CONFIRMED BY CI on the commit carrying this: append the GC reading
+      # and the "server compiler finished" line here.
+      NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_HEAP_MB || '14336' }}"
+      #
+      # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.
+      # It read: "NO max-old-space-size override: `next build` uses Turbopack
+      # (Rust), which holds the heavy compile state in NATIVE memory. Reserving a
+      # large V8 old space steals from that native budget..." — an argument for
+      # DELETING the override on the line directly above it. Every part of it is
+      # now false: `npm run build` is `next build --webpack`, the compile is
+      # JavaScript and its state is in the V8 heap, and the override is exactly
+      # what keeps it alive. It survived the switch off Turbopack and was left
+      # sitting under the setting it argues against, so anyone opening this file
+      # to diagnose an OOM — the one reason anyone opens this file — was told to
+      # do the thing that causes the OOM. Kept as a tombstone rather than quietly
+      # deleted, because the empirical bracket above is only trustworthy if the
+      # prose beside it is known to have been checked against what actually runs.
       # Placeholder build-time env — presence, not real secrets. Overridden by
       # repository/environment secrets when those are configured.
       NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co' }}
@@ -51,11 +544,74 @@ jobs:
       CRON_SECRET: ${{ secrets.CRON_SECRET || 'placeholder-cron-secret' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-      - name: Install dependencies
-        run: npm ci
-      - name: Production build (next build)
-        run: npm run build
+      # Node + `npm ci` live in ONE composite action for all four workflows —
+      # see .github/actions/node-deps/action.yml.
+      - uses: ./.github/actions/node-deps
+      # ── 2026-08-26, run 33021558019 (commit 67fc1b05): THE FAILURE MODE MOVED,
+      # exactly as the bracket above predicted. With webpackBuildWorker on, the
+      # compile FINISHED for the first time on CI — "Compiled with warnings in
+      # 8.0min", where every prior run aborted with exit 134 mid-compile around
+      # 8m10s. ~21 seconds later the RUNNER was shut down and the build worker
+      # SIGKILLed: no V8 abort, no exit 134 — the machine itself ran out. That is
+      # the "RSS is NOT clearly improved — only the heap is" reading coming true
+      # (13.9 GB worker RSS measured locally against a 16 GB machine).
+      #
+      # The bracket's conclusion — "the answer is the runner, not another knob" —
+      # missed one free knob: SWAP. The post-compile spike is TRANSIENT and its
+      # pages are COLD (pack-file-cache buffers being serialized to disk, the
+      # parent's retained compile results) — the exact working-set shape swap
+      # absorbs without thrashing the hot path. The runner has ~14 GB of free SSD
+      # doing nothing during that window. This does not raise any V8 cap (12288
+      # stays fatal for the reason recorded above); it gives the KERNEL somewhere
+      # to put cold pages so the OOM killer does not shoot the runner service.
+      #
+      # BEST-EFFORT BY DESIGN: if no swapfile can be created, the step says so
+      # and the build still runs — the build is the test, and a failed swap step
+      # masking a green build would invert the point. `free -h` prints before and
+      # after so the next reading of this bracket has numbers, not adjectives.
+      - name: Add swap headroom for the post-compile RSS spike
+        run: |
+          echo "── memory before ──"; free -h; swapon --show || true
+          TARGET=/mnt/swapfile-ci
+          sudo test -d /mnt || TARGET=/swapfile-ci
+          if sudo fallocate -l 8G "$TARGET" 2>/dev/null || sudo fallocate -l 4G "$TARGET" 2>/dev/null; then
+            sudo chmod 600 "$TARGET" && sudo mkswap "$TARGET" && sudo swapon "$TARGET" \
+              && echo "swap added at $TARGET" \
+              || echo "swapfile created but could not be enabled — building without it"
+          else
+            echo "no space for a swapfile — building without it"
+          fi
+          echo "── memory after ──"; free -h; swapon --show || true
+      # Two steps, one .next (see the 2026-10-06 wave-105F entry beside
+      # NODE_OPTIONS above). `npm run build` (= `next build --webpack`, the single
+      # pass Vercel and local builds still run) is deliberately NOT used here: the
+      # gate's point is that compile and generate get DIFFERENT heaps.
+      - name: Production build — compile (webpack only, one compiler per worker)
+        env:
+          # The worker inherits NODE_OPTIONS (job env above); DEBUG makes the
+          # worker print "starting <name> compiler" / "<name> compiler finished"
+          # so an abort names its compiler. A few lines, no measurable cost.
+          DEBUG: "next:build:webpack-build*"
+        run: npx next build --webpack --experimental-build-mode compile
+      # MEASURED 2026-10-06 (run 37420587555, commit 7e6e412a3): the FIRST two-phase run cleared the
+      # heap wall — compile finished, 411 static pages generated in 3.2 min — and then died in
+      # "Finalizing page optimization" with ENOENT rename .next/server/proxy.js → middleware.js.
+      # Next 16.2.7's compile phase already performs that rename; the generate phase repeats it.
+      # Restore the source name (a copy — the rename then overwrites middleware.js with the same
+      # bytes), so both phases see the file layout they expect. No-op when compile left proxy.js.
+      - name: Bridge the proxy bundle between phases (proxy.js ↔ middleware.js)
+        run: |
+          # MEASURED 2026-10-06 (run 37530795472, commit 5488c160d): restoring proxy.js + .map moved the
+          # abort one file later — generate also renames proxy.js.nft.json. Restore EVERY companion the
+          # compile phase renamed (middleware.js, .map, .nft.json, …), each only where proxy.* is absent.
+          n=0
+          for f in .next/server/middleware.js*; do
+            [ -e "$f" ] || continue
+            t=".next/server/proxy.js${f#.next/server/middleware.js}"
+            if [ ! -e "$t" ]; then cp "$f" "$t"; echo "restored $t"; n=$((n+1)); fi
+          done
+          echo "bridge restored $n file(s)"
+      - name: Production build — generate (page data + prerender, no webpack)
+        env:
+          NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_GENERATE_HEAP_MB || '10240' }}"
+        run: npx next build --webpack --experimental-build-mode generate

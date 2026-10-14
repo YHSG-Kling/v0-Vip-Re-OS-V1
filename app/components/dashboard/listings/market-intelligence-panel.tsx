@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
-import { Loader2, TrendingUp, TrendingDown, Zap, AlertTriangle, BarChart3 } from "lucide-react"
+import { Loader2, TrendingUp, TrendingDown, Zap, BarChart3 } from "lucide-react"
 import { predictMarketShift, findMarketArbitrage } from "@/app/actions/ai-predictions"
 
 interface MarketIntelligencePanelProps {

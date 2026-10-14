@@ -115,3 +115,34 @@ export function calculateJourneyProgress(
     pendingTasks,
   }
 }
+
+/**
+ * THE JOURNEY MILESTONE RULE (lane 86F2) — pure, so the emitter and its proof share it.
+ *
+ * Given the persona's stages (task ids in the portal's COMPOSITE form
+ * `${stage.id}:${task.id}`, exactly what completeTask records as metadata.task_id),
+ * the set of completed task ids AFTER a completion, and the task just completed:
+ *   · `stage` — the just-completed task's stage, when that completion is the one
+ *     that FINISHED it (every task of the stage is now in the set);
+ *   · `allDone` — every task of every stage is now in the set.
+ * `firstCompletion` must be false when the task had already been completed before
+ * (a re-submission): a stage that was already finished must not finish again.
+ * An unknown task id (not in any stage) finishes nothing.
+ */
+export function detectJourneyMilestones(
+  stages: Array<{ id: string; name: string; tasks: Array<{ id: string }> }>,
+  completedTaskIds: ReadonlySet<string>,
+  justCompletedTaskId: string,
+  firstCompletion: boolean,
+): { stage: { id: string; name: string; nextName: string | null } | null; allDone: boolean } {
+  const none = { stage: null, allDone: false }
+  if (!firstCompletion) return none
+  const idx = stages.findIndex((s) => s.tasks.some((t) => `${s.id}:${t.id}` === justCompletedTaskId))
+  if (idx < 0) return none
+  const done = (s: { id: string; tasks: Array<{ id: string }> }) =>
+    s.tasks.length > 0 && s.tasks.every((t) => completedTaskIds.has(`${s.id}:${t.id}`))
+  const s = stages[idx]
+  const stage = done(s) ? { id: s.id, name: s.name, nextName: stages[idx + 1]?.name ?? null } : null
+  const allDone = stages.length > 0 && stages.every((x) => x.tasks.length === 0 || done(x)) && stages.some((x) => x.tasks.length > 0)
+  return { stage, allDone }
+}

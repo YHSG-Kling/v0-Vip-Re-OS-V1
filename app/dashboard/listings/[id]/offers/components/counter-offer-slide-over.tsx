@@ -56,7 +56,9 @@ export function CounterOfferSlideOver({ offer, listingId, brokerageId, agentUser
       })
 
       if (result.success) {
-        toast({ title: "Counter offer sent" })
+        toast(result.warning
+          ? { title: "Counter offer sent — with a warning", description: result.warning }
+          : { title: "Counter offer sent" })
         onSuccess({ id: result.counterId, offer_price: price, offer_type: "counter" })
       } else {
         toast({ title: "Failed to send counter", description: result.error, variant: "destructive" })

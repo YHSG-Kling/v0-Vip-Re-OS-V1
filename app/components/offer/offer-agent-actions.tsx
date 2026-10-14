@@ -97,10 +97,44 @@ export function OfferAgentActions({ offerId, agentUserId, state, onResult }: Off
     startTransition(async () => {
       try {
         const url = prompt("Seller-signed contract URL (storage URL or leave blank to upload separately):") ?? ""
-        const r = await recordSellerResponse({
+        let r = await recordSellerResponse({
           offerId, userId: agentUserId, responseType: "accepted",
           documentUrl: url || undefined,
         })
+
+        // THE ATTESTATION THE REFUSAL ASKS FOR — answerable from here.
+        //
+        // An offer from an outside buyer's agent was signed on THEIR paperwork,
+        // so our e-sign webhook never fires and `offers.buyer_signed_at` stays
+        // null. The action now names the evidence that CAN establish it and
+        // flags `needs_buyer_signature_attestation`. Without this branch the
+        // agent is told exactly what is required and given no control to supply
+        // it — a refusal nobody can answer is the same dead end, one step later.
+        //
+        // Retried ONLY on that explicit flag, never on a generic failure, and
+        // the attestation is TYPED by a person: it is a statement they are
+        // accountable for, which is why the action rejects a click or a stray
+        // character. Cancelling leaves the original refusal on screen.
+        if (!r.success && r.needs_buyer_signature_attestation) {
+          const signedAt = prompt(
+            "The buyer signed on the outside agent's paperwork, so we never saw the signature land.\n\n" +
+            "What DATE does the buyer's signature on the executed contract bear? (YYYY-MM-DD)"
+          ) ?? ""
+          if (signedAt.trim()) {
+            const attestation = prompt(
+              "In your own words: who holds the executed contract, and confirm it carries the buyer's signature.\n\n" +
+              "This is recorded against your name as the attestor."
+            ) ?? ""
+            if (attestation.trim()) {
+              r = await recordSellerResponse({
+                offerId, userId: agentUserId, responseType: "accepted",
+                documentUrl: url || undefined,
+                buyerSignature: { signedAt: signedAt.trim(), attestation: attestation.trim() },
+              })
+            }
+          }
+        }
+
         report("accepted", r.success, r.success
           ? "Seller acceptance recorded. Submit to compliance next."
           : `Failed: ${r.error}`)
@@ -132,9 +166,39 @@ export function OfferAgentActions({ offerId, agentUserId, state, onResult }: Off
     try {
       const res = await fetch(`/api/offers/${offerId}/packet-scan`, { method: "POST" })
       const json = await res.json().catch(() => ({}))
-      report("scan", res.ok, res.ok
-        ? `Scan complete: ${json.completionPercent ?? "?"}% complete, ${json.blockers?.length ?? 0} blocker${json.blockers?.length === 1 ? "" : "s"}.`
-        : `Scan failed: ${json.error ?? res.statusText}`)
+
+      // THE REMEDY IS THE POINT OF THE REFUSAL.
+      //
+      // This read only `json.error`, so the agent was told "No staged document
+      // found for this offer" and nothing else — a refusal that names the fault
+      // and withholds the fix is the dead end this whole sequence removes. Since
+      // wave 9 every unrunnable exit carries a critical blocker whose `title`
+      // says what happened and whose `body` says what to DO ("…stage the
+      // completed forms in the Form Wizard, then resubmit"), and the API route
+      // returns the whole summary on the 400 as well as on the 200. Both are
+      // surfaced, on both paths — a scan that RAN and found blockers is just as
+      // useless without the instruction.
+      const blockers: Array<{ title?: string; body?: string }> = Array.isArray(json.blockers) ? json.blockers : []
+      const first = blockers[0]
+      const remedy = [first?.title, first?.body].filter(Boolean).join(" — ")
+      const more = blockers.length > 1 ? ` (+${blockers.length - 1} more)` : ""
+
+      if (!res.ok) {
+        // `no_packet_staged` is not a system fault and must not read like one:
+        // the offer wizard stages no packet at all, and those offers pass the
+        // gate on their executed-contract columns.
+        const headline = json.scanOutcome === "no_packet_staged"
+          ? "Nothing to scan"
+          : "Scan could not run"
+        report("scan", false, remedy
+          ? `${headline}: ${remedy}${more}`
+          : `${headline}: ${json.error ?? res.statusText}`)
+        return
+      }
+
+      report("scan", true, blockers.length === 0
+        ? `Scan complete: ${json.completionPercent ?? "?"}% complete, nothing outstanding.`
+        : `Scan complete: ${json.completionPercent ?? "?"}% complete, ${blockers.length} blocker${blockers.length === 1 ? "" : "s"}. ${remedy}${more}`)
     } finally { setBusy(null) }
   }
   function pickFile() {

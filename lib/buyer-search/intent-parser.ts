@@ -21,9 +21,16 @@ export interface ParsedBuyerIntent {
   
   // Location
   cities?: string[]
+  /** Two-letter USPS codes ("TX") — never a full state name, never lower case. */
   states?: string[]
   neighborhoods?: string[]
-  
+  /** Five-digit ZIPs the buyer named (wave 91). */
+  zipCodes?: string[]
+
+  /** 'rent' when the buyer's own words say renting/lease/a month (wave 91);
+   *  absent = the for-sale market. */
+  listingType?: 'sale' | 'rent'
+
   // Lifestyle & features
   features?: string[]
   mustHaves?: string[]
@@ -60,9 +67,19 @@ export function parseNaturalLanguageQuery(query: string): ParsedBuyerIntent {
   // Patterns: "$400k", "$400,000", "under 500k", "300-400k", "budget of 350000", "$1.5m".
   // The k/m suffix is captured INSIDE the group so parsePrice can scale it (the suffix used to fall
   // outside the capture, so "under 500k" parsed as $500 — breaking the price filter).
-  const NUM = String.raw`(\$?[\d,]+\.?\d*\s*[km]?)`
+  //
+  // Wave 91 (lane 91C) — three real-estate readings the parser got wrong:
+  //   · "million"/"mil" are suffixes too ("1.2 million" was $1).
+  //   · A RANGE that is really a bedroom/bath count ("3-4 bed house under
+  //     $400k") was read as a $3–$4 PRICE and, being the first pattern, beat
+  //     the real "under $400k". The range now refuses a count unit after it.
+  //   · Buyers say "under 450" and mean $450,000. A bare for-sale figure below
+  //     10,000 is never a home price, so it is read in thousands — unless the
+  //     buyer is RENTING ("under 2500 a month"), where it is the monthly rent.
+  const NUM = String.raw`(\$?[\d,]+\.?\d*\s*(?:(?:million|mil|[km])\b)?)`
+  const COUNT_UNIT = String.raw`(?!\s*\+?\s*(?:bed|br\b|bd\b|bath|ba\b|stor|car\b|garage|acre|sq|year|yr|min|mile))`
   const pricePatterns = [
-    new RegExp(`${NUM}\\s*(?:[-–]|to)\\s*${NUM}`, "i"), // Range: "300k-400k", "300k to 400k"
+    new RegExp(`${NUM}\\s*(?:[-–]|to)\\s*${NUM}${COUNT_UNIT}`, "i"), // Range: "300k-400k", "300k to 400k"
     new RegExp(`under\\s+${NUM}`, "i"),     // Max: "under 500k"
     new RegExp(`below\\s+${NUM}`, "i"),     // Max: "below 400k"
     new RegExp(`max\\s+${NUM}`, "i"),       // Max: "max 450k"
@@ -70,21 +87,37 @@ export function parseNaturalLanguageQuery(query: string): ParsedBuyerIntent {
     new RegExp(`around\\s+${NUM}`, "i"),    // Target: "around 350k"
   ]
 
+  // RENT CONTEXT — decides both the market (listingType) and how a bare
+  // figure is read. Only the buyer's own words: "rent", "lease", "a month".
+  const rentContext = /\b(rent|renting|rental|lease|leasing|per month|a month|monthly|\/mo)\b/i.test(query)
+  if (rentContext) intent.listingType = 'rent'
+  const priceOf = (raw: string) => scaleBarePrice(parsePrice(raw), raw, rentContext)
+
   for (const pattern of pricePatterns) {
     const match = query.match(pattern)
     if (match) {
       if (match[2]) {
         // Range detected
-        intent.minPrice = parsePrice(match[1])
-        intent.maxPrice = parsePrice(match[2])
+        intent.minPrice = priceOf(match[1])
+        intent.maxPrice = priceOf(match[2])
         confidencePoints += 20
       } else {
         // Single value - treat as max
-        intent.maxPrice = parsePrice(match[1])
+        intent.maxPrice = priceOf(match[1])
         confidencePoints += 15
       }
       break
     }
+  }
+
+  // ZIP CODES — a five-digit token that is not a price ("$75034" or "75034k"
+  // is money, and so is a figure already read above).
+  const zipMatches = Array.from(query.matchAll(/(?<![\$\d,.])\b(\d{5})\b(?!\s*(?:k|m|mil|million)\b)(?![\d,])/gi))
+    .map((m) => m[1])
+    .filter((z) => Number(z) !== intent.minPrice && Number(z) !== intent.maxPrice)
+  if (zipMatches.length > 0) {
+    intent.zipCodes = Array.from(new Set(zipMatches))
+    confidencePoints += 15
   }
 
   // 2. BEDROOM EXTRACTION
@@ -159,9 +192,18 @@ export function parseNaturalLanguageQuery(query: string): ParsedBuyerIntent {
   }
 
   // State extraction (abbreviations or full names)
-  const stateMatch = query.match(/\b(TX|CA|FL|NY|CO|WA|OR|AZ|GA|NC|TN|NV|UT|Texas|California|Florida)\b/i)
-  if (stateMatch) {
-    intent.states = [stateMatch[1].toUpperCase()]
+  //
+  // Wave 91: the abbreviations are matched CASE-SENSITIVELY. With `/i`, the
+  // word "or" in "condo or townhouse" was read as Oregon, and the platform
+  // search then filtered `state in ('OR')` — an empty page for every
+  // either/or buyer. Full names map to their USPS code (listings.state holds
+  // "TX", never "TEXAS", which is what `.toUpperCase()` used to produce).
+  const STATE_NAMES: Record<string, string> = { texas: 'TX', california: 'CA', florida: 'FL' }
+  const stateAbbrev = query.match(/\b(TX|CA|FL|NY|CO|WA|OR|AZ|GA|NC|TN|NV|UT)\b/)
+  const stateName = lowerQuery.match(/\b(texas|california|florida)\b/)
+  const stateCode = stateAbbrev?.[1] ?? (stateName ? STATE_NAMES[stateName[1]] : undefined)
+  if (stateCode) {
+    intent.states = [stateCode]
     confidencePoints += 10
   }
 
@@ -307,8 +349,21 @@ function parsePrice(value: string): number {
   const num = parseFloat(cleaned)
   if (Number.isNaN(num)) return NaN
   if (cleaned.endsWith('k')) return Math.round(num * 1000)
-  if (cleaned.endsWith('m')) return Math.round(num * 1_000_000)
+  if (cleaned.endsWith('m') || cleaned.endsWith('mil') || cleaned.endsWith('million')) return Math.round(num * 1_000_000)
   return Math.round(num)
+}
+
+/**
+ * A bare FOR-SALE figure the buyer said without a unit ("under 450") is in
+ * thousands: no home sells for $450, and "under 450" is how buyers say it.
+ * Only a figure from 50 to 9,999 with NO k/m/million suffix is scaled; a
+ * renter's figure is their monthly rent and is never scaled. PURE.
+ */
+function scaleBarePrice(value: number, raw: string, rentContext: boolean): number {
+  if (!Number.isFinite(value) || rentContext) return value
+  if (/(?:k|m|mil|million)\s*$/i.test(raw.trim())) return value
+  if (value >= 50 && value < 10_000) return value * 1000
+  return value
 }
 
 /**

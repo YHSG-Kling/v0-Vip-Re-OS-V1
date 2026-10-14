@@ -21,6 +21,7 @@
  */
 
 import { FAIR_HOUSING_PATTERNS } from "@/lib/compliance-rules/fair-housing-patterns"
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 export interface ComplianceGateResult {
   passed: boolean
@@ -53,8 +54,18 @@ const WARNING_PATTERNS: { pattern: RegExp; message: string }[] = [
     message: 'Review "luxury/exclusive" language for fair-housing compliance with state rules.',
   },
   {
-    pattern: /\b(motivated seller|must sell|price reduced|desperate)\b/i,
+    pattern: /\b(motivated seller|must sell|desperate)\b/i,
     message: '"Motivated seller" language can attract lowball offers — confirm agent approved.',
+  },
+  {
+    // OWNER RULING — the public word for a lowered list price is a PRICE
+    // IMPROVEMENT (lib/listings/price-improvement-label.ts). "price reduced"
+    // used to sit in the lowball-offer warning above, which said nothing about
+    // the wording; it moves here so the whole family is caught and the message
+    // names the replacement. WARNING, not a blocker: §5 — warnings pass through
+    // and only a hard fair-housing flag escalates to a human.
+    pattern: /\bprice[ -](reduc\w*|cut|cuts|drop|drops|dropped)\b|\breduced[ -]price\b/i,
+    message: `Public copy says "${priceImprovementLabel("noun")}", not a price reduction/cut/drop — rewrite before publishing.`,
   },
   {
     pattern: /\b(school district|near (great|top|best) schools)\b/i,

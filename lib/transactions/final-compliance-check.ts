@@ -40,7 +40,7 @@ export function evaluateFinalCompliance(input: FinalComplianceInput): FinalCompl
     blockers.push(`${input.missingDocs} required document${input.missingDocs === 1 ? "" : "s"} not yet provided — all disclosures and brokerage docs must be on file.`)
   }
   if (input.rejectedDocs > 0) {
-    blockers.push(`${input.rejectedDocs} document${input.rejectedDocs === 1 ? "" : "s"} were rejected and must be corrected before the CDA.`)
+    blockers.push(`${input.rejectedDocs} document${input.rejectedDocs === 1 ? " was" : "s were"} rejected and must be corrected before the CDA.`)
   }
   if (input.blockingComplianceFailures > 0) {
     blockers.push(`${input.blockingComplianceFailures} blocking compliance check${input.blockingComplianceFailures === 1 ? "" : "s"} unresolved.`)

@@ -57,7 +57,8 @@ function pureLayer() {
 function sourceLayer() {
   console.log("\n[wiring — radar cron, gated nudge, board in command center, owned]")
   const radar = src("lib/education/skill-freshness-radar.ts")
-  check("gathers REAL last-practice signals (objection / quiz / course)", /objection_training_sessions[\s\S]*?agent_quiz_attempts[\s\S]*?agent_courses/.test(radar))
+  check("gathers REAL last-practice signals (objection / quiz / completed modules)", /objection_training_sessions[\s\S]*?agent_quiz_attempts[\s\S]*?learning_assignments/.test(radar))
+  check("coursework signal reads the canonical learning_assignments rail, NOT the write-dead agent_courses", !/from\("agent_courses"\)/.test(radar))
   check("nudges on STALE always, UNTESTED only when tenured", /status === "stale" \|\| \(s\.status === "untested" && \(tenureDays \?\? 0\) >= UNTESTED_TENURE_DAYS\)/.test(radar))
   check("proposes a GATED refresher, deduped per (agent, skill, month)", /SKILL REFRESH — agent:\$\{a\.id\} — \$\{skill\.area\} — \$\{monthKey\}/.test(radar) && /proposeClientMessage/.test(radar))
   const cron = src("app/api/cron/onboarding-reminders/route.ts")

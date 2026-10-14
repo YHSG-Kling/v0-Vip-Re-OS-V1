@@ -27,33 +27,66 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
-import { getEsignProviders, getTransactionFormProviders } from "@/lib/integrations/providers/catalog"
+import { getSelectableEsignProviders, getTransactionFormProviders, DEFAULT_ESIGN_PROVIDER, PROVIDER_CATALOG } from "@/lib/integrations/providers/catalog"
+import { providerSelectionVerdict } from "@/lib/connections/scope"
 
 // ── Provider catalogue ─────────────────────────────────────────────────────
-const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calendar", "mls", "accounting", "crm"] as const
+// ONE SETTING PER CAPABILITY (wave 141, lane 141C; owner: "TRANSACTION/FORMS provider · E-SIGN
+// provider · ACCOUNTING provider · PAYMENTS provider"). `payment` is the kernel's provider_type for
+// the PAYMENTS capability (lib/kernel/providers.ts SYSTEM_DEFAULTS — Stripe by default).
+const PROVIDER_TYPES = ["esign", "transaction", "accounting", "payment", "sms", "email", "voice", "calendar", "mls", "crm"] as const
+const TYPE_LABELS: Record<string, string> = {
+  esign: "E-SIGN", transaction: "TRANSACTION / FORMS", accounting: "ACCOUNTING", payment: "PAYMENTS",
+}
 
 // eSign + transaction options are derived from the unified provider catalog
 // (single source of truth) so the UI offers exactly the IMPLEMENTED providers
 // and never the unimplemented ones (which crash the factory). Adding a provider
 // class + flipping catalog.implemented makes it appear here automatically.
 const PROVIDER_KEYS_BY_TYPE: Record<string, string[]> = {
-  esign:       [...getEsignProviders(), "none"],
+  // The catalog DEFAULT (lane 89A: DocuSign — embedded in the platform window) is offered FIRST;
+  // Google eSignature (portal-send, no credential), Dotloop and every connectable API provider
+  // remain selectable after it. A selection here always wins over the default.
+  esign:       [...getSelectableEsignProviders(), "none"],
   transaction: [...getTransactionFormProviders(), "none"],
   sms:         ["twilio", "bandwidth", "vonage"],
   email:       ["sendgrid", "mailgun", "resend"],
   voice:       ["twilio", "bandwidth"],
   calendar:    ["google", "outlook"],
-  mls:         ["idx_broker", "spark", "rets", "bridge", "rentcast"],
-  accounting:  ["quickbooks", "xero"],
+  // TOMBSTONE (lane 71C, carried from wave 69): "rentcast" removed from the
+  // tenant-selectable MLS provider list. Wave 69 owner ruling (verbatim):
+  // "rentcast is platform provided but idx is for tenant connected... the
+  // setting page should only allow them to setup their idx connection." The
+  // active-listing source order is DERIVED platform logic, never a tenant
+  // choice — survivor: lib/buyer-search/listing-source-order.ts::resolveActiveListingSources
+  // (IDX when the brokerage's own IDX credential is connected, else RentCast,
+  // never a tenant-picked override). This provider_overrides row was never
+  // consulted by that resolver anyway (readerless write of the "rentcast"
+  // value specifically) — removed at the source rather than left offering a
+  // choice with no effect.
+  mls:         ["idx_broker", "spark", "rets", "bridge"],
+  // Xero stays LISTED so a broker can see it is built-but-parked (lib/connections/scope.ts
+  // CANDIDATE_PROVIDERS) — the verdict renders it unavailable with the reason, never selectable.
+  accounting:  ["quickbooks", "xero", "none"],
+  payment:     ["stripe", "none"],
   crm:         ["gohighlevel", "none"],
 }
 
+/** The honest menu entry: the ONE verdict every write door reads (unavailable WITH its reason). */
+function selectionVerdict(type: string, key: string): { ok: boolean; reason?: string } {
+  const v = providerSelectionVerdict(type, key)
+  return v.ok ? { ok: true } : { ok: false, reason: v.reason }
+}
+
 const PLATFORM_LABELS: Record<string, string> = {
+  google_esign: PROVIDER_CATALOG.google_esign.label,
   dotloop:      "Dotloop",
   docusign:     "DocuSign",
   skyslope:     "SkySlope",
   authentisign: "Authentisign",
   brokermint:   "Brokermint",
+  formsimplicity: PROVIDER_CATALOG.formsimplicity.label,
+  stripe:       "Stripe",
   twilio:       "Twilio",
   bandwidth:    "Bandwidth",
   vonage:       "Vonage",
@@ -66,14 +99,16 @@ const PLATFORM_LABELS: Record<string, string> = {
   spark:        "Spark API",
   bridge:       "Bridge Interactive",
   idx_broker:   "IDX Broker",
-  rentcast:     "Rentcast (no IDX needed)",
   quickbooks:   "QuickBooks",
   xero:         "Xero",
+  wordpress:    "WordPress",
+  idxbroker:    "IDX Broker",   // the CREDENTIAL key; idx_broker above is the provider-override key
   gohighlevel:  "GoHighLevel",
   none:         "None (Disabled)",
 }
 
 const PLATFORM_ICONS: Record<string, string> = {
+  google_esign: "G",
   dotloop:    "D",
   docusign:   "DS",
   skyslope:   "SS",
@@ -104,18 +139,28 @@ type OverrideForm = {
 }
 
 const EMPTY_CRED: CredForm = { platform: "", api_key: "", api_url: "", account_id: "", account_name: "" }
-const EMPTY_OVERRIDE: OverrideForm = { provider_type: "esign", provider_key: "dotloop" }
+// The override form opens on the e-sign DEFAULT (the catalog's ONE constant), never a hard-coded vendor.
+const EMPTY_OVERRIDE: OverrideForm = { provider_type: "esign", provider_key: DEFAULT_ESIGN_PROVIDER }
 
 // ── Component ──────────────────────────────────────────────────────────────
 export function IntegrationsClient({
   credentials: initialCreds,
-  overrides: initialOverrides,
+  overrides,
+  defaults,
 }: {
   credentials: PlatformCredential[]
   overrides: ProviderOverride[]
+  /** The kernel's platform defaults per provider_type (lib/kernel/providers.ts SYSTEM_DEFAULTS),
+   *  passed by the server page — a client component cannot import the kernel. */
+  defaults?: Record<string, string>
 }) {
+  // `credentials` keeps local state on purpose: handleToggle flips is_active in
+  // place without a reload. TOMBSTONE — `const [overrides, setOverrides] =
+  // useState(initialOverrides)`: setOverrides was never called, so that copy had
+  // no writer; the prop is rendered directly. (handleSaveOverride ends in
+  // window.location.reload(), a full remount, so the list was not frozen in
+  // practice — it would have been the moment that became a router.refresh().)
   const [credentials, setCredentials] = useState(initialCreds)
-  const [overrides, setOverrides] = useState(initialOverrides)
   const [showCredDialog, setShowCredDialog] = useState(false)
   const [showOverrideDialog, setShowOverrideDialog] = useState(false)
   const [credForm, setCredForm] = useState<CredForm>(EMPTY_CRED)
@@ -219,7 +264,7 @@ export function IntegrationsClient({
           </Button>
         </div>
 
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50">
@@ -232,18 +277,30 @@ export function IntegrationsClient({
             <tbody>
               {PROVIDER_TYPES.map(type => {
                 const override = getOverrideForType(type)
+                // A stored selection the matrix no longer certifies is shown as UNAVAILABLE with its
+                // reason (tenant-facing honesty) — never as a working provider.
+                const stored = override && override.provider_key !== "none" ? selectionVerdict(type, override.provider_key) : null
+                const platformDefault = defaults?.[type]
                 return (
                   <tr key={type} className="border-b border-gray-50 hover:bg-gray-50">
                     <td className="px-4 py-3 font-medium text-gray-800 uppercase text-xs tracking-wide">
-                      {type}
+                      {TYPE_LABELS[type] ?? type}
                     </td>
                     <td className="px-4 py-3 text-gray-700">
                       {override
-                        ? PLATFORM_LABELS[override.provider_key] ?? override.provider_key
-                        : <span className="text-gray-400 italic">Kernel default</span>}
+                        ? <>
+                            {PLATFORM_LABELS[override.provider_key] ?? override.provider_key}
+                            {stored && !stored.ok && <p className="text-[11px] text-amber-700 mt-0.5">Unavailable — {stored.reason}</p>}
+                          </>
+                        : <span className="text-gray-400 italic">{type === "esign" ? `Default — ${PROVIDER_CATALOG[DEFAULT_ESIGN_PROVIDER].label}` : platformDefault ? `Default — ${PLATFORM_LABELS[platformDefault] ?? platformDefault}` : "Kernel default"}</span>}
                     </td>
                     <td className="px-4 py-3">
-                      {override ? statusBadge(override.enabled) : (
+                      {override ? (stored && !stored.ok ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                          Unavailable
+                        </span>
+                      ) : statusBadge(override.enabled)) : (
                         <span className="text-xs text-gray-400">—</span>
                       )}
                     </td>
@@ -293,7 +350,7 @@ export function IntegrationsClient({
             <p className="text-sm text-gray-500">No platform credentials configured yet.</p>
           </div>
         ) : (
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 bg-gray-50">
@@ -442,7 +499,7 @@ export function IntegrationsClient({
                 <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {PROVIDER_TYPES.map(t => (
-                    <SelectItem key={t} value={t}>{t.toUpperCase()}</SelectItem>
+                    <SelectItem key={t} value={t}>{TYPE_LABELS[t] ?? t.toUpperCase()}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -455,19 +512,28 @@ export function IntegrationsClient({
               >
                 <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {(PROVIDER_KEYS_BY_TYPE[overrideForm.provider_type] ?? []).map(k => (
-                    <SelectItem key={k} value={k}>
-                      {PLATFORM_LABELS[k] ?? k}
-                    </SelectItem>
-                  ))}
+                  {(PROVIDER_KEYS_BY_TYPE[overrideForm.provider_type] ?? []).map(k => {
+                    // Unavailable providers stay LISTED (never advertised as working, never hidden):
+                    // disabled, with the honest reason shown below the menu when picked.
+                    const v = selectionVerdict(overrideForm.provider_type, k)
+                    return (
+                      <SelectItem key={k} value={k} disabled={!v.ok}>
+                        {PLATFORM_LABELS[k] ?? k}{v.ok ? "" : " — unavailable"}
+                      </SelectItem>
+                    )
+                  })}
                 </SelectContent>
               </Select>
+              {(() => {
+                const v = overrideForm.provider_key ? selectionVerdict(overrideForm.provider_type, overrideForm.provider_key) : { ok: true }
+                return v.ok ? null : <p className="text-[11px] text-amber-700 mt-1.5">Unavailable — {v.reason}</p>
+              })()}
             </div>
             {error && <p className="text-xs text-red-600">{error}</p>}
           </div>
           <DialogFooter className="gap-2">
             <Button variant="outline" onClick={() => setShowOverrideDialog(false)}>Cancel</Button>
-            <Button onClick={handleSaveOverride} disabled={isPending}>
+            <Button onClick={handleSaveOverride} disabled={isPending || !selectionVerdict(overrideForm.provider_type, overrideForm.provider_key).ok}>
               {isPending ? "Saving..." : "Save Override"}
             </Button>
           </DialogFooter>

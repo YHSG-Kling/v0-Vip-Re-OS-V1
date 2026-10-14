@@ -43,9 +43,6 @@ import {
   Mail,
   RefreshCw,
   Search,
-  ArrowUpRight,
-  ArrowDownRight,
-  Filter,
   ChevronRight,
   Loader2,
   AlertTriangle,
@@ -58,13 +55,11 @@ import {
   SlidersHorizontal,
   Printer,
 } from "lucide-react"
-import Link from "next/link"
 import {
   getSourcePerformance,
   generateSourceAIInsights,
   exportSourceCSV,
   emailSourceReport,
-  getSourceComparison,
   type SourceMetrics,
   type SourceFamily,
 } from "@/app/actions/source-analytics"
@@ -73,9 +68,9 @@ import {
 // Props
 // ─────────────────────────────────────────────────────────────────────────────
 interface Props {
-  userId: string
   brokerageId: string
-  userType: string
+  /** Lane 90A: the server-resolved scope (null = brokerage-wide) — the client never re-derives it from a role. */
+  scopeAgentIds: string[] | null
   agentId: string | null
   initialSources: SourceMetrics[]
   initialSummary: {
@@ -206,6 +201,28 @@ function SourceRow({
         <span className={`text-sm font-medium ${source.close_rate >= 10 ? "text-emerald-600" : source.close_rate >= 3 ? "text-amber-600" : "text-muted-foreground"}`}>
           {source.close_rate}%
         </span>
+        {/* Wording-vs-quality verdict. A weak source with a fixable opener must NOT
+            be downranked — that throws away good leads over a copy problem. */}
+        {source.diagnostic && source.diagnostic.verdict !== "healthy" && (
+          <div
+            className={`mt-1 text-[10px] leading-tight ${
+              source.diagnostic.verdict === "wording_issue"
+                ? "text-amber-700"
+                : source.diagnostic.verdict === "insufficient_data"
+                  ? "text-muted-foreground"
+                  : "text-red-600"
+            }`}
+            title={source.diagnostic.why}
+          >
+            {source.diagnostic.verdict === "wording_issue"
+              ? "copy, not source — test new opener"
+              : source.diagnostic.verdict === "source_quality_issue"
+                ? "source quality — consider downranking"
+                : source.diagnostic.verdict === "targeting_issue"
+                  ? "targeting/cadence mismatch"
+                  : "not enough touches to judge"}
+          </div>
+        )}
       </TableCell>
       <TableCell>
         <span className={`text-sm font-medium ${source.roi_multiple >= 5 ? "text-emerald-600" : source.roi_multiple >= 2 ? "text-amber-600" : "text-red-500"}`}>
@@ -244,6 +261,8 @@ function CompareDialog({
   if (!open || sources.length === 0) return null
   const metrics: Array<{ label: string; fn: (s: SourceMetrics) => string }> = [
     { label: "Source Family", fn: s => s.source_family },
+    // Lane 82B — the platform-paid scraping vendor behind this source (SOURCE_VENDOR).
+    { label: "Vendor", fn: s => s.vendor ?? "—" },
     { label: "Raw Records", fn: s => s.raw_record_count > 0 ? s.raw_record_count.toLocaleString() : "—" },
     { label: "Leads", fn: s => s.lead_count > 0 ? s.lead_count.toLocaleString() : "—" },
     { label: "Contacts", fn: s => s.contact_count.toLocaleString() },
@@ -347,9 +366,8 @@ function EmailReportDialog({
 // Main Component
 // ─────────────────────────────────────────────────────────────────────────────
 export function SourceAnalyticsClient({
-  userId,
   brokerageId,
-  userType,
+  scopeAgentIds,
   agentId,
   initialSources,
   initialSummary,
@@ -381,8 +399,6 @@ export function SourceAnalyticsClient({
   const [emailSuccess, setEmailSuccess] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
 
-  const isBrokerOrAdmin = userType === "broker" || userType === "admin" || userType === "superadmin"
-
   // Filter sources by tab and search
   const filteredSources = sources.filter(s => {
     if (familyFilter !== "all" && s.source_family !== familyFilter) return false
@@ -404,7 +420,7 @@ export function SourceAnalyticsClient({
     startLoading(async () => {
       const result = await getSourcePerformance({
         brokerageId,
-        agentId: isBrokerOrAdmin ? undefined : userId,
+        agentIds: scopeAgentIds,
         dateFrom: new Date(dateFrom).toISOString(),
         dateTo: new Date(dateTo).toISOString(),
         sourceFamilies: familyFilter !== "all" ? [familyFilter as SourceFamily] : undefined,
@@ -415,7 +431,7 @@ export function SourceAnalyticsClient({
         setSummary(result.summary)
       }
     })
-  }, [brokerageId, userId, isBrokerOrAdmin, dateFrom, dateTo, familyFilter, sortBy])
+  }, [brokerageId, scopeAgentIds, dateFrom, dateTo, familyFilter, sortBy])
 
   const handleGenerateInsights = useCallback(() => {
     setAIError(null)
@@ -434,7 +450,7 @@ export function SourceAnalyticsClient({
     startExporting(async () => {
       const result = await exportSourceCSV({
         brokerageId,
-        agentId: isBrokerOrAdmin ? undefined : userId,
+        agentIds: scopeAgentIds,
         dateFrom: new Date(dateFrom).toISOString(),
         dateTo: new Date(dateTo).toISOString(),
       })
@@ -450,13 +466,13 @@ export function SourceAnalyticsClient({
         setExportError(result.error ?? "Export failed")
       }
     })
-  }, [brokerageId, userId, isBrokerOrAdmin, dateFrom, dateTo])
+  }, [brokerageId, scopeAgentIds, dateFrom, dateTo])
 
   const handleSendEmail = useCallback((email: string, name: string) => {
     startEmailing(async () => {
       const result = await emailSourceReport(brokerageId, email, name, "brokerage", {
         brokerageId,
-        agentId: isBrokerOrAdmin ? undefined : userId,
+        agentIds: scopeAgentIds,
         dateFrom: new Date(dateFrom).toISOString(),
         dateTo: new Date(dateTo).toISOString(),
       })
@@ -465,7 +481,7 @@ export function SourceAnalyticsClient({
         setEmailSuccess(true)
       }
     })
-  }, [brokerageId, userId, isBrokerOrAdmin, dateFrom, dateTo])
+  }, [brokerageId, scopeAgentIds, dateFrom, dateTo])
 
   const handlePrint = useCallback(() => {
     window.print()

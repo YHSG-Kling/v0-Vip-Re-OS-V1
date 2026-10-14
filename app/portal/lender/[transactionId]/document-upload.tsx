@@ -4,12 +4,12 @@ import { useState, useCallback } from "react"
 import { useDropzone } from "react-dropzone"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Upload, FileText, CheckCircle2, AlertCircle, X, Download } from "lucide-react"
+import { Upload, FileText, CheckCircle2, AlertCircle, Download } from "lucide-react"
 import { uploadLenderDocument } from "@/app/actions/lender-portal-actions"
 import { createClient } from "@/lib/supabase/client"
+import { formatDateTimeShort } from "@/lib/format/dates"
 
 interface Document {
   id: string
@@ -28,15 +28,8 @@ const DOCUMENT_TYPES = [
 
 type DocumentType = typeof DOCUMENT_TYPES[number]["value"]
 
-function formatDate(date: string): string {
-  return new Date(date).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  })
-}
+// `formatDate` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/dates.ts `formatDateTimeShort` (imported above).
 
 export function LenderDocumentUpload({
   transactionId,
@@ -71,27 +64,44 @@ export function LenderDocumentUpload({
         // Upload to Supabase Storage — real path, never a local placeholder
         const supabase = createClient()
         const filePath = `transactions/${transactionId}/lender/${Date.now()}_${file.name}`
-        const { error: uploadErr } = await supabase.storage
-          .from("transaction-documents")
-          .upload(filePath, file, { upsert: false, contentType: file.type })
+        // Store and sign as ONE step: the previous shape bailed after the bytes
+        // were already in the bucket whenever the signer failed, leaving a loan
+        // document in the tenant bucket with no row referencing it.
+        const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+        const stored = await putAndSign(supabase, {
+          bucket:      "transaction-documents",
+          path:        filePath,
+          body:        file,
+          contentType: file.type,
+          reason:      "lender_portal_document_upload",
+        })
 
-        if (uploadErr) {
-          setError(`Upload failed: ${uploadErr.message}`)
+        if (!stored.ok) {
+          setError(`Upload failed: ${stored.error}`)
           clearInterval(progressInterval)
           return
         }
 
-        const { data: { publicUrl } } = supabase.storage
-          .from("transaction-documents")
-          .getPublicUrl(filePath)
-
-        await uploadLenderDocument({
-          transactionId,
-          lenderId,
-          documentType: selectedType,
-          fileName: file.name,
-          fileUrl: publicUrl,
-        })
+        try {
+          await uploadLenderDocument({
+            transactionId,
+            lenderId,
+            documentType: selectedType,
+            fileName: file.name,
+            fileUrl: stored.signedUrl,
+          })
+        } catch (recordErr: any) {
+          // Nothing references the file now — undo the upload before rethrowing
+          // to the outer handler, which owns the message the lender sees.
+          await removeOrRecordOrphan(supabase, {
+            bucket:     "transaction-documents",
+            objectPath: stored.path,
+            reason:     "lender_document_record_refused",
+            detail:     recordErr?.message ?? String(recordErr),
+          })
+          clearInterval(progressInterval)
+          throw recordErr
+        }
 
         clearInterval(progressInterval)
         setUploadProgress(100)
@@ -214,7 +224,7 @@ export function LenderDocumentUpload({
                         <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
                         <div className="min-w-0">
                           <p className="font-medium text-sm truncate">{doc.file_name}</p>
-                          <p className="text-xs text-muted-foreground">{formatDate(doc.created_at)}</p>
+                          <p className="text-xs text-muted-foreground">{formatDateTimeShort(doc.created_at)}</p>
                         </div>
                       </div>
                       {doc.file_url && (

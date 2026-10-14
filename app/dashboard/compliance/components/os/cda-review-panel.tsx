@@ -27,17 +27,32 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Textarea } from "@/components/ui/textarea"
-import { ShieldCheck, AlertTriangle, CheckCircle, XCircle, Loader2, FileWarning } from "lucide-react"
+import { ShieldCheck, AlertTriangle, CheckCircle, Loader2, FileWarning, Send } from "lucide-react"
 import {
   approveCdaAction,
   brokerSignCdaAction,
+  sendCdaToTitleAction,
   requestCdaChangesAction,
   manualOverrideCdaAction,
+  // THE GATE THAT NOTHING COULD ARM.
+  //
+  // approveCdaAction reads closing_disclosure_agreement.signature_check_passed:
+  // true ⇒ may approve, false ⇒ must Manual Override with a reason, NULL ⇒
+  // grandfathered (an older CDA predating the check). runSignatureCheckForCdaAction
+  // is the ONLY writer of that column and of missing_docs — and it had no caller
+  // anywhere, so the column was NULL on every CDA ever created. Every disbursement
+  // authorization therefore took the grandfathered branch: the signature gate
+  // existed, the panel already rendered its verdict badges and its missing-document
+  // list below, and the verdict was never computed for anyone.
+  //
+  // This is the missing half (CLAUDE.md §1.2), not a second writer: nothing else
+  // in the tree writes signature_check_passed.
+  runSignatureCheckForCdaAction,
 } from "@/app/actions/cda-portal"
 import { listCdasForComplianceReviewAction, type CdaReviewItem } from "@/app/actions/cda-portal-list"
 import { toast } from "sonner"
 
-type Mode = "request_changes" | "manual_override" | null
+type Mode = "request_changes" | "manual_override" | "send_to_title" | null
 
 export function CdaReviewPanel() {
   const [items, setItems] = useState<CdaReviewItem[]>([])
@@ -47,6 +62,10 @@ export function CdaReviewPanel() {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [mode, setMode] = useState<Mode>(null)
   const [reason, setReason] = useState("")
+  // Send-to-title recipient. The closing agent is a person at a title company /
+  // escrow / closing attorney, not a stored platform user, so it is captured here.
+  const [titleEmail, setTitleEmail] = useState("")
+  const [titleName, setTitleName] = useState("")
 
   useEffect(() => { void reload() }, [])
 
@@ -63,7 +82,10 @@ export function CdaReviewPanel() {
     setReason("")
   }
 
-  function closeDialog() { setActiveId(null); setMode(null); setReason("") }
+  function closeDialog() {
+    setActiveId(null); setMode(null); setReason("")
+    setTitleEmail(""); setTitleName("")
+  }
 
   function handleApprove(cdaId: string) {
     startTransition(async () => {
@@ -80,6 +102,33 @@ export function CdaReviewPanel() {
           toast.error("error" in res ? res.error : "Approval failed")
         }
       }
+    })
+  }
+
+  /**
+   * Run (or re-run) the signature/document scan for one CDA and re-read the queue
+   * so the verdict badges and the missing-document list reflect it.
+   *
+   * The outcome is READ, and a refusal says so: the scan's own write is the thing
+   * the approval gate depends on, and a scan that silently failed used to leave
+   * signature_check_passed NULL — which approveCdaAction treats as grandfathered,
+   * i.e. a failed scan would OPEN the money gate rather than close it.
+   */
+  function handleSignatureCheck(cdaId: string) {
+    startTransition(async () => {
+      const res = await runSignatureCheckForCdaAction({ cdaId })
+      if (!res.success) {
+        toast.error("error" in res ? res.error : "The signature check could not be run")
+        return
+      }
+      if (res.passed) {
+        toast.success("Signature check passed — every document on this transaction is signed off")
+      } else {
+        toast.warning(
+          `Signature check failed — ${res.missing.length} document${res.missing.length === 1 ? "" : "s"} outstanding`,
+        )
+      }
+      void reload()
     })
   }
 
@@ -105,6 +154,21 @@ export function CdaReviewPanel() {
 
   function handleSubmitDialog() {
     if (!activeId) return
+    if (mode === "send_to_title") {
+      const email = titleEmail.trim()
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast.error("Enter a valid closing-agent email"); return }
+      startTransition(async () => {
+        const res = await sendCdaToTitleAction({
+          cdaId: activeId,
+          recipientEmail: email,
+          recipientName: titleName.trim() || undefined,
+          method: "email",
+        })
+        if (res.success) { toast.success(`CDA delivered to ${email}`); closeDialog(); void reload() }
+        else toast.error("error" in res ? res.error : "Send failed")
+      })
+      return
+    }
     if (mode === "request_changes") {
       if (!reason.trim()) { toast.error("Reason is required"); return }
       startTransition(async () => {
@@ -133,6 +197,12 @@ export function CdaReviewPanel() {
   // Compliance-approved CDAs awaiting the BROKER's signature (the 2nd signature
   // before the CDA can go to title).
   const awaitingBrokerSignature = items.filter(i => i.status === "approved" && !i.brokerApprovedAt)
+  // Signed by the broker and NOT yet delivered. This bucket did not exist, and
+  // neither did the list query behind it — a signed CDA simply left the queue
+  // with its disbursement instruction sitting on the platform.
+  const awaitingSendToTitle = items.filter(
+    i => i.status === "approved" && !!i.brokerApprovedAt && !i.sentToTitleAt,
+  )
 
   return (
     <Card>
@@ -145,6 +215,9 @@ export function CdaReviewPanel() {
           <div className="flex items-center gap-2">
             {submitted.length > 0 && <Badge className="bg-orange-500 text-white">{submitted.length} Pending</Badge>}
             {changesRequested.length > 0 && <Badge variant="outline">{changesRequested.length} Awaiting Agent</Badge>}
+            {awaitingSendToTitle.length > 0 && (
+              <Badge className="bg-blue-600 text-white">{awaitingSendToTitle.length} To Deliver</Badge>
+            )}
           </div>
         </div>
       </CardHeader>
@@ -158,11 +231,11 @@ export function CdaReviewPanel() {
             <div className="rounded-full bg-green-500/10 p-3 mb-3">
               <ShieldCheck className="h-6 w-6 text-green-600" />
             </div>
-            <p className="text-sm text-muted-foreground">No CDAs awaiting compliance review</p>
+            <p className="text-sm text-muted-foreground">No CDAs awaiting review, signature or delivery</p>
           </div>
         ) : (
           <>
-            {submitted.map(c => <CdaRow key={c.id} item={c} pending={pending} onApprove={handleApprove} onOpenDialog={openDialog} />)}
+            {submitted.map(c => <CdaRow key={c.id} item={c} pending={pending} onApprove={handleApprove} onOpenDialog={openDialog} onSignatureCheck={handleSignatureCheck} />)}
             {changesRequested.length > 0 && (
               <div className="pt-3 border-t">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Awaiting agent revision</p>
@@ -175,6 +248,16 @@ export function CdaReviewPanel() {
                 {awaitingBrokerSignature.map(c => <CdaRow key={c.id} item={c} pending={pending} onBrokerSign={handleBrokerSign} compact />)}
               </div>
             )}
+            {awaitingSendToTitle.length > 0 && (
+              <div className="pt-3 border-t">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
+                  Signed — awaiting delivery to the closing agent
+                </p>
+                {awaitingSendToTitle.map(c => (
+                  <CdaRow key={c.id} item={c} pending={pending} onOpenDialog={openDialog} sendToTitle compact />
+                ))}
+              </div>
+            )}
           </>
         )}
       </CardContent>
@@ -183,7 +266,9 @@ export function CdaReviewPanel() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {mode === "request_changes" ? "Request changes" : "Manual override approval"}
+              {mode === "request_changes" ? "Request changes"
+                : mode === "send_to_title" ? "Send the signed CDA to the closing agent"
+                : "Manual override approval"}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
@@ -202,26 +287,60 @@ export function CdaReviewPanel() {
                 </div>
               </div>
             )}
-            <Label className="text-xs font-semibold">
-              {mode === "request_changes" ? "What does the agent need to fix?" : "Override reason (min 10 characters)"}
-            </Label>
-            <Textarea
-              value={reason}
-              onChange={e => setReason(e.target.value)}
-              rows={4}
-              placeholder={mode === "request_changes"
-                ? "e.g. Buyer-broker agreement signature is missing on page 3"
-                : "e.g. All signatures verified out-of-band by phone with title officer Sarah Lee"}
-            />
+            {mode === "send_to_title" ? (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  This is the disbursement authorization. The closing agent uses it to split funds at
+                  closing, so it has to reach them — approving and signing it is not delivery.
+                </p>
+                <div className="space-y-1">
+                  <Label className="text-xs font-semibold">Closing agent email *</Label>
+                  <Input
+                    type="email"
+                    value={titleEmail}
+                    onChange={e => setTitleEmail(e.target.value)}
+                    placeholder="closer@titlecompany.com"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs font-semibold">Name (optional)</Label>
+                  <Input
+                    value={titleName}
+                    onChange={e => setTitleName(e.target.value)}
+                    placeholder="Sarah Lee, First American Title"
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <Label className="text-xs font-semibold">
+                  {mode === "request_changes" ? "What does the agent need to fix?" : "Override reason (min 10 characters)"}
+                </Label>
+                <Textarea
+                  value={reason}
+                  onChange={e => setReason(e.target.value)}
+                  rows={4}
+                  placeholder={mode === "request_changes"
+                    ? "e.g. Buyer-broker agreement signature is missing on page 3"
+                    : "e.g. All signatures verified out-of-band by phone with title officer Sarah Lee"}
+                />
+              </>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={closeDialog} disabled={pending}>Cancel</Button>
             <Button
               onClick={handleSubmitDialog}
-              disabled={pending || (mode === "manual_override" ? reason.trim().length < 10 : !reason.trim())}
+              disabled={pending || (
+                mode === "send_to_title" ? !titleEmail.trim()
+                  : mode === "manual_override" ? reason.trim().length < 10
+                  : !reason.trim()
+              )}
             >
               {pending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              {mode === "request_changes" ? "Send back" : "Override & Approve"}
+              {mode === "request_changes" ? "Send back"
+                : mode === "send_to_title" ? "Send to closing agent"
+                : "Override & Approve"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -237,11 +356,19 @@ interface RowProps {
   onApprove?: (id: string) => void
   onOpenDialog?: (id: string, mode: Exclude<Mode, null>) => void
   onBrokerSign?: (id: string) => void
+  /** Run the signature/document scan that arms the approval gate. */
+  onSignatureCheck?: (id: string) => void
+  /** Renders the delivery action instead of the review actions. */
+  sendToTitle?: boolean
 }
 
-function CdaRow({ item, pending, compact, onApprove, onOpenDialog, onBrokerSign }: RowProps) {
+function CdaRow({ item, pending, compact, onApprove, onOpenDialog, onBrokerSign, onSignatureCheck, sendToTitle }: RowProps) {
   const sigPassed = item.signatureCheckPassed === true
   const sigFailed = item.signatureCheckPassed === false
+  // NULL is not "fine" — it is "nobody looked". approveCdaAction grandfathers it,
+  // so the reviewer must be able to see the difference between a check that passed
+  // and a check that was never run before they authorise a disbursement.
+  const sigUnchecked = item.signatureCheckPassed === null
   const contractPassed = item.contractCheckPassed === true
   const contractFailed = item.contractCheckPassed === false
   const contractBlocker = (item.contractDiscrepancies ?? []).some(d => d.severity === "blocker")
@@ -262,6 +389,7 @@ function CdaRow({ item, pending, compact, onApprove, onOpenDialog, onBrokerSign 
           )}
           {sigPassed && <Badge className="bg-green-100 text-green-800 text-[10px]"><CheckCircle className="h-3 w-3 mr-1" /> Sigs OK</Badge>}
           {sigFailed && !overridden && <Badge variant="destructive" className="text-[10px]"><FileWarning className="h-3 w-3 mr-1" /> Missing sigs</Badge>}
+          {sigUnchecked && <Badge variant="outline" className="text-[10px] border-slate-400 text-slate-600">Sigs not checked</Badge>}
           {contractPassed && <Badge className="bg-green-100 text-green-800 text-[10px]"><CheckCircle className="h-3 w-3 mr-1" /> Split OK</Badge>}
           {contractFailed && contractBlocker && !overridden && <Badge variant="destructive" className="text-[10px]"><AlertTriangle className="h-3 w-3 mr-1" /> Split ≠ contract</Badge>}
           {item.outstandingFees > 0 && <Badge variant="outline" className="text-[10px] border-amber-500 text-amber-700">Owes ${item.outstandingFees.toLocaleString()} fees</Badge>}
@@ -311,6 +439,14 @@ function CdaRow({ item, pending, compact, onApprove, onOpenDialog, onBrokerSign 
             onClick={() => onOpenDialog(item.id, "request_changes")}>
             Request changes
           </Button>
+          {onSignatureCheck && (
+            <Button size="sm" variant="outline" disabled={pending}
+              onClick={() => onSignatureCheck(item.id)}
+              className="gap-1">
+              <ShieldCheck className="h-3 w-3" />
+              {sigUnchecked ? "Check signatures" : "Re-check signatures"}
+            </Button>
+          )}
           {(sigFailed || (contractFailed && contractBlocker)) && !overridden && (
             <Button size="sm" variant="outline" disabled={pending}
               onClick={() => onOpenDialog(item.id, "manual_override")}
@@ -324,6 +460,14 @@ function CdaRow({ item, pending, compact, onApprove, onOpenDialog, onBrokerSign 
         <div className="shrink-0">
           <Button size="sm" disabled={pending} onClick={() => onBrokerSign(item.id)} className="gap-1">
             ✍️ Sign as Broker
+          </Button>
+        </div>
+      )}
+      {sendToTitle && onOpenDialog && (
+        <div className="shrink-0">
+          <Button size="sm" disabled={pending} className="gap-1"
+            onClick={() => onOpenDialog(item.id, "send_to_title")}>
+            <Send className="h-3 w-3" /> Send to Title
           </Button>
         </div>
       )}

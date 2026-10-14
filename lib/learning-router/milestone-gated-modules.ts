@@ -122,10 +122,13 @@ export async function resolveMilestoneGatedFeed(
     .select(`
       id, title, summary, cover_image_url, estimated_minutes,
       milestone_key, gated_until_milestone, prerequisite_module_ids,
-      audience_roles, audience_personas, stage_tags
+      audience_roles, audience_personas, stage_tags, gap_tags
     `)
     .eq("brokerage_id", brokerageId)
     .eq("status", "published")
+    // Exclude bridged static lessons — they render on /learn (their origin), not
+    // in the portal-home education panel, so a lesson never appears in two places.
+    .not("gap_tags", "cs", '{static_bridge}')
     .order("display_priority", { ascending: false })
     .limit(100)
 

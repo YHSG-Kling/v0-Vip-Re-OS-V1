@@ -19,6 +19,9 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { sentinelWrite } from '@/lib/kernel/write-sentinel'
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
+import { collectError } from '@/lib/errors/collect-error'
 import {
   generatePersonalizedEmail,
   embedVideoInEmail,
@@ -32,12 +35,14 @@ import {
 } from '@/lib/ai-isa/isa-outreach-logger'
 import { evaluateOutbound } from '@/lib/kernel'
 import { dispatchEmail, dispatchSms } from '@/lib/providers/dispatch'
-import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
+import { loadBrandVoicePrompt, type BrandVoicePromptResult } from '@/lib/ai-isa/brand-voice-prompt'
 import { emitLifecycleEvent } from '@/lib/kernel/helpers'
-import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
+import { buildPersonalizationFacts, personalizeOutreach } from '@/lib/ai-isa/personalize-outreach'
 import { isLifetimeCustomerType } from '@/lib/contact-types'
 import { resolveContactChannel } from '@/lib/ai-isa/contact-channel-policy'
 import type { MessageType, Persona } from '@/lib/kernel/types'
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
 
 // ── Lifecycle states where AI ISA MUST NOT engage ──────────────────────────
 const BLOCKED_LIFECYCLE_STATES = new Set([
@@ -68,6 +73,8 @@ export interface EngageContactParams {
   forceChannel?: string
   /** User who initiated (for audit trail) */
   actorId?: string
+  /** Wave 105C: the mission this touch serves (else the contact's active mission is looked up). */
+  missionId?: string
 }
 
 export interface EngageContactResult {
@@ -77,34 +84,68 @@ export interface EngageContactResult {
   error?: string
 }
 
+/** Not exported (a "use server" export is an endpoint): network-invoked → session tenant must match. */
+async function refuseForeignNetworkTenant(brokerageId: string): Promise<string | null> {
+  let networkInvoked = false
+  try {
+    const { headers } = await import('next/headers')
+    networkInvoked = Boolean((await headers()).get('next-action'))
+  } catch {
+    networkInvoked = false // no request scope → a direct server-side call
+  }
+  if (!networkInvoked) return null
+  const { requireCallerTenant } = await import('@/lib/auth/require-caller')
+  const caller = await requireCallerTenant(brokerageId)
+  return caller.ok ? null : caller.error
+}
+
 export async function engageContact(
   params: EngageContactParams,
 ): Promise<EngageContactResult> {
   const { contactId, brokerageId, reason, forceChannel, actorId } = params
+  // Tenant from the SESSION (CLAUDE.md §4): this is a "use server" export, so it is reachable as a
+  // network endpoint. Invoked over the network it must belong to the caller's own brokerage; a
+  // direct server-side call (the stale-contact cron, initiateAIISAContactEngagement's already-gated
+  // path) carries no `next-action` header and keeps its trusted brokerageId. Fail closed.
+  const tenantRefusal = await refuseForeignNetworkTenant(brokerageId)
+  if (tenantRefusal) return { success: false, reason: tenantRefusal }
   const supabase = createServiceClient()
 
   try {
-    // ── 1. Fetch contact ──────────────────────────────────────────────────
-    const { data: contact, error: fetchError } = await supabase
-      .from('contacts')
-      .select(
-        `id, first_name, last_name, email, phone,
-         contact_type, contact_persona, buyer_stage, status,
-         dnc_status, call_stop_flag, tcpa_consent, tcpa_consent_date,
-         email_opt_out, sms_opt_out, phone_opt_out, direct_mail_opt_out,
-         isa_reengage_allowed, ai_outreach_paused,
-         preferred_channel, social_handles,
-         brokerage_id, team_id, agent_id,
-         mailing_address, city, mailing_state:state, mailing_zip:zip_code,
-         budget_min, budget_max, timeline, motivation_type, enrichment_profile, age_range,
-         occupation, household_income, home_owner_status, life_events, marital_status,
-         last_contacted_at`
-      )
-      .eq('id', contactId)
-      .eq('brokerage_id', brokerageId)
-      .maybeSingle()
+    // ── 0. SHARED WORKING CONTEXT (wave 105, lane 105C) — when a mission is in play for this
+    //    contact, ONE compile (lib/kernel/mission-context.ts) replaces three loads this function
+    //    made: the contacts row read (now CONTACT_CONTEXT_COLUMNS, read once by the compiler), the
+    //    NBA context load (4b) and the brand-voice load in dispatchContactChannel. The compiled
+    //    section is appended to the copy prompts' brand block so the writer sees the mission.
+    //    No mission (or a refused compile, logged) → the pre-105C loads below run unchanged. ──
+    const humanInitiated = !!actorId || !!forceChannel
+    const { missionInPlayFor, compileManagerContext } = await import('@/lib/kernel/mission-context')
+    const missionId = await missionInPlayFor({ brokerageId, subject: { type: 'contact', id: contactId }, missionId: params.missionId ?? null, client: supabase })
+    const compiledRes = missionId ? await compileManagerContext({ brokerageId, missionId, manager: 'ai_isa', tokenBudget: 1200, client: supabase }) : null
+    if (compiledRes && !compiledRes.ok) console.error(`[engageContact] mission context not compiled for ${missionId} (${compiledRes.reason}) — running the per-call loads`)
+    const compiled = compiledRes?.ok ? compiledRes : null
+    const compiledVoice = compiled?.context.policy.data?.voice ?? null
+    const preloadedVoice: BrandVoicePromptResult | null = compiled && compiledVoice
+      ? { ...compiledVoice, systemBlock: `${compiledVoice.systemBlock}\n\n${compiled.section}` }
+      : null
 
-    if (fetchError || !contact) {
+    // ── 1. Fetch contact — through the compiler when a mission is in play (the row is read ONCE
+    //    there; see CONTACT_CONTEXT_COLUMNS), else the same tenant-pinned read as before. ──
+    type ContactRow = Record<string, any> & { id: string }
+    let contact: ContactRow | null = null
+    if (compiled) {
+      contact = (compiled.context.person.data?.row as ContactRow | undefined) ?? null
+    } else {
+      const { CONTACT_CONTEXT_COLUMNS } = await import('@/lib/kernel/mission-context')
+      const { data, error: fetchError } = await supabase
+        .from('contacts')
+        .select(CONTACT_CONTEXT_COLUMNS)
+        .eq('id', contactId)
+        .eq('brokerage_id', brokerageId)
+        .maybeSingle()
+      contact = fetchError ? null : ((data as ContactRow | null) ?? null)
+    }
+    if (!contact) {
       return { success: false, reason: 'contact_not_found' }
     }
 
@@ -124,7 +165,7 @@ export async function engageContact(
       .from('transactions')
       .select('id, status')
       .eq('contact_id', contactId)
-      .in('status', ['active', 'under_contract', 'closing', 'pending'])
+      .in('status', [...TRANSACTION_STATUSES_OPEN])
       .limit(1)
       .maybeSingle()
 
@@ -142,6 +183,97 @@ export async function engageContact(
     const canContinue = await checkMaxTouches(contactId, 'contact', brokerageId)
     if (!canContinue) {
       return { success: false, reason: 'stop:max_touches' }
+    }
+
+    // ── 4b. NEXT-BEST-ACTION (wave 100, lane 100B) — the SAME NBA the lead sweep runs
+    //    (lib/ai-isa/lead-action-plan.ts planNextContactTouch — no second engine), fed the
+    //    contact's dead ends (ISA outcomes, call dispositions, represented, postponed-until),
+    //    decayed intent, current memory facts and reasons-not-to-act. It runs BEFORE the reel
+    //    handoff and the portal note, because those are touches too. wait / do_nothing are
+    //    actions: recorded on the action ledger with every reason, then nothing is sent. ──
+    {
+      const nbaNow = new Date()
+      const { loadContactNbaContext, planNextContactTouch, decisionRecordFor, decisionInputSnapshot } = await import('@/lib/ai-isa/lead-action-plan')
+      // 105C: an AUTONOMOUS run with a mission in play reads the compiler's opportunity slice (the
+      // same loadContactNbaContext, run once there); a human-initiated run keeps its own load (its
+      // agent-touch / appointment / callback fields are nulled for humans) but is handed the memory
+      // the compiler already read.
+      const nbaCtx = compiled && !humanInitiated
+        ? (compiled.context.opportunity.data
+            ? { ok: true as const, context: compiled.context.opportunity.data }
+            : { ok: false as const, error: compiled.context.opportunity.refused ?? 'opportunity slice absent' })
+        : await loadContactNbaContext(supabase, {
+            brokerageId, contact, humanInitiated, now: nbaNow,
+            ...(compiled ? { preloaded: { memory: compiled.context.memory.data } } : {}),
+          })
+      if (!nbaCtx.ok) {
+        console.warn(`[engageContact] next-best-action inputs unreadable for ${contactId} — not touching: ${nbaCtx.error}`)
+        return { success: false, reason: 'stop:nba_unreadable' }
+      }
+      const nbaPlan = planNextContactTouch({ now: nbaNow, context: nbaCtx.context })
+      // Wave 101 (101B): + the compact input, so lib/kernel/decision-replay.ts can re-run the planner on it.
+      // Wave 102 (102C): every verdict is a decision row — send_touch / convert too (decisionRecordFor);
+      // the touch that follows is its chokepoint's own 'executed' row.
+      const decisionRow = decisionRecordFor(nbaPlan, { brokerageId, contactId, now: nbaNow },
+        decisionInputSnapshot({ subject: 'contact', now: nbaNow, context: nbaCtx.context }))
+      {
+        const { recordNonAction } = await import('@/lib/kernel/action-ledger')
+        const rec = await recordNonAction(decisionRow, { client: supabase })
+        if (!rec.recorded && rec.error) console.warn(`[engageContact] ${decisionRow.decision} not ledgered for ${contactId}: ${rec.error}`)
+      }
+      if (nbaPlan.action === 'wait' || nbaPlan.action === 'do_nothing') {
+        return { success: false, reason: `nba:${nbaPlan.action}:${nbaPlan.reasonCode}` }
+      }
+
+      // ── 4c. NEXT BEST EXPERIENCE (wave 106, lane 106B) — the SAME NBA one rung up: now that
+      //    the ISA MAY touch this person, WHAT serves them next? PERSON + OPPORTUNITY + BEHAVIOR +
+      //    MEMORY + TRANSACTION STATE + EDUCATION STATE + FATIGUE + POLICY → one ranked experience
+      //    (lib/ai-isa/lead-action-plan.ts planNextBestExperience, deterministic — no model spend).
+      //    `communication` is this path's own job and continues below (the sequence / this touch
+      //    stays the delivery). Any other experience is ledgered (withActionLedger, detail.experience
+      //    → roi-ledger byExperience), audited (NEXT_BEST_EXPERIENCE_CHOSEN) and HANDED to its
+      //    executing manager through the 105A delegation seam (lazy; a refused delegation is
+      //    reported, never pretended) — and this touch does NOT go out on top of it. A human-
+      //    initiated run is the human's call: the plan is recorded, the touch proceeds. ──
+      {
+        const { loadNextBestExperienceInputs, planNextBestExperience, recordAndExecuteExperience } = await import('@/lib/ai-isa/lead-action-plan')
+        const inputs = await loadNextBestExperienceInputs(supabase, {
+          brokerageId, contact: contact as Parameters<typeof loadNextBestExperienceInputs>[1]['contact'], humanInitiated, now: nbaNow,
+          preloaded: { nba: nbaCtx.context },
+        })
+        if (!inputs.ok) {
+          console.warn(`[engageContact] next-best-experience inputs unreadable for ${contactId} — not touching: ${inputs.error}`)
+          return { success: false, reason: 'stop:experience_unreadable' }
+        }
+        const plan = planNextBestExperience(inputs.input)
+        const rec = await recordAndExecuteExperience(supabase, { brokerageId, contactId, plan, now: nbaNow, missionId: missionId ?? null, systemSource: 'engage_contact' })
+        for (const w of rec.warnings) console.warn(`[engageContact] experience ${plan.chosen.kind}: ${w}`)
+        if (plan.chosen.kind !== 'communication' && !humanInitiated) {
+          return { success: false, reason: `experience:${plan.chosen.kind}:${rec.execution.mode}` }
+        }
+      }
+
+      // ── 4d. STRATEGY (wave 107, lane 107E) — the ISA SELECTS a plan instead of inventing one: the
+      //    tenant's ACTIVE strategies the ISA participates in (lib/kernel/strategy-engine.ts selectStrategies —
+      //    deterministic eligibility on this contact's facts, learned performance through the 107F seam). The
+      //    top one becomes a MISSION with its managers + per-step delegations (activateStrategy — idempotent per
+      //    contact + strategy, approval per authority). Only an AUTONOMOUS run with no mission already in play;
+      //    a refusal is logged and this touch proceeds — the strategy never blocks the ISA's own step. ──
+      if (!missionId && !humanInitiated) {
+        try {
+          const { selectStrategies, activateStrategy } = await import('@/lib/kernel/strategy-engine')
+          const { factsFromContactRow } = await import('@/lib/kernel/strategy-library')
+          const sel = await selectStrategies({ brokerageId, manager: 'ai_isa', facts: factsFromContactRow(contact, nbaNow) }, supabase)
+          if (sel.readRefused) console.warn(`[engageContact] strategies unreadable for ${contactId}: ${sel.readRefused}`)
+          const top = sel.ranked[0]
+          if (top) {
+            const act = await activateStrategy({ brokerageId, candidate: top, subject: { type: 'contact', id: contactId }, actor: { type: 'manager', id: 'ai_isa' } }, supabase)
+            if (!act.ok) console.warn(`[engageContact] strategy ${top.definition.key} not activated for ${contactId}: ${act.reason}`)
+          }
+        } catch (e) {
+          console.error(`[engageContact] strategy selection failed for ${contactId}:`, e instanceof Error ? e.message : e)
+        }
+      }
     }
 
     // ── MANAGERS DELEGATING — the ISA hands a TRULY SITUATIONAL reel to the Asset Manager
@@ -194,11 +326,12 @@ export async function engageContact(
             )
             if (drafted.body?.trim()) portalBody = drafted.body.trim()
           } catch { /* gateway down → the deterministic them-first fallback stands */ }
-          await supabase.from('client_portal_messages').insert({
+          const { error: portalMsgErr } = await supabase.from('client_portal_messages').insert({
             brokerage_id: brokerageId, contact_id: contact.id, agent_id: contact.agent_id,
             direction: "agent_to_client", channel: 'portal', body: portalBody,
             metadata: { source: 'ai_isa_situational', persona: portalPersona, reason },
           })
+          if (portalMsgErr) console.error(`[engage-contact] AI ISA portal message NOT delivered to the client portal: ${portalMsgErr.message}`)
         }
       } catch (e) { console.error('[engageContact] portal touch failed:', e) }
     }
@@ -208,7 +341,7 @@ export async function engageContact(
     //    REPLY to, then their AGE-GROUP psychology (gen-z text/video-first, boomers answer the
     //    phone, …), ROTATED off the last channel used — all within consent. resolveContactChannel
     //    remains the floor when consent permits nothing the manager would choose. ──
-    let resolvedChannel = resolveContactChannel(contact)
+    let resolvedChannel = resolveContactChannel(contact as Parameters<typeof resolveContactChannel>[0])
     try {
       const { permittedContactChannels, decideNextChannel } = await import('@/lib/ai-isa/next-best-touch')
       const { cohortFromEnrichment } = await import('@/lib/ai-isa/adaptive-reengagement')
@@ -228,7 +361,7 @@ export async function engageContact(
       const { rankChannelsByReplyRate } = await import('@/lib/campaign-sequences/channel-order')
       const ranked = rankChannelsByReplyRate([...byCh.entries()].map(([channel, v]) => ({ channel, sent: v.sent, replies: v.replies })))
       const nba = decideNextChannel({
-        permitted: permittedContactChannels(contact), cohort,
+        permitted: permittedContactChannels(contact as Parameters<typeof permittedContactChannels>[0]), cohort,
         learnedRanked: ranked.ranked.map((x) => x.channel), lastChannel,
       })
       if (nba.channel !== 'no_channel') resolvedChannel = nba.channel
@@ -252,29 +385,81 @@ export async function engageContact(
         return { success: true, channel: 'newsletter' }
       } catch (e) {
         console.error('[engageContact] newsletter handoff failed; falling back to email:', e)
-        return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+        return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
       }
     }
 
     // Consent guard for phone/SMS
     if (CONSENT_REQUIRED_CHANNELS.has(channel) && !contact.tcpa_consent) {
       // Fall back to email rather than block entirely
-      return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+      return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
     }
 
-    return await dispatchContactChannel(channel, contact, brokerageId, reason, actorId, supabase)
+    return await dispatchContactChannel(channel, contact, brokerageId, reason, actorId, supabase, preloadedVoice)
   } catch (error: any) {
     console.error('[engageContact] Error:', error)
-    await supabase.from('automation_errors').insert({
-      workflow_name: 'ai_isa_contact_engagement',
-      error_message: error.message,
-      context_json: JSON.stringify({ contactId, brokerageId, reason }),
+    await collectError({
+      workflowName: 'ai_isa_contact_engagement',
+      errorMessage: error.message,
+      stack: error.stack,
       severity: 'high',
-      status: 'new',
-      created_at: new Date().toISOString(),
+      brokerageId,
+      context: { contactId, reason },
+      client: supabase,
     })
     return { success: false, error: error.message }
   }
+}
+
+// ── Property interest, resolved from a REAL source ─────────────────────────
+//
+// contacts has NO property_interest column (scripts/schema-snapshot.ts:239) —
+// it is a LEADS column. The SMS branch used to read
+// `(contact as any).property_interest ?? null`: the `as any` defeated tsc and
+// the `?? null` swallowed the miss, so SMS personalization silently lost the
+// fact on every send. For a CONTACT the fact lives in two places, tried in
+// order:
+//   1. the lead lineage — leads.contact_id (stamped by
+//      lib/contact-promotion/history-carry.ts:241) carries the
+//      property_interest captured at lead time, the same field the lead-side
+//      path reads directly (initiate-engagement.ts:403);
+//   2. the property_interests child table (contact_id FK,
+//      scripts/schema-snapshot.ts:531) — property_type from the contact's
+//      saved preferences.
+// Best-effort with {error} READ (§3): a refused read logs and returns null —
+// personalization then simply omits the fact, which is what already happened
+// silently; now it happens honestly.
+async function resolveContactPropertyInterest(
+  supabase: ReturnType<typeof createServiceClient>,
+  contactId: string,
+  brokerageId: string,
+): Promise<string | null> {
+  const { data: leadRows, error: leadError } = await supabase
+    .from('leads')
+    .select('property_interest')
+    .eq('contact_id', contactId)
+    .eq('brokerage_id', brokerageId)
+    .not('property_interest', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+  if (leadError) {
+    console.error('[engageContact] lead-lineage property_interest read refused:', leadError.message)
+  }
+  const fromLead = (leadRows?.[0]?.property_interest as string | null)?.trim()
+  if (fromLead) return fromLead
+
+  const { data: interestRows, error: interestError } = await supabase
+    .from('property_interests')
+    .select('property_type')
+    .eq('contact_id', contactId)
+    .eq('brokerage_id', brokerageId)
+    .not('property_type', 'is', null)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+  if (interestError) {
+    console.error('[engageContact] property_interests read refused:', interestError.message)
+  }
+  return (interestRows?.[0]?.property_type as string | null)?.trim() || null
 }
 
 // ── Dispatch ───────────────────────────────────────────────────────────────
@@ -286,6 +471,8 @@ async function dispatchContactChannel(
   reason: ISAEngagementReason,
   actorId: string | undefined,
   supabase: ReturnType<typeof createServiceClient>,
+  /** 105C: the brand voice the context compiler already resolved (null = resolve it here). */
+  preloadedVoice: BrandVoicePromptResult | null = null,
 ): Promise<EngageContactResult> {
   const persona = (contact.contact_persona ?? 'buyer') as Persona
   const journeyType = contact.contact_type === 'seller' ? 'seller' : 'buyer'
@@ -309,8 +496,9 @@ async function dispatchContactChannel(
     agent_id: contact.agent_id,
   }
 
-  // Brand voice
-  const brandVoice = await loadBrandVoicePrompt({ brokerageId, agentId: contact.agent_id ?? null })
+  // Brand voice — extend the AI's knowledge to cover THIS contact. With a mission in play the
+  // compiler resolved the same cascade once (brand-playbook-context → loadBrandVoicePrompt).
+  const brandVoice = preloadedVoice ?? await loadBrandVoicePrompt({ brokerageId, agentId: contact.agent_id ?? null, contactId: contact.id })
 
   // Compliance gate
   const compliance = await evaluateOutbound({
@@ -361,7 +549,7 @@ async function dispatchContactChannel(
 
     // SITUATIONAL VIDEO, never a throwaway: instead of synthesizing a generic D-ID avatar on
     // EVERY email (wasteful + non-situational + an unplayable placeholder), surface the
-    // contact's most recent COMPLETED, broker-APPROVED situational reel — the anniversary-
+    // contact's most recent FINISHED (completed or published), broker-APPROVED situational reel — the anniversary-
     // equity / buyer-match / market reels the dedicated situation triggers render over the
     // relationship. As new situational reels render, the email shows the latest: videos
     // RECUR and stay relevant, never "once" and never a per-touch generic clip.
@@ -370,7 +558,7 @@ async function dispatchContactChannel(
       .select('video_url, thumbnail_url, completed_at')
       .eq('contact_id', contact.id)
       .eq('brokerage_id', brokerageId)
-      .eq('status', 'completed')
+      .in('status', [...VIDEO_FINISHED_STATUSES])
       .eq('approval_status', 'approved')
       .not('video_url', 'is', null)
       .gte('completed_at', new Date(Date.now() - 120 * 86_400_000).toISOString())
@@ -427,7 +615,7 @@ async function dispatchContactChannel(
         contactId: contact.id, brokerageId, agentId: contact.agent_id ?? null,
       })
       if (conversationId) {
-        await supabase.from('messages').insert({
+        await sentinelWrite(supabase, supabase.from('messages').insert({
           conversation_id: conversationId,
           contact_id: contact.id,
           agent_id: contact.agent_id ?? null,
@@ -438,13 +626,15 @@ async function dispatchContactChannel(
           body: finalBody.replace(/<[^>]+>/g, '').substring(0, 1000),
           status: 'sent',
           created_at: new Date().toISOString(),
-        })
+        }), { table: "messages", flow: "messages_write", reason: "inbox copy of an email the dispatcher already sent (outreach logged separately)" })
         await touchConversation(supabase, conversationId, { inbound: false })
       }
     } catch { /* inbox mirror is best-effort; isa_outreach_log + activities are the record */ }
 
-    // Write activity
-    await supabase.from('activities').insert({
+    // Write activity. This is THE record that an ISA email went out — the
+    // kernel reads it into the AI's picture of the contact, so a lost row makes
+    // the assistant believe no outreach happened and send again.
+    const { error: isaEmailActivityError } = await supabase.from('activities').insert({
       activity_type: 'ai_isa_email',
       entity_type: 'contact',
       contact_id: contact.id,
@@ -455,6 +645,9 @@ async function dispatchContactChannel(
       status: 'completed',
       created_at: new Date().toISOString(),
     })
+    if (isaEmailActivityError) {
+      console.error('[aiIsaEngageContact] ai_isa_email activity REJECTED — the AI will not see this email as sent:', isaEmailActivityError.message)
+    }
 
     // Emit lifecycle event
     await emitLifecycleEvent({
@@ -467,32 +660,53 @@ async function dispatchContactChannel(
     })
 
     // Also write to ai_isa_activities
-    await supabase.from('ai_isa_activities').insert({
+    await sentinelWrite(supabase, supabase.from('ai_isa_activities').insert({
       contact_id: contact.id,
       brokerage_id: brokerageId,
       channel: 'email',
       activity_type: 'email', // CHECK vocabulary (drifted synonym was silently rejected)
       outcome: 'sent',
       summary: `AI ISA email: ${subject} (trigger: ${reason})`,
-    })
+    }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "ISA activity echo of a send already logged through logISAOutreach" })
 
     // Update contact last_contacted_at
-    await supabase
-      .from('contacts')
-      .update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-      .eq('id', contact.id)
+    await sentinelWrite(
+      supabase,
+      supabase
+        .from('contacts')
+        .update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('id', contact.id),
+      {
+        table: 'contacts',
+        flow: 'ai_isa_email_recency_stamp',
+        brokerageId,
+        reason:
+          'recency stamp after the ISA email already went out — the send is the fact, ai_isa_activities is its ledger; a lost stamp only makes the contact look staler than it is (the next sweep re-engages), never less consented',
+      },
+    )
 
-    // Trigger direct mail if eligible
-    const shouldSendMail = await shouldTriggerDirectMail(contact.id)
+    // Trigger direct mail if eligible.
+    //
+    // contactId, NOT leadId (lane W3 2026-09-01): `contact.id` is a contacts.id
+    // and the trigger's leads arm read it against `leads`, matched nothing, and
+    // answered false forever — this supplemental piece never went out. The
+    // trigger is dual-class now; the contacts arm resolves the VERIFIED mailing
+    // address off the contacts row itself. The result is read: a refusal is
+    // logged, never recorded as a send (the email above is this branch's
+    // outcome either way).
+    const shouldSendMail = await shouldTriggerDirectMail({ contactId: contact.id })
     if (shouldSendMail && !contact.direct_mail_opt_out) {
-      await triggerDirectMailCampaign({
-        leadId: contact.id,
+      const mailResult = await triggerDirectMailCampaign({
+        contactId: contact.id,
         brokerageId,
         firstName: contact.first_name || '',
         lastName: contact.last_name || '',
         motivation_type: contact.buyer_stage ?? undefined,
         property_interest: undefined,
       })
+      if (!mailResult.success) {
+        console.error('[engageContact] supplemental direct mail refused:', mailResult.error)
+      }
     }
 
     return { success: true, channel: 'email' }
@@ -501,15 +715,20 @@ async function dispatchContactChannel(
   // ── SMS ──────────────────────────────────────────────────────────────────
   if (channel === 'sms') {
     if (!contact.phone || !contact.tcpa_consent || contact.sms_opt_out) {
-      return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+      return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
     }
 
-    // Micro-personalized SMS — never a hardcoded fixed string
+    // Micro-personalized SMS — never a hardcoded fixed string.
+    // property_interest is resolved from its REAL sources (lead lineage /
+    // property_interests) — see resolveContactPropertyInterest above; it is
+    // not a contacts column and the old `(contact as any).property_interest`
+    // read was always undefined.
+    const propertyInterest = await resolveContactPropertyInterest(supabase, contact.id, brokerageId)
     const smsFacts = buildPersonalizationFacts({
       first_name:        contact.first_name,
       city:              (contact as any).city ?? (contact as any).mailing_city ?? null,
       motivation_type:   (contact as any).motivation_type ?? contact.buyer_stage ?? null,
-      property_interest: (contact as any).property_interest ?? null,
+      property_interest: propertyInterest,
       enrichment_profile: (contact as any).enrichment_profile ?? null,
       occupation:        (contact as any).occupation ?? null,
       household_income:  (contact as any).household_income ?? null,
@@ -517,17 +736,56 @@ async function dispatchContactChannel(
       life_events:       (contact as any).life_events ?? null,
       marital_status:    (contact as any).marital_status ?? null,
     })
-    const smsCopy = buildDeterministicCopy(smsFacts, 'sms', contact.first_name ?? undefined)
+    // THE FULL PIPELINE, not just its fallback.
+    //
+    // This called buildDeterministicCopy directly — the composer that
+    // personalizeOutreach falls back to when the AI gateway is unavailable. So
+    // the module whose own header calls itself "the single source of truth for
+    // all AI ISA outreach copy" had its AI half unreachable: personalizeOutreach
+    // had no caller anywhere in app/ or lib/, and every contact SMS shipped the
+    // fallback string as if the gateway were permanently down.
+    //
+    // NOTHING IS LOST BY THE SWAP: personalizeOutreach ends with
+    // `return buildDeterministicCopy(facts, channel, firstName)` on any gateway
+    // failure, non-ok response, or empty body, so the previous behaviour is
+    // exactly this call's degraded path.
+    const smsCopy = await personalizeOutreach({
+      facts:     smsFacts,
+      channel:   'sms',
+      brandVoice: brandVoice.systemBlock,
+      intent:    `AI ISA re-engagement (trigger: ${reason}) — reconnect and invite a reply.`,
+      firstName: contact.first_name ?? undefined,
+    })
     // PORTAL-BACK — every touch (SMS included) pulls the client into OUR portal (matches,
     // journey, value in one place), not a competitor's. SMS is the SMS-first cohorts' channel.
     const { portalSmsLine } = await import('@/lib/ai-isa/portal-link')
     const smsBody = `${smsCopy.body}\n${portalSmsLine(contact.id)}`
+
+    // FINAL COMPLIANCE PASS ON THE GENERATED TEXT — the email branch has always
+    // run one, and SMS did not need one while its body came from the
+    // deterministic composer (fixed, reviewed phrasing). Now that a model can
+    // write this body, the same rule has to apply: the gate above only saw a
+    // placeholder describing the send, not the words that go out.
+    const smsCompliance = await evaluateOutbound({
+      actorContext: { userId: brokerageId, role: 'isa', brokerageId },
+      journeyType,
+      persona,
+      messageType: 'sms',
+      content: smsBody,
+      contact: kernelContact,
+    })
+    if (!smsCompliance.allowed) {
+      return { success: false, reason: `stop:compliance:${smsCompliance.blockedReason ?? 'blocked'}`, channel }
+    }
 
     await dispatchSms({
       brokerageId,
       to: contact.phone,
       message: smsBody,
       agentId: contact.agent_id ?? undefined,
+      // Wave 100A: the ISA's SMS named no source, so the ledger credited the ASSIGNED AGENT (actor
+      // 'agent') with an AI ISA send. Same source as this function's email lane; not gate-arming.
+      systemSource: 'ai_isa_contact',
       metadata: { source: 'ai_isa_contact', reason },
     })
 
@@ -539,19 +797,29 @@ async function dispatchContactChannel(
       bodySnippet: smsBody.substring(0, 160),
     })
 
-    await supabase.from('ai_isa_activities').insert({
+    await sentinelWrite(supabase, supabase.from('ai_isa_activities').insert({
       contact_id: contact.id,
       brokerage_id: brokerageId,
       channel: 'sms',
       activity_type: 'text', // CHECK vocabulary (drifted synonym was silently rejected)
       outcome: 'sent',
       summary: `AI ISA SMS (trigger: ${reason})`,
-    })
+    }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "ISA activity echo of a send already logged through logISAOutreach" })
 
-    await supabase
-      .from('contacts')
-      .update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-      .eq('id', contact.id)
+    await sentinelWrite(
+      supabase,
+      supabase
+        .from('contacts')
+        .update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('id', contact.id),
+      {
+        table: 'contacts',
+        flow: 'ai_isa_sms_recency_stamp',
+        brokerageId,
+        reason:
+          'recency stamp after the ISA SMS already went out — the send is the fact, ai_isa_activities is its ledger; a lost stamp only makes the contact look staler than it is, never less consented',
+      },
+    )
 
     await emitLifecycleEvent({
       eventType: 'AI_ISA_CONTACT_SMS_SENT',
@@ -569,17 +837,34 @@ async function dispatchContactChannel(
   if (channel === 'direct_mail') {
     const hasVerifiedAddr = !!(contact.mailing_address)
     if (!hasVerifiedAddr || contact.direct_mail_opt_out) {
-      return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+      return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
     }
 
-    await triggerDirectMailCampaign({
-      leadId: contact.id,
+    // contactId, NOT leadId (lane W3 2026-09-01). `contact.id` is a contacts.id;
+    // the trigger's leads arm read it against `leads`, found nothing, and
+    // refused — while this branch DISCARDED that result and logged outreach,
+    // wrote ai_isa_activities outcome:'sent', emitted CONTACT_MAIL_SENT and
+    // returned success anyway. The ledger recorded mail that was never sent.
+    // The trigger is dual-class now, and its result is the branch's result:
+    // nothing below runs unless a piece actually dispatched (mirrors how the
+    // email/SMS branches return a stop reason instead of logging on refusal).
+    const mailResult = await triggerDirectMailCampaign({
+      contactId: contact.id,
       brokerageId,
       firstName: contact.first_name || '',
       lastName: contact.last_name || '',
       motivation_type: contact.buyer_stage ?? undefined,
       property_interest: undefined,
     })
+
+    if (!mailResult.success) {
+      return {
+        success: false,
+        channel: 'direct_mail',
+        reason: 'stop:direct_mail_refused',
+        error: mailResult.error,
+      }
+    }
 
     await logISAOutreach({
       brokerageId,
@@ -589,14 +874,14 @@ async function dispatchContactChannel(
       bodySnippet: 'Direct mail dispatched',
     })
 
-    await supabase.from('ai_isa_activities').insert({
+    await sentinelWrite(supabase, supabase.from('ai_isa_activities').insert({
       contact_id: contact.id,
       brokerage_id: brokerageId,
       channel: 'direct_mail',
       activity_type: 'direct_mail', // CHECK vocabulary (drifted synonym was silently rejected)
       outcome: 'sent',
       summary: `AI ISA direct mail (trigger: ${reason})`,
-    })
+    }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "ISA activity echo of a send already logged through logISAOutreach" })
 
     await emitLifecycleEvent({
       eventType: 'AI_ISA_CONTACT_MAIL_SENT',
@@ -613,16 +898,15 @@ async function dispatchContactChannel(
   // ── PHONE (outbound AI call) — the ISA uses its full toolbox on a CONSENTED contact.
   //    Situation-aware (buildCallContext reads the contact's stage/persona). Escalation
   //    ladder on any block/failure: voice drop (ringless voicemail) → email, so the touch
-  //    still lands. VAPI's initiateCall runs its own mandatory TCPA gate and throws on block. ──
+  //    still lands. The TCPA gate is the explicit guard on the next line — consent,
+  //    opt-out and stop-flag are checked HERE, in this repo, before any dial. (This note
+  //    used to credit the retired vendor's own gate for that, which would have been a
+  //    dangerous thing to believe once the vendor was gone: it named a safeguard that no
+  //    longer existed for the one channel where consent is a federal matter.) ──
   if (channel === 'phone') {
     if (!contact.phone || !contact.tcpa_consent || contact.phone_opt_out || contact.call_stop_flag) {
       return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
-        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
-    }
-    const vapiAssistantId = process.env.VAPI_ISA_ASSISTANT_ID
-    if (!vapiAssistantId) {
-      return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
-        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
     }
     const { buildCallContext } = await import('@/lib/ai-isa/build-call-context')
     const callContext = await buildCallContext({
@@ -631,50 +915,65 @@ async function dispatchContactChannel(
     })
     if (callContext.blocked) {
       return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
-        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
     }
-    const { initiateCall } = await import('@/lib/voice/vapi-client')
-    let vapiResponse: { id: string; status: string }
-    try {
-      vapiResponse = await initiateCall({
-        phoneNumber: contact.phone, assistantId: vapiAssistantId, contactId: contact.id,
-        brokerageId, initiatedBy: contact.agent_id ?? null,
-        assistantOverrides: {
-          name: callContext.assistantName, firstMessage: callContext.firstMessage,
-          ...(callContext.voiceConfig?.voiceId
-            ? { voice: { provider: (callContext.voiceConfig.provider ?? 'elevenlabs') as any, voiceId: callContext.voiceConfig.voiceId, stability: callContext.voiceConfig.stability ?? 0.7, similarityBoost: callContext.voiceConfig.similarityBoost ?? 0.8 } }
-            : {}),
-          model: { systemPrompt: callContext.systemPrompt },
-          variableValues: callContext.variables ?? {},
-        },
-      })
-    } catch {
+    // ENGINE: Twilio-native (the single voice lane). placeOutboundAiCall runs
+    // the TCPA + budget gates and writes its own voice_calls ledger row; on any
+    // block/failure it returns { ok: false }, so the escalation ladder (voice
+    // drop → email) still lands the touch.
+    const { placeOutboundAiCall } = await import('@/lib/voice/twilio-outbound')
+    const placed = await placeOutboundAiCall(supabase, {
+      toNumber: contact.phone, contactId: contact.id, brokerageId,
+      agentUserId: contact.agent_id ?? null, initiatedBy: contact.agent_id ?? null,
+      objective: `AI ISA re-engagement (trigger: ${reason}): reconnect, understand where the contact is now, and offer to book time with the agent.`,
+      contactName: contact.first_name ?? null,
+      firstMessage: callContext.firstMessage ?? null,
+      systemPrompt: callContext.systemPrompt ?? null,
+      // WAVE 58: reach the answer webhook's ConversationRelay/voice-drop path
+      // with the SAME resolved agent-clone voice buildCallContext picked —
+      // see OutboundCallBrief.elevenlabsVoiceId.
+      elevenlabsVoiceId: callContext.voiceConfig?.voiceId ?? null,
+      // ARMS THE AUTONOMY GATE — unattended re-engagement dial. 'ghost_recovery'
+      // and 'ai_isa' both map to the ai_isa manager; the trigger reason decides
+      // which, so the ledger records why the contact was called.
+      //
+      // `reason` is 'stale' | 'ghosted' | 'reactivation' — there is no
+      // 'ghost_recovery' reason. This mirrors the callPurpose mapping ~20 lines
+      // above, which is the convention this file already uses.
+      systemSource: reason === "ghosted" ? "ghost_recovery" : "ai_isa",
+    })
+    if (!placed.ok) {
       // Call couldn't be placed (TCPA block / provider) — drop a voicemail, else email.
       return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
-        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
     }
 
-    const voiceCallRow = await supabase.from('voice_calls').insert({
-      contact_id: contact.id, brokerage_id: brokerageId, agent_id: contact.agent_id ?? null,
-      vapi_call_id: vapiResponse.id, direction: 'outbound', call_type: 'ai_isa_call',
-      status: 'initiated', started_at: new Date().toISOString(),
-    }).select('id').single().then((r) => r.data, () => null)
-    await supabase.from('ai_isa_calls').insert({
-      voice_call_id: (voiceCallRow as any)?.id ?? null, brokerage_id: brokerageId, contact_id: contact.id,
+    await sentinelWrite(supabase, supabase.from('ai_isa_calls').insert({
+      voice_call_id: placed.voiceCallId, brokerage_id: brokerageId, contact_id: contact.id,
       lead_id: null, isa_campaign_id: null, script_used: 'isa_reengagement', appointment_set: false,
-    }).then(() => {}, () => {})
+    }), { table: "ai_isa_calls", flow: "ai_isa_calls_write", reason: "ISA call row for a call already placed (voice_calls holds the call)" })
     await logISAOutreach({
       brokerageId, entity: { entityType: 'contact', contactId: contact.id },
-      channel: 'phone', subject: 'AI ISA call', bodySnippet: `AI-ISA outbound call initiated. VAPI call ID: ${vapiResponse.id}`,
+      channel: 'phone', subject: 'AI ISA call', bodySnippet: `AI-ISA outbound call initiated (Twilio). Call SID: ${placed.callSid}`,
     })
-    await supabase.from('ai_isa_activities').insert({
+    await sentinelWrite(supabase, supabase.from('ai_isa_activities').insert({
       contact_id: contact.id, brokerage_id: brokerageId, channel: 'phone',
       activity_type: 'call', outcome: 'initiated', summary: `AI ISA call (trigger: ${reason})`,
-    }).then(() => {}, () => {})
-    await supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id)
+    }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "ISA activity echo of a call already placed" })
+    await sentinelWrite(
+      supabase,
+      supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id),
+      {
+        table: 'contacts',
+        flow: 'ai_isa_call_recency_stamp',
+        brokerageId,
+        reason:
+          'recency stamp after the ISA call was already placed with Twilio — the call SID is the fact; a lost stamp only makes the contact look staler than it is, never less consented',
+      },
+    )
     await emitLifecycleEvent({
       eventType: 'AI_ISA_CONTACT_CALL_INITIATED', entityType: 'contact', entityId: contact.id,
-      actorId: actorId ?? brokerageId, brokerageId, metadata: { reason, channel: 'phone', vapi_call_id: vapiResponse.id },
+      actorId: actorId ?? brokerageId, brokerageId, metadata: { reason, channel: 'phone', call_sid: placed.callSid },
     })
     return { success: true, channel: 'phone' }
   }
@@ -683,11 +982,11 @@ async function dispatchContactChannel(
   //    top of mind without interrupting. Falls back to email when no preset / not permitted. ──
   if (channel === 'voicedrop') {
     return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
-      ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+      ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
   }
 
   // Fallback — unsupported channel → email
-  return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+  return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
 }
 
 /**
@@ -715,7 +1014,7 @@ async function tryVoiceDrop(
     const { buildSituationalVoicemailScript } = await import('@/lib/ai-isa/situational-voicemail')
     const side = contact.contact_type === 'seller' ? 'seller'
       : contact.contact_type === 'both' ? 'both'
-      : isLifetimeCustomerType(contact.contact_type) ? 'past_client' : 'buyer'
+      : isLifetimeCustomerType(contact.contact_type) ? 'lifetime' : 'buyer'
     const stageHint = (contact.buyer_stage as string | null) ?? (contact.motivation_type as string | null) ?? null
     const fallbackVm = buildSituationalVoicemailScript({
       firstName: contact.first_name || 'there', side, stage: stageHint,
@@ -755,11 +1054,21 @@ async function tryVoiceDrop(
       brokerageId, entity: { entityType: 'contact', contactId: contact.id },
       channel: 'phone', subject: 'AI ISA voicemail', bodySnippet: 'AI ISA ringless voicemail dropped (voicedrop)',
     })
-    await supabase.from('ai_isa_activities').insert({
+    await sentinelWrite(supabase, supabase.from('ai_isa_activities').insert({
       contact_id: contact.id, brokerage_id: brokerageId, channel: 'voicedrop',
       activity_type: 'voicedrop', outcome: 'sent', summary: `AI ISA voice drop (trigger: ${reason})`,
-    }).then(() => {}, () => {})
-    await supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id)
+    }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "ISA activity echo of a voice drop already sent" })
+    await sentinelWrite(
+      supabase,
+      supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id),
+      {
+        table: 'contacts',
+        flow: 'ai_isa_voicedrop_recency_stamp',
+        brokerageId,
+        reason:
+          'recency stamp after the ringless voicemail was already dropped — the drop is the fact; a lost stamp only makes the contact look staler than it is, never less consented',
+      },
+    )
     await emitLifecycleEvent({
       eventType: 'AI_ISA_CONTACT_VOICEDROP_SENT', entityType: 'contact', entityId: contact.id,
       actorId: brokerageId, brokerageId, metadata: { reason, channel: 'voicedrop' },
@@ -774,17 +1083,53 @@ async function tryVoiceDrop(
 /**
  * toggleContactAIISA — agent toggle from contact detail view.
  * Enables or pauses AI ISA automation on a specific contact.
+ *
+ * THIS IS AN OUTBOUND-AUTOMATION SWITCH, so who may flip it matters as much as
+ * what it writes. It is exported from a `"use server"` module, i.e. it is a
+ * reachable HTTP endpoint, and it previously had **no authentication at all**:
+ * it opened a service-role client (RLS bypassed) and then took `brokerageId`
+ * AND `actorId` straight from the caller. Three separate problems:
+ *
+ *   · Any anonymous caller holding a contactId + brokerageId pair could set
+ *     `ai_outreach_paused = false` and `isa_reengage_allowed = true` —
+ *     RE-ARMING automated email/SMS outreach on a contact an agent had
+ *     deliberately paused. That is the wrong direction on a suppression-
+ *     adjacent flag.
+ *   · `isa_reengage_marked_by` is an accountability column and `actorId` is
+ *     also stamped on the emitted lifecycle event. Both were whatever the
+ *     caller said, so the audit trail could be forged to name any user.
+ *   · RLS was no defence here. The `contacts` UPDATE policies are properly
+ *     restrictive (agent-owns / broker-in-brokerage / platform-admin, verified
+ *     live) but `createServiceClient()` bypasses all of them.
+ *
+ * Both identity inputs now come from the session and the caller's copies are
+ * ignored — the same convention the rest of this repo uses for `agent_id?`.
+ * The tenant scope on the UPDATE is therefore session-derived, which is what
+ * makes it a real boundary rather than a caller-chosen one.
  */
 export async function toggleContactAIISA(params: {
   contactId: string
-  brokerageId: string
+  /** ignored — the tenant is the authenticated caller's */
+  brokerageId?: string
   enabled: boolean
-  actorId: string
+  /** ignored — the actor is the authenticated caller */
+  actorId?: string
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = createServiceClient()
-  const { contactId, brokerageId, enabled, actorId } = params
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) {
+    return { success: false, error: 'Unauthorized' }
+  }
+  const brokerageId = ctx.brokerageId
+  const actorId = ctx.userId
 
-  const { error } = await supabase
+  const supabase = createServiceClient()
+  const { contactId, enabled } = params
+
+  // .select('id') so a no-op update is distinguishable from a successful one:
+  // without it, targeting a contact in ANOTHER brokerage matches zero rows and
+  // still returns error === null, which would report success for a write that
+  // never happened.
+  const { data: updated, error } = await supabase
     .from('contacts')
     .update({
       ai_outreach_paused: !enabled,
@@ -795,8 +1140,12 @@ export async function toggleContactAIISA(params: {
     })
     .eq('id', contactId)
     .eq('brokerage_id', brokerageId)
+    .select('id')
 
   if (error) return { success: false, error: error.message }
+  if (!updated || updated.length === 0) {
+    return { success: false, error: 'Contact not found in your brokerage' }
+  }
 
   await emitLifecycleEvent({
     eventType: enabled ? 'AI_ISA_ENABLED_ON_CONTACT' : 'AI_ISA_PAUSED_ON_CONTACT',

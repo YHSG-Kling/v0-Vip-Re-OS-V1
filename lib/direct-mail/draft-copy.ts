@@ -28,7 +28,20 @@ import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 import { resolveBrandContext } from "@/lib/branding/resolve-brand-context"
 import type { Persona } from "@/lib/kernel/types"
 
-export type DirectMailCopyShape = "postcard" | "letter"
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): `DirectMailCopyShape` deleted — the
+// postcard/letter distinction lives as two named functions (draftPostcardCopy
+// / draftLetterCopy below), each with its own prompt and copy shape; no caller
+// ever carried the union as a value.
+
+/** The client the compliance gate reads and audits through (lane 86C). Mail copy is drafted
+ *  from send orchestration and manager reactors with NO cookie session, so the default cookie
+ *  client read no brand voice and the compliance_events row was refused (findRecentComplianceEventId
+ *  below then found nothing). ctx.brokerageId comes from the caller's verified row or session
+ *  (render-postcard / render-letter / manager-signals / the session-gated preview action). */
+async function tenantGateClient() {
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  return createServiceClient()
+}
 
 /** Map any incoming persona string to the canonical Persona union.
  *  Anything unrecognized falls to "other" so we never narrow off a
@@ -37,7 +50,7 @@ function normalizePersona(p: string): Persona {
   const KNOWN: Persona[] = [
     "first_time", "relocated", "luxury", "fsbo", "probate",
     "upsize", "downsize", "military", "divorce", "senior",
-    "expired", "foreclosure", "other",
+    "expired", "foreclosure", "investor", "other",
   ]
   return (KNOWN as string[]).includes(p) ? (p as Persona) : "other"
 }
@@ -323,7 +336,7 @@ export async function draftPostcardCopy(
         journeyType:  ctx.persona.includes("seller") || ctx.persona === "fsbo" || ctx.persona === "expired" ? "seller" : "buyer",
         persona:      normalizePersona(ctx.persona),
         content:      extractCopyForGate(script),
-      })
+      }, { client: await tenantGateClient() })
       return { allowed: r.allowed, violations: r.violations }
     },
   })
@@ -444,7 +457,7 @@ export async function draftLetterCopy(
         journeyType:  ctx.persona.includes("seller") || ctx.persona === "fsbo" || ctx.persona === "expired" ? "seller" : "buyer",
         persona:      normalizePersona(ctx.persona),
         content:      extractCopyForGate(script),
-      })
+      }, { client: await tenantGateClient() })
       return { allowed: r.allowed, violations: r.violations }
     },
   })

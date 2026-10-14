@@ -18,6 +18,11 @@ interface PortalNavProps {
 export default function PortalNav({ items }: PortalNavProps) {
   const pathname = usePathname()
 
+  // Lane 90D (test:rendered-empty-states): an empty nav rendered a bare border
+  // line. buildPortalNav never returns [] for a resolved view, so this only
+  // guards the shell against a module set that resolves to nothing.
+  if (items.length === 0) return null
+
   return (
     <nav className="border-b bg-background">
       <div className="container mx-auto px-4">

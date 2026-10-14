@@ -7,12 +7,14 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import {
   checkCertificationEligibility as checkCertEligibilityEngine,
   awardCertification as awardCertEngine,
   getCertificationStatus,
 } from "@/lib/onboarding/certification-engine"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -85,11 +87,18 @@ export async function getAgentProgress(
     .from('users').select('brokerage_id, user_type').eq('id', user.id).maybeSingle()
   if (!callerProfile?.brokerage_id) return { success: false, error: 'No brokerage found' }
 
-  const isAdmin = ['admin','broker','broker_owner','superadmin','super_admin']
-    .includes(callerProfile.user_type ?? '')
+  const isAdmin = isAdminOrBroker({ user_type: callerProfile.user_type ?? '' })
 
   // Resolve target agent: default to self. If caller specifies someone
   // else, must be admin AND in same brokerage.
+  // IDENTITY CLASS (m342). The two branches used to produce DIFFERENT classes
+  // into the same variable: the self path resolves an AGENTS id, while the admin
+  // path validated the caller-supplied id against `users` and kept it as a USERS
+  // id. Everything downstream (agent_onboarding, agent_step_completions,
+  // video_completion_tracking, agent_performance_reports) is agents-class, so
+  // the ADMIN path silently returned an empty progress report — a broker looking
+  // at one of their agents saw "nothing completed" rather than an error.
+  // Both branches now end on an agents id.
   let targetAgentId = agentId
   if (!targetAgentId) {
     targetAgentId = await resolveAgentId(supabase, user.id) ?? undefined
@@ -100,6 +109,12 @@ export async function getAgentProgress(
     if (!tgt || tgt.brokerage_id !== callerProfile.brokerage_id) {
       return { success: false, error: 'Forbidden' }
     }
+    targetAgentId = await resolveAgentId(supabase, targetAgentId) ?? undefined
+    if (!targetAgentId) return { success: false, error: 'That user has no agent profile yet' }
+  } else {
+    // Caller passed their OWN users id explicitly — same resolution as the
+    // default path, not a third behaviour.
+    targetAgentId = await resolveAgentId(supabase, user.id) ?? undefined
   }
 
   if (!targetAgentId) return { success: false, error: 'Agent profile not found' }
@@ -194,33 +209,48 @@ export async function getAgentProgress(
       : 0
   }
 
-  // Get courses
-  const { data: courses } = await supabase
-    .from('training_courses')
-    .select('id, course_name, category, is_required, passing_score, order_index')
-    .or(`brokerage_id.is.null,brokerage_id.eq.${targetBrokerageId}`)
-    .order('order_index', { ascending: true })
+  // Courses = the agent's Academy coursework on the CANONICAL rail (learning_modules +
+  // learning_assignments). The legacy training_courses/agent_courses spine had no
+  // course-taking runtime (agent_courses was never written), so it always rendered the
+  // same three seed courses as permanently "not started" — a duplicate of the
+  // certifications list. This shows the agent's REAL assigned + completed modules.
+  // learning_assignments.agent_user_id is a users.id. targetAgentId is now ALWAYS
+  // an agents.id — m342 made both branches above agree, where they previously
+  // produced different classes and this line compensated for the difference.
+  // Compensating for an invariant that no longer holds would have been a fresh
+  // bug, so this resolves the one class into the other explicitly.
+  const targetUserId = (!agentId || agentId === user.id)
+    ? user.id
+    : (await resolveAgentRecordToUserId(targetAgentId)) ?? user.id
+  const { data: courseAssignments } = await supabase
+    .from('learning_assignments')
+    .select('module_id, status, quiz_score, completed_at, learning_modules!inner(title, stage_tags, required, audience_roles)')
+    .eq('agent_user_id', targetUserId)
+    .not('module_id', 'is', null)
 
-  const { data: agentCourses } = await supabase
-    .from('agent_courses')
-    .select('training_course_id, status, score, completed_at')
-    .eq('agent_id', targetAgentId)
+  const mapCourseStatus = (s: string | null): CourseProgress['status'] =>
+    s === 'completed' ? 'passed' : s === 'in_progress' ? 'in_progress' : 'not_started'
 
-  const agentCourseMap = new Map((agentCourses || []).map(c => [c.training_course_id, c]))
-
-  const courseProgress: CourseProgress[] = (courses || []).map(course => {
-    const agentCourse = agentCourseMap.get(course.id)
-    return {
-      id: course.id,
-      courseName: course.course_name,
-      category: course.category,
-      status: agentCourse?.status || 'not_started',
-      score: agentCourse?.score || null,
-      completedAt: agentCourse?.completed_at,
-      isRequired: course.is_required,
-      passingScore: course.passing_score,
-    }
-  })
+  const courseProgress: CourseProgress[] = ((courseAssignments || []) as any[])
+    // Agent-facing coursework only — never a customer-audience module.
+    .filter(a => {
+      const m = Array.isArray(a.learning_modules) ? a.learning_modules[0] : a.learning_modules
+      const roles = m?.audience_roles ?? []
+      return roles.length === 0 || !roles.includes('customer')
+    })
+    .map(a => {
+      const m = Array.isArray(a.learning_modules) ? a.learning_modules[0] : a.learning_modules
+      return {
+        id: a.module_id as string,
+        courseName: (m?.title as string) ?? 'Course',
+        category: (m?.stage_tags?.[0] as string) ?? 'academy',
+        status: mapCourseStatus(a.status),
+        score: a.quiz_score ?? null,
+        completedAt: a.completed_at ?? undefined,
+        isRequired: (m?.required as boolean) ?? false,
+        passingScore: 80,
+      }
+    })
 
   // Update certification category based on earned certs
   const certStatus = await getCertificationStatus(targetAgentId, targetBrokerageId)
@@ -280,30 +310,67 @@ export async function getAgentProgress(
 
 // ─── Check Certification Eligibility ─────────────────────────────────────────
 
+// ── TENANT AND ACTOR COME FROM THE SESSION (CLAUDE.md §4) ───────────────────
+// TOMBSTONE (cross-cutting sweep, ruling wave 2026-08-24): the `agentId` and
+// `brokerageId` PARAMETERS are deleted from the decision. They stay in the
+// signature, renamed with a leading underscore, purely so no call site changes
+// arity — exactly the shape getAgentProgress (:76) and getAdminOnboardingOverview
+// (:647) in this same file already use. This finishes a conversion that was
+// applied to those two and stopped.
+//
+// WHY IT MATTERED MORE HERE. This is a `"use server"` file, so every export is a
+// PUBLIC HTTP ENDPOINT, and the gate read:
+//
+//     if (!user && !agentId) return { error: 'Not authenticated' }
+//     const targetAgentId     = agentId || resolveAgentId(session)
+//     const targetBrokerageId = brokerageId || (the agent row's own brokerage)
+//
+// An UNAUTHENTICATED caller who supplied an agentId PASSED the authentication
+// check — the `&&` makes a caller-supplied id a substitute for having a session —
+// and a caller-supplied brokerageId then became the tenant. CLAUDE.md §4: "Tenant
+// comes from the SESSION. Never from a request body, never from a parameter."
+//
+// NOTHING IS LOST. Measured across the whole tree: the only callers are
+// app/dashboard/onboarding/progress/progress-dashboard-client.tsx and
+// app/dashboard/onboarding/OnboardingDashboardClient.tsx, and NOT ONE of them
+// passes a second or third argument. The parameters were never exercised by the
+// product — an optional tenant parameter that no caller passes is
+// indistinguishable from no tenancy at all, the same shape the owner ruled on for
+// getSimilarListings.
+//
+// A cross-agent (admin-viewing-an-agent) path is deliberately NOT invented here.
+// getAgentProgress has one, and ITS `agentId` is a USERS id while this function
+// used the same parameter as an AGENTS id — one name carrying two identity
+// classes, which is the trap CLAUDE.md §3 and test:identity-class exist for.
+// Building that path is a product decision, not a repair.
 export async function checkCertEligibility(
   certName: string,
-  agentId?: string,
-  brokerageId?: string
+  _agentId?: string,      // ignored — the actor is the session user
+  _brokerageId?: string   // ignored — derived from the session actor's agents row
 ): Promise<{ success: boolean; eligible?: boolean; missing?: string[]; error?: string }> {
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user && !agentId) {
+  if (!user) {
     return { success: false, error: 'Not authenticated' }
   }
 
-  const targetAgentId = agentId || (user ? await resolveAgentId(supabase, user.id) : null)
+  const targetAgentId = await resolveAgentId(supabase, user.id)
   if (!targetAgentId) {
     return { success: false, error: 'Agent profile not found' }
   }
 
+  // IDENTITY CLASS (m342). targetAgentId is an AGENTS id (resolveAgentId returns
+  // the agents PK), so reading `users` by it never matched and targetBrokerageId
+  // fell back to whatever the caller supplied — or to undefined, which failed the
+  // action. agents carries brokerage_id directly; no second class needed.
   const { data: userData } = await supabase
-    .from('users')
+    .from('agents')
     .select('brokerage_id')
     .eq('id', targetAgentId)
-    .single()
+    .maybeSingle()
 
-  const targetBrokerageId = brokerageId || userData?.brokerage_id
+  const targetBrokerageId = userData?.brokerage_id
   if (!targetBrokerageId) {
     return { success: false, error: 'No brokerage found' }
   }
@@ -319,44 +386,118 @@ export async function checkCertEligibility(
 
 // ─── Claim Certification ─────────────────────────────────────────────────────
 
+// ── TENANT AND ACTOR COME FROM THE SESSION (CLAUDE.md §4) ───────────────────
+// TOMBSTONE (cross-cutting sweep, ruling wave 2026-08-24): the `agentId` and
+// `brokerageId` PARAMETERS are deleted from the decision. They stay in the
+// signature, renamed with a leading underscore, purely so no call site changes
+// arity — exactly the shape getAgentProgress (:76) and getAdminOnboardingOverview
+// (:647) in this same file already use. This finishes a conversion that was
+// applied to those two and stopped.
+//
+// WHY IT MATTERED MORE HERE. This is a `"use server"` file, so every export is a
+// PUBLIC HTTP ENDPOINT, and the gate read:
+//
+//     if (!user && !agentId) return { error: 'Not authenticated' }
+//     const targetAgentId     = agentId || resolveAgentId(session)
+//     const targetBrokerageId = brokerageId || (the agent row's own brokerage)
+//
+// An UNAUTHENTICATED caller who supplied an agentId PASSED the authentication
+// check — the `&&` makes a caller-supplied id a substitute for having a session —
+// and a caller-supplied brokerageId then became the tenant. CLAUDE.md §4: "Tenant
+// comes from the SESSION. Never from a request body, never from a parameter."
+//
+// NOTHING IS LOST. Measured across the whole tree: the only callers are
+// app/dashboard/onboarding/progress/progress-dashboard-client.tsx and
+// app/dashboard/onboarding/OnboardingDashboardClient.tsx, and NOT ONE of them
+// passes a second or third argument. The parameters were never exercised by the
+// product — an optional tenant parameter that no caller passes is
+// indistinguishable from no tenancy at all, the same shape the owner ruled on for
+// getSimilarListings.
+//
+// A cross-agent (admin-viewing-an-agent) path is deliberately NOT invented here.
+// getAgentProgress has one, and ITS `agentId` is a USERS id while this function
+// used the same parameter as an AGENTS id — one name carrying two identity
+// classes, which is the trap CLAUDE.md §3 and test:identity-class exist for.
+// Building that path is a product decision, not a repair.
+//
+// THIS ONE IS A WRITE — awardCertEngine below inserts the certification. So the
+// pre-fix shape was an UNAUTHENTICATED CROSS-TENANT WRITE: name any agents id and
+// any brokerage id, and a certification was awarded there.
 export async function claimCertification(
   certName: string,
-  agentId?: string,
-  brokerageId?: string
+  _agentId?: string,      // ignored — the actor is the session user
+  _brokerageId?: string   // ignored — derived from the session actor's agents row
 ): Promise<{ success: boolean; certId?: string; error?: string }> {
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user && !agentId) {
+  if (!user) {
     return { success: false, error: 'Not authenticated' }
   }
 
-  const targetAgentId = agentId || (user ? await resolveAgentId(supabase, user.id) : null)
+  const targetAgentId = await resolveAgentId(supabase, user.id)
   if (!targetAgentId) {
     return { success: false, error: 'Agent profile not found' }
   }
 
+  // IDENTITY CLASS (m342). targetAgentId is an AGENTS id (resolveAgentId returns
+  // the agents PK), so reading `users` by it never matched and targetBrokerageId
+  // fell back to whatever the caller supplied — or to undefined, which failed the
+  // action. agents carries brokerage_id directly; no second class needed.
   const { data: userData } = await supabase
-    .from('users')
+    .from('agents')
     .select('brokerage_id')
     .eq('id', targetAgentId)
-    .single()
+    .maybeSingle()
 
-  const targetBrokerageId = brokerageId || userData?.brokerage_id
+  const targetBrokerageId = userData?.brokerage_id
   if (!targetBrokerageId) {
     return { success: false, error: 'No brokerage found' }
   }
 
-  const result = await awardCertEngine(certName, targetAgentId, targetBrokerageId, user?.id)
+  const result = await awardCertEngine(certName, targetAgentId, targetBrokerageId, user.id)
 
   return result
 }
 
 // ─── Generate Performance Report ─────────────────────────────────────────────
 
+// ── TENANT AND ACTOR COME FROM THE SESSION (CLAUDE.md §4) ───────────────────
+// TOMBSTONE (cross-cutting sweep, ruling wave 2026-08-24): the `agentId` and
+// `brokerageId` PARAMETERS are deleted from the decision. They stay in the
+// signature, renamed with a leading underscore, purely so no call site changes
+// arity — exactly the shape getAgentProgress (:76) and getAdminOnboardingOverview
+// (:647) in this same file already use. This finishes a conversion that was
+// applied to those two and stopped.
+//
+// WHY IT MATTERED MORE HERE. This is a `"use server"` file, so every export is a
+// PUBLIC HTTP ENDPOINT, and the gate read:
+//
+//     if (!user && !agentId) return { error: 'Not authenticated' }
+//     const targetAgentId     = agentId || resolveAgentId(session)
+//     const targetBrokerageId = brokerageId || (the agent row's own brokerage)
+//
+// An UNAUTHENTICATED caller who supplied an agentId PASSED the authentication
+// check — the `&&` makes a caller-supplied id a substitute for having a session —
+// and a caller-supplied brokerageId then became the tenant. CLAUDE.md §4: "Tenant
+// comes from the SESSION. Never from a request body, never from a parameter."
+//
+// NOTHING IS LOST. Measured across the whole tree: the only callers are
+// app/dashboard/onboarding/progress/progress-dashboard-client.tsx and
+// app/dashboard/onboarding/OnboardingDashboardClient.tsx, and NOT ONE of them
+// passes a second or third argument. The parameters were never exercised by the
+// product — an optional tenant parameter that no caller passes is
+// indistinguishable from no tenancy at all, the same shape the owner ruled on for
+// getSimilarListings.
+//
+// A cross-agent (admin-viewing-an-agent) path is deliberately NOT invented here.
+// getAgentProgress has one, and ITS `agentId` is a USERS id while this function
+// used the same parameter as an AGENTS id — one name carrying two identity
+// classes, which is the trap CLAUDE.md §3 and test:identity-class exist for.
+// Building that path is a product decision, not a repair.
 export async function generatePerformanceReport(
-  agentId?: string,
-  brokerageId?: string
+  _agentId?: string,      // ignored — the actor is the session user
+  _brokerageId?: string   // ignored — derived from the session actor's agents row
 ): Promise<{
   success: boolean
   reportId?: string
@@ -367,22 +508,26 @@ export async function generatePerformanceReport(
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user && !agentId) {
+  if (!user) {
     return { success: false, error: 'Not authenticated' }
   }
 
-  const targetAgentId = agentId || (user ? await resolveAgentId(supabase, user.id) : null)
+  const targetAgentId = await resolveAgentId(supabase, user.id)
   if (!targetAgentId) {
     return { success: false, error: 'Agent profile not found' }
   }
 
+  // IDENTITY CLASS (m342). targetAgentId is an AGENTS id (resolveAgentId returns
+  // the agents PK), so reading `users` by it never matched and targetBrokerageId
+  // fell back to whatever the caller supplied — or to undefined, which failed the
+  // action. agents carries brokerage_id directly; no second class needed.
   const { data: userData } = await supabase
-    .from('users')
+    .from('agents')
     .select('brokerage_id')
     .eq('id', targetAgentId)
-    .single()
+    .maybeSingle()
 
-  const targetBrokerageId = brokerageId || userData?.brokerage_id
+  const targetBrokerageId = userData?.brokerage_id
   if (!targetBrokerageId) {
     return { success: false, error: 'No brokerage found' }
   }
@@ -452,6 +597,8 @@ export async function generatePerformanceReport(
 
   // Generate AI coaching report
   const { text } = await generateText({
+    brokerageId: targetBrokerageId,
+    userId: user.id,
     model: 'anthropic/claude-opus-4',
     system: `You are a real estate brokerage training coach. ${toneGuidance} Be concise and actionable.`,
     prompt: `Based on this new agent's onboarding metrics: ${JSON.stringify(metrics, null, 2)}
@@ -553,7 +700,7 @@ export async function dismissCelebration(): Promise<{ success: boolean; error?: 
 // ─── Retake Course ───────────────────────────────────────────────────────────
 
 export async function retakeCourse(
-  courseId: string
+  courseId: string  // a learning_modules.id on the canonical rail
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient()
 
@@ -562,13 +709,24 @@ export async function retakeCourse(
     return { success: false, error: 'Not authenticated' }
   }
 
-  // Delete the agent_courses record to allow retake
-  const agentId = await resolveAgentId(supabase, user.id)
+  // Reset the agent's completion on the canonical rail so the module can be
+  // retaken — RESET the learning_assignments row back to 'open', don't DELETE it.
+  // Deleting made the course vanish from the progress dashboard entirely instead
+  // of showing as retakeable; the dashboard reads the row's status, so the row
+  // must survive. Clear the completion fields (completed_at, quiz_score, viewed_at,
+  // dismissed_at). Scoped to the caller's own user id — an agent can only reset
+  // their own coursework.
   const { error } = await supabase
-    .from('agent_courses')
-    .delete()
-    .eq('agent_id', agentId)
-    .eq('training_course_id', courseId)
+    .from('learning_assignments')
+    .update({
+      status: 'open',
+      completed_at: null,
+      quiz_score: null,
+      viewed_at: null,
+      dismissed_at: null,
+    })
+    .eq('agent_user_id', user.id)
+    .eq('module_id', courseId)
 
   if (error) {
     return { success: false, error: error.message }
@@ -621,7 +779,7 @@ export async function getAdminOnboardingOverview(
     return { success: false, error: 'No brokerage found' }
   }
 
-  if (!['admin', 'broker', 'broker_owner', 'superadmin', 'super_admin'].includes(userData.user_type || '')) {
+  if (!isAdminOrBroker({ user_type: userData.user_type || '' })) {
     return { success: false, error: 'Unauthorized' }
   }
 
@@ -751,7 +909,7 @@ export async function sendOnboardingReminder(
     .eq('id', user.id)
     .single()
 
-  if (!['admin', 'broker', 'broker_owner', 'superadmin', 'super_admin'].includes(userData?.user_type || '')) {
+  if (!isAdminOrBroker({ user_type: userData?.user_type || '' })) {
     return { success: false, error: 'Unauthorized' }
   }
 

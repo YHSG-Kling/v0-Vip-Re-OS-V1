@@ -8,6 +8,24 @@
  * renders as "TBD" so a partially-known milestone still posts something useful rather than a raw
  * token.
  */
+import { priceOrPendingReview, PRICE_PENDING_REVIEW } from "@/lib/format/money"
+
+/**
+ * A PRICE token ({contract_price_fmt}, {purchase_price}, {offer_price}, …). A price we do not
+ * have — missing, blank, zero, "$0" — renders the ONE wording for it (wave 94,
+ * lib/format/money.ts PRICE_PENDING_REVIEW), never "TBD" and never "$0". A pre-formatted
+ * value (`*_fmt`) passes through unless it says zero.
+ */
+const PRICE_KEY_RE = /(^|_)price(_|$)/i
+
+function renderPriceToken(key: string, v: unknown): string {
+  if (typeof v === "string" && /_fmt$/i.test(key)) {
+    const digits = Number(v.replace(/[^0-9.]/g, ""))
+    return v.trim() && Number.isFinite(digits) && digits > 0 ? v : PRICE_PENDING_REVIEW
+  }
+  return priceOrPendingReview(typeof v === "number" || typeof v === "string" ? v : null)
+}
+
 export function renderTemplateText(
   text:     string | undefined,
   metadata: Record<string, any> | undefined,
@@ -15,6 +33,7 @@ export function renderTemplateText(
   if (!text || !text.includes("{")) return text
   return text.replace(/\{([a-z0-9_]+)\}/gi, (_m, key: string) => {
     const v = metadata?.[key]
+    if (PRICE_KEY_RE.test(key)) return renderPriceToken(key, v)
     // Only interpolate primitives — an object/array value would stringify to "[object Object]" in a
     // client-facing card; treat those (and missing/blank) as "TBD".
     const t = typeof v

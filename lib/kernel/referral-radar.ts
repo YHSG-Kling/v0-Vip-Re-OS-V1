@@ -19,31 +19,52 @@
 //                    approves+sends. NEVER auto-sends. Copy is GENERATED per the contact's
 //                    persona via generatePersonaCopy (deterministic fallback below).
 //
-// RULES: past clients only (contact_type past_client/lifetime/lifetime_customer/sphere or
-// nurture_status closed). WITHDRAWN excluded. One radar touch per (contact, event-type)
+// RULES: past clients only (contact_type client/lifetime_customer/sphere — the canonical
+// roster at lib/contact-types.ts:LIFETIME_CONTACT_TYPES — or nurture_status closed).
+// WITHDRAWN excluded. One radar touch per (contact, event-type)
 // per 90 days (idempotent). Does NOT duplicate the closing-anniversary play.
 // NOT server-only (simulator-driven; scraper + copyGenerator are injectable seams).
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { LIFETIME_CONTACT_TYPES, isLifetimeRelationshipType } from "@/lib/contact-types"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
 
 type Svc = ReturnType<typeof createServiceClient>
 
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: RADAR_DEDUPE_DAYS, REFERRAL_PRIMED_SCORE.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** One radar touch per (contact, event-type) per this window. */
-export const RADAR_DEDUPE_DAYS = 90
+const RADAR_DEDUPE_DAYS = 90
 
 /** A life event is "fresh" when detected within this window (Data Steward stamp). */
-export const LIFE_EVENT_FRESH_DAYS = 60
+const LIFE_EVENT_FRESH_DAYS = 60
 
 /** Equity at/above this is a milestone worth a sell/upgrade conversation. */
-export const EQUITY_MILESTONE = 250_000
+const EQUITY_MILESTONE = 250_000
 
 /** referral_score at/above this marks a contact primed to refer. */
-export const REFERRAL_PRIMED_SCORE = 70
+const REFERRAL_PRIMED_SCORE = 70
 
-/** The contact_type / nurture_status values that mark a PAST (lifetime) client. */
-export const PAST_CLIENT_TYPES = ["past_client", "lifetime", "lifetime_customer", "sphere", "client"] as const
-export const PAST_CLIENT_NURTURE = ["past_client", "closed", "lifetime"] as const
+// TOMBSTONE (CLAUDE.md §1, §6). `PAST_CLIENT_TYPES` was this module's own spelling of
+// the post-close contact_type roster — a third copy alongside
+// lib/campaigns/contact-sources.ts and lib/kernel/returning-customer.ts, all three of
+// which named `past_client` and `lifetime`. m539 retired both, so the `.or(
+// "contact_type.eq.past_client,…")` built below would have carried two clauses the
+// column can never satisfy. Survivor: lib/contact-types.ts:LIFETIME_CONTACT_TYPES,
+// imported above.
+
+/**
+ * contacts.nurture_status values that mark a PAST client. A DIFFERENT column and a
+ * DIFFERENT vocabulary from contact_type — `nurture_status` has NO CHECK constraint, so
+ * m539 does not reach it and its spellings are pinned to their writers, not to a
+ * constraint. `past_client` and `lifetime` stay here for exactly that reason.
+ */
+const PAST_CLIENT_NURTURE = ["past_client", "closed", "lifetime"] as const
 
 export type LifeEventType =
   | "job_change"
@@ -82,9 +103,8 @@ export interface DetectedLifeEvent {
 
 /** Pure: is this contact a PAST (lifetime) client the Radar may touch? */
 export function isPastClient(c: Pick<RadarContact, "contact_type" | "nurture_status">): boolean {
-  const t = (c.contact_type ?? "").toLowerCase()
   const n = (c.nurture_status ?? "").toLowerCase()
-  return (PAST_CLIENT_TYPES as readonly string[]).includes(t)
+  return isLifetimeRelationshipType(c.contact_type)
     || (PAST_CLIENT_NURTURE as readonly string[]).includes(n)
 }
 
@@ -118,7 +138,6 @@ function mapRawEvent(tag: string): LifeEventType | null {
  * Priority: explicit fresh life-event signals first, then derived milestones.
  */
 export function detectLifeEvent(c: RadarContact, now: Date): DetectedLifeEvent | null {
-  const name = (c.first_name ?? "there").toString().trim() || "there"
   const fresh =
     !!c.last_life_event_detected &&
     (now.getTime() - new Date(c.last_life_event_detected).getTime()) <= LIFE_EVENT_FRESH_DAYS * 86_400_000 &&
@@ -129,27 +148,35 @@ export function detectLifeEvent(c: RadarContact, now: Date): DetectedLifeEvent |
     const tags = lifeEventTypes(c.life_events)
     for (const tag of tags) {
       const mapped = mapRawEvent(tag)
-      if (mapped) return buildEvent(mapped, name)
+      if (mapped) return buildEvent(mapped)
     }
     // Marital status flipped to married + fresh stamp → marriage signal.
-    if ((c.marital_status ?? "").toLowerCase() === "married") return buildEvent("marriage", name)
+    if ((c.marital_status ?? "").toLowerCase() === "married") return buildEvent("marriage")
   }
 
   // 2) DERIVED milestones — real numbers on the row, not scraped events.
   if (typeof c.equity_estimate === "number" && c.equity_estimate >= EQUITY_MILESTONE) {
-    return buildEvent("equity_milestone", name)
+    return buildEvent("equity_milestone")
   }
   if (typeof c.referral_score === "number" && c.referral_score >= REFERRAL_PRIMED_SCORE) {
-    return buildEvent("referral_primed", name)
+    return buildEvent("referral_primed")
   }
   if ((c.referral_potential ?? "").toLowerCase() === "high") {
-    return buildEvent("referral_primed", name)
+    return buildEvent("referral_primed")
   }
 
   return null
 }
 
-function buildEvent(type: LifeEventType, name: string): DetectedLifeEvent {
+/**
+ * TOMBSTONE — this took a second parameter, `name`, and read NOTHING out of it. Every
+ * string it returns is a TEMPLATE about the event, not about the person; the name is
+ * applied where the copy is addressed, by `composeReferralTouch` (this file, below)
+ * and `composeReferralNudge` (this file, below), both of which already take it and
+ * both of which already use it. Deleted rather than wired: a second place that
+ * personalises the same copy is how two greetings for one client start (§6).
+ */
+function buildEvent(type: LifeEventType): DetectedLifeEvent {
   switch (type) {
     case "job_change":
       return { type, label: "a job/career change",
@@ -232,7 +259,7 @@ export async function runReferralRadar(
   // Pull past clients (by contact_type OR nurture_status). Cast a wide net, filter in code
   // so a single column rename never silently drops the whole feature.
   const orClause = [
-    ...PAST_CLIENT_TYPES.map((t) => `contact_type.eq.${t}`),
+    ...LIFETIME_CONTACT_TYPES.map((t) => `contact_type.eq.${t}`),
     ...PAST_CLIENT_NURTURE.map((n) => `nurture_status.eq.${n}`),
   ].join(",")
   const { data: rows } = await supabase.from("contacts")
@@ -240,6 +267,18 @@ export async function runReferralRadar(
     .eq("brokerage_id", brokerageId).or(orClause).limit(500)
 
   const contacts = (rows ?? []) as RadarContact[]
+  // RELATIONSHIP GRAPH (wave 102, lane 102B): who has this past client ALREADY referred to us? The
+  // referred_by edges point AT the referrer (lib/kernel/relationship-graph.ts); one tenant-wide read,
+  // counted per contact, becomes a real fact in the touch ("they have sent us N people") and in the
+  // agent's nudge. Read-only; a refused read (or no graph yet) is an empty map, never a failed pass.
+  const referralsGiven = new Map<string, number>()
+  {
+    const { data: refEdges, error: refErr } = await supabase.from("relationship_edges")
+      .select("to_entity_id")
+      .eq("brokerage_id", brokerageId).eq("relationship_type", "referred_by").eq("to_entity_type", "contact").limit(2000)
+    if (refErr) { if (!/does not exist|could not find/i.test(refErr.message ?? "")) console.warn("[referral-radar] referred_by read refused:", refErr.message) }
+    else for (const e of (refEdges ?? []) as Array<{ to_entity_id: string }>) referralsGiven.set(e.to_entity_id, (referralsGiven.get(e.to_entity_id) ?? 0) + 1)
+  }
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
   const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
   const { resolveResponsibleAgentUserId } = await import("@/lib/intelligence/mobile-approval-queue")
@@ -286,7 +325,12 @@ export async function runReferralRadar(
     const draft = await generatePersonaCopy(
       {
         goal: "a warm, no-pressure past-client check-in that opens the door to repeat business or a referral",
-        facts: [ev.clientHook, "I stay in touch with the people I've worked with", "I'm glad to help them or anyone they refer"],
+        facts: [
+          ev.clientHook,
+          "I stay in touch with the people I've worked with",
+          "I'm glad to help them or anyone they refer",
+          ...((referralsGiven.get(c.id) ?? 0) > 0 ? [`they have already referred ${referralsGiven.get(c.id)} ${referralsGiven.get(c.id) === 1 ? "person" : "people"} to me`] : []),
+        ],
         channel: "portal",
         persona: {
           name: fullName || null,

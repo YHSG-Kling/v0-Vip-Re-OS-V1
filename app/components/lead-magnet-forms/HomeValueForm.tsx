@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react"
 import { captureFormSubmissionAction } from "@/app/actions/lead-magnet-capture"
+import type { LeadMagnetAttribution } from "@/lib/lead-magnets/attribution"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -26,14 +27,21 @@ interface Props {
   tcpaText?: string
   thankYouMessage?: string
   primaryColor?: string
+  /** Wave 141: where the visitor came from (the page parsed it from the query string). */
+  attribution?: LeadMagnetAttribution | null
   onSubmitted?: (submissionId: string) => void
 }
 
+// valuation_requests.condition admits exactly: excellent | good | fair | poor.
+// The last option here was "needs_work", which the column rejects — so a
+// homeowner who picked the honest answer about their own house had their
+// valuation request refused and the LEAD LOST, at the very top of the funnel.
+// 'poor' is the column's word for it; the label is what the visitor reads.
 const CONDITION_OPTIONS = [
-  { value: "excellent",  label: "Excellent — Move-in ready" },
-  { value: "good",       label: "Good — Minor updates needed" },
-  { value: "fair",       label: "Fair — Some work required" },
-  { value: "needs_work", label: "Needs Work — Major renovation" },
+  { value: "excellent", label: "Excellent — Move-in ready" },
+  { value: "good",      label: "Good — Minor updates needed" },
+  { value: "fair",      label: "Fair — Some work required" },
+  { value: "poor",      label: "Needs Work — Major renovation" },
 ]
 
 export function HomeValueForm({
@@ -45,6 +53,7 @@ export function HomeValueForm({
   ctaText = "Get My Free Home Valuation",
   tcpaText = "By submitting, you consent to receive communications. You may opt out at any time.",
   thankYouMessage = "Thank you! Your request has been received. We will be in touch shortly.",
+  attribution = null,
   onSubmitted,
 }: Props) {
   const [isPending, startTransition] = useTransition()
@@ -91,6 +100,7 @@ export function HomeValueForm({
         brokerageId,
         source,
         tcpaConsentGiven: tcpaChecked,
+        attribution,
         submissionData: {
           first_name: firstName.trim(),
           last_name: lastName.trim(),

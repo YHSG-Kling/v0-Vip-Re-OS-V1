@@ -8,10 +8,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { useState, useEffect } from "react"
-import { providerPortalMode } from "@/lib/integrations/providers/catalog"
+import { providerPortalMode, DEFAULT_ESIGN_PROVIDER, PROVIDER_PORTAL_URLS, getCatalogEntry } from "@/lib/integrations/providers/catalog"
 import {
-  Card, CardContent, CardDescription, CardHeader, CardTitle,
-} from "@/components/ui/card"
+  Card, CardContent, } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -28,9 +27,7 @@ import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from "@/components/ui/command"
 import {
-  FileText, ExternalLink, Search, Building2, CheckCircle2,
-  AlertCircle, Clock, ClipboardList, Send, Download, RefreshCw,
-  Shield, Loader2, Users, Settings, Eye, UserCircle2,
+  FileText, ExternalLink, Search, Building2, AlertCircle, ClipboardList, Send, Download, Shield, Loader2, Users, Settings, Eye, UserCircle2,
 } from "lucide-react"
 import { formatDistanceToNow, format } from "date-fns"
 import Link from "next/link"
@@ -101,6 +98,10 @@ interface ListingAgreement {
   agent_signed_at: string | null
   fully_executed_at: string | null
   provider_name: string | null
+  /** listing_agreements.upload_mode — 'manual_upload' | 'provider_pull' (live CHECK). */
+  upload_mode: string | null
+  /** Populated only on the manual_upload path (execution-engine.ts:876). */
+  document_url: string | null
   brokerage_id: string
   agent_user_id: string | null
 }
@@ -120,14 +121,10 @@ interface FormsLibraryClientProps {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const PROVIDER_URLS: Record<string, string> = {
-  dotloop:        "https://www.dotloop.com/",
-  skyslope:       "https://app.skyslope.com/",
-  formsimplicity: "https://www.formsimplicity.com/",
-  brokermint:     "https://brokermint.com/",
-  authentisign:   "https://authentisign.com/",
-  docusign:       "https://www.docusign.com/",
-}
+// One spelling of each provider's portal URL (§6, lane 88C): the catalog's PROVIDER_PORTAL_URLS —
+// the same map this file's own providerPortalMode window already reads. The local copy pointed
+// DocuSign and Brokermint at their marketing sites and SkySlope at a non-frameable host.
+const PROVIDER_URLS: Record<string, string> = PROVIDER_PORTAL_URLS
 
 function capitalize(s: string) {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : s
@@ -269,11 +266,23 @@ export function FormsLibraryClient({
       .map(a => ({
         id:          a.id,
         type:        a.agreement_type ?? "Listing Agreement",
-        provider:    a.provider_name,
+        // WHERE IT CAME FROM, read off upload_mode rather than guessed from
+        // provider_name. A hand-uploaded agreement has no e-sign provider, and
+        // printing an empty provider cell made it look like a provider had been
+        // used and had not reported. An unknown/absent mode falls through to the
+        // provider name — the pre-existing behaviour, not a new claim.
+        provider:
+          a.upload_mode === "manual_upload" ? "Uploaded by hand"
+          : a.upload_mode === "provider_pull" ? (a.provider_name ?? "E-sign provider")
+          : a.provider_name,
         status:      a.esign_status,
         sentAt:      a.agent_signed_at,
         completedAt: a.fully_executed_at,
-        documentUrl: null,
+        // The signed PDF, which this list hardcoded to null. It exists only on the
+        // manual path — execution-engine.ts:876 writes document_url ONLY when
+        // upload_mode is 'manual_upload' and provider_ref (not a URL) otherwise —
+        // so the link is offered exactly where there is one to offer.
+        documentUrl: a.upload_mode === "manual_upload" ? a.document_url : null,
         source:      "listing_agreements" as const,
       })),
   ].sort((a, b) => {
@@ -418,8 +427,32 @@ export function FormsLibraryClient({
                 happens in their window; FILLING stays native below (where the
                 AI prefill lives); sending stays launchEsignEnvelope. */}
             {(() => {
+              // With no transaction provider connected, the window offered is the e-sign DEFAULT
+              // (catalog DEFAULT_ESIGN_PROVIDER). Lane 89A: DocuSign — sending happens INSIDE the
+              // platform (embedded sender view, the platform's DocuSign account when the brokerage
+              // has not connected its own); a portal-send default (Google) would name its Drive steps.
+              if (!resolvedProvider?.is_configured) {
+                const def = providerPortalMode(DEFAULT_ESIGN_PROVIDER)
+                if (!def) return null
+                const portalSend = !!getCatalogEntry(DEFAULT_ESIGN_PROVIDER)?.portalSend
+                return (
+                  <Card>
+                    <CardContent className="flex items-center justify-between py-3 px-4">
+                      <p className="text-xs text-muted-foreground">
+                        {portalSend
+                          ? `E-sign default: ${def.label}. Fill the form here, then open it in your Google Drive and choose Tools → eSignature → Request signature.`
+                          : `E-sign default: ${def.label} — fill the form here and send it for signature inside this window (recipients, field placement and Send all happen in ${def.label}'s embedded view).`}
+                        {" "}Connect your brokerage&apos;s own DocuSign, Dotloop, SkySlope or Authentisign in Settings → Integrations to send through your account instead.
+                      </p>
+                      <Button size="sm" variant="outline" asChild>
+                        <a href={def.url} target="_blank" rel="noopener noreferrer">Open {def.label}</a>
+                      </Button>
+                    </CardContent>
+                  </Card>
+                )
+              }
               const portal = providerPortalMode(resolvedProvider?.provider_name)
-              if (!portal || !resolvedProvider?.is_configured) return null
+              if (!portal) return null
               return portal.mode === "iframe" ? (
                 <Card>
                   <CardContent className="p-2">

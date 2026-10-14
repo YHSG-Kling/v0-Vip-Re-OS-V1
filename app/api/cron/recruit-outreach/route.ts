@@ -181,6 +181,16 @@ export async function GET(req: NextRequest) {
       leaderboardRows = lb.rows
     } catch (e: any) { errors.push(`leaderboard: ${e?.message ?? String(e)}`) }
 
+    // WORK ANNIVERSARIES (wave 103, lane 103C) — emit AGENT_WORK_ANNIVERSARY for every active agent
+    // whose seat anniversary fell this week; the event reactor awards WORK_ANNIVERSARY once a year
+    // through the one ledger path (lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES).
+    let anniversariesEmitted = 0
+    try {
+      const { runWorkAnniversariesAll } = await import("@/lib/gamification/work-anniversaries")
+      const wa = await runWorkAnniversariesAll(supabase)
+      anniversariesEmitted = wa.emitted
+    } catch (e: any) { errors.push(`work-anniversaries: ${e?.message ?? String(e)}`) }
+
     // CHALLENGES — score every active challenge's live standings and finalize any that just ended,
     // awarding prize points into the SAME ledger + proposing a gated winner announcement.
     let challengesFinalized = 0
@@ -203,9 +213,9 @@ export async function GET(req: NextRequest) {
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, portfolioBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, portfolioBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, anniversariesEmitted, challengesFinalized, execStandups, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, portfolioBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, portfolioBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, anniversariesEmitted, challengesFinalized, execStandups, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

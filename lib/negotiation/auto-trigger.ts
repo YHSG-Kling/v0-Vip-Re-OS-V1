@@ -18,6 +18,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { createServiceClient } from "@/lib/supabase/service"
 
@@ -32,7 +33,7 @@ export async function recordOutcomeForOfferSafe(
 ): Promise<void> {
   try {
     const supabase = createServiceClient()
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("negotiation_strategies")
       .update({
         status:              "outcome_recorded",
@@ -41,7 +42,7 @@ export async function recordOutcomeForOfferSafe(
         updated_at:          new Date().toISOString(),
       })
       .eq("offer_id", offerId)
-      .in("status", ["open", "accepted_by_agent"])
+      .in("status", ["open", "accepted_by_agent"]), { table: "negotiation_strategies", flow: "negotiation_outcome", reason: "outcome learning annotation; never blocks the offer transition that triggered it" })
   } catch (err) {
     console.error("[negotiation-auto] recordOutcomeForOffer failed:", err)
   }

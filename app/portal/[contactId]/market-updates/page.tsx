@@ -1,7 +1,7 @@
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { determinePortalView } from "@/lib/kernel/portal"
+import { resolvePortalLayouts, portalShowsLayout } from "@/lib/kernel/portal"
 import { getMarketUpdates, requestValueUpdate, getLifetimeContext } from "@/app/actions/portal-lifetime"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -29,8 +29,9 @@ export default async function MarketUpdatesPage({
   const supabase = await createClient()
 
   // Verify lifetime portal access
-  const portalView = await determinePortalView(supabase, { contactId })
-  if (portalView.view !== "lifetime") {
+  // The KERNEL's layouts (wave 94) — a dual client's portal shows every layout it carries.
+  const portalLayouts = await resolvePortalLayouts(supabase, { contactId })
+  if (!portalShowsLayout(portalLayouts, "lifetime")) {
     redirect(`/portal/${contactId}`)
   }
 

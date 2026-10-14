@@ -59,11 +59,33 @@ export default function TransactionFormsClient({ initialForms }: { initialForms:
   async function deleteForm(id: string) {
     if (!confirm("Deactivate this form? Agents will no longer see it on packet assembly.")) return
     const res = await fetch(`/api/admin/transaction-forms?id=${id}`, { method: "DELETE" })
-    if (res.ok) {
+    const { success, error } = await res.json().catch(() => ({}))
+    if (res.ok && success) {
       toast.success("Form deactivated")
       reload()
     } else {
-      toast.error("Could not deactivate")
+      toast.error(error ?? "Could not deactivate")
+    }
+  }
+
+  // MOUNTED (§1 orphan doctrine — scripts/handler-parity-census.ts,
+  // 2026-09-11): the PATCH endpoint at /api/admin/transaction-forms already
+  // accepts `is_active`, but nothing in the tree ever called PATCH — a
+  // deactivated form (DELETE above only ever sets is_active=false; there is
+  // no hard delete) had no way back. This is the missing CALLER for the
+  // reactivate half of that same toggle, not a new endpoint.
+  async function reactivateForm(id: string) {
+    const res = await fetch("/api/admin/transaction-forms", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, is_active: true }),
+    })
+    const { success, error } = await res.json().catch(() => ({}))
+    if (res.ok && success) {
+      toast.success("Form reactivated")
+      reload()
+    } else {
+      toast.error(error ?? "Could not reactivate")
     }
   }
 
@@ -140,9 +162,15 @@ export default function TransactionFormsClient({ initialForms }: { initialForms:
                       </a>
                     </Button>
                   )}
-                  <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive ml-auto" onClick={() => deleteForm(f.id)}>
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
+                  {f.is_active ? (
+                    <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive ml-auto" onClick={() => deleteForm(f.id)}>
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="outline" className="h-7 text-xs ml-auto" onClick={() => reactivateForm(f.id)}>
+                      Reactivate
+                    </Button>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -193,12 +221,12 @@ function CreateFormDialog({
       if (file) fd.append("file", file)
 
       const res = await fetch("/api/admin/transaction-forms", { method: "POST", body: fd })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        toast.error((err as { error?: string }).error ?? "Upload failed")
+      const body = await res.json().catch(() => ({})) as { error?: string; form?: { name?: string } }
+      if (!res.ok || !body.form) {
+        toast.error(body.error ?? "Upload failed")
         return
       }
-      toast.success("Form uploaded")
+      toast.success(`"${body.form.name ?? name}" uploaded`)
       onOpenChange(false)
       // Reset form
       setName(""); setDescription(""); setState(""); setPacketType("offer")

@@ -1,15 +1,15 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { EarningsKPIRow } from "@/app/components/financials/EarningsKPIRow"
 import { CapProgressBar } from "@/app/components/financials/CapProgressBar"
 import { CommissionBreakdownTable } from "@/app/components/financials/CommissionBreakdownTable"
 import { 
-  DollarSign, 
+  
   PieChart, 
-  TrendingUp, 
+  
   Users, 
   AlertCircle,
   BarChart3,
@@ -32,7 +32,11 @@ import { connectionScopeForUserType } from "@/lib/connections/field-spec"
 import { defaultQbReconciliationPeriod, loadAgentQbReconciliation } from "@/lib/finance/qb-reconciliation"
 import { ProviderConnectionCard } from "@/app/settings/accounting/provider-connection-card"
 import { QbReconciliationCard } from "@/app/settings/accounting/qb-reconciliation-card"
+import { QbScopedExportButton } from "../components/qb-scoped-export-button"
+import { pushAgentCommissionToQuickBooksAction } from "@/app/actions/accounting-sync"
 import { AgentFinancialsClient } from "./agent-financials-client"
+import { AgentNetPositionCard } from "./agent-net-position-card"
+import { getMyOpenCharges } from "@/app/actions/brokerage-fees"
 import { loadAgentFinancialDashboardSummaryAction } from "@/app/actions/financial-kernel"
 
 export const dynamic = "force-dynamic"
@@ -40,12 +44,21 @@ export const dynamic = "force-dynamic"
 export default async function AgentFinancialsPage() {
   const supabase = await createClient()
 
-  // Get agent context with identity resolution
-  let context
-  try {
-    context = await getAgentContext()
-  } catch {
-    redirect("/login")
+  // Heal an incomplete account IN PLACE (provision the agent/brokerage records
+  // right here) rather than bouncing the user off the Financials page they're on.
+  const context = await ensureAgentContextInPlace()
+
+  // Genuinely signed out → the login page is the correct destination.
+  if (!context.isAuthenticated) redirect("/login")
+
+  // Heal genuinely couldn't complete (pending invite / non-agent user type) — show
+  // an honest in-place notice instead of a bounce.
+  if (!context.agentId || !context.brokerageId) {
+    return (
+      <div className="max-w-2xl mx-auto p-6 text-sm text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your financials.
+      </div>
+    )
   }
 
   const { agentId: agentIdRaw, brokerageId: brokerageIdRaw } = context
@@ -54,13 +67,43 @@ export default async function AgentFinancialsPage() {
   const currentYear = new Date().getFullYear()
 
   // Load agent financial summary via kernel command (replaces 16 individual DB queries)
-const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
-  agentId,
-  brokerageId,
-})
+  const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
+    agentId,
+    brokerageId,
+  })
 
+  // A DATA failure (context/summary couldn't load) is NOT an auth failure — never
+  // bounce a signed-in agent to /login. Show an honest, in-place state instead.
   if (!financialSummaryResult.success) {
-    redirect("/login")
+    return (
+      <div className="max-w-2xl mx-auto p-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <AlertCircle className="h-5 w-5 text-amber-500" />
+              Financials aren&rsquo;t available right now
+            </CardTitle>
+            <CardDescription>
+              You&rsquo;re still signed in — this is a data issue, not a sign-in problem.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm text-muted-foreground">
+            <p>
+              {financialSummaryResult.error ??
+                "We couldn't load your financial summary. Please try again in a moment."}
+            </p>
+            <div className="flex gap-3">
+              <a href="/dashboard/financials/agent" className="text-blue-600 hover:underline">
+                Retry
+              </a>
+              <a href="/dashboard" className="text-blue-600 hover:underline">
+                Back to dashboard
+              </a>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    )
   }
 
   const summary = financialSummaryResult.data!
@@ -80,8 +123,10 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
   // books host on their account first (then team, then brokerage).
   const { readScopedZoom } = await import("@/lib/connections/zoom")
   const agentZoom = await readScopedZoom(svcBooks, "agent", context.userId).catch(() => null)
-  // Last honest export marker (column arrives with the scoped-accounting-export
-  // migration; absent column simply reads null → "Not synced yet").
+  // Last honest export marker. (The earlier note here said the column "arrives
+  // with the scoped-accounting-export migration" — that migration IS applied:
+  // agent_commissions carries quickbooks_export_id and quickbooks_synced_at on
+  // the live schema. Corrected wave 26.)
   let agentBooksLastSyncedAt: string | null = null
   if (agentBooks?.quickbooks.connected && agentId) {
     const { data: lastExport } = await svcBooks
@@ -95,6 +140,31 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
     agentBooksLastSyncedAt = ((lastExport as { quickbooks_synced_at?: string | null } | null)?.quickbooks_synced_at) ?? null
   }
 
+  // THE NEXT COMMISSION AVAILABLE TO EXPORT (wave 26). The scoped export lane
+  // (lib/finance/scoped-accounting-export.ts) had no caller at all, so an agent
+  // with their own QuickBooks connected could see the reconciliation gap below
+  // and had no way to close it. Offer the oldest PAID commission that carries no
+  // export marker yet — oldest first so the backlog drains in order.
+  // Best-effort: a refused read simply offers no button.
+  let nextExportableCommissionId: string | null = null
+  if (agentBooks?.quickbooks.connected && agentId) {
+    const { data: unexported, error: unexportedErr } = await svcBooks
+      .from("agent_commissions")
+      .select("id")
+      .eq("agent_id", agentId)
+      .eq("status", "paid")
+      .is("quickbooks_export_id", null)
+      .order("close_date", { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    // supabase-js RESOLVES refusals — a refused read is not "nothing to export".
+    if (unexportedErr) {
+      console.error("[agent-financials] unexported-commission read refused:", unexportedErr.message)
+    } else {
+      nextExportableCommissionId = (unexported as { id?: string } | null)?.id ?? null
+    }
+  }
+
   // QuickBooks reconciliation (round 37) — the agent's closed commissions vs
   // the OS-recorded export markers. Best-effort: a failed read renders nothing.
   const agentReconciliation = agentScopeMatches
@@ -103,6 +173,11 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
         ...defaultQbReconciliationPeriod(),
       }).catch(() => null)
     : null
+
+  // Fee charges — the SAME source the fees detail page reads, so the net-position
+  // summary and the per-charge ledger can never disagree. Best-effort: a failed read
+  // renders an empty fee side rather than breaking the earnings page.
+  const feeCharges = await getMyOpenCharges().catch(() => [])
 
   // Load the agent's saved budget for the current year (latest if regenerated)
   const { data: budgetRow, error: budgetError } = await supabase
@@ -132,7 +207,11 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
     anniversary_start: capTrackingRaw.anniversaryStart,
     anniversary_end: capTrackingRaw.anniversaryEnd,
   } : null
-  const agentData = summary.agentData ?? null
+  // `summary.agentData` is no longer read on this page. Its only two consumers
+  // were the cap fallbacks below, and both were reading `agents.cap_amount` /
+  // `agents.cap_progress` — the copy the commission engine never applies, in
+  // units that did not match what they were compared against. The kernel still
+  // returns the field; this page simply has nothing left to ask it for.
   const pipelineTransactions = summary.pipelineTransactions ?? []
   const earningsHistory = summary.earningsHistory ?? []
 
@@ -298,6 +377,15 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
         </p>
       </div>
 
+      {/* NET POSITION — walkthrough [106]: "my fees ... own brokerage separate from
+          commissions (this should be under one umbrella)". Grouping the two pages under
+          one nav item was only half of it: an agent still had to visit two screens and
+          do the subtraction themselves to learn what they actually clear. What they
+          take home is earnings MINUS what they owe the brokerage, so the fees figure
+          belongs on the earnings page. The per-charge detail stays on its own page —
+          this is the summary line, not a second copy of the ledger. */}
+      <AgentNetPositionCard ytdNet={ytdEarnings?.agent_net || 0} charges={feeCharges} />
+
       <AgentFinancialsClient
         agentId={agentId}
         brokerageId={brokerageId}
@@ -332,10 +420,25 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
         ytdTransactionCount={ytdTransactionCount}
       />
 
-      {/* Section 2: Cap Progress — prefers agent_cap_tracking, falls back to agents table */}
+      {/*
+        Section 2: Cap Progress — agent_cap_tracking ONLY.
+
+        THE FALLBACK WAS A UNITS BUG, not a safety net. It read
+        `capTracking?.cap_paid_to_date ?? agentData?.cap_progress` — DOLLARS on
+        the left, a 0-100 PERCENTAGE on the right (its writer computed
+        `ytd_gci / cap_amount * 100`). So exactly when the ledger was missing —
+        the case measured on three of four capped agents — this bar rendered "43"
+        as $43 collected against a $100,000 cap. And `cap_progress` measured what
+        the AGENT KEPT, while a cap ceilings what the BROKERAGE COLLECTS
+        (07-apply-cap.ts), so the two operands were never the same quantity.
+
+        Both `agents` columns are the copy the engine never reads and are dropped
+        in m463. No cap window now renders as "no cap", which is the truthful
+        statement, and is what the payout engine does with the same absence.
+      */}
       <CapProgressBar
-        capAmount={capTracking?.cap_amount ?? agentData?.cap_amount ?? null}
-        capProgress={capTracking?.cap_paid_to_date ?? agentData?.cap_progress ?? 0}
+        capAmount={capTracking?.cap_amount ?? null}
+        capProgress={capTracking?.cap_paid_to_date ?? 0}
         capProgressPct={capTrackingRaw?.capProgressPct || 0}
         bonusCredits={bonusCredits.reduce((sum: number, b: any) => sum + (b.amount || b.credit_amount || 0), 0)}
         isCapped={capTracking?.is_capped ?? false}
@@ -526,12 +629,17 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
             expenseRatio: (ytdEarnings?.agent_net || 0) > 0 
               ? (totalExpensesYTD / (ytdEarnings?.agent_net || 1)) * 100 
               : 0,
-            // cap_progress on agents table is a 0-100 percentage value
-            targetProgress: agentData?.cap_amount 
-              ? Math.min((agentData?.cap_progress || 0), 100)
-              : capTracking?.cap_amount
-                ? Math.min(((capTracking.cap_paid_to_date ?? 0) / capTracking.cap_amount) * 100, 100)
-                : undefined,
+            // Percent of cap collected, from the ledger. The branch that used to
+            // sit in front of this one preferred `agents.cap_progress` — and
+            // that BEAT the ledger whenever `agents.cap_amount` was set, which
+            // is precisely the stale copy the engine never applies. Worse, it
+            // was `ytd_gci / cap_amount`: the agent's own earnings measured
+            // against a ceiling on the BROKERAGE's, so on a 70/30 it read ~43%
+            // when the true figure was ~30%. One source now, and it is the one
+            // that decides the cheque.
+            targetProgress: capTracking?.cap_amount
+              ? Math.min(((capTracking.cap_paid_to_date ?? 0) / capTracking.cap_amount) * 100, 100)
+              : undefined,
           }}
           period="ytd"
         />
@@ -593,6 +701,13 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
             </div>
             {/* QuickBooks reconciliation (round 37) — commissions vs OS-recorded exports. */}
             {agentReconciliation && <QbReconciliationCard recon={agentReconciliation} />}
+            {/* Close the reconciliation gap the card above reports (wave 26). */}
+            {nextExportableCommissionId && (
+              <QbScopedExportButton
+                label="Sync next commission to QuickBooks"
+                run={pushAgentCommissionToQuickBooksAction.bind(null, nextExportableCommissionId)}
+              />
+            )}
           </div>
         )}
       </AgentFinancialsClient>

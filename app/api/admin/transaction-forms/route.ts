@@ -13,26 +13,34 @@
  * PATCH  update fields (name, description, field_schema, is_active)
  * DELETE soft-delete (is_active=false)
  *
- * Auth: requires admin/broker/superadmin role on the user's brokerage.
+ * Auth: tenant admin (users.user_type) or platform staff (platform_role) on the
+ * user's brokerage — the forms library is tenant-admin config, and platform
+ * staff administer tenants.
  */
 
 import { NextRequest, NextResponse } from "next/server"
-import { put } from "@vercel/blob"
 import { createClient } from "@/lib/supabase/server"
-
-const ALLOWED_ROLES = new Set(["admin", "superadmin", "broker", "broker_admin"])
+import { createServiceClient } from "@/lib/supabase/service"
+import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+import { checkUpload } from "@/lib/storage/file-limits"
+import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
+import { isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
 
 async function authAdmin(): Promise<{ userId: string; brokerageId: string } | NextResponse> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-  const { data: userRow } = await supabase
+  // `error` destructured: supabase-js resolves a refused read, and a refusal must
+  // not be reported as "no brokerage on user".
+  const { data: userRow, error: userError } = await supabase
     .from("users").select("brokerage_id, user_type, platform_role").eq("id", user.id).maybeSingle()
+  if (userError) return NextResponse.json({ error: "Role lookup failed" }, { status: 500 })
   if (!userRow?.brokerage_id) return NextResponse.json({ error: "No brokerage on user" }, { status: 422 })
 
-  const role = userRow.user_type ?? userRow.platform_role
-  if (!role || !ALLOWED_ROLES.has(role)) {
+  // ONE vocabulary per column: user_type answers the tenant half, platform_role
+  // the staff half — never coalesced into a single mixed value.
+  if (!isTenantAdminOrPlatformStaff(userRow)) {
     return NextResponse.json({ error: "Admin role required" }, { status: 403 })
   }
   return { userId: user.id, brokerageId: userRow.brokerage_id }
@@ -91,14 +99,45 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (file.type !== "application/pdf") {
       return NextResponse.json({ error: "Only PDF uploads supported" }, { status: 415 })
     }
-    if (file.size > 10 * 1024 * 1024) {
-      return NextResponse.json({ error: "PDF exceeds 10MB limit" }, { status: 413 })
+    // The 10 MB here was a fifth hand-kept number. The bytes ride a Vercel
+    // Function request body, so 4.5 MB is the real ceiling — a broker uploading
+    // a scanned 8 MB form packet was told 10 MB was fine and then 413'd at the
+    // edge with no message this code wrote.
+    const gate = checkUpload({
+      bucket: "brokerage-forms",
+      transport: "route_handler",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!gate.ok) {
+      return NextResponse.json({ error: gate.reason }, { status: 413 })
     }
+    // WAS: put(…, { access: "public" }) to Vercel Blob — a brokerage's
+    // transaction-form library at permanent unauthenticated URLs, in a
+    // third-party blob store the owner rule already says not to use. It now goes
+    // to the platform's own `brokerage-forms` Supabase bucket (document-class)
+    // and the URL comes from the ONE issuer. FAIL CLOSED: no signed URL → the
+    // bytes are removed and the request is refused, never a public link.
     const slug = Math.random().toString(36).slice(2, 9)
-    const path = `brokerage-forms/${auth.brokerageId}/${state}-${packetType}-${Date.now()}-${slug}.pdf`
+    const path = `brokerage/${auth.brokerageId}/${state}-${packetType}-${Date.now()}-${slug}.pdf`
     const buffer = Buffer.from(await file.arrayBuffer())
-    const blob = await put(path, buffer, { access: "public", contentType: "application/pdf" })
-    pdfUrl = blob.url
+    const svc = createServiceClient()
+    const { error: upErr } = await svc.storage
+      .from("brokerage-forms")
+      .upload(path, buffer, { contentType: "application/pdf", upsert: false })
+    if (upErr) {
+      return NextResponse.json({ error: `Storage upload failed: ${upErr.message}` }, { status: 500 })
+    }
+    const issued = await issueBucketObjectUrl(svc as never, { bucket: "brokerage-forms", objectPath: path })
+    if (!issued.ok) {
+      await removeOrRecordOrphan(svc as never, {
+        bucket: "brokerage-forms", objectPath: path,
+        reason: "transaction_form_sign_failed", detail: issued.reason,
+        brokerageId: auth.brokerageId,
+      })
+      return NextResponse.json({ error: issued.reason }, { status: 502 })
+    }
+    pdfUrl = issued.url
   }
 
   let fieldSchema: string[] | null = null

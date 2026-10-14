@@ -3,11 +3,9 @@
 import { useState, useTransition } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { Badge } from "@/components/ui/badge"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
-import { Phone, MessageSquare, Clock, FileText, Navigation, User } from "lucide-react"
+import { Phone, MessageSquare, Clock, FileText, User } from "lucide-react"
 import { toast } from "sonner"
 import { logActivity } from "@/app/actions/activities"
 

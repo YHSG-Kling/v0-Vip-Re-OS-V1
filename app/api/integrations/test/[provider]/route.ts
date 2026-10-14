@@ -5,12 +5,32 @@
 // POST /api/integrations/test/[provider]
 // Auth-gated, tests provider connection using server-side credentials
 // Dynamic route version that accepts provider as path param
+//
+// ─── TOMBSTONE (orphan doctrine §1.1, lane M3 2026-08-31) ────────────────────
+// app/api/onboarding/integrations/test/route.ts DELETED. It was a body-param
+// twin of THIS route — same testIntegration() call, same platform_credentials
+// and brokerage_integrations writes, same INTEGRATION_CONNECTED/FAILED kernel
+// events — with NO caller anywhere in the tree, while the onboarding tech-stack
+// UI addresses this one (app/dashboard/onboarding/tech-stack/tech-stack-client.tsx:239,
+// `fetch(`/api/integrations/test/${provider}`)`). Both authenticated on a
+// Supabase SESSION, so no external caller could exist for the twin (the same
+// "loop, not a door" test the opposite-missing census applies to
+// /api/agentic-os/voice). NOTHING WAS MERGED because this survivor was missing
+// nothing: it verifies the caller's brokerage the same way and additionally
+// accepts the provider as a path param with brokerage_id optional (falling back
+// to the session's own), which is a superset of the twin's required-body shape.
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { testIntegration, type ProviderName, PROVIDER_METADATA } from "@/lib/onboarding/integration-tester"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
+// THE ONE brokerage_integrations.status vocabulary (lib/integrations/
+// integration-status.ts). This route is the health WRITER that stamps 'error'
+// on a failing integration — it spelled both values as literals, so the
+// vocabulary module recorded "no writer stamps 'error'" while this one did
+// (lane 81E, 2026-09-24: a writer the census could not see is still a writer).
+import { INTEGRATION_STATUS_CONNECTED, INTEGRATION_STATUS_ERROR } from "@/lib/integrations/integration-status"
 
 export async function POST(
   request: NextRequest,
@@ -62,7 +82,7 @@ export async function POST(
     const targetBrokerageId = brokerageId || userData.brokerage_id
 
     // Verify user belongs to brokerage
-    if (targetBrokerageId !== userData.brokerage_id) {
+    if (!decideClaimedTenant({ actingBrokerageId: userData.brokerage_id, claimedBrokerageId: targetBrokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
       return NextResponse.json(
         { error: "Unauthorized: Brokerage mismatch" },
         { status: 403 }
@@ -103,19 +123,20 @@ export async function POST(
       .eq("platform", provider)
 
     // Update brokerage_integrations status
-    await supabase
+    const { error: testStatusErr } = await supabase
       .from("brokerage_integrations")
       .upsert({
         brokerage_id: targetBrokerageId,
         provider_type: PROVIDER_METADATA[provider].providerType,
         provider_name: provider,
-        status: result.pass ? "connected" : "error",
+        status: result.pass ? INTEGRATION_STATUS_CONNECTED : INTEGRATION_STATUS_ERROR,
         last_health_check_at: new Date().toISOString(),
         last_error: result.pass ? null : result.detail,
         updated_at: new Date().toISOString(),
       }, {
         onConflict: "brokerage_id,provider_name",
       })
+    if (testStatusErr) console.error(`[integration-test] test result NOT saved on brokerage_integrations: ${testStatusErr.message}`)
 
     // Fire kernel event based on result
     const kernelEvent = result.pass 
@@ -146,3 +167,6 @@ export async function POST(
     )
   }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

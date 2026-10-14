@@ -23,6 +23,17 @@ export interface EnrollContactParams {
   brokerageId: string
   enrolledBy?: string
   abVariant?: "A" | "B"
+  /**
+   * WAVE 107G (106B open loop) — consult the NEXT BEST EXPERIENCE planner before enrolling a CONTACT
+   * (journeyVerdictForEnrollment, the one rule auto-enroll and event-fanout already use):
+   *   "advise" — a HUMAN's own enrolment (the manual path): it proceeds, and the planner's verdict
+   *              rides back on the result so the person sees "the journey says wait" (a human's call
+   *              is never overridden — 106B ruling);
+   *   "hold"   — an autonomous caller: a wait / agent_intervention verdict (or unreadable journey
+   *              inputs — fail closed) refuses the enrolment.
+   * Omitted → not consulted (callers that gate upstream). Leads are not journey-planned (contact scope).
+   */
+  journey?: "advise" | "hold"
 }
 
 export interface EnrollResult {
@@ -30,6 +41,9 @@ export interface EnrollResult {
   enrollmentId?: string
   error?: string
   alreadyEnrolled?: boolean
+  /** The planner's verdict when `journey` was requested (advise: informational; hold: proceed=false refused). */
+  journey?: { mode: "advise" | "hold"; proceed: boolean; experience: string | null; reason: string }
+  heldByJourney?: boolean
 }
 
 // ─── Main enrollment function ─────────────────────────────────────────────────
@@ -44,6 +58,19 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
   const recipientId = isLead ? params.leadId! : params.contactId
   if (!recipientId) {
     return { success: false, error: "enrollContact requires exactly one of contactId / leadId" }
+  }
+
+  // WAVE 108F — AUTONOMOUS EXPERIMENTATION's cohort assignment: a RUNNING experiment on this sequence picks the
+  // contact's arm (deterministic, ledgered experiment.assign) and an ADOPTED winner serves the whole cohort
+  // (lib/kernel/experiment-pipeline.ts). Contacts only; anything unreadable keeps the asked-for sequence.
+  if (!isLead) {
+    try {
+      const { routeEnrollmentThroughExperiments } = await import("@/lib/kernel/experiment-pipeline")
+      const routed = await routeEnrollmentThroughExperiments(supabase, { brokerageId: params.brokerageId, sequenceId: params.sequenceId, contactId: recipientId })
+      if (routed.sequenceId !== params.sequenceId) params = { ...params, sequenceId: routed.sequenceId }
+    } catch (e) {
+      console.error(`[enrollment-engine] experiment routing skipped (control kept): ${(e as Error).message}`)
+    }
   }
 
   // Validate sequence exists, is active, and compliance_gated=true
@@ -85,6 +112,17 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
     }
   }
 
+  // THE JOURNEY CONSULT (wave 107G) — after the cheap refusals, before anything is written.
+  let journey: EnrollResult["journey"]
+  if (params.journey && !isLead) {
+    const { journeyVerdictForEnrollment } = await import("@/lib/ai-isa/lead-action-plan")
+    const v = await journeyVerdictForEnrollment(supabase, { brokerageId: params.brokerageId, contactId: recipientId })
+    journey = { mode: params.journey, proceed: v.proceed, experience: v.experience, reason: v.reason }
+    if (!v.proceed && params.journey === "hold") {
+      return { success: false, heldByJourney: true, journey, error: `Held by the journey planner — ${v.reason}` }
+    }
+  }
+
   // Calculate next_step_at from step 1 delay
   const { data: firstStep } = await supabase
     .from("campaign_sequence_steps")
@@ -116,8 +154,13 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
       current_step: 0,
       enrolled_at: new Date().toISOString(),
       next_step_at: nextStepAt,
-      // A/B: honor an explicit variant, else split 50/50 when the sequence is_ab_test, else null.
-      ab_variant: (await import("./ab-variant")).assignAbVariant({ isAbTest: (sequence as any).is_ab_test, provided: params.abVariant ?? null }),
+      // A/B: honor an explicit variant, else the STABLE kernel assignment (lib/kernel/experiments.ts)
+      // when the sequence is_ab_test, else null. The tenant kill switch assigns control.
+      ab_variant: (await import("./ab-variant")).assignAbVariant({
+        isAbTest: (sequence as any).is_ab_test, provided: params.abVariant ?? null,
+        brokerageId: params.brokerageId, recipientId, sequenceId: params.sequenceId,
+        policy: (sequence as any).is_ab_test ? await (await import("@/lib/kernel/experiments")).loadExperimentPolicy(supabase, params.brokerageId) : undefined,
+      }),
     })
     .select("id")
     .single()
@@ -139,7 +182,7 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
     suppressEnrollment: true,
   }).catch(() => {})
 
-  return { success: true, enrollmentId: enrollment.id }
+  return { success: true, enrollmentId: enrollment.id, ...(journey ? { journey } : {}) }
 }
 
 // ─── Pause / resume enrollment ────────────────────────────────────────────────
@@ -195,22 +238,66 @@ export async function stopSequencesOnResponse(
   return { unenrolled: data?.length ?? 0 }
 }
 
-export async function unenrollContact(
-  sequenceId: string,
-  contactId: string,
-  reason?: string
-): Promise<{ success: boolean; error?: string }> {
+/**
+ * TAKE ONE CONTACT OFF ONE SEQUENCE.
+ *
+ * The narrow sibling of `stopSequencesOnResponse` above: that one terminates
+ * EVERY sequence a person is on because they replied; this one terminates the
+ * single sequence a workflow step names.
+ *
+ * ── IT HAD NO CALLER, AND ITS CALLER HAD ITS OWN COPY ───────────────────────
+ *
+ * This was exported, re-exported through lib/campaign-sequences/index.ts, and
+ * invoked by nothing — while `lib/workflow/adapters/segment-ops.ts`
+ * `removeFromCampaignAdapter`, which is exactly "unenroll this contact from
+ * that sequence", hand-rolled the same UPDATE. Two writers for one idea, and
+ * the hand-rolled one was the weaker of the two in four separate ways:
+ *
+ *   · NO TENANT PREDICATE, on a service-role client. Same defect this function
+ *     had — hence `brokerageId` below, which is now REQUIRED rather than
+ *     optional, so the seam cannot be re-opened by omission.
+ *   · `status = 'cancelled'` where the engine writes `'unenrolled'`. The live
+ *     CHECK admits both (registry: status_vocab_pass6), and no reader anywhere
+ *     selects on either, so the two spellings were pure §6 drift — one
+ *     terminal state that could not be counted with one query.
+ *   · `.eq("status","active")` only, so a PAUSED enrollment survived a
+ *     "remove from campaign" step and resumed later. `.in([active,paused])`
+ *     here is the correct set and is what `stopSequencesOnResponse` uses.
+ *   · The result was discarded entirely. supabase-js RESOLVES a refused
+ *     update, so a tenant refusal and a successful removal were byte-identical.
+ *
+ * `.select("id")` is not decoration: an UPDATE matching NOTHING also resolves
+ * with `error: null`, so the row COUNT is the only thing that separates "taken
+ * off the sequence" from "the predicate refused and nobody was told". Whether
+ * zero is a failure is the CALLER's call — a contact who was never enrolled is
+ * a no-op, an unmatched brokerage is a refusal — so the count is returned
+ * rather than judged here.
+ *
+ * TOMBSTONE — the `reason?: string` parameter is DELETED. It was accepted and
+ * never written, because `sequence_enrollments` carries no column for it (live
+ * columns: scripts/schema-snapshot.ts). The workflow caller records its reason
+ * where reasons already persist — the step's own `output`, which the executor
+ * writes to `sequence_enrollments.step_outputs` — instead of handing it to a
+ * function that would have dropped it.
+ */
+export async function unenrollContact(params: {
+  sequenceId: string
+  contactId: string
+  brokerageId: string
+}): Promise<{ success: boolean; unenrolled: number; error?: string }> {
   const supabase = createServiceClient()
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("sequence_enrollments")
     .update({
       status: "unenrolled",
       completed_at: new Date().toISOString(),
     })
-    .eq("sequence_id", sequenceId)
-    .eq("contact_id", contactId)
+    .eq("brokerage_id", params.brokerageId)
+    .eq("sequence_id", params.sequenceId)
+    .eq("contact_id", params.contactId)
     .in("status", ["active", "paused"])
+    .select("id")
 
-  if (error) return { success: false, error: error.message }
-  return { success: true }
+  if (error) return { success: false, unenrolled: 0, error: error.message }
+  return { success: true, unenrolled: data?.length ?? 0 }
 }

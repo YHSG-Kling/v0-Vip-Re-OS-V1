@@ -19,9 +19,12 @@ import {
   cancelSubscription,
   getCancellationSaveOfferAction,
   acceptCancellationSaveOfferAction,
+  applyDiscountCodeAction,
 } from "@/app/actions/billing"
 import type { SaveOffer } from "@/lib/platform/save-offer"
+import { formatSeatLimit, formatTenantSeatLimit, normalizeCatalogSeatLimit } from "@/lib/kernel/tier-role-matrix"
 import { UpgradeModal } from "./upgrade-modal"
+import { isCustomPricedTier } from "@/lib/billing/plan-catalog"
 
 interface CurrentPlanCardProps {
   subscription: any
@@ -43,20 +46,52 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
   const [cancelStep, setCancelStep] = useState<"loading" | "offer" | "confirm">("loading")
   const [saveOffer, setSaveOffer] = useState<SaveOffer | null>(null)
   const [busy, setBusy] = useState(false)
+  // wave 141H — apply a discount code to the LIVE subscription (seat packages, renewals).
+  // Stripe validates; the next Stripe invoice is the amount. Prefixed handlers (wave-137 lesson).
+  const [discountCodeInput, setDiscountCodeInput] = useState("")
+  const [discountCodeBusy, setDiscountCodeBusy] = useState(false)
+  const [discountCodeApplied, setDiscountCodeApplied] = useState<{ code: string; summary: string } | null>(null)
 
+  const handleDiscountCodeApply = async () => {
+    if (!discountCodeInput.trim()) return
+    setDiscountCodeBusy(true)
+    try {
+      const res = await applyDiscountCodeAction(discountCodeInput)
+      if (res.ok) {
+        setDiscountCodeApplied({ code: res.code, summary: res.summary })
+        setDiscountCodeInput("")
+        toast({ title: `${res.code} applied`, description: `${res.summary} — it appears on your next Stripe invoice.` })
+      } else {
+        toast({ title: "Code not applied", description: res.error, variant: "destructive" })
+      }
+    } finally {
+      setDiscountCodeBusy(false)
+    }
+  }
+
+  // Did we read a catalogue tier at all? "no plan" and "unlimited plan" both
+  // arrive at max_agents === null/undefined; only this tells them apart.
+  const hasTier = Boolean(tier)
   const status = subscription?.status || "inactive"
   const renewalDate = subscription?.current_period_end
     ? new Date(subscription.current_period_end).toLocaleDateString()
     : "N/A"
 
-  const monthlyPrice = tier?.monthly_price_cents
-    ? `$${(tier.monthly_price_cents / 100).toFixed(2)}`
-    : "N/A"
-  const annualPrice = tier?.annual_price_cents
-    ? `$${(tier.annual_price_cents / 100).toFixed(2)}`
-    : "N/A"
+  // A custom-priced tier (multi-location) bills the QUOTED amount on the
+  // tenant's own Stripe price, never the catalogue placeholder (wave 87C).
+  const customPriced = isCustomPricedTier(tier?.tier_name)
+  const monthlyPrice = customPriced
+    ? "Custom pricing"
+    : tier?.monthly_price_cents
+      ? `$${(tier.monthly_price_cents / 100).toFixed(2)}`
+      : "N/A"
+  const annualPrice = customPriced
+    ? "Custom pricing"
+    : tier?.annual_price_cents
+      ? `$${(tier.annual_price_cents / 100).toFixed(2)}`
+      : "N/A"
 
-  const annualSavings = tier?.monthly_price_cents && tier?.annual_price_cents
+  const annualSavings = !customPriced && tier?.monthly_price_cents && tier?.annual_price_cents
     ? Math.round(100 - (tier.annual_price_cents / (tier.monthly_price_cents * 12)) * 100)
     : 0
 
@@ -141,16 +176,32 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
           <div className="flex items-center justify-between p-4 bg-muted rounded-lg">
             <div>
               <p className="text-2xl font-bold">{tier?.display_name || "No Plan"}</p>
+              {/* Unlimited is spelled NULL in subscription_tiers.max_agents (what
+                  the live multi_location row holds) and -1 in the older
+                  plan_limits convention. Testing only for -1 rendered the
+                  UNLIMITED plan as "null agents". One fold, shared with the
+                  seat gate — lib/kernel/tier-role-matrix.ts.
+
+                  AND THE OTHER DIRECTION: with NO subscription, `tier` is
+                  undefined, so `tier?.max_agents` reached that same fold as
+                  `undefined` and printed "Unlimited seats" directly beneath the
+                  words "No Plan". formatTenantSeatLimit takes the answer to
+                  "did we read a tier at all?" so absence can no longer borrow
+                  the unlimited label (§4 — fail closed). */}
               <p className="text-sm text-muted-foreground">
-                {tier?.max_agents === -1 ? "Unlimited" : tier?.max_agents} agent{tier?.max_agents !== 1 ? "s" : ""}
+                {hasTier
+                  ? `${formatSeatLimit(tier?.max_agents)} seat${normalizeCatalogSeatLimit(tier?.max_agents) === 1 ? "" : "s"}`
+                  : formatTenantSeatLimit(false, tier?.max_agents)}
               </p>
             </div>
             <div className="text-right">
               <p className="text-xl font-semibold">
                 {isAnnual ? annualPrice : monthlyPrice}
-                <span className="text-sm font-normal text-muted-foreground">
-                  /{isAnnual ? "year" : "month"}
-                </span>
+                {!customPriced && (
+                  <span className="text-sm font-normal text-muted-foreground">
+                    /{isAnnual ? "year" : "month"}
+                  </span>
+                )}
               </p>
               {annualSavings > 0 && isAnnual && (
                 <p className="text-xs text-green-600">Save {annualSavings}% annually</p>
@@ -184,6 +235,28 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
               <span>
                 Your subscription will end on {new Date(subscription.cancel_at).toLocaleDateString()}
               </span>
+            </div>
+          )}
+
+          {/* Discount code on the live subscription (wave 141H) — only when the plan is Stripe-linked. */}
+          {subscription?.stripe_subscription_id && (
+            <div className="flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center">
+              <Label htmlFor="plan-discount-code" className="text-sm whitespace-nowrap">Have a discount code?</Label>
+              <input
+                id="plan-discount-code"
+                className="h-9 flex-1 rounded-md border bg-background px-3 text-sm"
+                placeholder="e.g. LAUNCH20"
+                value={discountCodeInput}
+                onChange={(e) => setDiscountCodeInput(e.target.value.toUpperCase())}
+                disabled={discountCodeBusy}
+                aria-label="Discount code"
+              />
+              <Button variant="outline" size="sm" onClick={handleDiscountCodeApply} disabled={discountCodeBusy || !discountCodeInput.trim()}>
+                {discountCodeBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Apply"}
+              </Button>
+              {discountCodeApplied && (
+                <p className="text-xs text-emerald-700">{discountCodeApplied.code}: {discountCodeApplied.summary} — on your next invoice.</p>
+              )}
             </div>
           )}
 

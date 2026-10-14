@@ -17,6 +17,7 @@
  * POST body:
  *   { blog_post_id, source?, referrer?, contact_id?, persona_snapshot? }
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createHash } from "node:crypto"
@@ -67,7 +68,7 @@ export async function POST(req: NextRequest) {
     .digest("hex")
     .slice(0, 32)
 
-  await svc.from("blog_post_views").insert({
+  await sentinelWrite(svc, svc.from("blog_post_views").insert({
     blog_post_id:            p.id,
     brokerage_id:            p.brokerage_id,
     viewer_contact_id:       body.contact_id ?? null,
@@ -75,7 +76,7 @@ export async function POST(req: NextRequest) {
     source:                  body.source ?? "direct",
     referrer:                body.referrer ?? null,
     viewer_ip_hash:          ipHash,
-  })
+  }), { table: "blog_post_views", flow: "blog_post_views_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Wave 31 — denormalized counter increment so the public landing page
   // can show "1.2k readers" without a live count() join. Best-effort; the

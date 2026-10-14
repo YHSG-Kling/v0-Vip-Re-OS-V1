@@ -7,6 +7,10 @@ import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { TranscriptViewer } from "@/components/voice/TranscriptViewer"
 import { CoachingInsightCard } from "@/components/voice/CoachingInsightCard"
+import { CallRecordingPlayer } from "@/components/voice/CallRecordingPlayer"
+import { recordingPlaybackPath } from "@/lib/voice/recording-playback-path"
+// THE tenant roster, defined once — see the gate below.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import {
   Phone,
   PhoneIncoming,
@@ -15,12 +19,11 @@ import {
   Calendar,
   User,
   ArrowLeft,
-  Share2,
-  Flag,
   Volume2,
 } from "lucide-react"
 import Link from "next/link"
 import { CallReviewActionsBar } from "./call-review-actions-bar"
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 export const dynamic = "force-dynamic"
 
@@ -56,7 +59,17 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
     .single()
 
   const userRole = userData?.user_type || "agent"
-  const canViewAllCalls = ["team_lead", "broker", "broker_owner", "admin", "superadmin", "compliance_officer"].includes(userRole)
+  // THE tenant roster, asked once (§6, 2026-09-04, lane ROSTER). This was a
+  // five-role literal whose comment called it a scope ladder "kept inline"; the
+  // owner's 2026-09-04 ruling put `compliance_officer` INTO
+  // TENANT_ADMIN_USER_TYPES, at which point the literal was the roster written
+  // out again. Survivor: lib/auth/resolve-user-role.ts:isAdminOrBroker.
+  //
+  // ONE MEMBERSHIP DIFFERENCE, stated: this now also admits `broker_admin`,
+  // a storable user_type since m530 and named by CLAUDE.md §4 — the literal
+  // simply predated that migration and refused a broker admin their own
+  // brokerage's call review. Nothing is revoked.
+  const canViewAllCalls = isAdminOrBroker({ user_type: userRole })
 
   // Fetch voice call with contact and agent info
   const { data: voiceCall, error: voiceCallError } = await supabase
@@ -79,8 +92,7 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
       ),
       agents (
         id,
-        first_name,
-        last_name
+        users(first_name, last_name)
       )
     `)
     .eq("id", callId)
@@ -103,12 +115,15 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
     .eq("voice_call_id", callId)
     .single()
 
-  // Fetch Vapi metadata if exists
-  const { data: vapiCall } = await supabase
-    .from("vapi_voice_calls")
-    .select("id, vapi_call_id, cost_cents, ended_reason")
-    .eq("voice_call_id", callId)
-    .single()
+  // Call cost — the canonical billing rail is usage_logs (the Twilio status
+  // route writes one 'voice_call' row per completed call, tagged with the
+  // voice_call_id). The retired vapi_voice_calls table no longer carries it.
+  const { data: vendorCall } = await supabase
+    .from("usage_logs")
+    .select("id, cost_cents")
+    .eq("usage_type", "voice_call")
+    .contains("metadata", { voice_call_id: callId })
+    .maybeSingle()
 
   // Fetch transcription
   const { data: transcription } = await supabase
@@ -133,14 +148,23 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
     dismissed: boolean
   }> = []
   if (analysis) {
-    const { data: insights } = await supabase
+    // priority is TEXT (CHECK high|medium|low): `ORDER BY priority ASC` sorted
+    // it alphabetically — `high, low, medium` — so `low` outranked `medium`.
+    // SQL orders by created_at (the writer's insertion order, which
+    // lib/voice/call-coaching.ts already ranks); the rank is applied in code
+    // (lib/kernel/priority-rank.ts) so this page and the writer agree. The
+    // error is read (§3): a refused read must not render as "no coaching".
+    const { data: insights, error: insightsError } = await supabase
       .from("call_coaching_insights")
       .select("id, insight_type, content, priority, dismissed")
       .eq("call_analysis_id", analysis.id)
       .eq("dismissed", false)
-      .order("priority", { ascending: true })
+      .order("created_at", { ascending: true })
+    if (insightsError) {
+      console.error("[voice review] coaching insight read failed:", insightsError.message)
+    }
 
-    coachingInsights = insights || []
+    coachingInsights = [...(insights ?? [])].sort(byPriorityDesc)
   }
 
   // Fetch whisper logs
@@ -181,7 +205,8 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
   }
 
   const contact = voiceCall.contacts as unknown as { id: string; first_name: string; last_name: string; phone: string } | null
-  const agent = voiceCall.agents as unknown as { id: string; first_name: string; last_name: string } | null
+  // agents carries no name columns — they live on users, reached through agents.user_id.
+  const agent = voiceCall.agents as unknown as { id: string; users?: { first_name: string | null; last_name: string | null } | null } | null
 
   return (
     <div className="container max-w-5xl py-6 space-y-6">
@@ -253,13 +278,13 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
               <div className="flex items-center gap-2">
                 <User className="h-4 w-4" />
                 <span>
-                  {agent.first_name} {agent.last_name}
+                  {agent.users?.first_name} {agent.users?.last_name}
                 </span>
               </div>
             )}
-            {vapiCall?.cost_cents && (
+            {vendorCall?.cost_cents && (
               <div className="flex items-center gap-2">
-                <span>Cost: ${(vapiCall.cost_cents / 100).toFixed(2)}</span>
+                <span>Cost: ${(vendorCall.cost_cents / 100).toFixed(2)}</span>
               </div>
             )}
           </div>
@@ -276,7 +301,10 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <AudioPlayer src={voiceCall.recording_url} />
+            {/* The SRC is the authenticated same-origin proxy, never
+                voiceCall.recording_url — that is the api.twilio.com URL, which
+                is behind HTTP Basic auth and 401s in a browser. */}
+            <CallRecordingPlayer src={recordingPlaybackPath(voiceCall.id)} />
           </CardContent>
         </Card>
       )}
@@ -466,48 +494,9 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
   )
 }
 
-// Audio Player Component with speed controls
-function AudioPlayer({ src }: { src: string }) {
-  return (
-    <div className="space-y-3">
-      <audio controls className="w-full" preload="metadata">
-        <source src={src} type="audio/mpeg" />
-        Your browser does not support the audio element.
-      </audio>
-      <AudioSpeedControls />
-    </div>
-  )
-}
-
-function AudioSpeedControls() {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-xs text-muted-foreground">Playback speed:</span>
-      <div className="flex gap-1">
-        {["0.75x", "1x", "1.25x", "1.5x", "2x"].map((speed) => (
-          <button
-            key={speed}
-            className="px-2 py-1 text-xs rounded hover:bg-muted transition-colors data-[active=true]:bg-primary data-[active=true]:text-primary-foreground"
-            data-active={speed === "1x"}
-            onClick={(e) => {
-              const audio = e.currentTarget
-                .closest(".space-y-3")
-                ?.querySelector("audio")
-              if (audio) {
-                audio.playbackRate = parseFloat(speed)
-                // Update active state
-                e.currentTarget
-                  .closest(".flex.gap-1")
-                  ?.querySelectorAll("button")
-                  .forEach((btn) => btn.setAttribute("data-active", "false"))
-                e.currentTarget.setAttribute("data-active", "true")
-              }
-            }}
-          >
-            {speed}
-          </button>
-        ))}
-      </div>
-    </div>
-  )
-}
+// The recording player used to live here as AudioPlayer + AudioSpeedControls.
+// It was defined in THIS file — an async SERVER component — while attaching an
+// onClick handler to its speed buttons, which React cannot serialize onto a host
+// element in a server component. It never threw only because voice_calls.recording_url
+// had no writer, so the branch that renders it was unreachable. Now that recordings
+// land it is a real client component: @/components/voice/CallRecordingPlayer.

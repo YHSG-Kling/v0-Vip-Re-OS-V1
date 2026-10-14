@@ -46,8 +46,13 @@ function sourceLayer() {
   const eng = src("lib/education/onboarding-curriculum.ts")
   check("idempotent per onboarding tag (no duplicate module)", /contains\("gap_tags", \[tag\]\)/.test(eng))
   check("resolves tier from brokerages.plan_tier when not passed", /from\("brokerages"\)\.select\("plan_tier"\)/.test(eng))
+  // RE-ANCHORED (lane 77B): the emit lives in the ONE tenant-creation core
+  // (lib/kernel/tenant-creation.ts) every door delegates to — so the staff
+  // door and the prospect conversion fire it too, not only self-serve signup.
+  const core = src("lib/kernel/tenant-creation.ts")
   const signup = src("app/actions/auth/signup-brokerage.ts")
-  check("SUBSCRIPTION_CREATED is emitted on signup (the real-time hook)", /KernelEvent\.SUBSCRIPTION_CREATED/.test(signup))
+  check("SUBSCRIPTION_CREATED is emitted by the tenant-creation core (the real-time hook), which signup delegates to",
+    /KernelEvent\.SUBSCRIPTION_CREATED/.test(core) && /createTenantCore\(service, \{/.test(signup))
   const cron = src("app/api/cron/recruit-outreach/route.ts")
   check("the weekly cron runs the onboarding safety-net sweep", /runOnboardingCurriculumAll/.test(cron))
   const reg = src("lib/kernel/manager-registry.ts")

@@ -7,6 +7,15 @@
  * and leaves unknown property fields BLANK. Offer-TERM fields (price, earnest money, contingencies,
  * dates) are NEVER touched. Grounded only — no AI fabrication.
  *
+ * Layer 0 (static, stripped source): lib/intelligence/offer-property-prefill-runner.ts::
+ * prefillOfferFormProperty (resolve+map combinator) is not a duplicate of any of its three
+ * documented siblings — each needs a step BETWEEN resolve and map that the combinator alone can't
+ * do — so it was WIRED (wave 46 lane EC) rather than deleted: app/actions/buyer-offer/prefill-offer.ts
+ * ::resolveOfferPropertyPrefillAction calls it directly, and app/components/form-wizard/FormWizard.tsx
+ * calls THAT for the "my forms" entries that aren't a fillable PDF (prefillStorageFormAction only
+ * ever ran on `.pdf` refs, so those got no property prefill preview at all before this). Asserts the
+ * RULE (imports + calls the real functions), not a byte offset.
+ *
  * Layer 1 (shell, pure): the field mapping — known property fact fills its field; unknown → blank;
  * offer-term fields untouched; bare city/state never mis-filled. Layer 2 (live, creds-gated): resolve
  * KNOWN facts from a real seeded listing → build the prefill → assert only property fields filled,
@@ -14,7 +23,10 @@
  *
  * Run: npx tsx scripts/offer-property-prefill-simulator.ts   (npm run test:offer-property-prefill)
  */
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
 import { buildPropertyPrefill } from "../lib/intelligence/offer-property-prefill"
+import { blankComments } from "./strip-comments"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -44,7 +56,39 @@ async function main() {
   console.log(" Offer property prefill simulator")
   console.log("══════════════════════════════════════════════════\n")
 
-  console.log("[Layer 1 · field mapping]")
+  console.log("[Layer 0 · the combinator is WIRED, not orphaned — rule, not a byte offset]")
+  const runnerSrc = blankComments(readFileSync(resolve(process.cwd(), "lib/intelligence/offer-property-prefill-runner.ts"), "utf8"))
+  const actionSrc = blankComments(readFileSync(resolve(process.cwd(), "app/actions/buyer-offer/prefill-offer.ts"), "utf8"))
+  const wizardSrc = blankComments(readFileSync(resolve(process.cwd(), "app/components/form-wizard/FormWizard.tsx"), "utf8"))
+
+  check("prefillOfferFormProperty is still exported (the wire did not delete the combinator)",
+    /export\s+async\s+function\s+prefillOfferFormProperty\b/.test(runnerSrc))
+  check("resolveOfferPropertyPrefillAction exists as a real async server action",
+    /export\s+async\s+function\s+resolveOfferPropertyPrefillAction\b/.test(actionSrc))
+  check("resolveOfferPropertyPrefillAction actually CALLS prefillOfferFormProperty (not a stub)",
+    /prefillOfferFormProperty\s*\(/.test(actionSrc) &&
+    /import\s*\{[^}]*\bprefillOfferFormProperty\b[^}]*\}\s*from\s*["']@\/lib\/intelligence\/offer-property-prefill-runner["']/.test(actionSrc))
+  check("FormWizard imports resolveOfferPropertyPrefillAction from the buyer-offer action module",
+    /import\s*\{[^}]*\bresolveOfferPropertyPrefillAction\b[^}]*\}\s*from\s*["']@\/app\/actions\/buyer-offer\/prefill-offer["']/.test(wizardSrc))
+  check("FormWizard actually CALLS resolveOfferPropertyPrefillAction (not just imports it)",
+    /resolveOfferPropertyPrefillAction\s*\(/.test(wizardSrc))
+  // POSITIVE CONTROL (§2): the "actually CALLS" checkers above must be ABLE to
+  // fail, or a vacuous regex proves nothing. A synthetic pre-wire snippet —
+  // an import with NO call site, exactly the "counted as a reference but never
+  // invoked" shape orphan-export-guard is built to catch — run through the
+  // SAME call-site pattern the real checks use, must come back false.
+  const unusedImportOnly = blankComments(
+    `import { resolveOfferPropertyPrefillAction } from "@/app/actions/buyer-offer/prefill-offer"\nfunction unrelated() { return 1 }`,
+  )
+  check("control · the call-site pattern correctly finds NO invocation in an import-only snippet",
+    !/resolveOfferPropertyPrefillAction\s*\(/.test(unusedImportOnly))
+  const wiredSnippet = blankComments(
+    `import { resolveOfferPropertyPrefillAction } from "@/app/actions/buyer-offer/prefill-offer"\nresolveOfferPropertyPrefillAction({ listingId })`,
+  )
+  check("control · the SAME pattern correctly finds the invocation once one exists",
+    /resolveOfferPropertyPrefillAction\s*\(/.test(wiredSnippet))
+
+  console.log("\n[Layer 1 · field mapping]")
   const r = buildPropertyPrefill(OFFER_FORM_FIELDS, {
     address: "742 Evergreen Ter", legalDescription: "LOT 4 BLK 2 SPRINGFIELD ADD", county: "Hampden",
     propertyCity: "Springfield", propertyState: "MA", propertyZip: "01103", apn: "123-456-789",

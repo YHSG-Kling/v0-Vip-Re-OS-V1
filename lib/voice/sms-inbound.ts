@@ -7,7 +7,7 @@
 // and handed off to the kernel — but it NEVER wrote a `messages` row, so an
 // inbound text was invisible in the universal inbox the agents actually read.
 // This module closes that: tenant resolution by the CALLED number (the same
-// vapi_phone_numbers registry the voice lane uses), per-tenant signature
+// tenant_phone_numbers registry the voice lane uses), per-tenant signature
 // tokens (subaccounts sign with their OWN token), the messages-row writer the
 // inbox renders, and consent-provenance contact capture for unknown senders
 // (texting the office line IS consent for the thread — the inbound-call rule).
@@ -22,7 +22,7 @@ export interface TenantNumberContext {
 export async function resolveTenantByOwnNumber(svc: any, phone: string | null | undefined): Promise<TenantNumberContext | null> {
   const digits = (phone ?? "").replace(/\D/g, "")
   if (!digits) return null
-  const { data: num } = await svc.from("vapi_phone_numbers")
+  const { data: num } = await svc.from("tenant_phone_numbers")
     .select("brokerage_id, agent_user_id")
     .eq("phone_digits", digits).eq("is_active", true).maybeSingle()
   if (!num) return null
@@ -108,7 +108,7 @@ export async function recordInboundMessage(svc: any, input: {
   }
 
   if (draftAgentUserId) {
-    await svc.from("notifications").insert({
+    const { error: notifyError } = await svc.from("notifications").insert({
       user_id: draftAgentUserId,
       brokerage_id: input.brokerageId,
       type: "inbound_text_received",
@@ -120,6 +120,7 @@ export async function recordInboundMessage(svc: any, input: {
       channel: "in_app",
       is_read: false,
     }).then(undefined, () => {})
+    if (notifyError) console.warn("[sms-inbound.ts] notifications insert refused — the bell will not ring:", notifyError.message)
   }
   return { recorded: true, messageId: (inserted as any)?.id, conversationId, agentUserId: draftAgentUserId }
 }
@@ -140,8 +141,10 @@ export async function draftProactiveReply(input: {
   agentUserId: string
   body: string
 }): Promise<void> {
-  const { generateAIReplyDraft } = await import("@/app/actions/ai-reply-coach")
-  await generateAIReplyDraft({
+  // Lane 92A: the generator CORE — this is the sessionless webhook path (the tenant is
+  // the number's routing), and the public "use server" door now gates on a session.
+  const { generateAIReplyDraftForTenant } = await import("@/lib/ai-reply-coach/reply-draft-core")
+  const drafted = await generateAIReplyDraftForTenant({
     brokerageId: input.brokerageId,
     agentUserId: input.agentUserId,
     conversationId: input.conversationId,
@@ -150,6 +153,11 @@ export async function draftProactiveReply(input: {
     inboundBody: input.body,
     channel: "sms",
   })
+  // The draft is a convenience (nothing auto-sends), so a refusal must not fail the
+  // inbound webhook — but it is no longer discarded unread either.
+  if (!drafted.success) {
+    console.error(`[sms-inbound] proactive reply draft refused for conversation ${input.conversationId}: ${drafted.error ?? "unknown"}`)
+  }
 }
 
 /**
@@ -158,7 +166,13 @@ export async function draftProactiveReply(input: {
  * as the inbound-call lane). Returns the contact id, or null when capture is
  * impossible (no agent scope at all).
  */
-export async function captureTextingContact(svc: any, ctx: TenantNumberContext, fromPhone: string, channel: "sms" | "whatsapp"): Promise<string | null> {
+// TOMBSTONE (orphan doctrine §1.3) — this used to take a leading `svc: any` Supabase
+// client and never read it. The client it needed already lives inside the survivor,
+// lib/contact-pipeline/contact-capture.ts::captureContact, which opens its own and
+// applies the tenant predicate there; passing a second one in only meant a caller
+// could hand this function a client whose tenancy nobody here checked. The parameter
+// is gone rather than wired: there is no second reader to build for it.
+export async function captureTextingContact(ctx: TenantNumberContext, fromPhone: string, channel: "sms" | "whatsapp"): Promise<string | null> {
   try {
     const digits = fromPhone.replace(/\D/g, "")
     const { captureContact } = await import("@/lib/contact-pipeline/contact-capture")

@@ -8,7 +8,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 /** The brokerage roles that receive operational alerts. */
-export const BROKERAGE_ADMIN_ROLES = ["broker", "broker_owner", "broker_admin", "admin"] as const
+const BROKERAGE_ADMIN_ROLES = ["broker", "broker_owner", "broker_admin", "admin"] as const
 
 export interface BrokerageAdminNotification {
   type: string
@@ -20,7 +20,8 @@ export interface BrokerageAdminNotification {
 }
 
 /** Resolve the broker/admin user ids for a brokerage, deduped. */
-export async function resolveBrokerageAdminIds(supabase: SupabaseClient, brokerageId: string): Promise<string[]> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function resolveBrokerageAdminIds(supabase: SupabaseClient, brokerageId: string): Promise<string[]> {
   const { data: admins } = await supabase
     .from("users")
     .select("id")

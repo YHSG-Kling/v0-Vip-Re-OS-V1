@@ -8,7 +8,11 @@
 // Kernel Ownership Rules:
 //   - NO direct DB writes for financial data outside this file
 //   - Every mutation emits a KernelEvent via lifecycle_events
-//   - business_expenses has NO brokerage_id column — filter by agent_id only
+//   - business_expenses HAS a brokerage_id column (and team_id). CORRECTED
+//     2026-08-22: this line claimed the opposite, and createExpenseRecord below
+//     already contradicts it. brokerage_id is NOT NULL since m516 and is stamped
+//     from ctx.brokerageId; trigger business_expenses_derive_tenant is the DB
+//     backstop for writers that omit it. Scope reads by tenant AND agent_id.
 //   - agent_commissions.status transitions: pending → approved → paid
 //   - agent_cap_tracking is source of truth for cap state (not agents.cap_progress)
 //   - All functions are pure async — no global state, no module-level DB calls
@@ -26,9 +30,34 @@
 //   10. exportFinancialReport — CSV/PDF export with audit trail
 //   11. emailFinancialReport — send report via email_queue
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
+// BROKERAGE-WIDE MONEY GATES: every role check in this file guards commission /
+// expense / report surfaces backed by the SERVICE client (RLS bypassed), so the
+// app predicate is the only gate. Repointed from inline
+// ["broker","admin","superadmin"] literals to THE finance roster
+// (admin/broker/broker_owner — mirrors public.is_brokerage_finance_admin, m472):
+// 'superadmin' was dead (0 live rows store that user_type; the platform's
+// superadmin is user_type='admin' + platform_role='superadmin'), and
+// broker_owner — a storable seat that OWNS the brokerage — was wrongly refused.
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
+import { syncAgentLedgerToStamp } from "@/lib/commission/ledger-sync"
+import { resolveUserOffice, pickUserOffice } from "./resolve-user-office"
+import { resolveLedTeamId } from "./resolve-user-team"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+import { readCapProgress } from "@/lib/finance/cap-progress"
+import type { SupabaseClient } from "@supabase/supabase-js"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { usd } from "@/lib/format/money"
+import {
+  planDistributionCorrection, type DistributionCorrectionKind,
+  isSummarizedDistributionType, summaryAmountFromDistributions, SUMMARIZED_DISTRIBUTION_TYPES,
+  planDistributionVoid,
+  planResidualApproval, planResidualReversal, type ResidualReversalRow,
+} from "@/lib/commission/distribution-correction"
+import { withActionLedger } from "@/lib/kernel/action-ledger"
 
 
 // ─── CONSTANTS & ENUMS ────────────────────────────────────────────────────────
@@ -60,6 +89,43 @@ export interface FinancialActorContext {
   agentId:     string | null
   brokerageId: string
   userType:    "agent" | "team_lead" | "broker" | "admin" | "superadmin"
+  /**
+   * `users.platform_role` — the OTHER half of staff identity, and the half this
+   * shape was missing. Same reason it exists on AuthResult in
+   * lib/kernel/api-auth.ts: staff identity is DUAL-COLUMN, and the platform's
+   * only superadmin on this database is (user_type='admin',
+   * platform_role='superadmin'). A context carrying `userType` alone cannot
+   * represent that person, so `ctx.userType === "superadmin"` was a test no live
+   * account could ever pass.
+   *
+   * OPTIONAL AND NULL-BY-DEFAULT ON PURPOSE. Callers that legitimately do not
+   * know the column simply omit it; `undefined` means "unknown", and
+   * loadFinancialWorkspace then resolves the FACT from `users` rather than
+   * assuming one. `null` means "known, and this person is not staff" — every
+   * tenant user. Neither value ever grants anything on its own.
+   */
+  platformRole?: string | null
+  /**
+   * m526 — IS THIS ACTOR THE PRINCIPAL OF A TEAM-SCALE TENANT?
+   *
+   * OWNER RULING: on TEAM and SOLO tier the tenant's money IS the team's money,
+   * so its lead reads and administers its books; on BROKERAGE tier the same
+   * person is one of several leads in a larger office and m472/m473 stand — own
+   * team only, never the office's P&L.
+   *
+   * RESOLVED ONCE, at context build, by
+   * `lib/auth/resolve-user-role.ts#resolveTenantPrincipalTeamLead` — the app-side
+   * twin of `public.is_tenant_principal_team_lead()`. It is carried here for the
+   * same reason `platformRole` is: the eight gates below run on the SERVICE
+   * client (RLS bypassed), so the app predicate is the ONLY gate, and they are
+   * sync and cannot await a two-query lookup eight times.
+   *
+   * OPTIONAL AND FAIL-CLOSED. `undefined` means "nobody resolved this" and
+   * `null` means "resolved, and no"; only an explicit `true` widens anybody.
+   * A caller that cannot run the resolution therefore gets today's behaviour
+   * exactly, never a free grant.
+   */
+  isTenantPrincipal?: boolean | null
 }
 
 export interface KernelFinancialResult<T = void> {
@@ -118,6 +184,15 @@ export interface FinancialWorkspace {
   brokerageId:  string
   userType:     string
   accessLevel:  "personal" | "team" | "brokerage" | "system"
+  /**
+   * The team this actor LEADS (`teams.team_lead_id = userId`), or null. It is
+   * returned because `accessLevel: "team"` is otherwise an unusable answer — it
+   * says "scope this to your team" without naming the team, which is what forced
+   * every team surface to re-derive it from `users.team_id` and get a different
+   * answer. Null for everyone who leads no team, including brokerage/system
+   * actors whose wider scope does not come from a team link.
+   */
+  teamId:       string | null
   validatedAt:  string
 }
 
@@ -192,6 +267,11 @@ export interface FinancialExportResult {
 }
 
 // ─── INPUT CONTRACTS ──────────────────────────────────────────────────────────
+/** The deal side a commission was earned on. agent_commissions.side holds it and
+ *  loadAgentCommissions returns it; until wave 26 nothing WROTE it. Same three
+ *  values the duplicate creator in app/actions/agents.ts offered (§6). */
+export type CommissionSide = "listing" | "buying" | "both"
+
 export interface CreateCommissionRecordInput {
   ctx: FinancialActorContext
   agentId: string
@@ -201,6 +281,26 @@ export interface CreateCommissionRecordInput {
   brokerageFee?: number
   franchiseFee?: number
   additionalFees?: Array<{ name: string; amount: number }>
+  /** The deal's REAL close date, "YYYY-MM-DD" or an ISO timestamp.
+   *
+   *  PORTED IN WAVE 26 from app/actions/agents.ts:addAgentCommission, the
+   *  never-surfaced duplicate that carried it. This creator used to hardcode
+   *  `close_date: new Date()` — "closed today" — for every row it wrote, while
+   *  loadAgentCommissions ORDERS BY close_date and returns it to callers. So the
+   *  one commission ledger was ordered and reported on a date that was really
+   *  "when the button was pressed": a deal filed a week after closing sorted
+   *  ahead of one filed the same day it closed, and a backdated close was
+   *  unrepresentable.
+   *
+   *  OPTIONAL, and the fallback is stated rather than hidden: when a caller has
+   *  no close date on hand the write still falls back to today's date, which is
+   *  what every existing caller was already getting. It is a fallback, not a
+   *  fact — pass the real date whenever the deal has one. */
+  closeDate?: string | null
+  /** Which side of the deal earned this. Optional: null is honest ("not
+   *  recorded"), and is what every row carried before this field existed —
+   *  never guessed from the transaction. */
+  side?: CommissionSide | null
 }
 
 export interface CreatedCommissionRecord {
@@ -293,6 +393,39 @@ export interface EmailFinancialReportInput {
 // ─── COMMAND IMPLEMENTATIONS ──────────────────────────────────────────────────
 
 /**
+ * `users.platform_role` for one actor — the half of staff identity a caller may
+ * not have been able to supply.
+ *
+ * MODULE-PRIVATE. It exists so a context built by a caller that never read the
+ * column (`ctx.platformRole === undefined`) degrades to READING THE FACT rather
+ * than to assuming the person is not staff — which is precisely how the live
+ * superadmin was being refused. A caller that HAS read the column passes it
+ * (including as an explicit `null`) and no second query happens.
+ *
+ * The error is DESTRUCTURED: supabase-js resolves a refused read, so `const
+ * { data }` alone would report "permission denied" as "not staff". A refusal
+ * here returns null, which is fail-CLOSED — it can only ever narrow somebody to
+ * the scope their user_type already earns them, never widen them — but it is
+ * logged, because null is otherwise indistinguishable from a genuine tenant user.
+ */
+async function resolveActorPlatformRole(
+  client: SupabaseClient<any, any, any>,
+  userId: string,
+): Promise<string | null> {
+  const { data, error } = await client
+    .from("users")
+    .select("platform_role")
+    .eq("id", userId)
+    .maybeSingle()
+
+  if (error) {
+    console.error(`[financial] users.platform_role read REFUSED for ${userId}: ${error.message}`)
+    return null
+  }
+  return (data as { platform_role?: string | null } | null)?.platform_role ?? null
+}
+
+/**
  * loadFinancialWorkspace — Verify actor identity + determine access level
  */
 export async function loadFinancialWorkspace(
@@ -302,11 +435,66 @@ export async function loadFinancialWorkspace(
   const supabase = createServiceClient()
 
   try {
-    // Determine access level first — broker/admin users may not have an agents row
+    // ── ACCESS LEVEL — resolved from FACTS, not from the `user_type` label ────
+    //
+    // This block used to read:
+    //
+    //     if (ctx.userType === "team_lead")  accessLevel = "team"
+    //     if (ctx.userType === "superadmin") accessLevel = "system"
+    //
+    // and both tests were inverted against the live database.
+    //
+    // TEAM. The owner's ruling is "a team lead is an agent that runs their own
+    // team". Measured live, teamlead@vip.demo is user_type='agent' and LEADS one
+    // team — so the label test gave the real lead accessLevel="personal" and they
+    // never saw their team's numbers — while buyer@yourbrokerage.com is
+    // user_type='team_lead' and leads NOTHING, so the label test handed them a
+    // team scope for a team that does not exist. The fact is the
+    // `teams.team_lead_id` FK, which is what RLS was moved onto in m444 via
+    // public.current_user_led_team_id(). resolveLedTeamId() is that function's
+    // app-side twin, so the app and the database now give the same answer.
+    //
+    // SYSTEM. Staff identity is DUAL-COLUMN and the platform's only superadmin is
+    // (user_type='admin', platform_role='superadmin') — `ctx.userType ===
+    // "superadmin"` alone described nobody. Both columns are read, which is the
+    // same shape public.is_platform_admin() uses in RLS and requireSuperadmin()
+    // uses in app/actions/superadmin/platform-staff.ts. platform_role='superadmin'
+    // is written solely by the superadmin-gated staff CRUD, so this widens to the
+    // genuine superadmin and to nobody else.
+    //
+    // BROKER/ADMIN IS DELIBERATELY UNTOUCHED — 'broker' and 'admin' are real
+    // user_type values held by real brokerage users, and brokerage scope is still
+    // exactly what they get.
+    //
+    // ORDER IS PRECEDENCE, WIDEST LAST: a broker who also leads a team keeps
+    // brokerage scope (wider), and the superadmin keeps system scope, rather than
+    // being narrowed to one team by the lead link.
+    const platformRole =
+      ctx.platformRole !== undefined
+        ? ctx.platformRole
+        : await resolveActorPlatformRole(supabase, ctx.userId)
+    // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+    const isSuperadmin = isPlatformSuperadminIdentity(ctx.userType, platformRole)
+
+    // resolveLedTeamId returns { ok: false, error } on a REFUSED read (§1 merge,
+    // 2026-09-11) — fail CLOSED to "personal" scope on a refusal, same as
+    // "leads nothing": a refusal must never be read as permission to widen.
+    const ledOf = await resolveLedTeamId(supabase, ctx.userId)
+    const ledTeamId = ledOf.ok ? ledOf.teamId : null
+
     let accessLevel: "personal" | "team" | "brokerage" | "system" = "personal"
-    if (ctx.userType === "team_lead") accessLevel = "team"
+    if (ledTeamId) accessLevel = "team"
+    // m526 — ON A TEAM-SCALE TENANT THE LEAD'S TEAM SCOPE *IS* THE TENANT SCOPE.
+    // Placed above broker/admin and below superadmin, keeping the "ORDER IS
+    // PRECEDENCE, WIDEST LAST" rule this block already documents: it can only
+    // ever WIDEN a lead from "team" to "brokerage", never narrow a broker who
+    // also happens to lead a team. On BROKERAGE tier `isTenantPrincipal` is
+    // false and the lead stays on "team" — m472/m473 untouched. `undefined`
+    // (unresolved) is not `true`, so a caller that never resolved the fact gets
+    // exactly today's answer (§4, fail closed).
+    if (ctx.isTenantPrincipal === true) accessLevel = "brokerage"
     if (ctx.userType === "broker" || ctx.userType === "admin") accessLevel = "brokerage"
-    if (ctx.userType === "superadmin") accessLevel = "system"
+    if (isSuperadmin) accessLevel = "system"
 
     if (ctx.agentId) {
       // Agent path: verify identity via agents table
@@ -352,6 +540,7 @@ export async function loadFinancialWorkspace(
         brokerageId: ctx.brokerageId,
         userType:    ctx.userType,
         accessLevel,
+        teamId:      ledTeamId,
         validatedAt: new Date().toISOString(),
       },
     }
@@ -401,7 +590,11 @@ export async function loadAgentFinancialSummary(
         capAmount:        capData?.cap_amount ?? 0,
         capPaidToDate:    capData?.cap_paid_to_date ?? 0,
         capIsCapped:      capData?.is_capped ?? false,
-        capProgressPct:   capData ? (capData.cap_paid_to_date / capData.cap_amount) * 100 : 0,
+        // ONE READING of the cap, shared with the earnings rollup that now
+        // stamps agent_earnings.cap_progress_pct — see lib/finance/cap-progress.ts.
+        // The inline `(paid / amount) * 100` this replaces divided by zero for an
+        // uncapped agent and handed the progress bar NaN, which renders as "NaN%".
+        capProgressPct:   readCapProgress(capData).pct ?? 0,
         anniversaryStart: capData?.anniversary_start ?? "",
         anniversaryEnd:   capData?.anniversary_end ?? "",
       },
@@ -539,15 +732,91 @@ export async function loadCommissionDistributions(
       query = query.eq("agent_id", agentId)
     }
 
-    const { data: distributions } = await query
+    const { data: distributions, error: distError } = await query
+    if (distError) {
+      return { success: false, error: distError.message }
+    }
+
+    // ── RESOLVE RECIPIENT NAMES (2026-08-27, lane CB — §1.2 the missing half) ──
+    // recipientName was hardcoded null after the recipient_id/recipient_name
+    // tombstone below, and the one UI consumer
+    // (app/dashboard/financials/agent/agent-financials-client.tsx:639 renders
+    // `recipientName ?? recipientId`) therefore showed a RAW UUID in the
+    // recipient cell. The recipient the engine stamps is agent_id / team_id, so
+    // the name is resolvable: agents.id → agents.user_id → users.first/last name
+    // (agents.id and users.id are DISJOINT classes — never fed to each other,
+    // CLAUDE.md §3), and teams.id → teams.name. Batched, error-READ, and
+    // display-only: a refused name read logs and falls back to null (the UI then
+    // shows the id) rather than failing the money list — the amounts are the
+    // load-bearing data, the label is not.
+    const agentIds = [...new Set((distributions ?? []).map((d) => d.agent_id).filter(Boolean))] as string[]
+    const teamIds = [...new Set((distributions ?? []).map((d) => d.team_id).filter(Boolean))] as string[]
+    const agentNameById = new Map<string, string>()
+    const teamNameById = new Map<string, string>()
+
+    if (agentIds.length > 0) {
+      const { data: agentRows, error: agentErr } = await supabase
+        .from("agents")
+        .select("id, user_id")
+        .in("id", agentIds)
+        .eq("brokerage_id", brokerageId)
+      if (agentErr) {
+        console.error("[financial-kernel] distribution agent lookup refused:", agentErr.message)
+      } else if (agentRows && agentRows.length > 0) {
+        const userIds = [...new Set(agentRows.map((a) => a.user_id).filter(Boolean))] as string[]
+        const { data: userRows, error: userErr } = await supabase
+          .from("users")
+          .select("id, first_name, last_name")
+          .in("id", userIds)
+        if (userErr) {
+          console.error("[financial-kernel] distribution user-name lookup refused:", userErr.message)
+        } else {
+          const userNameById = new Map(
+            (userRows ?? []).map((u) => [u.id, [u.first_name, u.last_name].filter(Boolean).join(" ").trim()]),
+          )
+          for (const a of agentRows) {
+            const name = a.user_id ? userNameById.get(a.user_id) : undefined
+            if (name) agentNameById.set(a.id, name)
+          }
+        }
+      }
+    }
+
+    if (teamIds.length > 0) {
+      const { data: teamRows, error: teamErr } = await supabase
+        .from("teams")
+        .select("id, name")
+        .in("id", teamIds)
+        .eq("brokerage_id", brokerageId)
+      if (teamErr) {
+        console.error("[financial-kernel] distribution team lookup refused:", teamErr.message)
+      } else {
+        for (const t of teamRows ?? []) {
+          if (t.name) teamNameById.set(t.id, t.name)
+        }
+      }
+    }
 
     return {
       success: true,
       data: (distributions ?? []).map((d) => ({
         id:               d.id,
         agentId:          d.agent_id,
-        recipientId:      d.recipient_id,
-        recipientName:    d.recipient_name ?? "",
+        // TOMBSTONE (2026-08-27, §1.1): this used to read `d.recipient_id` and
+        // `d.recipient_name`. recipient_id is writer-less — the engine's ONLY
+        // insert (lib/commission/waterfall/11-validate-persist.ts:164
+        // distributionRows) writes distribution_type + agent_id / team_id and
+        // has never named it; live-verified 2026-08-27 on hrvaqgvukzxfskkcrwbt:
+        // 0 rows, no trigger, no pg_proc, no FK, no view touches it (m571
+        // retires the column). recipient_name was worse: NOT A COLUMN on
+        // commission_distributions at all, so `?? ""` rendered every recipient
+        // cell as an empty string and masked the null id behind it. SURVIVORS:
+        // agent_id / team_id + distribution_type — the columns the engine
+        // actually stamps the recipient with, now resolved to display names above.
+        recipientId:      d.agent_id ?? d.team_id ?? null,
+        recipientName:    (d.agent_id ? agentNameById.get(d.agent_id) : undefined)
+                            ?? (d.team_id ? teamNameById.get(d.team_id) : undefined)
+                            ?? null,
         type:             d.distribution_type,
         calculatedAmount: d.calculated_amount,
         status:           d.status,
@@ -627,11 +896,15 @@ export async function recalculateCommissionState(
     // and the cap RESETS when the anniversary year elapses (computeCapState — pure, tested).
     const now = new Date()
     let capped = 0
+    // A refused cap write leaves the agent's cap state (and every split computed
+    // from it) stale while this used to report the recalculation done — read each
+    // error, and count rows so a write that matched nothing is not "updated".
+    const capRefusals: string[] = []
 
     for (const record of capTracking ?? []) {
       const st = computeCapState(record as CapRecordLite, now)
       if (st.changed) {
-        await supabase
+        const { data: capUpdated, error: capErr } = await supabase
           .from("agent_cap_tracking")
           .update({
             is_capped: st.isCapped,
@@ -640,21 +913,29 @@ export async function recalculateCommissionState(
               : {}),
           })
           .eq("id", record.id)
+          .select("id")
+        if (capErr) capRefusals.push(`${record.id}: ${capErr.message}`)
+        else if ((capUpdated ?? []).length === 0) capRefusals.push(`${record.id}: matched no row`)
       }
       if (st.isCapped) capped++
     }
+    if (capRefusals.length > 0) {
+      return {
+        success: false,
+        error: `Cap recalculation incomplete — ${capRefusals.length} agent cap record(s) were not updated: ${capRefusals.slice(0, 3).join("; ")}`,
+      }
+    }
 
     // Emit lifecycle event
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: brokerageId, // NOT NULL (pass 5)
-        entity_type: "commission_state",
-        entity_id:   brokerageId,
-        event_type:  KernelEvent.COMMISSION_STATE_RECALCULATED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: brokerageId, // NOT NULL (pass 5)
+        entityType: "commission_state",
+        entityId:   brokerageId,
+        event:  KernelEvent.COMMISSION_STATE_RECALCULATED,
         metadata:    { recalculated: capTracking?.length ?? 0, capped },
-        created_at:  new Date().toISOString(),
-      })
+        createdAt:  new Date().toISOString(),
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_state_recalculated_echo", brokerageId: brokerageId, reason: "lifecycle echo of a completed recalculation; the cap rows are the record" })
 
     return {
       success: true,
@@ -680,7 +961,7 @@ export async function markCommissionApproved(
 
   try {
     // Guard: only brokerage users can approve
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Insufficient permissions to approve commissions" }
     }
 
@@ -706,25 +987,37 @@ export async function markCommissionApproved(
 
     // Update status
     const approvedAt = new Date().toISOString()
-    await supabase
+    // A refused status transition used to return { success: true } — the caller,
+    // the splits mirror and the deal stamp all then proceeded as if the
+    // commission had been approved while the row stayed 'pending'.
+    const { error: approveError } = await supabase
       .from("agent_commissions")
       .update({ status: newStatus, approved_at: approvedAt, approved_by: approvedBy })
       .eq("id", commissionId)
+    if (approveError) {
+      return { success: false, error: `Could not approve the commission: ${approveError.message}` }
+    }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
-    await supabase.from("commission_splits").update({ status: "approved", updated_at: approvedAt }).eq("commission_id", commissionId)
+    await sentinelWrite(supabase, supabase.from("commission_splits").update({ status: "approved", updated_at: approvedAt }).eq("commission_id", commissionId), { table: "commission_splits", flow: "commission_splits_mirror_approved", brokerageId: brokerageId, reason: "mirror of agent_commissions (already approved, the source of truth); the tracking-drift reaper heals a single-sided miss — ledgered so the miss is visible" })
+
+    // …and onto the deal stamp, so approval is visible on the retained record too.
+    await syncAgentLedgerToStamp(supabase, {
+      transaction_id: (commission as { transaction_id?: string | null }).transaction_id ?? null,
+      agent_id:       (commission as { agent_id: string }).agent_id,
+      status:         newStatus,
+    })
 
     // Emit lifecycle event
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: brokerageId, // NOT NULL (pass 5)
-        entity_type: "agent_commission",
-        entity_id:   commissionId,
-        event_type:  KernelEvent.COMMISSION_APPROVED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: brokerageId, // NOT NULL (pass 5)
+        entityType: "agent_commission",
+        entityId:   commissionId,
+        event:  KernelEvent.COMMISSION_APPROVED,
         metadata:    { oldStatus, newStatus, approvedBy },
-        created_at:  approvedAt,
-      })
+        createdAt:  approvedAt,
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_approved_echo", brokerageId: brokerageId, reason: "lifecycle echo after the approval landed" })
 
     return {
       success: true,
@@ -746,7 +1039,7 @@ export async function markCommissionPaid(
 
   try {
     // Guard: only brokerage users can mark paid
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Insufficient permissions to mark commissions as paid" }
     }
 
@@ -772,26 +1065,40 @@ export async function markCommissionPaid(
 
     const paidAt = paidAtInput ?? new Date().toISOString()
 
-    // Update status
-    await supabase
+    // Update status. THIS IS THE PAYOUT RECORD. A refused write here previously
+    // returned success, and the splits ledger and the seven-year deal stamp were
+    // then mirrored to 'paid' against a row still reading 'pending'.
+    const { error: payError } = await supabase
       .from("agent_commissions")
       .update({ status: newStatus, paid_at: paidAt, payment_method: method ?? null })
       .eq("id", commissionId)
+    if (payError) {
+      return { success: false, error: `Could not mark the commission paid: ${payError.message}` }
+    }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
-    await supabase.from("commission_splits").update({ status: "paid", paid_at: paidAt, updated_at: paidAt }).eq("commission_id", commissionId)
+    await sentinelWrite(supabase, supabase.from("commission_splits").update({ status: "paid", paid_at: paidAt, updated_at: paidAt }).eq("commission_id", commissionId), { table: "commission_splits", flow: "commission_splits_mirror_paid", brokerageId: brokerageId, reason: "mirror of agent_commissions (already paid, the source of truth); the tracking-drift reaper heals a single-sided miss — ledgered so the miss is visible" })
+
+    // Mirror onto the DEAL STAMP (transaction_commissions) — the record real-estate
+    // retention keeps for seven years. Paying the agent here without stamping the
+    // deal leaves that record saying "pending" forever, which is a false record.
+    await syncAgentLedgerToStamp(supabase, {
+      transaction_id: (commission as { transaction_id?: string | null }).transaction_id ?? null,
+      agent_id:       (commission as { agent_id: string }).agent_id,
+      status:         newStatus,
+      paid_at:        paidAt,
+    })
 
     // Emit lifecycle event
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: brokerageId, // NOT NULL (pass 5)
-        entity_type: "agent_commission",
-        entity_id:   commissionId,
-        event_type:  KernelEvent.COMMISSION_PAID,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: brokerageId, // NOT NULL (pass 5)
+        entityType: "agent_commission",
+        entityId:   commissionId,
+        event:  KernelEvent.COMMISSION_PAID,
         metadata:    { oldStatus, newStatus, paidAt, method },
-        created_at:  paidAt,
-      })
+        createdAt:  paidAt,
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_paid_echo", brokerageId: brokerageId, reason: "lifecycle echo after the payout record landed" })
 
     // Update agent cap tracking (cap_paid_to_date)
     const { data: agentEarnings } = await supabase
@@ -809,13 +1116,13 @@ export async function markCommissionPaid(
         .maybeSingle()
 
       if (capRecord) {
-        await supabase
+        await sentinelWrite(supabase, supabase
           .from("agent_cap_tracking")
           .update({
             cap_paid_to_date: (capRecord.cap_paid_to_date ?? 0) + (agentEarnings.agent_commission ?? 0),
           })
           .eq("agent_id", agentEarnings.agent_id)
-          .eq("brokerage_id", brokerageId)
+          .eq("brokerage_id", brokerageId), { table: "agent_cap_tracking", flow: "cap_paid_to_date_on_payout", brokerageId: brokerageId, reason: "cap progress after a landed payout must not unwind the payout; a refusal is ledgered for the repair digest and recalculateCommissionState re-derives cap state" })
       }
     }
 
@@ -873,7 +1180,7 @@ export async function markCommissionDisputed(input: {
 
     // Gate: the owning agent, or a broker/admin.
     const isOwner = ctx.agentId != null && ctx.agentId === commission.agent_id
-    const isBroker = ["broker", "admin", "superadmin"].includes(ctx.userType)
+    const isBroker = isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })
     if (!isOwner && !isBroker) return { success: false, error: "Only the owning agent or a broker can dispute this commission" }
 
     if (!COMMISSION_STATUS_TRANSITIONS[commission.status]?.includes("disputed")) {
@@ -881,19 +1188,25 @@ export async function markCommissionDisputed(input: {
     }
 
     const now = new Date().toISOString()
-    await supabase
+    // A dispute that reports success without landing leaves the agent believing
+    // their objection is on the record when the row is untouched.
+    const { error: disputeError } = await supabase
       .from("agent_commissions")
       .update({ status: "disputed", dispute_reason: trimmed, disputed_at: now, disputed_by: ctx.userId, dispute_resolution: null, dispute_resolved_at: null, updated_at: now })
       .eq("id", commissionId)
+    if (disputeError) {
+      return { success: false, error: `Could not file the dispute: ${disputeError.message}` }
+    }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
-    await supabase.from("commission_splits").update({ status: "disputed", updated_at: now }).eq("commission_id", commissionId)
+    await sentinelWrite(supabase, supabase.from("commission_splits").update({ status: "disputed", updated_at: now }).eq("commission_id", commissionId), { table: "commission_splits", flow: "commission_splits_mirror_disputed", brokerageId: brokerageId, reason: "mirror of agent_commissions (dispute already filed, the source of truth); ledgered so the miss is visible" })
 
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: brokerageId, // NOT NULL (pass 5)
-      entity_type: "agent_commission", entity_id: commissionId,
-      event_type: KernelEvent.COMMISSION_DISPUTED, metadata: { reason: trimmed, disputedBy: ctx.userId }, created_at: now,
-    }).then(() => {}, () => {})
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: brokerageId, // NOT NULL (pass 5)
+      entityType: "agent_commission", entityId: commissionId,
+      event: KernelEvent.COMMISSION_DISPUTED, metadata: { reason: trimmed, disputedBy: ctx.userId }, createdAt: now,
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_disputed_echo", brokerageId: brokerageId, reason: "lifecycle echo after the dispute landed" })
 
     return { success: true, data: { commissionId, status: "disputed" } }
   } catch (error) {
@@ -916,7 +1229,7 @@ export async function resolveCommissionDispute(input: {
   const { ctx, commissionId, brokerageId, resolution, notes } = input
   const supabase = createServiceClient()
   try {
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Only a broker can resolve a dispute" }
     }
     const { data: commission } = await supabase
@@ -934,7 +1247,9 @@ export async function resolveCommissionDispute(input: {
     }
 
     const now = new Date().toISOString()
-    await supabase
+    // Resolving a dispute moves money back into the payable lifecycle; a refused
+    // write reported as resolved leaves the commission stuck on 'disputed'.
+    const { error: resolveError } = await supabase
       .from("agent_commissions")
       .update({
         status: nextStatus,
@@ -945,16 +1260,20 @@ export async function resolveCommissionDispute(input: {
         updated_at: now,
       })
       .eq("id", commissionId)
+    if (resolveError) {
+      return { success: false, error: `Could not resolve the dispute: ${resolveError.message}` }
+    }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
-    await supabase.from("commission_splits").update({ status: nextStatus, updated_at: now }).eq("commission_id", commissionId)
+    await sentinelWrite(supabase, supabase.from("commission_splits").update({ status: nextStatus, updated_at: now }).eq("commission_id", commissionId), { table: "commission_splits", flow: "commission_splits_mirror_dispute_resolved", brokerageId: brokerageId, reason: "mirror of agent_commissions (resolution already landed, the source of truth); ledgered so the miss is visible" })
 
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: brokerageId, // NOT NULL (pass 5)
-      entity_type: "agent_commission", entity_id: commissionId,
-      event_type: nextStatus === "approved" ? KernelEvent.COMMISSION_APPROVED : KernelEvent.COMMISSION_CALCULATED,
-      metadata: { dispute_resolution: resolution, notes: notes ?? null, resolvedBy: ctx.userId }, created_at: now,
-    }).then(() => {}, () => {})
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: brokerageId, // NOT NULL (pass 5)
+      entityType: "agent_commission", entityId: commissionId,
+      event: nextStatus === "approved" ? KernelEvent.COMMISSION_APPROVED : KernelEvent.COMMISSION_CALCULATED,
+      metadata: { dispute_resolution: resolution, notes: notes ?? null, resolvedBy: ctx.userId }, createdAt: now,
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_dispute_resolved_echo", brokerageId: brokerageId, reason: "lifecycle echo after the resolution landed" })
 
     return { success: true, data: { commissionId, status: nextStatus } }
   } catch (error) {
@@ -972,8 +1291,26 @@ export async function createExpenseRecord(
   const supabase = createServiceClient()
 
   try {
-    // Guard: owner can only create own expenses (unless broker/admin)
-    if (ctx.agentId !== agentId && !["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    // Guard: owner can only create own expenses (unless broker/admin).
+    //
+    // THIS IS NOT THE WHOLE GATE, and saying so here is the point. `agentId`
+    // arrives as a PARAMETER and this function writes on the SERVICE-ROLE client,
+    // so the roster check below answers "may this rank book someone else's cost"
+    // but NOT "is that someone in the caller's brokerage" — without which a
+    // finance admin could name an agent in ANOTHER tenant while brokerage_id
+    // downstream is stamped with the CALLER's, filing one brokerage's cost onto
+    // another's books.
+    //
+    // The tenant half lives ONE layer up, at
+    // app/actions/financial-kernel.ts#authorizeAgentScope, which every other
+    // agentId-taking action already calls and which createExpenseRecordAction now
+    // calls too (added 2026-08-22). It is not re-implemented here: docs/wave4-slice3.md
+    // rules that authorization belongs in the action layer and that these kernel
+    // functions trust the ctx they are handed, and a second dialect of the same
+    // clause is the drift CLAUDE.md §6 forbids. Any NEW caller of
+    // createExpenseRecord that does not come through that action must apply the
+    // same helper before calling.
+    if (ctx.agentId !== agentId && !isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Can only create expenses for yourself" }
     }
 
@@ -990,15 +1327,34 @@ export async function createExpenseRecord(
     const now = new Date().toISOString()
     const recordDate = expenseDate ?? new Date().toISOString().split("T")[0]
 
-    // Insert expense record
-    // NOTE: business_expenses has NO brokerage_id column — only agent_id
+    // business_expenses.description is NOT NULL in the live schema, so
+    // `description ?? null` did not write an anonymous expense — it made the
+    // whole insert fail, and the caller learned that only from a raw Postgres
+    // message. Ask for the description instead.
+    const expenseDescription = description?.trim()
+    if (!expenseDescription) {
+      return { success: false, error: "A description is required for an expense" }
+    }
+
+    // Insert expense record.
+    //
+    // The comment here used to read "business_expenses has NO brokerage_id
+    // column — only agent_id". That is false against the live schema: the table
+    // carries brokerage_id AND team_id. Believing it meant every expense written
+    // through the kernel was tenant-orphaned, while logScopedExpense in
+    // app/actions/financials.ts set them — two writers, two shapes, and reports
+    // that scope by brokerage silently missed the kernel's rows.
     const { data: expense, error: insertError } = await supabase
       .from("business_expenses")
       .insert({
         agent_id:     agentId,
+        brokerage_id: ctx.brokerageId,
+        // team_id is left to the DB: FinancialActorContext does not carry a
+        // team, and guessing one from the actor would mis-file an expense a
+        // broker recorded for an agent on a different team.
         category,
         amount,
-        description:  description ?? null,
+        description:  expenseDescription,
         receipt_url:  receiptUrl ?? null,
         expense_date: recordDate,
         created_at:   now,
@@ -1011,16 +1367,15 @@ export async function createExpenseRecord(
     }
 
     // Emit lifecycle event
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId, // NOT NULL (pass 5)
-        entity_type: "business_expense",
-        entity_id:   expense.id,
-        event_type:  KernelEvent.EXPENSE_CREATED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId, // NOT NULL (pass 5)
+        entityType: "business_expense",
+        entityId:   expense.id,
+        event:  KernelEvent.EXPENSE_CREATED,
         metadata:    { agentId, category, amount, description },
-        created_at:  now,
-      })
+        createdAt:  now,
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "expense_created_echo", brokerageId: ctx.brokerageId, reason: "lifecycle echo after the expense row landed" })
 
     return {
       success: true,
@@ -1042,7 +1397,7 @@ export async function createExpenseRecord(
 export async function createCommissionRecord(
   input: CreateCommissionRecordInput
 ): Promise<KernelFinancialResult<CreatedCommissionRecord>> {
-  const { ctx, agentId, transactionId, grossCommission, splitPercentage, brokerageFee, franchiseFee, additionalFees } = input
+  const { ctx, agentId, transactionId, grossCommission, splitPercentage, brokerageFee, franchiseFee, additionalFees, closeDate, side } = input
   const supabase = createServiceClient()
 
   try {
@@ -1107,7 +1462,14 @@ export async function createCommissionRecord(
         transaction_id: transactionId,
         gross_commission: grossCommission,
         agent_split_percent: agentSplit,
-        close_date: new Date().toISOString(),
+        // THE DEAL'S CLOSE DATE WHEN THE CALLER HAS ONE. The `?? new Date()`
+        // fallback is the OLD behaviour preserved for callers that pass nothing
+        // — it means "we were not told when this closed, so we recorded when it
+        // was filed". It is not a claim about the deal. See closeDate on
+        // CreateCommissionRecordInput.
+        close_date: closeDate ?? new Date().toISOString(),
+        // Null = not recorded. Never inferred from the transaction.
+        side: side ?? null,
         status: "pending",
       })
       .select("id")
@@ -1117,16 +1479,42 @@ export async function createCommissionRecord(
       return { success: false, error: error?.message || "Failed to create commission record" }
     }
 
+    // OFFICE OF RECORD for the PRODUCING agent — `agentId`, not `ctx.userId`,
+    // because a broker may be creating this record on an agent's behalf and the
+    // deal was closed out of the AGENT's office. Resolved through the ONE
+    // precedence rule (./resolve-user-office: users.location_id wins over
+    // agents.location_id); an agent with no linked user takes the pure form of
+    // that same rule rather than a second one written out here. Stamped on the
+    // split below so a later office transfer cannot drag closed history with it
+    // (owner ruling; see the OfficeProduction comment in
+    // lib/intelligence/brokerage-pnl.ts, which reads this stamp).
+    const { data: agentRow, error: agentOfficeErr } = await supabase
+      .from("agents").select("user_id, location_id").eq("id", agentId).maybeSingle()
+    if (agentOfficeErr) {
+      // Never silently becomes "no office": that would file real money under
+      // "No office assigned" on the owner's report and read as a real finding.
+      console.error(`[createCommissionRecord] agent office read REFUSED for ${agentId}: ${agentOfficeErr.message}`)
+    }
+    const agentOffice = (agentRow as { user_id?: string | null; location_id?: string | null } | null) ?? null
+    const office = agentOffice?.user_id
+      ? await resolveUserOffice(supabase, agentOffice.user_id)
+      : pickUserOffice(null, agentOffice?.location_id ?? null)
+
     // COMMISSION SPLITS LEDGER (burn-down round 4): the agent financials page
     // and brokerage-P&L intelligence read commission_splits — writer-less until
     // now, so both rendered empty forever. One split row per commission with
     // the SAME numbers the waterfall computed (fees + cap credit in metadata);
     // status mirrors the commission lifecycle (live CHECK: pending/approved/
     // paid/disputed/cancelled). Best-effort: the commission is already the
-    // source of truth — a split-ledger failure never blocks the close.
-    await supabase.from("commission_splits").insert({
+    // source of truth — a split-ledger failure never blocks the close. But it is
+    // never SILENT either: supabase-js resolves a refused write, so an
+    // undestructured insert would swallow a real failure — including the one
+    // ordering hazard this row now has, a deploy that lands ahead of m427 and so
+    // writes `location_id` to a column that does not exist yet.
+    const { error: splitErr } = await supabase.from("commission_splits").insert({
       agent_id: agentId,
       brokerage_id: ctx.brokerageId,
+      location_id: office.locationId,
       transaction_id: transactionId,
       commission_id: commission.id,
       agent_amount: agentNet,
@@ -1134,12 +1522,15 @@ export async function createCommissionRecord(
       status: "pending",
       metadata: { fee_breakdown: feeBreakdown, capped_amount: cappedAmount, agent_split_percent: agentSplit },
     })
+    if (splitErr) {
+      console.error(`[createCommissionRecord] commission_splits ledger write FAILED for commission ${commission.id}: ${splitErr.message}`)
+    }
 
     if (capRow && !cappedAmount) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("agent_cap_tracking")
         .update({ cap_paid_to_date: (capRow.cap_paid_to_date || 0) + brokerageShare })
-        .eq("id", capRow.id)
+        .eq("id", capRow.id), { table: "agent_cap_tracking", flow: "cap_paid_to_date_on_commission", brokerageId: ctx.brokerageId, reason: "cap progress after a landed commission must not unwind it; a refusal is ledgered for the repair digest and recalculateCommissionState re-derives cap state" })
     }
 
     await processKernelEvent({
@@ -1167,7 +1558,8 @@ export async function createCommissionRecord(
   }
 }
 // ── Report serialization (pure, testable) ──────────────────────────────────────
-const fmtMoney = (n: number) => `$${Math.round(Number(n) || 0).toLocaleString("en-US")}`
+// TOMBSTONE (§1.1, 2026-09-08): local `fmtMoney` lived here; survivor lib/format/money.ts:usd
+const fmtMoney = (n: number) => usd(Number(n) || 0)
 
 /** PURE: flatten a brokerage financial summary into labelled rows for CSV/PDF. */
 export function financialReportRows(
@@ -1210,7 +1602,7 @@ export async function exportFinancialReport(
 
   try {
     // Guard: only authorized users can export
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Insufficient permissions to export reports" }
     }
 
@@ -1247,16 +1639,15 @@ export async function exportFinancialReport(
     }
 
     // Emit lifecycle event
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: brokerageId, // NOT NULL (pass 5)
-        entity_type: "financial_report",
-        entity_id:   brokerageId,
-        event_type:  format === "csv" ? KernelEvent.REPORT_EXPORTED_CSV : KernelEvent.REPORT_EXPORTED_PDF,
+    await import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: brokerageId, // NOT NULL (pass 5)
+        entityType: "financial_report",
+        entityId:   brokerageId,
+        event:  format === "csv" ? KernelEvent.REPORT_EXPORTED_CSV : KernelEvent.REPORT_EXPORTED_PDF,
         metadata:    { reportType, dateFrom, dateTo, filename },
-        created_at:  generatedAt,
-      })
+        createdAt:  generatedAt,
+        auditOnly: true,
+      }).then(k.asWriteResult))
 
     return {
       success: true,
@@ -1282,7 +1673,7 @@ export async function emailFinancialReport(
 
   try {
     // Guard: only authorized users can email reports
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Insufficient permissions to email reports" }
     }
 
@@ -1310,16 +1701,15 @@ export async function emailFinancialReport(
     }
 
     // Emit lifecycle event
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: brokerageId, // NOT NULL (pass 5)
-        entity_type: "email_report",
-        entity_id:   brokerageId,
-        event_type:  KernelEvent.REPORT_EMAILED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: brokerageId, // NOT NULL (pass 5)
+        entityType: "email_report",
+        entityId:   brokerageId,
+        event:  KernelEvent.REPORT_EMAILED,
         metadata:    { reportType, recipients, subject },
-        created_at:  queuedAt,
-      })
+        createdAt:  queuedAt,
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "report_emailed_echo", brokerageId: brokerageId, reason: "lifecycle echo after the email_queue rows landed" })
 
     return {
       success: true,
@@ -1427,7 +1817,7 @@ export async function loadAgentFinancialDashboardSummary(
         .from("transactions")
         .select("*")
         .eq("agent_id", input.agentId)
-        .in("status", ["active", "pending"]),
+        .in("status", [...TRANSACTION_STATUSES_OPEN]),
 
       service
         .from("agent_commissions")
@@ -1481,4 +1871,564 @@ export async function loadAgentFinancialDashboardSummary(
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }
   }
+}
+
+// ─── COMMISSION CORRECTION (wave 98 — owner: "yes build commission correction screen") ───────────
+//
+// m689 made a POSTED (paid) commission_distributions entry append-only; this is the ONE writer of
+// its correction: a NEW row (m690 entry_type 'reversal' | 'adjustment', adjusts_distribution_id →
+// the original, correction_reason, corrected_by) whose signed amount the pure planner
+// (lib/commission/distribution-correction.ts) derives in cents from the original + every earlier
+// correction. The paid row is never updated. The row inherits the original's recipient + deal +
+// type + commission so every reader that sums calculated_amount (CDA breakdown, referral earnings,
+// revenue-share board, CDA template fields) nets the correction in with no special case; it is
+// stamped 'paid' (posted at once) so the posting UPDATEs — which skip paid rows — never touch it, and
+// m689 makes it append-only in turn.
+//
+// GATE: the brokerage's books tier (isBrokerageFinanceAdmin — BROKERAGE_FINANCE_ADMIN_USER_TYPES
+// plus the m526 tenant principal), the tenant from the SESSION context (ctx.brokerageId — the
+// action never accepts one), fail closed on every refused read. The insert is .select()ed and
+// COUNTED.
+
+export interface CommissionSummaryRestamp {
+  /** agent_commissions rows re-stamped (0 when the type has no summary column or no commission). */
+  agentCommissions: number
+  /** transaction_commissions stamp rows re-stamped. */
+  transactionStamps: number
+  /** Why nothing was re-stamped, when that is the correct outcome. */
+  skipped?: string
+  error?: string
+}
+
+/**
+ * Wave 100 (lane 100C — 98A open item, gap row 16). Re-derives the summary figures a correction moved:
+ * agent_commissions.net_to_agent / net_to_brokerage for the original's commission_id, and the deal
+ * stamp transaction_commissions.calculated_amount for (transaction, 'agent' + recipient agent) or
+ * (transaction, 'brokerage'). Each is Σ of that type's distribution rows (original + every correction)
+ * — re-derived, not incremented, so it is idempotent. Tenant-anchored; every UPDATE .select()ed and
+ * COUNTED (§3: an UPDATE that matches nothing also resolves).
+ */
+async function restampCommissionSummaries(
+  supabase: ReturnType<typeof createServiceClient>,
+  p: { brokerageId: string; commissionId: string | null; transactionId: string | null; agentId: string | null; distributionType: string | null },
+): Promise<CommissionSummaryRestamp> {
+  const out: CommissionSummaryRestamp = { agentCommissions: 0, transactionStamps: 0 }
+  if (!isSummarizedDistributionType(p.distributionType)) {
+    return { ...out, skipped: `distribution_type ${p.distributionType ?? "null"} has no summary column` }
+  }
+  const type = p.distributionType
+  const now = new Date().toISOString()
+  const errors: string[] = []
+
+  // ONE figure: the corrected entry's own commission (commission_id) when it has one — a deal recalculated
+  // twice carries two commissions, and summing the transaction would count both; the transaction's rows
+  // (scoped to the recipient agent) only when the entry was posted without a commission.
+  if (!p.commissionId && !p.transactionId) return { ...out, skipped: "entry has neither a commission nor a transaction" }
+  // `status` rides along (105E): a VOIDED row carries no money and summaryAmountFromDistributions drops
+  // it — the same rule the reconciler (reconcile-tracking.ts detectSummaryAmountDrift) compares with.
+  let rowsQ = supabase
+    .from("commission_distributions")
+    .select("distribution_type, calculated_amount, status")
+    .eq("brokerage_id", p.brokerageId)
+    .eq("distribution_type", type)
+  rowsQ = p.commissionId ? rowsQ.eq("commission_id", p.commissionId) : rowsQ.eq("transaction_id", p.transactionId as string)
+  if (!p.commissionId && type === "agent" && p.agentId) rowsQ = rowsQ.eq("agent_id", p.agentId)
+  const { data: rows, error: rowsErr } = await rowsQ
+  if (rowsErr) return { ...out, error: `distribution rows: ${rowsErr.message}` }
+  const amount = summaryAmountFromDistributions((rows ?? []) as Array<{ distribution_type: string | null; calculated_amount: number | null; status: string | null }>, type)
+  if (!Number.isFinite(amount)) return { ...out, error: "distribution rows carry a non-numeric amount" }
+
+  if (p.commissionId) {
+    const { data: upd, error: updErr } = await supabase
+      .from("agent_commissions")
+      .update({ [SUMMARIZED_DISTRIBUTION_TYPES[type]]: amount, updated_at: now })
+      .eq("id", p.commissionId)
+      .eq("brokerage_id", p.brokerageId)
+      .select("id")
+    if (updErr) errors.push(`agent_commissions: ${updErr.message}`)
+    else out.agentCommissions = (upd ?? []).length
+  }
+
+  if (p.transactionId) {
+    let stampQ = supabase
+      .from("transaction_commissions")
+      .update({ calculated_amount: amount, updated_at: now })
+      .eq("transaction_id", p.transactionId)
+      .eq("brokerage_id", p.brokerageId)
+      .eq("recipient_type", type)
+    if (type === "agent" && p.agentId) stampQ = stampQ.eq("recipient_id", p.agentId)
+    const { data: upd, error: updErr } = await stampQ.select("id")
+    if (updErr) errors.push(`transaction_commissions: ${updErr.message}`)
+    else out.transactionStamps = (upd ?? []).length
+  }
+  return errors.length > 0 ? { ...out, error: errors.join("; ") } : out
+}
+
+export interface CorrectCommissionDistributionInput {
+  ctx: FinancialActorContext
+  distributionId: string
+  kind: DistributionCorrectionKind
+  correctedAmount?: number | null
+  reason: string
+}
+
+export async function correctCommissionDistribution(
+  input: CorrectCommissionDistributionInput,
+): Promise<KernelFinancialResult<{ correctionId: string; amount: number; netAfter: number; summaries: CommissionSummaryRestamp }>> {
+  const { ctx, distributionId, kind } = input
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
+    return { success: false, error: "Only the brokerage's finance admins can correct a posted commission entry." }
+  }
+  if (!ctx.brokerageId) return { success: false, error: "Missing brokerage context" }
+  const supabase = createServiceClient()
+  try {
+    const { data: original, error: readErr } = await supabase
+      .from("commission_distributions")
+      .select("id, brokerage_id, transaction_id, commission_id, agent_id, team_id, rule_id, distribution_type, source_of_funds, cap_status, status, entry_type, calculated_amount")
+      .eq("id", distributionId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (readErr) return { success: false, error: `Could not read the entry: ${readErr.message}` }
+    if (!original) return { success: false, error: "Commission entry not found" }
+
+    const { data: prior, error: priorErr } = await supabase
+      .from("commission_distributions")
+      .select("calculated_amount")
+      .eq("adjusts_distribution_id", distributionId)
+      .eq("brokerage_id", ctx.brokerageId)
+    if (priorErr) return { success: false, error: `Could not read earlier corrections: ${priorErr.message}` }
+
+    const plan = planDistributionCorrection({
+      original: original as { id: string; status: string | null; entry_type?: string | null; calculated_amount: number | null },
+      priorCorrections: (prior ?? []) as Array<{ calculated_amount: number | null }>,
+      kind,
+      correctedAmount: input.correctedAmount ?? null,
+      reason: input.reason,
+    })
+    if (!plan.ok) return { success: false, error: plan.error }
+
+    const o = original as Record<string, unknown>
+    const now = new Date().toISOString()
+    const { data: inserted, error: insErr } = await supabase
+      .from("commission_distributions")
+      .insert({
+        brokerage_id:            ctx.brokerageId,
+        transaction_id:          o.transaction_id ?? null,
+        commission_id:           o.commission_id ?? null,
+        agent_id:                o.agent_id ?? null,
+        team_id:                 o.team_id ?? null,
+        rule_id:                 o.rule_id ?? null,
+        distribution_type:       o.distribution_type,
+        source_of_funds:         o.source_of_funds ?? "brokerage",
+        cap_status:              o.cap_status ?? null,
+        calculation_type:        "flat",
+        calculation_value:       plan.amount,
+        calculated_amount:       plan.amount,
+        status:                  "paid",
+        paid_at:                 now,
+        entry_type:              kind,
+        adjusts_distribution_id: distributionId,
+        correction_reason:       input.reason.trim(),
+        corrected_by:            ctx.userId,
+      })
+      .select("id, calculated_amount")
+    if (insErr) return { success: false, error: `Correction refused: ${insErr.message}` }
+    if (!inserted || inserted.length !== 1) {
+      return { success: false, error: `Correction not recorded (${inserted?.length ?? 0} rows written)` }
+    }
+    // Wave 100 (lane 100C — 98A open item): the SUMMARY rows re-derived from the distribution rows
+    // (lib/commission/distribution-correction.ts SUMMARY RE-STAMP). The correction is already posted
+    // (append-only), so a refused re-stamp is REPORTED beside the success, never rolled into a failure.
+    const restamp = await restampCommissionSummaries(supabase, {
+      brokerageId: ctx.brokerageId,
+      commissionId: (o.commission_id as string | null) ?? null,
+      transactionId: (o.transaction_id as string | null) ?? null,
+      agentId: (o.agent_id as string | null) ?? null,
+      distributionType: (o.distribution_type as string | null) ?? null,
+    })
+    if (restamp.error) console.error("[financial] commission correction posted; summary re-stamp incomplete:", restamp.error)
+    // WAVE 107 (107A): REVERSING the producing agent's SOURCE entry reverses every residual it funded.
+    // (An adjustment changes the amount, not the event — residuals are re-judged by finance, not auto-scaled.)
+    if (kind === "reversal" && o.distribution_type === "agent" && o.transaction_id) {
+      const cascade = await reverseDerivedResiduals(supabase, {
+        ctx, transactionId: o.transaction_id as string, commissionId: (o.commission_id as string | null) ?? null,
+        sourceDistributionId: distributionId, trigger: "source_reversed", reason: `source commission entry reversed: ${input.reason.trim()}`,
+      })
+      if (cascade.errors.length > 0) console.error("[financial] reversal posted; residual reversal incomplete:", cascade.errors.join("; "))
+    }
+    return {
+      success: true,
+      data: { correctionId: (inserted[0] as { id: string }).id, amount: plan.amount, netAfter: plan.netAfter, summaries: restamp },
+    }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+// ─── VOID (wave 105, lane 105E — owner ruling 1, 2026-10-06) ─────────────────────────────────────
+
+export interface VoidCommissionDistributionInput {
+  ctx: FinancialActorContext
+  distributionId: string
+  reason: string
+}
+
+export interface VoidCommissionDistributionResult {
+  distributionId: string
+  voidedAt: string
+  /** The summary rows re-derived without the voided row (same re-stamp the correction uses). */
+  summaries: CommissionSummaryRestamp
+  /** reconcileSummariesAgainstLedger over the tenant's ledger after the void — drift is REPORTED, never
+   *  rolled into a failure (the void is done; a projection that still disagrees is the reaper's finding). */
+  reconciliation: { checked: number; drifts: number; measured: boolean; warnings: string[] } | null
+}
+
+/**
+ * VOID an UNPAID commission entry (owner ruling 1, wave 105): finance admins only, tenant from the
+ * SESSION context, eligibility by the pure rule (lib/commission/distribution-correction.ts
+ * planDistributionVoid — pending | approved, no paid_at, not voided, no posted correction, a reason ≤ 500
+ * chars). The SAME row is stamped status 'voided' + voided_at + voided_reason (preserved: amounts
+ * untouched, never deleted; the actor rides the ledger row — there is no voided_by column, and none is
+ * added). A PAID entry is REFUSED with VOID_REFUSED_PAID: it is corrected through a reversal /
+ * adjustment row (correctCommissionDistribution), never voided — m689's trigger would refuse the UPDATE
+ * anyway, and the status predicate on the UPDATE keeps this command from ever reaching it.
+ *
+ * LAW 5 evidence, in order: withActionLedger (FINANCIAL, HUMAN_REQUESTED — the admin's reason rides
+ * reason_detail) claims BEFORE the write and settles after it; the UPDATE is .select()ed and COUNTED
+ * (§3: an UPDATE matching nothing resolves); then the summary re-stamp (voided row excluded), the
+ * COMMISSION_UPDATED audit event (metadata.change 'distribution_voided'), and the read-only reconciler.
+ */
+export async function voidCommissionDistribution(
+  input: VoidCommissionDistributionInput,
+): Promise<KernelFinancialResult<VoidCommissionDistributionResult>> {
+  const { ctx, distributionId } = input
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
+    return { success: false, error: "Only the brokerage's finance admins can void a commission entry." }
+  }
+  if (!ctx.brokerageId) return { success: false, error: "Missing brokerage context" }
+  const supabase = createServiceClient()
+  try {
+    const { data: entry, error: readErr } = await supabase
+      .from("commission_distributions")
+      .select("id, brokerage_id, transaction_id, commission_id, agent_id, distribution_type, status, entry_type, calculated_amount, paid_at, voided_at")
+      .eq("id", distributionId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (readErr) return { success: false, error: `Could not read the entry: ${readErr.message}` }
+    if (!entry) return { success: false, error: "Commission entry not found" }
+
+    const { data: corrections, error: corrErr } = await supabase
+      .from("commission_distributions")
+      .select("status, paid_at")
+      .eq("adjusts_distribution_id", distributionId)
+      .eq("brokerage_id", ctx.brokerageId)
+    if (corrErr) return { success: false, error: `Could not read the entry's corrections: ${corrErr.message}` }
+
+    const e = entry as Record<string, unknown>
+    const plan = planDistributionVoid({
+      entry: { id: distributionId, status: (e.status as string | null) ?? null, entry_type: (e.entry_type as string | null) ?? null, paid_at: (e.paid_at as string | null) ?? null, voided_at: (e.voided_at as string | null) ?? null },
+      corrections: (corrections ?? []) as Array<{ status: string | null; paid_at: string | null }>,
+      reason: input.reason,
+    })
+    if (!plan.ok) return { success: false, error: plan.error }
+
+    const now = new Date().toISOString()
+    type Outcome = { ok: true; voidedAt: string } | { ok: false; error: string }
+    const outcome = await withActionLedger<Outcome>(
+      {
+        brokerageId: ctx.brokerageId,
+        action: "finance.commission_distribution.void",
+        actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null },
+        subject: { type: "commission_distribution", id: distributionId, ref: (e.transaction_id as string | null) ?? null },
+        reasonCode: "HUMAN_REQUESTED",
+        reasonDetail: plan.reason,
+        riskClass: "FINANCIAL",
+        systemSource: "commission_correction_screen",
+        detail: {
+          status_before: e.status ?? null,
+          calculated_amount: e.calculated_amount ?? null,
+          distribution_type: e.distribution_type ?? null,
+          transaction_id: e.transaction_id ?? null,
+          commission_id: e.commission_id ?? null,
+          agent_id: e.agent_id ?? null,
+        },
+      },
+      async (): Promise<Outcome> => {
+        // The status predicate is the m689 guard: a posted / voided row is never matched, so the
+        // append-only trigger is never hit; a 0-row match is REFUSED, not reported as success (§3).
+        const { data: voided, error: updErr } = await supabase
+          .from("commission_distributions")
+          .update({ status: "voided", voided_at: now, voided_reason: plan.reason })
+          .eq("id", distributionId)
+          .eq("brokerage_id", ctx.brokerageId)
+          .not("status", "in", '("paid","voided")')
+          .is("paid_at", null)
+          .select("id, voided_at")
+        if (updErr) return { ok: false, error: `Void refused: ${updErr.message}` }
+        if (!voided || voided.length !== 1) {
+          return { ok: false, error: `Void not recorded (${voided?.length ?? 0} rows matched — already paid / voided, or not in this brokerage)` }
+        }
+        return { ok: true, voidedAt: ((voided[0] as { voided_at?: string | null }).voided_at as string | null) ?? now }
+      },
+      {
+        settle: (r) => (r.ok ? { status: "executed", outcome: "voided" } : { status: "failed", outcome: "refused", error: r.error }),
+        replay: (claim) => ({ ok: false, error: `Void already ${claim.kind === "in_flight" ? "in flight" : "recorded"} for this entry` }),
+      },
+      { client: supabase },
+    )
+    if (!outcome.ok) return { success: false, error: outcome.error }
+
+    // The SUMMARY rows re-derived from the LIVE rows (voided excluded) — the void is already stamped, so
+    // a refused re-stamp is REPORTED beside the success, never rolled into a failure.
+    const restamp = await restampCommissionSummaries(supabase, {
+      brokerageId: ctx.brokerageId,
+      commissionId: (e.commission_id as string | null) ?? null,
+      transactionId: (e.transaction_id as string | null) ?? null,
+      agentId: (e.agent_id as string | null) ?? null,
+      distributionType: (e.distribution_type as string | null) ?? null,
+    })
+    if (restamp.error) console.error("[financial] commission entry voided; summary re-stamp incomplete:", restamp.error)
+
+    // WAVE 107 (107A): voiding the producing agent's SOURCE entry takes every residual it funded with it.
+    if (e.distribution_type === "agent" && e.transaction_id) {
+      const cascade = await reverseDerivedResiduals(supabase, {
+        ctx, transactionId: e.transaction_id as string, commissionId: (e.commission_id as string | null) ?? null,
+        sourceDistributionId: distributionId, trigger: "source_voided", reason: `source commission entry voided: ${plan.reason}`,
+      })
+      if (cascade.errors.length > 0) console.error("[financial] void landed; residual reversal incomplete:", cascade.errors.join("; "))
+    }
+
+    // The canonical commission event (KernelEvent vocabulary has no 'voided' — COMMISSION_UPDATED is the
+    // distribution-level change event, and the change rides metadata). Audit row with lineage; no fan-out
+    // (nobody has been ruled to be notified of a void — the ledger row above is the evidence).
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: ctx.brokerageId,
+      entityType: "commission_distribution",
+      entityId: distributionId,
+      event: KernelEvent.COMMISSION_UPDATED,
+      actorUserId: ctx.userId,
+      transactionId: (e.transaction_id as string | null) ?? undefined,
+      metadata: {
+        change: "distribution_voided",
+        statusBefore: e.status ?? null,
+        calculatedAmount: e.calculated_amount ?? null,
+        distributionType: e.distribution_type ?? null,
+        commissionId: e.commission_id ?? null,
+        voidedAt: outcome.voidedAt,
+        voidedReason: plan.reason,
+        voidedBy: ctx.userId,
+      },
+      createdAt: outcome.voidedAt,
+      auditOnly: true,
+      client: supabase,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_distribution_void_echo", brokerageId: ctx.brokerageId, reason: "audit echo after the void landed; the action ledger row is the primary evidence" })
+
+    // The read-only reconciler (104A): the projections are expected to agree now; a drift is a FINDING
+    // reported with the result (and by the commission_amount_drift reaper), never a rollback.
+    let reconciliation: VoidCommissionDistributionResult["reconciliation"] = null
+    try {
+      const { reconcileSummariesAgainstLedger } = await import("@/lib/commission/reconcile-tracking")
+      const rec = await reconcileSummariesAgainstLedger(supabase, { brokerageId: ctx.brokerageId })
+      reconciliation = { checked: rec.checked, drifts: rec.drifts.length, measured: rec.measured, warnings: rec.warnings }
+      if (rec.drifts.length > 0) console.warn(`[financial] void of ${distributionId}: ${rec.drifts.length} projection(s) still drift from the ledger — see commission_amount_drift`)
+    } catch (recErr) {
+      reconciliation = { checked: 0, drifts: 0, measured: false, warnings: [`reconciler threw: ${recErr instanceof Error ? recErr.message : String(recErr)}`] }
+    }
+
+    return { success: true, data: { distributionId, voidedAt: outcome.voidedAt, summaries: restamp, reconciliation } }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+// ─── RESIDUAL ECONOMICS: FINANCE MANAGER REVIEW + REVERSAL (wave 107, lane 107A) ──────────────────
+// Owner: "Agent B closes → Economic Event → Commission ledger → Residual relationship lookup → Rule
+// evaluation → Residual ledger entry → Finance Manager review." Steps 1–5 are the waterfall (calculateCommission
+// → 09 evaluateResidualRules on the close date → 11 posts commission_distributions 'residual' as 'pending' with
+// per-entry action-ledger evidence + COMMISSION_DISTRIBUTED). Step 6 is HERE, on the existing correction screen
+// (the CDA Commission Breakdown, canCorrectEntries): approve (pending → approved; only then does the deal's
+// disbursement pay it — RESIDUAL_PAYABLE_FILTER) or reject (the existing VOID). Finance admins only
+// (isBrokerageFinanceAdmin — §5: agents never see others' residuals), tenant from the SESSION context.
+
+/**
+ * APPROVE a residual entry (pending → approved). LAW 5: withActionLedger FINANCIAL / HUMAN_REQUESTED, claimed
+ * BEFORE the write (idempotent per entry); the UPDATE is predicated on the pending residual shape and COUNTED
+ * (§3: an UPDATE matching nothing resolves); then the COMMISSION_APPROVED audit event. Rejection = void.
+ */
+export async function approveResidualEntry(input: { ctx: FinancialActorContext; distributionId: string; note?: string | null }): Promise<KernelFinancialResult<{ distributionId: string; status: "approved" }>> {
+  const { ctx, distributionId } = input
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
+    return { success: false, error: "Only the brokerage's finance admins approve residual entries." }
+  }
+  if (!ctx.brokerageId) return { success: false, error: "Missing brokerage context" }
+  const supabase = createServiceClient()
+  try {
+    const { data: entry, error: readErr } = await supabase
+      .from("commission_distributions")
+      .select("id, transaction_id, commission_id, agent_id, distribution_type, status, entry_type, paid_at, calculated_amount")
+      .eq("id", distributionId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (readErr) return { success: false, error: `Could not read the entry: ${readErr.message}` }
+    if (!entry) return { success: false, error: "Residual entry not found" }
+    const e = entry as Record<string, unknown>
+    const plan = planResidualApproval(e as { id: string; distribution_type: string | null; status: string | null; entry_type?: string | null; paid_at?: string | null })
+    if (!plan.ok) return { success: false, error: plan.error }
+
+    type Outcome = { ok: true } | { ok: false; error: string }
+    const outcome = await withActionLedger<Outcome>(
+      {
+        brokerageId: ctx.brokerageId,
+        action: "finance.residual.approve",
+        actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null },
+        subject: { type: "commission_distribution", id: distributionId, ref: (e.transaction_id as string | null) ?? null },
+        reasonCode: "HUMAN_REQUESTED",
+        reasonDetail: (input.note ?? "").trim() || "finance review approved the residual entry",
+        idempotencyKey: `residual-approve:${distributionId}`,
+        riskClass: "FINANCIAL",
+        systemSource: "commission_correction_screen",
+        detail: { transaction_id: e.transaction_id ?? null, commission_id: e.commission_id ?? null, beneficiary_agent_id: e.agent_id ?? null, calculated_amount: e.calculated_amount ?? null, status_before: e.status ?? null },
+      },
+      async (): Promise<Outcome> => {
+        const { data: upd, error: updErr } = await supabase
+          .from("commission_distributions")
+          .update({ status: "approved" })
+          .eq("id", distributionId)
+          .eq("brokerage_id", ctx.brokerageId)
+          .eq("distribution_type", "residual")
+          .eq("status", "pending")
+          .is("paid_at", null)
+          .select("id")
+        if (updErr) return { ok: false, error: `Approval refused: ${updErr.message}` }
+        if (!upd || upd.length !== 1) return { ok: false, error: `Approval not recorded (${upd?.length ?? 0} rows matched — no longer pending, or not in this brokerage)` }
+        return { ok: true }
+      },
+      {
+        settle: (r) => (r.ok ? { status: "executed", outcome: "approved" } : { status: "failed", outcome: "refused", error: r.error }),
+        replay: (claim) => ({ ok: false, error: `Approval already ${claim.kind === "in_flight" ? "in flight" : "recorded"} for this entry` }),
+      },
+      { client: supabase },
+    )
+    if (!outcome.ok) return { success: false, error: outcome.error }
+
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: ctx.brokerageId,
+      entityType: "commission_distribution",
+      entityId: distributionId,
+      event: KernelEvent.COMMISSION_APPROVED,
+      actorUserId: ctx.userId,
+      transactionId: (e.transaction_id as string | null) ?? undefined,
+      metadata: { change: "residual_approved", calculatedAmount: e.calculated_amount ?? null, beneficiaryAgentId: e.agent_id ?? null, commissionId: e.commission_id ?? null },
+      auditOnly: true,
+      client: supabase,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "residual_approved_echo", brokerageId: ctx.brokerageId, reason: "audit echo after the residual approval landed; the action ledger row is the primary evidence" })
+
+    return { success: true, data: { distributionId, status: "approved" } }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * The residual consequence of a SOURCE commission void / reversal (planResidualReversal decides): unpaid
+ * residuals of the same commission are VOIDED in place, paid ones get a NEW reversal row. Each write is its own
+ * withActionLedger FINANCIAL claim keyed per (source, residual) — a re-run replays instead of double-reversing.
+ * Called only from voidCommissionDistribution / correctCommissionDistribution after their own gate passed.
+ */
+async function reverseDerivedResiduals(
+  supabase: ReturnType<typeof createServiceClient>,
+  input: { ctx: FinancialActorContext; transactionId: string; commissionId: string | null; sourceDistributionId: string; trigger: "source_voided" | "source_reversed"; reason: string },
+): Promise<{ voided: number; reversed: number; errors: string[] }> {
+  const { ctx } = input
+  const out = { voided: 0, reversed: 0, errors: [] as string[] }
+  let q = supabase
+    .from("commission_distributions")
+    .select("id, transaction_id, commission_id, agent_id, team_id, distribution_type, source_of_funds, cap_status, status, entry_type, paid_at, voided_at, calculated_amount, adjusts_distribution_id")
+    .eq("brokerage_id", ctx.brokerageId)
+    .eq("transaction_id", input.transactionId)
+    .eq("distribution_type", "residual")
+  if (input.commissionId) q = q.eq("commission_id", input.commissionId)
+  const { data: rows, error: readErr } = await q
+  if (readErr) { out.errors.push(`residual read refused: ${readErr.message}`); return out }
+  const all = (rows ?? []) as Array<ResidualReversalRow & Record<string, unknown>>
+  const entries = all.filter((r) => (r.entry_type ?? "entry") === "entry")
+  const correctionsByEntry = new Map<string, Array<{ calculated_amount: number | string | null; status?: string | null; paid_at?: string | null }>>()
+  for (const c of all.filter((r) => (r.entry_type ?? "entry") !== "entry" && r.adjusts_distribution_id)) {
+    const k = String(c.adjusts_distribution_id)
+    correctionsByEntry.set(k, [...(correctionsByEntry.get(k) ?? []), c])
+  }
+  const reason = input.reason.slice(0, 500)
+  const plan = planResidualReversal({ residuals: entries, correctionsByEntry, reason })
+  const byId = new Map(entries.map((r) => [r.id, r]))
+
+  type Outcome = { ok: true } | { ok: false; error: string }
+  const ledgered = (action: string, residualId: string, run: () => Promise<Outcome>) => withActionLedger<Outcome>(
+    {
+      brokerageId: ctx.brokerageId,
+      action,
+      actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null },
+      subject: { type: "commission_distribution", id: residualId, ref: input.transactionId },
+      reasonCode: "HUMAN_REQUESTED",
+      reasonDetail: reason,
+      idempotencyKey: `${action}:${input.sourceDistributionId}:${residualId}`,
+      riskClass: "FINANCIAL",
+      systemSource: "commission_correction_screen",
+      detail: { trigger: input.trigger, source_distribution_id: input.sourceDistributionId, transaction_id: input.transactionId, residual_id: residualId },
+    },
+    run,
+    {
+      settle: (r) => (r.ok ? { status: "executed", outcome: action.endsWith("void") ? "voided" : "reversed" } : { status: "failed", outcome: "refused", error: r.error }),
+      replay: () => ({ ok: true }),
+    },
+    { client: supabase },
+  )
+
+  for (const id of plan.void) {
+    const r = await ledgered("finance.residual.void", id, async () => {
+      const { data: upd, error } = await supabase
+        .from("commission_distributions")
+        .update({ status: "voided", voided_at: new Date().toISOString(), voided_reason: reason })
+        .eq("id", id).eq("brokerage_id", ctx.brokerageId)
+        .not("status", "in", '("paid","voided")').is("paid_at", null)
+        .select("id")
+      if (error) return { ok: false, error: error.message }
+      return (upd ?? []).length === 1 ? { ok: true } : { ok: false, error: `${(upd ?? []).length} rows matched` }
+    })
+    if (r.ok) out.voided++; else out.errors.push(`void ${id}: ${r.error}`)
+  }
+  for (const rev of plan.reverse) {
+    const o = byId.get(rev.id) as Record<string, unknown>
+    const r = await ledgered("finance.residual.reverse", rev.id, async () => {
+      const now = new Date().toISOString()
+      const { data: ins, error } = await supabase
+        .from("commission_distributions")
+        .insert({
+          brokerage_id: ctx.brokerageId, transaction_id: input.transactionId, commission_id: o.commission_id ?? null,
+          agent_id: o.agent_id ?? null, team_id: o.team_id ?? null, distribution_type: "residual",
+          source_of_funds: o.source_of_funds ?? "brokerage", cap_status: o.cap_status ?? null,
+          calculation_type: "flat", calculation_value: rev.amount, calculated_amount: rev.amount,
+          status: "paid", paid_at: now, entry_type: "reversal", adjusts_distribution_id: rev.id,
+          correction_reason: reason, corrected_by: ctx.userId,
+        })
+        .select("id")
+      if (error) return { ok: false, error: error.message }
+      return (ins ?? []).length === 1 ? { ok: true } : { ok: false, error: `${(ins ?? []).length} rows written` }
+    })
+    if (r.ok) out.reversed++; else out.errors.push(`reverse ${rev.id}: ${r.error}`)
+  }
+
+  if (out.voided + out.reversed > 0) {
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: ctx.brokerageId,
+      entityType: "commission_distribution",
+      entityId: input.sourceDistributionId,
+      event: KernelEvent.COMMISSION_UPDATED,
+      actorUserId: ctx.userId,
+      transactionId: input.transactionId,
+      metadata: { change: "residual_reversed", trigger: input.trigger, voided: plan.void, reversed: plan.reverse, untouched: plan.untouched },
+      auditOnly: true,
+      client: supabase,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "residual_reversed_echo", brokerageId: ctx.brokerageId, reason: "audit echo after the residual reversal landed; each residual's action ledger row is the primary evidence" })
+  }
+  return out
 }

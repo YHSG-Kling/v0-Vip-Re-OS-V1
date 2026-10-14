@@ -98,8 +98,23 @@ export function TenantEntitlementsPanel({ brokerageId }: { brokerageId: string }
               {data.grants.length > 0 && (
                 <div className="mt-2 space-y-1">
                   {data.grants.map((g) => (
-                    <div key={g.id} className="flex items-center gap-2 text-xs">
-                      <span className="flex-1 truncate">+{g.extraTokens.toLocaleString()} · {g.reason}{g.effectiveUntil ? ` · until ${new Date(g.effectiveUntil).toLocaleDateString()}` : ' · no expiry'}</span>
+                    <div key={g.id} className="flex items-start gap-2 text-xs">
+                      <span className="flex-1 min-w-0">
+                        <span className="block truncate">+{g.extraTokens.toLocaleString()} · {g.reason}{g.effectiveUntil ? ` · until ${new Date(g.effectiveUntil).toLocaleDateString()}` : ' · no expiry'}</span>
+                        {/* WHO APPROVED IT. Written on every grant (approved_by /
+                            requested_by) and read by nothing until now — a raise to a
+                            tenant's paid AI allowance with no name on it is an approval
+                            nobody can check. selfApproved is stated rather than hidden:
+                            this panel grants and approves in one press, so the same
+                            staffer is on both halves, and a future request/approve split
+                            has to be visible here to mean anything. */}
+                        <span className="block text-[11px] text-muted-foreground truncate">
+                          {g.approvedByName
+                            ? `approved by ${g.approvedByName}${g.selfApproved ? ' (granted and approved)' : g.requestedByName ? ` · requested by ${g.requestedByName}` : ''}`
+                            : 'approver not on file'}
+                          {g.approvedAt ? ` · ${new Date(g.approvedAt).toLocaleDateString()}` : ''}
+                        </span>
+                      </span>
                       <Button size="sm" variant="ghost" disabled={pending} onClick={() => revoke(g.id)}>Revoke</Button>
                     </div>
                   ))}

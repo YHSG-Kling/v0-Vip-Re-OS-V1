@@ -36,7 +36,10 @@ async function main() {
 
   console.log("\n[Layer 1 · manager attribution per channel]")
   check("voice → ai_isa", touchpointManagerForChannel("ai_call") === "ai_isa" && touchpointManagerForChannel("voice_drop") === "ai_isa")
-  check("social + direct_mail → marketing_agent", touchpointManagerForChannel("social_post") === "marketing_agent" && touchpointManagerForChannel("direct_mail") === "marketing_agent")
+  // m618: "marketing_agent" retired as a ManagerKey — social/direct_mail now resolve to
+  // its survivor campaign_orchestrator (the same value the "unknown channel" default below
+  // already returns; the map keeps them EXPLICIT rather than deleted, see touchpoint-bridge.ts).
+  check("social + direct_mail → campaign_orchestrator", touchpointManagerForChannel("social_post") === "campaign_orchestrator" && touchpointManagerForChannel("direct_mail") === "campaign_orchestrator")
   check("video → asset_manager (Video Director assembled)", touchpointManagerForChannel("video") === "asset_manager")
   check("email/sms → campaign_orchestrator", touchpointManagerForChannel("email") === "campaign_orchestrator" && touchpointManagerForChannel("sms") === "campaign_orchestrator")
   check("unknown channel → campaign_orchestrator default (never throws)", touchpointManagerForChannel("zzz") === "campaign_orchestrator")

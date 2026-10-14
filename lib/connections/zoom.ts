@@ -36,6 +36,7 @@
 import { createHmac } from "crypto"
 import type { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { encryptSecret, decryptSecret } from "@/lib/security/secret-crypto"
 
 type ServiceClient = ReturnType<typeof createServiceClient>
 
@@ -138,7 +139,8 @@ export function zoomProviderGap(env: { clientId?: string | null; clientSecret?: 
 }
 
 /** Live: is the Zoom OAuth app configured? (Drives every connect button.) */
-export function isZoomProviderConfigured(): boolean {
+// internal helper — called in-file by ensureZoomMeetingForAppointment
+function isZoomProviderConfigured(): boolean {
   return zoomProviderGap({
     clientId: process.env.ZOOM_CLIENT_ID ?? null,
     clientSecret: process.env.ZOOM_CLIENT_SECRET ?? null,
@@ -146,7 +148,8 @@ export function isZoomProviderConfigured(): boolean {
 }
 
 /** Live: the gap statement for the current environment (null when configured). */
-export function currentZoomProviderGap(): string | null {
+// internal helper — called in-file by ensureFreshZoomToken/ensureZoomMeetingForAppointment/readScopedZoom
+function currentZoomProviderGap(): string | null {
   return zoomProviderGap({
     clientId: process.env.ZOOM_CLIENT_ID ?? null,
     clientSecret: process.env.ZOOM_CLIENT_SECRET ?? null,
@@ -261,8 +264,9 @@ export async function loadScopedZoomCredential(
 
   if (!data || data.is_active === false) return null
   const config = (data.config ?? {}) as Record<string, unknown>
-  const accessToken = (data.access_token as string | null) ?? (config.access_token as string | undefined) ?? null
-  const refreshToken = (data.refresh_token as string | null) ?? (config.refresh_token as string | undefined) ?? ""
+  // Stored tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt before use.
+  const accessToken = decryptSecret((data.access_token as string | null) ?? (config.access_token as string | undefined) ?? null)
+  const refreshToken = decryptSecret((data.refresh_token as string | null) ?? (config.refresh_token as string | undefined) ?? "") ?? ""
   if (!accessToken) return null
   return {
     id: data.id as string,
@@ -307,15 +311,24 @@ export async function ensureFreshZoomToken(
     throw new Error(`Zoom token refresh failed (${res.status ?? "—"}): ${res.error ?? ""}`)
   }
   const tokenExpiresAt = new Date(Date.now() + (res.data.expires_in ?? 3600) * 1000).toISOString()
-  await svc
+  // ZOOM ROTATES THE REFRESH TOKEN: the one we just spent is now dead. If this
+  // persist is refused and nobody is told, the row keeps the spent token and the
+  // integration is permanently broken at the next refresh — while this call
+  // still returns a working access token, so the failure surfaces an hour later
+  // with nothing pointing back here. The function already throws on a failed
+  // refresh; a failed persist is the same class of failure.
+  const { error: persistError } = await svc
     .from("platform_credentials")
     .update({
-      access_token: res.data.access_token,
-      refresh_token: res.data.refresh_token,
+      access_token: encryptSecret(res.data.access_token),
+      refresh_token: encryptSecret(res.data.refresh_token),
       token_expires_at: tokenExpiresAt,
       updated_at: new Date().toISOString(),
     })
     .eq("id", cred.id)
+  if (persistError) {
+    throw new Error(`Zoom token refreshed but could not be stored — the stored refresh token is now spent: ${persistError.message}`)
+  }
   return res.data.access_token
 }
 
@@ -453,7 +466,13 @@ export async function readScopedZoom(
   ownerId: string,
 ): Promise<ScopedZoomStatus> {
   const offering = ZOOM_OFFERINGS[scope]
-  const cred = offering.status === "connectable"
+  // ONE VOCABULARY (§6, wave 26): this line hand-rolled
+  // `offering.status === "connectable"`, which is the entire body of
+  // `isZoomOffered` (line 124) — the predicate declared 340 lines above for
+  // exactly this question and reached by nothing. Two spellings of "is Zoom
+  // connectable at this scope" cannot be found from one another, and a change to
+  // the offering vocabulary would have had to be made in both.
+  const cred = isZoomOffered(scope)
     ? await loadScopedZoomCredential(svc, scope, ownerId)
     : null
   return {

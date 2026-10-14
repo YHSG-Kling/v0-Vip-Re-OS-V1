@@ -30,13 +30,18 @@
 //  - loadFormDraft                   → returns null if no draft; never 404-errors
 //  - launchEsignEnvelope             → delegates to provider.sendForSignature, logs event
 //  - getEsignStatus                  → returns percentComplete 0–100, signed/total counts
-//  - syncEsignDocuments              → delegates to provider.syncDocuments, returns doc list
+//  - syncEsignDocuments              → REMOVED (m614, this lane). Fetch-only duplicate of
+//                                       lib/transactions/sync-from-provider.ts's two persisting
+//                                       cores (syncTransactionDocumentsFromProvider,
+//                                       syncListingDocumentsFromProvider) — see the tombstone
+//                                       at its former home below COMMAND 7.
 //  - recordBuyerPropertyAction       → upserts property_interests row for contact
 //  - loadBuyerSavedProperties        → returns paginated saved/favorited interests
 
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { createServiceClient } from "@/lib/supabase/service"
-import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
 import { KernelEvent } from "./events"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 // ─── RESULT TYPE ────────────────────────────────────────────────────────────
 
@@ -133,24 +138,45 @@ export interface BuyerPropertyInterest {
 //
 // Resolves the brokerage's connected forms/transaction provider name.
 // Source of truth: platform_credentials table (is_active=true).
-// Falls back to "dotloop" if no explicit credential found.
+// Returns "not_configured" when no credential is found. This is the TRANSACTION-FORMS (TM) vendor
+// only; e-sign is resolved by lib/integrations/resolve-esign-provider.ts (selection, else the
+// catalog DEFAULT_ESIGN_PROVIDER — DocuSign — never "dotloop" and never "whatever TM is connected").
 // Rule: provider is a brokerage/team property — NEVER a contact property.
+//
+// WAVE 140 (lane 140P; lane 140H: "forms.ts returns a token in its result"): this result carried
+// the DECRYPTED access_token to every caller — including app/actions/forms-kernel.ts
+// resolveFormsProviderAction, a "use server" export that returned it to two browser components.
+// The resolver now answers the QUESTION ("which provider, is it configured, is a token stored") and
+// never the secret; the ONE egress caller that still signs a provider request from it (the Dotloop
+// branch of app/actions/admin/commission-agreement.ts) loads it through loadTransactionFormsCredential
+// below, which has no "use server" caller. (lib/transactions/cda-esign.ts no longer reads either —
+// wave 141: the CDA follows the tenant's E-SIGN selection through lib/esign/dispatch-packet.ts, whose
+// credential is resolved by lib/integrations/resolve-esign-provider.ts, never the TM vendor's.)
+
+const TRANSACTION_FORMS_PLATFORMS = ["dotloop", "skyslope", "formsimplicity", "brokermint", "authentisign", "docusign"] as const
+
+/** The newest active transaction-forms credential row (the SEALED token, never decrypted here).
+ *  One read, a literal select, so the credential reader census sees exactly which columns leave the store. */
+async function newestTransactionFormsCredential(brokerage_id: string) {
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("platform_credentials")
+    .select("platform, account_id, is_active, access_token")
+    .eq("brokerage_id", brokerage_id)
+    .in("platform", [...TRANSACTION_FORMS_PLATFORMS])
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw new Error(`platform_credentials read refused: ${error.message}`)
+  return (data ?? null) as { platform: string | null; account_id: string | null; is_active: boolean | null; access_token: string | null } | null
+}
 
 export async function resolveTransactionFormsProvider(input: {
   brokerage_id: string
-}): Promise<KernelFormsResult<{ provider_name: string; is_configured: boolean; access_token: string | null; account_id: string | null }>> {
+}): Promise<KernelFormsResult<{ provider_name: string; is_configured: boolean; has_access_token: boolean; account_id: string | null }>> {
   try {
-    const supabase = createServiceClient()
-
-    const { data: credential } = await supabase
-      .from("platform_credentials")
-      .select("platform, account_id, access_token, is_active")
-      .eq("brokerage_id", input.brokerage_id)
-      .in("platform", ["dotloop", "skyslope", "formsimplicity", "brokermint", "authentisign", "docusign"])
-      .eq("is_active", true)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    const credential = await newestTransactionFormsCredential(input.brokerage_id)
 
     const provider_name = credential?.platform ?? "not_configured"
     const is_configured = !!credential?.account_id
@@ -160,7 +186,32 @@ export async function resolveTransactionFormsProvider(input: {
       data: {
         provider_name,
         is_configured,
-        access_token: credential?.access_token ?? null,
+        // A handle, not the token: "a sealed token is stored" (the sealed value never leaves this function).
+        has_access_token: typeof credential?.access_token === "string" && credential.access_token.length > 0,
+        account_id: credential?.account_id ?? null,
+      },
+    }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+}
+
+/**
+ * THE EGRESS HALF — the decrypted transaction-forms credential, for a server caller that is about
+ * to sign a provider request (today: the Dotloop branches named above). Never reached from a
+ * "use server" export, never returned to a browser; a caller that only needs the provider's NAME
+ * uses resolveTransactionFormsProvider.
+ */
+export async function loadTransactionFormsCredential(input: {
+  brokerage_id: string
+}): Promise<KernelFormsResult<{ provider_name: string; access_token: string | null; account_id: string | null }>> {
+  try {
+    const credential = await newestTransactionFormsCredential(input.brokerage_id)
+    return {
+      success: true,
+      data: {
+        provider_name: credential?.platform ?? "not_configured",
+        access_token: decryptSecret(credential?.access_token ?? null),
         account_id: credential?.account_id ?? null,
       },
     }
@@ -212,23 +263,52 @@ export async function loadAvailableTransactionForms(input: {
       query = query.or(`state.eq.${input.state.toUpperCase()},state.is.null`)
     }
 
-    const { data: brokerageForms } = await query
+    // ALSO read brokerage_form_library — the PDF form library the broker/admin
+    // UPLOADS to (app/api/admin/transaction-forms) and the AI form-fill engine
+    // consults. It was invisible to the agent Forms Library because this loader
+    // only read brokerage_forms (whose transaction rows nothing populates), so an
+    // agent never saw the forms their broker uploaded. Merge both so the agent
+    // can see + fill them; its category is packet_type, matched to the context.
+    let libQuery = supabase
+      .from("brokerage_form_library")
+      .select("id, name, description, state, packet_type, pdf_url, is_active")
+      .eq("brokerage_id", input.brokerage_id)
+      .eq("is_active", true)
+      .in("packet_type", contextCategories[input.context_type])
+      .order("name")
+      .limit(50)
+    if (input.state) {
+      libQuery = libQuery.or(`state.eq.${input.state.toUpperCase()},state.is.null`)
+    }
 
-    if (brokerageForms && brokerageForms.length > 0) {
-      return {
-        success: true,
-        data: {
-          forms: brokerageForms.map((f: any) => ({
-            id:          f.id,
-            name:        f.form_name,
-            category:    f.form_category,
-            form_type:   f.form_type ?? f.form_category,
-            is_required: f.is_required ?? false,
-            description: f.document_url ? "Brokerage library form" : undefined,
-            state:       f.state ?? undefined,
-          })),
-        },
-      }
+    const [{ data: brokerageForms }, { data: libraryForms }] = await Promise.all([
+      query,
+      libQuery.then((r: any) => r, () => ({ data: [] })),
+    ])
+
+    const merged: FormTemplate[] = [
+      ...((brokerageForms ?? []) as any[]).map((f) => ({
+        id:          f.id,
+        name:        f.form_name,
+        category:    f.form_category,
+        form_type:   f.form_type ?? f.form_category,
+        is_required: f.is_required ?? false,
+        description: f.document_url ? "Brokerage library form" : undefined,
+        state:       f.state ?? undefined,
+      })),
+      ...((libraryForms ?? []) as any[]).map((f) => ({
+        id:          f.id,
+        name:        f.name,
+        category:    f.packet_type ?? input.context_type,
+        form_type:   f.packet_type ?? input.context_type,
+        is_required: false,
+        description: f.description ?? (f.pdf_url ? "Brokerage form library (PDF)" : undefined),
+        state:       f.state ?? undefined,
+      })),
+    ]
+
+    if (merged.length > 0) {
+      return { success: true, data: { forms: merged } }
     }
 
     // Fallback: return context-appropriate defaults so the UI is never empty
@@ -315,6 +395,58 @@ export async function prefillFormWithContext(input: {
           seller_email:      seller?.email ?? null,
           seller_phone:      seller?.phone ?? null,
         }
+
+        // ── THE HALF THAT WAS MISSING ────────────────────────────────────────
+        // A listing agreement and a seller disclosure are contracts issued under
+        // a LICENCE, and state advertising law requires the brokerage's name and
+        // licence to appear on them. The block above resolves the property and
+        // the seller and stops — so every listing form prefilled for the e-sign
+        // flow went out with the agent's licence number and the entire brokerage
+        // block blank.
+        //
+        // The listing-forms panel already READS this block to warn a human
+        // before sending (see listing-forms-panel.tsx), but a warning on screen
+        // does not fill the field: the document itself still left the licence
+        // empty, and the agent found out after the seller had signed it.
+        //
+        // prefillListingFormFromRecord already resolves exactly that block —
+        // listings → agents → users, and agents → brokerages. It is joined in
+        // here rather than duplicated, so the two cannot disagree about which
+        // agent or which brokerage a listing belongs to.
+        //
+        // TENANT SAFETY: it reads by listing id alone, which is why it is called
+        // only from inside this branch — the query above has already refused any
+        // listing outside input.brokerage_id, so the id is proven in-tenant
+        // before it is handed over.
+        //
+        // ADDITIVE BY DESIGN: it uses the RLS client rather than this function's
+        // service client, so a caller with no session (a background job) simply
+        // gets nothing back. That is logged and the property/seller fields above
+        // are left exactly as they are — a missing licence block must never cost
+        // the agent the rest of the prefill.
+        try {
+          const { prefillListingFormFromRecord } = await import("./listings")
+          const ctx = await prefillListingFormFromRecord({ listingId: input.context_id })
+          if (ctx.success) {
+            const p = ctx.prefillData
+            fields = {
+              ...fields,
+              agent_first_name:     p.agentFirstName ?? null,
+              agent_last_name:      p.agentLastName ?? null,
+              agent_email:          p.agentEmail ?? null,
+              agent_license_number: p.agentLicenseNumber ?? null,
+              agent_license_state:  p.agentLicenseState ?? null,
+              brokerage_name:       p.brokerageName ?? null,
+              brokerage_address:    p.brokerageAddress ?? null,
+              brokerage_phone:      p.brokeragePhone ?? null,
+              brokerage_license:    p.brokerageLicense ?? null,
+            }
+          } else {
+            console.error("[prefillFormWithContext] agent/brokerage prefill unavailable:", ctx.error)
+          }
+        } catch (err) {
+          console.error("[prefillFormWithContext] agent/brokerage prefill failed:", err)
+        }
       }
     } else if (input.context_type === "offer") {
       // Offer context: ONLY offer + buyer contact data
@@ -322,7 +454,7 @@ export async function prefillFormWithContext(input: {
         .from("offers")
         .select(`
           id, offer_price, offer_date:submitted_at, closing_date, earnest_money,
-          financing_type, contingencies, contact_id,
+          financing_type, contingencies, contact_id, listing_id, transaction_id, property_address,
           contacts!contact_id (
             first_name, last_name, email, phone
           ),
@@ -353,6 +485,27 @@ export async function prefillFormWithContext(input: {
           state:             listing?.state ?? null,
           zip_code:          listing?.zip_code ?? null,
           list_price:        listing?.list_price ?? null,
+        }
+
+        // GROUNDED FALLBACK CHAIN (orphan burn-down). The bare `listings` embed above
+        // is null whenever the offer has no linked listing row (an off-MLS or
+        // external-listing buy) — property_address/city/state/zip then went out
+        // blank even though the offer's OWN transaction or its own property_address
+        // column often carries the answer. resolveKnownPropertyFacts is the one
+        // resolver that already walks listing → transaction → offer's own address;
+        // it only fills what THIS query left null, never overwrites a real value.
+        if (!fields.property_address || !fields.city) {
+          const { resolveKnownPropertyFacts } = await import("@/lib/intelligence/offer-property-prefill-runner")
+          const facts = await resolveKnownPropertyFacts({
+            listingId:       (offer as any).listing_id ?? null,
+            transactionId:   (offer as any).transaction_id ?? null,
+            offerId:         offer.id,
+            propertyAddress: (offer as any).property_address ?? null,
+          }, supabase)
+          fields.property_address = fields.property_address ?? facts.address ?? null
+          fields.city             = fields.city ?? facts.propertyCity ?? null
+          fields.state             = fields.state ?? facts.propertyState ?? null
+          fields.zip_code          = fields.zip_code ?? facts.propertyZip ?? null
         }
       }
     } else if (input.context_type === "transaction") {
@@ -571,16 +724,22 @@ export async function launchEsignEnvelope(input: {
       return { success: false, error: "Already sent for signature" }
     }
 
-    // Resolve provider with credentials from platform_credentials
-    const providerResult = await resolveTransactionFormsProvider({ brokerage_id: input.brokerage_id })
-    if (!providerResult.success || !providerResult.data?.is_configured) {
-      return { success: false, error: "No transaction provider configured for this brokerage. Go to Settings > Integrations." }
+    // Resolve the e-sign provider through the ONE rule (lane 89A): the brokerage's e-sign
+    // SELECTION, else the DocuSign default (the brokerage's own DocuSign connection, else the
+    // platform's DocuSign account). A portal-send selection (Google eSignature) is refused with
+    // where to send from — nothing was sent, so that stays an honest refusal. The old read here
+    // took "the newest transaction-management credential", which let the TM vendor pick the signer.
+    const { resolveESignProviderForActor } = await import("@/lib/integrations/resolve-esign-provider")
+    let resolvedEsign: Awaited<ReturnType<typeof resolveESignProviderForActor>>
+    try {
+      // brokerage scope only: `agent_id` here is not proven to be a users.id (the selection's
+      // user tier keys on users.id), so it is not passed as one.
+      resolvedEsign = await resolveESignProviderForActor({ brokerageId: input.brokerage_id })
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : "The e-sign provider could not be resolved for this brokerage." }
     }
-    const { provider_name: providerName, access_token, account_id } = providerResult.data
-    const injectedCredentials = access_token && account_id
-      ? { apiKey: access_token, profileId: account_id }
-      : undefined
-    const provider = getTransactionProviderByName(providerName, injectedCredentials)
+    const providerName = resolvedEsign.providerName
+    const provider = resolvedEsign.provider
 
     // Delegate to provider (transport only)
     const sendResult = await provider.sendForSignature({
@@ -595,30 +754,30 @@ export async function launchEsignEnvelope(input: {
     }
 
     // Update submission status
-    await supabase
+    const { error: sentForSigErr } = await supabase
       .from("form_submissions")
       .update({
         status:     "sent_for_signature",
         updated_at: new Date().toISOString(),
       })
       .eq("id", input.form_submission_id)
+    if (sentForSigErr) console.error(`[kernel/forms] submission NOT marked sent_for_signature: ${sentForSigErr.message}`)
 
     // Emit event
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        entity_type:  "form_submission",
-        entity_id:    input.form_submission_id,
-        event_type:   KernelEvent.ESIGN_ENVELOPE_REQUESTED,
-        brokerage_id: input.brokerage_id,
-        metadata: {
-          agent_id:                 input.agent_id,
-          external_transaction_id:  input.external_transaction_id,
-          provider:                 providerName,
-          signer_count:             input.signers.length,
-        },
-        created_at: new Date().toISOString(),
-      })
+    // Audit row + reactor (integrator, 2026-09-03 — was a bare insert).
+    const { error: emitErr } = await emitKernelEvent({
+      entityType:  "form_submission",
+      entityId:    input.form_submission_id,
+      event:       KernelEvent.ESIGN_ENVELOPE_REQUESTED,
+      brokerageId: input.brokerage_id,
+      metadata: {
+        agent_id:                 input.agent_id,
+        external_transaction_id:  input.external_transaction_id,
+        provider:                 providerName,
+        signer_count:             input.signers.length,
+      },
+    })
+    if (emitErr) console.error(`[forms] ESIGN_ENVELOPE_REQUESTED emit refused for submission ${input.form_submission_id}: ${emitErr}`)
 
     return { success: true, data: { envelope_launched: true } }
   } catch (error: any) {
@@ -637,9 +796,13 @@ export async function getEsignStatus(input: {
   external_transaction_id: string
 }): Promise<KernelFormsResult<EsignStatus>> {
   try {
-    const providerResult = await resolveTransactionFormsProvider({ brokerage_id: input.brokerage_id })
-    const providerName   = providerResult.data?.provider_name ?? "dotloop"
-    const provider       = getTransactionProviderByName(providerName)
+    // Lane 89A: the same ONE rule as the send — the brokerage's e-sign SELECTION, else the DocuSign
+    // default with its credential (the brokerage's own, else the platform's account). A portal-send
+    // selection (Google eSignature) has no status API and is refused honestly; never a silent Dotloop.
+    const { resolveESignProviderForActor } = await import("@/lib/integrations/resolve-esign-provider")
+    const resolvedEsign  = await resolveESignProviderForActor({ brokerageId: input.brokerage_id })
+    const providerName   = resolvedEsign.providerName
+    const provider       = resolvedEsign.provider
 
     const status = await provider.getSignatureStatus(input.external_transaction_id)
 
@@ -662,52 +825,24 @@ export async function getEsignStatus(input: {
   }
 }
 
-// ─── COMMAND 8: syncEsignDocuments ──────────────────────────────────────────
+// ─── (REMOVED) COMMAND 8: syncEsignDocuments ────────────────────────────────
 //
-// Pulls documents from the provider and returns them for display.
-// Does NOT write to DB directly — caller persists if needed.
-// Provider call is TRANSPORT ONLY.
-
-export async function syncEsignDocuments(input: {
-  brokerage_id: string
-  external_transaction_id: string
-  contact_id: string
-  transaction_id?: string
-  listing_id?: string
-}): Promise<KernelFormsResult<{ documents: ProviderDocument[]; synced_count: number }>> {
-  try {
-    const providerResult = await resolveTransactionFormsProvider({ brokerage_id: input.brokerage_id })
-    const providerName   = providerResult.data?.provider_name ?? "dotloop"
-    const provider       = getTransactionProviderByName(providerName)
-
-    const result = await provider.syncDocuments({
-      externalTransactionId: input.external_transaction_id,
-      contactId:             input.contact_id,
-      transactionId:         input.transaction_id,
-      listingId:             input.listing_id,
-    })
-
-    if (!result.success) {
-      return { success: false, error: result.error ?? "Document sync failed" }
-    }
-
-    const documents: ProviderDocument[] = (result.documents ?? []).map((d) => ({
-      externalDocumentId: d.externalDocumentId,
-      documentName:       d.documentName,
-      folderName:         d.folderName,
-      isSigned:           d.isSigned,
-      url:                d.url,
-      uploadedAt:         d.uploadedAt,
-    }))
-
-    return {
-      success: true,
-      data: { documents, synced_count: documents.length },
-    }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
+// DELETED as a duplicate that could only ever go stale (orphan doctrine §1.1,
+// this lane — m614). This function FETCHED the provider's document list and
+// explicitly did NOT write to DB, leaving persistence to whatever called it;
+// its one caller, app/actions/forms-kernel.ts:syncEsignDocsAction, now
+// delegates directly to the two functions that actually own this capability
+// end to end (fetch AND idempotent upsert, in one round-trip):
+//   lib/transactions/sync-from-provider.ts:syncTransactionDocumentsFromProvider
+//   lib/transactions/sync-from-provider.ts:syncListingDocumentsFromProvider
+// Both call the SAME provider.syncDocuments this function called — nothing
+// this function did was unique, it was strictly a subset (fetch, no persist)
+// of what its survivors already do. m614 is what made the listing half of that
+// survivor pair possible (transaction_documents.listing_id + the provider-
+// tracking columns on `listings`); before it existed, this fetch-only function
+// was the only path that could reach a listing packet at all, which is why it
+// survived as long as it did. KernelFormsResult / ProviderDocument stay
+// exported — getEsignStatus above and launchEsignEnvelope still use them.
 
 // ─── COMMAND 9: recordBuyerPropertyAction ───────────────────────────────────
 //
@@ -813,11 +948,14 @@ export async function recordBuyerPropertyAction(input: {
     }
     const event = eventMap[input.interest_level]
     if (event && !isExternal) {
-      await supabase.from("lifecycle_events").insert({
-        entity_type: "contact", entity_id: input.contact_id, event_type: event, brokerage_id: input.brokerage_id,
+      // Audit row + reactor (integrator, 2026-09-03 — was a bare insert, so the
+      // buyer's own portal reaction never reached sequences or the staff bell).
+      const { error: emitErr } = await emitKernelEvent({
+        entityType: "contact", entityId: input.contact_id, event, brokerageId: input.brokerage_id,
+        contactId: input.contact_id, listingId: input.listing_id ?? undefined,
         metadata: { listing_id: input.listing_id, interest_level: input.interest_level, agent_id: input.agent_id },
-        created_at: new Date().toISOString(),
       })
+      if (emitErr) console.error(`[forms] ${event} emit refused for contact ${input.contact_id}: ${emitErr}`)
     }
 
     // BUYER GRAPH LOOP — the buyer's own portal action (favorite/dismiss) now TEACHES the system

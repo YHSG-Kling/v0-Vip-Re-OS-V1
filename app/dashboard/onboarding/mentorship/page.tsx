@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { MentorshipClient } from "./mentorship-client"
+import { listMentorSessions, getMentorLift, type MentorSessionEntry } from "@/app/actions/onboarding/mentor-session"
+import type { MentorLift } from "@/lib/recruiting/mentor-lift"
 
 export const dynamic = "force-dynamic"
 
@@ -20,12 +22,26 @@ export default async function MentorshipPage() {
   // Existing mentor assignment — the CANONICAL agent_mentor_relationships is the single source of truth
   // (the deprecated agent_onboarding_sessions mentor columns are retired). The matcher stores the match
   // reason/score/topics as JSON in the notes column.
-  const { data: relationship } = await supabase
+  // `users` has NO `full_name` (verified against information_schema) — a name is
+  // first_name + last_name — so PostgREST rejected this ENTIRE select and the
+  // page could never show a mentor, even for a mentee who has one. The
+  // mentor_agent_id hint is required: agent_mentor_relationships has TWO FKs to
+  // agents (mentor_agent_id, mentee_agent_id). agents.user_id -> users.id is a
+  // single FK, so `user` is an OBJECT.
+  const { data: relationship, error: relationshipError } = await supabase
     .from("agent_mentor_relationships")
-    .select("mentor_agent_id, status, notes, agents:mentor_agent_id(id, user:users(full_name, email, phone))")
+    .select(
+      "mentor_agent_id, status, notes, agents:mentor_agent_id(id, phone_mobile, phone_office, user:users(first_name, last_name, email, phone))",
+    )
     .eq("mentee_agent_id", agent.id)
     .eq("status", "active")
     .maybeSingle()
+
+  // supabase-js RESOLVES a failed query, so `const { data }` alone rendered a
+  // rejected read as "you have no mentor yet".
+  if (relationshipError) {
+    console.error("[MentorshipPage] mentor read refused:", relationshipError.message)
+  }
 
   const parsedNotes = (() => {
     const n = relationship?.notes
@@ -37,23 +53,90 @@ export default async function MentorshipPage() {
     } catch { return { topics: [n], reason: null, score: null } }
   })()
 
+  // The READ has to move with the select: `?.user?.full_name` would still be
+  // undefined and mentorName would stay "Your Mentor" forever. Phone prefers the
+  // mentor's own client-facing numbers on `agents`; users.phone is the fallback.
+  const mentorAgent = (relationship?.agents ?? null) as Record<string, any> | null
+  const mentorUser = (mentorAgent?.user ?? null) as Record<string, any> | null
+  const mentorName =
+    [mentorUser?.first_name, mentorUser?.last_name].filter(Boolean).join(" ") || null
+
+  // GRADUATION — the reader half of agent_mentor_relationships.end_date.
+  //
+  // lib/recruiting/mentorship-lifecycle.ts:75 ends a pairing the moment the mentee's
+  // onboarding certification lands: status → 'completed', end_date → now. NOTHING read
+  // either fact. Because the query above pins `.eq("status","active")`, a graduated mentee
+  // fell straight back to the "Find Your Mentor" empty state — the product forgot they had
+  // ever had a mentor, and forgot the day they finished. Only asked when there is no active
+  // pairing, so an active mentorship costs no extra round trip. §3: the error is read; an
+  // unreadable answer leaves the card off rather than claiming "never mentored".
+  let graduation: { mentorName: string | null; endedAt: string | null } | null = null
+  if (!relationship) {
+    const { data: completed, error: completedError } = await supabase
+      .from("agent_mentor_relationships")
+      .select("end_date, agents:mentor_agent_id(user:users(first_name, last_name))")
+      .eq("mentee_agent_id", agent.id)
+      .eq("status", "completed")
+      .order("end_date", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle()
+    if (completedError) {
+      console.error("[MentorshipPage] completed mentorship read refused:", completedError.message)
+    } else if (completed) {
+      const gradAgent = (completed.agents ?? null) as Record<string, any> | null
+      const gradUser = (gradAgent?.user ?? null) as Record<string, any> | null
+      graduation = {
+        mentorName: [gradUser?.first_name, gradUser?.last_name].filter(Boolean).join(" ") || null,
+        // NEVER INFERRED. A completed pairing whose end_date is null (ended before the
+        // lifecycle stamped it) says "completed" without a date rather than guessing one.
+        endedAt: (completed.end_date as string | null) ?? null,
+      }
+    }
+  }
+
   const mentorData = relationship
     ? {
         mentorId: relationship.mentor_agent_id as string,
-        mentorName: (relationship.agents as any)?.user?.full_name ?? "Your Mentor",
-        mentorEmail: (relationship.agents as any)?.user?.email ?? null,
-        mentorPhone: (relationship.agents as any)?.user?.phone ?? null,
+        mentorName: mentorName ?? "Your Mentor",
+        mentorEmail: mentorUser?.email ?? null,
+        mentorPhone:
+          mentorAgent?.phone_mobile ?? mentorAgent?.phone_office ?? mentorUser?.phone ?? null,
         suggestedTopics: parsedNotes.topics,
         matchScore: parsedNotes.score,
         matchReason: parsedNotes.reason,
       }
     : null
 
+  // THE COACHING HISTORY. logMentorSession has written mentor_sessions since it
+  // was built and NOTHING read the table: the rating a mentee gave, the action
+  // item the pair agreed and the mentor's notes were all recorded and then
+  // unreachable by either of them. A refusal is surfaced rather than rendered as
+  // "no sessions yet" — an empty coaching history is a claim, not a default.
+  const sessionsRes = await listMentorSessions(25)
+  const sessions: MentorSessionEntry[] = sessionsRes.ok ? sessionsRes.entries : []
+  const sessionsError = sessionsRes.ok ? null : sessionsRes.error
+
+  // THE BROKER KPI — mentored vs unmentored production/retention lift. The
+  // action gates itself (requireCaller + resolveTenantAdmin, tenant from the
+  // session): a plain agent on this page gets the role refusal and no card —
+  // that is the expected outcome, not an error. Anything ELSE (a refused cohort
+  // read) is logged, because a broker shown no card over an outage would read
+  // it as "no verdict yet".
+  const liftRes = await getMentorLift()
+  const mentorLift: MentorLift | null = liftRes.ok ? liftRes.lift : null
+  if (!liftRes.ok && !/brokerage admin/i.test(liftRes.error)) {
+    console.error("[MentorshipPage] mentor lift read refused:", liftRes.error)
+  }
+
   return (
     <MentorshipClient
       agentId={agent.id}
       brokerageId={agent.brokerage_id}
       initialMentor={mentorData}
+      graduation={graduation}
+      sessions={sessions}
+      sessionsError={sessionsError}
+      mentorLift={mentorLift}
     />
   )
 }

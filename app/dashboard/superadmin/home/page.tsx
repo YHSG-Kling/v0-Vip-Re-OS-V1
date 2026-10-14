@@ -11,7 +11,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolvePlatformRole } from "@/lib/platform/require-capability"
 import { platformStaffCan, isPlatformStaffRole, type PlatformCapability } from "@/lib/platform/platform-staff-roster"
 import { PLATFORM_ANNOUNCEMENT_TYPE } from "@/lib/notifications/platform-staff"
-import { PLATFORM_MANAGERS, type PlatformManagerKey } from "@/lib/kernel/manager-registry"
+import { resolvePlatformManager, type PlatformManagerKey } from "@/lib/kernel/manager-registry"
 import { AnnouncementComposer } from "./announcement-composer"
 import { AgreementAckBanner } from "./agreement-ack-banner"
 
@@ -96,6 +96,8 @@ const GROUPS: ToolGroup[] = [
         desc: "One view of the whole agentic OS — subsystems, open incidents, self-healing." },
       { label: "Sentinel — today's proposed actions", href: "/dashboard/superadmin/sentinel#proposed-actions", cap: "sentinel", countKey: "proposedSentinel", managerKey: "platform_sentinel",
         desc: "The AI fleet manager's daily queue: engagement risk, expiring connections, dunning, SLA breaches, expiring trials — each with drafted outreach awaiting your approval." },
+      { label: "Skill Marketplace", href: "/dashboard/superadmin/skill-marketplace", cap: "sentinel",
+        desc: "Third-party and platform agent skills awaiting evaluation, approval, publication or revocation." },
       { label: "Observability", href: "/dashboard/superadmin/observability", cap: "sentinel",
         desc: "System health, cron runs, and error surfaces across the platform." },
       { label: "Continuity board", href: "/dashboard/superadmin/continuity", cap: "sentinel",
@@ -114,6 +116,8 @@ const GROUPS: ToolGroup[] = [
         desc: "Per-tenant phone inventory — staff-side provisioning and release, with the number-event audit feed." },
       { label: "A2P 10DLC", href: "/dashboard/superadmin/a2p", cap: "providers",
         desc: "Every tenant's SMS campaign registration status." },
+      { label: "QR registry — platform + every tenant", href: "/dashboard/superadmin/qr-codes", cap: "marketing",
+        desc: "The one QR management registry: every tracked code the OS minted (video outros, listing pages, landing pages, direct mail, business cards, studio assets), who owns it — the platform or a tenant — and its scans." },
       { label: "Suppression list", href: "/dashboard/superadmin/suppression", cap: "sentinel",
         desc: "Platform-wide outbound suppression — addresses that must never be contacted." },
       { label: "Vendors — every tenant", href: "/dashboard/superadmin/vendors", cap: "sentinel",
@@ -160,7 +164,10 @@ export default async function PlatformStaffHomePage() {
       ? svc.from("brokerages").select("id", { count: "exact", head: true }).eq("status", "active")
       : Promise.resolve({ count: null, error: null }),
     can("support")
-      ? svc.from("support_tickets").select("id", { count: "exact", head: true }).in("status", ["open", "in_progress"])
+      // LANE-FILTERED: this badge is the PLATFORM's own support queue. Before the
+      // lane existed it counted every brokerage's internal tickets too, so the
+      // platform staff home showed work no platform staffer answers.
+      ? svc.from("support_tickets").select("id", { count: "exact", head: true }).eq("lane", "tenant_to_platform").in("status", ["open", "in_progress"])
       : Promise.resolve({ count: null, error: null }),
     can("providers")
       ? svc.from("connector_healing_proposals").select("id", { count: "exact", head: true }).eq("status", "pending")
@@ -248,7 +255,8 @@ export default async function PlatformStaffHomePage() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {g.tools.map((t) => {
               const count = t.countKey ? counts[t.countKey] : null
-              const manager = t.managerKey ? PLATFORM_MANAGERS[t.managerKey] : null
+              // Through the resolver (the registry's contract; never undefined).
+              const manager = t.managerKey ? resolvePlatformManager(t.managerKey) : null
               return (
                 <Card key={t.href + t.label} className="hover:border-primary/50 transition-colors">
                   <CardContent className="p-4">

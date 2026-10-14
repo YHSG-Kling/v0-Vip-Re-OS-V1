@@ -57,6 +57,7 @@ import {
   compareNeighborhoods,
   analyzeInvestmentProperty,
   calculateRentVsBuy,
+  calculateHomeValue,
 } from "@/app/actions/calculators"
 
 // Tool definitions with categories
@@ -270,6 +271,36 @@ const TOOLS = [
       { name: "state", type: "text", label: "State", placeholder: "CO" },
     ],
   },
+  // THE FOURTH CALCULATOR. `calculateHomeValue` is the only export in
+  // app/actions/calculators.ts with no surface anywhere: its three siblings each
+  // have a tile below and it had none, so the one calculator that runs a real AI
+  // CMA (comparable sourcing + adjustment) was unreachable from the signed-in
+  // product and existed only for the public agent page.
+  //
+  // TENANT COMES FROM THE SESSION, not from this form. `calculateHomeValue`
+  // resolves the brokerage from getAgentContext first and only falls back to
+  // `agentSlug` on the public path — so this tile passes NO slug and no brokerage
+  // id, and a signed-in agent's own tenant pays for and receives their own CMA
+  // (CLAUDE.md §4). Its own rate limiter bounds the provider spend before any
+  // paid call, so the tile adds no second limiter of its own.
+  {
+    id: "home_value",
+    name: "Home Value (AI CMA)",
+    description: "Run a real comparable-sales valuation for one address — the same engine behind your public home-value page",
+    category: "intelligence",
+    categoryColor: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+    icon: Home,
+    directAction: true,
+    inputs: [
+      { name: "address", type: "text", label: "Street address", placeholder: "1234 N Lamar Blvd" },
+      { name: "state", type: "text", label: "State (2-letter)", placeholder: "TX" },
+      { name: "city", type: "text", label: "City", placeholder: "Austin", required: false },
+      { name: "zipCode", type: "text", label: "ZIP", placeholder: "78701", required: false },
+      { name: "bedrooms", type: "text", label: "Bedrooms", placeholder: "3", required: false },
+      { name: "bathrooms", type: "text", label: "Bathrooms", placeholder: "2", required: false },
+      { name: "squareFeet", type: "text", label: "Square feet", placeholder: "1850", required: false },
+    ],
+  },
   {
     id: "investment_analyzer",
     name: "Investment Property Analyzer",
@@ -340,8 +371,12 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
         getBrandVoiceProfile(agentId),
       ])
 
-      if (favResult) setFavorites(favResult as any)
-      if (statsResult) setUsageStats(statsResult as any)
+      if (favResult) setFavorites(Array.isArray(favResult) ? favResult : [])
+      // getAIToolUsageStats returns an OBJECT of totals; the per-tool counts the
+      // "Recently Used" row needs live on .by_tool. Assigning the whole object here
+      // (behind an `as any`) is what made this page crash: the next render called
+      // .sort() on an object and threw before anything painted.
+      setUsageStats(Array.isArray(statsResult?.by_tool) ? statsResult.by_tool : [])
       if (voiceResult) setBrandVoice(voiceResult)
     } catch (error) {
       console.error("Error loading AI tools data:", error)
@@ -390,6 +425,22 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
             maintenanceReserve: 5,
             vacancyRate: 5,
           })
+        } else if (tool.id === "home_value") {
+          // Optional facts stay UNKNOWN when the agent leaves them blank — null,
+          // never a fabricated 0, because runAiCma adjusts against them and a
+          // zero-bed subject is a different property, not a missing one.
+          const num = (v: string | undefined) => {
+            const n = parseFloat(v ?? "")
+            return Number.isFinite(n) ? n : null
+          }
+          result = await calculateHomeValue(inputs.address, {
+            state: (inputs.state ?? "").trim().toUpperCase(),
+            city: inputs.city?.trim() || null,
+            zipCode: inputs.zipCode?.trim() || null,
+            bedrooms: num(inputs.bedrooms),
+            bathrooms: num(inputs.bathrooms),
+            squareFeet: num(inputs.squareFeet),
+          })
         } else if (tool.id === "rent_vs_buy") {
           result = await calculateRentVsBuy({
             rentAmount: parseFloat(inputs.rentAmount),
@@ -416,7 +467,15 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
 
       const result = await executeAITool(tool.id, userId, userType, params)
 
-      if (result.success && result.result) {
+      // Read the outcome — a refusal (quota, permission, provider error) used to
+      // leave the panel exactly as it was, indistinguishable from never pressing.
+      if (!result.success || !result.result) {
+        setToolResults((prev) => ({
+          ...prev,
+          [tool.id]: (result as any)?.error ?? "The tool returned no result.",
+        }))
+        setExpandedResults((prev) => ({ ...prev, [tool.id]: true }))
+      } else {
         let finalResult = result.result
 
         // Check compliance for customer-facing content
@@ -430,12 +489,12 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
         setToolResults((prev) => ({ ...prev, [tool.id]: finalResult }))
         setExpandedResults((prev) => ({ ...prev, [tool.id]: true }))
       }
-    } catch (error) {
-      console.error(`Error running tool ${tool.id}:`, error)
+    } catch (error: any) {
       setToolResults((prev) => ({
         ...prev,
-        [tool.id]: "Error running tool. Please try again.",
+        [tool.id]: error?.message ? `The tool did not run: ${error.message}` : "The tool did not run.",
       }))
+      setExpandedResults((prev) => ({ ...prev, [tool.id]: true }))
     } finally {
       setLoadingTools((prev) => ({ ...prev, [tool.id]: false }))
     }
@@ -456,8 +515,9 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
     setTimeout(() => setCopiedId(null), 2000)
   }
 
-  // Get top 3 recently used tools
-  const recentlyUsedTools = usageStats
+  // Get top 3 recently used tools. Copy before sorting — .sort() mutates in place,
+  // and mutating state during render is how you get inconsistent paints.
+  const recentlyUsedTools = [...usageStats]
     .sort((a, b) => b.count - a.count)
     .slice(0, 3)
     .map((stat) => TOOLS.find((t) => t.id === stat.toolName))
@@ -513,7 +573,16 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
                     <div className="flex-1 min-w-0">
                       <p className="font-medium truncate">{tool.name}</p>
                     </div>
-                    <Button size="sm" variant="outline">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={(e) => {
+                        // The Card carries the same jump; stop the bubble so it
+                        // does not run twice.
+                        e.stopPropagation()
+                        document.getElementById(`tool-${tool.id}`)?.scrollIntoView({ behavior: "smooth" })
+                      }}
+                    >
                       Launch
                     </Button>
                   </CardContent>

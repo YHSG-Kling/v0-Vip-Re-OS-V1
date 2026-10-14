@@ -49,10 +49,25 @@ export async function runMlsNumberReminders(
         .limit(1).maybeSingle()
       if (existing) continue
 
+      // Wave 81C — THE MLS CUT RIDES THE MLS NUDGE. The admin enters the
+      // listing in the MLS by hand (mls-syndication ruling); the unbranded
+      // video (ai_video_projects.usage_intent='mls', lib/video/render-cut.ts)
+      // is what goes in the UNBRANDED virtual-tour / media field, so the nudge
+      // hands over its link when one has rendered. Read the error (§3).
+      const { data: mlsCut, error: mlsCutError } = await svc.from("ai_video_projects")
+        .select("video_url").eq("brokerage_id", brokerageId).eq("listing_id", l.id)
+        .eq("usage_intent", "mls").not("video_url", "is", null)
+        .order("created_at", { ascending: false }).limit(1).maybeSingle()
+      if (mlsCutError) console.warn("[mls-number-reminder] MLS-cut lookup refused — nudging without the link:", mlsCutError.message)
+      const mlsCutUrl = (mlsCut as { video_url?: string | null } | null)?.video_url ?? null
+      const mlsCutLine = mlsCutUrl
+        ? ` The unbranded MLS video for the MLS's unbranded virtual-tour / media field: ${mlsCutUrl} (no agent or brokerage branding, contact or QR — the branded cut stays on social).`
+        : ""
+
       const { error } = await svc.from("notifications").insert({
         user_id: agentUserId, brokerage_id: brokerageId, type: "mls_number_needed",
         title: "Add the MLS number to confirm syndication",
-        body: `${l.address ?? "Your listing"} is live but has no MLS number on file yet. Add it on the listing so the MLS — and the portals it syndicates to (Zillow, Realtor.com) — show as live in the seller's portal.`,
+        body: `${l.address ?? "Your listing"} is live but has no MLS number on file yet. Add it on the listing so the MLS — and the portals it syndicates to (Zillow, Realtor.com) — show as live in the seller's portal.${mlsCutLine}`,
         entity_type: "listing", entity_id: l.id, priority: "medium", is_read: false,
       })
       if (!error) result.reminded++

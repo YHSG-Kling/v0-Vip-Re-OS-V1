@@ -30,6 +30,23 @@ export interface BrandVoicePromptContext {
    * call context). Pass the owning manager key for other rails.
    */
   managerKey?: string
+  /**
+   * When set, retrieves the top brokerage KNOWLEDGE-BASE matches (RAG, scoped to
+   * brokerageId) for this query and appends a "Relevant knowledge" block to
+   * systemBlock — so the AI answers from the brokerage's OWN uploaded facts, not
+   * generic boilerplate. Omit for query-agnostic outbound rails (no cost, no
+   * behavior change). Pass the inbound message / call objective as the query.
+   */
+  knowledgeQuery?: string
+  /**
+   * When set, the AI's knowledge is extended to COVER THIS CONTACT: their notes,
+   * AI summary, personality tips, persona, and recent interaction history are
+   * loaded (scoped to the brokerage) and injected as a "What we know about this
+   * contact" block, so the assistant writes with the relationship's real context
+   * instead of cold. Deterministic (no embedding); best-effort — a miss never
+   * breaks brand voice. Omit for contactless rails.
+   */
+  contactId?: string
 }
 
 export interface BrandVoicePromptResult {
@@ -51,6 +68,43 @@ export interface BrandVoicePromptResult {
   /** The tenant's custom AI teammate answering for this domain, when one is
    *  chartered and active — callers may surface the name in attributions. */
   teammate: { name: string; roleTitle: string; baseManagerKey: string } | null
+}
+
+/**
+ * Compact `brand_voice_context` jsonb shape for a queued VIDEO row
+ * (`ai_video_projects.brand_voice_context`).
+ *
+ * Wave 60E: the async video lane (generate-script / avatar-explainer /
+ * video-director) wrote `brand_voice_context: {}` — a column with a writer
+ * carrying no information — because none of them ran the ONE brand-voice
+ * cascade this file is. This is the ONE shape every video writer now stamps,
+ * so the render-queue reviewer (app/dashboard/videos review card) can show
+ * the voice a queued video was actually written with. `source` is always
+ * `"loadBrandVoicePrompt"` — a fixed literal, not a second spelling to drift
+ * from this one — so a reader can tell the value came from the cascade
+ * rather than the older `lib/kernel/marketing.ts:1057` shape (brokerage
+ * name/about/bio — a distinct, pre-existing writer left as-is).
+ */
+export interface BrandVoiceVideoContext {
+  tone: string | null
+  formalityLevel: string | null
+  prohibitedWords: string[]
+  preferredWords: string[]
+  tagline: string | null
+  assistantName: string
+  source: "loadBrandVoicePrompt"
+}
+
+export function brandVoiceContextForVideo(result: BrandVoicePromptResult): BrandVoiceVideoContext {
+  return {
+    tone: result.tone,
+    formalityLevel: result.formalityLevel,
+    prohibitedWords: result.prohibitedWords,
+    preferredWords: result.preferredWords,
+    tagline: result.tagline,
+    assistantName: result.assistantName,
+    source: "loadBrandVoicePrompt",
+  }
 }
 
 export async function loadBrandVoicePrompt(
@@ -247,6 +301,89 @@ export async function loadBrandVoicePrompt(
       .map((o) => `Objection (${o.category}): "${o.objection}" → Response: "${o.response}"`)
       .join("\n")
     parts.push(`Handle these objections with the prepared responses:\n${objBlock}`)
+  }
+
+  // ── RAG: inject the brokerage's OWN knowledge base for THIS query ────────────
+  // The FAQ/objection blocks above are hand-entered on the identity profile; the
+  // knowledge base (uploaded articles + help topics, embedded) is the scalable
+  // corpus. When the caller passes a query (the inbound message / call objective),
+  // retrieve the top matches — SCOPED to this brokerage via ragSearch's
+  // p_brokerage_id param (never the cookie session, which is absent in webhook/
+  // cron contexts) — and inject them so the AI answers from the brokerage's real
+  // facts. Best-effort: a KB outage never breaks brand voice.
+  if (ctx.knowledgeQuery?.trim()) {
+    try {
+      const { ragSearch } = await import("@/lib/knowledge/embedding-service")
+      const kb = await ragSearch(ctx.knowledgeQuery.slice(0, 1000), {
+        brokerageId: ctx.brokerageId,
+        limit: 4,
+        threshold: 0.6,
+      })
+      if (kb.length > 0) {
+        const kbBlock = kb.map((r) => `### ${r.title}\n${r.content}`).join("\n\n")
+        parts.push(`Relevant knowledge from your brokerage's knowledge base — use these FIRST and do not contradict them:\n${kbBlock}`)
+      }
+    } catch { /* KB unavailable — brand voice still stands */ }
+  }
+
+  // ── Contact coverage: extend the KNOWLEDGE to THIS contact ───────────────────
+  // The KB block above covers the brokerage's facts; this covers the specific
+  // person the AI is writing to — their persona, segment, qualification, AI
+  // insights and notes — so the assistant writes with the relationship's real
+  // context instead of cold. Scoped to the brokerage (never another tenant's
+  // contact); deterministic (no embedding); best-effort — a miss never breaks
+  // brand voice. Recent conversation turns are loaded by the rails themselves.
+  if (ctx.contactId) {
+    try {
+      const { data: c } = await supabase
+        .from("contacts")
+        .select("first_name, contact_persona, lead_temperature, lifetime_segment, qualification_summary, ai_insights, notes")
+        .eq("id", ctx.contactId)
+        .eq("brokerage_id", ctx.brokerageId)
+        .maybeSingle()
+      if (c) {
+        const lines: string[] = []
+        if (c.contact_persona) lines.push(`Persona: ${c.contact_persona}`)
+        if (c.lead_temperature) lines.push(`Temperature: ${c.lead_temperature}`)
+        if (c.lifetime_segment) lines.push(`Lifetime segment: ${c.lifetime_segment}`)
+        if (c.qualification_summary) lines.push(`Qualification: ${c.qualification_summary}`)
+        if (c.ai_insights) lines.push(`AI insights: ${c.ai_insights}`)
+        if (c.notes) lines.push(`Notes: ${c.notes}`)
+        if (lines.length > 0) {
+          const name = (c.first_name ?? "").trim()
+          parts.push(`What we know about this contact${name ? ` (${name})` : ""} — reference this naturally and never contradict it:\n${lines.join("\n")}`)
+        }
+      }
+    } catch { /* contact context unavailable — brand voice still stands */ }
+  }
+
+  // ── Extended memory: RAG over THIS contact's accumulated history ─────────────
+  // Beyond the structured snapshot above, the contact has a growing vector memory
+  // (contact_memory: portal milestones, showing feedback, agent notes, persona
+  // signals) on the SAME canonical embedder as the KB. When a query is present,
+  // recall the most relevant memories for this contact and inject them so the AI
+  // stays consistent with what's happened before. Scoped to the brokerage+entity
+  // inside the RPC; best-effort — a memory miss never breaks brand voice.
+  if (ctx.contactId && ctx.knowledgeQuery?.trim()) {
+    try {
+      const { recallContactMemory } = await import("@/lib/agents/contact-memory")
+      const rec = await recallContactMemory({
+        brokerageId: ctx.brokerageId,
+        entityType: "contact",
+        entityId: ctx.contactId,
+        query: ctx.knowledgeQuery.slice(0, 1000),
+        k: 4,
+      })
+      if (rec.ok && rec.memories.length > 0) {
+        // Provenance (source_table) when the memory was written FROM a specific
+        // row (a showing, a portal message, …) — never invented for memories
+        // written without one (a free-standing agent note).
+        const memBlock = rec.memories
+          .map((m) => `- ${m.content}${m.sourceTable ? ` (from ${m.sourceTable})` : ""}`)
+          .join("\n")
+        parts.push(`Relevant history with this contact — recall and stay consistent with it:\n${memBlock}`)
+      }
+    } catch { /* memory unavailable — brand voice still stands */ }
   }
 
   return {

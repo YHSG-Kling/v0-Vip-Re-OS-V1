@@ -15,6 +15,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import type { MessageType, Persona, ActorRole } from "./types"
 
 // ─── INPUT / OUTPUT TYPES ────────────────────────────────────────────────────
@@ -100,84 +101,118 @@ function rowToVoice(row: Record<string, any> | null | undefined): Partial<Resolv
 
 // ─── HIERARCHY LOADER ────────────────────────────────────────────────────────
 
-/**
- * Load and merge brand voice settings from all three scopes.
- * Uses createClient (session-aware) — safe for server actions called in request context.
- */
-async function loadResolvedBrandVoice(
-  brokerageId: string,
-  teamId?: string,
-  actorUserId?: string
-): Promise<ResolvedBrandVoice> {
-  const supabase = await createClient()
+/** The narrow client surface the core reads through — a cookie client, a service client or a
+ *  test double all satisfy it. */
+export type BrandVoiceReadClient = Pick<SupabaseClient, "from">
 
+interface BrandVoiceScope {
+  brokerageId: string
+  teamId?: string
+  actorUserId?: string
+}
+
+const BV_COLUMNS = "tone, formality_level, key_brand_messages, prohibited_words, preferred_words, tagline, mission_statement"
+
+/**
+ * THE CORE (lane 86C). Load and merge brand voice settings from all three scopes through the
+ * client the caller hands it, with EVERY read pinned to `scope.brokerageId`.
+ *
+ * WHY A CLIENT SEAM. brand_voice_profile's one policy is `brokerage_id =
+ * current_user_brokerage_id()` (live, 2026-09-27). The pre-86C loader built the COOKIE client
+ * internally, so every sessionless caller — the voice webhook's stage creators
+ * (lib/kernel/content-creators.ts), the sequence cron (lib/campaign-sequences/render-step.ts),
+ * every cron that reaches evaluateOutbound — read as anon and got NO ROWS: the tenant's
+ * prohibited words were never checked and the call reported "no violations". Degraded, never
+ * refused, which is the silent shape CLAUDE.md §3 warns about.
+ *
+ * The session door (applyBrandVoice with no client) still reads through the cookie client, so
+ * RLS keeps a signed-in caller inside its own tenant. The sessionless door lives in the
+ * server-only module lib/kernel/tenant-config-reads.ts, which binds the SERVICE client and takes
+ * the tenant from the caller's verified context. Both call this one function.
+ *
+ * Tenant pins the service client needs (RLS supplied them before): the team and agent profile
+ * reads now carry `.eq("brokerage_id", …)`, and the agent scope reads an agents row only — the
+ * pre-86C `agentRow?.id ?? actorUserId` fallback wrote a USERS id into an agents-class predicate
+ * (CLAUDE.md §3: disjoint id spaces), which matched nothing at best.
+ */
+export async function resolveBrandVoiceCore(
+  client: BrandVoiceReadClient,
+  scope: BrandVoiceScope,
+): Promise<ResolvedBrandVoice> {
+  const { brokerageId, teamId, actorUserId } = scope
   let resolved: ResolvedBrandVoice = { ...EMPTY_VOICE }
+  if (!brokerageId) return resolved
+
+  const note = (what: string, error: { message?: string } | null | undefined) => {
+    if (error) console.error(`[brand-voice] ${what} read refused — that scope's voice is NOT applied:`, error.message)
+  }
 
   // ── 1. BROKERAGE LEVEL ───────────────────────────────────────────────────
-  // brand_voice_profile is joined to brokerages in pipeline.ts — query directly
-  // by brokerage_id to keep it simple and avoid the join here.
-  const { data: brokerageProfile } = await supabase
+  const { data: brokerageProfile, error: brokerageErr } = await client
     .from("brand_voice_profile")
-    .select("tone, formality_level, key_brand_messages, prohibited_words, preferred_words, tagline, mission_statement")
+    .select(BV_COLUMNS)
     .eq("brokerage_id", brokerageId)
     .is("agent_id", null)
     .is("team_id", null)
     .maybeSingle()
-
+  note("brokerage brand_voice_profile", brokerageErr)
   if (brokerageProfile) {
     resolved = mergeVoice(resolved, rowToVoice(brokerageProfile))
   }
 
   // ── 2. TEAM LEVEL ────────────────────────────────────────────────────────
-  // Teams store overrides in member_overrides_json (jsonb).
-  // Brand voice overrides live at member_overrides_json.brand_voice.
+  // Teams store overrides in member_overrides_json (jsonb) at .brand_voice.
   if (teamId) {
-    const { data: team } = await supabase
+    const { data: team, error: teamErr } = await client
       .from("teams")
       .select("member_overrides_json")
       .eq("id", teamId)
       .eq("brokerage_id", brokerageId)
       .maybeSingle()
+    note("teams.member_overrides_json", teamErr)
 
     const teamBrandVoice = (team?.member_overrides_json as any)?.brand_voice
     if (teamBrandVoice) {
       resolved = mergeVoice(resolved, rowToVoice(teamBrandVoice))
     }
 
-    // Also check brand_voice_profile scoped to the team
-    const { data: teamProfile } = await supabase
+    const { data: teamProfile, error: teamProfileErr } = await client
       .from("brand_voice_profile")
-      .select("tone, formality_level, key_brand_messages, prohibited_words, preferred_words, tagline, mission_statement")
+      .select(BV_COLUMNS)
       .eq("team_id", teamId)
+      .eq("brokerage_id", brokerageId)
       .is("agent_id", null)
       .maybeSingle()
-
+    note("team brand_voice_profile", teamProfileErr)
     if (teamProfile) {
       resolved = mergeVoice(resolved, rowToVoice(teamProfile))
     }
   }
 
   // ── 3. AGENT LEVEL ───────────────────────────────────────────────────────
-  // brand_voice_profile rows where agent_id matches the actor.
+  // actorUserId is a USERS id; brand_voice_profile.agent_id is agents-class. Cross via
+  // agents.user_id inside this tenant, and read nothing when no agents row exists.
   if (actorUserId) {
-    // First resolve the agent's UUID from the users table (actorUserId may be auth user id)
-    const { data: agentRow } = await supabase
+    const { data: agentRow, error: agentErr } = await client
       .from("agents")
       .select("id")
       .eq("user_id", actorUserId)
       .eq("brokerage_id", brokerageId)
       .maybeSingle()
+    note("agents", agentErr)
 
-    const agentId = agentRow?.id ?? actorUserId
-
-    const { data: agentProfile } = await supabase
-      .from("brand_voice_profile")
-      .select("tone, formality_level, key_brand_messages, prohibited_words, preferred_words, tagline, mission_statement")
-      .eq("agent_id", agentId)
-      .maybeSingle()
-
-    if (agentProfile) {
-      resolved = mergeVoice(resolved, rowToVoice(agentProfile))
+    const agentId = (agentRow as { id?: string } | null)?.id
+    if (agentId) {
+      const { data: agentProfile, error: agentProfileErr } = await client
+        .from("brand_voice_profile")
+        .select(BV_COLUMNS)
+        .eq("agent_id", agentId)
+        .eq("brokerage_id", brokerageId)
+        .maybeSingle()
+      note("agent brand_voice_profile", agentProfileErr)
+      if (agentProfile) {
+        resolved = mergeVoice(resolved, rowToVoice(agentProfile))
+      }
     }
   }
 
@@ -364,13 +399,17 @@ function getPersonaBrandNotes(persona: string, journeyType: "buyer" | "seller"):
  * Does NOT rewrite content — callers own that decision.
  */
 export async function applyBrandVoice(
-  params: ApplyBrandVoiceParams
+  params: ApplyBrandVoiceParams,
+  opts?: { client?: BrandVoiceReadClient },
 ): Promise<BrandVoiceResult> {
-  const voice = await loadResolvedBrandVoice(
-    params.brokerageId,
-    params.teamId,
-    params.actorUserId
-  )
+  // No client = the SESSION door: the cookie client, so RLS holds the caller to its own tenant.
+  // A sessionless caller passes the service client through lib/kernel/tenant-config-reads.ts.
+  const client: BrandVoiceReadClient = opts?.client ?? (await createClient())
+  const voice = await resolveBrandVoiceCore(client, {
+    brokerageId: params.brokerageId,
+    teamId: params.teamId,
+    actorUserId: params.actorUserId,
+  })
 
   const { violations, notes } = checkContent(params.content, voice, params)
 

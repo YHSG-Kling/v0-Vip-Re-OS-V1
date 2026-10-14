@@ -12,7 +12,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { AlertTriangle, CheckCircle2, Megaphone, Sparkles, Activity } from "lucide-react"
 import { getTenantPlatformStatusAction } from "@/app/actions/whats-new"
-import { changelogEntries } from "@/lib/platform/changelog"
+import { changelogEntries, latestChangelogDate } from "@/lib/platform/changelog"
+import { agoOrNever } from "@/lib/format/dates"
 
 export const dynamic = "force-dynamic"
 
@@ -27,14 +28,8 @@ function fmtDate(iso: string) {
   return new Date(t).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
 }
 
-function fmtAgo(iso: string | null) {
-  if (!iso) return "never"
-  const ms = Date.now() - new Date(iso).getTime()
-  if (ms < 60_000) return "just now"
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`
-  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`
-  return `${Math.round(ms / 86_400_000)}d ago`
-}
+// `fmtAgo` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/dates.ts `agoOrNever` (imported above).
 
 function serviceStatusBadge(status: string) {
   switch (status) {
@@ -51,6 +46,7 @@ export default async function WhatsNewPage() {
 
   const status = res.ok ? res.status : null
   const entries = changelogEntries()
+  const latestDate = latestChangelogDate()
 
   const overallCopy: Record<string, { label: string; className: string }> = {
     operational: { label: "All systems operational", className: "text-emerald-700" },
@@ -92,7 +88,7 @@ export default async function WhatsNewPage() {
                 </p>
                 <p className="text-sm mt-1 whitespace-pre-wrap">{status.notice.message}</p>
                 {status.notice.startedAt && (
-                  <p className="text-xs text-muted-foreground mt-1">Since {fmtAgo(status.notice.startedAt)} · updated {fmtAgo(status.notice.updatedAt)}</p>
+                  <p className="text-xs text-muted-foreground mt-1">Since {agoOrNever(status.notice.startedAt)} · updated {agoOrNever(status.notice.updatedAt)}</p>
                 )}
               </div>
             </div>
@@ -130,7 +126,7 @@ export default async function WhatsNewPage() {
             {!status.canSeeServices ? (
               <p className="p-4 text-sm text-muted-foreground">
                 Per-service detail is visible to your account&apos;s admins and brokers.
-                {status.lastCheckedAt && <> Last checked {fmtAgo(status.lastCheckedAt)}.</>}
+                {status.lastCheckedAt && <> Last checked {agoOrNever(status.lastCheckedAt)}.</>}
               </p>
             ) : status.services.length === 0 ? (
               <p className="p-4 text-sm text-muted-foreground">
@@ -156,7 +152,7 @@ export default async function WhatsNewPage() {
                         </td>
                         <td className="px-4 py-2.5 text-xs text-muted-foreground">{s.category ?? "—"}</td>
                         <td className="px-4 py-2.5 text-center">{serviceStatusBadge(s.status)}</td>
-                        <td className="px-4 py-2.5 text-right text-xs text-muted-foreground">{fmtAgo(s.lastCheckedAt)}</td>
+                        <td className="px-4 py-2.5 text-right text-xs text-muted-foreground">{agoOrNever(s.lastCheckedAt)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -169,10 +165,26 @@ export default async function WhatsNewPage() {
 
       {/* Product changelog — ships with the release */}
       <div className="space-y-4">
-        <h2 className="text-lg font-semibold flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-primary" />
-          Release notes
-        </h2>
+        <div className="flex items-baseline justify-between gap-3 flex-wrap">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" />
+            Release notes
+          </h2>
+          {/*
+            "Last updated" comes from latestChangelogDate() (lib/platform/changelog.ts:89),
+            which was written for this page and had never been called. It reads the
+            newest entry off the SAME defensively re-sorted list this page renders,
+            so the date in the header can never disagree with the first card below
+            it — which is the whole reason not to write {entries[0].date} here.
+            Null only when the changelog is empty, and then the empty state below
+            is what speaks.
+          */}
+          {latestDate && (
+            <span className="text-xs text-muted-foreground">
+              Last updated {fmtDate(latestDate)}
+            </span>
+          )}
+        </div>
         {entries.length === 0 ? (
           <div className="rounded-lg border p-10 text-center text-sm text-muted-foreground">
             No release notes published yet.

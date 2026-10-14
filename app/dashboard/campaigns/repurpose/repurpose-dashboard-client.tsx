@@ -4,7 +4,7 @@
 // Layer 9.11 — Omni-Presence Repurposer Dashboard Client
 // Two-panel layout: Pipeline Builder (left) + Source Picker & History (right)
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -15,7 +15,6 @@ import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Switch } from "@/components/ui/switch"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
 import {
   Dialog,
   DialogContent,
@@ -43,9 +42,7 @@ import {
   Plus,
   RefreshCw,
   Play,
-  Pause,
   Trash2,
-  Settings,
   Video,
   FileText,
   Mic,
@@ -75,10 +72,14 @@ import {
   togglePipelineActive,
   deletePipeline,
 } from "@/lib/repurpose/actions"
-import { OUTPUT_FORMAT_CONFIG } from "@/lib/repurpose/types"
 import type { SourceType, OutputFormat } from "@/lib/repurpose/types"
 import { toast } from "sonner"
 import { SnippetWizardPanel } from "./components/snippet-wizard-panel"
+import { getFilteredRepurposeHistory } from "@/app/actions/video-repurposing"
+import {
+  REPURPOSE_LOG_STATUSES,
+  REPURPOSE_LOG_APPROVAL_STATUSES,
+} from "@/app/actions/video-repurposing.utils"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -135,6 +136,9 @@ interface RepurposeDashboardClientProps {
   pipelines: Pipeline[]
   history: HistoryItem[]
   sources: Sources
+  // Deep-link (e.g. Podcast Studio "Send to Omnipresence"): preselect a source.
+  initialSourceType?: string | null
+  initialSourceId?: string | null
 }
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -181,12 +185,21 @@ export function RepurposeDashboardClient({
   brokerageId,
   teamId,
   userRole,
-  pipelines: initialPipelines,
+  pipelines,
   history: initialHistory,
   sources,
+  initialSourceType = null,
+  initialSourceId = null,
 }: RepurposeDashboardClientProps) {
   const router = useRouter()
-  const [pipelines, setPipelines] = useState(initialPipelines)
+  // TOMBSTONE — `const [pipelines, setPipelines] = useState(initialPipelines)`.
+  // The setter was never called, and create / toggle / delete / execute all end
+  // in router.refresh(): React ignores a changed useState initializer after
+  // mount, so the refreshed server prop never reached the table and every
+  // mutation looked like a no-op until a hard reload. The PROP is the survivor
+  // (`pipelines`, destructured above) — it re-renders with each refresh.
+  // `history` keeps its local state on purpose: the filter bar below replaces it
+  // from getFilteredRepurposeHistory between refreshes.
   const [history, setHistory] = useState(initialHistory)
   
   // UI State
@@ -203,6 +216,58 @@ export function RepurposeDashboardClient({
     autoApprove: false,
   })
   
+  // History filters. The first paint comes from lib/repurpose/actions'
+  // getRepurposeHistory (unfiltered, 100 rows); narrowing it goes through
+  // getRepurposedContentLogs, which derives the tenant from the SESSION rather
+  // than trusting a brokerageId argument, and validates the status tokens
+  // against the live CHECK constraints before it queries.
+  const ALL = "__all__"
+  const [historyFilterSource, setHistoryFilterSource] = useState<string>(ALL)
+  const [historyFilterStatus, setHistoryFilterStatus] = useState<string>(ALL)
+  const [historyFilterApproval, setHistoryFilterApproval] = useState<string>(ALL)
+  const [historyFiltering, setHistoryFiltering] = useState(false)
+  const [historyFilterError, setHistoryFilterError] = useState<string | null>(null)
+  const [historyIsFiltered, setHistoryIsFiltered] = useState(false)
+
+  const applyHistoryFilters = async (
+    next?: { source?: string; status?: string; approval?: string }
+  ) => {
+    const source = next?.source ?? historyFilterSource
+    const status = next?.status ?? historyFilterStatus
+    const approval = next?.approval ?? historyFilterApproval
+
+    setHistoryFiltering(true)
+    setHistoryFilterError(null)
+    try {
+      const result = await getFilteredRepurposeHistory({
+        sourceType: source === ALL ? undefined : source,
+        status: status === ALL ? undefined : status,
+        approvalStatus: approval === ALL ? undefined : approval,
+      })
+      if (!result.success) {
+        // The server's verdict, surfaced. An empty table over a refused query
+        // reads identically to "no results", which is the failure mode this
+        // avoids.
+        setHistoryFilterError(result.error ?? "Could not load history.")
+        return
+      }
+      setHistory(result.history as unknown as HistoryItem[])
+      setHistoryIsFiltered(source !== ALL || status !== ALL || approval !== ALL)
+    } catch (err: any) {
+      setHistoryFilterError(err?.message ?? "Could not load history.")
+    } finally {
+      setHistoryFiltering(false)
+    }
+  }
+
+  const clearHistoryFilters = async () => {
+    setHistoryFilterSource(ALL)
+    setHistoryFilterStatus(ALL)
+    setHistoryFilterApproval(ALL)
+    await applyHistoryFilters({ source: ALL, status: ALL, approval: ALL })
+    setHistoryIsFiltered(false)
+  }
+
   // Execution State
   const [selectedPipeline, setSelectedPipeline] = useState<Pipeline | null>(null)
   const [selectedSource, setSelectedSource] = useState<{ type: SourceType; id: string; title: string } | null>(null)
@@ -211,6 +276,39 @@ export function RepurposeDashboardClient({
     outputs?: any[]
     error?: string
   } | null>(null)
+
+  // Deep-link handoff (e.g. Podcast Studio "Send to Omnipresence" →
+  // ?source=podcast&episodeId=…): land the user ON the Execute tab with the
+  // work pre-staged instead of a bare dashboard. If an active pipeline already
+  // matches the source type, auto-select it and preselect the exact source so
+  // one click executes; otherwise pre-seed the Create-Pipeline dialog with the
+  // right source type so the user builds the correct pipeline in one step.
+  useEffect(() => {
+    if (!initialSourceType) return
+    const type = initialSourceType as SourceType
+    const typedSources =
+      type === "video_project" ? sources.video_project
+      : type === "blog_post" ? sources.blog_post
+      : type === "podcast_episode" ? sources.podcast_episode
+      : type === "script" ? sources.script
+      : []
+    const match = initialSourceId
+      ? typedSources.find((s) => s.id === initialSourceId)
+      : undefined
+
+    setActiveTab("execute")
+
+    const activePipeline = pipelines.find((p) => p.is_active && p.source_type === type)
+    if (activePipeline) {
+      setSelectedPipeline(activePipeline)
+      if (match) setSelectedSource({ type, id: match.id, title: match.title })
+    } else {
+      // No pipeline yet — pre-seed creation with this source type.
+      setNewPipeline((prev) => ({ ...prev, sourceType: type, sourceId: match?.id ?? prev.sourceId }))
+    }
+    // Run once on mount for the deep-link; subsequent selection is user-driven.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Available formats for video vs text sources
   const VIDEO_FORMATS: OutputFormat[] = ["instagram_reels", "instagram_story", "tiktok", "youtube_shorts", "facebook_reels"]
@@ -240,6 +338,8 @@ export function RepurposeDashboardClient({
       brokerageId: brokerageId,
       agentUserId: userId,
       teamId: teamId || undefined,
+      // The switch on this dialog was set and then not sent — it governed nothing.
+      autoApprove: newPipeline.autoApprove,
     })
 
     if (result.success) {
@@ -291,9 +391,14 @@ export function RepurposeDashboardClient({
     setIsLoading(true)
     setExecutionResult(null)
 
+    // The selection the button already required is now actually sent. It gated
+    // the click and was rendered in the run summary, but never left the client,
+    // so the run generated from the source TYPE alone.
     const result = await executePipeline({
       pipelineId: selectedPipeline.id,
       brokerageId,
+      sourceType: selectedSource.type,
+      sourceId: selectedSource.id,
     })
 
     setExecutionResult(result)
@@ -401,11 +506,7 @@ export function RepurposeDashboardClient({
         <TabsList className="mb-4">
           <TabsTrigger value="execute">
             <Play className="h-4 w-4 mr-2" />
-            Execute Pipeline
-          </TabsTrigger>
-          <TabsTrigger value="pipelines">
-            <Settings className="h-4 w-4 mr-2" />
-            Manage Pipelines ({pipelines.length})
+            Repurpose
           </TabsTrigger>
           <TabsTrigger value="history">
             <History className="h-4 w-4 mr-2" />
@@ -422,73 +523,105 @@ export function RepurposeDashboardClient({
         {/* ═══════════════════════════════════════════════════════════════════ */}
         <TabsContent value="execute">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Left Panel - Pipeline Selector */}
+            {/* Left Panel - Pipelines: select an active one to run, and manage
+                (create / activate / delete) inline — no separate tab. */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Zap className="h-5 w-5 text-amber-500" />
-                  Select Pipeline
-                </CardTitle>
-                <CardDescription>Choose a pipeline to transform your content</CardDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <Zap className="h-5 w-5 text-amber-500" />
+                      Pipelines
+                    </CardTitle>
+                    <CardDescription>Toggle a pipeline on, then select it to transform your content</CardDescription>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => setIsCreateDialogOpen(true)}>
+                    <Plus className="h-4 w-4 mr-1.5" />
+                    New Pipeline
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
-                {pipelines.filter((p) => p.is_active).length === 0 ? (
+                {pipelines.length === 0 ? (
                   <div className="text-center py-8 text-muted-foreground">
                     <Layers className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <p>No active pipelines found</p>
+                    <p>No pipelines yet</p>
                     <Button variant="link" onClick={() => setIsCreateDialogOpen(true)}>
                       Create your first pipeline
                     </Button>
                   </div>
                 ) : (
-                  <ScrollArea className="h-[300px]">
+                  <ScrollArea className="h-[320px]">
                     <div className="space-y-2">
-                      {pipelines
-                        .filter((p) => p.is_active)
-                        .map((pipeline) => {
-                          const sourceConfig = SOURCE_TYPE_CONFIG[pipeline.source_type as SourceType]
-                          const isSelected = selectedPipeline?.id === pipeline.id
-                          return (
-                            <div
-                              key={pipeline.id}
-                              onClick={() => {
-                                setSelectedPipeline(pipeline)
-                                setSelectedSource(null) // Reset source when pipeline changes
-                              }}
-                              className={`p-4 rounded-lg border cursor-pointer transition-all ${
-                                isSelected
-                                  ? "border-primary bg-primary/5"
-                                  : "border-border hover:border-primary/50"
-                              }`}
-                            >
-                              <div className="flex items-center justify-between mb-2">
-                                <span className="font-medium">{pipeline.pipeline_name}</span>
+                      {pipelines.map((pipeline) => {
+                        const sourceConfig = SOURCE_TYPE_CONFIG[pipeline.source_type as SourceType]
+                        const isSelected = selectedPipeline?.id === pipeline.id
+                        const selectable = pipeline.is_active
+                        return (
+                          <div
+                            key={pipeline.id}
+                            onClick={() => {
+                              if (!selectable) return // inactive pipelines aren't runnable
+                              setSelectedPipeline(pipeline)
+                              setSelectedSource(null) // Reset source when pipeline changes
+                            }}
+                            className={`p-4 rounded-lg border transition-all ${
+                              !selectable
+                                ? "border-dashed border-border opacity-60"
+                                : isSelected
+                                  ? "border-primary bg-primary/5 cursor-pointer"
+                                  : "border-border hover:border-primary/50 cursor-pointer"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between mb-2 gap-2">
+                              <span className="font-medium truncate">{pipeline.pipeline_name}</span>
+                              <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
                                 {isSelected && <CheckCircle className="h-4 w-4 text-primary" />}
-                              </div>
-                              <div className="flex items-center gap-2 mb-2">
-                                <Badge variant="secondary" className={sourceConfig?.color}>
-                                  {sourceConfig?.icon}
-                                  <span className="ml-1">{sourceConfig?.label}</span>
-                                </Badge>
-                              </div>
-                              <div className="flex flex-wrap gap-1">
-                                {(pipeline.output_config?.formats || []).slice(0, 4).map((format) => {
-                                  const formatConfig = OUTPUT_FORMAT_UI[format]
-                                  return (
-                                    <Badge key={format} variant="outline" className="text-xs">
-                                      {formatConfig?.label}
-                                    </Badge>
-                                  )
-                                })}
-                                {(pipeline.output_config?.formats || []).length > 4 && (
-                                  <Badge variant="outline" className="text-xs">
-                                    +{(pipeline.output_config?.formats || []).length - 4}
-                                  </Badge>
-                                )}
+                                {/* activate / deactivate */}
+                                <Switch
+                                  checked={pipeline.is_active}
+                                  onCheckedChange={() => handleTogglePipeline(pipeline.id, pipeline.is_active)}
+                                  disabled={isLoading}
+                                  aria-label="Pipeline active"
+                                />
+                                {/* delete */}
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  onClick={() => handleDeletePipeline(pipeline.id)}
+                                  disabled={isLoading}
+                                  aria-label="Delete pipeline"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                                </Button>
                               </div>
                             </div>
-                          )
-                        })}
+                            <div className="flex items-center gap-2 mb-2">
+                              <Badge variant="secondary" className={sourceConfig?.color}>
+                                {sourceConfig?.icon}
+                                <span className="ml-1">{sourceConfig?.label}</span>
+                              </Badge>
+                              {!selectable && <span className="text-[10px] text-muted-foreground">inactive</span>}
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              {(pipeline.output_config?.formats || []).slice(0, 4).map((format) => {
+                                const formatConfig = OUTPUT_FORMAT_UI[format]
+                                return (
+                                  <Badge key={format} variant="outline" className="text-xs">
+                                    {formatConfig?.label}
+                                  </Badge>
+                                )
+                              })}
+                              {(pipeline.output_config?.formats || []).length > 4 && (
+                                <Badge variant="outline" className="text-xs">
+                                  +{(pipeline.output_config?.formats || []).length - 4}
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
                   </ScrollArea>
                 )}
@@ -642,97 +775,6 @@ export function RepurposeDashboardClient({
         {/* ═══════════════════════════════════════════════════════════════════ */}
         {/* PIPELINES TAB */}
         {/* ═══════════════════════════════════════════════════════════════════ */}
-        <TabsContent value="pipelines">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle>Your Pipelines</CardTitle>
-                  <CardDescription>Manage your content repurposing workflows</CardDescription>
-                </div>
-                <Button onClick={() => setIsCreateDialogOpen(true)}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  New Pipeline
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {pipelines.length === 0 ? (
-                <div className="text-center py-12 text-muted-foreground">
-                  <Layers className="h-16 w-16 mx-auto mb-4 opacity-50" />
-                  <h3 className="text-lg font-medium mb-2">No pipelines yet</h3>
-                  <p className="mb-4">Create your first pipeline to start repurposing content</p>
-                  <Button onClick={() => setIsCreateDialogOpen(true)}>
-                    <Plus className="h-4 w-4 mr-2" />
-                    Create Pipeline
-                  </Button>
-                </div>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Pipeline Name</TableHead>
-                      <TableHead>Source Type</TableHead>
-                      <TableHead>Output Formats</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Created</TableHead>
-                      <TableHead className="text-right">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {pipelines.map((pipeline) => {
-                      const sourceConfig = SOURCE_TYPE_CONFIG[pipeline.source_type as SourceType]
-                      return (
-                        <TableRow key={pipeline.id}>
-                          <TableCell className="font-medium">{pipeline.pipeline_name}</TableCell>
-                          <TableCell>
-                            <Badge variant="secondary" className={sourceConfig?.color}>
-                              {sourceConfig?.icon}
-                              <span className="ml-1">{sourceConfig?.label}</span>
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex flex-wrap gap-1">
-                              {(pipeline.output_config?.formats || []).slice(0, 3).map((format) => (
-                                <Badge key={format} variant="outline" className="text-xs">
-                                  {OUTPUT_FORMAT_UI[format]?.label}
-                                </Badge>
-                              ))}
-                              {(pipeline.output_config?.formats || []).length > 3 && (
-                                <Badge variant="outline" className="text-xs">
-                                  +{(pipeline.output_config?.formats || []).length - 3}
-                                </Badge>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <Switch
-                              checked={pipeline.is_active}
-                              onCheckedChange={() => handleTogglePipeline(pipeline.id, pipeline.is_active)}
-                              disabled={isLoading}
-                            />
-                          </TableCell>
-                          <TableCell>{new Date(pipeline.created_at).toLocaleDateString()}</TableCell>
-                          <TableCell className="text-right">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => handleDeletePipeline(pipeline.id)}
-                              disabled={isLoading}
-                            >
-                              <Trash2 className="h-4 w-4 text-red-500" />
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      )
-                    })}
-                  </TableBody>
-                </Table>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
         {/* ══════════════════════════════════════════════════════════���════════ */}
         {/* HISTORY TAB */}
         {/* ═══════════════════════════════════════════════════════════════════ */}
@@ -740,13 +782,95 @@ export function RepurposeDashboardClient({
           <Card>
             <CardHeader>
               <CardTitle>Repurpose History</CardTitle>
-              <CardDescription>Recent content transformations</CardDescription>
+              <CardDescription>
+                Recent content transformations
+                {historyIsFiltered ? " · filtered" : ""}
+              </CardDescription>
             </CardHeader>
             <CardContent>
+              {/* Refine — server-side filtering of repurposed_content_log */}
+              <div className="flex flex-wrap items-end gap-3 mb-4">
+                <div className="space-y-1">
+                  <Label className="text-xs">Source</Label>
+                  <Select
+                    value={historyFilterSource}
+                    onValueChange={(v) => { setHistoryFilterSource(v); applyHistoryFilters({ source: v }) }}
+                  >
+                    <SelectTrigger className="h-8 w-[170px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL} className="text-xs">All sources</SelectItem>
+                      {(Object.keys(SOURCE_TYPE_CONFIG) as SourceType[]).map((t) => (
+                        <SelectItem key={t} value={t} className="text-xs">
+                          {SOURCE_TYPE_CONFIG[t].label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Status</Label>
+                  <Select
+                    value={historyFilterStatus}
+                    onValueChange={(v) => { setHistoryFilterStatus(v); applyHistoryFilters({ status: v }) }}
+                  >
+                    <SelectTrigger className="h-8 w-[150px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL} className="text-xs">Any status</SelectItem>
+                      {REPURPOSE_LOG_STATUSES.map((s) => (
+                        <SelectItem key={s} value={s} className="text-xs capitalize">{s}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Approval</Label>
+                  <Select
+                    value={historyFilterApproval}
+                    onValueChange={(v) => { setHistoryFilterApproval(v); applyHistoryFilters({ approval: v }) }}
+                  >
+                    <SelectTrigger className="h-8 w-[160px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL} className="text-xs">Any approval</SelectItem>
+                      {REPURPOSE_LOG_APPROVAL_STATUSES.map((s) => (
+                        <SelectItem key={s} value={s} className="text-xs">{s.replace(/_/g, " ")}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {historyIsFiltered && (
+                  <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={clearHistoryFilters}>
+                    Clear
+                  </Button>
+                )}
+
+                {historyFiltering && (
+                  <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Filtering…
+                  </span>
+                )}
+              </div>
+
+              {historyFilterError && (
+                <div className="mb-4 flex items-center gap-2 text-sm text-red-600">
+                  <AlertCircle className="h-4 w-4" />
+                  <span>{historyFilterError}</span>
+                </div>
+              )}
+
               {history.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <History className="h-16 w-16 mx-auto mb-4 opacity-50" />
-                  <p>No repurposed content yet</p>
+                  <p>{historyIsFiltered ? "Nothing matches those filters" : "No repurposed content yet"}</p>
                 </div>
               ) : (
                 <Table>
