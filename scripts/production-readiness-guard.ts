@@ -607,7 +607,7 @@ function envNameHits(src: string): number[] {
 /** Platform consoles that live OUTSIDE app/dashboard/superadmin/ and legitimately render provider config
  *  — each named with the gate that keeps a tenant out; V7 proves the gate is real, not a label. */
 const PLATFORM_CONSOLES_OUTSIDE_SUPERADMIN: Record<string, { gatedBy: string; gateFile: string; gateCall: RegExp }> = {
-  "app/dashboard/admin/system/providers/system-providers-client.tsx": { gatedBy: "mounted only by ./page.tsx, which awaits requireSuperadmin() and redirects before rendering", gateFile: "app/dashboard/admin/system/providers/page.tsx", gateCall: /requireSuperadmin\(\)[\s\S]*redirect\([\s\S]*<SystemProvidersClient/ },
+  "app/dashboard/admin/system/providers/system-providers-client.tsx": { gatedBy: "mounted only by ./page.tsx, which awaits requireSuperadmin() and refuses IN PLACE (RoleGateNotice — page-role-gate-roster P5, never a silent redirect) before rendering", gateFile: "app/dashboard/admin/system/providers/page.tsx", gateCall: /requireSuperadmin\(\)[\s\S]*if\s*\(!gate\.ok\)\s*return\s*<RoleGateNotice\b[\s\S]*<SystemProvidersClient/ },
 }
 const envHits = tenantTsx.map((f) => ({ f, lines: envNameHits(read(f)) })).filter((h) => h.lines.length)
 const envNew = envHits.filter((h) => !PLATFORM_CONSOLES_OUTSIDE_SUPERADMIN[h.f])
@@ -616,7 +616,7 @@ for (const h of envHits) console.log(`      ${h.f}:${h.lines.join(",")}${PLATFOR
 console.log("    BLIND SPOT: a name assembled from fragments, or read from a config object the page renders, is not seen; a provider's DISPLAY name (Twilio, SendGrid) is allowed — the rule is configuration and credentials, not vendor names.")
 check("V6 no tenant-facing .tsx renders an env-var-shaped secret name in a string literal or JSX text (platform configuration never reaches a tenant screen)", envNew.length === 0, envNew.map((h) => `${h.f}:${h.lines.join(",")}`).join(", "))
 const ungatedConsoles = Object.entries(PLATFORM_CONSOLES_OUTSIDE_SUPERADMIN).filter(([f, g]) => !existsSync(join(ROOT, f)) || !existsSync(join(ROOT, g.gateFile)) || !g.gateCall.test(codeOf(read(g.gateFile))) || !/import\s*\{[^}]*SystemProvidersClient[^}]*\}\s*from\s*["']\.\/system-providers-client["']/.test(stripComments(read(g.gateFile))) || /export\s+default/.test(codeOf(read(f))))
-check("V7 every classified platform console outside the superadmin path is REAL: its file exists, it exports no default page, and its named gate file awaits the platform gate and redirects before mounting it", ungatedConsoles.length === 0, ungatedConsoles.map(([f]) => f).join(", "))
+check("V7 every classified platform console outside the superadmin path is REAL: its file exists, it exports no default page, and its named gate file awaits the platform gate and refuses in place before mounting it", ungatedConsoles.length === 0, ungatedConsoles.map(([f]) => f).join(", "))
 check("V8 POSITIVE CONTROL — an env name in JSX text and in a string literal is caught; a process.env read, a NEXT_PUBLIC_ name, a code identifier and a comment are not",
   envNameHits(`export default function P() { return <p>Requires: DID_API_KEY in environment</p> }`).length === 1 &&
   envNameHits(`const rows = [{ envKey: "ZENROWS_API_KEY" }]`).length === 1 &&
