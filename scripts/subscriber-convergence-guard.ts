@@ -176,7 +176,7 @@ function makeDeps(svc: ReturnType<typeof fakeSvc>, c: Counters, fail: { isaOnce?
     starterAssistant: async (s, id) => { c.assistant++; const { data } = await s.from("ai_identity_profiles").select("id").eq("brokerage_id", id).maybeSingle(); if (!data) await s.from("ai_identity_profiles").insert({ brokerage_id: id, scope_id: id, assistant_name: "Aria" }); return { seeded: !data, withPhoto: false } },
     emitEvent: async (e) => { c.events.push(e); await svc.from("lifecycle_events").insert({ brokerage_id: e.brokerageId, event_type: e.event, entity_id: e.entityId }); return { inserted: true } },
     curriculum: async () => { c.curriculum++; return { authored: 0, topics: 0 } },
-    checkout: async (_s, i) => { c.checkout++; return { ok: true, url: `https://checkout.test/${i.brokerageId}`, sessionId: "cs_1", setupFeeCents: 0, setupFeeWaived: false, recurringCents: 0 } },
+    checkout: async (_s, i) => { c.checkout++; return { ok: true, url: `https://checkout.test/${i.brokerageId}`, sessionId: "cs_1", setupFeeCents: 0, setupFeeWaived: false, recurringCents: 0, discount: null } },
     accountRepair: async () => { c.repair++; return { success: true, repaired: [] } },
     // Lane 140D/E's initializer is proven against its own fixture (test:tenant-baseline); here it is COUNTED per door.
     operatingBaseline: async (_s, id) => { c.baseline++; return { ok: true, websitePath: `/site/${id}`, snapshotVersion: "snap@fixture", items: [], refused: [], preserved: [] } },
