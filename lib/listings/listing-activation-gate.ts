@@ -99,6 +99,10 @@ import {
 // The executed-agreement spelling lives with the status vocabulary that owns it,
 // so a widened CHECK fails that module's proof instead of silently passing here.
 import { LISTING_AGREEMENT_EXECUTED_STATUS } from "@/lib/transactions/coordination-status"
+// wave 142 (lane 142K finding 1): the e-sign mark is read on the LADDER — compliance_pending / correction_required /
+// compliance_approved / fully_executed are all PAST all-signed; pinning the pre-ladder literal refused every listing the
+// compliance loop had touched, forever.
+import { isAtOrPastAllSigned } from "@/lib/esign/packet-states"
 
 export type { GateRequirement, GateRefusal, UnexecutedDocument }
 
@@ -328,7 +332,7 @@ async function readListingCompliance(
   const good = agreements.find(
     (a) =>
       a.compliance_passed === true &&
-      a.esign_status === LISTING_AGREEMENT_EXECUTED_STATUS &&
+      isAtOrPastAllSigned(a.esign_status) &&
       !!a.fully_executed_at,
   )
   if (good) {
@@ -350,8 +354,8 @@ async function readListingCompliance(
   const latest = agreements[0]
   const gaps: string[] = []
   if (latest.compliance_passed !== true) gaps.push("its compliance review has not passed")
-  if (latest.esign_status !== LISTING_AGREEMENT_EXECUTED_STATUS) {
-    gaps.push(`its e-sign status is "${latest.esign_status ?? "not recorded"}" rather than "${LISTING_AGREEMENT_EXECUTED_STATUS}"`)
+  if (!isAtOrPastAllSigned(latest.esign_status)) {
+    gaps.push(`its e-sign status is "${latest.esign_status ?? "not recorded"}" — not yet "${LISTING_AGREEMENT_EXECUTED_STATUS}" (or a compliance state past it) on the ladder`)
   }
   if (!latest.fully_executed_at) gaps.push("it was never marked fully executed")
 

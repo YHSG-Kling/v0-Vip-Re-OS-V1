@@ -63,7 +63,7 @@ interface PlayableProbe {
 
 /** The content types the probe judges. Everything else is skipped as not_video. */
 export function isVideoContentType(contentType: string): boolean {
-  return /^video\//i.test((contentType ?? "").trim())
+  return (contentType ?? "").trim().toLowerCase().startsWith("video/")
 }
 
 /** The one place a refused probe's reason is spelled — the failure census keys on this token.

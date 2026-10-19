@@ -57,19 +57,56 @@ export async function run() {
   const before = touchpoints().length
   try { await closeTransactionCommand({ transactionId: TX, brokerageId: B, agentId: AG_U, reason: "canary re-run" }) } catch { /* measured below */ }
   const afterRerun = touchpoints().length
-  c.step("RE-RUN: the conversion itself is idempotent on the contact (still exactly one row each, still lifetime_customer) — the duplicate the ruling names is the touchpoint schedule (measured, printed as the 142C finding)", contacts().filter((x) => x.id === BUYER || x.id === SELLER).every((x) => x.contact_type === "lifetime_customer") && contacts().filter((x) => x.email === buyer?.email).length === 1, `touchpoints ${before} → ${afterRerun}`)
-  if (afterRerun > before) console.log(`    finding (lane 142C, 'no duplicate conversions'): a second close inserted ${afterRerun - before} more lifetime_customer_touchpoints rows (${before} → ${afterRerun}) — the schedule is not keyed on (contact, transaction, touchpoint_type)`)
+  // THE RULE (lane 142C landed): the ONE writer keys the schedule on the transaction — a re-run adds NOTHING.
+  c.step("RE-RUN (142C landed — 'no duplicate conversions'): a second close of the same transaction is idempotent end to end — the contacts still read lifetime_customer, exactly one row each, and the touchpoint schedule is NOT inserted again (the ONE writer promoteDealContactsToLifetime guards on an existing schedule for related_transaction_id: 0 new rows)", contacts().filter((x) => x.id === BUYER || x.id === SELLER).every((x) => x.contact_type === "lifetime_customer") && contacts().filter((x) => x.email === buyer?.email).length === 1 && afterRerun === before && before === 10, `touchpoints ${before} → ${afterRerun}`)
+  if (afterRerun > before) console.log(`    finding (lane 142C, 'no duplicate conversions'): a second close inserted ${afterRerun - before} more lifetime_customer_touchpoints rows (${before} → ${afterRerun})`)
 
   // ── the doors + proofs that exist at HEAD ──
   const pkg = readRepo("package.json") ?? ""
   const kernel = strippedRepo("lib/kernel/transactions.ts") ?? ""
-  c.step("the Lifetime doors and proofs exist: app/actions/lifetime-customers.ts + portal-lifetime.ts; test:lifetime-ledger + test:conversion-finality registered; the conversion writes both columns in ONE update and READS its error (no swallowed refusal)", !!readRepo("app/actions/lifetime-customers.ts") && !!readRepo("app/actions/portal-lifetime.ts") && /"test:lifetime-ledger":/.test(pkg) && /"test:conversion-finality":/.test(pkg) && /contact_type:\s*LIFETIME_CUSTOMER_TYPE,\s*lifecycle_state:\s*LIFETIME_CUSTOMER_TYPE/.test(kernel) && /lifetimePromotionError/.test(kernel), "")
+  const writer = strippedRepo("lib/kernel/lifetime-conversion.ts") ?? ""
+  c.step("the Lifetime doors and proofs exist: app/actions/lifetime-customers.ts + portal-lifetime.ts; test:lifetime-ledger + test:conversion-finality registered; the ONE writer (lib/kernel/lifetime-conversion.ts promoteDealContactsToLifetime — landed 142C) writes BOTH columns in ONE counted update (.select('id')) and READS its error; the close command imports it and no longer inline-writes contacts (the inline write + schedule are tombstoned)", !!readRepo("app/actions/lifetime-customers.ts") && !!readRepo("app/actions/portal-lifetime.ts") && /"test:lifetime-ledger":/.test(pkg) && /"test:conversion-finality":/.test(pkg) && /contact_type:\s*LIFETIME_CUSTOMER_TYPE,\s*lifecycle_state:\s*LIFETIME_CUSTOMER_TYPE/.test(writer) && /promoteErr/.test(writer) && /\.select\(\s*["']id["']\s*\)/.test(writer) && /lifetime-conversion/.test(kernel) && !/contact_type:\s*LIFETIME_CUSTOMER_TYPE/.test(kernel) && !/lifetime_customer_touchpoints/.test(kernel), "")
 
-  // ── WAVE142 HOOK (integrator): 142C — CLOSED / PAYOUT PENDING + the keyed (no-duplicate) schedule. ──
+  // ── WAVE142 HOOK (integrator): 142C — wired 142K: CLOSED / PAYOUT PENDING on a tenant whose policy requires the payout; released by the payout. ──
   for (const h of hooksFor("lifetime")) {
     const at = h.probe()
     if (!at) { c.hook(h.lane, h.contract, `measured: no payout_pending state in lib/kernel/transactions.ts; the re-run inserted ${Math.max(0, afterRerun - before)} duplicate touchpoint rows`); continue }
-    c.step(`${h.lane} landed (${at}) — wire its export into this canary (WAVE142 HOOK (integrator): ${h.lane}): close with an unverified payout → CLOSED / PAYOUT PENDING (no lifetime conversion yet) → verify the payout → conversion + schedule once; re-run → 0 new rows`, false, h.contract.slice(0, 120))
+    const L = await import("../../lib/kernel/lifetime-conversion")
+    const B3 = uuid(), AG3_U = uuid(), AG3 = uuid(), BUYER3 = uuid(), SELLER3 = uuid(), TX3 = uuid()
+    const c3row = (id: string, type: string, first: string) => ({ ...contact(id, type, first), brokerage_id: B3, agent_id: AG3 })
+    ;(svc.tables.brokerages ??= []).push({ id: B3, name: `${CANARY_TAG} Holds`, plan_tier: "brokerage", slug: `${CANARY_TAG}-life3` })
+    ;(svc.tables.users ??= []).push({ id: AG3_U, email: `agent3@${CANARY_EMAIL_DOMAIN}`, user_type: "agent", brokerage_id: B3, platform_role: null, first_name: "Canary", last_name: "Three" })
+    ;(svc.tables.agents ??= []).push({ id: AG3, user_id: AG3_U, brokerage_id: B3, first_name: "Canary", last_name: "Three", is_active: true })
+    ;(svc.tables.contacts ??= []).push(c3row(BUYER3, "buyer", "Bobbi"), c3row(SELLER3, "seller", "Sal"))
+    ;(svc.tables.transactions ??= []).push({ id: TX3, brokerage_id: B3, agent_id: AG3, listing_id: null, buyer_contact_id: BUYER3, seller_contact_id: SELLER3, contact_id: BUYER3, deal_type: "buyer", status: "under_contract", stage: "CLOSING_PREP", property_address: `3 ${CANARY_TAG} Way`, sales_price: 350_000, created_at: nowIso(), updated_at: nowIso() })
+    ;(svc.tables.brokerage_settings ??= []).push({ id: uuid(), brokerage_id: B3, settings: { [L.LIFETIME_CONVERSION_POLICY_KEY]: { require_payout_verified: true } }, created_at: nowIso() })
+    const verdicts = [
+      L.lifetimeConversionVerdict({ closed: false, requiredRecordsComplete: true, payoutVerified: true, requirePayoutVerified: true }),
+      L.lifetimeConversionVerdict({ closed: true, requiredRecordsComplete: false, payoutVerified: true, requirePayoutVerified: true }),
+      L.lifetimeConversionVerdict({ closed: true, requiredRecordsComplete: true, payoutVerified: false, requirePayoutVerified: true }),
+      L.lifetimeConversionVerdict({ closed: true, requiredRecordsComplete: true, payoutVerified: false, requirePayoutVerified: false }),
+      L.lifetimeConversionVerdict({ closed: true, requiredRecordsComplete: true, payoutVerified: true, requirePayoutVerified: true }),
+    ].map((v) => v.action)
+    const policy = await L.readLifetimeConversionPolicy(svc as never, B3)
+    const c3 = (id: string) => contacts().find((x) => x.id === id)
+    const held = () => (svc.tables.activities ?? []).filter((a) => a.brokerage_id === B3 && a.transaction_id === TX3 && a.activity_type === L.LIFETIME_HOLD_ACTIVITY_TYPE)
+    const tp3 = () => (svc.tables.lifetime_customer_touchpoints ?? []).filter((t) => t.related_transaction_id === TX3)
+    let closeHeld: { success: boolean; error?: string } = { success: false, error: "not run" }
+    try { closeHeld = await closeTransactionCommand({ transactionId: TX3, brokerageId: B3, agentId: AG3_U, reason: "canary close (payout pending)" }) } catch (e) { closeHeld = { success: false, error: `THREW: ${(e as Error).message}` } }
+    c.step(`${h.lane} landed (${at}) — CLOSED / PAYOUT PENDING: on a tenant whose policy (brokerage_settings.settings.lifetime_conversion.require_payout_verified) holds conversion until the agent is paid, the VERIFIED closing closes the transaction but converts NOBODY yet — ONE open hold activity (${L.LIFETIME_HOLD_ACTIVITY_TYPE}, the "${L.LIFETIME_HOLD_LABEL}" label on the deal), the buyer + seller still buyer / seller, 0 touchpoints; the pure verdict ladder reads not_closed → hold_records → hold_payout_pending → convert (and convert-at-close when the policy does not require it)`, closeHeld.success && policy.requirePayoutVerified && /brokerage_settings/.test(policy.source) && verdicts.join() === "not_closed,hold_records,hold_payout_pending,convert,convert" && (svc.tables.transactions ?? []).find((t) => t.id === TX3)?.status === "closed" && held().length === 1 && held()[0].status === "pending" && c3(BUYER3)?.contact_type === "buyer" && c3(SELLER3)?.contact_type === "seller" && tp3().length === 0, closeHeld.error ?? `hold ${held().length}; touchpoints ${tp3().length}`)
+    const release = await L.releaseLifetimeConversionOnPayout(svc as never, { brokerageId: B3, transactionId: TX3, actorUserId: AG3_U })
+    const releaseAgain = await L.releaseLifetimeConversionOnPayout(svc as never, { brokerageId: B3, transactionId: TX3, actorUserId: AG3_U })
+    let rerun3: { success: boolean; error?: string } = { success: false }
+    try { rerun3 = await closeTransactionCommand({ transactionId: TX3, brokerageId: B3, agentId: AG3_U, reason: "canary re-run after payout" }) } catch (e) { rerun3 = { success: false, error: `THREW: ${(e as Error).message}` } }
+    const noHold = await L.releaseLifetimeConversionOnPayout(svc as never, { brokerageId: B, transactionId: TX, actorUserId: AG_U })
+    // INTEGRATOR FINDING (RED at 28774bdc2, never relaxed): a re-run of closeTransactionCommand AFTER the payout released the
+    // conversion opens a SECOND "CLOSED / PAYOUT PENDING" hold — lib/kernel/transactions.ts:1386 hard-codes payoutVerified:false
+    // and lib/kernel/lifetime-conversion.ts:168 holdLifetimeConversionPendingPayout dedupes on a PENDING hold only, so a
+    // completed hold (the released one) does not stop a new pending one; the contacts are already lifetime_customer, nobody
+    // will ever release the duplicate. The owner's rule: no duplicate conversions OR accounting on a re-run. Lane 142C's file.
+    c.step(`${h.lane} the PAYOUT VERIFIED releases it through the ONE writer (the path markCommissionPaid shares): both contacts → lifetime_customer on BOTH columns (COUNTED: 2 promoted), the 5×2 schedule lands ONCE, the hold activity completes; a second release promotes the same value and SKIPS the existing schedule (0 new rows); a re-run of the close after the payout adds nothing (still 10 rows, still ONE hold, completed — never re-opened); a convert-at-close tenant has nothing held (released false, by policy) — INTEGRATOR FINDING when red: transactions.ts:1386 + lifetime-conversion.ts:168 re-open a hold on a re-run after the payout`, release.released && release.promotion?.promoted === 2 && release.promotion?.touchpointsScheduled === 10 && release.promotion?.skippedExistingTouchpoints === false && c3(BUYER3)?.contact_type === "lifetime_customer" && c3(BUYER3)?.lifecycle_state === "lifetime_customer" && c3(SELLER3)?.contact_type === "lifetime_customer" && c3(SELLER3)?.lifecycle_state === "lifetime_customer" && held().length === 1 && held()[0]?.status === "completed" && releaseAgain.released && releaseAgain.promotion?.skippedExistingTouchpoints === true && releaseAgain.promotion?.touchpointsScheduled === 0 && tp3().length === 10 && rerun3.success && tp3().length === 10 && held().length === 1 && held().every((a) => a.status === "completed") && !noHold.released && /policy converts at close/.test(noHold.reason), `promoted ${release.promotion?.promoted}; touchpoints ${tp3().length}; holds ${held().map((a) => a.status).join(",")}; re-run ${rerun3.success ? "ok" : rerun3.error}`)
+    const cl3 = await cleanupCanary(svc, B3)
+    c.step("cleanup (the holding tenant): every tagged row deleted with .select() counts; residual 0", cl3.mismatches.length === 0 && cl3.residual === 0, cl3.cleanup.map((x) => `${x.table}:${x.deleted}`).join(" "))
   }
   c.blind("The close ran the real kernel command in memory: commission recalculation, the closing-gift task and the kernel events ran best-effort against the fake (refusals are theirs to log). The 'verified' in 'verified closing' is the close date + the executed contract the caller had — no settlement statement is checked here (the preliminary-cd canary).")
   const cl = await cleanupCanary(svc, B), cl2 = await cleanupCanary(svc, B2)

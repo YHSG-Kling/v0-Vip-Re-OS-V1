@@ -118,7 +118,7 @@ export function BookProjectPanel({ magnetId, onStage }: Props) {
       </div>
       {book.subtitle && <p className="text-xs text-muted-foreground">{book.subtitle}</p>}
 
-      <ol className="grid grid-cols-7 gap-1 text-[10px] text-muted-foreground" aria-label="Book stages">
+      <ol className="grid grid-cols-4 sm:grid-cols-7 gap-1 text-[10px] text-muted-foreground" aria-label="Book stages">
         {["Research", "Outline", "Chapters", "Fact check", "Edit", "Layout", "Review"].map((label, i) => (
           <li key={label} className={`rounded px-1 py-1 text-center ${i < stageIndex ? "bg-green-100 text-green-800" : i === stageIndex ? "bg-primary/10 text-primary font-medium" : "bg-muted"}`}>{label}</li>
         ))}

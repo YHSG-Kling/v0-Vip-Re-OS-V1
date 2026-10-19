@@ -10,7 +10,11 @@
  * attribution, sequences). MERGED onto the survivor before deletion: the declared persona
  * (lib/lead-magnets/form-contact-types.ts → settings.default_contact_type, honoured by
  * captureFormSubmission) and the "Custom Form" questions editor (already there since wave 141).
- * The admin routes stay resolving as thin doors onto the kernel (createLeadMagnet / an allow-listed PATCH).
+ * The two admin routes (POST /api/admin/forms — app/api/admin/forms/route.ts; PATCH /api/admin/forms/[id] —
+ * app/api/admin/forms/[id]/route.ts) were DELETED at wave-142 integration:
+ * no in-tree caller remained once this builder left, and a session-gated door nobody addresses is the orphan the
+ * one-sided census names. SURVIVOR for both: lib/kernel/lead-magnets.ts createLeadMagnet / publishLeadMagnet (draft
+ * edits ride saveMagnetLandingContentAction) behind app/actions/lead-magnets-actions.ts (the lead-magnet workspace).
  * This client keeps the TRANSACTION-FORMS tab byte-for-byte (a different function) and points lead capture
  * at its survivor.
  */

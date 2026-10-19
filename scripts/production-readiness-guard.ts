@@ -485,20 +485,39 @@ const reachable = doorReach(pages)
  *  DIRECTLY by one (the service a panel/action calls). */
 const userLayer = new Set([...reachable].filter((f) => f.startsWith("app/") && !f.startsWith("app/api/cron/")))
 /** PURE over its inputs — the door of a capability whose persisting modules are `users`, or null. */
-function doorOf(users: string[], ui: Set<string>, edges: (f: string) => string[]): string | null {
+function doorOf(users: string[], ui: Set<string>, edges: (f: string) => string[], fronts: string[] = []): string | null {
   for (const f of users) if (ui.has(f)) return f
   for (const g of ui) { const hit = edges(g).find((t) => users.includes(t)); if (hit) return `${g} → ${hit}` }
+  // law 4 (UI → service → domain module): a NAMED kernel front that itself imports the persister, imported directly by
+  // a user-layer module. The front is named per table, never discovered — hub over-reach stays excluded.
+  for (const front of fronts) {
+    const persister = edges(front).find((t) => users.includes(t))
+    if (!persister) continue
+    for (const g of ui) if (edges(g).includes(front)) return `${g} → ${front} → ${persister}`
+  }
   return null
 }
 /** Window tables with NO user door BY DESIGN — platform/cron-internal evidence or caches, each with its reason. */
 const DOORLESS_BY_DESIGN: Record<string, string> = {}
-const doors = new Map(windowTables.map((t) => [t, doorOf(tableUse.get(t)!, userLayer, importEdges)]))
+/** Tables whose persisting module is fronted by a kernel service (wave 142: the forms-submit route stopped importing
+ *  lib/kernel/person-identity.ts directly once capture consolidated onto captureFormSubmission → captureContact, so the
+ *  identity layer's doors are all one service deep — the contact brief, the CRM command set, the capture pipeline). */
+const DOOR_FRONTS: Record<string, string[]> = {
+  person_identities: ["lib/contacts/contact-brief.ts", "lib/kernel/crm.ts", "lib/contact-pipeline/contact-capture.ts"],
+  person_identity_evidence: ["lib/contacts/contact-brief.ts", "lib/kernel/crm.ts", "lib/contact-pipeline/contact-capture.ts"],
+}
+const doors = new Map(windowTables.map((t) => [t, doorOf(tableUse.get(t)!, userLayer, importEdges, DOOR_FRONTS[t] ?? [])]))
 const doorless = windowTables.filter((t) => tableUse.get(t)!.length > 0 && !doors.get(t))
 const unexplainedDoorless = doorless.filter((t) => !DOORLESS_BY_DESIGN[t])
 console.log(`    census: ${pages.length} pages reach ${reachable.size} runtime modules (${userLayer.size} in the user layer); ${windowTables.length - doorless.length}/${windowTables.length} window tables have a door; ${doorless.length} doorless (${Object.keys(DOORLESS_BY_DESIGN).length} by design)`)
 for (const t of windowTables) console.log(`      ${t}: ${doors.get(t) ? `door ${doors.get(t)}` : DOORLESS_BY_DESIGN[t] ? `doorless by design — ${DOORLESS_BY_DESIGN[t]}` : "NO DOOR"}`)
 console.log("    BLIND SPOT: a door is an import/fetch edge, not a rendered control — a panel that imports the service for a constant counts; computed fetch paths are not followed; a capability with no window table (pure code) is censused by test:orphan-routes / orphan-export, not here.")
 check("U1 every window table with runtime use has a user door (or is classified doorless by design)", unexplainedDoorless.length === 0, unexplainedDoorless.join(", "))
+check("U1b POSITIVE CONTROL — a named front that does NOT import the persister is not a door; one that does, imported by a user-layer module, is",
+  doorOf(["p.ts"], new Set(["app/x.ts"]), (f) => (f === "app/x.ts" ? ["front.ts"] : []), ["front.ts"]) === null
+  && doorOf(["p.ts"], new Set(["app/x.ts"]), (f) => (f === "app/x.ts" ? ["front.ts"] : f === "front.ts" ? ["p.ts"] : []), ["front.ts"]) === "app/x.ts → front.ts → p.ts")
+const staleFronts = Object.keys(DOOR_FRONTS).filter((t) => !windowTables.includes(t))
+check("U1c every DOOR_FRONTS table is a window table (a retired name cannot sit in the map reading as fronted)", staleFronts.length === 0, staleFronts.join(", "))
 const staleDoorless = Object.keys(DOORLESS_BY_DESIGN).filter((t) => !doorless.includes(t))
 check("U2 no stale doorless exception (the table still exists in the window and still has no door)", staleDoorless.length === 0, staleDoorless.join(", "))
 check("U2b POSITIVE CONTROL — a service imported only by a cron route has NO door; the same service imported by an action does",
@@ -801,9 +820,9 @@ check("B5b when the reviewed ALTER POLICY migration (lane 142A's, 781) is presen
   m781Census ? `${m781} ${JSON.stringify(m781Census)} stamp ${stampOf(m781)}` : "absent at HEAD (lane 142A contract)")
 const m782Sql = m782 ? read(`${MIG}/${m782}`) : ""
 const m782NewCheck = m782Sql.match(/ADD\s+CONSTRAINT\s+users_user_type_check[\s\S]*?\(([\s\S]*?)\)\s*\)?\s*;/i)?.[1] ?? ""
-check("B5c when the owner-SQL users_user_type_check file (lane 142A's, 782) is present: it is stamped OWNER SQL, drops and re-adds users_user_type_check, and the new vocabulary omits 'superadmin'",
-  !m782 || (ownerSqlStamped(m782) && /DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?users_user_type_check/i.test(m782Sql) && /ADD\s+CONSTRAINT\s+users_user_type_check/i.test(m782Sql) && m782NewCheck.length > 0 && !/'superadmin'/.test(m782NewCheck)),
-  m782 ? `${m782} owner-stamped ${ownerSqlStamped(m782)}` : "absent at HEAD (lane 142A contract)")
+check("B5c when the users_user_type_check file (lane 142A's, 782) is present: it states its status (OWNER SQL, or APPLIED LIVE once the MCP accepted the DROP CONSTRAINT), drops and re-adds users_user_type_check, and the new vocabulary omits 'superadmin'",
+  !m782 || ((ownerSqlStamped(m782) || stampOf(m782) === "applied") && /DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?users_user_type_check/i.test(m782Sql) && /ADD\s+CONSTRAINT\s+users_user_type_check/i.test(m782Sql) && m782NewCheck.length > 0 && !/'superadmin'/.test(m782NewCheck)),
+  m782 ? `${m782} owner-stamped ${ownerSqlStamped(m782)}, stamp ${stampOf(m782)}` : "absent at HEAD (lane 142A contract)")
 check("B5d POSITIVE CONTROL — the policy census catches an inline superadmin arm, an unconfined policy and a DROP; a confined ALTER POLICY passes; a commented-out DROP is not a statement",
   (() => { const c = rlsPolicyCensus("-- DROP POLICY x ON t;\nALTER POLICY p ON public.t USING (user_type = 'superadmin' OR brokerage_id = current_user_brokerage_id());\nALTER POLICY q ON public.t USING (true);\nDROP POLICY r ON public.t;\nALTER POLICY s ON public.t USING (is_platform_admin());"); return c.statements === 4 && c.alterPolicy === 3 && c.superadminArms === 1 && c.unconfined === 1 && c.drops === 1 })())
 /** PURE — live authority arms testing the dead user_type 'superadmin' (strings intact, comments blanked). */
@@ -915,7 +934,7 @@ const cdaSetup = bc("app/actions/brokerage-cda-setup.ts")
 check("B13 the brokerage CDA setting is three live columns (offers_cda, cda_onboarding_at, non_cda_payout_default) with ONE roster-gated writer that stamps all three consistently (payout default null when CDA is offered), read by the commission reconciliation and the CDA page",
   CDA_COLUMNS.every((c) => brokerageCols.includes(c))
   && /export async function setBrokerageCdaSettingAction/.test(cdaSetup) && /offers_cda:\s*input\.offersCda/.test(cdaSetup) && /cda_onboarding_at:\s*new Date\(\)\.toISOString\(\)/.test(cdaSetup) && /non_cda_payout_default:\s*input\.offersCda \? null :/.test(cdaSetup) && /isBrokerageFinanceAdmin\(/.test(cdaSetup)
-  && /\.select\("offers_cda"\)/.test(bc("lib/commission/reconcile-tracking.ts")) && /\.select\("offers_cda"\)/.test(bc("app/dashboard/transactions/[id]/cda/page.tsx")))
+  && /\.select\("offers_cda\b[^"]*"\)/.test(bc("lib/commission/reconcile-tracking.ts")) && /\.select\("offers_cda\b[^"]*"\)/.test(bc("app/dashboard/transactions/[id]/cda/page.tsx")))
 classify("B13", "CDA policy configuration", "PASS", "tenant admin (finance roster) sets it", "structural; a tenant's value is NOT_APPLICABLE live (0 closing_disclosure_agreement rows — never operated)")
 
 // B14 — Remotion / video readiness (lane 142F's playable-output contract)

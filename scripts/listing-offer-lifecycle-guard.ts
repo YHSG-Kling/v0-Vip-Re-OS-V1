@@ -339,7 +339,7 @@ async function main() {
   const copyFiles = ["app/components/form-wizard/FormWizard.tsx", "app/dashboard/forms/FormsLibraryClient.tsx", "app/dashboard/settings/integrations/integrations-client.tsx", "app/api/forms/provider-library/route.ts", "lib/integrations/providers/provider-resolver.ts", "lib/esign/dispatch-packet.ts", "lib/kernel/immediate-operations.ts"]
   const stale = copyFiles.filter((f) => tenantFacing(code(f)))
   check(`no tenant-facing 'transaction provider' wording remains in the named surfaces (${copyFiles.length} files); the settings label and the wizard tab say legal-forms provider; the catalog carries the ONE label`,
-    stale.length === 0 && /transaction: "LEGAL-FORMS PROVIDER"/.test(code("app/dashboard/settings/integrations/integrations-client.tsx")) && /Legal-forms provider/.test(wiz) && /export const LEGAL_FORMS_PROVIDER_LABEL = "legal-forms provider"/.test(code("lib/integrations/providers/catalog.ts")), stale.join(", "))
+    stale.length === 0 && /transaction: "LEGAL-FORMS PROVIDER"/.test(code("app/dashboard/settings/integrations/integrations-client.tsx")) && /Legal-forms provider/.test(wiz) && /export const LEGAL_FORMS_PROVIDER_LABEL = "Legal-forms provider"/.test(code("lib/integrations/providers/catalog.ts")), stale.join(", "))
   check("the provider capability matrix still claims exactly the owner's head functions per provider (credentials · settings · forms · transaction creation · upload · fill · e-sign · status · sync)",
     /"credentials", "settings", "forms", "transaction_creation", "document_upload", "form_fill", "esign", "status", "sync"/.test(code("lib/integrations/providers/catalog.ts")))
 

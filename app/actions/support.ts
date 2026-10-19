@@ -39,7 +39,7 @@ import {
 import { BROKERAGE_ADMIN_USER_TYPES } from "@/lib/auth/require-brokerage-admin"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import {
-  SUPPORT_DESK_USER_TYPES, resolveTicketQueueScope, scopeTicketQuery, ticketWithinScope,
+  resolveTicketQueueScope, scopeTicketQuery, ticketWithinScope,
   type TicketQueueScope,
 } from "@/lib/support/ticket-scope"
 

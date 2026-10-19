@@ -39,7 +39,9 @@ export async function run() {
   const ai = await resolveProviderCore(svc as never, { providerType: "ai", actorContext: actor })
   c.step("PLATFORM-ONLY TYPES stay platform-chosen: 'ai' (and video / avatar / enrichment …) answer the system vendor for a tenant actor — a tenant override never reaches the platform tier's keys", SYSTEM_ONLY_TYPES.has("ai") && ai.providerKey === SYSTEM_DEFAULTS.ai && ai.scope !== "brokerage", `${ai.providerKey}@${ai.scope}`)
   c.step("THE MATRIX CERTIFIES BEFORE A PROVIDER IS OFFERED (landed 141C): docusign is e-sign certified, brokermint (no e-sign) is not; the matrix names every catalog provider's credentials / settings / forms / fill / e-sign / status / sync cells", esignCertified("docusign") && !esignCertified("brokermint") && Object.keys(PROVIDER_CAPABILITY_MATRIX).length >= 5, Object.keys(PROVIDER_CAPABILITY_MATRIX).join(","))
-  console.log(`    measured: SYSTEM_DEFAULTS.transaction = '${SYSTEM_DEFAULTS.transaction}' (certified for e-sign per the matrix: ${esignCertified(SYSTEM_DEFAULTS.transaction) ? "yes" : "NO"}) — the 142I subject`)
+  // WIRED 142K: lane 142I DELETED the uncertified `transaction: "dotloop"` default (tombstone lib/kernel/providers.ts:62);
+  // the key's presence is what the 142I hook below reads.
+  console.log(`    measured: "transaction" in SYSTEM_DEFAULTS = ${"transaction" in SYSTEM_DEFAULTS} (lane 142I: the legal-forms provider has NO platform default — the tenant's selection decides) — the 142I subject`)
 
   // ── 2 · Stripe is the coupon money source (pure) ──
   const { isMockStripeCouponId } = await import("../../lib/platform/coupons")
@@ -60,7 +62,22 @@ export async function run() {
   for (const h of hooksFor("commercial-platform")) {
     const at = h.probe()
     if (!at) { c.hook(h.lane, h.contract, /READINESS CHECKS/.test(h.contract) ? "measured: production-readiness-guard / tenant-readiness / provider-posture carry no support-isolation + offers_cda readiness row (the rows handed to lane I are in lane142J-notes + READINESS-MATRIX §Wave 142)" : `measured above: SYSTEM_DEFAULTS.transaction = '${SYSTEM_DEFAULTS.transaction}', uncertified`); continue }
-    c.step(`${h.lane} landed (${at}) — wire it into this canary (WAVE142 HOOK (integrator): ${h.lane}): ${/READINESS CHECKS/.test(h.contract) ? "assert the guard's wave-142 gate rows name the lane keys and that a 0-row live count reads NOT_APPLICABLE" : "assert SYSTEM_DEFAULTS.transaction is e-sign certified per the matrix or 'none' until the tenant selects"}`, /READINESS CHECKS/.test(h.contract) ? /NOT_APPLICABLE|unproven/.test(strippedRepo("scripts/production-readiness-guard.ts") ?? "") : esignCertified(SYSTEM_DEFAULTS.transaction) || SYSTEM_DEFAULTS.transaction === "none", h.contract.slice(0, 120))
+    if (/READINESS CHECKS/.test(h.contract)) {
+      const guard = strippedRepo("scripts/production-readiness-guard.ts") ?? ""
+      c.step(`${h.lane} landed (${at}) — READINESS CHECKS read from CODE: the guard's wave-142 gate rows name the lane keys (support isolation, the CDA setting offers_cda, the playable-video rule, the certified legal-forms + e-sign configurations) and a readiness row that would read a LIVE operational count treats 0 rows as NOT_APPLICABLE / unproven, never PASS`, /support[-_]isolation|supportIsolation/.test(guard) && /\boffers_cda\b/.test(guard) && /playable|video-pipeline-truth/i.test(guard) && /NOT_APPLICABLE|unproven/.test(guard) && /WAVE142_GATES|WAVE142_CONTRACT_PROOFS/.test(guard), "")
+      continue
+    }
+    // WAVE142 HOOK (integrator): 142I — wired 142K: the RULE is "absent or certified"; the resolver is driven for the absent case.
+    const { providerOfferVerdict } = await import("../../lib/integrations/providers/catalog")
+    const mirror = strippedRepo("app/actions/settings/provider-settings-actions.ts") ?? "", resolverSrc = strippedRepo("lib/integrations/providers/provider-resolver.ts") ?? ""
+    const txDefault = (SYSTEM_DEFAULTS as Record<string, string | undefined>).transaction
+    const noSelection = await resolveProviderCore(svc as never, { providerType: "transaction" as never, actorContext: actor })
+    c.step(`${h.lane} landed (${at}) — NO UNCERTIFIED DEFAULT LEGAL-FORMS INTEGRATION: SYSTEM_DEFAULTS carries NO transaction key (deleted, tombstoned) and the settings mirror dropped the same line; dotloop is refused by the matrix for the capability (providerOfferVerdict transaction/dotloop not ok); the tenant-facing resolver honours only a user / team / brokerage SELECTION (resolveTransactionProviderSelection) — so a tenant with no selection has NO legal-forms provider`, txDefault === undefined && !/transaction:\s*["']dotloop["']/.test(mirror) && !providerOfferVerdict("transaction", "dotloop").ok && /resolveTransactionProviderSelection/.test(resolverSrc), `providers.ts transaction default: ${txDefault ?? "absent"}`)
+    // INTEGRATOR FINDING (RED at 28774bdc2, never relaxed): lib/kernel/providers.ts:153 / :249 fall a type with no default
+    // back to the TYPE NAME (`SYSTEM_DEFAULTS[providerType] ?? providerType`), so the kernel resolver answers providerKey
+    // "transaction" (scope system_default) for a tenant with no selection — a key no catalog carries, read as a provider by
+    // any caller of resolveProviderCore("transaction"). The rule: no selection → no provider (null / "none"). Lane 142I's file.
+    c.step(`${h.lane} the KERNEL RESOLVER for a type with no platform default and no tenant selection answers NO PROVIDER (providerKey null or 'none'; never the type's own name as a key) — INTEGRATOR FINDING when red: lib/kernel/providers.ts:153,:249 \`?? providerType\``, noSelection.providerKey === null || noSelection.providerKey === "none", `resolveProviderCore(transaction) → ${JSON.stringify({ providerKey: noSelection.providerKey, scope: noSelection.scope })}`)
   }
   c.blind("The provisioning chains (direct paid, trial, staff-created, seat invite, A2P initiation, coupon redemption, proration) RUN in the subscriber / seat / user-invite / coupon / brokerage-adoption canaries — here they are asserted on stripped source so this canary stays cheap. No Stripe, no provider is reached.")
   const cl = await cleanupCanary(svc, B)

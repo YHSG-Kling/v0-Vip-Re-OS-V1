@@ -1,5 +1,6 @@
 "use client"
 
+import { LEGAL_FORMS_PROVIDER_LABEL } from "@/lib/integrations/providers/catalog"
 import { useState, useTransition, useEffect } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -4989,7 +4990,7 @@ export function TransactionDetailClient({
                   <CardHeader className="pb-3">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <Building2 className="h-4 w-4" />
-                      Legal-forms provider
+                      {LEGAL_FORMS_PROVIDER_LABEL}
                       {formsProvider && (
                         <Badge
                           variant={formsProvider.is_configured ? "default" : "secondary"}

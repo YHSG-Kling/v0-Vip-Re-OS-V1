@@ -189,7 +189,7 @@ console.log("\n━━━ D · source, stripped ━━━")
 
 console.log("\n━━━ E · the door census (stripped, strings kept) ━━━")
 {
-  const DISPATCH = /\b(queueContactEnrichment|queueContactEnrichmentAndScore|enrichContactAfterIntake|captureContact)\s*\(|KernelEvent\.(CONTACT_CREATED|CONTACT_CAPTURED)\b/
+  const DISPATCH = /\b(queueContactEnrichment|queueContactEnrichmentAndScore|enrichContactAfterIntake|captureContact|captureFormSubmission)\s*\(|KernelEvent\.(CONTACT_CREATED|CONTACT_CAPTURED)\b/
   const INSERT = /\.from\(\s*["']contacts["']\s*\)\s*\.(insert|upsert)\(/g
   /** The top-level keys of the object literal that follows `.insert(` (null when the payload is not a literal). */
   function payloadKeys(src: string, after: number): { keys: string[]; spread: boolean } | null {
@@ -246,7 +246,7 @@ console.log("\n━━━ E · the door census (stripped, strings kept) ━━━
   // the brief's named doors, by name
   for (const [door, token] of [
     ["lib/kernel/lead-magnets.ts", /queueContactEnrichment\s*\(/],            // captureFormSubmission
-    ["app/api/forms/submit/route.ts", /captureContact\s*\(/],                 // /api/forms/submit
+    ["app/api/forms/submit/route.ts", /captureFormSubmission\s*\(/],          // /api/forms/submit — consolidated onto the lead-magnets survivor (wave 142E), which queues
     ["lib/ads/ad-lead-intake.ts", /queueContactEnrichment\s*\(/],             // ad-lead intake
     ["app/actions/business-card/business-card-actions.ts", /captureContact\s*\(/], // the scanner
     ["lib/kernel/crm.ts", /enrichContactAfterIntake\s*\(/],                   // manual create (survivor)

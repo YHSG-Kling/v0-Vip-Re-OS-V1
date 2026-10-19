@@ -45,7 +45,7 @@ async function resolvePlatformStaffIds(supabase: SupabaseClient): Promise<string
   const { data: staff, error } = await supabase
     .from("users")
     .select("id")
-    .or(`user_type.eq.superadmin,platform_role.in.(${platformRoles})`)
+    .or(`platform_role.in.(${platformRoles})`)
     .limit(500)
   if (error) {
     console.error("[platform-staff] resolvePlatformStaffIds: users read refused:", error.message)

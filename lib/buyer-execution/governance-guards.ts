@@ -298,7 +298,7 @@ export async function checkAdminOverride(params: {
     return { allowed: false, error: 'User not found' }
   }
 
-  if (!['admin', 'broker', 'broker_owner', 'superadmin'].includes(user.user_type ?? '') && user.platform_role !== 'superadmin') {
+  if (!['admin', 'broker', 'broker_owner'].includes(user.user_type ?? '') && user.platform_role !== 'superadmin') {
     return { allowed: false, error: 'Only admins or brokers can override governance' }
   }
 

@@ -93,7 +93,7 @@ export async function POST(request: Request) {
         .maybeSingle()
       if (
         ur?.brokerage_id === contact.brokerage_id &&
-        ['admin', 'broker', 'superadmin', 'agent'].includes(ur?.user_type ?? '')
+        ['admin', 'broker', 'agent'].includes(ur?.user_type ?? '')
       ) {
         hasAccess = true
       }

@@ -78,7 +78,9 @@ export const OWNER_STATE_ALIASES: Readonly<Record<OwnerPacketState, EsignPacketS
   expired:             "expired",
 })
 
-/** PURE: the column spelling for an owner's word (null for a word that is not in the ruling). */
+/** PURE: the column spelling for an owner's word (null for a word that is not in the ruling).
+ * @proofSeam scripts/listing-offer-lifecycle-guard.ts proves every word of the owner's 2026-10-18 ruling resolves to a
+ * column state; no runtime caller speaks the owner's words — the writers (packet-state-writer.ts) use the column spelling. */
 export function fromOwnerState(word: string | null | undefined): EsignPacketState | null {
   if (!word) return null
   return (OWNER_STATE_ALIASES as Record<string, EsignPacketState>)[word] ?? null

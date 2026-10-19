@@ -32,7 +32,7 @@ export type ProviderName =
   | "formsimplicity"
 
 /** THE ONE tenant-facing name of the forms capability (owner, wave 142): never "transaction provider". */
-export const LEGAL_FORMS_PROVIDER_LABEL = "legal-forms provider"
+export const LEGAL_FORMS_PROVIDER_LABEL = "Legal-forms provider"
 
 export interface ProviderCapabilities {
   /** Can send documents for e-signature through this provider. */

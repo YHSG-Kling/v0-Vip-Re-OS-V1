@@ -17,7 +17,7 @@
  * provider webhook would; no session exists (the canary client's auth answers "nobody signed in").
  */
 import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSvc, uuid } from "./_harness"
-import { hooksFor, strippedRepo } from "./_registry"
+import { hooksFor, readRepo, strippedRepo } from "./_registry"
 
 export async function run() {
   const c = canary("Offer: outside-property + in-house → buyer/seller signatures → compliance catches missing forms/initials → corrections + approval → transaction only after clearance")
@@ -123,11 +123,40 @@ export async function run() {
   const drift = ["lib/kernel/bidding-war-concierge.ts", "lib/kernel/compliance/active-representation.ts", "lib/kernel/offer-net-sheet.ts"].map((f) => ({ f, s: strippedRepo(f) })).filter((x) => x.s !== null)
   console.log(`    finding (lane 142B, SURVIVORS142 §2): offers.status has NO CHECK and the open-status lists differ across ${drift.map((x) => x.f).join(", ") || "(files moved)"} — one vocabulary per function (§6) is the lane's merge`)
 
-  // ── WAVE142 HOOK (integrator): 142B — webhook-first monitoring + one reconciler; the lifecycle guard. ──
+  // ── WAVE142 HOOK (integrator): 142B — wired 142K: webhook-first monitoring (the terminal outcome at the door) + the one reconciler; the lifecycle spine + the registered proof. ──
   for (const h of hooksFor("offer-lifecycle")) {
     const at = h.probe()
     if (!at) { c.hook(h.lane, h.contract, /MONITORING/.test(h.contract) ? "at HEAD four provider webhooks + the esign-doc-sync / dotloop-sync crons exist; no ONE named reconciler through the selected provider" : "at HEAD test:listing-offer-lifecycle is not registered; the outside-property shape is proven here on the gate, not at every door"); continue }
-    c.step(`${h.lane} landed (${at}) — wire its export into this canary and assert the contract (WAVE142 HOOK (integrator): ${h.lane})`, false, h.contract.slice(0, 120))
+    if (/MONITORING/.test(h.contract)) {
+      // The webhook-first half in memory: the provider's TERMINAL outcome recorded at the door through the ONE writer.
+      const { recordEnvelopeTerminalState } = await import("../../lib/forms/esign-execution-loop")
+      const { canAdvancePacketState } = await import("../../lib/esign/packet-states")
+      const ENV2 = `env_${CANARY_TAG}_offer_declined`
+      const inHouse = () => (svc.tables.offers ?? []).find((o) => o.id === O_IN)
+      Object.assign(inHouse() ?? {}, { provider_envelope_id: ENV2, esign_status: "sent" })
+      const declined = await recordEnvelopeTerminalState(svc as never, { provider: "docusign", envelopeId: ENV2, state: "declined", reason: "Seller declined to sign" })
+      const again = await recordEnvelopeTerminalState(svc as never, { provider: "docusign", envelopeId: ENV2, state: "declined" })
+      const voided = await recordEnvelopeTerminalState(svc as never, { provider: "docusign", envelopeId: ENV2, state: "voided" })
+      const nobody = await recordEnvelopeTerminalState(svc as never, { provider: "docusign", envelopeId: `env_${CANARY_TAG}_nobody`, state: "expired" })
+      const declinedBells = (svc.tables.notifications ?? []).filter((n) => n.brokerage_id === B && n.type === "esign.packet.declined")
+      const doors = ["app/api/webhooks/docusign/route.ts", "app/api/webhooks/skyslope/route.ts", "app/api/webhooks/authentisign/route.ts"].map((f) => strippedRepo(f) ?? "")
+      const sweep = strippedRepo("lib/transactions/esign-doc-sync-sweep.ts") ?? "", dispatchSrc = strippedRepo("lib/kernel/cron-dispatch.ts") ?? ""
+      c.step(`${h.lane} landed (${at}) — E-SIGN MONITORING, webhooks first: the provider's DECLINED envelope is recorded AT THE DOOR on the offer it matches (tenant resolved FROM the envelope, esign_status declined through the ladder, the evidence row, the agent's high-priority bell); a redelivery is a no-op (0 rows, no second bell); a later 'voided' over the declined packet is REFUSED (a terminal outcome is never overwritten); an envelope no tenant owns records nothing; the three verified webhook doors (HMAC + timingSafeEqual before the body is read) call recordEnvelopeTerminalState; the reconciliation BACKUP is the ONE sweep (sweepEsignDocSync → evaluateEnvelopeExecution, the same core the webhooks run) on the esign-doc-sync cron — cron is the fallback, never how a signing event is first found`, declined.brokerageId === B && declined.offers === 1 && declined.agreements === 0 && declined.refused.length === 0 && inHouse()?.esign_status === "declined" && declinedBells.length === 1 && declinedBells[0].user_id === AG_U && declinedBells[0].priority === "high" && again.offers === 0 && again.refused.length === 0 && voided.offers === 0 && voided.refused.some((r) => /never overwritten/.test(r)) && nobody.brokerageId === null && nobody.refused.length === 1 && !canAdvancePacketState("declined", "voided").ok && doors.every((d) => /timingSafeEqual/.test(d) && /\brecordEnvelopeTerminalState\s*\(/.test(d)) && /\bevaluateEnvelopeExecution\b/.test(sweep) && /export\s+async\s+function\s+sweepEsignDocSync\b/.test(sweep) && /esign-doc-sync/.test(dispatchSrc), JSON.stringify({ declined: { offers: declined.offers, refused: declined.refused }, redelivery: again.offers, voided: voided.refused[0]?.slice(0, 90), bells: declinedBells.length }).slice(0, 300))
+      continue
+    }
+    // LIFECYCLE VOCABULARY — the owner's order on the spine, the column's form_source, the registered proof on the chain.
+    const { DEAL_LIFECYCLE_STAGES } = await import("../../lib/esign/packet-states")
+    const pkg = readRepo("package.json") ?? "", vocab = readRepo("scripts/check-vocabularies.ts") ?? "", guard = strippedRepo(at) ?? ""
+    const formSource = /form_source:\s*\[([^\]]*)\]/.exec(vocab)?.[1]?.replace(/["'\s]/g, "").split(",").filter(Boolean) ?? []
+    const vocabChecks: Array<[string, boolean]> = [
+      ["the spine's order", [...DEAL_LIFECYCLE_STAGES].join() === "listing,offer,signatures,compliance,fully_executed_contract,transaction,closing"],
+      ["form_source CHECK", formSource.includes("in_app") && formSource.includes("manual") && formSource.includes("docusign") && !formSource.some((v) => /my_forms|transaction_provider/.test(v))],
+      ["proof registered + on the chain", /"test:listing-offer-lifecycle":/.test(pkg) && /npm run test:listing-offer-lifecycle\b/.test(pkg)],
+      ["proof drives the ladder, the gate and the null-listing rule", /packet-states|packet-state-writer/.test(guard) && /assertTransactionCreationAllowed|transaction-creation-gate/.test(guard) && /resolvedListingId/.test(guard)],
+      ["the outside-property offer reached its transaction", offer()?.listing_id === null && !!offer()?.transaction_id],
+    ]
+    const vocabBad = vocabChecks.filter(([, ok]) => !ok).map(([n]) => n)
+    c.step(`${h.lane} landed (${at}) — LIFECYCLE VOCABULARY: the spine names the owner's order (listing → offer → signatures → compliance → fully_executed_contract → transaction → closing) as ONE tuple; offers.form_source is spelled in its CHECK (in_app | manual | the legal-forms providers — the wizard's old 'my_forms,transaction_provider' join is not a value); test:listing-offer-lifecycle is registered AND on the guard chain and drives the ladder, the writer, the transaction gate and the null-listing rule (resolvedListingId); the journey above proved an OUTSIDE-PROPERTY offer (listing_id null) walks every door to a transaction only after compliance`, vocabBad.length === 0, `form_source: ${formSource.join("|")}${vocabBad.length ? `; FAILED: ${vocabBad.join(", ")}` : ""}`)
   }
   c.blind("No provider is called: the signing itself is modelled by the offer columns the webhooks stamp (buyer_signed_at, seller_response_type, fully_signed_contract_received_at); the document scanner's signature_completeness is a fixture. The chokepoint ran for real in memory under the internal secret (the posture a provider webhook presents) — its session path (requireCallerTenant) is test:tenant-scope's. RLS not modelled.")
   const a = await cleanupCanary(svc, B), b = await cleanupCanary(svc, B2)

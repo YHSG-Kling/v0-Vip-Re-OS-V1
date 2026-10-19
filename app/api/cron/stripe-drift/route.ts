@@ -119,7 +119,7 @@ export async function GET(request: NextRequest) {
       const { data: staff } = await svc
         .from("users")
         .select("id, brokerage_id")
-        .or("user_type.eq.superadmin,platform_role.eq.superadmin")
+        .eq("platform_role", "superadmin")
         .limit(20)
       const detail = drifts
         .map((d) => d.finding

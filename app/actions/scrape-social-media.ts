@@ -59,7 +59,7 @@ export async function scrapeSocialMedia(params: {
     .select('user_type')
     .eq('id', ctx.userId)
     .maybeSingle()
-  const isAdmin = ['admin', 'broker', 'broker_owner', 'superadmin', 'super_admin'].includes(
+  const isAdmin = ['admin', 'broker', 'broker_owner'].includes(
     u?.user_type ?? ''
   )
   if (!isAdmin) return { success: false, error: 'Forbidden: admin only' }

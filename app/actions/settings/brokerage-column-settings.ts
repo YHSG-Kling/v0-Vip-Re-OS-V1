@@ -23,7 +23,8 @@ import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
-import { saveLiveFaceProviderOrder, saveReviewRequestDelayDays } from "@/lib/settings/brokerage-settings-columns"
+import { saveLifetimeConversionPolicy, saveLiveFaceProviderOrder, saveReviewRequestDelayDays } from "@/lib/settings/brokerage-settings-columns"
+import { parseLifetimeConversionPolicy } from "@/lib/kernel/lifetime-conversion"
 import {
   normalizeReviewRequestDelay,
   REVIEW_REQUEST_DEFAULT_DELAY_DAYS,
@@ -125,4 +126,30 @@ export async function saveLiveFaceProviderOrderAction(order: string[]) {
   if (!w.ok) return w
   revalidatePath("/dashboard/settings/twin-studio")
   return { ok: true as const, order: w.value }
+}
+
+// ─── settings.lifetime_conversion (wave 142C's policy; door built at integration) ───────────
+
+export async function getLifetimeConversionPolicyAction() {
+  const g = await gate("read", "the lifetime conversion policy")
+  if (!g.ok) return g
+  const { data, error } = await createServiceClient()
+    .from("brokerage_settings")
+    .select("settings")
+    .eq("brokerage_id", g.brokerageId)
+    .maybeSingle()
+  if (error) return readRefusal(error)
+  // The SAME parser the money rail reads with (lib/kernel/lifetime-conversion.ts) — one vocabulary.
+  const policy = parseLifetimeConversionPolicy((data as { settings?: unknown } | null)?.settings)
+  return { ok: true as const, canEdit: g.canEdit, requirePayoutVerified: policy.requirePayoutVerified }
+}
+
+/** true = a closed customer stays "CLOSED / PAYOUT PENDING" until the agent's payout is recorded; false = convert at close. */
+export async function saveLifetimeConversionPolicyAction(requirePayoutVerified: boolean) {
+  const g = await gate("write", "the lifetime conversion policy")
+  if (!g.ok) return g
+  const w = await saveLifetimeConversionPolicy(createServiceClient(), g.brokerageId, { requirePayoutVerified }, { type: "user", userId: g.userId, reason: "lifetime conversion policy set" })
+  if (!w.ok) return w
+  revalidatePath("/dashboard/admin/onboarding")
+  return { ok: true as const, requirePayoutVerified: w.value.require_payout_verified }
 }

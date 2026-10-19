@@ -23,6 +23,9 @@ export async function run() {
   const c = canary("Commissions / payments: deterministic waterfall → brokerage authorizes → check / direct deposit → recorded + stamped → reconciled · no double payout")
   if (LIVE) return c.report([], 0, "refused in CANARY_LIVE mode: in-memory only — a payout record is money; the live ledger has never been operated")
   const B = uuid(), ADMIN = uuid(), AG_U = uuid(), AG = uuid(), TX = uuid(), C1 = uuid(), SPLIT = uuid(), STAMP = uuid()
+  // WIRED 142K (lane 142C): a SECOND deal's commission walks the seven payment states; its row carries the m787 columns
+  // (applied live, so markCommissionPaid's "column exists" rule stamps the instruction instant) and the ledger's net.
+  const TX2 = uuid(), C2 = uuid(), SPLIT2 = uuid(), STAMP2 = uuid()
   const svc = canaryClient({
     brokerages: [{ id: B, name: `${CANARY_TAG} Brokerage`, plan_tier: "brokerage", slug: `${CANARY_TAG}-pay` }],
     users: [
@@ -30,10 +33,22 @@ export async function run() {
       { id: AG_U, email: `agent@${CANARY_EMAIL_DOMAIN}`, user_type: "agent", brokerage_id: B, platform_role: null },
     ],
     agents: [{ id: AG, user_id: AG_U, brokerage_id: B, first_name: "Canary", last_name: "Agent", is_active: true }],
-    transactions: [{ id: TX, brokerage_id: B, agent_id: AG, status: "closed", stage: "CLOSED", property_address: `1 ${CANARY_TAG} Way`, sales_price: 400_000, close_date: nowIso().slice(0, 10) }],
-    agent_commissions: [{ id: C1, brokerage_id: B, agent_id: AG, transaction_id: TX, status: "approved", amount: 16_800, paid_at: null, payment_method: null, created_at: nowIso(), updated_at: nowIso() }],
-    commission_splits: [{ id: SPLIT, brokerage_id: B, commission_id: C1, status: "approved", amount: 16_800, paid_at: null }],
-    transaction_commissions: [{ id: STAMP, brokerage_id: B, transaction_id: TX, recipient_type: "agent", recipient_id: AG, status: "approved", calculated_amount: 16_800, paid_date: null }],
+    transactions: [
+      { id: TX, brokerage_id: B, agent_id: AG, status: "closed", stage: "CLOSED", property_address: `1 ${CANARY_TAG} Way`, sales_price: 400_000, close_date: nowIso().slice(0, 10) },
+      { id: TX2, brokerage_id: B, agent_id: AG, status: "closed", stage: "CLOSED", property_address: `2 ${CANARY_TAG} Way`, sales_price: 400_000, close_date: nowIso().slice(0, 10) },
+    ],
+    agent_commissions: [
+      { id: C1, brokerage_id: B, agent_id: AG, transaction_id: TX, status: "approved", amount: 16_800, paid_at: null, payment_method: null, created_at: nowIso(), updated_at: nowIso() },
+      { id: C2, brokerage_id: B, agent_id: AG, transaction_id: TX2, status: "approved", amount: 16_800, net_to_agent: 16_800, paid_at: null, payment_method: null, deposit_received_at: null, payment_initiated_at: null, payment_received_at: null, payment_received_by: null, payment_received_attestation: null, reconciled_at: null, reconciled_by: null, reconciled_via: null, reconciled_reference: null, quickbooks_synced_at: null, quickbooks_export_id: null, created_at: nowIso(), updated_at: nowIso() },
+    ],
+    commission_splits: [
+      { id: SPLIT, brokerage_id: B, commission_id: C1, status: "approved", amount: 16_800, paid_at: null },
+      { id: SPLIT2, brokerage_id: B, commission_id: C2, status: "approved", amount: 16_800, paid_at: null },
+    ],
+    transaction_commissions: [
+      { id: STAMP, brokerage_id: B, transaction_id: TX, recipient_type: "agent", recipient_id: AG, status: "approved", calculated_amount: 16_800, paid_date: null },
+      { id: STAMP2, brokerage_id: B, transaction_id: TX2, recipient_type: "agent", recipient_id: AG, status: "approved", calculated_amount: 16_800, paid_date: null },
+    ],
   })
   setSvc(svc)
 
@@ -85,7 +100,54 @@ export async function run() {
   for (const h of hooksFor("commission-payment")) {
     const at = h.probe()
     if (!at) { c.hook(h.lane, h.contract, `measured: COMMISSION_LEDGER_STATUSES = ${[...COMMISSION_LEDGER_STATUSES].join("/")} — no payment_initiated / payment_recorded / payment_received / reconciled, no receipt attestation; markCommissionPaid ×${dup.length}`); continue }
-    c.step(`${h.lane} landed (${at}) — wire its export into this canary (WAVE142 HOOK (integrator): ${h.lane}): drive expected → preliminary → approved_final → payment_initiated (check) → payment_recorded → the agent's receipt ATTESTATION (amount, date, payer, method, evidence) → reconciled, and assert a second attestation / payout is refused`, false, h.contract.slice(0, 120))
+    // WAVE142 HOOK (integrator): 142C — wired 142K: the seven states DERIVED (pure) and the no-CDA flow walked in memory
+    // on ONE row through the kernel's three new writers + the existing payout record.
+    const { deriveCommissionPaymentState, COMMISSION_PAYMENT_STATES, COMMISSION_PAYMENT_STATE_LABELS } = await import("../../lib/commission/ledger-sync")
+    const { initiateCommissionPayout, attestCommissionReceived, reconcileCommissionPayment } = await import("../../lib/kernel/financial")
+    const ladder = [{ status: "pending" }, { status: "pending", preliminary_statement_at: "x" }, { status: "approved" }, { status: "approved", payment_initiated_at: "x" }, { status: "paid", paid_at: "x" }, { status: "paid", payment_received_at: "x" }, { status: "paid", reconciled_at: "x" }].map((r) => deriveCommissionPaymentState(r).state)
+    const held = deriveCommissionPaymentState({ status: "disputed", paid_at: "x" })
+    c.step(`${h.lane} landed (${at}) — THE SEVEN PAYMENT STATES are DERIVED from the one four-value status + the evidence stamps (never a fifth status column — §6): expected → preliminary → approved_final → payment_initiated → payment_recorded → payment_received → reconciled, the later evidence wins; a DISPUTE holds the state its evidence reached (held) rather than inventing one; one tenant-facing label per state`, ladder.join() === [...COMMISSION_PAYMENT_STATES].join() && held.state === "payment_recorded" && held.held && COMMISSION_PAYMENT_STATES.every((s) => !!COMMISSION_PAYMENT_STATE_LABELS[s]), ladder.join(" → "))
+    const c2 = () => (svc.tables.agent_commissions ?? []).find((r) => r.id === C2) as Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any -- the in-memory row
+    const state = () => deriveCommissionPaymentState(c2() as never).state
+    const s0 = state()
+    const init = await initiateCommissionPayout({ ctx: broker, commissionId: C2, brokerageId: B, method: "check", reference: "chk 1042" })
+    const initAgain = await initiateCommissionPayout({ ctx: broker, commissionId: C2, brokerageId: B, method: "direct_deposit" })
+    const s1 = state()
+    // Snapshots at this instant — the checks below are read after the whole flow has run.
+    const afterInit = { status: c2().status, method: c2().payment_method, initiatedAt: c2().payment_initiated_at }
+    const paid2 = await markCommissionPaid({ ctx: broker, commissionId: C2, brokerageId: B, method: "check" })
+    const s2 = state()
+    const stranger = { ...(agentActor as object), agentId: uuid() } as unknown as Ctx
+    const attestation = { amount: 16_800, receivedAt: "2026-10-19", payer: "Canary Brokerage", method: "check" as const, reference: "chk 1042" }
+    const foreignAttest = await attestCommissionReceived({ ctx: stranger, commissionId: C2, brokerageId: B, attestation })
+    const attest = await attestCommissionReceived({ ctx: agentActor, commissionId: C2, brokerageId: B, attestation })
+    const attestAgain = await attestCommissionReceived({ ctx: agentActor, commissionId: C2, brokerageId: B, attestation })
+    const s3 = state()
+    const qb = await reconcileCommissionPayment({ ctx: broker, commissionId: C2, brokerageId: B, via: "quickbooks" })
+    const manualNoRef = await reconcileCommissionPayment({ ctx: broker, commissionId: C2, brokerageId: B, via: "manual" })
+    const recon = await reconcileCommissionPayment({ ctx: broker, commissionId: C2, brokerageId: B, via: "manual", reference: "stmt 2026-10 line 14" })
+    const reconAgain = await reconcileCommissionPayment({ ctx: broker, commissionId: C2, brokerageId: B, via: "manual", reference: "stmt 2026-10 line 14" })
+    const initOnPaid = await initiateCommissionPayout({ ctx: broker, commissionId: C2, brokerageId: B, method: "check" })
+    const s4 = state()
+    const flow: Array<[string, boolean]> = [
+      ["starts approved_final", s0 === "approved_final"],
+      ["initiate (check)", init.success && init.data?.alreadyInitiated === false],
+      ["second initiate = alreadyInitiated, method not re-stamped", initAgain.success && initAgain.data?.alreadyInitiated === true && afterInit.method === "check"],
+      ["status still approved after initiate", afterInit.status === "approved" && afterInit.initiatedAt === init.data?.initiatedAt && s1 === "payment_initiated"],
+      ["ledger posts (markCommissionPaid)", paid2.success && c2().status === "paid" && s2 === "payment_recorded"],
+      ["instruction instant kept through the post", c2().payment_initiated_at === init.data?.initiatedAt && c2().payment_method === "check"],
+      ["stranger's attestation refused", !foreignAttest.success && /agent who owns/.test(foreignAttest.error ?? "")],
+      ["agent attests, amount matches ledger", attest.success && attest.data?.amountMatchesLedger === true && c2().payment_received_attestation?.payer === "Canary Brokerage" && c2().payment_received_attestation?.on_behalf === false && c2().payment_received_by === AG_U && s3 === "payment_received"],
+      ["second attestation refused", !attestAgain.success && /already_attested/.test(attestAgain.error ?? "")],
+      ["quickbooks refused without a confirmed export", !qb.success && /quickbooks_not_synced/.test(qb.error ?? "")],
+      ["manual reconcile needs a reference", !manualNoRef.success],
+      ["manual reconcile with a statement reference", recon.success && recon.data?.via === "manual" && c2().reconciled_reference === "stmt 2026-10 line 14" && c2().reconciled_by === ADMIN && s4 === "reconciled"],
+      ["second reconcile refused", !reconAgain.success && /already_reconciled/.test(reconAgain.error ?? "")],
+      ["payout on a paid row initiates nothing", initOnPaid.success && initOnPaid.data?.alreadyInitiated === true],
+      ["one ledger row", (svc.tables.agent_commissions ?? []).filter((r) => r.id === C2).length === 1],
+    ]
+    const flowBad = flow.filter(([, ok]) => !ok).map(([n]) => n)
+    c.step(`${h.lane} the NO-CDA FLOW end to end in memory on ONE row, every refusal READ: approved_final → the brokerage INITIATES the payout by CHECK (payment_initiated_at + method stamped; a second initiate reports alreadyInitiated and re-stamps nothing) → payment_initiated → the ledger POSTS it (markCommissionPaid keeps the instruction instant) → payment_recorded → the AGENT ATTESTS receipt (amount, date, payer, method, reference; a stranger's attestation refused; the amount matches the ledger's net) → payment_received; a second attestation refused by name (already_attested) → RECONCILED only against the ACTUAL connected integration (quickbooks refused: no confirmed export on the row) or a bank / statement reference (manual without one refused) → reconciled; a second reconcile refused (already_reconciled); a payout on a paid row initiates NOTHING (no duplicate payouts); the ledger stays ONE row; Stripe is never in the path (asserted above)`, flowBad.length === 0, `${s0} → ${s1} → ${s2} → ${s3} → ${s4}${flowBad.length ? `; FAILED: ${flowBad.join(", ")} — ${[init, initAgain, paid2, foreignAttest, attest, attestAgain, qb, manualNoRef, recon, reconAgain, initOnPaid].map((r) => (r.success ? "ok" : r.error)).join(" | ")}` : ""}`)
   }
   c.blind("The kernel's markCommissionPaid ran in memory with the finance-admin gate on the actor context (no session); the COMMISSION_PAID event's fan-out is counted, not asserted. The waterfall's other ten stages are the commission proofs' (test:commission-*). QuickBooks is the pure reconciler on fixtures — no QuickBooks connection, no export, no Stripe call.")
   const cl = await cleanupCanary(svc, B)

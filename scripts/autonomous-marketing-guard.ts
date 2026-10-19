@@ -46,7 +46,7 @@
  * are server-only (asserted on stripped source); the real compliance gate's own blockers are exercised only
  * through the pattern list (the gate's rules have test:compliance-gate).
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { PDFDocument } from "pdf-lib"
 import { memSupabase } from "./in-memory-supabase"
@@ -475,12 +475,12 @@ async function main() {
   const sal = rows(c, "contacts").find((x) => x.email === "sal@seller.test"), una = rows(c, "contacts").find((x) => x.email === "una@unknown.test"), bo = rows(c, "contacts").find((x) => x.email === "bo@buyer.test")
   check("F2 the ONE capture command honours the declared persona on a custom form (seller) and the intake locale; unspecified stays null (never guessed); the magnet's own intent wins over a declaration (control)",
     sal?.contact_type === "seller" && sal?.metadata?.captured_language === "es" && (una?.contact_type ?? null) === null && bo?.contact_type === "buyer", JSON.stringify({ sal, una, bo }))
-  const fm = code("app/dashboard/admin/forms/FormsManagerClient.tsx"), fp = code("app/dashboard/admin/forms/page.tsx"), post = code("app/api/admin/forms/route.ts"), patch = code("app/api/admin/forms/[id]/route.ts"), submit = code("app/api/forms/submit/route.ts")
+  const fm = code("app/dashboard/admin/forms/FormsManagerClient.tsx"), fp = code("app/dashboard/admin/forms/page.tsx"), submit = code("app/api/forms/submit/route.ts")
   check("F3 the second builder is GONE: no create/edit modal, no /api/admin/forms fetch, no lead_capture_forms read on the page; lead capture points at the survivor; the transaction-forms tab survives",
     !/fetch\(['"`]\/api\/admin\/forms/.test(fm) && !/openCreate|openEdit|toggleActive/.test(fm) && /\/dashboard\/marketing\/lead-magnets/.test(fm) && /transaction-forms/.test(fm) && !/from\(['"]lead_capture_forms['"]\)/.test(fp))
-  check("F4 the two admin doors are THIN doors onto the kernel: POST → createLeadMagnet (no raw insert; tenant + agent from the session, agents.id via users.id), PATCH → an allow-list with a COUNTED tenant-pinned update (no verbatim body)",
-    /createLeadMagnet\(\{/.test(post) && !/\.insert\(/.test(post) && /from\('agents'\)[\s\S]{0,200}?\.eq\('user_id',\s*user\.id\)/.test(post) && !/body\.brokerage_id/.test(post)
-    && /const PATCHABLE = new Set\(/.test(patch) && !/\.update\(body\)/.test(patch) && /\.update\(patch\)[\s\S]{0,200}?\.eq\('brokerage_id',\s*profile\.brokerage_id\)[\s\S]{0,100}?\.select\('id'\)/.test(patch) && /length !== 1/.test(patch))
+  const adminDoorsGone = !existsSync(join(root, "app/api/admin/forms/route.ts")) && !existsSync(join(root, "app/api/admin/forms/[id]/route.ts"))
+  check("F4 the two admin doors (POST /api/admin/forms, PATCH /api/admin/forms/[id]) are GONE — deleted at wave-142 integration once no in-tree caller remained (the one-sided census's 6b); SURVIVOR createLeadMagnet behind app/actions/lead-magnets-actions.ts; the client's tombstone names the survivor",
+    adminDoorsGone && /createLeadMagnet\(/.test(code("app/actions/lead-magnets-actions.ts")) && /DELETED at wave-142 integration/.test(raw("app/dashboard/admin/forms/FormsManagerClient.tsx")) && /createLeadMagnet \/ publishLeadMagnet/.test(raw("app/dashboard/admin/forms/FormsManagerClient.tsx")))
   check("F5 /forms/[slug] captures through captureFormSubmission (no second pipeline: no captureContact, no form_submissions insert, no counter RPC) and the renderer sends the consent it collects; control: the kernel still holds the ONE form_submissions insert",
     /captureFormSubmission\(\{/.test(submit) && !/captureContact\(/.test(submit) && !/from\('form_submissions'\)/.test(submit) && !/increment_form_submission_count/.test(submit) && /language:\s*capturedLanguage/.test(submit)
     && /tcpaConsent:\s*tcpaChecked/.test(code("app/forms/[slug]/FormRenderer.tsx")) && /from\("form_submissions"\)[\s\S]{0,120}?\.insert\(/.test(kernelSrc))

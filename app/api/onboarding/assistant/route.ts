@@ -156,7 +156,7 @@ ${kbContext || 'No specific documentation found for this query.'}${memoryContext
               .from('users')
               .select('id')
               .eq('brokerage_id', brokerageId)
-              .in('user_type', ['admin', 'broker', 'superadmin'])
+              .in('user_type', ['admin', 'broker'])
             for (const adm of admins ?? []) {
               await sentinelWrite(service, service.from('notifications').insert({
                 user_id: adm.id,

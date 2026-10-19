@@ -17,7 +17,7 @@
  */
 import { PDFDocument, StandardFonts } from "pdf-lib"
 import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSvc, uuid } from "./_harness"
-import { hooksFor, strippedRepo } from "./_registry"
+import { hooksFor, listFiles, readRepo, strippedRepo } from "./_registry"
 import { overflowFindings } from "./mobile"
 
 /** A real AcroForm PDF with the four fields a purchase contract's identification page carries. */
@@ -91,8 +91,9 @@ export async function run() {
   // hand-off); the literal "google_drive_handoff" lives in a comment at HEAD — stripped, so never asserted.
   const dispatch = strippedRepo("lib/esign/dispatch-packet.ts") ?? ""
   c.step("then the TENANT'S e-sign: the wizard sends through the one dispatch (sendListingAgreementForSignatureAction / submitForSignature → dispatchEsignPacket, resolveESignChoice — platform default DocuSign), the embedded DocuSign sender view framed (embedded_send → embeddedSend: true), the Google hand-off as the popup (embeddedSend false)", /sendListingAgreementForSignatureAction|submitForSignature/.test(wizard) && DEFAULT_ESIGN_PROVIDER === "docusign" && providerOfferVerdict("esign", "docusign").ok && /embeddedSend:\s*esignMode\s*===\s*["']embedded_send["']/.test(wizard) && /embeddedSend\??:\s*boolean/.test(dispatch) && /dispatchStatusFor\(/.test(dispatch), "")
-  const labels = [...wizard.matchAll(/STEP_LABELS_(OFFER|LISTING)\s*=\s*\[([^\]]*)\]/g)].map((m) => `${m[1]}: ${m[2].replace(/["'\s]/g, "")}`)
-  console.log(`    census: wizard steps at HEAD — ${labels.join(" · ") || "(no STEP_LABELS const)"}; the owner's sequence (Purpose → Property → Parties → Terms → Recommended Forms → Complete → Review → E-sign/Deliver) and the opening question are lane 142B's hook`)
+  // WIRED 142K: the steps live on the spine (lib/forms/form-wizard-sequence.ts — lane 142B), never numbered in the component.
+  const { FORM_WIZARD_STEP_LABELS: wizardLabels } = await import("../../lib/forms/form-wizard-sequence")
+  console.log(`    census: wizard steps at HEAD — ${wizardLabels.join(" → ")} (FORM_WIZARD_SEQUENCE, rendered by stepKeyAt); the owner's sequence + the opening question are asserted in the 142B hook below`)
   // AI coaches, never authors a legal fact: the fill, the legal description and the wizard's prefill door name no model.
   const authored = ["lib/forms/pdf-form-fill.ts", "lib/forms/legal-description.ts", "app/actions/buyer-offer/prefill-storage-form.ts"].filter((f) => /generateText|generateObject|gatewayChat|Routed\(/.test(strippedRepo(f) ?? ""))
   c.step("NEVER model-authored: the PDF fill, the legal-description resolver and the wizard's prefill door name no model call (0 of 3) — the AI explains what is missing; a human fills the legal facts", authored.length === 0, authored.join(",") || "0 of 3")
@@ -106,18 +107,85 @@ export async function run() {
   for (const h of hooksFor("form-wizard")) {
     const at = h.probe()
     if (!at) {
-      c.hook(h.lane, h.contract, /sequence/i.test(h.contract) ? `at HEAD the steps are ${labels[0] ?? "Context, Forms, Fill, Signers, E-Sign, Monitor"}; no 'listing forms or an offer?' question` : /SOURCE \(a\)/.test(h.contract) ? "at HEAD packets are brokerage-scoped only (brokerage_form_library behind app/api/admin/transaction-forms); nothing under platform Media carries a form packet" : /SOURCE \(b\)/.test(h.contract) ? "at HEAD the vocabulary is 'transaction forms' everywhere (TransactionFormsProvider 42 hits / 19 files); 'legal forms' has 0 spellings" : "at HEAD LEGAL_DESCRIPTION_SOURCES = agent | rentcast (m768)")
+      c.hook(h.lane, h.contract, /sequence/i.test(h.contract) ? `at HEAD the steps are ${wizardLabels.join(" → ")}; no 'listing forms or an offer?' question` : /SOURCE \(a\)/.test(h.contract) ? "STILL at 28774bdc2 (lane 142B landed no platform-Media packet — integrator finding, lane142K-notes): packets are brokerage-scoped only (brokerage_form_library behind app/api/admin/transaction-forms); nothing under platform Media carries a form packet" : /SOURCE \(b\)/.test(h.contract) ? "at HEAD the vocabulary is 'transaction forms' everywhere (TransactionFormsProvider 42 hits / 19 files); 'legal forms' has 0 spellings" : "at HEAD LEGAL_DESCRIPTION_SOURCES = agent | rentcast (m768)")
       continue
     }
     if (h.lane === "142C") {
+      // WAVE142 HOOK (integrator): 142C — wired 142K: the landed sources (lane C folded county + approved OSINT research into
+      // ONE provenance value, public_record, accepted only cited + shaped and stamped verification_required).
       const { LEGAL_DESCRIPTION_SOURCES } = await import("../../lib/forms/legal-description")
+      const { looksLikeLegalDescription } = await import("../../lib/intelligence/offer-property-prefill")
       const sources = LEGAL_DESCRIPTION_SOURCES as readonly string[]
-      c.step(`${h.lane} landed (${at}): the sources keep agent + rentcast and add the owner's three (an active-listing / IDX-MLS record, a county / public-record capability, approved OSINT research) — each a provenance value, never the street address`, sources.includes("agent") && sources.includes("rentcast") && sources.some((s) => /listing|idx|mls/i.test(s)) && sources.some((s) => /county|public/i.test(s)) && sources.some((s) => /osint/i.test(s)), sources.join(","))
+      const m786 = listFiles("supabase/migrations", (f) => /\/m786-[^/]+\.sql$/.test(f))[0] ?? null
+      const sql = m786 ? readRepo(m786) ?? "" : ""
+      const ld = strippedRepo("lib/forms/legal-description.ts") ?? "", lookup = strippedRepo("lib/property/address-lookup.ts") ?? ""
+      const address = looksLikeLegalDescription("1 Canary Way, Pensacola, FL 32501"), street = looksLikeLegalDescription("123 Main Street, Pensacola, FL 32501")
+      const ldChecks: Array<[string, boolean]> = [
+        ["four sources", sources.length === 4 && ["agent", "listing", "rentcast", "public_record"].every((s) => sources.includes(s))],
+        ["m786 spells all four", ["agent", "listing", "rentcast", "public_record"].every((s) => new RegExp(`'${s}'`).test(sql))],
+        ["public_record stamped verification_required", /verification_required:\s*source\s*===\s*["']public_record["']/.test(ld)],
+        ["address fill carries legalDescriptionSource", /legalDescriptionSource/.test(lookup)],
+        ["a legal description passes the shape rule", looksLikeLegalDescription("LOT 7 BLK 2 CANARY COVE PB 12 PG 34").ok],
+        ["a street address never does", !address.ok && !street.ok && ["street_address", "no_legal_tokens"].includes(address.reason) && ["street_address", "no_legal_tokens"].includes(street.reason)],
+        ["empty refused", !looksLikeLegalDescription("").ok],
+      ]
+      c.step(`${h.lane} landed (${at}): the sources keep agent + rentcast and add the ACTIVE-LISTING record ('listing' — the IDX/MLS-fed row) and the public-record research capability ('public_record' — county record / approved OSINT research, accepted only CITED and SHAPED, stamped verification_required so a human verifies before the packet relies on it) — four provenance values the m786 CHECK spells; the ADDRESS FILL returns legalDescription + legalDescriptionSource beside the address; the shape rule never accepts a street address (two positive controls)`, ldChecks.every(([, ok]) => ok), `${sources.join(",")}; m786 ${m786 ?? "MISSING"}; address → ${address.reason} / ${street.reason}${ldChecks.some(([, ok]) => !ok) ? `; FAILED: ${ldChecks.filter(([, ok]) => !ok).map(([n]) => n).join(", ")}` : ""}`)
       continue
     }
-    if (/sequence/i.test(h.contract)) {
-      const landedLabels = [...(strippedRepo(at) ?? "").matchAll(/STEP_LABELS_(OFFER|LISTING)\s*=\s*\[([^\]]*)\]/g)].map((m) => m[2])
-      c.step(`${h.lane} landed (${at}): the wizard asks 'listing forms or an offer?' and its step vocabulary carries Recommended Forms + Review + E-sign/Deliver (never a CDA step)`, /listing forms or an offer/i.test(strippedRepo(at) ?? "") && landedLabels.some((l) => /Recommended/i.test(l) && /Review/i.test(l)) && !landedLabels.some((l) => /CDA/i.test(l)), landedLabels.join(" · "))
+    if (/^FORMWIZARD/.test(h.contract)) {
+      // WAVE142 HOOK (integrator): 142B — wired 142K: the spine, the coach, the recommendation and the terms, driven pure.
+      const seq = await import("../../lib/forms/form-wizard-sequence")
+      const { getStateForms } = await import("../../lib/state-forms/registry")
+      const fl = getStateForms("FL", "offer")
+      const financingAddendum = fl.addenda.find((a) => /financ/i.test(a)) ?? null
+      const inspectionAddendum = fl.addenda.find((a) => /inspection/i.test(a)) ?? null
+      // A realistic library: the required contract in Media, the two contingency addenda at the legal-forms provider.
+      const providerForm = (name: string) => ({ ref: `skyslope:${name}`, name, source: "legal_forms_provider" as const, providerName: "skyslope" })
+      const available = [{ ref: `lib/${fl.required[0]}.pdf`, name: fl.required[0], source: "my_forms" as const }, ...(inspectionAddendum ? [providerForm(inspectionAddendum)] : []), ...(financingAddendum ? [providerForm(financingAddendum)] : [])]
+      const cashAnswers = { property_source: "outside", offer_price: "$400,000", financing_type: "cash", earnest_money: 5000, closing_date: "2026-12-01", inspection_period_days: 10, sale_of_buyer_home: false, pre_1978: false, hoa: false }
+      const cash = seq.recommendForms({ purpose: "offer", answers: cashAnswers, statePackage: fl, available, stateCode: "FL" })
+      const financed = seq.recommendForms({ purpose: "offer", answers: { ...cashAnswers, financing_type: "conventional", financing_contingency_days: 21, appraisal_contingency: true }, statePackage: fl, available, stateCode: "FL" })
+      const none = seq.recommendForms({ purpose: "offer", answers: cashAnswers, statePackage: null, available, stateCode: "FL" })
+      // MEASURED (lane 142B / integrator, the matcher's precision): with a SPARSE library (the financing file only) the token
+      // matcher (lib/forms/state-package-match.ts:60 — a 2/3-token overlap scores) attaches the FINANCING file to the
+      // INSPECTION slot and starves the financing entry; a realistic library joins correctly (the step above).
+      const sparse = financingAddendum ? seq.recommendForms({ purpose: "offer", answers: cashAnswers, statePackage: fl, available: [providerForm(financingAddendum)], stateCode: "FL" }) : null
+      const misJoin = sparse?.recommended.find((r) => r.name === financingAddendum && r.packageForm !== financingAddendum) ?? null
+      console.log(`    finding (lane 142B, matcher precision): sparse library → ${misJoin ? `"${misJoin.name}" attached to the "${misJoin.packageForm}" slot (state-package-match.ts:60 admits a 2/3-token overlap)` : "no mis-join"}`)
+      const terms = seq.offerTermsToCreateOfferFields(cashAnswers)
+      const first8 = seq.FORM_WIZARD_STEP_LABELS.slice(0, 8).map((l) => l.toLowerCase().replace(/[^a-z]/g, ""))
+      const wizardChecks: Array<[string, boolean]> = [
+        ["the owner's sequence, no CDA step", first8.join(",") === "purpose,property,parties,terms,recommendedforms,complete,review,esigndeliver" && !seq.FORM_WIZARD_STEP_LABELS.some((l) => /cda/i.test(l))],
+        ["the opening question + two purposes", /listing forms or an offer/i.test(seq.FORM_WIZARD_OPENING_QUESTION) && [...seq.FORM_WIZARD_PURPOSES].join() === "listing,offer"],
+        ["the coach never invents", seq.AI_COACH_RULES.some((r) => /never invents legal terms, signatures or material facts/.test(r))],
+        ["intake names what is missing", seq.missingRequiredIntake("offer", {}).some((p) => /offer price/i.test(p)) && seq.missingRequiredIntake("offer", cashAnswers).length === 0 && seq.missingRequiredIntake("listing", {}).some((p) => /representation/i.test(p))],
+        ["recommendation returns only forms that exist", cash.recommended.every((r) => available.some((a) => a.ref === r.ref)) && cash.recommended.some((r) => r.kind === "required" && r.name === fl.required[0])],
+        ["a required form nobody has is NAMED, never invented", cash.missing.length >= Math.max(0, fl.required.length - 1) && cash.missing.every((m) => /not in your library or your legal-forms provider/.test(m.why))],
+        ["financing addendum only when financed", !financingAddendum || (!cash.recommended.some((r) => r.name === financingAddendum) && financed.recommended.some((r) => r.name === financingAddendum && r.kind === "addendum" && /financed/.test(r.reason) && r.source === "legal_forms_provider"))],
+        ["no package → nothing", none.recommended.length === 0 && none.missing.length === 0],
+        ["terms become the offer's fields", terms.offer_price === 400_000 && terms.earnest_money === 5000 && terms.financing_type === "cash" && !terms.financing_contingency && !terms.appraisal_contingency && terms.inspection_contingency && terms.inspection_period_days === 10 && terms.closing_date === "2026-12-01"],
+        ["form_source is the column's word", seq.offerFormSourceFor([{ source: "my_forms" }]) === "in_app" && seq.offerFormSourceFor([{ source: "legal_forms_provider", providerName: "SkySlope" }]) === "skyslope" && seq.offerFormSourceFor([{ source: "legal_forms_provider", providerName: "formsimplicity" }]) === "manual" && seq.offerFormSourceFor([]) === "manual"],
+        ["the wizard renders from the spine", /stepKeyAt\(/.test(wizard) && /StepPurpose/.test(wizard)],
+      ]
+      const wizardBad = wizardChecks.filter(([, ok]) => !ok).map(([n]) => n)
+      c.step(`${h.lane} landed (${at}): the wizard renders the OWNER's sequence from ONE spine (Purpose → Property → Parties → Terms → Recommended Forms → Complete → Review → E-sign/Deliver; CDA is never a step) and opens with "${seq.FORM_WIZARD_OPENING_QUESTION}" (listing | offer are the only purposes); the coach's rules say it never invents legal terms, signatures or material facts; the intake names what is still missing (a blank offer misses the price; a blank listing misses the representation); the RECOMMENDATION returns only forms that EXIST (the state's verified package joined to the library / the legal-forms provider; a required form nobody has is NAMED under missing, never invented; a financing addendum only when the purchase is financed; no package → nothing); the TERMS become the offer's real fields (price 400000, cash → no financing / appraisal contingency, inspection 10 days); form_source is the column's word (in_app | the provider's name | manual)`, wizardBad.length === 0, `FL offer package: ${fl.required.length} required, ${fl.addenda.length} addenda; recommended cash ${cash.recommended.length} / financed ${financed.recommended.length}; missing ${cash.missing.length}${wizardBad.length ? `; FAILED: ${wizardBad.join(", ")} — cash ${JSON.stringify(cash.recommended.map((r) => r.name))} financed ${JSON.stringify(financed.recommended.map((r) => r.name))} missing ${JSON.stringify(cash.missing.map((m) => m.packageForm))} intake ${JSON.stringify(seq.missingRequiredIntake("offer", cashAnswers))}` : ""}`)
+      continue
+    }
+    if (/SOURCE \(b\)/.test(h.contract)) {
+      // WAVE142 HOOK (integrator): 142B — wired 142K: ONE tenant-facing spelling; the matrix per provider; no old spelling left.
+      const { LEGAL_FORMS_PROVIDER_LABEL, PROVIDER_CAPABILITY_MATRIX } = await import("../../lib/integrations/providers/catalog")
+      const rows = Object.entries(PROVIDER_CAPABILITY_MATRIX) as Array<[string, Record<string, unknown>]>
+      const need = ["credentials", "settings", "forms", "transaction_creation", "esign", "status", "sync"]
+      // The COPY census: tenant-facing surfaces (app/**/*.tsx, stripped) with import specifiers dropped — a module PATH
+      // (lib/integrations/transaction-providers/…) is code the lane deliberately did not rename, never copy. The .ts
+      // residues (server log strings, module paths) are published beside the zero, not counted.
+      const OLD = /transaction[- ]?(forms?)?[- ]provider/i
+      const dropImports = (s: string) => s.replace(/\bfrom\s+["'][^"']+["']/g, "").replace(/import\(\s*["'][^"']+["']\s*\)/g, "")
+      const oldSpelling = listFiles("app", (f) => /\.tsx$/.test(f)).filter((f) => OLD.test(dropImports(strippedRepo(f) ?? "")))
+      const residues = listFiles("app", (f) => /\.ts$/.test(f)).filter((f) => OLD.test(dropImports(strippedRepo(f) ?? "")))
+      const integrations = strippedRepo("app/dashboard/settings/integrations/integrations-client.tsx") ?? ""
+      c.step(`${h.lane} landed (${at}) — SOURCE (b) + VOCABULARY: the tenant-facing name is ONE spelling (LEGAL_FORMS_PROVIDER_LABEL = 'Legal-forms provider'; the integrations table carries it; the wizard's source vocabulary is my_forms | legal_forms_provider); 0 tenant-facing 'transaction provider' spellings remain in app/**/*.tsx after stripping (import paths dropped; positive control: the finder catches the old spelling in a specimen); the matrix says per provider (${rows.length}) credentials / settings / forms / transaction creation / document upload / form fill / e-sign / status / sync with evidence per cell; the provider window is API → embedded → popup, never an unsupported iframe (asserted above)`, LEGAL_FORMS_PROVIDER_LABEL === "Legal-forms provider" && /legal-forms provider/i.test(integrations) && /legal_forms_provider/.test(strippedRepo("lib/forms/form-wizard-sequence.ts") ?? "") && oldSpelling.length === 0 && OLD.test("Connect your transaction forms provider") && !OLD.test(dropImports(`import { x } from "@/lib/integrations/transaction-providers/resolve-transaction-provider"`)) && rows.length >= 5 && rows.every(([, row]) => need.every((k) => k in row) && Object.keys(row).length >= 8), `cells: ${rows[0] ? Object.keys(rows[0][1]).join(",") : "none"}; old spelling in .tsx: ${oldSpelling.join(",") || "none"}`)
+      console.log(`    census (§6 residues, not copy): the old spelling in app/**/*.ts after stripping, import paths dropped — ${residues.length ? residues.join(", ") : "none"} (server-log strings in ai-offer-creation.ts; module paths lib/integrations/transaction-providers/* + transaction-provider.interface are file names lane 142B left unrenamed — report for the integrator)`)
       continue
     }
     c.step(`${h.lane} landed (${at}) — wire its export into this canary and assert the contract (WAVE142 HOOK (integrator): ${h.lane})`, false, h.contract.slice(0, 120))

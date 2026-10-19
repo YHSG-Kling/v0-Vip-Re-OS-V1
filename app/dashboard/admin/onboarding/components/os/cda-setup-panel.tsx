@@ -30,6 +30,7 @@ import {
   deactivateCdaTemplateAction,
   updateCdaTemplateAction,
 } from "@/app/actions/brokerage-cda-setup"
+import { getLifetimeConversionPolicyAction, saveLifetimeConversionPolicyAction } from "@/app/actions/settings/brokerage-column-settings"
 import { ALL_US_STATES } from "@/lib/state-forms/registry"
 import { uploadCdaTemplateFile } from "@/app/actions/cda-storage"
 import { toast } from "sonner"
@@ -67,6 +68,8 @@ export function CdaSetupPanel() {
   const [loading, setLoading] = useState(true)
   const [offersCda, setOffersCda] = useState<boolean | null>(null)
   const [payoutDefault, setPayoutDefault] = useState<"direct_deposit" | "check">("direct_deposit")
+  /** wave 142C: null until read; true = hold the lifetime conversion until the agent's payout is recorded. */
+  const [requirePayoutVerified, setRequirePayoutVerified] = useState<boolean | null>(null)
   const [templates, setTemplates] = useState<Template[]>([])
   const [pending, startTransition] = useTransition()
 
@@ -90,6 +93,8 @@ export function CdaSetupPanel() {
   async function reload() {
     setLoading(true)
     const settings = await getBrokerageCdaSettingAction()
+    const lifetime = await getLifetimeConversionPolicyAction()
+    if (lifetime.ok) setRequirePayoutVerified(lifetime.requirePayoutVerified)
     if (settings.success) {
       setOffersCda(settings.offersCda)
       if (settings.payoutDefault === "direct_deposit" || settings.payoutDefault === "check") {
@@ -99,6 +104,18 @@ export function CdaSetupPanel() {
     const tpls = await listCdaTemplatesAction({ includeInactive: showInactive })
     if (tpls.success) setTemplates(tpls.templates as Template[])
     setLoading(false)
+  }
+
+  function saveLifetimePolicy(next: boolean) {
+    startTransition(async () => {
+      const res = await saveLifetimeConversionPolicyAction(next)
+      if (res.ok) {
+        setRequirePayoutVerified(res.requirePayoutVerified)
+        toast.success("Lifetime conversion policy saved")
+      } else {
+        toast.error(res.error)
+      }
+    })
   }
 
   async function saveSetting(nextOffers: boolean, nextPayout: typeof payoutDefault) {
@@ -244,6 +261,22 @@ export function CdaSetupPanel() {
                 <SelectItem value="check">Check</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+        )}
+
+        {/* Lifetime conversion policy (wave 142C; lib/kernel/lifetime-conversion.ts reads it) */}
+        {offersCda !== null && (
+          <div className="rounded-lg bg-muted p-3 space-y-2">
+            <Label className="text-xs font-semibold">When does a closed customer become a lifetime customer?</Label>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant={requirePayoutVerified === false ? "default" : "outline"} disabled={pending || requirePayoutVerified === null} onClick={() => saveLifetimePolicy(false)}>
+                At closing
+              </Button>
+              <Button size="sm" variant={requirePayoutVerified === true ? "default" : "outline"} disabled={pending || requirePayoutVerified === null} onClick={() => saveLifetimePolicy(true)}>
+                Once the agent&apos;s payout is recorded
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">Until then the transaction reads CLOSED / PAYOUT PENDING; records and the ledger are untouched.</p>
           </div>
         )}
 

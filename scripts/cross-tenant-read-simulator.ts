@@ -530,7 +530,7 @@ function m781Layer() {
   if (!existsSync(join(ROOT, file))) { check(`${file} exists`, false); return }
   const rawSql = readFileSync(join(ROOT, file), "utf8")
   const sql = stripSqlComments(rawSql)
-  check("m781 states its status on line 1 (the lane stamp or APPLIED LIVE)", /WRITTEN, NOT APPLIED|APPLIED LIVE/.test(rawSql.split("\n")[0]))
+  check("m781 states APPLIED LIVE on line 1 (applied 2026-10-19 via Supabase MCP — PART 1; PART 2 split to m795)", /APPLIED LIVE/.test(rawSql.split("\n")[0]))
   check("m781 is MCP-applicable one statement per call: ALTER POLICY only — no DROP / CREATE POLICY, no DROP TABLE", !/\b(DROP|CREATE)\s+POLICY\b|\bDROP\s+TABLE\b/i.test(sql))
   const policies = parseAlterPolicies(sql)
   check(`m781 is non-degenerate: ${policies.length} ALTER POLICY statements, every one carrying an expression`, policies.length > 0 && policies.every((p) => p.expressions.length > 0))
@@ -563,7 +563,7 @@ function m781Layer() {
   if (!existsSync(join(ROOT, cFile))) { check(`${cFile} exists`, false); return }
   const cRaw = readFileSync(join(ROOT, cFile), "utf8")
   const cSql = stripSqlComments(cRaw)
-  check("m782 is stamped as the OWNER's SQL-editor action and claims NOT applied (the MCP holds the DROP)", /OWNER SQL EDITOR/.test(cRaw.split("\n")[0]) && claimOf(cRaw) !== "unstated")
+  check("m782 states its status on line 1 (the owner's SQL-editor action until applied; APPLIED LIVE once the MCP accepted ALTER TABLE … DROP CONSTRAINT, 2026-10-19)", /OWNER SQL EDITOR|APPLIED LIVE/.test(cRaw.split("\n")[0]) && claimOf(cRaw) !== "unstated")
   const list = cSql.match(/ADD CONSTRAINT users_user_type_check\s+CHECK\s*\(user_type = ANY \(ARRAY\[([^\]]*)\]\)\)/)?.[1] ?? ""
   const values = list.split(",").map((s) => s.trim().replace(/::text$/, "").replace(/^'|'$/g, "")).filter(Boolean)
   check("m782 re-declares users_user_type_check WITHOUT 'superadmin' (and never 'super_admin')", values.length > 0 && !values.includes("superadmin") && !values.includes("super_admin"))

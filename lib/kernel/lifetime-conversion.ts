@@ -52,8 +52,9 @@ export function lifetimeConversionVerdict(input: {
   return { action: "convert", label: "LIFETIME", reason: input.requirePayoutVerified ? "closing verified, records complete, payout recorded" : "closing verified, records complete" }
 }
 
-/** PURE — the tenant's policy from brokerage_settings.settings (any shape; absent → convert at close). */
-function parseLifetimeConversionPolicy(settings: unknown): { requirePayoutVerified: boolean } {
+/** PURE — the tenant's policy from brokerage_settings.settings (any shape; absent → convert at close).
+ *  Exported so the settings door (app/actions/settings/brokerage-column-settings.ts) reads with the SAME parser. */
+export function parseLifetimeConversionPolicy(settings: unknown): { requirePayoutVerified: boolean } {
   const s = settings && typeof settings === "object" ? (settings as Record<string, unknown>)[LIFETIME_CONVERSION_POLICY_KEY] : null
   const requirePayoutVerified = !!(s && typeof s === "object" && (s as Record<string, unknown>).require_payout_verified === true)
   return { requirePayoutVerified }
@@ -168,16 +169,20 @@ export async function promoteDealContactsToLifetime(
 export async function holdLifetimeConversionPendingPayout(
   svc: Svc,
   args: { brokerageId: string; transactionId: string; contactIds: string[]; agentRecordId: string | null; nowIso?: string },
-): Promise<{ held: boolean; alreadyHeld: boolean; error?: string }> {
+): Promise<{ held: boolean; alreadyHeld: boolean; released?: boolean; error?: string }> {
   const { data: prior, error: priorErr } = await svc
     .from("activities")
-    .select("id")
+    .select("id, status")
     .eq("brokerage_id", args.brokerageId)
     .eq("transaction_id", args.transactionId)
     .eq("activity_type", LIFETIME_HOLD_ACTIVITY_TYPE)
-    .eq("status", "pending")
-    .limit(1)
+    .in("status", ["pending", "completed"])
+    .limit(2)
   if (priorErr) return { held: false, alreadyHeld: false, error: priorErr.message }
+  // wave 142 (lane 142K finding 2): a COMPLETED hold is the payout having already released the conversion — a re-run of
+  // the close must not open a second "CLOSED / PAYOUT PENDING" that nobody will ever release (owner: no duplicate
+  // conversions or accounting on a re-run). A pending one is simply already held.
+  if ((prior ?? []).some((p) => (p as { status?: string }).status === "completed")) return { held: false, alreadyHeld: true, released: true }
   if (prior && prior.length > 0) return { held: true, alreadyHeld: true }
   const { error } = await svc.from("activities").insert({
     brokerage_id: args.brokerageId,

@@ -32,6 +32,15 @@
  *
  * WAVE 142 (lane 142J, HEAD fec8b6a95): the SAME pattern for lanes 142A–I — WAVE142_HOOKS below, read through the
  * same hookCensus (per wave or both) and the same hooksFor. The roster gains the thirteen wave-142 journeys.
+ *
+ * WIRED AT 28774bdc2 (wave 142, lane 142K — the integration lane): all ten lanes are merged. Seven probes that still
+ * answered null for a LANDED lane were re-pointed to where the lane's code lives (lane B's ladder + terminal-state door +
+ * sequence module, lane C's closing policy, lane E's public-copy loop, lane I's deleted default) — each one verified null
+ * at fec8b6a95 (`git show fec8b6a95:<file>` carries none of the names), so the census's positive control still holds.
+ * ONE probe stays pending on purpose: 142B SOURCE (a) — lane B landed no platform-Media packet (grep 2026-10-19: nothing
+ * under lib/forms, lib/kernel/forms.ts, app/actions/superadmin names a platform packet); the hook records that honestly.
+ * Every landed hook's canary now DRIVES the export in memory (lane142K-notes.md); where the landed code does not meet the
+ * contract the step stays red and names file:line (the listing activation gate's literal, the kernel resolver's fallback).
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
@@ -274,9 +283,12 @@ export const WAVE142_HOOKS: CanaryHook[] = [
   {
     canary: "listing-lifecycle", lane: "142B",
     contract: "LISTING AGREEMENT all-signed → signed documents retrieved + verified → agent + responsible compliance notified → the packet AUTO-SUBMITTED to compliance (the existing listing compliance loop) → required docs / initials / signatures / disclosures checked → deficiencies notified immediately → corrections / re-sign → ONLY after compliance approval the listing reads FULLY EXECUTED — never on the provider's completion event",
-    // HEAD: lib/forms/esign-execution-loop.ts applyReadyWrites stamps listing_agreements { esign_status: "fully_signed",
-    // fully_executed_at: now } the moment the PROVIDER reports every tracked form signed — before the compliance loop runs.
-    probe: () => { const s = strippedRepo("lib/forms/esign-execution-loop.ts"); return s && !/esign_status:\s*["']fully_signed["'],\s*fully_executed_at:\s*now/.test(s) ? "lib/forms/esign-execution-loop.ts" : null },
+    // LANDED (lane 142B, re-anchored 142K): THE LADDER. The provider's completion stamps fully_signed (the column's spelling
+    // of the owner's all_signed) through the ladder-guarded survivor (recordEsignPacketHop / isAtOrPastAllSigned) and never
+    // writes 'fully_executed'; the ONLY writer of fully_executed is the listing compliance loop, after compliance_approved.
+    // (The legacy column fully_executed_at is still stamped at provider completion — esign-execution-loop.ts:499 — a §6
+    // finding the listing-lifecycle canary publishes beside the rule; the activation gate's literal is the canary's red step.)
+    probe: () => { const loop = strippedRepo("lib/forms/esign-execution-loop.ts") ?? "", comp = strippedRepo("lib/listings/listing-compliance-loop.ts") ?? ""; return /\b(recordEsignPacketHop|isAtOrPastAllSigned)\b/.test(loop) && !/["']fully_executed["']/.test(loop) && /["']compliance_approved["'][\s\S]*?["']fully_executed["']/.test(comp) ? "lib/listings/listing-compliance-loop.ts" : null },
   },
   {
     canary: "listing-lifecycle", lane: "142B",
@@ -286,7 +298,11 @@ export const WAVE142_HOOKS: CanaryHook[] = [
   {
     canary: "offer-lifecycle", lane: "142B",
     contract: "E-SIGN MONITORING through the tenant's SELECTED e-sign provider (resolveESignChoice; platform default DocuSign; never Dotloop-hardwired): verified provider WEBHOOKS preferred (signature verified at the door), provider-compliant status RECONCILIATION as the backup through ONE reconciler (cron is the fallback, never the primary way a signing event is found)",
-    probe: () => firstStrippedMatch([...listFiles("lib/esign", TS), ...listFiles("lib/forms", TS), ...listFiles("lib/esign-webhooks", TS), ...listFiles("app/api/cron", TS)], /\b(reconcileEnvelopeStatus|reconcileEsignStatus|reconcileEsignEnvelopes|reconcileEnvelopeStatuses|esignStatusReconciliation|reconcileSigningStatus)\b/),
+    // LANDED (lane 142B, re-anchored 142K): webhooks FIRST — the provider's terminal outcome (declined / voided / expired)
+    // is recorded AT THE DOOR by recordEnvelopeTerminalState (the four webhooks used to `ignore` it); the reconciliation
+    // backup is the pre-existing ONE sweep (lib/transactions/esign-doc-sync-sweep.ts sweepEsignDocSync on the esign-doc-sync
+    // cron) through the same core (evaluateEnvelopeExecution). The sweep existed at fec8b6a95, so it cannot be the probe.
+    probe: () => { const loop = strippedRepo("lib/forms/esign-execution-loop.ts") ?? ""; const doors = ["app/api/webhooks/docusign/route.ts", "app/api/webhooks/skyslope/route.ts", "app/api/webhooks/authentisign/route.ts"]; return /export\s+async\s+function\s+recordEnvelopeTerminalState\b/.test(loop) && doors.every((d) => /\brecordEnvelopeTerminalState\s*\(/.test(strippedRepo(d) ?? "")) ? "lib/forms/esign-execution-loop.ts" : null },
   },
   {
     canary: "offer-lifecycle", lane: "142B",
@@ -296,11 +312,16 @@ export const WAVE142_HOOKS: CanaryHook[] = [
   {
     canary: "form-wizard", lane: "142B",
     contract: "FORMWIZARD (EXTEND app/components/form-wizard/FormWizard.tsx + lib/kernel/forms.ts, never rewrite): LISTING and OFFER only (CDA is never a step); the opening question 'Are we preparing listing forms or an offer?' → conversational intake (listing: property, seller, representation, price, period, compensation, disclosures, special terms; offer: in-house vs outside, buyer/seller, price, financing, deposits, closing date, contingencies, credits, inclusions, special terms) → the AI recommends ACTUAL available forms (jurisdiction, brokerage settings, representation, verified requirements — never invented) → the agent approves the packet → Complete → Review → E-sign/Deliver; the AI coaches, never invents legal terms, signatures or material facts",
-    probe: () => { const s = strippedRepo("app/components/form-wizard/FormWizard.tsx"); return s && /listing forms or an offer/i.test(s) ? "app/components/form-wizard/FormWizard.tsx" : null },
+    // LANDED (lane 142B, re-anchored 142K): the question and the sequence live in lib/forms/form-wizard-sequence.ts
+    // (FORM_WIZARD_OPENING_QUESTION / FORM_WIZARD_SEQUENCE); the wizard renders from it (StepPurpose, stepKeyAt).
+    probe: () => { const seq = strippedRepo("lib/forms/form-wizard-sequence.ts") ?? "", wiz = strippedRepo("app/components/form-wizard/FormWizard.tsx") ?? ""; return /listing forms or an offer/i.test(seq) && /\b(FORM_WIZARD_OPENING_QUESTION|StepPurpose|FORM_WIZARD_SEQUENCE)\b/.test(wiz) ? "lib/forms/form-wizard-sequence.ts" : null },
   },
   {
     canary: "form-wizard", lane: "142B",
     contract: "SOURCE (a): a licensed form PACKET from PLATFORM Media rendered INSIDE VIPAgents — fillable (verified-data prefill, AI-assisted completion with human review, manual edit, required-field validation, autosave/resume, PDF generation, version history, download) on the existing pdf-lib / forms survivors (lib/forms/pdf-form-fill.ts, saveFormDraft / loadFormDraft); at HEAD packets are brokerage-scoped only (brokerage_form_library) and nothing under platform/superadmin Media carries a packet",
+    // STILL PENDING AT 28774bdc2 (lane 142K): lane 142B landed no platform-Media packet source (no module under lib/forms,
+    // lib/kernel/forms.ts or the superadmin actions names one — grep 2026-10-19); packets stay brokerage-scoped. Recorded
+    // as an integrator finding in lane142K-notes.md; the probe is truthful and is not widened.
     probe: () => firstStrippedMatch([...listFiles("lib/forms", TS), "lib/kernel/forms.ts", "app/actions/forms-kernel.ts", ...listFiles("app/dashboard/superadmin", TS), ...listFiles("app/actions/superadmin", TS)], /\b(platform_form_packets|platformFormPackets|PLATFORM_FORM_PACKET\w*|platform_form_library|platformFormLibrary)\b/),
   },
   {
@@ -328,7 +349,10 @@ export const WAVE142_HOOKS: CanaryHook[] = [
     // HEAD: app/actions/cda-portal.ts names offers_cda only in a comment (stripped → absent): the CDA doors do not read
     // the brokerage setting; the manual-fill rule itself IS built (cda-template-fields.ts: a waterfall field is never
     // pre-filled) and the canary proves it at HEAD.
-    probe: () => { const s = strippedRepo("app/actions/cda-portal.ts") ?? ""; return /\boffers_cda\b/.test(s) ? "app/actions/cda-portal.ts" : null },
+    // LANDED (lane 142C, re-anchored 142K): the ONE answer is lib/transactions/cda-closing-policy.ts resolveCdaMode
+    // (offers_cda → cda | no_cda with the payout default; undeclared → no_cda), READ by the CDA page, the commission
+    // finalization and the deadline reaper (≥ 2 readers) — the doors in cda-portal.ts stay behind the page's verdict.
+    probe: () => { const policy = strippedRepo("lib/transactions/cda-closing-policy.ts") ?? ""; const readers = ["app/dashboard/transactions/[id]/cda/page.tsx", "lib/commission/reconcile-tracking.ts", "lib/transactions/cda-delivery-reaper.ts"].filter((f) => /\bresolveCdaMode\s*\(/.test(strippedRepo(f) ?? "")); return /export\s+function\s+resolveCdaMode\b/.test(policy) && /\boffersCda\b/.test(policy) && readers.length >= 2 ? "lib/transactions/cda-closing-policy.ts" : null },
   },
   {
     canary: "cda-closing", lane: "142C",
@@ -377,7 +401,9 @@ export const WAVE142_HOOKS: CanaryHook[] = [
   {
     canary: "autonomous-marketing", lane: "142E",
     contract: "FAIR-HOUSING REWRITE LOOP for PUBLIC copy (lead magnets, landing copy, ads, social — the video loop's shape reused): flagged → the AI rewrites with the specific findings → recheck (fair-housing-patterns / realEstateComplianceGate) → a human approves the corrected creative; capped (e.g. 2 rewrites) then escalated to a human; NEVER applied to private CDA / financial records or routine internal form entry (positive control); no hard-written marketing copy outside examples / templates / business rules",
-    probe: () => firstStrippedMatch([...listFiles("lib/lead-magnets", TS), ...listFiles("lib/kernel/marketing", TS), ...listFiles("lib/compliance-rules", TS), ...listFiles("lib/ads", TS), ...listFiles("lib/marketing", TS)], /\b(rewriteForFairHousing|fairHousingRewrite\w*|rewriteWithFindings|FAIR_HOUSING_REWRITE_CAP|MAX_FAIR_HOUSING_REWRITES|rewriteCopyForCompliance|complianceRewriteLoop)\b/),
+    // LANDED (lane 142E, re-anchored 142K) as lib/kernel/marketing/public-copy-rewrite.ts rewritePublicCopyUntilCompliant
+    // (cap PUBLIC_COPY_MAX_REWRITES, scanPublicCopy the gate, isPublicMarketingSurface the scope rule).
+    probe: () => firstStrippedMatch([...listFiles("lib/kernel/marketing", TS), ...listFiles("lib/lead-magnets", TS), ...listFiles("lib/compliance-rules", TS), ...listFiles("lib/ads", TS), ...listFiles("lib/marketing", TS)], /\b(rewritePublicCopyUntilCompliant|PUBLIC_COPY_MAX_REWRITES|rewriteForFairHousing|fairHousingRewrite\w*|rewriteWithFindings|FAIR_HOUSING_REWRITE_CAP|MAX_FAIR_HOUSING_REWRITES|rewriteCopyForCompliance|complianceRewriteLoop)\b/),
   },
   {
     canary: "autonomous-marketing", lane: "142E",
@@ -445,8 +471,10 @@ export const WAVE142_HOOKS: CanaryHook[] = [
   {
     canary: "commercial-platform", lane: "142I",
     contract: "NO UNCERTIFIED DEFAULT LEGAL-FORMS INTEGRATION (owner: 'dotloop is not the only … they all should be fully functional for the tenants to choose'): SYSTEM_DEFAULTS.transaction (lib/kernel/providers.ts + the provider-settings-actions mirror) is a CERTIFIED provider per the matrix (docusign for e-sign; the certified transaction-only provider or 'none until the tenant selects' for forms) — never 'dotloop' — and the readiness check asserts the rule",
-    // HEAD: lib/kernel/providers.ts:62 `transaction: "dotloop"` — a provider PROVIDER_CAPABILITY_MATRIX does not certify.
-    probe: () => { const s = strippedRepo("lib/kernel/providers.ts"); return s && !/transaction:\s*["']dotloop["']/.test(s) && /transaction:/.test(s) ? "lib/kernel/providers.ts" : null },
+    // HEAD fec8b6a95: lib/kernel/providers.ts:62 `transaction: "dotloop"` — a provider PROVIDER_CAPABILITY_MATRIX does not certify.
+    // LANDED (lane 142I, re-anchored 142K): the key is DELETED from SYSTEM_DEFAULTS (tombstone; the tenant's selection decides
+    // through provider-resolver.ts) — so the rule is "absent or certified", and the probe reads absence, not a replacement.
+    probe: () => { const s = strippedRepo("lib/kernel/providers.ts"); return s && /SYSTEM_DEFAULTS/.test(s) && !/\btransaction:\s*["'][\w-]+["']/.test(s) ? "lib/kernel/providers.ts" : null },
   },
 ]
 

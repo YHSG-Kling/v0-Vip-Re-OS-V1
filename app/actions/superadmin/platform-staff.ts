@@ -26,9 +26,11 @@ import { requireSuperadmin } from "@/lib/auth/platform-guard"
 // is (user_type='admin', platform_role='superadmin'), the shape the platform's one live superadmin
 // carries. This map used to MINT user_type='superadmin' (a value no live row has and every gate
 // reads as dead), so a promoted staffer's base type disagreed with the roster the gates resolve.
+// The superadmin SEAT is a tenant-admin user_type (never a 'superadmin' user_type — m782 removed it from the CHECK).
+const TENANT_ADMIN_SEAT = { user_type: "admin" } as const
 function roleColumns(role: string): { user_type: string; platform_role: string } {
   switch (role) {
-    case "superadmin": return { user_type: "admin", platform_role: "superadmin" }
+    case "superadmin": return { ...TENANT_ADMIN_SEAT, platform_role: "superadmin" }
     case "admin":      return { user_type: "admin", platform_role: "admin" }
     case "support":    return { user_type: "support", platform_role: "support" }
     default:           return { user_type: "system", platform_role: "marketing" } // marketing
@@ -57,14 +59,13 @@ export async function listPlatformStaffAction(): Promise<{ ok: true; staff: any[
   const { data, error } = await svc
     .from("users")
     .select("id, email, first_name, last_name, user_type, platform_role, status, created_at")
-    // The user_type half is the LEGACY 'superadmin' MARKER ONLY. It used to read
+    // platform_role is the roster column (CLAUDE.md §4). This used to read
     // `user_type.in.(superadmin,support)`, which listed every TENANT user carrying
     // user_type='support' — a legal tenant role with no platform employment — as a
-    // member of platform staff on the staff-management console, where a superadmin
-    // could then change their "platform role". platform_role is the roster column;
-    // user_type participates solely through the legacy marker, exactly as
-    // isPlatformStaffIdentity() and public.is_platform_staff() define it.
-    .or(`user_type.eq.superadmin,platform_role.in.(${PLATFORM_STAFF_ROLES.join(",")})`)
+    // member of platform staff. The legacy `user_type.eq.superadmin` marker arm was
+    // dropped in wave 142 (m782 removed 'superadmin' from users_user_type_check, so
+    // the arm could only ever match nothing).
+    .in("platform_role", [...PLATFORM_STAFF_ROLES])
     .order("created_at", { ascending: false })
   if (error) return { ok: false, error: error.message }
   return { ok: true, staff: data ?? [] }
@@ -159,9 +160,9 @@ export async function revokePlatformStaffAction(userId: string): Promise<{ ok: b
   if (userId === auth.userId) return { ok: false, error: "You cannot revoke your own access" }
 
   const svc = createServiceClient()
-  // Revoke ALL platform access: the requireStaff gates accept user_type∈{superadmin,
-  // support} OR platform_role='superadmin', so revoke must break every one. Downgrade
-  // to a non-staff user_type + clear platform_role + deactivate. Row kept for audit.
+  // Revoke ALL platform access: platform_role is the only staff discriminator (m782 retired
+  // the user_type='superadmin' seat), but downgrade user_type too so no tenant gate admits
+  // the row either. Clear platform_role + deactivate. Row kept for audit.
   const { error } = await svc.from("users").update({ user_type: "contact", platform_role: null, status: "inactive", updated_at: new Date().toISOString() }).eq("id", userId)
   if (error) return { ok: false, error: error.message }
   await audit(auth.userId, auth.email, "platform_staff.revoked", userId, {})

@@ -10,10 +10,11 @@
  * owner's 2026-10-14 ruling + m780). Owner (wave 142, verbatim): "tenant should not read ticket queue across
  * brokerages, only their tenancy."
  *
- * THE LIVE FINDING THIS CANARY HOLDS (SURVIVORS142 §1): app/actions/support.ts:108 callerReadsAllBrokerages admits
- * `ctx.userType === "support"` — a storable TENANT seat — to every brokerage's tickets. The session doors need a
- * request, so the rule is asserted on STRIPPED source; the removal is lane 142A's and a WAVE142 HOOK until it lands.
- * In-memory only: support_tickets holds 0 live rows (2026-10-19), so nothing live could be proven anyway.
+ * THE LIVE FINDING THIS CANARY HELD (SURVIVORS142 §1, fec8b6a95): app/actions/support.ts:108 callerReadsAllBrokerages
+ * admitted `ctx.userType === "support"` — a storable TENANT seat — to every brokerage's tickets. LANDED (lane 142A,
+ * wired 142K): lib/support/ticket-scope.ts is the ONE scope decision (resolveTicketQueueScope / scopeTicketQuery /
+ * ticketWithinScope), driven pure and COUNTED on the in-memory client below; the session doors need a request, so the
+ * door rule is asserted on STRIPPED source. In-memory only: support_tickets holds 0 live rows (2026-10-19).
  */
 import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSvc, uuid } from "./_harness"
 import { hooksFor, strippedRepo } from "./_registry"
@@ -26,7 +27,11 @@ import { exportedAsyncBodies } from "./crm-inbound"
  *  the tickets they raised), or the admin / platform scope helpers (which pin or refuse inside).
  *  @proofSeam held with specimens below. */
 export function tenantUnpinnedTicketReaders(stripped: string): string[] {
-  const ANCHOR = /\.eq\(\s*["']brokerage_id["']\s*,\s*ctx\.brokerageId\s*\)|brokerage_id:\s*(brokerageId|ctx\.brokerageId)\b|callerIsTicketSubmitter\(|\.eq\(\s*["']submitted_by_user_id["']\s*,\s*ctx\.userId\s*\)|callerReadsAllBrokerages\(|requirePlatformCapability\(|resolveAdminTicketScope\(|isPlatformSuperadminIdentity\(/
+  // WIRED 142K (lane 142A landed): the SESSION pin is now the ONE predicate lib/support/ticket-scope.ts scopeTicketQuery /
+  // ticketWithinScope, decided by resolveQueueScope (requirePlatformCapability("support") → platform_role) — the arm
+  // `callerReadsAllBrokerages(` is gone from the file; it stays in this list only so the POSITIVE CONTROL specimen below
+  // still reads as "pinned by a helper", never as a live anchor.
+  const ANCHOR = /\.eq\(\s*["']brokerage_id["']\s*,\s*ctx\.brokerageId\s*\)|brokerage_id:\s*(brokerageId|ctx\.brokerageId)\b|callerIsTicketSubmitter\(|\.eq\(\s*["']submitted_by_user_id["']\s*,\s*ctx\.userId\s*\)|callerReadsAllBrokerages\(|requirePlatformCapability\(|resolveAdminTicketScope\(|isPlatformSuperadminIdentity\(|scopeTicketQuery\(|resolveQueueScope\(|ticketWithinScope\(/
   return exportedAsyncBodies(stripped)
     .filter(({ body }) => /\.from\(\s*["']support_tickets["']\s*\)/.test(body))
     .filter(({ body }) => !ANCHOR.test(body))
@@ -120,7 +125,9 @@ export async function run() {
   // ── 5 · the session doors, on stripped source (they need a request) ──
   const support = strippedRepo("app/actions/support.ts") ?? ""
   const console_ = strippedRepo("app/actions/superadmin/support-console.ts") ?? ""
-  c.step("tenant doors pin the tenant: every exported reader of support_tickets in app/actions/support.ts either pins brokerage_id from the SESSION or goes through the platform/admin scope helpers (0 unpinned readers)", tenantUnpinnedTicketReaders(support).length === 0 && /listBrokerageTickets[\s\S]*?\.eq\(\s*["']brokerage_id["'],\s*ctx\.brokerageId\s*\)/.test(support), tenantUnpinnedTicketReaders(support).join(",") || "0 unpinned")
+  const listBody = exportedAsyncBodies(support).find((f) => f.name === "listBrokerageTickets")?.body ?? "", flipBody = exportedAsyncBodies(support).find((f) => f.name === "updateTicketStatus")?.body ?? ""
+  const gateFirst = (b: string) => b.search(/\bresolveQueueScope\s*\(/) >= 0 && b.search(/\bcreateServiceClient\s*\(/) >= 0 && b.search(/\bresolveQueueScope\s*\(/) < b.search(/\bcreateServiceClient\s*\(/)
+  c.step("tenant doors pin the tenant (the RULE, landed 142A): every exported reader of support_tickets in app/actions/support.ts either pins brokerage_id from the SESSION (scopeTicketQuery / ticketWithinScope) or goes through the platform/admin scope helpers (0 unpinned readers); the list and the status-flip doors resolve the scope BEFORE the service client exists (gate first, §4) and pin the query through scopeTicketQuery", tenantUnpinnedTicketReaders(support).length === 0 && gateFirst(listBody) && gateFirst(flipBody) && /scopeTicketQuery\(/.test(listBody) && /scopeTicketQuery\(/.test(flipBody), tenantUnpinnedTicketReaders(support).join(",") || "0 unpinned; gate-first on both doors")
   c.step("the PLATFORM console is gated by the ONE capability gate (requirePlatformCapability(\"support\") — platform_role), lists ONLY the tenant_to_platform lane (a brokerage's internal queue is never the platform's), and audits staff mutations", /requirePlatformCapability\(\s*["']support["']\s*\)/.test(console_) && /CONSOLE_LANE\s*=\s*["']tenant_to_platform["']/.test(console_) && /superadmin_audit_log/.test(console_) && !/userType\s*===\s*["']superadmin["']/.test(console_), "")
   c.step("POSITIVE CONTROL: the finder catches an exported reader that selects support_tickets with no tenant predicate and no gate, and an authority arm that admits `userType === \"support\"`; a pinned reader and a platform_role read are not caught", tenantUnpinnedTicketReaders(`export async function listAll() { const svc = createServiceClient(); const { data } = await svc.from("support_tickets").select("id"); return data }\nexport async function listMine(ctx) { const { data } = await createServiceClient().from("support_tickets").select("id").eq("brokerage_id", ctx.brokerageId); return data }`).join() === "listAll" && tenantTypeCrossTenantArm(`if (ctx.userType === "support") return true\nreturn isPlatformSuperadminIdentity(row?.user_type, row?.platform_role)`).join() === "support" && tenantTypeCrossTenantArm(`return isPlatformSuperadminIdentity(row?.user_type, row?.platform_role)`).length === 0)
 
@@ -132,7 +139,25 @@ export async function run() {
       continue
     }
     if (/SUPPORT ISOLATION/.test(h.contract)) {
-      c.step(`${h.lane} landed (${at}): NO tenant user_type is a cross-tenant authority arm in app/actions/support.ts (support / superadmin arms absent); the cross-brokerage read is decided by the roster predicate on platform_role (isPlatformSuperadminIdentity / resolvePlatformRoleIdentity / platformStaffCan)`, tenantTypeCrossTenantArm(support).length === 0 && /isPlatformSuperadminIdentity\(|resolvePlatformRoleIdentity\(|platformStaffCan\(/.test(support), tenantTypeCrossTenantArm(support).join(",") || "0 arms")
+      // WAVE142 HOOK (integrator): 142A — wired 142K: the ONE scope decision driven pure, the predicate COUNTED on the
+      // in-memory client, the doors asserted on stripped source (they need a request).
+      const { SUPPORT_DESK_USER_TYPES, resolveTicketQueueScope, scopeTicketQuery, ticketWithinScope } = await import("../../lib/support/ticket-scope")
+      const { TENANT_ADMIN_USER_TYPES } = await import("../../lib/auth/resolve-user-role")
+      const roster = TENANT_ADMIN_USER_TYPES as ReadonlySet<string>
+      const tenantSeat = resolveTicketQueueScope({ platformSupport: false, userType: "support", brokerageId: B })
+      const noTenant = resolveTicketQueueScope({ platformSupport: false, userType: "support", brokerageId: null })
+      const producer = resolveTicketQueueScope({ platformSupport: false, userType: "agent", brokerageId: B })
+      const legacy = resolveTicketQueueScope({ platformSupport: false, userType: "superadmin", brokerageId: B })
+      const platform = resolveTicketQueueScope({ platformSupport: true, userType: "support", brokerageId: null })
+      c.step(`${h.lane} landed (${at}) — THE ONE SCOPE DECISION (lib/support/ticket-scope.ts resolveTicketQueueScope, pure): a tenant 'support' seat reads ITS OWN tenant only; no session tenant → refused; a producer (agent) → refused; the legacy 'superadmin' TYPE → refused (a user_type can only refuse, never widen); ONLY the platform verdict (platform_role through requirePlatformCapability) reads across; the desk roster is TENANT_ADMIN_USER_TYPES spread + 'support' (${roster.size} + 1), never a retyped list`, tenantSeat.kind === "tenant" && tenantSeat.brokerageId === B && noTenant.kind === "refused" && producer.kind === "refused" && legacy.kind === "refused" && platform.kind === "platform" && [...roster].every((t) => SUPPORT_DESK_USER_TYPES.has(t)) && SUPPORT_DESK_USER_TYPES.has("support") && SUPPORT_DESK_USER_TYPES.size === roster.size + 1 && !SUPPORT_DESK_USER_TYPES.has("agent") && !SUPPORT_DESK_USER_TYPES.has("superadmin"), [...SUPPORT_DESK_USER_TYPES].join(","))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the in-memory builder is the PostgREST shape the predicate pins
+      const q = (): any => svc.from("support_tickets")
+      const own = await (scopeTicketQuery(q().select("id, brokerage_id"), { kind: "tenant", brokerageId: B }) as Promise<{ data: Array<{ id: string; brokerage_id: string }> | null }>)
+      const all = await (scopeTicketQuery(q().select("id, brokerage_id"), { kind: "platform" }) as Promise<{ data: Array<{ id: string }> | null }>)
+      const flip = await (scopeTicketQuery(q().update({ status: "resolved" }), { kind: "tenant", brokerageId: B }).eq("id", T2).select("id") as Promise<{ data: Array<{ id: string }> | null; error: { message: string } | null }>)
+      c.step(`${h.lane} the PREDICATE on the service client, COUNTED: the tenant scope sees B's 2 tickets and none of B2's; the platform scope sees all 4; a tenant-scoped status flip on B2's ticket matches ZERO rows (the §3 shape updateTicketStatus counts and refuses as 'Ticket not found') and B2's row is untouched; ticketWithinScope admits only the session tenant's ticket (and nothing with no tenant)`, (own.data ?? []).length === 2 && (own.data ?? []).every((t) => t.brokerage_id === B) && (all.data ?? []).length === 4 && !flip.error && (flip.data ?? []).length === 0 && (svc.tables.support_tickets ?? []).find((t) => t.id === T2)?.status === "in_progress" && ticketWithinScope({ brokerage_id: B }, { kind: "tenant", brokerageId: B }) && !ticketWithinScope({ brokerage_id: B2 }, { kind: "tenant", brokerageId: B }) && ticketWithinScope({ brokerage_id: B2 }, { kind: "platform" }) && !ticketWithinScope({ brokerage_id: null }, { kind: "tenant", brokerageId: B }), `own ${(own.data ?? []).length}, all ${(all.data ?? []).length}, cross-tenant flip matched ${(flip.data ?? []).length}`)
+      const adminPage = strippedRepo("app/dashboard/admin/support-tickets/page.tsx") ?? ""
+      c.step(`${h.lane} the DOORS (stripped source): NO tenant user_type is a cross-tenant authority arm in app/actions/support.ts (support / superadmin arms absent; callerReadsAllBrokerages deleted); the cross-brokerage read is decided by the ONE platform gate (requirePlatformCapability("support") → platform_role through the roster) feeding resolveTicketQueueScope; the admin page gates on SUPPORT_DESK_USER_TYPES (no six-string roster literal)`, tenantTypeCrossTenantArm(support).length === 0 && /requirePlatformCapability\(\s*["']support["']\s*\)/.test(support) && /resolveTicketQueueScope\(/.test(support) && !/callerReadsAllBrokerages/.test(support) && /SUPPORT_DESK_USER_TYPES\.has\(/.test(adminPage) && !/\[\s*["']broker["'],\s*["']broker_admin["']/.test(adminPage), tenantTypeCrossTenantArm(support).join(",") || "0 arms")
       continue
     }
     const sql = (await import("node:fs")).readFileSync((await import("node:path")).join(process.cwd(), at), "utf8")

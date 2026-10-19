@@ -150,7 +150,9 @@ export async function resolveProviderCore(
   params: ResolveProviderParams,
 ): Promise<ResolvedProvider> {
   const { providerType, actorContext } = params
-  const systemDefault = SYSTEM_DEFAULTS[providerType] ?? providerType
+  // wave 142 (lane 142K finding 3): a type with NO platform default answers "none" — never the type's own name as a
+  // provider key (no catalog carries "transaction"; lane 142I removed the Dotloop default on purpose).
+  const systemDefault = SYSTEM_DEFAULTS[providerType] ?? "none"
 
   const readOverride = async (
     scope: "user" | "team" | "brokerage" | "superadmin",
@@ -246,7 +248,7 @@ export async function resolveProvider(
 ): Promise<ResolvedProvider> {
   if (opts?.client) return resolveProviderCore(opts.client, params)
 
-  const systemDefault = SYSTEM_DEFAULTS[params.providerType] ?? params.providerType
+  const systemDefault = SYSTEM_DEFAULTS[params.providerType] ?? "none"
   const caller = await resolveCallerIdentity().catch(() => null)
   const sameTenant = !!caller?.ok && !!caller.brokerageId && caller.brokerageId === params.actorContext.brokerageId
   const staff = !!caller?.ok && isPlatformStaffRole(caller.platformRole)

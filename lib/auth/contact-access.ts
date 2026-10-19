@@ -114,7 +114,7 @@ export async function assertCanActOnContact(
       .maybeSingle()
     if (profileError) return { ok: false, error: `Could not resolve your identity: ${profileError.message}` }
     const isStaff =
-      profile?.user_type === "superadmin" || isPlatformStaffRole((profile as { platform_role?: string | null } | null)?.platform_role)
+      isPlatformStaffRole((profile as { platform_role?: string | null } | null)?.platform_role)
     if (isStaff) {
       if (intent === "read") return { ok: true, userId: ctx.userId, actorUserId, contact: c }
       return {
