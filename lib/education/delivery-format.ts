@@ -28,7 +28,10 @@ const CHECKLIST_WORTHY = new Set<string>([
  * PURE: the format a MATERIAL warrants, from its topic. Video for the emotional/complex moments,
  * checklist for procedural step-lists, guide for everything else (comparative/analytical prose).
  */
-export function resolveMaterialFormat(input: { topicKey?: string | null }): EducationFormat {
+export function resolveMaterialFormat(input: { topicKey?: string | null; source?: string | null }): EducationFormat {
+  // Wave 142 (lane 142G): a piece authored from repeated SUPPORT questions is a written answer — a guide (article channel),
+  // never a video — whatever the topic key would otherwise say.
+  if (input.source === "support") return "guide"
   const key = (input.topicKey ?? "").split(":").pop() ?? input.topicKey ?? ""
   if (VIDEO_WORTHY.has(key)) return "video"
   if (CHECKLIST_WORTHY.has(key)) return "checklist"

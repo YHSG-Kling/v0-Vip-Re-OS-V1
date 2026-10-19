@@ -481,7 +481,7 @@ async function main() {
     && src("lib/marketing/social-cadence.ts").includes("media_urls: mediaUrls"))
   check("listing email campaigns embed the listing hero photo at the top of the body (no text-only listing blasts)",
     src("app/actions/email-campaigns.ts").includes("heroHtml")
-    && src("app/actions/email-campaigns.ts").includes("${heroHtml}${emailContent.data.generated_content}"))
+    && /body: `\$\{heroHtml\}\$\{\w+\}`/.test(src("app/actions/email-campaigns.ts")))
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[17 · NO HARDCODED IDENTITY + PROVEN MEDIA-TYPE DECISIONS]")

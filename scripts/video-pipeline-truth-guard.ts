@@ -128,7 +128,7 @@ async function main() {
   const probeIdx = host.indexOf("probePlayableOutput(bytes, contentType)")
   const gateIdx = host.indexOf("checkUpload({")
   const uploadIdx = host.indexOf(".upload(path, bytes")
-  check("media-host runs probePlayableOutput on video/* BEFORE the limit gate and the upload", probeIdx > 0 && gateIdx > probeIdx && uploadIdx > gateIdx && /if \(isVideoContentType\(contentType\)\)\s*\{\s*const probe = probePlayableOutput\(bytes, contentType\)\s*if \(!probe\.ok\)\s*\{\s*throw new Error\(`\[media-host\] refusing to host \$\{bucket\}\/\$\{path\}: \$\{describeUnplayable\(probe\)\}`\)/.test(host))
+  check("media-host runs probePlayableOutput on video/* BEFORE the limit gate and the upload", probeIdx > 0 && gateIdx > probeIdx && uploadIdx > gateIdx && /if \(isVideoContentType\(contentType\)\)\s*\{\s*const probe = probePlayableOutput\(bytes, contentType\)\s*if \(!probe\.ok\)\s*\{\s*throw new Error\(`\[media-host\] refusing to host \$\{bucket\}\/\$\{path\}[^`]*\$\{describeUnplayable\(probe\)\}`\)/.test(host))
   check("CONTROL: the finder would still see the old host shape (no probe)", !/probePlayableOutput\(/.test("export async function hostRenderedMedia(svc, path, bytes, contentType) { const gate = checkUpload({ bucket }) }"))
   const coord = code("lib/remotion/render-coordinator.ts")
   const cFail = coord.indexOf('status:        "failed"')

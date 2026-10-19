@@ -231,9 +231,9 @@ console.log("\n── 'New Listing' creates a listing, not an offer ──")
   check("both submit controls route by mode", routed.length === 2)
 
   check("the listing lane has a completion screen of its own",
-    /step === 6 && mode === "listing" && state\.listingId/.test(WIZARD))
+    /stepKey === "monitor" && mode === "listing" && state\.listingId/.test(WIZARD))
   check("…and the offer screen no longer answers for both",
-    /step === 6 && mode === "offer" && state\.offerId/.test(WIZARD))
+    /stepKey === "monitor" && mode === "offer" && state\.offerId/.test(WIZARD))
   // Rule, not waypoint: the button may only promise what its handler does. Lane 88C made the listing
   // lane really send the agreement (sendListingAgreementForSignatureAction), so the label may say so —
   // and must not when the handler does not send.

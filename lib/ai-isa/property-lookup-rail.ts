@@ -398,6 +398,15 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
 }
 
 /**
+ * Capabilities whose answer is a RESEARCH SIGNAL that degrades gracefully when its only provider is down — the
+ * caller's leg refuses with its reason and the run continues (the deal investigator leaves the source null and says
+ * why). OS health therefore does not count them when it asks whether a failing provider can be routed around
+ * (lib/kernel/os-health.ts): a sole-provider COMPLIANCE capability (dnc_tcpa) still sends the incident to a human,
+ * a sole-provider research capability never blocks the failover of the provider's other capabilities.
+ */
+export const DEGRADABLE_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set<ProviderCapability>(["online_presence", "business_identity"])
+
+/**
  * Capabilities whose provider ORDER is an owner ruling rather than cheapest-first. Every other
  * capability stays sorted by unit cost (scripts/provider-cost-routing-guard.ts asserts both rules).
  * The value is the ruling, verbatim, so the exception carries its own authority.

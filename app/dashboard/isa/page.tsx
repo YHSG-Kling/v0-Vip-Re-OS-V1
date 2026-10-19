@@ -67,7 +67,7 @@ export const dynamic = 'force-dynamic'
 function toActorRole(userType: string | null | undefined): ActorRole {
   switch (userType) {
     case 'broker': case 'broker_owner': case 'broker_admin': return 'broker'
-    case 'admin': case 'superadmin': case 'support': return 'admin'
+    case 'admin': case 'support': return 'admin'
     case 'team_lead': return 'team_lead'
     case 'isa': return 'isa'
     case 'tc': return 'tc'

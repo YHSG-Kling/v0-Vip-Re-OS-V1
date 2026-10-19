@@ -84,7 +84,7 @@ export async function hostRenderedMedia(
   if (isVideoContentType(contentType)) {
     const probe = probePlayableOutput(bytes, contentType)
     if (!probe.ok) {
-      throw new Error(`[media-host] refusing to host ${bucket}/${path}: ${describeUnplayable(probe)}`)
+      throw new Error(`[media-host] refusing to host ${bucket}/${path}: the playability probe failed — ${describeUnplayable(probe)}`)
     }
   }
 

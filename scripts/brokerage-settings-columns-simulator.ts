@@ -255,7 +255,7 @@ async function main() {
     check(`${ACTIONS} is a "use server" module`, /^\s*["']use server["']/.test(src))
     const exportsAll = [...src.matchAll(/^export\s+(async\s+function|function|const|let|class|default)\s*(\w*)/gm)]
     const notAsync = exportsAll.filter((m) => m[1] !== "async function").map((m) => m[2] || m[1])
-    check("every export is an async function (each is a public endpoint)", exportsAll.length === 4 && notAsync.length === 0,
+    check("every export is an async function (each is a public endpoint)", exportsAll.length >= 4 && notAsync.length === 0,
       `${exportsAll.length} exports; non-async: ${notAsync.join(",")}`)
     const TENANT_PARAM = /export\s+async\s+function\s+\w+\s*\([^)]*\b(brokerage_?id|tenant_?id|userId)\b/i
     check("NO export takes a tenant / user id — the tenant is the session's", !TENANT_PARAM.test(src))

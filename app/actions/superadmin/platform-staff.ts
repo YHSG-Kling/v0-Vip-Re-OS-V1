@@ -27,10 +27,9 @@ import { requireSuperadmin } from "@/lib/auth/platform-guard"
 // carries. This map used to MINT user_type='superadmin' (a value no live row has and every gate
 // reads as dead), so a promoted staffer's base type disagreed with the roster the gates resolve.
 // The superadmin SEAT is a tenant-admin user_type (never a 'superadmin' user_type — m782 removed it from the CHECK).
-const TENANT_ADMIN_SEAT = { user_type: "admin" } as const
 function roleColumns(role: string): { user_type: string; platform_role: string } {
   switch (role) {
-    case "superadmin": return { ...TENANT_ADMIN_SEAT, platform_role: "superadmin" }
+    case "superadmin": return { user_type: "admin", platform_role: "superadmin" }
     case "admin":      return { user_type: "admin", platform_role: "admin" }
     case "support":    return { user_type: "support", platform_role: "support" }
     default:           return { user_type: "system", platform_role: "marketing" } // marketing

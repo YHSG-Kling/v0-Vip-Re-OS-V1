@@ -181,6 +181,8 @@ export interface CaptureFormSubmissionOutput {
   success: boolean
   submissionId?: string
   contactId?: string
+  /** The person behind the capture (wave 102.1 identity layer), null when nothing anchored one. */
+  personId?: string | null
   capturedAt?: string
   /** What was actually kept: the verified campaign (or null when it was not this tenant's) + the rest. */
   attribution?: (LeadMagnetAttribution & { campaignVerified: boolean; touchpointId: string | null }) | null
@@ -728,6 +730,51 @@ function cardEyebrowForMagnetType(magnetType: string | null | undefined): string
   }
 }
 
+
+/**
+ * Wave 102.1 identity evidence for a public form capture. Mirrors lib/contact-pipeline/contact-capture.ts
+ * recordCapturePersonEvidence (the identity layer every capture door shares): resolve ONCE, link the contact
+ * (capture_match) and the submission row on the same person. A refusal is SAID (console) and the capture is
+ * unaffected — identity is evidence, never a gate.
+ */
+async function recordFormCapturePersonEvidence(
+  supabase: any,
+  args: { brokerageId: string; contactId: string | null; submissionId: string; firstName: string | null; lastName: string | null; email: string | null; phone: string | null },
+): Promise<string | null> {
+  try {
+    const { resolvePerson, linkPersonEvidence } = await import("@/lib/kernel/person-identity")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    const person = await resolvePerson(supabase, {
+      brokerageId: args.brokerageId,
+      firstName: args.firstName, lastName: args.lastName, email: args.email, phone: args.phone,
+    })
+    if (!person.ok) {
+      if (person.reason !== "no_identity_anchor") console.warn(`[lead-magnets] person identity not resolved: ${person.reason}`)
+      return null
+    }
+    if (args.contactId) {
+      const c = await linkPersonEvidence(supabase, {
+        brokerageId: args.brokerageId, personId: person.personId,
+        entityType: "contact", entityId: args.contactId, matchMethod: "capture_match", matchScore: 1,
+        source: "form_submit", actor: { type: "system", userId: null }, identity: person.identity,
+        existingEvent: KernelEvent.CONTACT_CAPTURED,
+      })
+      if (!c.ok) console.warn(`[lead-magnets] contact person evidence not recorded: ${c.reason}`)
+    }
+    const sub = await linkPersonEvidence(supabase, {
+      brokerageId: args.brokerageId, personId: person.personId,
+      entityType: "form_submission", entityId: args.submissionId, matchMethod: "capture_match", matchScore: 1,
+      source: "form_submit", actor: { type: "system", userId: null }, identity: person.identity,
+      existingEvent: KernelEvent.FORM_SUBMISSION_RECEIVED,
+    })
+    if (!sub.ok) console.warn(`[lead-magnets] submission person evidence not recorded: ${sub.reason}`)
+    return person.personId
+  } catch (err) {
+    console.warn("[lead-magnets] person identity threw (submission unaffected):", err instanceof Error ? err.message : String(err))
+    return null
+  }
+}
+
 /**
  * Enqueue the 1200×630 LeadMagnetCard still for one magnet — the producer the
  * registered composition never had (remotion/Root.tsx used to carry the
@@ -1109,6 +1156,15 @@ export async function captureFormSubmission(
   // Increment submission count on form (atomic — avoids read-modify-write races)
   await supabase.rpc("increment_form_submission_count", { form_id_input: input.formId })
 
+  // PERSON IDENTITY (wave 102.1) — merged onto this kernel command at wave-142 integration from the retired
+  // /api/forms/submit capture path (lane 142E consolidated the route here; the kernel's contact path never resolved
+  // a person). ONE resolve; the CONTACT (capture_match) and the SUBMISSION row linked on the same person; person_id
+  // rides FORM_SUBMISSION_RECEIVED through the output. Best-effort: never blocks the capture.
+  const personId = await recordFormCapturePersonEvidence(supabase, {
+    brokerageId: input.brokerageId, contactId: contactId ?? null, submissionId: submission.id,
+    firstName: data.first_name ?? null, lastName: data.last_name ?? null, email: data.email ?? null, phone: data.phone ?? null,
+  })
+
   // CONSENT ARTIFACT (wave 141): the audit row the compliance surfaces read — the same table and
   // vocabulary the ad-lead intake (consent_source 'ad_lead_form') and persistContactConsent write.
   // Best-effort by contract (the contact is already stamped above); a refusal is logged by the sentinel.
@@ -1345,6 +1401,7 @@ export async function captureFormSubmission(
   return {
     success: true,
     submissionId: submission.id,
+    personId,
     contactId,
     capturedAt: submittedAt,
     attribution: attribution ? { ...attribution, campaignId: verifiedCampaignId, campaignVerified: !!verifiedCampaignId, touchpointId } : null,

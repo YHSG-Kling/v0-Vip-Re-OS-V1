@@ -159,6 +159,10 @@ const LEGACY_INPUT_SPELLINGS = [
   "broker_admin", "super_admin", "transaction_coordinator", "compliance_manager",
   "title", "client", "team_leader", "solo_agent", "team_member", "title_agent",
   "marketing", "lender",
+  // 2026-10-19 (wave 142, m782): 'superadmin' left users_user_type_check — platform staff live in platform_role
+  // (where the word remains a legal value) and it stays a canonical permission role. Same precedent as `lender`:
+  // the cache catching up is not 63 new defects; role-vocabulary / check-vocabulary judge the column compares.
+  "superadmin",
 ] as const
 
 const KNOWN_ROLE_WORDS = new Set<string>([...STORABLE_USER_TYPES, ...LEGACY_INPUT_SPELLINGS])

@@ -196,6 +196,21 @@ export function MagnetLibrary({ brokerageId, scope, onSelectMagnet, onCreateNew 
                       <Link2 className="h-3 w-3" />
                       /lm/{magnet.slug}
                     </span>
+                    {/* The form-only public page (no landing copy) — the retired admin Forms Manager's "copy /forms/<slug>"
+                        door, merged onto this survivor at wave-142 integration (orphan doctrine §1.1). */}
+                    {magnet.magnetType === "generic_form" && (
+                      <a
+                        href={`/forms/${magnet.slug}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex items-center gap-1 hover:underline"
+                        title="Form-only page: the questions and consent alone, no landing copy"
+                      >
+                        <Link2 className="h-3 w-3" />
+                        /forms/{magnet.slug}
+                      </a>
+                    )}
                     {magnet.clonedFromId && (
                       <span className="flex items-center gap-1">
                         <Copy className="h-3 w-3" />

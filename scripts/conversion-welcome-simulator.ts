@@ -924,9 +924,11 @@ function layer9_formsAndOpenHouse() {
 
   // ── FORMS: AN ADMIN CAN DECLARE A FORM'S PERSONA (BUILD, §1.2 — no invented
   //    classifier for a generic admin-built form with no persona field) ──────
-  const formsRoute = src("app/api/forms/submit/route.ts")
-  check("app/api/forms/submit/route.ts reads an admin-declared default_contact_type\n    from lead_capture_forms.settings and forwards it to captureContact, instead\n    of guessing one",
-    /default_contact_type/.test(formsRoute) && /contact_type:\s*declaredContactType/.test(formsRoute))
+  // Wave 142 (lane 142E): the route's capture consolidated onto the kernel's captureFormSubmission (the ONE
+  // capture command); the declared persona moved with it. The survivor is asserted, the route is asserted to use it.
+  const formsRoute = src("app/api/forms/submit/route.ts"), formsKernel = src("lib/kernel/lead-magnets.ts")
+  check("captureFormSubmission (lib/kernel/lead-magnets.ts — the survivor of /api/forms/submit's capture) reads an admin-declared default_contact_type\n    from lead_capture_forms.settings and applies it to the new contact, instead\n    of guessing one; the route captures through it",
+    /default_contact_type/.test(formsKernel) && /newRow\.contact_type = resolvedContactType/.test(formsKernel) && /captureFormSubmission\(/.test(formsRoute))
 
   // ── OPEN HOUSE: ALL THREE READERS/CALLERS REACH THE ONE WELCOME PATH ──────
   const attendedStart = reactor.indexOf("if (params.event === KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED)")

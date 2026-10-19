@@ -327,7 +327,7 @@ function must<T>(res: { data: T | null; error: { message?: string } | null }, wh
 export const DETECTORS: Record<HealthDetector, Detector> = {
   // provider health is platform-wide evidence; the incident is THIS tenant's only when it uses the provider.
   provider_failures: async (svc, b, deps) => {
-    const { CONTACT_PROVIDER_ROUTES, routeCapability } = await import("@/lib/ai-isa/property-lookup-rail")
+    const { CONTACT_PROVIDER_ROUTES, DEGRADABLE_CAPABILITIES, routeCapability } = await import("@/lib/ai-isa/property-lookup-rail")
     const providers = Array.from(new Set(Object.values(CONTACT_PROVIDER_ROUTES).flat().map((e) => e.provider)))
     const usage = must(await svc.from("vendor_usage_tracking").select("vendor_name").eq("brokerage_id", b).gte("created_at", iso(hoursAgo(deps.now, 24 * 7))).limit(2000), "vendor_usage_tracking") as Array<{ vendor_name: string | null }>
     const used = new Set(usage.map((u) => String(u.vendor_name ?? "").toLowerCase()))
@@ -341,10 +341,14 @@ export const DETECTORS: Record<HealthDetector, Detector> = {
       if (h.state !== "failing" && h.state !== "rate_limited") continue
       const capabilities = (Object.keys(CONTACT_PROVIDER_ROUTES) as Array<keyof typeof CONTACT_PROVIDER_ROUTES>).filter((c) => CONTACT_PROVIDER_ROUTES[c].some((e) => e.provider === p))
       const routes = capabilities.map((c) => routeCapability(c, health as any))
-      const failoverAvailable = routes.length > 0 && routes.every((r) => r.providers.length > 0)
+      // Wave 142 (lane 142D added online_presence + business_identity, sole-provider RESEARCH capabilities on versium): a degradable
+      // capability with no alternative degrades the answer, it does not strand the provider's other capabilities.
+      const blocking = routes.filter((r) => !DEGRADABLE_CAPABILITIES.has(r.capability))
+      const degraded = routes.filter((r) => DEGRADABLE_CAPABILITIES.has(r.capability) && r.providers.length === 0).map((r) => r.capability)
+      const failoverAvailable = blocking.length > 0 && blocking.every((r) => r.providers.length > 0)
       out.push(incident(b, "provider_failures", h.state === "rate_limited" ? "rate_limit" : "provider_failure", {
         subjectKey: `provider:${p}`, subjectId: null, subjectType: "provider",
-        summary: `${p} is ${h.state}: ${h.reason}`,
+        summary: `${p} is ${h.state}: ${h.reason}${degraded.length ? ` — ${degraded.join(", ")} degraded (research signal, no alternative) until ${p} recovers` : ""}`,
         idempotent: true, // every capability on the route table is a READ lookup
         failoverAvailable, retryAfter: h.cooldownUntil ?? null,
         evidence: { provider: p, state: h.state, reason: h.reason, routes: routes.map((r) => ({ capability: r.capability, providers: r.providers, skipped: r.skipped })) },

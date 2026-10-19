@@ -417,12 +417,12 @@ export async function updateTicketStatus(
   if (priority && (TICKET_PRIORITIES as readonly string[]).includes(priority)) update.priority = priority
 
   // A tenant scope pins the write to the session tenant; only platform support is unpinned.
-  const q = scopeTicketQuery(svc.from("support_tickets").update(update).eq("id", ticketId), scope)
   // PROVE the write. A brokerage-scoped update that matches no row returns
   // error:null with zero rows — indistinguishable from success unless the rows
   // are counted, which is how the optimistic status flip in the queue UI could
-  // report "Ticket marked resolved" for a ticket in another tenant.
-  const { data: updated, error } = await q.select("id")
+  // report "Ticket marked resolved" for a ticket in another tenant. The write and
+  // its { error } read are ONE statement (swallowed-refusal-census reads per statement).
+  const { data: updated, error } = await scopeTicketQuery(svc.from("support_tickets").update(update).eq("id", ticketId), scope).select("id")
   if (error) return { ok: false, error: error.message }
   if ((updated?.length ?? 0) === 0) return { ok: false, error: "Ticket not found" }
 
@@ -450,7 +450,9 @@ async function resolveAdminTicketScope(ticketId: string): Promise<
     .select("id, brokerage_id, lane")
     .eq("id", ticketId)
     .maybeSingle()
-  if (error || !t) return { ok: false }
+  // The refusal is READ and SAID: a refused ticket read is a permissions/outage event, never "no ticket".
+  if (error) { console.error("[support] ticket thread scope read refused:", error.message); return { ok: false } }
+  if (!t) return { ok: false }
   // The thread (support_ticket_messages) inherits the parent's scope — m468's rule —
   // so the ONE predicate decides here, before any message is read or posted.
   if (!ticketWithinScope(t as { brokerage_id?: string | null }, scope)) return { ok: false }

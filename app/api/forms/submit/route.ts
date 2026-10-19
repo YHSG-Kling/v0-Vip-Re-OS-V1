@@ -103,7 +103,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         entityType:  'contact',
         entityId:    result.contactId,
         contactId:   result.contactId,
-        metadata:    { formId: form.id, submissionId: result.submissionId ?? null, door: '/forms/[slug]' },
+        metadata:    { formId: form.id, submissionId: result.submissionId ?? null, door: '/forms/[slug]', person_id: result.personId ?? null },
       }).catch((err) => console.error('[forms/submit] FORM_SUBMISSION_RECEIVED emit failed:', err))
     }
 

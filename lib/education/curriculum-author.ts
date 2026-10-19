@@ -235,7 +235,7 @@ export async function persistCurriculumDraft(svc: Svc, brokerageId: string, gap:
     gap_tags: [gap.topicKey],
     audience_roles: audienceForGap(gap),
     // Format follows the material — only video-worthy topics render on the video channel; a support how-to is an article.
-    channels: gap.source === "support" ? ["article"] : channelsForFormat(resolveMaterialFormat({ topicKey: gap.topicKey })),
+    channels: channelsForFormat(resolveMaterialFormat({ topicKey: gap.topicKey, source: gap.source })),
     estimated_minutes: gap.source === "support" ? 3 : 5,
     required: gap.source === "compliance",
   }).select("id").single()

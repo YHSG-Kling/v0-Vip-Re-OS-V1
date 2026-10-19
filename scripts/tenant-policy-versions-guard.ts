@@ -367,7 +367,10 @@ async function main() {
   const bsOut = uniq(bsWriters).filter((f) => !BS_ALLOWED.has(f))
   check(`brokerage_settings is written only by its classified writers (unclassified: ${bsOut.join(", ") || "0"})`, bsOut.length === 0 && uniq(bsWriters).includes("lib/settings/brokerage-settings-merge.ts"))
   const cols = src("lib/settings/brokerage-settings-columns.ts")
-  check("both policy-column writers append a version", (cols.match(/await versionColumn\(/g) ?? []).length === 2 && /appendTenantPolicyVersion\(/.test(cols))
+  // RULE, not a count: every COLUMN writer in the file versions through versionColumn; a settings-KEY writer versions
+  // through mergeBrokerageSettings' policy option instead (settings-merge-race: the merge writer is the ONE settings writer).
+  const colWriters = (cols.match(/^export async function save\w+\(/gm) ?? []).length - (cols.match(/mergeBrokerageSettings\(/g) ?? []).length
+  check(`every policy-column writer appends a version (${colWriters} column writer(s))`, colWriters >= 2 && (cols.match(/await versionColumn\(/g) ?? []).length === colWriters && /appendTenantPolicyVersion\(/.test(cols))
   check(`managed_agents authority/autonomy is set only in manager-evals.ts (${uniq(maWriters).join(", ")})`, uniq(maWriters).join() === "app/actions/admin/manager-evals.ts")
   const me = src("app/actions/admin/manager-evals.ts")
   const fnBody = (s: string, name: string) => { const i = s.indexOf(`export async function ${name}(`); const j = s.indexOf("\nexport ", i + 10); return s.slice(i, j < 0 ? undefined : j) }

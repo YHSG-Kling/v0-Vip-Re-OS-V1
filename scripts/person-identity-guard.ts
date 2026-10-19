@@ -310,7 +310,9 @@ async function main() {
     { file: "lib/lead-pipeline/unknown-sender-identification.ts", label: "unknown sender: email match → evidence, person_id on the event", needs: [/person-identity/, /matchMethod: "email_exact"/, /person_id: personId/] },
     { file: "lib/open-house/instant-greeting.ts", label: "open-house kiosk: contact + attendee evidence", needs: [/person-identity/, /entityType: "open_house_attendee"/, /matchMethod: "capture_match"/, /lastName: input\.lastName/] },
     { file: "app/api/open-house/attend/route.ts", label: "attend route passes lastName to the kiosk greeting", needs: [/sendInstantOpenHouseGreeting\(\{[\s\S]*?lastName,[\s\S]*?\}\)/] },
-    { file: "app/api/forms/submit/route.ts", label: "form submit: ONE path — the person from captureContact, only the submission row linked here, person_id on FORM_SUBMISSION_RECEIVED", needs: [/person-identity/, /personId: capturedPersonId, personIdentity/, /entityType: 'form_submission'/, /person_id: personId/] },
+    // Wave 142 (lane 142E): /api/forms/submit's capture consolidated onto captureFormSubmission; the identity link moved with it.
+    { file: "lib/kernel/lead-magnets.ts", label: "form submit (survivor captureFormSubmission): ONE resolve — the contact (capture_match) and the submission row linked on the same person, person_id returned for FORM_SUBMISSION_RECEIVED", needs: [/person-identity/, /entityType: "form_submission"/, /matchMethod: "capture_match"/, /existingEvent: KernelEvent\.FORM_SUBMISSION_RECEIVED/] },
+    { file: "app/api/forms/submit/route.ts", label: "form submit route carries the kernel's person_id on FORM_SUBMISSION_RECEIVED", needs: [/person_id: result\.personId/] },
     { file: "lib/lead-intelligence/person-timeline.ts", label: "person-timeline reads personForContact / personForLead", needs: [/personForContact\(/, /personForLead\(/, /"identity_evidence"/] },
     { file: "lib/contacts/contact-brief.ts", label: "contact-brief reads personForContact + summarizePersonEvidence", needs: [/personForContact\(/, /summarizePersonEvidence\(/, /identityEvidence/] },
   ]
@@ -333,8 +335,9 @@ async function main() {
   check("POSITIVE CONTROL: the inserter finder recognises the service's own insert", /\.from\(["']person_identity_evidence["']\)[\s\S]{0,200}?\.insert\(/.test(src("lib/kernel/person-identity.ts")))
   // ONE path per door: the form route no longer resolves or links the contact itself (captureContact does).
   const formSrc = src("app/api/forms/submit/route.ts")
-  check("form route: no resolvePerson and no contact link of its own (captureContact is the one writer for the contact)", !/resolvePerson\(/.test(formSrc) && !/entityType: 'contact'/.test(formSrc))
-  check("POSITIVE CONTROL: the pre-102E form route (its own resolvePerson) would fail that census", /resolvePerson\(/.test(formSrc.replace(/linkPersonEvidence\(/, "resolvePerson(")))
+  // Wave 142 (lane 142E): the route is a thin door — it resolves nothing and links nothing; the kernel's capture command does both.
+  check("form route: no resolvePerson and no link of its own (captureFormSubmission is the one identity writer for the capture)", !/resolvePerson\(/.test(formSrc) && !/linkPersonEvidence\(/.test(formSrc) && !/entityType: 'contact'/.test(formSrc))
+  check("POSITIVE CONTROL: the pre-102E form route (its own resolvePerson) would fail that census", /resolvePerson\(/.test("    const person = await resolvePerson(supabase, { brokerageId: form.brokerage_id, email })"))
   check("the behavioral_signal evidence helper is module-private in the lib module (not exported) and no second copy is left in the 'use server' file (tombstone only)", !/export async function recordBehavioralSignalIdentity/.test(src("lib/lead-intelligence/visitor-email-capture.ts")) && /async function recordBehavioralSignalIdentity/.test(src("lib/lead-intelligence/visitor-email-capture.ts")) && !/function recordBehavioralSignalIdentity/.test(src("app/actions/lead-intelligence.ts")) && !/\.eq\("email", signal\.email_captured\)/.test(src("app/actions/lead-intelligence.ts")))
 
   // ── 11. R2 — a dedup verdict links onto the SURVIVOR's person (wave 102.1, lane 102E) ────────

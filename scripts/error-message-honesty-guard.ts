@@ -451,7 +451,7 @@ const BASELINE = 72
 console.log("\n═══ 1. No NEW guard blames something it did not test ═══")
 const hits = findMismatches()
 {
-  for (const h of hits.slice(0, 40)) console.log(`     ${h.file}:${h.line}  !${h.cond}  →  "${h.msg.slice(0, 70)}"`)
+  for (const h of hits.slice(0, process.env.HONESTY_LIST === "1" ? hits.length : 40)) console.log(`     ${h.file}:${h.line}  !${h.cond}  →  "${h.msg.slice(0, 70)}"`)
   if (hits.length > 40) console.log(`     … and ${hits.length - 40} more`)
   ok(`guards whose message names a different noun, at or below ${BASELINE} (found ${hits.length})`,
     hits.length <= BASELINE,

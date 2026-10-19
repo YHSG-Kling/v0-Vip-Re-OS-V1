@@ -34,6 +34,7 @@ import { validateReviewRequestDelay } from "@/lib/reputation/review-request-dela
 import { validateFaceProviderOrder, type FaceRenderProvider } from "@/lib/live-agent/face-render"
 import { appendTenantPolicyVersion, type PolicyActor } from "@/lib/kernel/tenant-policy"
 import { LIFETIME_CONVERSION_POLICY_KEY } from "@/lib/kernel/lifetime-conversion"
+import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 
 type ColumnWriteResult<T> = { ok: true; rowId: string; value: T } | { ok: false; error: string }
 
@@ -97,7 +98,7 @@ export async function saveLiveFaceProviderOrder(
   return out
 }
 
-type PolicyColumn = "review_request_delay_days" | "live_agent_face_provider_order" | "settings"
+type PolicyColumn = "review_request_delay_days" | "live_agent_face_provider_order"
 
 /** The value this save replaces. A refused read refuses — history never starts from a guess. */
 async function readPrior(svc: any, brokerageId: string, column: PolicyColumn): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
@@ -106,7 +107,7 @@ async function readPrior(svc: any, brokerageId: string, column: PolicyColumn): P
   return { ok: true, value: (data as Record<string, unknown> | null)?.[column] ?? null }
 }
 
-async function versionColumn(svc: any, brokerageId: string, column: PolicyColumn | `settings.${string}`, value: unknown, previous: unknown, actor: PolicyActor | undefined): Promise<void> {
+async function versionColumn(svc: any, brokerageId: string, column: PolicyColumn, value: unknown, previous: unknown, actor: PolicyActor | undefined): Promise<void> {
   const v = await appendTenantPolicyVersion(svc, {
     brokerageId, policyKey: column, value, previous,
     actor: actor ?? { type: "system", reason: "column write without a named actor" },
@@ -117,9 +118,10 @@ async function versionColumn(svc: any, brokerageId: string, column: PolicyColumn
 /**
  * settings.lifetime_conversion — the tenant's lifetime-conversion policy. The reader is
  * lib/kernel/lifetime-conversion.ts (wave 142C: "CLOSED / PAYOUT PENDING" holds the conversion until the
- * agent's payout is recorded when require_payout_verified is true); this is its ONE writer (opposite-missing
- * 1b at wave-142 integration — the key was read and never written). A jsonb KEY: the write merges onto the
- * stored settings object, never replaces it, and is counted like every column writer here.
+ * agent's payout is recorded when require_payout_verified is true); this is its ONE door (opposite-missing
+ * 1b at wave-142 integration — the key was read and never written). A jsonb KEY, so the write goes through
+ * the ONE settings writer, mergeBrokerageSettings (settings-merge-race: compare-and-set by key, never a
+ * replace), which versions the key through TENANT_POLICY_SETTINGS_KEYS.
  */
 export async function saveLifetimeConversionPolicy(
   svc: any,
@@ -129,16 +131,8 @@ export async function saveLifetimeConversionPolicy(
 ): Promise<ColumnWriteResult<{ require_payout_verified: boolean }>> {
   if (!brokerageId) return { ok: false, error: "No brokerage to save the lifetime conversion policy for — nothing was written." }
   if (typeof policy?.requirePayoutVerified !== "boolean") return { ok: false, error: "requirePayoutVerified must be true or false." }
-  const prior = await readPrior(svc, brokerageId, "settings")
-  if (!prior.ok) return prior
-  const priorSettings = prior.value && typeof prior.value === "object" && !Array.isArray(prior.value) ? (prior.value as Record<string, unknown>) : {}
   const value = { require_payout_verified: policy.requirePayoutVerified }
-  const settings = { ...priorSettings, [LIFETIME_CONVERSION_POLICY_KEY]: value }
-  const res = await svc
-    .from("brokerage_settings")
-    .upsert({ brokerage_id: brokerageId, settings, updated_at: new Date().toISOString() }, { onConflict: "brokerage_id" })
-    .select("id")
-  const out = countedOne("Lifetime conversion policy", res, value)
-  if (out.ok) await versionColumn(svc, brokerageId, `settings.${LIFETIME_CONVERSION_POLICY_KEY}`, value, priorSettings[LIFETIME_CONVERSION_POLICY_KEY] ?? null, actor)
-  return out
+  const m = await mergeBrokerageSettings(svc, brokerageId, { [LIFETIME_CONVERSION_POLICY_KEY]: value }, { policy: actor })
+  if (!m.ok) return { ok: false, error: m.error }
+  return { ok: true, rowId: m.rowId, value }
 }
