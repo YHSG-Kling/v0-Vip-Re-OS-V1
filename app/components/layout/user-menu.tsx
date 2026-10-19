@@ -42,7 +42,7 @@ export function UserMenu({ userContext }: UserMenuProps) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon">
-          <User className="w-5 h-5 text-gray-700" />
+          <User className="w-5 h-5 text-gray-700" /><span className="sr-only">Account menu</span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="border-gray-200 bg-white">

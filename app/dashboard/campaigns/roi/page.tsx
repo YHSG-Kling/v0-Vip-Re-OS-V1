@@ -12,14 +12,20 @@ import {
   getChannelPerformanceData,
   getTopCampaigns,
 } from "@/lib/campaigns/roi-calculator"
+import { DEFAULT_ROI_WINDOW, isRoiWindowKey, resolveRoiWindow } from "./roi-window"
 
 export const metadata = {
   title: "Campaign ROI | Dashboard",
   description: "Track and analyze your marketing campaign ROI performance",
 }
 
-export default async function CampaignROIPage() {
+export default async function CampaignROIPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ window?: string }>
+}) {
   const supabase = await createClient()
+  const { window: windowParam } = await searchParams
 
   // Get current user
   const {
@@ -48,14 +54,11 @@ export default async function CampaignROIPage() {
     redirect("/dashboard/onboarding")
   }
 
-  // Get current month date range
-  const now = new Date()
-  const windowStart = new Date(now.getFullYear(), now.getMonth(), 1)
-    .toISOString()
-    .slice(0, 10)
-  const windowEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-    .toISOString()
-    .slice(0, 10)
+  // Wave 142 (lane 142H): the window is the client's "Date Window" choice, carried in ?window= — before,
+  // the select set state nothing read while this page always fetched the current month. Unknown → default.
+  const roiWindow = resolveRoiWindow(isRoiWindowKey(windowParam) ? windowParam : DEFAULT_ROI_WINDOW)
+  const windowStart = roiWindow.start
+  const windowEnd = roiWindow.end
 
   // Fetch ROI data in parallel
   const [roiResult, channelResult, topCampaignsResult] = await Promise.all([
@@ -102,6 +105,7 @@ export default async function CampaignROIPage() {
       channelPerformance={channelResult.success ? channelResult.channels || [] : []}
       topCampaigns={topCampaignsResult.success ? topCampaignsResult.campaigns || [] : []}
       agents={agents}
+      window={roiWindow.key}
       accessError={!roiResult.success ? roiResult.error : undefined}
     />
   )

@@ -205,7 +205,11 @@ import type { BatchDataToolTier } from "@/lib/ai-isa/persona-tool-policy"
 import { BATCHDATA_SKIP_TRACE_COST_USD, BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD } from "@/lib/external/batchdata-client"
 import { PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_EMAIL_VALIDATE_COST_USD } from "@/lib/external/peopledata-client"
 import { MCP_TOOL_CALL_COST_USD } from "@/lib/external/batchdata-ai-tools"
-import { VERSIUM_MATCH_CREDIT_USD, type VersiumIdentity, type VersiumContactCall, type VersiumDemographicCall, type VersiumProvenance } from "@/lib/external/versium-client"
+import {
+  VERSIUM_MATCH_CREDIT_USD, type VersiumIdentity, type VersiumContactCall, type VersiumDemographicCall, type VersiumProvenance,
+  // Wave 142 (lane 142D): the B2B2C crosswalk + the full-demographic real-estate indicators (audited in the adapter).
+  type VersiumB2B2CIdentity, type VersiumB2B2COutput, type VersiumB2B2CCall, type VersiumFullDemographicCall, type VersiumRealEstateIndicators,
+} from "@/lib/external/versium-client"
 import { BATCHDATA_BILLED_PULL_OPT_IN } from "@/lib/buyer-search/listing-source-order"
 import { MAPBOX_SKU_USD, GOOGLE_MAPS_SKU_USD } from "@/lib/vendor-governance/cost-normalizer"
 
@@ -294,6 +298,8 @@ export type ProviderCapability =
   | "motivated_seller_list"  // quicklist pulls (pre-foreclosure, absentee, vacant, …)
   | "property_valuation"     // "what is this home worth?" — AVM point + range (wave 99, lane 99C)
   | "map_render"             // a map of coordinates — static image or browser tiles (wave 140, lane 140I)
+  | "business_identity"      // a BUSINESS identity (LinkedIn URL / name + city + state) ↔ its consumer contact points — the B2B2C crosswalk (wave 142, lane 142D)
+  | "online_presence"        // observed online real-estate activity + property/behaviour indicators for a known person (wave 142, lane 142D)
 
 export interface ProviderRouteEntry {
   provider: ContactDataProvider
@@ -378,6 +384,16 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
   map_render: [
     { provider: "mapbox", unitCostUsd: MAPBOX_SKU_USD.static_image, keyedBy: "coordinates" },
     { provider: "google_maps", unitCostUsd: GOOGLE_MAPS_SKU_USD.static_map, keyedBy: "coordinates" },
+  ],
+  // Wave 142 (lane 142D; owner: "expose contact/business append, B2B2C identity matching, online-presence /
+  // real-estate indicators … through the EXISTING kernel capability routing"). ONE provider sells each
+  // (audited: lib/external/versium-client.ts — the B2B2C Crosswalk Append API and the full_demographic
+  // output), at the SAME credit constant every Versium leg books; a no-match is free. No second rail.
+  business_identity: [
+    { provider: "versium", unitCostUsd: VERSIUM_MATCH_CREDIT_USD, keyedBy: "person_identifier" },
+  ],
+  online_presence: [
+    { provider: "versium", unitCostUsd: VERSIUM_MATCH_CREDIT_USD, keyedBy: "person_identifier" },
   ],
 }
 
@@ -663,6 +679,169 @@ export async function runVersiumContactLeg(
     }
   } catch (e) {
     return { answered: false, emails: [], phones: [], cost: 0, skipped: `error: ${e instanceof Error ? e.message : String(e)}`, ...none }
+  }
+}
+
+// ─── WAVE 142 (lane 142D): TWO MORE VERSIUM CAPABILITIES ON THE SAME RAIL ──────────────────────
+// Owner: "Expose contact/business append, B2B2C identity matching, online-presence/real-estate indicators
+// … through the EXISTING kernel capability routing (routeCapability / provider chain), with the cost gate,
+// cost booking and evidence." Both legs are the contact leg's shape: the route is read through
+// routeCapability (a Versium in cool-down is routed around), the budget pre-flight runs through THE SAME
+// gate (budget-gate.ts::checkVendorBudget) with the worst-case bill BEFORE a credit can be spent, ONE
+// booking per paid call names the capability, and nothing here throws. The vendor contract each calls is
+// audited in lib/external/versium-client.ts (what is verified vs UNRESOLVED is written beside the code).
+// Callers at HEAD: the business-card scanner (business_identity — an agent's / vendor's card is a BUSINESS
+// identity; the crosswalk is the identity/dedup evidence, never an outreach channel) and the deal
+// investigator (online_presence — a research step within its cap). No LLM decides either.
+
+type VersiumLegDeps = {
+  meter?: (m: import("@/lib/vendor-governance/meter-vendor").MeterVendorInput) => Promise<unknown>
+  /** Test seam — defaults to budget-gate.ts::checkVendorBudget (the same gate every Versium leg runs). */
+  checkBudget?: (p: { brokerageId: string; addCost: number }) => Promise<{ allowed: boolean }>
+  /** Test seam — defaults to connector-gateway.ts::loadProviderHealth. */
+  providerHealth?: ProviderHealthFn
+}
+
+/** The pre-flight every paid Versium leg runs — refuse (by name) before a single credit can be spent. */
+async function versiumLegPreflight(args: {
+  capability: ProviderCapability
+  brokerageId: string | null
+  worstCaseUsd: number
+  injectedCall: boolean
+  deps: VersiumLegDeps
+}): Promise<{ ok: true } | { ok: false; skipped: string }> {
+  // Tenant-attributed spend only — a null tenant has no budget to check and no ledger row to book (§4).
+  if (!args.brokerageId) return { ok: false, skipped: "no_brokerage" }
+  // Unconfigured Versium spends nothing — answer that before paying for a budget read.
+  if (!args.injectedCall && !(await import("@/lib/external/versium-client")).isVersiumConfigured()) return { ok: false, skipped: "unconfigured" }
+  const health = await (args.deps.providerHealth ?? defaultProviderHealth)("versium").catch(() => null)
+  const route = routeCapability(args.capability, { versium: health })
+  if (!route.providers.includes("versium")) return { ok: false, skipped: route.skipped.map((s) => `provider_failing: ${s.reason}`).join("; ") || "no_provider_on_route" }
+  try {
+    const checkBudget = args.deps.checkBudget
+      ?? (async (p: { brokerageId: string; addCost: number }) => (await import("@/lib/vendor-governance/budget-gate")).checkVendorBudget(p))
+    const budget = await checkBudget({ brokerageId: args.brokerageId, addCost: args.worstCaseUsd })
+    if (!budget.allowed) return { ok: false, skipped: "budget" }
+  } catch (e) {
+    // A gate that cannot run refuses (CLAUDE.md §4) — never "nobody checked" read as "checked and fine".
+    return { ok: false, skipped: `budget_unavailable: ${e instanceof Error ? e.message : String(e)}` }
+  }
+  return { ok: true }
+}
+
+/** Book one Versium leg's spend and READ the ledger's answer (meterVendorSpend resolves false when no row landed). */
+async function bookVersiumLeg(meterFn: VersiumLegDeps["meter"], m: import("@/lib/vendor-governance/meter-vendor").MeterVendorInput): Promise<void> {
+  const fn = meterFn ?? ((x: import("@/lib/vendor-governance/meter-vendor").MeterVendorInput) => import("@/lib/vendor-governance/meter-vendor").then((v) => v.meterVendorSpend(x)))
+  let booked: unknown
+  try { booked = await Promise.resolve(fn(m)) } catch (e) { booked = e instanceof Error ? e.message : String(e) }
+  if (booked === false || typeof booked === "string") {
+    console.warn(`[versium] $${m.cost} ${m.usageType} NOT booked to the vendor ledger (brokerage ${m.brokerageId ?? "none"})${typeof booked === "string" ? `: ${booked}` : ""}`)
+  }
+}
+
+export interface VersiumBusinessIdentityLegResult {
+  answered: boolean
+  businessEmails: string[]
+  consumerEmails: string[]
+  consumerMobiles: string[]
+  consumerAddress: { address: string | null; city: string | null; state: string | null; zip: string | null } | null
+  cost: number
+  skipped: string | null
+  provenance: Partial<Record<VersiumB2B2COutput, VersiumProvenance>>
+}
+
+/**
+ * THE B2B2C IDENTITY LEG — a business identity (a LinkedIn URL, or first + last + city + state) crosswalked
+ * to its consumer contact points. Default ask: consumer_email ONLY (one crosswalk, one data point — the key
+ * the scanner dedups a business card against the tenant's contacts with). Books vendor "versium", usage
+ * "b2b2c_append", capability person.enrich_business_identity. Never throws.
+ */
+export async function runVersiumBusinessIdentityLeg(
+  req: {
+    brokerageId: string | null
+    identity: VersiumB2B2CIdentity
+    outputs?: readonly VersiumB2B2COutput[]
+    systemSource: string
+    metadata?: Record<string, unknown>
+    attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null }
+  },
+  deps: VersiumLegDeps & { call?: VersiumB2B2CCall } = {},
+): Promise<VersiumBusinessIdentityLegResult> {
+  const outputs: readonly VersiumB2B2COutput[] = req.outputs?.length ? req.outputs : ["consumer_email"]
+  const none: VersiumBusinessIdentityLegResult = { answered: false, businessEmails: [], consumerEmails: [], consumerMobiles: [], consumerAddress: null, cost: 0, skipped: null, provenance: {} }
+  // Worst case: one crosswalk credit + one credit per output asked (versium-client.ts — the documented billing unit).
+  const pre = await versiumLegPreflight({ capability: "business_identity", brokerageId: req.brokerageId, worstCaseUsd: Math.round((1 + outputs.length) * VERSIUM_MATCH_CREDIT_USD * 100) / 100, injectedCall: !!deps.call, deps })
+  if (!pre.ok) return { ...none, skipped: pre.skipped }
+  try {
+    const { appendVersiumB2B2C } = await import("@/lib/external/versium-client")
+    const r = await appendVersiumB2B2C(req.identity, outputs, { call: deps.call })
+    if (r.skipped) return { ...none, skipped: r.skipped }
+    if (r.cost > 0) {
+      await bookVersiumLeg(deps.meter, {
+        vendorName: "versium",
+        usageType: "b2b2c_append",
+        cost: r.cost,
+        brokerageId: req.brokerageId,
+        systemSource: req.systemSource,
+        metadata: { ...(req.metadata ?? {}), capability: "person.enrich_business_identity", answered_by: r.matched ? "versium" : null, outputs, credits: r.credits },
+        attribution: req.attribution,
+      })
+    }
+    return {
+      answered: r.matched, businessEmails: r.businessEmails, consumerEmails: r.consumerEmails, consumerMobiles: r.consumerMobiles, consumerAddress: r.consumerAddress,
+      cost: r.cost, skipped: r.error && !r.matched ? `error: ${r.error}` : null, provenance: r.provenance,
+    }
+  } catch (e) {
+    return { ...none, skipped: `error: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
+export interface VersiumOnlinePresenceLegResult {
+  answered: boolean
+  indicators: VersiumRealEstateIndicators | null
+  cost: number
+  skipped: string | null
+  provenance: VersiumProvenance | null
+}
+
+/**
+ * THE ONLINE-PRESENCE LEG — "Online Presence Indicator - Real Estate" and the other property / behaviour
+ * indicators of the full demographic output, for ONE known person; protected characteristics never leave the
+ * adapter. Books vendor "versium", usage "online_presence_append", capability person.enrich_online_presence.
+ * A research / intent signal — never a targeting segment (lib/kernel/lookalike-audience.ts carries the
+ * ad-policy verdict). Never throws.
+ */
+export async function runVersiumOnlinePresenceLeg(
+  req: {
+    brokerageId: string | null
+    identity: VersiumIdentity
+    systemSource: string
+    metadata?: Record<string, unknown>
+    attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null }
+  },
+  deps: VersiumLegDeps & { call?: VersiumFullDemographicCall } = {},
+): Promise<VersiumOnlinePresenceLegResult> {
+  const none: VersiumOnlinePresenceLegResult = { answered: false, indicators: null, cost: 0, skipped: null, provenance: null }
+  const pre = await versiumLegPreflight({ capability: "online_presence", brokerageId: req.brokerageId, worstCaseUsd: VERSIUM_MATCH_CREDIT_USD, injectedCall: !!deps.call, deps })
+  if (!pre.ok) return { ...none, skipped: pre.skipped }
+  try {
+    const { appendVersiumRealEstateIndicators } = await import("@/lib/external/versium-client")
+    const r = await appendVersiumRealEstateIndicators(req.identity, { call: deps.call })
+    if (r.skipped) return { ...none, skipped: r.skipped }
+    if (r.cost > 0) {
+      await bookVersiumLeg(deps.meter, {
+        vendorName: "versium",
+        usageType: "online_presence_append",
+        cost: r.cost,
+        brokerageId: req.brokerageId,
+        systemSource: req.systemSource,
+        metadata: { ...(req.metadata ?? {}), capability: "person.enrich_online_presence", answered_by: r.indicators ? "versium" : null, credits: r.credits },
+        attribution: req.attribution,
+      })
+    }
+    return { answered: !!r.indicators, indicators: r.indicators, cost: r.cost, skipped: r.error && !r.indicators ? `error: ${r.error}` : null, provenance: r.provenance }
+  } catch (e) {
+    return { ...none, skipped: `error: ${e instanceof Error ? e.message : String(e)}` }
   }
 }
 

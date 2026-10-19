@@ -68,6 +68,10 @@ export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition>
   referral_appreciation:   { label: "Referral appreciation policy", store: "brokerage_settings.settings", defaultNote: "platform default appreciation" },
   ce_provider:             { label: "CE provider", store: "brokerage_settings.settings", defaultNote: "no CE provider connected" },
   learned_vetoes:          { label: "Vetoed learned adjustments", store: "brokerage_settings.settings", defaultNote: "no learned adjustment vetoed" },
+  // Wave 142 (142C, owner: "CLOSED / PAYOUT PENDING until payout verified where rules require"):
+  // { require_payout_verified: boolean } read by lib/kernel/lifetime-conversion.ts — the close converts
+  // the deal's customers to lifetime unless this holds the conversion until the agent's payout is recorded.
+  lifetime_conversion:     { label: "Lifetime conversion gate (hold until payout verified)", store: "brokerage_settings.settings", defaultNote: "converts at the verified close; lib/kernel/lifetime-conversion.ts" },
   // Wave 104 (104C, controlled learning): a PROMOTED predictor threshold — { [predictor]: { thresholdMultiplier,
   // requireStrongest } } read by lib/intelligence/predictor-learning-runner.ts getPredictorTuning ahead of the
   // record-derived tuning; written ONLY by lib/kernel/improvement-proposals.ts promotion / rollback.
@@ -129,6 +133,12 @@ export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition>
   // platform ceiling (platform_settings.self_healing_ceilings, m753) — a tenant value above the ceiling is clamped, never
   // honored. Written only through the policy-proposal promotion path (improvement_proposals → mergeBrokerageSettings).
   self_healing:            { label: "Self-healing (diagnosis / research budgets, attempts per day, allowed remediation classes, auto-fix threshold)", store: "brokerage_settings.settings", defaultNote: "platform defaults ($0.05 diagnosis, $0.06 provider research, $0.10 / 6 calls law-rule research, 2 attempts/day, every declared playbook, auto-fix at ≥ 50% confidence) under the platform ceiling" },
+  // Wave 142 (142F; owner: "all videos that are not personal should also be added to youtube"): { youtube: boolean } —
+  // whether an APPROVED public-marketing video (lib/video/public-video.ts classifyPublicVideo: broadcast kind, addressed
+  // to nobody, not in-house, not the MLS cut, finished + compliance passed) is queued onto the existing YouTube rail
+  // automatically (lib/video/youtube-publish.ts queueYouTubeAutoPublish, read through readVideoAutoPublishPolicy).
+  // DEFAULT ON; an UNREADABLE value refuses (fail closed). Written only through mergeBrokerageSettings (a policy proposal).
+  video_auto_publish:      { label: "Video auto-publish (approved public marketing videos → the connected YouTube channel)", store: "brokerage_settings.settings", defaultNote: "on — every approved non-personal marketing video is queued to the brokerage's connected YouTube channel" },
 }
 
 /** Real columns that are tenant operating policy. */

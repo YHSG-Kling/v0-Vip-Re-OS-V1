@@ -608,9 +608,33 @@ export async function getEmailCampaignStats(_brokerageId?: string) {
 
 // ─── LISTING-SPECIFIC EMAIL CAMPAIGNS (migrated from email-campaign-automation.ts) ───
 
+/** Subject prefix per listing-campaign type when the AGENT supplies the body (there is no generator subject to use). */
+const LISTING_CAMPAIGN_SUBJECT: Record<"coming_soon" | "launch" | "open_house" | "price_drop" | "sold", string> = {
+  coming_soon: "Coming Soon",
+  launch: "Just Listed",
+  open_house: "Open House",
+  price_drop: "Price Improvement",
+  sold: "Just Sold",
+}
+
+/** Agent-typed plain text → HTML paragraphs with line breaks, escaped (the template body is HTML). */
+function plainTextToEmailHtml(text: string): string {
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  return text
+    .split(/\n{2,}/)
+    .map((p) => `<p>${esc(p.trim()).replace(/\n/g, "<br/>")}</p>`)
+    .join("")
+}
+
 export async function prepareListingEmailCampaign(params: {
   transactionId: string
   campaignType: "coming_soon" | "launch" | "open_house" | "price_drop" | "sold"
+  /**
+   * Wave 142 (lane 142H): the Coming-Soon card shows the AI teaser as an editable textarea ("edit before
+   * sending") and then called this action WITHOUT the edit — the campaign generated its own body and the
+   * agent's review went nowhere. A reviewed body is what ships (no second LLM call).
+   */
+  bodyOverride?: string
 }) {
   if (!isValidUUID(params.transactionId)) {
     return { success: false, error: "Invalid transaction ID" }
@@ -672,14 +696,24 @@ export async function prepareListingEmailCampaign(params: {
       ? `<img src="${heroUrl}" alt="${String(listing.address ?? "Listing").replace(/"/g, "&quot;")}" style="width:100%;max-width:640px;border-radius:8px;display:block;margin:0 auto 16px;" />`
       : ""
 
-    const emailContent = await generateEmail({
-      agentId: transaction.agent_id,
-      emailType: params.campaignType as any,
-      propertyIds: [listing.id],
-    })
+    const reviewedBody = params.bodyOverride?.trim()
+    let generatedSubject: string | undefined
+    let generatedBody: string | undefined
+    if (reviewedBody) {
+      generatedSubject = `${LISTING_CAMPAIGN_SUBJECT[params.campaignType]}: ${listing.address}`
+      generatedBody = plainTextToEmailHtml(reviewedBody)
+    } else {
+      const emailContent = await generateEmail({
+        agentId: transaction.agent_id,
+        emailType: params.campaignType as any,
+        propertyIds: [listing.id],
+      })
 
-    if (!emailContent.success) {
-      return { success: false, error: "Failed to generate email content" }
+      if (!emailContent.success) {
+        return { success: false, error: "Failed to generate email content" }
+      }
+      generatedSubject = emailContent.data?.subject
+      generatedBody = emailContent.data?.generated_content
     }
 
     const recipients = await getListingCampaignRecipients(params.transactionId, params.campaignType, listing)
@@ -688,7 +722,7 @@ export async function prepareListingEmailCampaign(params: {
     if (!brokerageId) {
       return { success: false, error: "Could not resolve brokerage for campaign" }
     }
-    const emailSubject = emailContent.data?.subject || `New Listing: ${listing.address}`
+    const emailSubject = generatedSubject || `New Listing: ${listing.address}`
 
     // email_campaigns: subject_line NOT NULL; campaign_format (CHECK one_off|drip|...) replaces
     // phantom campaign_type; audience_filter jsonb replaces phantom target_segment.
@@ -708,7 +742,7 @@ export async function prepareListingEmailCampaign(params: {
 
     if (error) throw error
 
-    if (!emailContent.data?.generated_content) {
+    if (!generatedBody) {
       return { success: false, error: "AI failed to generate email content" }
     }
 
@@ -728,7 +762,7 @@ export async function prepareListingEmailCampaign(params: {
         slug: `${params.campaignType}-${listing.id}-${Date.now()}`,
         template_type: TEMPLATE_TYPE_MAP[params.campaignType] ?? "followup",
         subject: emailSubject,
-        body: `${heroHtml}${emailContent.data.generated_content}`,
+        body: `${heroHtml}${generatedBody}`,
         variables: {
           property_address: listing.address,
           property_city: listing.city,
@@ -785,7 +819,7 @@ export async function prepareListingEmailCampaign(params: {
       campaign_id: campaign.id,
       recipients: queued,
       recipientsRequested: uniqueRecipients.length,
-      subject: emailContent.data?.subject,
+      subject: emailSubject,
     }
   } catch (error) {
     console.error("Prepare listing email campaign error:", error)

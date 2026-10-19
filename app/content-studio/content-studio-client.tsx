@@ -1513,7 +1513,7 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
                       <CardTitle className="text-slate-900">Create Newsletter Campaign</CardTitle>
                       <CardDescription>Design and send email newsletters to your contacts</CardDescription>
                     </div>
-                    <Button variant="ghost" size="icon" onClick={() => setIsCreatingNewsletter(false)}>
+                    <Button variant="ghost" size="icon" aria-label="Close" onClick={() => setIsCreatingNewsletter(false)}>
                       <X className="h-4 w-4" />
                     </Button>
                   </div>

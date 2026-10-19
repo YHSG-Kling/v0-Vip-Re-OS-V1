@@ -31,6 +31,7 @@ export async function resolveKnownPropertyFacts(args: ResolvePropertyPrefillArgs
   const facts: KnownPropertyFacts = {
     address: args.propertyAddress?.trim() || null,
     legalDescription: null, // filled from the record's legal_description below when it carries one
+    legalDescriptionSource: null,
     apn: null,
     county: null,
     propertyCity: null,
@@ -41,10 +42,14 @@ export async function resolveKnownPropertyFacts(args: ResolvePropertyPrefillArgs
     const v = row?.legal_description
     return typeof v === "string" && v.trim() ? v.trim() : null
   }
+  const legalSourceOf = (row: Record<string, unknown> | null | undefined): string | null => {
+    const v = row?.legal_description_source
+    return typeof v === "string" && v.trim() ? v.trim() : null
+  }
 
   // 1. The linked listing is the most authoritative property record we hold.
   if (args.listingId) {
-    const { data: l, error: lErr } = await svc.from("listings").select("address, city, state, zip, legal_description").eq("id", args.listingId).maybeSingle()
+    const { data: l, error: lErr } = await svc.from("listings").select("address, city, state, zip, legal_description, legal_description_source").eq("id", args.listingId).maybeSingle()
     if (lErr) console.error(`[offer-property-prefill] listings read refused (legal_description needs m768 applied?): ${lErr.message}`)
     if (l) {
       facts.address = facts.address ?? ((l as any).address ?? null)
@@ -52,19 +57,23 @@ export async function resolveKnownPropertyFacts(args: ResolvePropertyPrefillArgs
       facts.propertyState = (l as any).state ?? null
       facts.propertyZip = (l as any).zip ?? null
       facts.legalDescription = legalOf(l as Record<string, unknown>)
+      facts.legalDescriptionSource = facts.legalDescription ? legalSourceOf(l as Record<string, unknown>) : null
     }
   }
 
   // 2. The transaction carries property_address/city/state/zip (e.g. an external-MLS buy).
   if (args.transactionId && (!facts.address || !facts.propertyCity || !facts.legalDescription)) {
-    const { data: t, error: tErr } = await svc.from("transactions").select("property_address, property_city, property_state, property_zip, legal_description").eq("id", args.transactionId).maybeSingle()
+    const { data: t, error: tErr } = await svc.from("transactions").select("property_address, property_city, property_state, property_zip, legal_description, legal_description_source").eq("id", args.transactionId).maybeSingle()
     if (tErr) console.error(`[offer-property-prefill] transactions read refused (legal_description needs m768 applied?): ${tErr.message}`)
     if (t) {
       facts.address = facts.address ?? ((t as any).property_address ?? null)
       facts.propertyCity = facts.propertyCity ?? ((t as any).property_city ?? null)
       facts.propertyState = facts.propertyState ?? ((t as any).property_state ?? null)
       facts.propertyZip = facts.propertyZip ?? ((t as any).property_zip ?? null)
-      facts.legalDescription = facts.legalDescription ?? legalOf(t as Record<string, unknown>)
+      if (!facts.legalDescription) {
+        facts.legalDescription = legalOf(t as Record<string, unknown>)
+        facts.legalDescriptionSource = facts.legalDescription ? legalSourceOf(t as Record<string, unknown>) : null
+      }
     }
   }
 

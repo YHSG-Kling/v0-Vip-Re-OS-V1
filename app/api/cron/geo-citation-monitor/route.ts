@@ -58,6 +58,7 @@ export async function GET(req: NextRequest) {
   let landingObs = 0
   let gaps = 0
   let signals = 0
+  let booksAdvanced = 0
 
   try {
     // Brokerages with citable surfaces: published reels OR active FAQ landing pages.
@@ -100,6 +101,14 @@ export async function GET(req: NextRequest) {
         const { runLeadMagnetSuggestions } = await import("@/lib/lead-magnets/suggestions")
         const ideas = await runLeadMagnetSuggestions(supabase, brokerageId, {})
         signals += ideas.published
+        // 4 — THE BOOK SAFETY NET (wave 142, lane 142E): an AI-written lead-magnet book is driven by the review
+        // surface's auto-continue (app/components/features/lead-magnets/BookProjectPanel.tsx); a project that sat
+        // untouched for 15+ minutes (a closed tab) is advanced ONE stage here, bounded per tenant. Cron is the
+        // backup, never the primary way the book gets written (wave 142 ruling).
+        const { sweepStalledBookProjects } = await import("@/lib/lead-magnets/book-creator")
+        const books = await sweepStalledBookProjects(supabase, brokerageId, {})
+        booksAdvanced += books.advanced
+        for (const err of books.errors) errors.push(`${brokerageId}: book ${err}`)
       } catch (e: any) {
         errors.push(`${brokerageId}: ${e?.message ?? String(e)}`)
       }
@@ -108,9 +117,9 @@ export async function GET(req: NextRequest) {
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: reelObs + landingObs + signals,
-      metadata: { brokerages: brokerages.length, reelObs, landingObs, gaps, signals, errors: errors.slice(0, 20) },
+      metadata: { brokerages: brokerages.length, reelObs, landingObs, gaps, signals, booksAdvanced, errors: errors.slice(0, 20) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, brokerages: brokerages.length, reelObs, landingObs, gaps, signals, errors: errors.length })
+    return NextResponse.json({ ok: true, brokerages: brokerages.length, reelObs, landingObs, gaps, signals, booksAdvanced, errors: errors.length })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

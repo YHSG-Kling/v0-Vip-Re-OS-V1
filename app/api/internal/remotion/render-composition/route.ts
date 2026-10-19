@@ -393,6 +393,14 @@ export async function POST(req: NextRequest) {
       renderId: row.id, compositionId: row.composition_id,
       status: "failed", errorMessage: msg.slice(0, 800),
     })
+    // IMMEDIATE OWNERSHIP (wave 142, lane 142F) — the still path hosts directly (no
+    // coordinator), so an unplayable output refused by the host is escalated here too.
+    try {
+      const { escalateRenderFailure } = await import("@/lib/remotion/render-escalation")
+      await escalateRenderFailure(svc, { brokerageId: row.brokerage_id, renderId: row.id, compositionId: row.composition_id, error: msg })
+    } catch (escErr) {
+      console.warn("[render-composition] render failure escalation did not land:", (escErr as Error).message)
+    }
     return NextResponse.json({ ok: false, render_id: row.id, error: msg }, { status: 500 })
   }
 }

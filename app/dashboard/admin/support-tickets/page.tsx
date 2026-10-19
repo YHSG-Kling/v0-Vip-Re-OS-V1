@@ -2,15 +2,18 @@ import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity"
 import { listBrokerageTickets } from "@/app/actions/support"
 import { isTicketLane, type TicketLane } from "@/lib/support/ticket-constants"
+import { SUPPORT_DESK_USER_TYPES } from "@/lib/support/ticket-scope"
 import { SupportQueueClient } from "./support-queue-client"
 import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
-// SCOPE LADDER (kept inline — mirrors app/actions/support.ts, which admits the
-// storable platform 'support' user_type): 'superadmin' removed — dead as
-// users.user_type (0 live rows); broker_owner added.
-const ADMIN_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "team_lead", "support"])
+// TOMBSTONE (wave 142, lane 142A; §6): a second `ADMIN_ROLES = new Set([...six
+// strings...])` literal stood here, "mirroring" app/actions/support.ts by hand.
+// Survivor: lib/support/ticket-scope.ts:SUPPORT_DESK_USER_TYPES (the admin roster
+// spread + 'support'). This page only decides what to SHOW; the action decides what
+// is ALLOWED and pins every read to the caller's own tenant unless the platform
+// 'support' capability (platform_role, never a user_type) admits them across.
 
 /**
  * THE OFFICE QUEUE, ONE LANE AT A TIME.
@@ -33,7 +36,7 @@ export default async function SupportTicketsAdminPage({
 }) {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
-  if (!ADMIN_ROLES.has(ctx.userType)) return <RoleGateNotice surface="Support tickets" audience="brokerage admins, team leads and platform support" />
+  if (!SUPPORT_DESK_USER_TYPES.has(ctx.userType)) return <RoleGateNotice surface="Support tickets" audience="your brokerage's office staff and platform support" />
 
   const sp = (await searchParams) ?? {}
   const lane: TicketLane = isTicketLane(sp.lane) ? sp.lane : DEFAULT_LANE

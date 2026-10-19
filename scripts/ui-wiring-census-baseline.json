@@ -1,10 +1,16 @@
 {
-  "_": "Shrink-only ratchets for scripts/ui-wiring-census-guard.ts (lane 141I, measured 2026-10-14 after the lane's fixes). dead.* = dead-surface hits OUTSIDE the critical paths (critical paths are a hard zero); mobile.* = static mobile findings on the critical flows that are published, not failed. Each may only fall; regenerate deliberately with --write-baseline and say why in the commit.",
+  "_": "Shrink-only ratchets for scripts/ui-wiring-census-guard.ts. dead.* = dead-surface hits OUTSIDE the journeys (the journeys are a hard zero); mobile.* = static mobile findings on the wave-141 critical paths (lane 141I, measured 2026-10-14 — that population is frozen so these only fall); journeys.* = the same findings over every product journey (lane 142H, measured 2026-10-19 after the lane's fixes); a11y.* = icon buttons without an accessible name over the whole app (142H). Each may only fall; regenerate deliberately with --write-baseline and say why in the commit.",
   "counts": {
     "mobile.GRID_COLS_4PLUS_NO_BREAKPOINT": 1,
     "mobile.GRID_COLS_3_NO_BREAKPOINT": 25,
-    "mobile.NOWRAP_FLEX_ROW": 2,
+    "mobile.NOWRAP_FLEX_ROW": 1,
     "mobile.SUB_TOUCH_BUTTON": 161,
-    "mobile.TABLE_NO_CARD_VARIANT": 27
+    "mobile.TABLE_NO_CARD_VARIANT": 27,
+    "journeys.GRID_COLS_4PLUS_NO_BREAKPOINT": 14,
+    "journeys.GRID_COLS_3_NO_BREAKPOINT": 111,
+    "journeys.NOWRAP_FLEX_ROW": 6,
+    "journeys.SUB_TOUCH_BUTTON": 515,
+    "journeys.TABLE_NO_CARD_VARIANT": 141,
+    "a11y.ICON_BUTTON_NO_LABEL": 0
   }
 }

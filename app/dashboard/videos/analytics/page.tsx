@@ -78,6 +78,9 @@ interface EngagementEvent {
   timestamp: string
 }
 
+/** The range select → days. Wave 142 (lane 142H): this select used to set state nothing read. */
+const RANGE_DAYS: Record<string, number> = { "7d": 7, "30d": 30, "90d": 90, year: 365 }
+
 export default function VideoAnalyticsPage() {
   const { user, userContext } = useAuth()
   const brokerageId = userContext?.brokerageId
@@ -87,17 +90,21 @@ export default function VideoAnalyticsPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
 
-  const loadStats = async () => {
+  const loadStats = async (range: string) => {
     try {
       if (user?.id) {
+        const sinceDays = RANGE_DAYS[range] ?? null
         const [data, events] = await Promise.all([
-          getVideoPerformanceStats(user.id, brokerageId),
+          // The rollups are lifetime per video, so the range selects the VIDEOS CREATED in it
+          // (the only window the data honours — the select's copy says so).
+          getVideoPerformanceStats(user.id, brokerageId, { sinceDays }),
           // Raw event stream behind the aggregates — the rollups alone never say
           // WHEN anything happened, so a stale number looked identical to a live one.
           getVideoEngagementEvents({ limit: 25 }),
         ])
         setStats(data)
-        setRecentEvents(events as unknown as EngagementEvent[])
+        const since = sinceDays ? Date.now() - sinceDays * 86_400_000 : 0
+        setRecentEvents((events as unknown as EngagementEvent[]).filter((e) => new Date(e.timestamp).getTime() >= since))
       }
     } catch (error) {
       console.error("[v0] Error loading video analytics:", error)
@@ -107,15 +114,16 @@ export default function VideoAnalyticsPage() {
   useEffect(() => {
     async function initialLoad() {
       setLoading(true)
-      await loadStats()
+      await loadStats(dateRange)
       setLoading(false)
     }
     initialLoad()
-  }, [user?.id, brokerageId])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, brokerageId, dateRange])
 
   const handleRefresh = async () => {
     setRefreshing(true)
-    await loadStats()
+    await loadStats(dateRange)
     setRefreshing(false)
   }
 
@@ -162,15 +170,15 @@ export default function VideoAnalyticsPage() {
               Refresh
             </Button>
             <Select value={dateRange} onValueChange={setDateRange}>
-              <SelectTrigger className="w-[180px]">
+              <SelectTrigger className="w-[230px]" aria-label="Videos created in">
                 <Calendar className="h-4 w-4 mr-2" />
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="7d">Last 7 days</SelectItem>
-                <SelectItem value="30d">Last 30 days</SelectItem>
-                <SelectItem value="90d">Last 90 days</SelectItem>
-                <SelectItem value="year">This year</SelectItem>
+                <SelectItem value="7d">Videos from the last 7 days</SelectItem>
+                <SelectItem value="30d">Videos from the last 30 days</SelectItem>
+                <SelectItem value="90d">Videos from the last 90 days</SelectItem>
+                <SelectItem value="year">Videos from the last year</SelectItem>
               </SelectContent>
             </Select>
           </div>

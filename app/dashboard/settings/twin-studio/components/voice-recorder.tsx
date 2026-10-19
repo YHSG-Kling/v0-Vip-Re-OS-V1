@@ -176,7 +176,7 @@ export function VoiceRecorder({
             className="hidden"
           />
           <div className="rounded-lg border bg-card p-4 flex items-center gap-3">
-            <Button onClick={togglePlay} size="icon" variant="outline" className="rounded-full h-10 w-10">
+            <Button onClick={togglePlay} size="icon" variant="outline" className="rounded-full h-10 w-10" aria-label={playing ? "Pause sample" : "Play sample"}>
               {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
             </Button>
             <div className="flex-1">

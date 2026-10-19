@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 457 tables, 826 columns.
+ * MEASURED AT GENERATION: 457 tables, 828 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-14
+ * generated: 2026-10-19
  * source: public.live_check_constraints_json()
- * body-sha256: a89bedb472cd8c0a4bd07a1fd4e23f4cd7d5a8be4569b9ad96da59ca9d209d46
+ * body-sha256: 9dd2dbdb7ecc2bcdb544b5d5cdc5fd6ca8eba0cdfe6400fe36b09fac909d285b
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -97,6 +97,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     transaction_fee_type: ["flat", "percent"],
   },
   agent_commissions: {
+    reconciled_via: ["manual", "quickbooks"],
     side: ["both", "buying", "listing"],
     status: ["approved", "disputed", "paid", "pending"],
   },
@@ -364,6 +365,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     card_subject_type: ["agent", "contact", "potential_contact", "sphere", "unknown", "vendor"],
     classified_by: ["default", "match", "notes", "picker", "reader"],
     review_status: ["approved", "pending", "rejected"],
+    routed_entity_type: ["contact", "none", "recruit", "vendor"],
   },
   buyer_behavior_log: {
     signal_type: ["alert_dismissed", "alert_opened", "dismissed", "filter_applied", "like_it", "love_it", "maybe", "not_for_us", "offer_created", "offer_declined", "portal_visit", "price_range_adjusted", "property_dismissed", "property_saved", "property_shared", "property_viewed", "saved", "search_executed", "search_time_spent", "showing_attended", "showing_no_show", "tour_stop_rated", "viewed"],
@@ -454,7 +456,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   closing_disclosure_agreement: {
     non_cda_payout_method: ["check", "direct_deposit"],
-    sent_to_title_method: ["docusign", "dotloop", "email", "manual"],
+    sent_to_title_method: ["docusign", "dotloop", "email", "manual", "portal"],
     status: ["approved", "awaiting_preliminary_cd", "cancelled", "changes_requested", "drafting", "pending", "rejected", "submitted"],
   },
   closing_disclosure_agreement_revisions: {
@@ -889,7 +891,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     adjustment_type: ["charity_donation", "custom", "first_responder", "military", "relocation", "repeat_client"],
     adjustment_value_type: ["flat", "percent"],
     agreement_type: ["buyer_representation", "dual_agency", "listing", "representation"],
-    esign_status: ["declined", "fully_signed", "partially_signed", "pending", "sent", "voided"],
+    esign_status: ["compliance_approved", "compliance_pending", "correction_required", "declined", "expired", "fully_executed", "fully_signed", "partially_signed", "pending", "sent", "voided"],
     upload_mode: ["manual_upload", "provider_pull"],
   },
   listing_health_interventions: {
@@ -927,7 +929,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     priority: ["high", "low", "medium"],
   },
   listings: {
-    legal_description_source: ["agent", "rentcast"],
+    legal_description_source: ["agent", "listing", "public_record", "rentcast"],
     lifecycle_stage: ["AGENT_CONSULTATION", "APPOINTMENT_SET", "APPRAISAL", "CLOSED", "CLOSING_PREP", "CMA_GENERATION", "COMING_SOON_ACTIVE", "COMING_SOON_PREP", "FINANCING", "INSPECTION", "LEAD", "LEAD_ASSIGNED", "LIFETIME_CUSTOMER", "LISTING_AGREEMENT_INITIATED", "LISTING_AGREEMENT_SIGNED", "LISTING_CANCELLED", "LISTING_EXPIRED", "LISTING_PRESENTATION_CREATED", "MEDIA_APPROVED", "MEDIA_CAPTURE", "MLS_ACTIVE", "MLS_DATE_CONFIRMED", "MLS_READY", "NEGOTIATION", "OFFERS_RECEIVED", "OPEN_HOUSE_EVENT", "OPEN_HOUSE_MARKETING", "PRESENTATION_DRIP_PREP", "PRESENTATION_VIDEO_GENERATED", "REPAIRS_IN_PROGRESS", "SELLER_DECISION", "SELLER_DECLINED", "SHOWINGS_ACTIVE", "UNDER_CONTRACT"],
     property_type: ["commercial", "condo", "land", "multi_family", "other", "single_family", "townhouse"],
     status: ["active", "cancelled", "coming_soon", "draft", "expired", "listing_signed", "off_market", "pending", "sold", "withdrawn"],
@@ -1118,7 +1120,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     commission_disclosure_method: ["click_through", "docusign", "dotloop", "wet_signature"],
     disclosed_commission_payer: ["buyer", "either", "seller", "split"],
     esign_provider: ["authentisign", "docusign", "dotloop", "formsimplicity", "google_esign", "in_app", "skyslope"],
-    esign_status: ["declined", "fully_signed", "partially_signed", "pending", "sent", "voided"],
+    esign_status: ["compliance_approved", "compliance_pending", "correction_required", "declined", "expired", "fully_executed", "fully_signed", "partially_signed", "pending", "sent", "voided"],
     form_source: ["authentisign", "docusign", "dotloop", "in_app", "manual", "portal_upload", "skyslope"],
     offer_type: ["backup", "counter", "multiple_counter", "standard"],
     seller_response_type: ["accepted", "countered", "rejected"],
@@ -1626,7 +1628,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   transactions: {
     commission_final_source: ["cd_uploaded", "cda_signed"],
     deal_type: ["buyer", "dual", "seller"],
-    legal_description_source: ["agent", "rentcast"],
+    legal_description_source: ["agent", "listing", "public_record", "rentcast"],
     source_family: ["contact_direct", "lead", "raw"],
     stage: ["APPRAISAL", "CLOSED", "CLOSING_PREP", "FINANCING_PENDING", "INSPECTION", "LOST", "UNDER_CONTRACT"],
     status: ["active", "archived", "clear_to_close", "closed", "funded", "lead", "lost", "pending", "qualifying", "under_contract"],
@@ -1652,7 +1654,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   users: {
     platform_role: ["admin", "ai_isa_system", "marketing", "superadmin", "support"],
-    user_type: ["admin", "agent", "broker", "broker_admin", "broker_owner", "compliance_officer", "contact", "isa", "superadmin", "support", "system", "tc", "team_lead", "vendor"],
+    user_type: ["admin", "agent", "broker", "broker_admin", "broker_owner", "compliance_officer", "contact", "isa", "support", "system", "tc", "team_lead", "vendor"],
   },
   valuation_requests: {
     condition: ["excellent", "fair", "good", "poor"],

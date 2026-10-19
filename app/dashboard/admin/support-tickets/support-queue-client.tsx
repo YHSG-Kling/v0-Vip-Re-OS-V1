@@ -65,6 +65,14 @@ function AdminTicketThread({ ticketId }: { ticketId: string }) {
               {thread.requesterName && (
                 <p className="text-xs text-muted-foreground">Raised by {thread.requesterName}</p>
               )}
+              {thread.triage && (
+                <p className="rounded border border-indigo-200 bg-indigo-50/40 px-2 py-1 text-[11px] text-indigo-700">
+                  AI triage: {thread.triage.category ?? "—"} · {thread.triage.priority ?? "—"}
+                  {thread.triage.summary ? ` — ${thread.triage.summary}` : ""}
+                  {thread.triage.answerDelivered ? " · submitter pointed to help articles" : ""}
+                  {thread.triage.needsHuman ? " · a person owes the reply" : ""}
+                </p>
+              )}
               {thread.messages.length === 0 ? (
                 <p className="text-xs text-muted-foreground">No replies yet.</p>
               ) : thread.messages.map((m) => (

@@ -286,7 +286,11 @@ console.log("\n[3 · promotion writers — contact_type and lifecycle_state are 
 // customers in silence (CLAUDE.md §3 — supabase-js RESOLVES refusals). The
 // invariant lives at the writers instead, and this is what keeps it there.
 const PROMOTION_WRITERS = [
-  "lib/kernel/transactions.ts",
+  // 2026-10-19 (wave 142, lane 142C): the transaction-close promotion MOVED from
+  // lib/kernel/transactions.ts closeTransactionCommand onto the ONE lifetime writer
+  // lib/kernel/lifetime-conversion.ts promoteDealContactsToLifetime (shared with the payout release) —
+  // the promotion write lives there now; closeTransactionCommand calls it.
+  "lib/kernel/lifetime-conversion.ts",
   "lib/transactions/stage-progression.ts",
   // 2026-09-09 (wave 46): handleSellerToLifetimeTransition MOVED from
   // app/actions/listing-lifecycle-core.ts onto the surviving stage writer's module when the

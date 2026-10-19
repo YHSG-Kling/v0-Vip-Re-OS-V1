@@ -324,7 +324,7 @@ export default async function MobileAssistantPage() {
                   placeholder="Enter property address..."
                   className="flex-1 min-h-[44px]"
                 />
-                <Button type="submit" size="icon" className="min-h-[44px] min-w-[44px]">
+                <Button type="submit" size="icon" className="min-h-[44px] min-w-[44px]" aria-label="Search">
                   <Search className="h-4 w-4" />
                 </Button>
               </form>

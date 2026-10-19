@@ -417,14 +417,14 @@ export default function PropertySearchContent() {
                 <Button
                   variant={viewMode === "grid" ? "default" : "outline"}
                   size="icon"
-                  onClick={() => setViewMode("grid")}
+                  aria-label="Grid view" aria-pressed={viewMode === "grid"} onClick={() => setViewMode("grid")}
                 >
                   <Grid3x3 className="h-4 w-4" />
                 </Button>
                 <Button
                   variant={viewMode === "list" ? "default" : "outline"}
                   size="icon"
-                  onClick={() => setViewMode("list")}
+                  aria-label="List view" aria-pressed={viewMode === "list"} onClick={() => setViewMode("list")}
                 >
                   <List className="h-4 w-4" />
                 </Button>
@@ -462,7 +462,7 @@ export default function PropertySearchContent() {
                         variant="secondary"
                         size="icon"
                         className="absolute top-2 right-2"
-                        onClick={() => handleSaveProperty(property)}
+                        aria-label="Save property" onClick={() => handleSaveProperty(property)}
                       >
                         <Heart className="h-4 w-4" />
                       </Button>

@@ -347,7 +347,7 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels, initialEpi
                   </div>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon-sm" className="shrink-0">
+                      <Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="Episode actions">
                         <MoreVertical className="h-4 w-4" />
                       </Button>
                     </DropdownMenuTrigger>

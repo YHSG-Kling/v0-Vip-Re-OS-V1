@@ -33,6 +33,8 @@ import {
 } from "@/lib/kernel/listings"
 import { isValidUUID } from "@/lib/validations"
 import { getCatalogEntry } from "@/lib/integrations/providers/catalog"
+import type { EsignPacketState } from "@/lib/esign/packet-states"
+import { recordEsignPacketHop } from "@/lib/esign/packet-state-writer"
 
 // ─── Auth context helper ──────────────────────────────────────────────────────
 
@@ -1206,6 +1208,66 @@ export async function sendListingAgreementForSignatureAction(params: {
     .select("id")
     .maybeSingle()
   if (docErr) warnings.push(`the listing-agreement record was not written (${docErr.message})`)
+
+  // THE AGREEMENT ROW THE WEBHOOKS MATCH (wave 142, lane 142B — UNWIRED at HEAD): the provider webhooks'
+  // ready-write stamps a listing agreement, moves the listing to LISTING_AGREEMENT_SIGNED and starts the
+  // compliance loop ONLY through a `listing_agreements` row (provider_ref = the envelope, or listing_id —
+  // lib/forms/esign-execution-loop.ts applyReadyWrites), and this send wrote none: the only insert in the
+  // tree was the HUMAN markAgreementSigned. A wizard-sent agreement that came back signed therefore never
+  // moved its listing. One open row per listing: a re-send re-points it to the new envelope. The packet
+  // state is the owner's ladder (lib/esign/packet-states.ts): `sent` when the provider emailed the
+  // signers, `pending` while it waits on the agent's window. Written AFTER the dispatch — a refusal is a
+  // warning on the record, never a failed send (a retry would cut a second envelope).
+  const agreementStatus: EsignPacketState = dispatch.status === "sent" ? "sent" : "pending"
+  const { data: openAgreement, error: openAgreementErr } = await svc
+    .from("listing_agreements")
+    .select("id")
+    .eq("brokerage_id", ctx.brokerageId)
+    .eq("listing_id", listing.id as string)
+    .is("fully_executed_at", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (openAgreementErr) {
+    warnings.push(`the listing agreement row could not be read (${openAgreementErr.message}) — the signed copy will not move the listing automatically`)
+  } else if (openAgreement?.id) {
+    const { data: repointed, error: repointErr } = await svc
+      .from("listing_agreements")
+      .update({ provider_name: dispatch.providerName ?? null, provider_ref: dispatch.envelopeId ?? null, esign_status: agreementStatus, upload_mode: "provider_pull", updated_at: new Date().toISOString() })
+      .eq("id", openAgreement.id as string)
+      .eq("brokerage_id", ctx.brokerageId)
+      .select("id")
+    if (repointErr) warnings.push(`the listing agreement row was not updated with the envelope (${repointErr.message})`)
+    else if ((repointed ?? []).length === 0) warnings.push("the listing agreement row matched no row (wrong tenant?)")
+  } else {
+    const { error: agreementInsertErr } = await svc
+      .from("listing_agreements")
+      .insert({
+        listing_id:                listing.id,
+        brokerage_id:              ctx.brokerageId,
+        seller_contact_id:         listing.seller_contact_id ?? null,
+        agent_user_id:             ctx.userId,
+        agreement_type:            "listing",
+        upload_mode:               "provider_pull",
+        provider_name:             dispatch.providerName ?? null,
+        provider_ref:              dispatch.envelopeId ?? null,
+        document_name:             docs[0]?.name ?? null,
+        esign_status:              agreementStatus,
+        commission_is_flat_fee:    false,
+        has_commission_adjustment: false,
+        compliance_passed:         false,
+      })
+    if (agreementInsertErr) warnings.push(`the listing agreement row was not created (${agreementInsertErr.message}) — the signed copy will not move the listing automatically`)
+  }
+  // THE SENT / STAGED HOP (owner: "notifications at every hop (sent, …)"): evidence + the agent's deduped
+  // bell for the agreement state just written; a refusal (no row landed above) is logged, never a failed send.
+  {
+    const hop = await recordEsignPacketHop(svc as any, {
+      brokerageId: ctx.brokerageId, record: { table: "listing_agreements", listingId: listing.id as string },
+      state: agreementStatus, source: "ui", actorUserId: ctx.userId, provider: dispatch.providerName ?? null, envelopeId: dispatch.envelopeId ?? null,
+    })
+    if (!hop.ok) console.error(`[listings-kernel] listing ${listing.id} agreement ${agreementStatus} hop not recorded: ${hop.reason}`)
+  }
 
   revalidatePath(`/dashboard/listings/${listing.id}`)
   return {

@@ -123,7 +123,7 @@ export function MentorshipClient({ agentId, brokerageId, initialMentor, graduati
     <div className="max-w-2xl mx-auto p-6 space-y-6">
       <div className="flex items-center gap-3">
         <Link href="/dashboard/onboarding">
-          <Button variant="ghost" size="icon">
+          <Button variant="ghost" size="icon" aria-label="Back">
             <ArrowLeft className="h-4 w-4" />
           </Button>
         </Link>

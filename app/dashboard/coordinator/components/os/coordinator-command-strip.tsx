@@ -121,7 +121,7 @@ export function CoordinatorCommandStrip({ brokerageId }: CoordinatorCommandStrip
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {BUCKETS.map((bucket) => {
             const Icon = bucket.icon
             const count = items.filter(bucket.match).length

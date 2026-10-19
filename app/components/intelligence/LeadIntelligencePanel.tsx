@@ -318,7 +318,7 @@ export default function LeadIntelligencePanel({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-4 gap-4 text-sm bg-muted/50 p-4 rounded-lg">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm bg-muted/50 p-4 rounded-lg">
                   <div>
                     <span className="text-muted-foreground text-xs">Beds:</span>
                     <p className="font-medium text-lg">{property.property_details?.bedrooms || "N/A"}</p>

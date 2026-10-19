@@ -87,7 +87,9 @@ const SYSTEM_DEFAULTS: Record<string, string> = {
   calendar:    "google",
   payment:     "stripe",
   esign:       DEFAULT_ESIGN_PROVIDER,   // the catalog's ONE default (mirrors lib/kernel/providers.ts; DocuSign since wave 89)
-  transaction: "dotloop",
+  // TOMBSTONE (wave 142, lane 142I): `transaction: "dotloop"` deleted here as in the kernel table
+  // (lib/kernel/providers.ts SYSTEM_DEFAULTS) — the legal-forms provider has no platform default; an empty
+  // pick is refused by name through providerSelectionVerdict below, never silently stored as Dotloop.
   ai:          "anthropic",
   direct_mail: "lob",
   video:       "did",

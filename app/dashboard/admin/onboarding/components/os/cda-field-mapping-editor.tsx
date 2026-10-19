@@ -184,7 +184,7 @@ export function CdaFieldMappingEditor({
             sources auto-fill; agent inputs are typed at closing.
           </p>
         </div>
-        <Button variant="ghost" size="icon" onClick={onClose}><X className="h-4 w-4" /></Button>
+        <Button variant="ghost" size="icon" aria-label="Close" onClick={onClose}><X className="h-4 w-4" /></Button>
       </div>
 
       <div className="flex items-center gap-2">

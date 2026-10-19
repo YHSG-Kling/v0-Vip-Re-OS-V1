@@ -52,17 +52,32 @@ import { requireAuth } from "@/lib/kernel/api-auth"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { revalidatePath } from "next/cache"
-import { canApproveCda, canBrokerSignCda, canSendCdaToTitle } from "@/lib/transactions/cda-signing-policy"
+import { CDA_APPROVE_ROLES, canApproveCda, canBrokerSignCda, canSendCdaToTitle } from "@/lib/transactions/cda-signing-policy"
+import {
+  PRELIMINARY_STATEMENT_DOC_TYPES,
+  nextPreliminaryStatementVersion,
+  reviewOnNewStatementVersion,
+  reviewOnCorrectionRequested,
+  reviewOnConfirmed,
+  cdaFigureGate,
+  preliminaryReviewOf,
+  comparePreliminaryStatementFigures,
+  describePreliminaryDiscrepancies,
+  cdaDeliveryRoute,
+  deliveryIdempotency,
+  type PreliminaryDiscrepancy,
+  type StatementFigures,
+} from "@/lib/transactions/cda-closing-policy"
 import { buildCdaContractVerdict, buildCdaFeeDeduction, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy, type CdaFeeDeduction } from "@/lib/commission/cda-discrepancy"
 import { bestEffort } from "@/lib/db/best-effort"
 
-const COMPLIANCE_ROLES = new Set([
-  "compliance_officer",
-  "admin",
-  "broker",
-  "broker_admin",
-  "superadmin",
-])
+// ONE ROSTER (wave 142, lane 142C): the seats that may APPROVE a CDA are the seats that may send it
+// back, override, close the file and review the preliminary statement —
+// lib/transactions/cda-signing-policy.ts CDA_APPROVE_ROLES. The local literal this replaces restated
+// it MINUS broker_owner (the brokerage's owner could not send a CDA back or close the file) and PLUS
+// 'superadmin', which is dead as a users.user_type (0 live rows; platform staff live in platform_role
+// and are never fallen back to it — wave 141 ruling, m780 live).
+const COMPLIANCE_ROLES = CDA_APPROVE_ROLES
 
 type CdaAction =
   | "drafted"
@@ -263,27 +278,48 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
 
   if (!agent?.user_id) return { success: false as const, error: "agent_user_not_found" }
 
+  // ── VERSIONING (wave 142, lane 142C; owner: "attach to the transaction with versioning … revised
+  // official statement → version retained"). Every statement upload is its own transaction_documents
+  // row; the CDA points at the LATEST (preliminary_cd_document_id) and carries the review state of
+  // that version in field_values.preliminary_statement, with every prior version's terminal state
+  // kept in its history. A revised statement re-opens the review (pending_review) — a correction
+  // request is never left standing against a document that was replaced.
+  const { data: priorStatements, error: priorStatementsErr } = await supabase
+    .from("transaction_documents")
+    .select("id, doc_type")
+    .eq("transaction_id", input.transactionId)
+    .eq("brokerage_id", txn.brokerage_id)
+    .in("doc_type", [...PRELIMINARY_STATEMENT_DOC_TYPES])
+    .neq("id", input.documentId)
+  if (priorStatementsErr) console.error("[cda-portal] prior statement read refused — version counted from 1:", priorStatementsErr.message)
+  const statementVersion = nextPreliminaryStatementVersion(priorStatements ?? [])
+  const receivedAt = new Date().toISOString()
+
   // Find or create the CDA row.
   const { data: existing } = await supabase
     .from("closing_disclosure_agreement")
-    .select("id, revision_number")
+    .select("id, revision_number, field_values")
     .eq("transaction_id", input.transactionId)
     .maybeSingle()
 
   let cdaId: string
   if (existing) {
+    const priorValues = ((existing as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
+    const review = reviewOnNewStatementVersion(preliminaryReviewOf(priorValues), { version: statementVersion, documentId: input.documentId, at: receivedAt })
     const { error: prelimCdErr } = await supabase
       .from("closing_disclosure_agreement")
       .update({
-        preliminary_cd_uploaded_at: new Date().toISOString(),
+        preliminary_cd_uploaded_at: receivedAt,
         preliminary_cd_document_id: input.documentId,
         preliminary_cd_uploaded_by: auth.userId,
+        field_values: { ...priorValues, preliminary_statement: review },
         // Don't downgrade status if the agent already started drafting.
       })
       .eq("id", existing.id)
     if (prelimCdErr) return { success: false as const, error: `Could not record the preliminary CD upload: ${prelimCdErr.message}` }
     cdaId = existing.id
   } else {
+    const review = reviewOnNewStatementVersion(null, { version: statementVersion, documentId: input.documentId, at: receivedAt })
     const { data: created, error } = await supabase
       .from("closing_disclosure_agreement")
       .insert({
@@ -291,9 +327,10 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
         brokerage_id: txn.brokerage_id,
         agent_id: agent.id,
         status: "pending",
-        preliminary_cd_uploaded_at: new Date().toISOString(),
+        preliminary_cd_uploaded_at: receivedAt,
         preliminary_cd_document_id: input.documentId,
         preliminary_cd_uploaded_by: auth.userId,
+        field_values: { preliminary_statement: review },
         revision_number: 1,
       })
       .select("id")
@@ -301,6 +338,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     if (error || !created) return { success: false as const, error: error?.message ?? "create_failed" }
     cdaId = created.id
   }
+  const versionLabel = statementVersion > 1 ? ` (revised statement, version ${statementVersion})` : ""
 
   // Keep-one: closing_notifications was a write-only ledger (nothing reads it);
   // `notifications` below is the canonical in-app surface and already carries
@@ -314,8 +352,8 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     user_id: agent.user_id,
     brokerage_id: txn.brokerage_id,
     type: "preliminary_cd_received",
-    title: "Preliminary CD ready",
-    body: `Preliminary CD uploaded${txn.property_address ? ` for ${txn.property_address}` : ""}. Draft your CDA now.`,
+    title: statementVersion > 1 ? "Revised preliminary statement received" : "Preliminary CD ready",
+    body: `Preliminary CD uploaded${txn.property_address ? ` for ${txn.property_address}` : ""}${versionLabel}. ${statementVersion > 1 ? "Review the corrected figures against the executed contract and the waterfall." : "Draft your CDA now."}`,
     entity_type: "transaction",
     entity_id: input.transactionId,
     priority: "high",
@@ -330,11 +368,11 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     agent_id: txn.agent_id,
     entity_type: "transaction",
     activity_type: "preliminary_cd_received",
-    title: "Preliminary CD received",
-    description: "TC / title uploaded the preliminary closing disclosure. CDA draft required.",
+    title: statementVersion > 1 ? `Preliminary statement received — version ${statementVersion}` : "Preliminary CD received",
+    description: `TC / title uploaded the preliminary closing disclosure${versionLabel}. ${statementVersion > 1 ? "Review it against the executed contract + waterfall." : "CDA draft required."}`,
     priority: "high",
     status: "pending",
-    notes: JSON.stringify({ cda_id: cdaId, document_id: input.documentId }),
+    notes: JSON.stringify({ cda_id: cdaId, document_id: input.documentId, version: statementVersion }),
   })
   if (prelimCdActivityError) {
     console.error("[cdaPortal] preliminary_cd_received activity REJECTED — the CDA-required step will not appear on the transaction:", prelimCdActivityError.message)
@@ -404,12 +442,12 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
       contactId:       (txnFull as any)?.contact_id        ?? undefined,
       agentUserId:     auth.userId,
       actorUserId:     auth.userId,
-      metadata:        { cdaId, documentId: input.documentId },
+      metadata:        { cdaId, documentId: input.documentId, version: statementVersion },
     })
   } catch { /* fan-out is best-effort; agent + TC already notified above */ }
 
   revalidatePath(`/dashboard/transactions/${input.transactionId}`)
-  return { success: true as const, cdaId }
+  return { success: true as const, cdaId, version: statementVersion }
 }
 
 // ─── 2. Agent draft / update ─────────────────────────────────────────────────
@@ -762,7 +800,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
     .select(
-      "id, transaction_id, brokerage_id, agent_id, status, agent_signed_off_at, revision_number, signature_check_passed, manual_override_by, gross_commission, agent_net",
+      "id, transaction_id, brokerage_id, agent_id, status, agent_signed_off_at, revision_number, signature_check_passed, manual_override_by, gross_commission, agent_net, field_values",
     )
     .eq("id", input.cdaId)
     .maybeSingle()
@@ -778,6 +816,12 @@ export async function approveCdaAction(input: { cdaId: string }) {
   // Shared state-machine gate (compliance role + submitted status + agent e-signed).
   const approveVerdict = canApproveCda({ status: cda.status, agentSignedOff: !!cda.agent_signed_off_at, role: auth.userType })
   if (!approveVerdict.ok) return { success: false as const, error: approveVerdict.error }
+  // FIGURE GATE (wave 142, lane 142C; owner: "broker cannot approve a CDA on unresolved inaccurate
+  // figures"): a correction request against the title company's preliminary statement is still open —
+  // the revised official statement has not arrived — so the disbursement cannot be authorized against
+  // figures everyone agrees are wrong. No override: the fix is title's corrected statement.
+  const figureGate = cdaFigureGate(preliminaryReviewOf((cda as { field_values?: Record<string, unknown> | null }).field_values))
+  if (!figureGate.ok) return { success: false as const, error: figureGate.error }
   // Approval gate — required signatures/initials must be present on every
   // transaction document, OR a compliance manager must have invoked manual
   // override (with a logged reason). signature_check_passed === null is
@@ -1338,11 +1382,16 @@ export async function manualOverrideCdaAction(input: { cdaId: string; reason: st
 
 export async function sendCdaToTitleAction(input: {
   cdaId:           string
-  recipientEmail:  string
+  /** Required for method 'email'; ignored for 'portal' (the title company's portal account is the recipient). */
+  recipientEmail?: string
   recipientName?:  string
-  method?:         "email" | "docusign" | "dotloop" | "manual"
+  /** 'portal' = the title company on the Deal Team (a title_company_users account for this transaction) — wave 142. */
+  method?:         "email" | "portal" | "docusign" | "dotloop" | "manual"
   subject?:        string
   message?:        string
+  /** A delivery already recorded is never repeated on retry; an explicit re-send needs a reason (≥ 5 chars). */
+  resend?:         boolean
+  resendReason?:   string
 }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
@@ -1353,7 +1402,7 @@ export async function sendCdaToTitleAction(input: {
   // see the body composition note further down.
   const { data: cda, error: cdaReadErr } = await supabase
     .from("closing_disclosure_agreement")
-    .select("id, transaction_id, brokerage_id, status, broker_approved_at, gross_commission, agent_net, brokerage_net")
+    .select("id, transaction_id, brokerage_id, status, broker_approved_at, gross_commission, agent_net, brokerage_net, sent_to_title_at, sent_to_title_recipient, generated_pdf_url, field_values")
     .eq("id", input.cdaId)
     .maybeSingle()
   // A refused read is not "no such CDA" — supabase-js resolves refusals, and
@@ -1369,6 +1418,36 @@ export async function sendCdaToTitleAction(input: {
   // signed before submit → compliance approved → broker signed → then sent).
   const sendVerdict = canSendCdaToTitle({ status: cda.status, brokerSigned: !!cda.broker_approved_at })
   if (!sendVerdict.ok) return { success: false as const, error: sendVerdict.error }
+
+  // ── NEVER DUPLICATE A DELIVERY ON RETRY (wave 142, lane 142C) ───────────────
+  // A recorded delivery (sent_to_title_at) is the record; a retry of the same send is refused by
+  // name with the prior recipient and time. An explicit re-send (a bounced address, a new closer)
+  // needs a reason and is recorded as such on the delivery activity.
+  const method = input.method ?? "email"
+  const idem = deliveryIdempotency({
+    sentToTitleAt: (cda as { sent_to_title_at?: string | null }).sent_to_title_at ?? null,
+    sentRecipient: (cda as { sent_to_title_recipient?: string | null }).sent_to_title_recipient ?? null,
+    recipient: input.recipientEmail ?? "portal",
+    resend: input.resend,
+    resendReason: input.resendReason ?? null,
+  })
+  if (!idem.ok) {
+    return { success: false as const, error: `${idem.error}: delivered to ${(cda as { sent_to_title_recipient?: string | null }).sent_to_title_recipient ?? "title"} at ${(cda as { sent_to_title_at?: string | null }).sent_to_title_at} — pass resend with a reason to send again` }
+  }
+
+  // ── THE ROUTE (wave 142): title on the Deal Team → the portal inbox; outside → the verified email.
+  let portalUser: { userId: string; email: string | null; company: string | null } | null = null
+  if (method === "portal") {
+    portalUser = await resolveTitlePortalUser(supabase, cda.transaction_id, cda.brokerage_id)
+    const route = cdaDeliveryRoute({ titlePortalUserId: portalUser?.userId ?? null, requested: "portal" })
+    if (route.route !== "portal") return { success: false as const, error: route.reason }
+    if (!(cda as { generated_pdf_url?: string | null }).generated_pdf_url) {
+      return { success: false as const, error: "no_signed_cda_pdf: generate the filled CDA PDF before delivering it to the title portal" }
+    }
+  } else if (method === "email") {
+    const route = cdaDeliveryRoute({ titleEmail: input.recipientEmail ?? null, requested: "email" })
+    if (route.route !== "email") return { success: false as const, error: route.reason }
+  }
 
   // ── THE AUTHORIZATION NOW CARRIES THE DISBURSEMENT (§1 merge, wave 26) ─────
   // The subject line has always said "Approved Commission Disbursement
@@ -1408,7 +1487,8 @@ export async function sendCdaToTitleAction(input: {
       + `</ul>`
   }
 
-  const method = input.method ?? "email"
+  // TRACKED STATUS (wave 142): what the provider / the portal said happened, recorded beside the send.
+  let deliveryEvidence: Record<string, unknown> = { method, resend: idem.resend, resend_reason: idem.resend ? (input.resendReason ?? null) : null }
   // ── A SWALLOWED SEND IS NOT A DELIVERY (wave 26) ──────────────────────────
   // This used to be `try { await dispatchEmail(...) } catch {}` with the result
   // discarded, and then stamped sent_to_title_at unconditionally below. A send
@@ -1428,7 +1508,7 @@ export async function sendCdaToTitleAction(input: {
         brokerageId:   cda.brokerage_id,
         systemSource:  "cda",
         from:          "closings@platform.com",
-        to:            input.recipientEmail,
+        to:            input.recipientEmail as string,
         subject:       input.subject ?? "Approved Commission Disbursement Authorization",
         html:          (input.message ?? "")
                        + disbursementHtml
@@ -1441,6 +1521,8 @@ export async function sendCdaToTitleAction(input: {
       emailOk = (sendResult as { success?: boolean } | null)?.success === true
       if (!emailOk) {
         emailErr = (sendResult as { error?: string } | null)?.error ?? "provider reported failure"
+      } else {
+        deliveryEvidence = { ...deliveryEvidence, provider: (sendResult as { providerKey?: string }).providerKey ?? null, message_id: (sendResult as { messageId?: string }).messageId ?? null, state: "accepted_by_provider" }
       }
     } catch (e) {
       emailErr = e instanceof Error ? e.message : String(e)
@@ -1453,10 +1535,53 @@ export async function sendCdaToTitleAction(input: {
     }
   }
 
+  // ── THE PORTAL INBOX (wave 142): the signed CDA becomes a document the title portal lists
+  // (app/actions/title-portal.ts getTitlePortalData reads doc_type 'cda') and a bell on the title
+  // company's own account — evidence of WHAT was delivered to WHOM, not an email in flight.
+  if (method === "portal" && portalUser) {
+    const { data: portalDoc, error: portalDocErr } = await supabase
+      .from("transaction_documents")
+      .insert({
+        transaction_id: cda.transaction_id,
+        brokerage_id:   cda.brokerage_id,
+        doc_type:       "cda",
+        doc_label:      "Commission Disbursement Authorization — approved and signed",
+        storage_url:    (cda as { generated_pdf_url?: string | null }).generated_pdf_url,
+        status:         "approved",
+        uploaded_by:    auth.userId,
+        uploaded_at:    new Date().toISOString(),
+        metadata:       { cda_id: cda.id, delivered_to_title_user_id: portalUser.userId },
+      })
+      .select("id")
+      .single()
+    if (portalDocErr || !portalDoc) {
+      return { success: false as const, error: `delivery_failed:portal document not recorded (${portalDocErr?.message ?? "no row"})` }
+    }
+    const { error: portalBellErr } = await supabase.from("notifications").insert({
+      user_id:      portalUser.userId,
+      brokerage_id: cda.brokerage_id,
+      type:         "cda_delivered_portal",
+      title:        "Commission Disbursement Authorization delivered",
+      body:         `The brokerage's approved and signed CDA for this closing is in your portal documents.${figuresKnown ? " It states the disbursement figures." : ""}`,
+      entity_type:  "transaction",
+      entity_id:    cda.transaction_id,
+      priority:     "high",
+      channel:      "in_app",
+    })
+    if (portalBellErr) {
+      // The document IS in the portal (the delivery); the bell is the heads-up. Logged, not hidden.
+      console.error("[cda-portal] title portal bell refused — the CDA is in the portal documents but the title user was not pinged:", portalBellErr.message)
+    }
+    deliveryEvidence = { ...deliveryEvidence, portal_document_id: portalDoc.id, title_user_id: portalUser.userId, state: portalBellErr ? "document_delivered_bell_refused" : "document_delivered_and_notified" }
+  }
+
   const sentNow = new Date().toISOString()
-  const recipient = input.recipientName
-    ? `${input.recipientName} <${input.recipientEmail}>`
-    : input.recipientEmail
+  const recipient = method === "portal" && portalUser
+    ? `portal:${portalUser.email ?? portalUser.company ?? portalUser.userId}`
+    : input.recipientName
+      ? `${input.recipientName} <${input.recipientEmail}>`
+      : (input.recipientEmail as string)
+  const priorSendValues = ((cda as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
 
   // THE RECORD OF THE SEND. This write used to also set status:"delivered" — a value the
   // live CHECK constraint (closing_disclosure_agreement_status_check: awaiting_preliminary_cd,
@@ -1473,7 +1598,10 @@ export async function sendCdaToTitleAction(input: {
     .update({
       sent_to_title_at:        sentNow,
       sent_to_title_recipient: recipient,
+      // 'portal' is admitted by m788 (the lane stamp); until it is applied the CHECK refuses the write
+      // and this action reports delivery_not_recorded — never a silent success.
       sent_to_title_method:    method,
+      field_values:            { ...priorSendValues, title_delivery: { ...deliveryEvidence, recipient, at: sentNow } },
       updated_at:              sentNow,
     })
     .eq("id", cda.id)
@@ -1517,6 +1645,7 @@ export async function sendCdaToTitleAction(input: {
       method,
       grossCommission: figuresKnown ? grossCommission : null,
       figuresIncluded: figuresKnown,
+      delivery: deliveryEvidence,
     }),
     status:         "completed",
     completed_at:   sentNow,
@@ -1777,4 +1906,342 @@ export async function closeCdaAction(input: { cdaId: string }) {
   revalidatePath(`/dashboard/transactions/${row.transaction_id}`)
   revalidatePath(`/dashboard/compliance`)
   return { success: true as const, closedAt: now }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// WAVE 142 (lane 142C) — the preliminary statement review loop, the external-broker return path,
+// and the title-portal identity the delivery routes read. Pure rules in
+// lib/transactions/cda-closing-policy.ts; these are the I/O doors.
+// ────────────────────────────────────────────────────────────────────────────
+
+/** The title company on the DEAL TEAM for this transaction: a title_company_users row with a users account. */
+async function resolveTitlePortalUser(
+  supabase: SupabaseClient,
+  transactionId: string,
+  brokerageId: string,
+): Promise<{ userId: string; email: string | null; company: string | null } | null> {
+  const { data, error } = await supabase
+    .from("title_company_users")
+    .select("user_id, email, company_name")
+    .eq("transaction_id", transactionId)
+    .eq("brokerage_id", brokerageId)
+    .not("user_id", "is", null)
+    .limit(1)
+    .maybeSingle()
+  if (error) { console.error("[cda-portal] title_company_users read refused:", error.message); return null }
+  const row = data as { user_id?: string | null; email?: string | null; company_name?: string | null } | null
+  if (!row?.user_id) return null
+  return { userId: row.user_id, email: row.email ?? null, company: row.company_name ?? null }
+}
+
+/** The verified title email outside the platform (transaction_title_escrow), or null. */
+async function resolveTitleEmail(supabase: SupabaseClient, transactionId: string): Promise<{ email: string | null; name: string | null }> {
+  const { data, error } = await supabase
+    .from("transaction_title_escrow")
+    .select("title_officer_email, title_company_email, escrow_officer_email, title_officer_name, escrow_officer_name")
+    .eq("transaction_id", transactionId)
+    .maybeSingle()
+  if (error) { console.error("[cda-portal] transaction_title_escrow read refused:", error.message); return { email: null, name: null } }
+  const t = data as Record<string, string | null> | null
+  return { email: t?.title_officer_email ?? t?.title_company_email ?? t?.escrow_officer_email ?? null, name: t?.title_officer_name ?? t?.escrow_officer_name ?? null }
+}
+
+/** The actors who review the statement: the assigned agent, the TC, or a compliance/broker seat. */
+async function canReviewPreliminaryStatement(
+  supabase: SupabaseClient,
+  auth: { userId: string; agentId: string | null; userType: string },
+  cda: { transaction_id: string; agent_id: string | null },
+): Promise<boolean> {
+  if (COMPLIANCE_ROLES.has(auth.userType)) return true
+  if (auth.agentId && auth.agentId === cda.agent_id) return true
+  const { data: txn } = await supabase.from("transactions").select("coordinator_id").eq("id", cda.transaction_id).maybeSingle()
+  return !!(txn as { coordinator_id?: string | null } | null)?.coordinator_id && (txn as { coordinator_id?: string | null }).coordinator_id === auth.userId
+}
+
+/**
+ * THE AGENT / TC COMPARED THE TITLE COMPANY'S PRELIMINARY STATEMENT AGAINST THE EXECUTED CONTRACT +
+ * WATERFALL AND FOUND IT WRONG. Owner: "discrepancy documented → correction request to title → revised
+ * official statement → version retained → waterfall reconciled → broker reviews. AI may identify/explain
+ * discrepancies, never fabricate values; never silently alter the title company's document."
+ *
+ * The discrepancies are either DOCUMENTED by the human (items) or IDENTIFIED deterministically from the
+ * figures the human read off the statement (statementFigures vs the transaction's terms + the CDA's
+ * waterfall — comparePreliminaryStatementFigures; no model, nothing invented). The request reaches title
+ * through the title portal when title is on the deal team, else the verified title email; the review
+ * state becomes correction_requested, which BLOCKS approval (cdaFigureGate) until the revised statement
+ * arrives (notifyAgentOfPreliminaryCdAction re-opens the review as pending_review).
+ */
+export async function requestPreliminaryCdCorrectionAction(input: {
+  cdaId: string
+  /** Discrepancies the reviewer documented by hand (field + the two figures). */
+  items?: Array<{ field: string; statementValue: number; expectedValue: number; note?: string }>
+  /** The figures as the reviewer reads them off the statement — compared deterministically against the record. */
+  statementFigures?: StatementFigures
+  message?: string
+}) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+
+  const { data: cda, error: cdaErr } = await supabase
+    .from("closing_disclosure_agreement")
+    .select("id, transaction_id, brokerage_id, agent_id, status, revision_number, field_values, gross_commission, agent_net, brokerage_net")
+    .eq("id", input.cdaId)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
+  if (cdaErr) return { success: false as const, error: `cda_read_refused:${cdaErr.message}` }
+  if (!cda) return { success: false as const, error: "not_found" }
+  if (!(await canReviewPreliminaryStatement(supabase, auth, cda))) return { success: false as const, error: "forbidden" }
+
+  const priorValues = ((cda as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
+  const review = preliminaryReviewOf(priorValues)
+  if (!review) return { success: false as const, error: "no_preliminary_statement_on_file" }
+
+  // IDENTIFY — deterministic: the statement's figures vs the executed contract + the waterfall.
+  const { data: txn } = await supabase
+    .from("transactions")
+    .select("purchase_price, closing_cost_contribution, property_address, agent_id, coordinator_id")
+    .eq("id", cda.transaction_id)
+    .maybeSingle()
+  const t = txn as { purchase_price?: number | null; closing_cost_contribution?: number | null; property_address?: string | null; agent_id?: string | null; coordinator_id?: string | null } | null
+  const expected: StatementFigures = {
+    sales_price: t?.purchase_price ?? null,
+    gross_commission: cda.gross_commission == null ? null : Number(cda.gross_commission),
+    agent_net: cda.agent_net == null ? null : Number(cda.agent_net),
+    brokerage_net: cda.brokerage_net == null ? null : Number(cda.brokerage_net),
+    seller_credits: t?.closing_cost_contribution ?? null,
+  }
+  const identified = input.statementFigures ? comparePreliminaryStatementFigures(input.statementFigures, expected) : { discrepancies: [] as PreliminaryDiscrepancy[], compared: [], unverifiable: [] }
+  const documented: PreliminaryDiscrepancy[] = (input.items ?? [])
+    .filter((i) => i && typeof i.field === "string" && Number.isFinite(i.statementValue) && Number.isFinite(i.expectedValue))
+    .map((i) => {
+      const delta = i.statementValue - i.expectedValue
+      const deltaPct = i.expectedValue === 0 ? 100 : Math.round((Math.abs(delta) / Math.abs(i.expectedValue)) * 1000) / 10
+      return { field: i.field as PreliminaryDiscrepancy["field"], statement: Math.round(i.statementValue), expected: Math.round(i.expectedValue), delta: Math.round(delta), deltaPct, severity: deltaPct >= 5 ? "blocker" : "warning" } as PreliminaryDiscrepancy
+    })
+  const items = [...documented, ...identified.discrepancies.filter((d) => !documented.some((x) => x.field === d.field))]
+  if (items.length === 0) return { success: false as const, error: "no_discrepancy_documented", unverifiable: identified.unverifiable }
+
+  // DELIVER the correction request to title — portal inbox when on the deal team, else the verified email.
+  const now = new Date().toISOString()
+  const lines = describePreliminaryDiscrepancies(items)
+  const portalUser = await resolveTitlePortalUser(supabase, cda.transaction_id, cda.brokerage_id)
+  const titleEmail = portalUser ? { email: null, name: null } : await resolveTitleEmail(supabase, cda.transaction_id)
+  const route = cdaDeliveryRoute({ titlePortalUserId: portalUser?.userId ?? null, titleEmail: titleEmail.email })
+  let delivery: { route: "portal" | "email" | "none"; recipient: string | null; message_id: string | null; at: string } = { route: "none", recipient: null, message_id: null, at: now }
+  const subject = `Correction requested on the preliminary settlement statement${t?.property_address ? ` — ${t.property_address}` : ""}`
+  if (route.route === "portal" && portalUser) {
+    const { error: bellErr } = await supabase.from("notifications").insert({
+      user_id: portalUser.userId,
+      brokerage_id: cda.brokerage_id,
+      type: "preliminary_cd_correction_requested",
+      title: subject,
+      body: `${input.message?.trim() ? `${input.message.trim()} ` : ""}${lines.join(" ")}`.slice(0, 480),
+      entity_type: "transaction",
+      entity_id: cda.transaction_id,
+      priority: "high",
+      channel: "in_app",
+    })
+    if (bellErr) return { success: false as const, error: `delivery_failed:${bellErr.message}` }
+    delivery = { route: "portal", recipient: portalUser.email ?? portalUser.company ?? portalUser.userId, message_id: null, at: now }
+  } else if (route.route === "email" && titleEmail.email) {
+    try {
+      const { dispatchEmail } = await import("@/lib/providers/dispatch")
+      const sendResult = await dispatchEmail({
+        brokerageId: cda.brokerage_id,
+        systemSource: "cda",
+        from: "closings@platform.com",
+        to: titleEmail.email,
+        subject,
+        html: `<p>${input.message?.trim() ? input.message.trim() : "Our review of the preliminary settlement statement against the executed contract found figures that do not agree. Please issue a corrected statement:"}</p><ul>${lines.map((l) => `<li>${l}</li>`).join("")}</ul><p>Reply with the revised official statement; the brokerage's disbursement authorization is held until it arrives.</p>`,
+      })
+      if ((sendResult as { success?: boolean } | null)?.success !== true) {
+        return { success: false as const, error: `delivery_failed:${(sendResult as { error?: string } | null)?.error ?? "provider reported failure"}` }
+      }
+      delivery = { route: "email", recipient: titleEmail.email, message_id: (sendResult as { messageId?: string }).messageId ?? null, at: now }
+    } catch (e) {
+      return { success: false as const, error: `delivery_failed:${e instanceof Error ? e.message : String(e)}` }
+    }
+  }
+  // route 'none': no title recipient is known — the request is RECORDED (approval blocked) and the
+  // caller is told to deliver it by hand; the correction state does not depend on a send.
+
+  const nextReview = reviewOnCorrectionRequested(review, { items, by: auth.userId, at: now, delivery, note: input.message ?? null })
+  const { data: saved, error: saveErr } = await supabase
+    .from("closing_disclosure_agreement")
+    .update({ field_values: { ...priorValues, preliminary_statement: nextReview }, updated_at: now })
+    .eq("id", cda.id)
+    .eq("brokerage_id", auth.brokerageId)
+    .select("id")
+  if (saveErr) return { success: false as const, error: `correction_not_recorded:${saveErr.message}` }
+  if (!saved || saved.length === 0) return { success: false as const, error: "not_found" }
+
+  const { error: activityErr } = await supabase.from("activities").insert({
+    brokerage_id: cda.brokerage_id,
+    transaction_id: cda.transaction_id,
+    agent_id: t?.agent_id ?? cda.agent_id ?? null,
+    entity_type: "transaction",
+    activity_type: "preliminary_cd_correction_requested",
+    title: `Correction requested on the preliminary statement (version ${review.version})`,
+    description: lines.join(" "),
+    priority: "urgent",
+    status: "pending",
+    notes: JSON.stringify({ cda_id: cda.id, version: review.version, items, delivery, unverifiable: identified.unverifiable }),
+  })
+  if (activityErr) console.error("[cda-portal] preliminary_cd_correction_requested activity REJECTED:", activityErr.message)
+
+  // The broker / compliance seats learn at once that approval is blocked on title's correction.
+  const { data: reviewers } = await supabase
+    .from("users")
+    .select("id")
+    .eq("brokerage_id", cda.brokerage_id)
+    .in("user_type", [...CDA_APPROVE_ROLES])
+    .limit(20)
+  for (const u of (reviewers ?? []) as Array<{ id: string }>) {
+    if (u.id === auth.userId) continue
+    await bestEffort(supabase.from("notifications").insert({
+      user_id: u.id,
+      brokerage_id: cda.brokerage_id,
+      type: "preliminary_cd_correction_requested",
+      title: "CDA approval held — statement correction requested",
+      body: `${items.length} discrepanc${items.length === 1 ? "y" : "ies"} documented on the preliminary statement${t?.property_address ? ` for ${t.property_address}` : ""}; approval is blocked until title's revised statement arrives.`,
+      entity_type: "transaction",
+      entity_id: cda.transaction_id,
+      priority: "high",
+      channel: "in_app",
+    }), "the correction request is already recorded; this is only the reviewer heads-up")
+  }
+
+  revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
+  revalidatePath(`/dashboard/compliance`)
+  return { success: true as const, items, delivered: delivery.route !== "none", route: delivery.route, recipient: delivery.recipient, unverifiable: identified.unverifiable, version: review.version }
+}
+
+/** The statement's figures reconcile with the executed contract + waterfall — the version is REVIEWED (the broker may approve). */
+export async function confirmPreliminaryCdReviewAction(input: { cdaId: string; note?: string }) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+
+  const { data: cda, error: cdaErr } = await supabase
+    .from("closing_disclosure_agreement")
+    .select("id, transaction_id, brokerage_id, agent_id, field_values")
+    .eq("id", input.cdaId)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
+  if (cdaErr) return { success: false as const, error: `cda_read_refused:${cdaErr.message}` }
+  if (!cda) return { success: false as const, error: "not_found" }
+  if (!(await canReviewPreliminaryStatement(supabase, auth, cda))) return { success: false as const, error: "forbidden" }
+
+  const priorValues = ((cda as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
+  const review = preliminaryReviewOf(priorValues)
+  if (!review) return { success: false as const, error: "no_preliminary_statement_on_file" }
+  const now = new Date().toISOString()
+  const nextReview = reviewOnConfirmed(review, auth.userId, now, input.note ?? null)
+  const { data: saved, error: saveErr } = await supabase
+    .from("closing_disclosure_agreement")
+    .update({ field_values: { ...priorValues, preliminary_statement: nextReview }, updated_at: now })
+    .eq("id", cda.id)
+    .eq("brokerage_id", auth.brokerageId)
+    .select("id")
+  if (saveErr) return { success: false as const, error: `review_not_recorded:${saveErr.message}` }
+  if (!saved || saved.length === 0) return { success: false as const, error: "not_found" }
+
+  const { error: activityErr } = await supabase.from("activities").insert({
+    brokerage_id: cda.brokerage_id,
+    transaction_id: cda.transaction_id,
+    agent_id: cda.agent_id ?? null,
+    entity_type: "transaction",
+    activity_type: "preliminary_cd_reviewed",
+    title: `Preliminary statement version ${review.version} reconciled with the contract + waterfall`,
+    description: input.note?.trim() || "Figures agree with the executed contract and the commission waterfall.",
+    priority: "medium",
+    status: "completed",
+    completed_at: now,
+    notes: JSON.stringify({ cda_id: cda.id, version: review.version, reviewed_by: auth.userId }),
+  })
+  if (activityErr) console.error("[cda-portal] preliminary_cd_reviewed activity REJECTED:", activityErr.message)
+
+  revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
+  revalidatePath(`/dashboard/compliance`)
+  return { success: true as const, version: review.version }
+}
+
+/**
+ * THE BROKER IS OUTSIDE THE PLATFORM (owner verbatim: "otherwise the agent has to send the document
+ * outside … fill the form out … download it and send it to the broker outside"): the agent delivered
+ * the filled CDA to their managing broker outside VIPAgents (or through a legal-forms provider both
+ * use) and RETURNS THE SIGNED DOCUMENT here. The signed copy on file is the broker's authorization —
+ * never an envelope that was merely sent — so the CDA becomes approved + broker-signed and may go to
+ * title. In-app brokerages never take this door (their broker signs in brokerSignCdaAction).
+ */
+export async function returnExternallySignedCdaAction(input: { cdaId: string; fileName: string; fileUrl: string; signedBy?: string | null }) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  if (!input.fileUrl?.trim() || !input.fileName?.trim()) return { success: false as const, error: "signed_document_required" }
+
+  const { data: cda, error: cdaErr } = await supabase
+    .from("closing_disclosure_agreement")
+    .select("id, transaction_id, brokerage_id, agent_id, status, revision_number, broker_approved_at, field_values")
+    .eq("id", input.cdaId)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
+  if (cdaErr) return { success: false as const, error: `cda_read_refused:${cdaErr.message}` }
+  if (!cda) return { success: false as const, error: "not_found" }
+  if (!(auth.agentId && auth.agentId === cda.agent_id) && !COMPLIANCE_ROLES.has(auth.userType)) return { success: false as const, error: "forbidden" }
+  if ((await loadCdaDispositionRoute(supabase, cda.brokerage_id)) !== "external_form_platform") {
+    return { success: false as const, error: "brokerage_on_platform_use_in_app_broker_signature" }
+  }
+  if (cda.broker_approved_at) return { success: true as const, alreadyRecorded: true }
+  if (cda.status !== "submitted") return { success: false as const, error: `cannot_return_signed_from_status:${cda.status}` }
+
+  const now = new Date().toISOString()
+  const { data: doc, error: docErr } = await supabase
+    .from("transaction_documents")
+    .insert({
+      transaction_id: cda.transaction_id,
+      brokerage_id:   cda.brokerage_id,
+      doc_type:       "cda_signed_external",
+      doc_label:      input.fileName,
+      storage_url:    input.fileUrl,
+      status:         "uploaded",
+      uploaded_by:    auth.userId,
+      uploaded_at:    now,
+      metadata:       { cda_id: cda.id, signed_by: input.signedBy ?? null, signed_outside_platform: true },
+    })
+    .select("id")
+    .single()
+  if (docErr || !doc) return { success: false as const, error: docErr?.message ?? "insert_failed" }
+
+  const priorValues = ((cda as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
+  const { data: saved, error: saveErr } = await supabase
+    .from("closing_disclosure_agreement")
+    .update({
+      status: "approved",
+      broker_approved_at: now,
+      field_values: { ...priorValues, broker_esign: { mode: "external_signed", provider: null, envelope_id: null, document_id: doc.id, signed_by: input.signedBy ?? null, returned_by: auth.userId, at: now } },
+      updated_at: now,
+    })
+    .eq("id", cda.id)
+    .eq("brokerage_id", auth.brokerageId)
+    .select("id")
+  if (saveErr) return { success: false as const, error: `signed_return_not_recorded:${saveErr.message}` }
+  if (!saved || saved.length === 0) return { success: false as const, error: "not_found" }
+
+  await recordRevision({
+    cdaId: cda.id,
+    revisionNumber: cda.revision_number,
+    status: "approved",
+    action: "approved",
+    notes: `Broker signed the CDA OUTSIDE the platform${input.signedBy ? ` (${input.signedBy})` : ""}; the signed copy is on file (transaction document ${doc.id}) — authorized for delivery to the closing agent.`,
+    actedBy: auth.userId,
+  })
+  try {
+    const { finalizeTransactionCommission } = await import("@/lib/commission/finalization")
+    await finalizeTransactionCommission(supabase, cda.transaction_id, "cda_signed")
+  } catch { /* finalization is best-effort */ }
+
+  revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
+  return { success: true as const, documentId: doc.id }
 }

@@ -60,6 +60,12 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { shouldAutoExecuteOffer } from "./offer-execution-state"
+// THE PACKET'S COMPLIANCE HOPS (wave 142, lane 142B; owner: "Provider completion ≠ compliance approval
+// … only after compliance approval: canonical Transaction created (offer)"): the offer's esign_status
+// walks compliance_pending → correction_required | compliance_approved → fully_executed through the
+// ONE writer (ladder-guarded, evidenced, deduped bell). The gate and the driver are unchanged.
+import { advanceEsignPacketState } from "@/lib/esign/packet-state-writer"
+import type { EsignPacketState } from "@/lib/esign/packet-states"
 
 type OfferComplianceTrigger =
   | "agreement_executed"   // both sides signed — the loop's first run
@@ -120,6 +126,10 @@ export async function runOfferComplianceLoop(
     return { outcome: "outside_window", transactionId: null, reason: "offer is not fully executed by both buyer and seller" }
   }
 
+  // ── 2b · THE PACKET ENTERS COMPLIANCE — recorded before the gate runs (the owner's "compliance_pending"). ──
+  const stamp = (to: EsignPacketState, extra: { notify?: boolean; detail?: string | null } = {}) => stampOfferPacket(supabase, brokerageId, offerId, to, params.actorUserId ?? null, extra)
+  await stamp("compliance_pending")
+
   // ── 3 · THE driver → THE gate. Dynamic import: it reaches `server-only` modules the tsx guards cannot load. ──
   let attempted = false, created = false, transactionId: string | undefined, reason: string | undefined
   try {
@@ -144,17 +154,40 @@ export async function runOfferComplianceLoop(
   const meta = ((fresh as { metadata?: Record<string, unknown> | null } | null)?.metadata ?? o.metadata ?? {}) as Record<string, unknown>
   const prior = (meta.compliance_gate ?? {}) as Record<string, unknown>
 
+  // On a pass, compliance_approved is RECORDED (evidence) and fully_executed is ANNOUNCED — one bell for the
+  // one moment the owner names: "only after compliance approval: canonical Transaction created".
   if (created) {
     await writeGateState(supabase, offerId, brokerageId, meta, {
       ...prior, state: "passed", blockers: [], checked_at: new Date().toISOString(), trigger, transaction_id: transactionId ?? null,
     })
+    await stamp("compliance_approved", { notify: false })
+    await stamp("fully_executed", { detail: transactionId ? `Transaction ${transactionId} created.` : null })
     return { outcome: "advanced", transactionId: transactionId ?? null, reason: null }
   }
 
   await writeGateState(supabase, offerId, brokerageId, meta, {
     ...prior, state: "blocked", checked_at: new Date().toISOString(), trigger, reason: reason ?? null,
   })
+  // The deficiency list itself already travelled through notifyComplianceFlag (deduped on the blocker
+  // set, inside the gate) — the hop is recorded without a second bell (owner: "no duplicates").
+  await stamp("correction_required", { notify: false })
   return { outcome: "blocked", transactionId: null, reason: reason ?? null }
+}
+
+/** One packet hop on the offer; a ladder refusal (e.g. a redelivery) is logged, never thrown into the loop. */
+async function stampOfferPacket(
+  supabase: SupabaseClient,
+  brokerageId: string,
+  offerId: string,
+  to: EsignPacketState,
+  actorUserId: string | null,
+  extra: { notify?: boolean; detail?: string | null },
+): Promise<void> {
+  const r = await advanceEsignPacketState(supabase as any, {
+    brokerageId, record: { table: "offers", id: offerId }, to,
+    source: actorUserId ? "ui" : "system", actorUserId, notify: extra.notify, detail: extra.detail ?? null,
+  })
+  if (!r.ok) console.warn(`[offer-compliance-loop] offer ${offerId} packet → ${to} not recorded: ${r.reason}`)
 }
 
 async function writeGateState(

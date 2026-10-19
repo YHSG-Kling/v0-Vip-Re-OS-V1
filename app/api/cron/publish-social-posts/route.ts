@@ -201,6 +201,15 @@ export async function GET(request: Request) {
                 created_at: new Date().toISOString(),
               }), { table: "social_publish_log", flow: "social_publish_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
               if (pr.success) anyOk = true
+              // Wave 142 (lane 142F): the fan-out's YouTube leg records its id on the asset too.
+              if (pr.success && String(acct.platform ?? "").toLowerCase() === "youtube") {
+                const { recordYouTubePublishOnAsset } = await import("@/lib/video/youtube-publish")
+                const rec = await recordYouTubePublishOnAsset(supabase, {
+                  id: post.id, brokerage_id: post.brokerage_id, platform: "youtube",
+                  external_post_id: pr.externalPostId ?? null, media_urls: post.media_urls ?? null, post_brief: post.post_brief ?? null,
+                })
+                if (!rec.ok) console.error(`[publish-social-posts] YouTube id not recorded on the asset for post ${post.id} (fan-out): ${rec.reason}`)
+              }
             } catch (fanErr) {
               await sentinelWrite(supabase, supabase.from("social_publish_log").insert({
                 social_post_id: post.id, brokerage_id: post.brokerage_id, platform: acct.platform,
@@ -268,6 +277,18 @@ export async function GET(request: Request) {
             })
             .eq("id", post.id)
           if (publishedStatusErr) console.error(`[publish-social-posts] post published but NOT marked published (may be re-published): ${publishedStatusErr.message}`)
+
+          // Wave 142 (lane 142F): a YouTube upload's id + url go BACK onto the asset it came from
+          // (ai_video_projects.video_metadata.youtube + marketing_assets.metadata.youtube), so
+          // campaigns, lead magnets and follow-up can reference the published video. Best-effort.
+          if (String(post.platform ?? "").toLowerCase() === "youtube") {
+            const { recordYouTubePublishOnAsset } = await import("@/lib/video/youtube-publish")
+            const rec = await recordYouTubePublishOnAsset(supabase, {
+              id: post.id, brokerage_id: post.brokerage_id, platform: post.platform,
+              external_post_id: publishResult.externalPostId ?? null, media_urls: post.media_urls ?? null, post_brief: post.post_brief ?? null,
+            })
+            if (!rec.ok) console.error(`[publish-social-posts] YouTube id not recorded on the asset for post ${post.id}: ${rec.reason}`)
+          }
 
           // INSERT social_publish_log with publish_status='published'
           await sentinelWrite(supabase, supabase.from("social_publish_log").insert({

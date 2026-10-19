@@ -160,7 +160,9 @@ const ADAPTER_FACTS: Readonly<Record<string, AdapterFacts>> = {
   // Versium is BOTH an identity provider (owner/reverse contact) AND, wave 138, a property-data
   // provider: property_facts routes to it BEHIND BatchData (equal unit price; owner order RentCast →
   // BatchData stands — see CONTACT_PROVIDER_ROUTES.property_facts).
-  versium: { serviceKeys: ["versium"], outputs: "owner/person email + phone append, household financials + demographic/property append", transport: "rest", version: "v2", ledger: "vendor_usage_tracking", booking: "meterVendorSpend (lib/vendor-governance/meter-vendor.ts)", gateway: true },
+  // Wave 142 (142D): + the B2B2C crosswalk (business identity ↔ consumer contact points) and the
+  // full-demographic real-estate / online-presence indicators — audited in lib/external/versium-client.ts.
+  versium: { serviceKeys: ["versium"], outputs: "owner/person email + phone append, household financials + demographic/property append, B2B2C business-identity crosswalk, online-presence / real-estate indicators", transport: "rest", version: "v2", ledger: "vendor_usage_tracking", booking: "meterVendorSpend (lib/vendor-governance/meter-vendor.ts)", gateway: true },
   // ── platform channels (SYSTEM_ONLY_TYPES) ──
   anthropic: { serviceKeys: ["vercel-ai-gateway", "anthropic", "anthropic-managed-agents", "anthropic-status"], aliases: ["ai_gateway", "vercel_ai_gateway", "managed_agents"], outputs: "model completions", transport: "gateway", version: "AI Gateway OpenAI-compatible v1", tenancyKey: "ai_gateway", priceKey: "anthropic_claude", ledger: "ai_tool_usage", booking: "logAIUsage (lib/ai/cost-tracking.ts)", geography: "global", statusUrl: "https://www.vercel-status.com", changelogUrl: "https://docs.anthropic.com/en/release-notes/api", gateway: true, envVars: ["AI_GATEWAY_API_KEY", "ANTHROPIC_API_KEY"] },
   did: { serviceKeys: ["did"], registryKey: "d_id", aliases: ["d_id"], outputs: "avatar video render", transport: "rest", version: "unversioned", priceKey: "did", ledger: "vendor_usage_tracking", booking: "meterVendorSpend (lib/did/index.ts)", geography: "global", gateway: true },

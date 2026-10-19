@@ -45,6 +45,10 @@ import { LIVE_TABLES } from "./live-tables"
 import { MANAGERS, MAINTENANCE_DOMAINS, TABLE_MANAGER } from "../lib/kernel/manager-registry"
 import { createTenantCore, type TenantCreationDeps } from "../lib/kernel/tenant-creation"
 import { normalizeDeclaredAffiliation, declareBrokerageAffiliation, readDeclaredAffiliation, AFFILIATION_FORBIDDEN_KEYS } from "../lib/kernel/brokerage-identity"
+// Wave 142 (lane 142A): the REAL billing orchestrator and the REAL Stripe-side gate run in D7 / D7b with only
+// Stripe itself and the ledger client seamed — the actor the Stripe side is handed is the thing under proof.
+import { handoffSubscriberBillingToBrokerage as orchestrateBillingHandoff } from "../lib/billing/subscriber-billing-handoff"
+import { handoffSubscriberBillingToBrokerage as stripeSideHandoff } from "../lib/billing/subscriber-handoff"
 import {
   requestBrokerageTransfer, recordBrokerageTransferConsent, runBrokerageTransferMigration, cancelBrokerageTransferRequest,
   listBrokerageTransferRequests, transferMigrationComplete, transferStepsPending, memberTargetRole,
@@ -347,17 +351,43 @@ const ledgerRows = (svc: MemClient, action: string) => svc.tables.agent_action_l
 }
 
 // ── D7 · a Stripe-billed source stalls at billing BEFORE archive, then resumes ──
+// THE REAL orchestrator (lib/billing/subscriber-billing-handoff.ts) over THE REAL Stripe-side gate
+// (lib/billing/subscriber-handoff.ts): only the Stripe SDK call and the ledger client are seamed. The
+// actor the Stripe side is HANDED is recorded — wave 142 (owner): the APPROVING brokerage admin, never
+// the subject whose consent runs the migration.
+type StripeStub = () => Promise<{ applied: boolean; skipped: boolean; mode?: "scheduled_cancel" | "cancelled_now"; finalInvoiceId?: string | null }>
+const realBillingDeps = (c: MemClient, s: Spies, actors: Array<string | null>, stripe: StripeStub, over: Partial<BrokerageTransferDeps> = {}) => railDeps(c, s, {
+  billingHandoff: (c2, i) => orchestrateBillingHandoff(c2, i, {
+    stripeSide: async (c3, i3) => {
+      actors.push(i3.actorUserId)
+      const r = await stripeSideHandoff(c3, { sourceBrokerageId: i3.sourceBrokerageId, targetBrokerageId: i3.targetBrokerageId, effectiveAt: i3.effectiveAt, actorUserId: i3.actorUserId ?? "", reason: `brokerage transfer ${i3.transferRequestId}` }, { ledgerClient: c3, endSubscription: stripe, emit: async () => ({}), now: NOW })
+      return r.ok
+        ? { ok: true, evidence: { stripe_mode: r.source.mode, proration: r.source.proration, replay: r.replay, ledger_action: r.evidence.ledgerAction } }
+        : { ok: false, error: r.error, evidence: { stripe_refusal: r.refused } }
+    },
+  }),
+  ...over,
+})
 {
   const { seed, f } = railSeed()
   const svc = memSupabase(seed, { uuidIds: true })
-  const s = spies(); const deps = railDeps(svc, s)
+  const s = spies()
+  const stripeActors: Array<string | null> = []
+  // Stripe answers "not configured" → the handoff stalls for the honest reason.
+  const deps = realBillingDeps(svc, s, stripeActors, async () => ({ applied: false, skipped: true }))
   const req = await requestBrokerageTransfer(svc, { targetBrokerageId: f.T, initiatedByUserId: f.A, subjectEmail: "ivy@team.test", targetRole: "team_lead" }, deps)
   check("a TEAM tenant's owner can be adopted as a team lead", req.ok, req.ok ? "" : req.error)
   const id = req.ok ? req.request.id : ""
   const c = await recordBrokerageTransferConsent(svc, { requestId: id, actor: { userId: f.O2, brokerageId: f.S2, kind: "subject" }, decision: "consent", statement: "Our team consents to joining Harbor Realty.", channel: "settings_ui" }, deps)
   const m = c.ok ? c.migration : null
-  check("BILLING PENDING: the Stripe-billed source stalls at billing_handoff (the Stripe side is lane 141H's — nothing fabricated)", !!m && !m.ok && m.stalledAt === "billing_handoff" && /stripe_handoff_pending/.test(m.error))
+  check("BILLING PENDING: the Stripe-billed source stalls at billing_handoff for the HONEST reason (Stripe unconfigured) — not the actor", !!m && !m.ok && m.stalledAt === "billing_handoff" && /stripe_handoff_pending/.test(m.error) && /not configured/.test(m.error) && !/actor_not_authorized|Only an admin of the adopting/.test(m.error), m && !m.ok ? m.error : "")
+  check("THE ACTOR RULE (wave 142): the consent ran as the SUBJECT, yet the Stripe side was handed the APPROVING target admin (initiated_by_user_id) — never the subject", stripeActors.length === 1 && stripeActors[0] === f.A && !stripeActors.includes(f.O2), stripeActors.join(","))
   const mid = svc.tables.brokerage_transfer_requests.find((r) => r.id === id)!
+  check("the stalled handoff's evidence names the approver and the Stripe refusal", mid.billing_handoff?.ok === false && (mid.billing_handoff as any)?.evidence?.approved_by_user_id === f.A && (mid.billing_handoff as any)?.evidence?.stripe_refusal === "stripe_unconfigured")
+  // POSITIVE CONTROL: the Stripe side's tenancy gate REFUSES a source-side owner as actor — so the pre-fix
+  // rail (handing the subject over) could never have completed a Stripe-linked adoption.
+  const subjectAsActor = await stripeSideHandoff(svc, { sourceBrokerageId: f.S, targetBrokerageId: f.T, effectiveAt: NOW.toISOString(), actorUserId: f.O }, { ledgerClient: svc, endSubscription: async () => ({ applied: true, skipped: false, mode: "scheduled_cancel" as const }), emit: async () => ({}), now: NOW })
+  check("POSITIVE CONTROL: the Stripe side refuses the adopted OWNER as actor (actor_not_authorized) — the subject can never be the billing actor", !subjectAsActor.ok && subjectAsActor.refused === "actor_not_authorized")
   check("membership + data already done; billing failed; archive + readiness pending; status migrating", mid.status === "migrating" && mid.migration?.steps.membership?.status === "done" && mid.migration?.steps.data?.status === "done" && mid.migration?.steps.billing_handoff?.status === "failed" && transferStepsPending(mid.migration).join(",") === "billing_handoff,archive_source,target_readiness")
   check("the team moved as a unit (same id) with both members; the member stays an agent, the owner is the team lead", svc.tables.teams[0].brokerage_id === f.T && svc.tables.users.filter((u) => u.brokerage_id === f.S2 && !u.platform_role).length === 0 && svc.tables.users.find((u) => u.id === f.O2)!.user_type === "team_lead" && svc.tables.users.find((u) => u.email === "member@team.test")!.user_type === "agent" && mid.migration?.counts.members === 2 && mid.migration?.counts.teams === 1)
   check("NOT ARCHIVED while billing is pending (no double billing by omission); the Stripe row untouched", svc.tables.brokerages.find((b) => b.id === f.S2)!.status === "active" && svc.tables.subscriptions.find((x) => x.id === "sub-s2")!.status === "active")
@@ -372,6 +402,31 @@ const ledgerRows = (svc: MemClient, action: string) => svc.tables.agent_action_l
   check("finished steps were NOT re-run (no second member move, no second domain repair); billing called once", s.moved.length === movedBefore && s.domain === domainBefore && s.billing === 1 && done.migration?.attempts === 2)
   check("now archived, billing evidence recorded (stripe_prorated), readiness recorded, completed", svc.tables.brokerages.find((b) => b.id === f.S2)!.status === "archived" && done.billing_handoff?.ok === true && done.billing_handoff?.mode === "stripe_prorated" && done.readiness?.ready === true && done.status === "completed")
   check("two migration ledger rows (one per attempt): failed, then executed", ledgerRows(svc, "tenant.transfer.migrate").map((r) => r.status).join(",") === "failed,executed")
+}
+
+// ── D7b · a Stripe-billed source COMPLETES on consent once Stripe answers — the approver is the actor ──
+{
+  const { seed, f } = railSeed()
+  const svc = memSupabase(seed, { uuidIds: true })
+  const s = spies()
+  const stripeActors: Array<string | null> = []
+  const deps = realBillingDeps(svc, s, stripeActors, async () => ({ applied: true, skipped: false, mode: "scheduled_cancel" as const, finalInvoiceId: null }))
+  const req = await requestBrokerageTransfer(svc, { targetBrokerageId: f.T, initiatedByUserId: f.A, subjectEmail: "ivy@team.test", targetRole: "team_lead" }, deps)
+  const id = req.ok ? req.request.id : ""
+  const c = await recordBrokerageTransferConsent(svc, { requestId: id, actor: { userId: f.O2, brokerageId: f.S2, kind: "subject" }, decision: "consent", statement: "Our team consents to joining Harbor Realty.", channel: "settings_ui" }, deps)
+  check("STRIPE-LINKED ADOPTION COMPLETES IN THE CONSENT CALL (no stall at stripe_handoff_pending)", c.ok && c.migration?.ok === true, c.ok ? (c.migration && !c.migration.ok ? c.migration.error : "") : c.error)
+  const done = svc.tables.brokerage_transfer_requests.find((r) => r.id === id)!
+  check("the Stripe side was handed the APPROVING admin exactly once; the subject never", stripeActors.length === 1 && stripeActors[0] === f.A)
+  check("billing evidence: stripe_prorated, the approver recorded, Stripe's scheduled cancel + proration", done.billing_handoff?.ok === true && done.billing_handoff?.mode === "stripe_prorated" && (done.billing_handoff as any).evidence?.approved_by_user_id === f.A && (done.billing_handoff as any).evidence?.stripe_mode === "stripe_scheduled_cancel")
+  const srcSub = svc.tables.subscriptions.find((x) => x.id === "sub-s2")!
+  check("the source subscription mirrors INTENT only (cancel_at = effective_at, COUNTED); status stays Stripe's to write; no fabricated refund", srcSub.cancel_at === done.effective_at && srcSub.status === "active" && svc.tables.subscriptions.find((x) => x.id === "sub-t")!.status === "active")
+  check("the Stripe-side ledger row is FINANCIAL, under the SOURCE tenant, with the approver as actor", svc.tables.agent_action_ledger.some((r) => r.action === "billing.subscription.handoff_to_brokerage" && r.brokerage_id === f.S2 && r.actor_user_id === f.A && r.status === "executed"))
+  check("archived + completed + readiness recorded", svc.tables.brokerages.find((b) => b.id === f.S2)!.status === "archived" && done.status === "completed" && done.readiness?.ready === true)
+  check("the migrate ledger row records BOTH the running actor (the subject) and the approving admin", ledgerRows(svc, "tenant.transfer.migrate").some((r) => r.actor_user_id === f.O2 && (r.detail ?? r.details ?? r.metadata ?? {})?.approving_admin_user_id === f.A) || ledgerRows(svc, "tenant.transfer.migrate").some((r) => JSON.stringify(r).includes(f.A) && r.actor_user_id === f.O2))
+  // A target admin RETRYING a finished transfer: nothing acts, and the approver would be that admin.
+  const w = svc.writes.length
+  const again = await runBrokerageTransferMigration(svc, { requestId: id, actor: { userId: f.A, brokerageId: f.T, kind: "target_admin" } }, deps)
+  check("IDEMPOTENT after a Stripe-linked completion: a retry acts on nothing (zero writes, Stripe not called again)", again.ok && again.alreadyCompleted === true && svc.writes.length === w && stripeActors.length === 1)
 }
 
 // ── D8 · decline · D9 · verification failure moves nothing · D10 · pure ──────
@@ -446,6 +501,11 @@ console.log("\n[E · registration, derived vocabularies, wiring]")
 
   const rail = stripped("lib/kernel/brokerage-transfer.ts")
   check("the rail's ONLY billing edge is the seam (no stripe import, no subscriptions write)", /subscriber-billing-handoff/.test(rail) && !/from ["']stripe["']|lib\/stripe|stripe-subscription-ops/.test(rail) && !/\.from\("subscriptions"\)/.test(rail))
+  // THE ACTOR RULE (wave 142): the seam is handed the APPROVING admin — derived from the request's
+  // initiated_by_user_id (or the retrying target admin) — never the running actor by shorthand.
+  const handoffCall = rail.match(/handoff\(svc,\s*\{[^}]*\}/)?.[0] ?? ""
+  check("the ONE billing call passes actorUserId: approvingAdminUserId, and that id derives from req.initiated_by_user_id", /actorUserId:\s*approvingAdminUserId/.test(handoffCall) && /approvingAdminUserId\s*=[^\n]*req\.initiated_by_user_id/.test(rail) && !/\bactorUserId\s*[,}]/.test(handoffCall))
+  check("CONTROL: the pre-fix shorthand (the running actor) would be caught", /\bactorUserId\s*[,}]/.test("handoff(svc, { sourceBrokerageId: sourceId, targetBrokerageId: targetId, effectiveAt, transferRequestId: req.id, actorUserId })"))
   const rehomes = (rail.match(/\.update\(\{ brokerage_id: targetId \}\)\.eq\("brokerage_id", sourceId\)/g) ?? []).length
   const anyRehome = (rail.match(/\.update\(\{ brokerage_id: targetId \}\)/g) ?? []).length
   check(`every re-home update is pinned to the source tenant (${rehomes}/${anyRehome})`, anyRehome >= 2 && rehomes === anyRehome)
@@ -464,6 +524,6 @@ console.log("\n[E · registration, derived vocabularies, wiring]")
   check("events declared once in KernelEvent (requested / consented / declined / cancelled / stalled / completed / archived / affiliation declared)", ["brokerage_transfer_requested", "brokerage_transfer_consented", "brokerage_transfer_declined", "brokerage_transfer_cancelled", "brokerage_transfer_stalled", "brokerage_transfer_completed", "brokerage_archived", "brokerage_affiliation_declared"].every((e) => new RegExp(`'${e}'`).test(stripped("lib/kernel/events.ts"))))
 }
 
-console.log(`\nBLIND SPOTS: scripts/ not scanned in A (simulators look up their own tagged brokerages by name); the Stripe half of the handoff is lane 141H's (stubbed here); readiness is a counted seam; RLS not exercised.`)
+console.log(`\nBLIND SPOTS: scripts/ not scanned in A (simulators look up their own tagged brokerages by name); the Stripe SDK call is stubbed in D7/D7b (the Stripe-side tenancy gate, seat verdict and ledger run for real against the in-memory client); readiness is a counted seam; RLS not exercised.`)
 console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
 if (failed) { console.log(failures.map((f) => `   ✗ ${f}`).join("\n")); process.exit(1) }

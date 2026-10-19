@@ -39,6 +39,10 @@ import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { OFFER_EVENT, EVENT_TO_STATUS, OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
+// THE ONE PACKET LIFECYCLE (wave 142, lane 142B): "already past this step" is asked of the ladder
+// (a packet in compliance is past all-signed) — a redelivered completion never regresses it.
+import { isAtOrPastAllSigned } from "@/lib/esign/packet-states"
+import { recordEsignPacketHop } from "@/lib/esign/packet-state-writer"
 
 export type ESignProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
@@ -254,6 +258,8 @@ async function finalizeMatchingOffer(
   if (!matchedOffer) return
   if (matchedOffer.transaction_id) return  // already converted — idempotent
   if (matchedOffer.esign_status === "fully_signed") return  // already past this step
+  // …or anywhere in compliance after it (wave 142, lane 142B): the ladder, so a redelivery never regresses a packet in review.
+  if (isAtOrPastAllSigned(matchedOffer.esign_status)) return
 
   // REDELIVERY GUARD (carried note, lane FA wave 47 → wave 48) — the
   // buyer-first branch below was NOT idempotent the way the counter-executed
@@ -294,6 +300,14 @@ async function finalizeMatchingOffer(
       })
       .eq("id", matchedOffer.id)
     if (counterExecutedErr) console.error(`[finalize-packet] fully-executed counter: offer NOT marked accepted/fully_signed: ${counterExecutedErr.message}`)
+    if (!counterExecutedErr) {
+      // THE ALL-SIGNED HOP (wave 142, lane 142B): bell + evidence for the stamp above, deduped per (offer, state).
+      const hop = await recordEsignPacketHop(supabase, {
+        brokerageId: matchedOffer.brokerage_id as string, record: { table: "offers", id: matchedOffer.id as string },
+        state: "fully_signed", source: "webhook", provider, envelopeId,
+      })
+      if (!hop.ok) console.error(`[finalize-packet] offer ${matchedOffer.id} all-signed hop not recorded: ${hop.reason}`)
+    }
 
     // OFFER_OS_ESIGN_COMPLETED — read by event-fanout.ts ("Your offer is signed
     // / all parties have e-signed... fully executed and on file") but nothing
@@ -352,6 +366,15 @@ async function finalizeMatchingOffer(
       })
       .eq("id", matchedOffer.id)
     if (buyerSignedErr) console.error(`[finalize-packet] buyer signature: offer NOT marked partially_signed: ${buyerSignedErr.message}`)
+    if (!buyerSignedErr) {
+      // THE PARTY-SIGNED HOP (wave 142, lane 142B): evidence for the stamp above. No bell here — the
+      // notifyEsignSigned call below IS the "a party signed" bell on this path (owner: "no duplicates").
+      const hop = await recordEsignPacketHop(supabase, {
+        brokerageId: matchedOffer.brokerage_id as string, record: { table: "offers", id: matchedOffer.id as string },
+        state: "partially_signed", source: "webhook", provider, envelopeId, notify: false,
+      })
+      if (!hop.ok) console.error(`[finalize-packet] offer ${matchedOffer.id} party-signed hop not recorded: ${hop.reason}`)
+    }
   }
 
   // Activity for the agent's queue (left feed) + notification for the bell.
@@ -456,7 +479,10 @@ async function finalizeMatchingOffer(
       .eq("id", agentId)
       .maybeSingle()
 
-    if (agentRow?.user_id) {
+    // ONLY on the buyer-first path (wave 142, lane 142B): this bell says "Buyer signed — forward to the
+    // listing agent", which is wrong once a counter is fully executed; that moment's bell is the
+    // all-signed hop recorded above (agent + compliance bench), and the owner wants no duplicates.
+    if (agentRow?.user_id && !isCounterFullyExecuted) {
       await notifyEsignSigned(supabase, {
         brokerageId:  matchedOffer.brokerage_id as string,
         agentUserId:  agentRow.user_id as string,
@@ -508,10 +534,12 @@ export async function finalizeLegacyEsignArtifacts(
   // never an envelope id — never match on it.
   const { data: matchedOffer } = await supabase
     .from("offers")
-    .select("id, contact_id, transaction_id")
+    .select("id, contact_id, transaction_id, esign_status")
     .eq("provider_envelope_id", envelopeId)
     .maybeSingle()
-  if (matchedOffer && !matchedOffer.transaction_id) {
+  // Never over a packet already all-signed or in compliance (wave 142): the legacy stamp used to be
+  // unconditional, which would have regressed compliance_pending to fully_signed on every redelivery.
+  if (matchedOffer && !matchedOffer.transaction_id && !isAtOrPastAllSigned(matchedOffer.esign_status)) {
     // Only set fully_signed/completed timestamps here — the offer-side
     // convergence (compliance.passed → ACCEPTED → convertOfferToTransaction)
     // is handled by finalizeMatchingOffer in finalizeVoiceCockpitPacket and
@@ -525,15 +553,19 @@ export async function finalizeLegacyEsignArtifacts(
 
   const { data: matchedAgreement } = await supabase
     .from("listing_agreements")
-    .select("id, listing_id")
+    .select("id, listing_id, esign_status")
     .eq("provider_ref", envelopeId)
     .maybeSingle()
   if (matchedAgreement) {
-    const { error: agreementExecutedErr } = await supabase
-      .from("listing_agreements")
-      .update({ esign_status: "fully_signed", fully_executed_at: now })
-      .eq("id", matchedAgreement.id)
-    if (agreementExecutedErr) console.error(`[finalize-packet] listing agreement NOT marked fully executed: ${agreementExecutedErr.message}`)
+    // The stamp only when the ladder is still below all-signed (wave 142): a redelivery or an
+    // agreement already in compliance keeps its state; the stage transition below stays stage-gated.
+    if (!isAtOrPastAllSigned(matchedAgreement.esign_status)) {
+      const { error: agreementExecutedErr } = await supabase
+        .from("listing_agreements")
+        .update({ esign_status: "fully_signed", fully_executed_at: now })
+        .eq("id", matchedAgreement.id)
+      if (agreementExecutedErr) console.error(`[finalize-packet] listing agreement NOT marked fully executed: ${agreementExecutedErr.message}`)
+    }
     // Listing agreement signed → "coming soon" (pre-listing), NOT live-on-MLS.
     // Run through the KERNEL (service client — webhooks have no session) so the
     // LISTING_AGREEMENT_SIGNED event + automation fire. MLS_ACTIVE is set later

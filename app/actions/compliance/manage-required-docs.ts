@@ -206,7 +206,7 @@ export async function setRequiredDocTemplate(
       .eq("id", input.formId)
       .maybeSingle()
     if (!form || form.brokerage_id !== actor.brokerageId) return { ok: false, error: "Form not found in your library" }
-    if (!form.is_active) return { ok: false, error: "That form is inactive — reactivate it in Transaction Forms first" }
+    if (!form.is_active) return { ok: false, error: "That form is inactive — reactivate it in Legal Forms first" }
   }
 
   const { error } = await svc

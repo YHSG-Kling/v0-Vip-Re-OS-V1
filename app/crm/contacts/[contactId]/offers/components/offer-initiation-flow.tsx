@@ -361,7 +361,7 @@ export function OfferInitiationFlow({
             <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-2 mb-4">
               <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
               <div>
-                <p className="text-sm font-medium text-amber-800">No transaction provider connected</p>
+                <p className="text-sm font-medium text-amber-800">No legal-forms provider connected</p>
                 <p className="text-xs text-amber-700 mt-0.5">
                   Connect a forms provider in Settings for state-approved forms. Using brokerage in-app forms below.
                 </p>
@@ -1187,7 +1187,7 @@ export function OfferInitiationFlow({
                     <div className="flex items-start gap-2">
                       <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-sm font-medium text-amber-800">No transaction provider connected</p>
+                        <p className="text-sm font-medium text-amber-800">No legal-forms provider connected</p>
                         <p className="text-xs text-amber-700 mt-0.5">
                           Using brokerage in-app forms. Connect a provider in Settings for state-approved forms.
                           You will select and fill forms in the next step.

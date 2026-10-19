@@ -765,6 +765,13 @@ export async function createListingPosts(params: {
   agentId: string
   brokerageId: string
   platforms: string[]
+  /**
+   * Wave 142 (lane 142H): the Coming-Soon card shows the AI post as an editable textarea ("edit before
+   * publishing") and then called this action WITHOUT the edit — every platform got a fresh generation and
+   * the agent's review went nowhere. When the reviewed copy is passed it is what ships (no second LLM
+   * call); scheduleSocialPost still runs the outbound compliance gate on it, exactly as on generated text.
+   */
+  contentOverride?: string
 }) {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.propertyId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
@@ -810,12 +817,15 @@ export async function createListingPosts(params: {
         continue
       }
 
-      // Generate platform-optimized content
-      const content = await generatePlatformContent({
-        platform,
-        property,
-        agentId: params.agentId,
-      })
+      // The agent-reviewed copy wins; otherwise generate platform-optimized content
+      const reviewed = params.contentOverride?.trim()
+      const content: { text: string; hashtags: string[] } = reviewed
+        ? { text: reviewed, hashtags: [] }
+        : await generatePlatformContent({
+            platform,
+            property,
+            agentId: params.agentId,
+          })
 
       // Schedule post for optimal time
       const optimalTime = getOptimalPostingTime(platform)

@@ -152,6 +152,16 @@ export async function applyMarketingAssetApproval(
     if (delivery.card === "failed" || delivery.email === "failed") {
       console.error(`[approval-queue] approved video ${id} — delivery incomplete: card=${delivery.card} email=${delivery.email} ${delivery.detail ?? ""}`)
     }
+    // WAVE 142 (lane 142F; owner: "all videos that are not personal should also be added to
+    // youtube") — THE APPROVAL IS THE HUMAN GATE for a PUBLIC marketing video: the same release
+    // queues it onto the existing YouTube rail (social_posts → publish-social-posts →
+    // publishToYouTube) under the tenant's video_auto_publish switch. A personal / client /
+    // in-house / MLS-only / compliance-failed video is refused with its reason and stays in the
+    // library; a video approved before its render finished is queued by handleVideoGenerated
+    // when the file lands. Idempotent per video. The approval stands whatever this reports.
+    const { queueYouTubeAutoPublish } = await import("@/lib/video/youtube-publish")
+    const yt = await queueYouTubeAutoPublish(svc as any, id)
+    if (!yt.queued) console.info(`[approval-queue] approved video ${id} — YouTube auto-publish not queued: ${yt.reason}`)
   }
   if (kind === "video_script") {
     // WAVE 87 (lane 87D) — APPROVAL RENDERS. This queue approval is the second

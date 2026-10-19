@@ -16,7 +16,7 @@
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { canary } from "./_harness"
-import { ROOT, listFiles, strippedRepo } from "./_registry"
+import { ROOT, hooksFor, listFiles, strippedRepo } from "./_registry"
 
 /** The pages a subscriber / agent cannot do business without (file paths at HEAD; a missing path is a finding). */
 export const CRITICAL_PAGES = [
@@ -85,6 +85,12 @@ export async function run() {
   const projects = [...config.matchAll(/name:\s*["']([^"']+)["']/g)].map((m) => m[1])
   const mobileProject = /devices\[["'](iPhone|Pixel|Galaxy|iPad)[^"']*["']\]|viewport:\s*\{\s*width:\s*(390|412|430|820)/.test(config)
   console.log(`    finding (lane 141I): playwright.config.ts projects = [${projects.join(", ")}]; mobile/tablet viewport project: ${mobileProject ? "yes" : "NO — the 820 / 390 smoke has no project at HEAD"}`)
+  // WAVE142 HOOK (integrator): 142H — the mobile / tablet viewport project (390 / 820) on the Playwright smoke.
+  for (const h of hooksFor("mobile")) {
+    const at = h.probe()
+    if (!at) { c.hook(h.lane, h.contract, `measured above: projects = [${projects.join(", ")}] — no 390 / 820 viewport project`); continue }
+    c.step(`${h.lane} landed (${at}): the Playwright config carries a MOBILE / TABLET viewport project (a devices[] preset or an explicit 390 / 412 / 430 / 820 width) beside Desktop Chrome, so the 390px rule is driven, not only censused`, mobileProject && projects.length >= 2, projects.join(", "))
+  }
   c.blind(`Static census only: a table that overflows because of long content, or a sheet that renders off-screen, is not an idiom this finder sees — the Playwright smoke at 390px is the real proof (lane 141I); playwright.config.ts carries ${mobileProject ? "a" : "NO"} mobile viewport project at HEAD.`)
   c.blind(`BLIND SPOT, published: a scroll wrapper ANYWHERE in the file clears every table in it (a file-level heuristic); ${modules.length} modules scanned, page + same-directory client components only.`)
   return c.report([], 0)

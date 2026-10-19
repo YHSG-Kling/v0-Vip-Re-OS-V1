@@ -32,6 +32,7 @@
 import { checkUpload } from "@/lib/storage/file-limits"
 import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
 import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
+import { isVideoContentType, probePlayableOutput, describeUnplayable } from "@/lib/video/playable-output"
 
 /**
  * The default host bucket: PUBLIC, and what every existing caller used.
@@ -69,6 +70,24 @@ export async function hostRenderedMedia(
   contentType: string,
   bucket: string = RENDER_MEDIA_BUCKET,
 ): Promise<string> {
+  // THE PLAYABILITY PROBE (wave 142, lane 142F; owner: "a render is complete only
+  // when the output is PLAYABLE, never because a status column says success").
+  // This is the ONE host every finished video goes through — the coordinator, the
+  // three render routes, the D-ID poller, the hybrid composite — so it is the one
+  // place the bytes can be judged before a URL exists for anything to stamp
+  // `succeeded` with. A video/* buffer that is empty, truncated, has no moov/mdat
+  // or a zero duration is REFUSED here (lib/video/playable-output.ts, pure header
+  // parse — ffmpeg-static ships no ffprobe); the throw lands in every caller's
+  // existing failure path (the row goes `failed` with the probe's reasons, the
+  // queue's bounded retry and lib/remotion/render-escalation.ts take it from
+  // there). PNGs, PDFs and MP3s are not judged — the probe answers only for video.
+  if (isVideoContentType(contentType)) {
+    const probe = probePlayableOutput(bytes, contentType)
+    if (!probe.ok) {
+      throw new Error(`[media-host] refusing to host ${bucket}/${path}: ${describeUnplayable(probe)}`)
+    }
+  }
+
   // THE GATE, before the bytes move. These bytes are server-generated rather
   // than caller-supplied, so this is not an untrusted-input check — it is a
   // check that the destination can actually hold what we are about to send.

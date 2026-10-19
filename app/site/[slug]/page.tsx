@@ -24,6 +24,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { siteUrl } from "@/lib/platform/site-url"
 import { serializeJsonLd } from "@/lib/geo/video-landing"
 import { SiteChatLauncher } from "@/app/components/public-site/SiteChatLauncher"
+import { LandingVideo } from "@/app/components/public-site/LandingVideo"
+import { pickSiteHeroVideo } from "@/lib/video/public-video"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 300
@@ -69,7 +71,12 @@ async function loadSite(slug: string) {
   // than fabricating one; null falls back to text-only unchanged.
   const { resolveSiteLiveAgentEmbed } = await import("@/lib/embed/resolve-site-embed")
   const liveEmbed = await resolveSiteLiveAgentEmbed(svc, { brokerageId: b.id }).catch(() => null)
-  return { b, assistantName: (identity as any)?.assistant_name ?? null, listings: listings ?? [], agents: agents ?? [], posts: posts ?? [], magnets: magnetRows, openHouses: openHouses ?? [], valuationMagnet, livePublicId: liveEmbed?.publicId ?? null }
+  // THE SITE'S VIDEO (wave 142, lane 142F; owner: "a landing page should include some type of
+  // video"): the newest PUBLISHED public-marketing reel (lib/video/public-video.ts — the /v/[slug]
+  // rail's own published rows, re-classified so a client video never reaches the storefront).
+  // Null = no slot rendered: a tenant with no approved public reel gets no empty box.
+  const heroVideo = await pickSiteHeroVideo(svc, b.id).catch(() => null)
+  return { b, assistantName: (identity as any)?.assistant_name ?? null, listings: listings ?? [], agents: agents ?? [], posts: posts ?? [], magnets: magnetRows, openHouses: openHouses ?? [], valuationMagnet, livePublicId: liveEmbed?.publicId ?? null, heroVideo }
 }
 
 export async function generateMetadata({ params }: PageProps) {
@@ -90,7 +97,7 @@ export default async function TenantSitePage({ params }: PageProps) {
   const { slug } = await params
   const data = await loadSite(slug)
   if (!data) notFound()
-  const { b, assistantName, listings, agents, posts, magnets, openHouses, valuationMagnet, livePublicId } = data as any
+  const { b, assistantName, listings, agents, posts, magnets, openHouses, valuationMagnet, livePublicId, heroVideo } = data as any
   const primary = /^#[0-9a-fA-F]{6}$/.test(b.primary_color ?? "") ? (b.primary_color as string) : "#0F172A"
   const base = siteUrl()
   const pageUrl = `${base}/site/${b.slug}`
@@ -132,6 +139,30 @@ export default async function TenantSitePage({ params }: PageProps) {
           </div>
         </div>
       </header>
+
+      {/* VIDEO — the brokerage's newest approved public reel (wave 142, lane 142F). Rendered only
+          when one exists; the player falls back to its poster / a link that still plays: the
+          YouTube copy when the reel is on the channel (the write-back's reader), else the reel's
+          own page. */}
+      {heroVideo && (
+        <section className="container mx-auto px-6 py-12" aria-label="Featured video">
+          <div className="mx-auto max-w-3xl">
+            <LandingVideo
+              src={heroVideo.videoUrl}
+              poster={heroVideo.thumbnailUrl}
+              title={heroVideo.title}
+              fallbackHref={heroVideo.youtubeUrl ?? `/v/${heroVideo.slug}`}
+              className="w-full aspect-video rounded-xl border bg-black shadow-sm"
+            />
+            <p className="mt-3 text-sm text-muted-foreground flex flex-wrap items-center gap-x-4 gap-y-1">
+              <Link href={`/v/${heroVideo.slug}`} className="hover:underline" style={{ color: primary }}>{heroVideo.title} →</Link>
+              {heroVideo.youtubeUrl && (
+                <a href={heroVideo.youtubeUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">Watch on YouTube</a>
+              )}
+            </p>
+          </div>
+        </section>
+      )}
 
       {/* FEATURED LISTINGS — live inventory, each a lead-capture page */}
       {listings.length > 0 && (

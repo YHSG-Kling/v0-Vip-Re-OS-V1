@@ -31,7 +31,7 @@ function unresolvableProviderError(providerName: string): Error {
     const available = getImplementedProviders().map((p) => p.label).join(", ")
     return new Error(`${entry.label} is not yet available. Choose one of: ${available}.`)
   }
-  return new Error(`Unknown transaction provider: ${providerName}. Contact support.`)
+  return new Error(`Unknown legal-forms provider: ${providerName}. Contact support.`)
 }
 
 // ── Provider registry ────────────────────────────────────────────────────────
@@ -126,7 +126,7 @@ export async function getTransactionProvider(
 ): Promise<ITransactionProvider> {
   const selection = await resolveTransactionProviderSelection(brokerageId)
   if (!selection.provider) {
-    throw new Error("No transaction provider is selected for this brokerage. Choose one in Settings → Integrations (Provider Routing → TRANSACTION).")
+    throw new Error("No legal-forms provider is selected for this brokerage. Choose one in Settings → Integrations (Provider Routing → TRANSACTION).")
   }
   const normalized = selection.provider as ProviderName
   const factory    = PROVIDER_REGISTRY[normalized]
@@ -148,7 +148,7 @@ export function getTransactionProviderByName(
   credentials?: ProviderCredentials
 ): ITransactionProvider {
   if (!providerName || providerName === "not_configured") {
-    throw new Error("No transaction provider configured. Set up a provider in Settings > Integrations.")
+    throw new Error("No legal-forms provider configured. Set up a provider in Settings > Integrations.")
   }
 
   const normalizedName = providerName.toLowerCase() as ProviderName

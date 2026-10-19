@@ -108,6 +108,33 @@ export async function GET(req: NextRequest) {
     console.error("[composition-render-queue] auto-requeue sweep failed (degrading to no-op):", (e as Error).message)
   }
 
+  // FAILURE CENSUS (wave 142, lane 142F; owner: "figure out what remotion issues we keep
+  // running into"). The live table held 0 rows on 2026-10-19 — there is no production
+  // failure history yet — so this is the READER that classifies the FIRST one the moment
+  // it is written: every failed row of the last 7 days folded through the recorded
+  // root-cause signatures (lib/remotion/render-failure-census.ts), printed in the tick's
+  // response and on the log line. Best-effort; a refused read is reported, never zero.
+  let failureCensus: { total: number; byBucket: Record<string, unknown>; lines: string[]; error?: string } = { total: 0, byBucket: {}, lines: [] }
+  try {
+    const { censusRenderFailures, describeRenderFailureCensus } = await import("@/lib/remotion/render-failure-census")
+    const since = new Date(Date.now() - 7 * 24 * 3_600_000).toISOString()
+    const { data: failedWeek, error: censusErr } = await svc.from("remotion_composition_renders")
+      .select("id, composition_id, error_message, retry_count")
+      .eq("render_status", "failed")
+      .gte("created_at", since)
+      .limit(200)
+    if (censusErr) {
+      failureCensus = { total: 0, byBucket: {}, lines: [], error: `census read refused: ${censusErr.message}` }
+    } else {
+      const census = censusRenderFailures((failedWeek ?? []) as Array<{ id: string; composition_id: string | null; error_message: string | null; retry_count: number | null }>)
+      const lines = describeRenderFailureCensus(census)
+      failureCensus = { total: census.total, byBucket: census.byBucket as Record<string, unknown>, lines }
+      if (census.total > 0) console.warn(`[composition-render-queue] render failure census (7d): ${census.total} failed — ${lines.join(" | ")}`)
+    }
+  } catch (e) {
+    failureCensus = { total: 0, byBucket: {}, lines: [], error: (e as Error).message }
+  }
+
   // Oldest queued row first (idx_remotion_renders_queued covers this).
   const { data: rows, error } = await svc.from("remotion_composition_renders")
     .select("id, composition_id, brokerage_id")
@@ -119,6 +146,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ran_at: new Date().toISOString(), processed: 0,
       leak_sweep: leakSweep, living_refresh: livingRefresh, auto_requeue: autoRequeue,
+      failure_census: failureCensus,
     })
   }
 
@@ -148,6 +176,7 @@ export async function GET(req: NextRequest) {
       leak_sweep:     leakSweep,
       living_refresh: livingRefresh,
       auto_requeue:   autoRequeue,
+      failure_census: failureCensus,
     })
   } catch (e) {
     return NextResponse.json({

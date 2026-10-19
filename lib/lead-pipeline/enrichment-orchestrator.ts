@@ -4,6 +4,7 @@
 //               vendor-tracking.ts, /api/cron/contact-enrichment
 
 import { createServiceClient } from '@/lib/supabase/service'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { skipTraceWithPeopleData } from '@/lib/external/peopledata-client'
 import { scrubPhonesForPatch } from '@/lib/compliance/phone-scrub-runner'
@@ -190,8 +191,17 @@ interface EnrichmentResult {
 
 export async function processEnrichmentQueue(
   brokerageId: string,
+  /**
+   * Wave 142 (lane 142D — owner: "enrichment should happen as soon as a new contact or form submission
+   * comes in"): `queueEntryId` narrows the drain to the ONE row a queue writer just inserted, run
+   * fire-and-forget from lib/enrichment/inline-drain.ts right after the write. Same function, same gates,
+   * same ledger — the cron call (no option) stays the batch backstop for whatever the inline run left.
+   * `supabase` is the client seam the two queue writers already have (`params.supabase ?? createServiceClient()`)
+   * so a proof can run THIS function over an in-memory client; the app always passes none.
+   */
+  opts: { queueEntryId?: string; supabase?: SupabaseClient<any, any, any> } = {},
 ): Promise<EnrichmentResult> {
-  const supabase = createServiceClient()
+  const supabase = opts.supabase ?? createServiceClient()
   const result: EnrichmentResult = {
     processed: 0,
     succeeded: 0,
@@ -201,15 +211,17 @@ export async function processEnrichmentQueue(
     paidWithheld: 0,
   }
 
-  // Fetch pending batch
-  const { data: entries, error: fetchError } = await supabase
+  // Fetch pending batch (or the one named row — tenant predicate UNCONDITIONAL either way)
+  let queueQuery = supabase
     .from('lead_enrichment_queue')
     .select('id, lead_id, contact_id, brokerage_id, status, enrichment_type, trigger_type, retry_count, max_retries')
     .eq('brokerage_id', brokerageId)
     .eq('status', 'pending')
     .lt('retry_count', MAX_RETRIES)
+  if (opts.queueEntryId) queueQuery = queueQuery.eq('id', opts.queueEntryId)
+  const { data: entries, error: fetchError } = await queueQuery
     .order('queued_at', { ascending: true })
-    .limit(BATCH_SIZE)
+    .limit(opts.queueEntryId ? 1 : BATCH_SIZE)
 
   if (fetchError) {
     console.error('[enrichment-orchestrator] Failed to fetch queue:', fetchError.message)

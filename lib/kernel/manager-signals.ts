@@ -27,6 +27,9 @@ import { isDeliberativeDomain } from "@/lib/managers/deliberation"
 // Wave 141B — IMMEDIATE OPERATIONS: the ONE consumer of a door's routed post-condition failure, keyed
 // per registered owning manager (lib/kernel/immediate-operations.ts; its survivors are lazy imports).
 import { handleOperationFailureEscalated, IMMEDIATE_OPERATION_CONSUMERS, OPERATION_SIGNAL_TYPE } from "@/lib/kernel/immediate-operations"
+// Wave 142G — SUPPORT AI TRIAGE: the ticket's registered owner VERIFIES (a person replied / resolved / the SLA
+// sweep owns a breach) on the tick (lib/support/ticket-triage.ts; its survivors are lazy imports).
+import { handleSupportTicketTriaged, SUPPORT_TRIAGE_CONSUMERS, SUPPORT_TRIAGE_SIGNAL_TYPE } from "@/lib/support/ticket-triage"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -437,6 +440,12 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   //    operation's readiness keys with repair (self-healing engine) or hands it to a human with the evidence.
   //    Derived from IMMEDIATE_OPERATION_CONSUMERS so the owner map and the inbox can never drift (§6). ──
   ...Object.fromEntries(IMMEDIATE_OPERATION_CONSUMERS.map((m) => [`${m}:${OPERATION_SIGNAL_TYPE}`, (signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc }) => handleOperationFailureEscalated(signal, ctx)])),
+  // ── Wave 142G — SUPPORT AI TRIAGE: `<owner>:support_ticket_triaged` for every registered owner the triage can
+  //    route to (TRIAGE_OWNER_BY_CATEGORY). The handler is the VERIFICATION step: it re-reads the ticket on its
+  //    tenant and closes the watch when a person has replied or the ticket resolved; a breached SLA belongs to the
+  //    SLA sweep; an unanswered open ticket stays open on the feed as the owner's item. Derived from
+  //    SUPPORT_TRIAGE_CONSUMERS so the owner map and the inbox can never drift (§6). ──
+  ...Object.fromEntries(SUPPORT_TRIAGE_CONSUMERS.map((m) => [`${m}:${SUPPORT_TRIAGE_SIGNAL_TYPE}`, (signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc }) => handleSupportTicketTriaged(signal, ctx)])),
   // AI ISA → Shopping Agent: a qualified person asked for a later callback.
   "shopping_agent:qualification_call_requested": (signal, ctx) => proposeQualificationConfirmation(
     signal, ctx, "shopping_agent",

@@ -166,7 +166,7 @@ export function AiVendorInsightsPanel({ brokerageId }: AiVendorInsightsPanelProp
             </CardTitle>
             <CardDescription>AI-powered vendor recommendations</CardDescription>
           </div>
-          <Button variant="ghost" size="icon" onClick={handleRefresh} disabled={refreshing}>
+          <Button variant="ghost" size="icon" aria-label="Refresh insights" onClick={handleRefresh} disabled={refreshing}>
             <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
           </Button>
         </div>

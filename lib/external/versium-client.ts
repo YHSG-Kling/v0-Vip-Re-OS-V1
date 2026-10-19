@@ -70,8 +70,12 @@ import { householdFinancialsFromVersium, buildVersiumDemographicProfile, fieldPr
 // VERSIUM_API_KEY) — never a parameter, never in agent/tool context.
 
 /** The capabilities this adapter serves, named as the platform asks for them (not as Versium's
- *  endpoints are named). The ledger rows a caller books carry the same name in metadata.capability. */
-type VersiumCapability = "person.enrich_contact" | "person.enrich_demographics" | "person.enrich_financial" | "property.enrich_facts"
+ *  endpoints are named). The ledger rows a caller books carry the same name in metadata.capability.
+ *  Wave 142 (lane 142D): + person.enrich_business_identity (the B2B2C crosswalk) and
+ *  person.enrich_online_presence (the full-demographic real-estate indicators). */
+type VersiumCapability =
+  | "person.enrich_contact" | "person.enrich_demographics" | "person.enrich_financial" | "property.enrich_facts"
+  | "person.enrich_business_identity" | "person.enrich_online_presence"
 
 /** Provenance for a value this adapter returned — written beside the value where it is stored.
  *  Wave 100 (lane 100C): this shape is the SURVIVOR every provider now writes — it is THE
@@ -506,6 +510,353 @@ export async function appendVersiumPropertyFacts(
       credits,
       cost: credits > 0 ? Math.round(credits * VERSIUM_MATCH_CREDIT_USD * 100) / 100 : VERSIUM_NO_MATCH_COST_USD,
       provenance: any ? provenance("property.enrich_facts", new Date().toISOString(), first) : null,
+    }
+  } catch (e) {
+    return { ...none, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WAVE 142 (lane 142D) — THE VERSIUM PRODUCT AUDIT (owner: "audit real products — contact/business
+// append, B2B2C identity matching, 'Online Presence Indicator - Real Estate' and other real-estate
+// indicators, Versium REACH MCP, B2B2C data append. Verify every field against the real schema before
+// relying on it.") Read 2026-10-19 through the research capability (Exa — versium.com and
+// api-documentation.versium.com are not reachable from this environment's egress proxy):
+//   · api-documentation.versium.com/reference/b2b2c-append-api      (the B2B2C Crosswalk Append API)
+//   · versium.com/b2b2c-data-append/                                (the product + billing statement)
+//   · versium.com/versium-reach-mcp/                                (the REACH MCP server)
+//   · api-documentation.versium.com/reference/full-demographic-insights + /reference/output-sample-full-
+//     demographic (the field list and a sample row — where "Online Presence Indicator - Real Estate" lives)
+// What is VERIFIED is cited beside the code; what the pages did not show is marked UNRESOLVED and read
+// defensively (an absent field stays absent — never guessed, never a mapped column).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * THE REACH MCP VERDICT — recorded as data so the decision is readable, not remembered.
+ * versium.com/versium-reach-mcp (verified): endpoint https://app.versium.com/mcp/reach, Streamable HTTP,
+ * "your agent must support OAuth dynamic client registration to securely connect to your Versium REACH
+ * account"; tools = the SAME appends this adapter already calls over REST (Contact, Demographic,
+ * Firmographic, C2B, IP-to-Domain), audience ESTIMATES (CAB / B2B list gen) and email validation; it
+ * EXCLUDES "Online Audience Append", "ABM specific list generation" and "Look-alike specific list
+ * generation". A server-side kernel capability cannot complete an interactive OAuth-DCR handshake, and
+ * every append the MCP exposes is reachable through the REST contract behind the ONE egress
+ * (connector-gateway) with a server key — so the MCP adds no supported value for the kernel today.
+ * NOT WIRED (no duplicate rail; LAW 2). Revisit if Versium publishes a non-interactive credential for
+ * the MCP or a CAB estimate REST endpoint the audience research could use.
+ */
+export const VERSIUM_REACH_MCP = Object.freeze({
+  url: "https://app.versium.com/mcp/reach",
+  transport: "streamable_http",
+  auth: "oauth_dynamic_client_registration",
+  wired: false,
+  excludedByVendor: ["online_audience_append", "abm_list_generation", "lookalike_list_generation"] as const,
+  verdict: "every append it exposes is the REST contract this adapter already calls through the connector gateway; the OAuth-DCR handshake is interactive, so it is not a server credential — not wired, no second rail",
+  verifiedAt: "2026-10-19",
+  source: "https://versium.com/versium-reach-mcp/",
+})
+
+// ─── B2B2C CROSSWALK APPEND — business identity ↔ consumer identity ───────────────────────────
+// VERIFIED (api-documentation.versium.com/reference/b2b2c-append-api, read 2026-10-19):
+//   · GET (or POST) https://api.versium.com/v2/b2b2cAppend — US-only ("Records outside the US return zero
+//     results"); auth `x-versium-api-key`; "Access to this endpoint must also be enabled on your account;
+//     a key without B2B2C access returns 400 with a list of the API groups it can reach."
+//   · INPUTS (one combination required, else 400): `li_url` (a LinkedIn profile URL — "the most specific
+//     identity signal available"; tried first when both are supplied) OR `first` + `last` + `city` +
+//     `state`; optional `zip` (5-digit), `address` (refines the consumer email lookup), `country` (US).
+//   · OUTPUTS (`output[]`, "Repeat the parameter once per requested output"): business_email ·
+//     consumer_mobile ("Mobile lines only — landline and VoIP candidates are discarded") · consumer_email
+//     · consumer_address. "Requesting any of the three consumer outputs runs the identity crosswalk.
+//     `crosswalk` is not a selectable value — it is reported and charged automatically when a consumer
+//     contact point is returned." "One request returns at most one result record."
+//   · CONFIG: cfg_required (comma = AND, semicolon = OR; "If the requirement is not satisfied, the whole
+//     response is a zero-result response and nothing is charged"), cfg_max_emails_b2c (1 default → 2;
+//     "consumer email is charged per email address returned"), cfg_max_phones_b2c (1 → 2; "charged once
+//     per matched record no matter how many numbers come back").
+//   · BILLING (versium.com/b2b2c-data-append): "One match credit when any consumer data returns, plus
+//     standard per-data-point costs for consumer and business data points." The response's own
+//     match_counts is what was charged — this client books every counted output PLUS the counted
+//     crosswalk, each at the credit-package ceiling (don't understate a bill); a no-match books $0.
+//   · ONE OUTPUT PER REQUEST: the ONE egress (connector-gateway `query: Record<string, string>`) carries
+//     one value per key, exactly as the contact append above; the default ask is consumer_email ONLY
+//     (one crosswalk, one data point) — the identity-matching key the scanner dedups on.
+//   · UNRESOLVED (the Output Sample page was not reachable): the RESULT ROW's field names. Read
+//     defensively from the documented vocabulary; an absent field stays absent.
+
+export type VersiumB2B2COutput = "business_email" | "consumer_mobile" | "consumer_email" | "consumer_address"
+export const VERSIUM_B2B2C_OUTPUTS: readonly VersiumB2B2COutput[] = ["business_email", "consumer_mobile", "consumer_email", "consumer_address"]
+
+export interface VersiumB2B2CIdentity {
+  /** A LinkedIn profile URL — satisfies the input rule alone. */
+  linkedinUrl?: string | null
+  firstName?: string | null
+  lastName?: string | null
+  city?: string | null
+  /** Two-letter US state. */
+  state?: string | null
+  zip?: string | null
+  address?: string | null
+}
+
+/** PURE — the documented input combinations, or null (nothing asked, nothing spent). */
+export function versiumB2B2CQueryFor(id: VersiumB2B2CIdentity): Record<string, string> | null {
+  const t = (v: string | null | undefined) => (typeof v === "string" ? v.trim() : "")
+  const li = t(id.linkedinUrl)
+  const first = t(id.firstName), last = t(id.lastName), city = t(id.city), state = t(id.state).toUpperCase()
+  const q: Record<string, string> = {}
+  if (/^https?:\/\/([a-z0-9-]+\.)?linkedin\.com\/in\/[^\s/?#]+/i.test(li)) q.li_url = li
+  if (first && last && city && /^[A-Z]{2}$/.test(state)) { q.first = first; q.last = last; q.city = city; q.state = state }
+  if (!q.li_url && !q.first) return null
+  const zipMatch = t(id.zip).match(/^(\d{5})(?:-?\d{4})?$/)
+  if (zipMatch) q.zip = zipMatch[1]
+  if (t(id.address)) q.address = t(id.address)
+  q.country = "US"
+  return q
+}
+
+export interface VersiumB2B2CResult {
+  businessEmails: string[]
+  consumerEmails: string[]
+  consumerMobiles: string[]
+  consumerAddress: { address: string | null; city: string | null; state: string | null; zip: string | null } | null
+  matched: boolean
+  /** Counted outputs + the counted crosswalk (match_counts), each one credit. */
+  credits: number
+  cost: number
+  provenance: Partial<Record<VersiumB2B2COutput, VersiumProvenance>>
+  skipped?: "unconfigured" | "no_identity"
+  error?: string
+}
+
+/** One B2B2C request (injectable so the proof runs with zero network). */
+export type VersiumB2B2CCall = (output: VersiumB2B2COutput, query: Record<string, string>) =>
+  Promise<{ ok: boolean; status: number | null; data: unknown; error?: string | null }>
+
+/** PURE — one b2b2cAppend response, one output → the values it carried + the credits counted. */
+function parseVersiumB2B2CResponse(body: unknown, output: VersiumB2B2COutput): {
+  values: string[]; address: VersiumB2B2CResult["consumerAddress"]; credits: number; row: Record<string, unknown> | null
+} {
+  const v = (body && typeof body === "object" ? (body as Record<string, any>).versium : null) ?? {}
+  const results: Array<Record<string, unknown>> = Array.isArray(v.results)
+    ? v.results.filter((r: unknown): r is Record<string, unknown> => !!r && typeof r === "object")
+    : []
+  const row = results[0] ?? null
+  const text = (r: Record<string, unknown>, keys: string[]): string => {
+    for (const k of keys) { const raw = r[k]; const s = typeof raw === "string" ? raw.trim() : typeof raw === "number" ? String(raw) : ""; if (s) return s }
+    return ""
+  }
+  // UNRESOLVED field names — the documented vocabulary of the contact output and the output keys themselves.
+  const KEYS: Record<VersiumB2B2COutput, string[]> = {
+    business_email: ["Business Email", "Business Email Address", "business_email", "Email Address", "Email"],
+    consumer_email: ["Consumer Email", "Email Address", "Email", "consumer_email"],
+    consumer_mobile: ["Consumer Mobile", "Mobile Phone", "Mobile", "Phone", "consumer_mobile"],
+    consumer_address: ["Address", "Consumer Address", "Street Address", "address"],
+  }
+  const values: string[] = []
+  let address: VersiumB2B2CResult["consumerAddress"] = null
+  if (row) {
+    if (output === "consumer_address") {
+      const street = text(row, KEYS.consumer_address), city = text(row, ["City", "city"]), state = text(row, ["State", "state"]), zip = text(row, ["Zip", "ZIP", "Zip Code", "zip"])
+      if (street || city || state || zip) address = { address: street || null, city: city || null, state: state || null, zip: zip || null }
+    } else {
+      const s = text(row, KEYS[output])
+      const ok = output === "consumer_mobile" ? s.replace(/\D/g, "").length >= 10 : /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)
+      if (ok) values.push(output === "consumer_mobile" ? s : s.toLowerCase())
+    }
+  }
+  const answered = values.length > 0 || !!address
+  if (!answered) return { values, address, credits: 0, row: null }
+  // What was charged: the counted output, plus the crosswalk the vendor reports beside it.
+  const counted = Number(v.match_counts?.[output])
+  const crosswalk = Number(v.match_counts?.crosswalk)
+  const credits = (Number.isFinite(counted) && counted >= 0 ? counted : 1) + (Number.isFinite(crosswalk) && crosswalk > 0 ? crosswalk : 0)
+  return { values, address, credits, row }
+}
+
+/** Versium B2B2C crosswalk for ONE business identity. `outputs` asked in order, one request each. Never throws. */
+export async function appendVersiumB2B2C(
+  id: VersiumB2B2CIdentity,
+  outputs: readonly VersiumB2B2COutput[] = ["consumer_email"],
+  deps: { call?: VersiumB2B2CCall } = {},
+): Promise<VersiumB2B2CResult> {
+  const out: VersiumB2B2CResult = { businessEmails: [], consumerEmails: [], consumerMobiles: [], consumerAddress: null, matched: false, credits: 0, cost: 0, provenance: {} }
+  const apiKey = process.env.VERSIUM_API_KEY
+  if (!apiKey && !deps.call) return { ...out, skipped: "unconfigured" }
+  const query = versiumB2B2CQueryFor(id)
+  if (!query) return { ...out, skipped: "no_identity" }
+  const call: VersiumB2B2CCall = deps.call ?? (async (output, q) => {
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    return callConnector<any>({
+      connector: "versium",
+      baseUrl: VERSIUM_API_BASE,
+      path: "b2b2cAppend",
+      method: "GET",
+      // cfg_required = the output asked: a response that cannot carry it is a zero-result response and
+      // "nothing is charged" (documented) — never a credit for an empty crosswalk.
+      query: { ...q, "output[]": output, cfg_required: output, cfg_max_emails_b2c: "1", cfg_max_phones_b2c: "1", rcfg_max_time: VERSIUM_MAX_TIME_SECONDS },
+      auth: { style: "header", name: "x-versium-api-key", value: apiKey as string },
+      timeoutMs: 15_000,
+    })
+  })
+  for (const output of outputs) {
+    if (!VERSIUM_B2B2C_OUTPUTS.includes(output)) continue
+    try {
+      const res = await call(output, query)
+      // A refused call bills nothing (400 incl. "no B2B2C access" / 401 / 402 / 403 / 429 are refusals; a 5xx returns no result).
+      if (!res.ok) { out.error = `${versiumStatusProblem(res.status)}${res.error ? ` — ${res.error}` : ""}`; continue }
+      const parsed = parseVersiumB2B2CResponse(res.data, output)
+      out.credits += parsed.credits
+      if (output === "business_email") out.businessEmails.push(...parsed.values)
+      else if (output === "consumer_email") out.consumerEmails.push(...parsed.values)
+      else if (output === "consumer_mobile") out.consumerMobiles.push(...parsed.values)
+      else if (parsed.address) out.consumerAddress = parsed.address
+      if (parsed.credits > 0) out.provenance[output] = provenance("person.enrich_business_identity", new Date().toISOString(), parsed.row)
+    } catch (e) {
+      out.error = e instanceof Error ? e.message : String(e)
+    }
+  }
+  out.matched = out.businessEmails.length > 0 || out.consumerEmails.length > 0 || out.consumerMobiles.length > 0 || !!out.consumerAddress
+  out.cost = out.credits > 0 ? Math.round(out.credits * VERSIUM_MATCH_CREDIT_USD * 100) / 100 : VERSIUM_NO_MATCH_COST_USD
+  return out
+}
+
+// ─── ONLINE PRESENCE / REAL-ESTATE INDICATORS — the `full_demographic` output ──────────────────
+// VERIFIED (api-documentation.versium.com/reference/full-demographic-insights — the field list; and
+// /reference/output-sample-full-demographic — `match_counts: { full_demographic: 1 }`, results[0] keyed
+// by the display names below, "Yes"/"No" on indicator fields; read 2026-10-19):
+//   · GET /v2/demographic?output[]=full_demographic — the same inputs (versiumQueryFor), auth, config
+//     and billing unit as every other demographic output (one match credit per MATCHED output; a
+//     no-match is free). The credit WEIGHT of full_demographic relative to `demographic` is NOT
+//     published on the pages read — booked per counted match at the credit-package ceiling, like every
+//     other output here (don't understate); an owner-confirmed rate card can lower it.
+//   · THE FIELDS THIS REPO KEEPS — each name verbatim from the field list, each a property / behaviour
+//     fact: "Online Presence Indicator - Real Estate" (the owner's named indicator — the person's
+//     observed online real-estate activity), "Investing Real Estate", "Investing Estimated Residential
+//     Properties Owned", "Home Own or Rent", "Length of Residence", "Home Sales Transaction",
+//     "Business Owner", "Small Office or Home Office", "Home Improvement", "Lifestyles Home Improvement",
+//     "Decorating and Furnishing", "Mortgage Purchase Date", "Refinance Date", "Online Purchasing Indicator".
+//   · PROTECTED CHARACTERISTICS NEVER LEAVE THIS FILE (fair housing; owner: "respect consent, fair
+//     housing, protected characteristics and platform ad policies"). The full output ALSO carries race /
+//     ethnicity ("Ethnicity", "Ethnic Group", "African American Professional", "Assimilation"), religion
+//     ("Religion", "Christian Families", "Religious …"), national origin / language ("Language"),
+//     familial status ("Presence of Children", "Number of Children", "Single Parent", "Generations In
+//     Household", "Grandchildren", "Parenting", every "… in Household" age band), sex ("Gender",
+//     "Working Woman in Household"), age ("DOB", "Age Range", "Senior in Household", "Young Adult …"),
+//     disability-adjacent health fields, "Veteran In Household" and "Party Affiliation". The mapper reads
+//     ONLY the allow-list above and the raw row is never returned — a research/intent signal, never a
+//     targeting segment (lookalike-audience.ts carries the ad-policy verdict).
+
+/** The real-estate indicators Versium's full demographic output carries — OUR shape, booleans and plain values only. */
+export interface VersiumRealEstateIndicators {
+  /** "Online Presence Indicator - Real Estate" — observed online real-estate activity. */
+  onlinePresenceRealEstate: boolean | null
+  /** "Investing Real Estate". */
+  investingRealEstate: boolean | null
+  /** "Investing Estimated Residential Properties Owned" (an integer when stated). */
+  residentialPropertiesOwned: number | null
+  /** "Home Own or Rent" → owner | renter. */
+  homeOwnRent: "owner" | "renter" | null
+  /** "Length of Residence" (the vendor's band, e.g. "15+ Years"). */
+  lengthOfResidence: string | null
+  /** "Home Sales Transaction" (e.g. "Resale"). */
+  homeSalesTransaction: string | null
+  /** "Business Owner" / "Small Office or Home Office" — either flag. */
+  businessOwner: boolean | null
+  /** "Home Improvement" / "Lifestyles Home Improvement" / "Decorating and Furnishing" — any flag. */
+  homeImprovementInterest: boolean | null
+  /** "Online Purchasing Indicator". */
+  onlinePurchasing: boolean | null
+  /** "Mortgage Purchase Date" → ISO YYYY-MM-DD (full 8-digit dates only). */
+  mortgagePurchaseDate: string | null
+  /** "Refinance Date" → ISO YYYY-MM-DD (full 8-digit dates only). */
+  refinanceDate: string | null
+}
+
+/** A field name that names a protected characteristic (or an age/household band) — dropped, never mapped. */
+const VERSIUM_PROTECTED_CLASS_FIELD = /ethnic|religio|christian|african american|assimilation|\blanguage\b|children|single parent|generations|grandchildren|parenting|in household|household rank|gender|working woman|\bdob\b|age range|senior|young adult|veteran|party affiliation|health|dieting|disab/i
+
+/** PURE — the allow-listed facts from one full_demographic row; everything protected is never read. */
+function versiumRealEstateIndicatorsFrom(row: unknown): VersiumRealEstateIndicators {
+  const r = row && typeof row === "object" ? (row as Record<string, unknown>) : {}
+  const get = (k: string): string => {
+    if (VERSIUM_PROTECTED_CLASS_FIELD.test(k)) return "" // belt and braces: an allow-list key can never be a protected one
+    const v = r[k]
+    return typeof v === "string" || typeof v === "number" ? String(v).trim() : ""
+  }
+  const yn = (k: string): boolean | null => { const s = get(k).toLowerCase(); return s === "yes" || s === "y" || s === "true" ? true : s === "no" || s === "n" || s === "false" ? false : null }
+  const anyYes = (...ks: string[]): boolean | null => { const vals = ks.map(yn); return vals.some((v) => v === true) ? true : vals.every((v) => v === null) ? null : false }
+  const int = (k: string): number | null => { const s = get(k).replace(/[^\d]/g, ""); return s ? Number(s) : null }
+  const isoDate = (k: string): string | null => {
+    const d = get(k).replace(/-/g, "")
+    return /^\d{8}$/.test(d) && Number(d.slice(4, 6)) >= 1 && Number(d.slice(4, 6)) <= 12 && Number(d.slice(6, 8)) >= 1 && Number(d.slice(6, 8)) <= 31
+      ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null
+  }
+  const own = get("Home Own or Rent").toLowerCase()
+  return {
+    onlinePresenceRealEstate: yn("Online Presence Indicator - Real Estate"),
+    investingRealEstate: yn("Investing Real Estate"),
+    residentialPropertiesOwned: int("Investing Estimated Residential Properties Owned"),
+    homeOwnRent: own ? (/rent/.test(own) ? "renter" : /own/.test(own) ? "owner" : null) : null,
+    lengthOfResidence: get("Length of Residence") || null,
+    homeSalesTransaction: get("Home Sales Transaction") || null,
+    businessOwner: anyYes("Business Owner", "Small Office or Home Office"),
+    homeImprovementInterest: anyYes("Home Improvement", "Lifestyles Home Improvement", "Decorating and Furnishing"),
+    onlinePurchasing: yn("Online Purchasing Indicator"),
+    mortgagePurchaseDate: isoDate("Mortgage Purchase Date"),
+    refinanceDate: isoDate("Refinance Date"),
+  }
+}
+
+export interface VersiumRealEstateIndicatorsResult {
+  /** null on a no-match or when the match carried none of the allow-listed facts. */
+  indicators: VersiumRealEstateIndicators | null
+  credits: number
+  cost: number
+  provenance: VersiumProvenance | null
+  skipped?: "unconfigured" | "no_identity"
+  error?: string
+}
+
+/** One full_demographic request (injectable so the proof runs with zero network). */
+export type VersiumFullDemographicCall = (output: "full_demographic", query: Record<string, string>) =>
+  Promise<{ ok: boolean; status: number | null; data: unknown; error?: string | null }>
+
+/** Versium real-estate / online-presence indicators for ONE person. Never throws; no raw row leaves. */
+export async function appendVersiumRealEstateIndicators(
+  id: VersiumIdentity,
+  deps: { call?: VersiumFullDemographicCall } = {},
+): Promise<VersiumRealEstateIndicatorsResult> {
+  const none: VersiumRealEstateIndicatorsResult = { indicators: null, credits: 0, cost: 0, provenance: null }
+  const apiKey = process.env.VERSIUM_API_KEY
+  if (!apiKey && !deps.call) return { ...none, skipped: "unconfigured" }
+  const query = versiumQueryFor(id)
+  if (!query) return { ...none, skipped: "no_identity" }
+  const call: VersiumFullDemographicCall = deps.call ?? (async (output, q) => {
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    return callConnector<any>({
+      connector: "versium",
+      baseUrl: VERSIUM_API_BASE,
+      path: "demographic",
+      method: "GET",
+      query: { ...q, "output[]": output, cfg_maxrecs: "1", rcfg_max_time: VERSIUM_MAX_TIME_SECONDS },
+      auth: { style: "header", name: "x-versium-api-key", value: apiKey as string },
+      timeoutMs: 15_000,
+    })
+  })
+  try {
+    const res = await call("full_demographic", query)
+    if (!res.ok) return { ...none, error: `${versiumStatusProblem(res.status)}${res.error ? ` — ${res.error}` : ""}` }
+    const v = (res.data && typeof res.data === "object" ? (res.data as Record<string, any>).versium : null) ?? {}
+    const first = Array.isArray(v.results) ? v.results.find((x: unknown) => !!x && typeof x === "object") : null
+    if (!first) return none
+    const counted = Number(v.match_counts?.full_demographic)
+    const credits = Number.isFinite(counted) && counted >= 0 ? counted : 1
+    const ind = versiumRealEstateIndicatorsFrom(first)
+    const any = Object.values(ind).some((x) => x !== null)
+    return {
+      indicators: any ? ind : null,
+      credits,
+      cost: credits > 0 ? Math.round(credits * VERSIUM_MATCH_CREDIT_USD * 100) / 100 : VERSIUM_NO_MATCH_COST_USD,
+      provenance: any ? provenance("person.enrich_online_presence", new Date().toISOString(), first) : null,
     }
   } catch (e) {
     return { ...none, error: e instanceof Error ? e.message : String(e) }

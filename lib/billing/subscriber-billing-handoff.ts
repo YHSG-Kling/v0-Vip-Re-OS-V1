@@ -49,6 +49,12 @@ export interface SubscriberBillingHandoffInput {
   effectiveAt: string
   /** brokerage_transfer_requests.id — the evidence key the Stripe side carries on its metadata. */
   transferRequestId: string
+  /**
+   * users.id of the APPROVING brokerage admin — the request's initiator, or a target admin retrying it —
+   * NEVER the adopted subject (wave 142, lane 142A). The Stripe side's tenancy gate
+   * (lib/billing/subscriber-handoff.ts) admits an admin of the TARGET or platform staff and refuses the
+   * source side, so a subject's id here stalls every Stripe-linked adoption at stripe_handoff_pending.
+   */
   actorUserId: string | null
 }
 
@@ -117,7 +123,7 @@ export async function handoffSubscriberBillingToBrokerage(
   input: SubscriberBillingHandoffInput,
   deps: SubscriberBillingHandoffDeps = {},
 ): Promise<SubscriberBillingHandoffResult> {
-  const base = { source_brokerage_id: input.sourceBrokerageId, target_brokerage_id: input.targetBrokerageId, transfer_request_id: input.transferRequestId, effective_at: input.effectiveAt }
+  const base = { source_brokerage_id: input.sourceBrokerageId, target_brokerage_id: input.targetBrokerageId, transfer_request_id: input.transferRequestId, effective_at: input.effectiveAt, approved_by_user_id: input.actorUserId }
   const target = await latestSubscription(svc, input.targetBrokerageId)
   if (target.error) return { ok: false, code: "target_subscription_unreadable", error: `Target subscription read refused: ${target.error}`, evidence: base }
   if (!target.row) return { ok: false, code: "target_subscription_missing", error: "The adopting brokerage has no subscription row — it must own the seat relationship before it takes a seat.", evidence: base }

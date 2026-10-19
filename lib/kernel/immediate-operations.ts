@@ -75,7 +75,8 @@ export const OPERATION_LABEL: Readonly<Record<ImmediateOperation, string>> = Obj
   tenant_creation: "Workspace setup", user_creation: "User setup", invitation: "Invitation delivery",
   seat_provisioning: "Seat provisioning", brokerage_transfer: "Brokerage transfer", website_creation: "Website creation",
   provider_connection: "Provider connection", billing_activation: "Billing activation", phone_a2p: "Phone number registration",
-  transaction_provider_connection: "Transaction provider connection",
+  // The tenant-facing name is the LEGAL-FORMS provider (owner, wave 142); the key is a stored vocabulary.
+  transaction_provider_connection: "Legal-forms provider connection",
 })
 
 /** Which readiness checks the consumer RE-VERIFIES (with repair) for each operation. An empty list means
@@ -265,6 +266,10 @@ export interface OperationHandlerDeps {
   /** The human rails (notifications to org recipients; platform staff when the subject is platform-visible). */
   notifyOrg?: (svc: Svc, brokerageId: string, n: { title: string; body: string; entityType: string; entityId: string | null }) => Promise<number>
   notifyStaff?: (svc: Svc, n: { title: string; body: string; entityType: string; entityId: string | null }) => Promise<number>
+  /** Wave 142G — the TICKET FLOW: an escalation that reaches a human also opens (or reuses) the ONE support ticket
+   *  that tracks it, so it carries an SLA clock and a thread, not only a bell (lib/support/ticket-triage.ts
+   *  ensureOperationTicket). Default = that survivor; the proof injects a spy. */
+  openTicket?: (svc: Svc, p: { brokerageId: string; operation: string; tenantFacing: string; platformVisible: boolean; actorUserId?: string | null; lifecycleEventId?: string | null }) => Promise<{ ticketId: string | null; created: boolean; error: string | null }>
 }
 
 interface OperationSignalPayload {
@@ -275,6 +280,12 @@ interface OperationSignalPayload {
   readiness_keys?: string[]
   tenant_facing?: string | null
   platform_visible?: boolean
+  actor_user_id?: string | null
+}
+
+const defaultOpenTicket: NonNullable<OperationHandlerDeps["openTicket"]> = async (svc, p) => {
+  const { ensureOperationTicket } = await import("@/lib/support/ticket-triage")
+  return ensureOperationTicket(svc, p)
 }
 
 const defaultNotifyOrg: NonNullable<OperationHandlerDeps["notifyOrg"]> = async (svc, brokerageId, n) => {
@@ -310,15 +321,26 @@ export async function handleOperationFailureEscalated(
   const p = (signal.payload ?? {}) as Partial<OperationSignalPayload>
   const notifyOrg = deps.notifyOrg ?? defaultNotifyOrg
   const notifyStaff = deps.notifyStaff ?? defaultNotifyStaff
+  const openTicket = deps.openTicket ?? defaultOpenTicket
   const entityType = signal.entityType ?? p.subject_type ?? "operation"
   const entityId = signal.entityId ?? p.subject_id ?? null
 
   // The bell carries the tenant-facing body; the consumed action (the bus record) carries the detail —
   // readiness reasons, the playbook that ran, the engine's own refusal — so the feed says WHY.
+  // Wave 142G: the escalation ALSO lands in the ticket flow (one tracked ticket per operation while open) — a
+  // subject that is itself a support ticket (the triage's safe-repair path) is not re-ticketed; it is the ticket.
   const escalate = async (title: string, body: string, staffDetail: string | null): Promise<string> => {
     const org = await notifyOrg(svc, ctx.brokerageId, { title, body, entityType, entityId })
     const staff = p.platform_visible ? await notifyStaff(svc, { title, body: staffDetail ?? body, entityType, entityId }) : 0
-    return `escalated to a human (${org} tenant admin(s)${p.platform_visible ? `, ${staff} platform staff` : ""}) — ${staffDetail ?? body}`.slice(0, 600)
+    let ticketNote = ""
+    if (entityType === "support_ticket" && entityId) ticketNote = `; tracked on support ticket ${entityId}`
+    else if (isImmediateOperation(p.operation)) {
+      try {
+        const t = await openTicket(svc, { brokerageId: ctx.brokerageId, operation: p.operation, tenantFacing: body, platformVisible: !!p.platform_visible, actorUserId: p.actor_user_id ?? null, lifecycleEventId: p.lifecycle_event_id ?? null })
+        ticketNote = t.ticketId ? `; ${t.created ? "opened" : "already tracked on"} support ticket ${t.ticketId}` : `; no ticket opened (${t.error ?? "refused"})`
+      } catch (e) { ticketNote = `; no ticket opened (${e instanceof Error ? e.message : String(e)})` }
+    }
+    return `escalated to a human (${org} tenant admin(s)${p.platform_visible ? `, ${staff} platform staff` : ""}${ticketNote}) — ${staffDetail ?? body}`.slice(0, 600)
   }
 
   if (!isImmediateOperation(p.operation)) {

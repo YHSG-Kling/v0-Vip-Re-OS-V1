@@ -37,13 +37,19 @@ import {
   type TicketStatus, type TicketPriority, type TicketLane, type SupportTicket, type HelpArticle,
 } from "@/lib/support/ticket-constants"
 import { BROKERAGE_ADMIN_USER_TYPES } from "@/lib/auth/require-brokerage-admin"
-import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
+import {
+  SUPPORT_DESK_USER_TYPES, resolveTicketQueueScope, scopeTicketQuery, ticketWithinScope,
+  type TicketQueueScope,
+} from "@/lib/support/ticket-scope"
 
-// SCOPE LADDER (kept inline — 'support' is a storable platform-staff user_type
-// this queue deliberately admits): 'superadmin' removed — dead as
-// users.user_type (0 live rows; the platform superadmin is user_type='admin',
-// admitted already); broker_owner added — storable seat that owns the brokerage.
-const ADMIN_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "team_lead", "support"])
+// TOMBSTONE (wave 142, lane 142A; §6): `const ADMIN_ROLES = new Set(["broker",
+// "broker_owner", "broker_admin", "admin", "team_lead", "support"])` stood here, and
+// a second copy in app/dashboard/admin/support-tickets/page.tsx:13. Survivor:
+// lib/support/ticket-scope.ts:SUPPORT_DESK_USER_TYPES — the operational admin
+// roster SPREAD from TENANT_ADMIN_USER_TYPES plus 'support', so the office desk can
+// never again disagree with lib/auth/resolve-user-role.ts (compliance_officer was
+// missing from both literals while public.is_brokerage_admin() admitted it).
 
 /** The columns every ticket read in this file selects. One list so a lane can
  *  never be dropped from one query and present in another. */
@@ -86,33 +92,33 @@ async function callerAdministersOwnBrokerage(ctx: { userId: string; userType: st
 }
 
 /**
- * Who reads/writes the ticket queue ACROSS brokerages instead of being pinned to
- * their own tenant.
+ * THE SCOPE a caller reads the office queue in — platform (cross-tenant), their own
+ * tenant, or refused. ONE decision for the list, the status flip, the thread read
+ * and the reply, so no door can be wider than another.
  *
- * Two halves, and only one of them worked. `ctx.userType === "support"` is live —
- * 'support' is a storable user_type — but `ctx.userType === "superadmin"` matched
- * NOBODY: the platform's only superadmin is (user_type='admin',
- * platform_role='superadmin'), so the platform owner silently fell through to the
- * brokerage-scoped branch and the support console showed them ONE tenant's tickets
- * while reading as the whole queue. AgentContext does not carry platform_role, so
- * it is read here. Both columns, the same shape as public.is_platform_admin() in
- * RLS — see app/actions/vendor-budget.ts:136-147.
+ * TOMBSTONE (wave 142, lane 142A — owner verbatim: "tenant should not read ticket
+ * queue across brokerages, only their tenancy"): `callerReadsAllBrokerages` stood
+ * here and opened with `if (ctx.userType === "support") return true`. 'support' is
+ * a storable TENANT seat type (users_user_type_check) — so a tenant row typed
+ * 'support' with NO platform_role read and wrote every brokerage's tickets through
+ * the service client, and no proof covered it. The platform-staff CRUD also writes
+ * user_type='support' beside platform_role='support', which is why the arm LOOKED
+ * like a staff gate. The arm is gone; a user_type never widens scope.
  *
- * NOT widened to the four-role platform-staff roster: that would newly admit
- * platform 'admin' and 'marketing' to every tenant's support tickets, which is a
- * scope decision this fix has no mandate to make. Only the dead half is repaired.
+ * CROSS-TENANT IS THE PLATFORM 'support' CAPABILITY, THROUGH THE ONE GATE the
+ * platform console already uses (app/actions/superadmin/support-console.ts
+ * requireStaff → requirePlatformCapability("support")): platform_role → the roster
+ * predicates (lib/platform/platform-staff-roster.ts) + the superadmin-edited
+ * overrides. The previous code admitted only the superadmin here; the console
+ * admits every staff role carrying the capability, and two spellings of "who is
+ * platform support" is the §6 defect this file was already paying for. Survivor:
+ * lib/support/ticket-scope.ts resolveTicketQueueScope (pure; the proof runs it).
  */
-async function callerReadsAllBrokerages(ctx: { userId: string; userType: string }): Promise<boolean> {
-  // Owner ruling 2026-10-14: `ctx.userType === "superadmin"` is never an authority arm (platform staff
-  // live in platform_role; the old arm matched nobody and was the fallback shape the ruling forbids).
-  if (ctx.userType === "support") return true
-  const { data } = await createServiceClient()
-    .from("users")
-    .select("user_type, platform_role")
-    .eq("id", ctx.userId)
-    .maybeSingle()
-  const row = data as { user_type?: string | null; platform_role?: string | null } | null
-  return isPlatformSuperadminIdentity(row?.user_type, row?.platform_role)
+async function resolveQueueScope(ctx: { userType: string; brokerageId: string | null }): Promise<TicketQueueScope> {
+  // FAIL CLOSED (§4): a gate that did not admit, or admitted nobody, is a refusal —
+  // the same two-part test requireStaff applies in the console.
+  const gate = await requirePlatformCapability("support")
+  return resolveTicketQueueScope({ platformSupport: gate.ok && !!gate.userId, userType: ctx.userType, brokerageId: ctx.brokerageId })
 }
 
 function mapTicket(r: Record<string, unknown>): SupportTicket {
@@ -228,6 +234,18 @@ export async function createSupportTicket(input: {
       })
     }
   } catch { /* best-effort */ }
+
+  // AI TRIAGE (wave 142, lane 142G — owner: TICKET → AI TRIAGE → registered owner → safe repair or answer →
+  // human where required). In-request, so nobody waits for a tick to learn the ticket was read; best-effort,
+  // so a dark model lane never blocks the ticket (the triage falls back to its deterministic classifier and
+  // says so in its evidence row). Pinned to the SESSION tenant resolved above — never a body-supplied id.
+  try {
+    const { triageSupportTicket } = await import("@/lib/support/ticket-triage")
+    await triageSupportTicket(svc, {
+      ticketId: data.id as string, brokerageId, lane, subject, description: input.description?.trim() || null,
+      category: category ?? "general", priority, submitterUserId: ctx.userId, actor: { userType: ctx.userType },
+    })
+  } catch (e) { console.error("[support] AI triage did not run:", e instanceof Error ? e.message : String(e)) }
 
   revalidatePath("/dashboard/help")
   return { ok: true, id: data.id as string }
@@ -360,22 +378,22 @@ export async function listBrokerageTickets(filters: {
 }): Promise<{ ok: true; tickets: SupportTicket[] } | { ok: false; error: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
-  if (!ADMIN_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden" }
   if (!isTicketLane(filters?.lane)) return { ok: false, error: "A support lane is required" }
+  // Platform support reads every brokerage; a desk seat reads ITS OWN tenant; anyone
+  // else is refused BEFORE the service client is created (gate first, §4).
+  const scope = await resolveQueueScope(ctx)
+  if (scope.kind === "refused") return { ok: false, error: "Forbidden" }
 
   const svc = createServiceClient()
-  let query = svc
-    .from("support_tickets")
-    .select(TICKET_COLUMNS)
-    .eq("lane", filters.lane)
+  let query = scopeTicketQuery(
+    svc
+      .from("support_tickets")
+      .select(TICKET_COLUMNS)
+      .eq("lane", filters.lane),
+    scope,
+  )
     .order("created_at", { ascending: false })
     .limit(300)
-
-  // Superadmin/support staff see all brokerages; everyone else is brokerage-scoped.
-  if (!(await callerReadsAllBrokerages(ctx))) {
-    if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
-    query = query.eq("brokerage_id", ctx.brokerageId)
-  }
   if (filters.status) query = query.eq("status", filters.status)
 
   const { data, error } = await query
@@ -389,19 +407,17 @@ export async function updateTicketStatus(
   priority?: TicketPriority,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ADMIN_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden" }
+  if (!ctx.isAuthenticated) return { ok: false, error: "Forbidden" }
   if (!(TICKET_STATUSES as readonly string[]).includes(status)) return { ok: false, error: "Invalid status" }
+  const scope = await resolveQueueScope(ctx)
+  if (scope.kind === "refused") return { ok: false, error: "Forbidden" }
 
   const svc = createServiceClient()
   const update: Record<string, unknown> = { status, updated_at: new Date().toISOString() }
   if (priority && (TICKET_PRIORITIES as readonly string[]).includes(priority)) update.priority = priority
 
-  let q = svc.from("support_tickets").update(update).eq("id", ticketId)
-  // Non-platform admins may only touch their own brokerage's tickets.
-  if (!(await callerReadsAllBrokerages(ctx))) {
-    if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
-    q = q.eq("brokerage_id", ctx.brokerageId)
-  }
+  // A tenant scope pins the write to the session tenant; only platform support is unpinned.
+  const q = scopeTicketQuery(svc.from("support_tickets").update(update).eq("id", ticketId), scope)
   // PROVE the write. A brokerage-scoped update that matches no row returns
   // error:null with zero rows — indistinguishable from success unless the rows
   // are counted, which is how the optimistic status flip in the queue UI could
@@ -425,7 +441,9 @@ async function resolveAdminTicketScope(ticketId: string): Promise<
   | { ok: false }
 > {
   const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ADMIN_ROLES.has(ctx.userType)) return { ok: false }
+  if (!ctx.isAuthenticated) return { ok: false }
+  const scope = await resolveQueueScope(ctx)
+  if (scope.kind === "refused") return { ok: false }
   const svc = createServiceClient()
   const { data: t, error } = await svc
     .from("support_tickets")
@@ -433,12 +451,9 @@ async function resolveAdminTicketScope(ticketId: string): Promise<
     .eq("id", ticketId)
     .maybeSingle()
   if (error || !t) return { ok: false }
-  // Non-platform admins may only touch their own brokerage's tickets.
-  if (!(await callerReadsAllBrokerages(ctx))) {
-    if (!ctx.brokerageId || (t as { brokerage_id: string | null }).brokerage_id !== ctx.brokerageId) {
-      return { ok: false }
-    }
-  }
+  // The thread (support_ticket_messages) inherits the parent's scope — m468's rule —
+  // so the ONE predicate decides here, before any message is read or posted.
+  if (!ticketWithinScope(t as { brokerage_id?: string | null }, scope)) return { ok: false }
   return { ok: true, svc, userId: ctx.userId, lane: String((t as { lane?: string | null }).lane ?? "") }
 }
 

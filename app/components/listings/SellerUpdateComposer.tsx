@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -10,6 +10,8 @@ import { Loader2, Sparkles, Send, Save, Trash2, Eye, AlertTriangle } from "lucid
 import {
   generateSellerUpdateDraft,
   sendSellerUpdate,
+  saveSellerUpdateDraft,
+  loadSellerUpdateDraft,
 } from "@/app/actions/seller-updates"
 import { ContextualAiAssistBar } from "@/app/components/ai-copilot"
 
@@ -39,6 +41,23 @@ export function SellerUpdateComposer({
 
   const [isGenerating, startGenerating] = useTransition()
   const [isSending, startSending] = useTransition()
+  const [isSaving, startSaving] = useTransition()
+  // The pending draft saved on an earlier visit (ai_message_drafts, trigger seller_update) — wave 142.
+  const [savedDraftId, setSavedDraftId] = useState<string | null>(null)
+  const [savedAt, setSavedAt] = useState<string | null>(null)
+
+  useEffect(() => {
+    let live = true
+    loadSellerUpdateDraft(listingId)
+      .then((r) => {
+        if (!live || !r.body) return
+        setDraft(r.body)
+        setSavedDraftId(r.draftId)
+        setSavedAt(r.savedAt)
+      })
+      .catch(() => {})
+    return () => { live = false }
+  }, [listingId])
 
   const handleGenerateDraft = () => {
     setError(null)
@@ -76,17 +95,33 @@ export function SellerUpdateComposer({
         setDraft("")
         setIsDraft(false)
         setContext(null)
+        // sendSellerUpdate stamps the saved draft `sent` — nothing pending remains for this listing
+        setSavedDraftId(null)
+        setSavedAt(null)
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to send update")
       }
     })
   }
 
+  // Wave 142 (lane 142H): this used to clear two flags and save nothing ("the draft stays in component
+  // state"). It now persists through the drafts survivor (ai_message_drafts) and reports the refusal.
   const handleSaveAsDraft = () => {
-    // In this implementation, the draft stays in component state
-    // Could be extended to save to a drafts table
+    if (!draft.trim()) {
+      setError("Nothing to save yet — write or generate the update first")
+      return
+    }
     setError(null)
     setSuccess(false)
+    startSaving(async () => {
+      const r = await saveSellerUpdateDraft({ listingId, body: draft, draftId: savedDraftId })
+      if (!r.success) {
+        setError(r.error ?? "The draft could not be saved")
+        return
+      }
+      setSavedDraftId(r.draftId ?? null)
+      setSavedAt(new Date().toISOString())
+    })
   }
 
   const handleDiscard = () => {
@@ -228,10 +263,19 @@ export function SellerUpdateComposer({
                 {showPreview ? "Edit" : "Preview"}
               </Button>
 
-              <Button variant="outline" onClick={handleSaveAsDraft}>
-                <Save className="mr-2 h-4 w-4" />
-                Save as Draft
+              <Button variant="outline" onClick={handleSaveAsDraft} disabled={isSaving || !draft.trim()}>
+                {isSaving ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="mr-2 h-4 w-4" />
+                )}
+                {isSaving ? "Saving…" : savedDraftId ? "Update Draft" : "Save as Draft"}
               </Button>
+              {savedAt && !isSaving && (
+                <span className="self-center text-xs text-muted-foreground">
+                  Draft saved {new Date(savedAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                </span>
+              )}
 
               <Button
                 variant="ghost"

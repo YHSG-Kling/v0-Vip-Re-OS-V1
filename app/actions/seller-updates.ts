@@ -229,6 +229,29 @@ export async function sendSellerUpdate({ listingId, agentId, messageBody, approv
     throw new Error(`Failed to send message: ${messageError.message}`)
   }
 
+  // A draft the agent SAVED for this listing (saveSellerUpdateDraft) is now sent — stamped on the same
+  // row, counted (CLAUDE.md §3). Zero rows is the common case (most sends never had a saved draft), so
+  // it is not a failure here. sent_message_id is NOT written: its FK targets `messages`, and a seller
+  // update lands in client_portal_messages — the portal message id rides in edit_delta as evidence.
+  const { data: sentDrafts, error: draftError } = await supabase
+    .from("ai_message_drafts")
+    .update({
+      status: "sent",
+      final_body: messageBody,
+      acted_at: new Date().toISOString(),
+      edit_delta: { client_portal_message_id: message.id },
+    })
+    .eq("brokerage_id", brokerageId)
+    .eq("listing_id", listingId)
+    .eq("trigger_event", SELLER_UPDATE_DRAFT_TRIGGER)
+    .eq("status", "pending")
+    .select("id")
+  if (draftError) {
+    console.error("[seller-updates] saved draft could not be marked sent:", draftError.message)
+  } else if ((sentDrafts ?? []).length > 1) {
+    console.warn(`[seller-updates] ${sentDrafts!.length} pending drafts marked sent for listing ${listingId} (expected ≤ 1)`)
+  }
+
   // Emit kernel event — audit row + reactor. This is THE producer of
   // SELLER_UPDATE_SENT: the portal template in lib/kernel/event-fanout.ts
   // ("Listing activity update") had no emitter until the bare insert here
@@ -250,6 +273,97 @@ export async function sendSellerUpdate({ listingId, agentId, messageBody, approv
   })
 
   return { success: true, messageId: message.id }
+}
+
+/** ai_message_drafts.trigger_event of a seller-update draft the agent saved — ONE spelling for the writer and both readers. */
+const SELLER_UPDATE_DRAFT_TRIGGER = "seller_update"
+
+/**
+ * Wave 142 (lane 142H — UI wiring audit): the composer's "Save as Draft" button saved NOTHING — its handler
+ * cleared two flags and a comment admitted "the draft stays in component state". The draft SURVIVOR is
+ * ai_message_drafts (the table the net-sheet explanation and the AI reply coach already persist to):
+ * channel in_app (the seller portal is the delivery channel), status pending, trigger seller_update, keyed
+ * to the listing and its seller contact. Tenant from the session, never the body; one pending draft per
+ * listing is what the composer loads back.
+ */
+export async function loadSellerUpdateDraft(
+  listingId: string,
+): Promise<{ draftId: string | null; body: string | null; savedAt: string | null; error?: string }> {
+  const supabase = await createClient()
+  const { brokerageId } = await getAgentContext()
+  if (!brokerageId) return { draftId: null, body: null, savedAt: null, error: "Not authenticated" }
+
+  const { data, error } = await supabase
+    .from("ai_message_drafts")
+    .select("id, draft_body, created_at")
+    .eq("brokerage_id", brokerageId)
+    .eq("listing_id", listingId)
+    .eq("trigger_event", SELLER_UPDATE_DRAFT_TRIGGER)
+    .eq("status", "pending")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) return { draftId: null, body: null, savedAt: null, error: error.message }
+  return { draftId: data?.id ?? null, body: data?.draft_body ?? null, savedAt: data?.created_at ?? null }
+}
+
+export async function saveSellerUpdateDraft({
+  listingId,
+  body,
+  draftId,
+}: {
+  listingId: string
+  body: string
+  /** The pending draft to update; absent → a new row. A stale id (sent / gone) falls through to a new row. */
+  draftId?: string | null
+}): Promise<{ success: boolean; draftId?: string; error?: string }> {
+  const text = body.trim()
+  if (!text) return { success: false, error: "Nothing to save — the update is empty" }
+
+  const supabase = await createClient()
+  const { userId, brokerageId } = await getAgentContext()
+  if (!brokerageId) return { success: false, error: "Not authenticated" }
+
+  // The listing must be this tenant's and have a seller contact — the same gate sendSellerUpdate applies.
+  const { data: listing, error: listingError } = await supabase
+    .from("listings")
+    .select("id, contact_id")
+    .eq("id", listingId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (listingError) return { success: false, error: listingError.message }
+  if (!listing?.contact_id) return { success: false, error: "Listing or seller contact not found" }
+
+  if (draftId) {
+    const { data: updated, error: updateError } = await supabase
+      .from("ai_message_drafts")
+      .update({ draft_body: text })
+      .eq("id", draftId)
+      .eq("brokerage_id", brokerageId)
+      .eq("status", "pending")
+      .select("id")
+    if (updateError) return { success: false, error: updateError.message }
+    if ((updated ?? []).length === 1) return { success: true, draftId }
+    // no row matched (already sent, or not this tenant's) — a fresh draft, never a silent "saved"
+  }
+
+  const { data: inserted, error: insertError } = await supabase
+    .from("ai_message_drafts")
+    .insert({
+      agent_user_id: userId,
+      contact_id: listing.contact_id,
+      listing_id: listingId,
+      brokerage_id: brokerageId,
+      channel: "in_app",
+      draft_body: text,
+      trigger_event: SELLER_UPDATE_DRAFT_TRIGGER,
+      status: "pending",
+      context_summary: "Seller update draft saved by the agent from the listing composer",
+    })
+    .select("id")
+    .single()
+  if (insertError) return { success: false, error: insertError.message }
+  return { success: true, draftId: inserted.id }
 }
 
 /**

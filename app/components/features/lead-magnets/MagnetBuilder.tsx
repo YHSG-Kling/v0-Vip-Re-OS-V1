@@ -1,10 +1,12 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { createLeadMagnetAction, publishLeadMagnetAction, draftLeadMagnetWithAiAction } from "@/app/actions/lead-magnets-actions"
+import { createLeadMagnetAction, publishLeadMagnetAction, draftLeadMagnetWithAiAction, startBookProjectAction } from "@/app/actions/lead-magnets-actions"
 import { generateLeadMagnetCopyAction } from "@/app/actions/marketing/lead-magnet-copy"
 import type { CreateLeadMagnetInput } from "@/lib/kernel/lead-magnets"
 import type { LandingContent } from "@/lib/marketing/lead-magnet-copy"
+// Wave 142: the ONE roster of "who fills this form" (merged from the retired admin Forms Manager).
+import { FORM_DECLARABLE_CONTACT_TYPES } from "@/lib/lead-magnets/form-contact-types"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -19,7 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { Bell, CheckCircle2, Loader2, Plus, Sparkles, Trash2, Wand2 } from "lucide-react"
+import { Bell, BookOpen, CheckCircle2, Loader2, Plus, Sparkles, Trash2, Wand2 } from "lucide-react"
 
 type MagnetType = CreateLeadMagnetInput["magnetType"]
 type PublishChannel = "qr_code" | "email" | "landing_page" | "social"
@@ -94,6 +96,30 @@ export function MagnetBuilder({ brokerageId, onCreated, onDrafted, initialConcep
   const [concept, setConcept] = useState(initialConcept ?? "")
   const [isDrafting, setIsDrafting] = useState(false)
   const [draftNote, setDraftNote] = useState<string | null>(null)
+  // Wave 142: WHO FILLS a custom form (merged from the retired admin Forms Manager) — "" = unspecified.
+  const [defaultContactType, setDefaultContactType] = useState("")
+  // Wave 142: THE BOOK — a whole AI-written, fact-checked, fair-housing-reviewed book as the deliverable.
+  const [bookAudience, setBookAudience] = useState<"buyer" | "seller">("seller")
+  const [isStartingBook, setIsStartingBook] = useState(false)
+
+  function handleWriteBook() {
+    setError(null)
+    setDraftNote(null)
+    if (concept.trim().length < 12) { setError("Describe the book in a sentence or two first."); return }
+    setIsStartingBook(true)
+    ;(async () => {
+      try {
+        const res = await startBookProjectAction({ concept: concept.trim(), audience: bookAudience, area: area.trim() || null, brand: brand.trim() || null })
+        if (!res.success) { setError(res.error ?? "The book project was not created"); return }
+        setDraftNote(`Book project started — the writer is researching, outlining and drafting "${res.title}". Follow it on the review tab.`)
+        onDrafted?.(res.magnetId, res.slug)
+      } catch (err: any) {
+        setError(err?.message ?? "The book project was not created")
+      } finally {
+        setIsStartingBook(false)
+      }
+    })()
+  }
 
   function toggleChannel(channel: PublishChannel) {
     setChannels((prev) =>
@@ -179,6 +205,8 @@ export function MagnetBuilder({ brokerageId, onCreated, onDrafted, initialConcep
         publish_state: "draft",
         // The AI landing copy is persisted WITH the row (one write — not a second save that could fail).
         landing: landing ?? null,
+        // Who fills a CUSTOM form — the kernel stamps the contact type so the welcome + handoff fire.
+        default_contact_type: magnetType === "generic_form" && defaultContactType ? defaultContactType : null,
       })
 
       if (!result.success || !result.magnetId) {
@@ -322,16 +350,35 @@ export function MagnetBuilder({ brokerageId, onCreated, onDrafted, initialConcep
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button type="button" size="sm" onClick={handleDraftWithAi} disabled={isDrafting || isGenerating}>
+            <Button type="button" size="sm" onClick={handleDraftWithAi} disabled={isDrafting || isGenerating || isStartingBook}>
               {isDrafting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Wand2 className="h-4 w-4 mr-2" />}
               Draft with AI
             </Button>
-            <Button type="button" variant="secondary" size="sm" onClick={handleGenerateCopy} disabled={isGenerating || isDrafting}>
+            <Button type="button" variant="secondary" size="sm" onClick={handleGenerateCopy} disabled={isGenerating || isDrafting || isStartingBook}>
               {isGenerating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}
               {landing ? "Regenerate page copy only" : "Write page copy only"}
             </Button>
           </div>
           {draftNote && <p className="text-xs text-green-700">{draftNote}</p>}
+
+          {/* Wave 142: a WHOLE BOOK as the deliverable — researched, outlined, written, fact-checked, edited, laid out as a PDF you review. */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-2 border-t">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium flex items-center gap-1"><BookOpen className="h-3.5 w-3.5" /> Or write a whole book from this concept</p>
+              <p className="text-[11px] text-muted-foreground">Research → outline → original chapters → fact check → edit → cover + PDF. You review every chapter before it can publish.</p>
+            </div>
+            <Select value={bookAudience} onValueChange={(v) => setBookAudience(v as "buyer" | "seller")}>
+              <SelectTrigger className="w-[150px]" aria-label="Book audience"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="seller">For sellers</SelectItem>
+                <SelectItem value="buyer">For buyers</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button type="button" variant="outline" size="sm" onClick={handleWriteBook} disabled={isStartingBook || isDrafting || isGenerating}>
+              {isStartingBook ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <BookOpen className="h-4 w-4 mr-2" />}
+              Write the book
+            </Button>
+          </div>
 
           {landing && (
             <div className="space-y-3 pt-1">
@@ -432,6 +479,23 @@ export function MagnetBuilder({ brokerageId, onCreated, onDrafted, initialConcep
             </div>
           ))}
         </div>
+
+        {/* Wave 142 (merged from the admin Forms Manager): who fills a CUSTOM form, so the right welcome + manager pick them up. */}
+        {magnetType === "generic_form" && (
+          <div className="space-y-2">
+            <Label>Who fills this form?</Label>
+            <Select value={defaultContactType || "unspecified"} onValueChange={(v) => setDefaultContactType(v === "unspecified" ? "" : v)}>
+              <SelectTrigger aria-label="Who fills this form"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="unspecified">Unspecified — capture only, no automatic welcome</SelectItem>
+                {FORM_DECLARABLE_CONTACT_TYPES.map((v) => (
+                  <SelectItem key={v} value={v}>{v === "both" ? "Buyers and sellers" : v === "buyer" ? "Buyers" : "Sellers"}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">Sets the contact type on every submission so the welcome sequence and the right manager pick the person up. Leave unspecified to capture without guessing.</p>
+          </div>
+        )}
 
         {/* Thank you message */}
         <div className="space-y-2">

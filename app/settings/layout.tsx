@@ -52,11 +52,13 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   }
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    // Wave 142 (lane 142H): a column below md — the sidebar renders as a horizontal section strip there
+    // (a 256px fixed rail on a 390px phone left the settings themselves ~130px wide).
+    <div className="flex flex-col md:flex-row h-screen bg-gray-50">
       <SettingsSidebar />
       <div className="flex-1 overflow-auto">
         <div className="border-b border-gray-200 bg-white sticky top-0 z-10">
-          <div className="max-w-7xl mx-auto px-8 py-4 flex items-center justify-between">
+          <div className="max-w-7xl mx-auto px-4 md:px-8 py-4 flex items-center justify-between">
             <div></div>
             <Link 
               href="/dashboard"
@@ -67,7 +69,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
             </Link>
           </div>
         </div>
-        <div className="max-w-7xl mx-auto p-8">
+        <div className="max-w-7xl mx-auto p-4 md:p-8">
           {children}
         </div>
       </div>

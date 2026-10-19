@@ -114,7 +114,7 @@ export function BrokerageFatigueDashboard({ buyers, alerts, brokerageId }: Props
     <div className="space-y-8">
 
       {/* Summary strip */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: "Total Monitored", value: buyers.length, color: "text-foreground" },
           { label: "Watch",    value: buyers.filter(b => b.risk_level === "moderate").length, color: "text-amber-700" },
@@ -208,7 +208,7 @@ export function BrokerageFatigueDashboard({ buyers, alerts, brokerageId }: Props
             <p className="text-sm text-muted-foreground">No buyers in this risk category.</p>
           </div>
         ) : (
-          <div className="rounded-lg border border-border bg-card overflow-hidden">
+          <div className="rounded-lg border border-border bg-card overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="border-b border-border bg-muted/40">
                 <tr>

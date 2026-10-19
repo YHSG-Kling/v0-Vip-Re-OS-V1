@@ -349,8 +349,9 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
 
     const processedVariations: AdCreativeVariation[] = []
 
-    for (const variation of variations) {
-      const combinedText = `${variation.headline} ${variation.primaryText} ${variation.description}`
+    for (const original of variations) {
+      // `variation` is what lands (the rewrite loop below may replace its copy; the name never changes).
+      let variation = original
       const variationDestination = leadMagnetId
         ? await resolveAdDestination(supabase as never, {
             brokerageId: context.brokerageId,
@@ -361,7 +362,7 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
 
       // Run all 5 compliance gates: Brand Voice → TCPA → Authority → Fair Housing → Them-First
       // Ad creative uses the "social" channel and a synthetic broadcast contact (no real recipient).
-      const complianceResult = await evaluateOutbound({
+      const gateFor = (v: AdCreativeVariation) => evaluateOutbound({
         actorContext: {
           userId,
           brokerageId: context.brokerageId,
@@ -370,13 +371,57 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
         journeyType: "seller",
         persona: "other",
         messageType: "social",
-        content: combinedText,
+        content: `${v.headline} ${v.primaryText} ${v.description}`,
         contact: broadcastAdContact(context.brokerageId),
       })
+      let complianceResult = await gateFor(variation)
+
+      // THE FAIR-HOUSING REWRITE LOOP (wave 142, lane 142E; owner: "any fair housing flags on copy ai should
+      // rewrite with those comments in mind"). A rejected variation goes BACK to the routed lane with the
+      // specific findings (the ONE pattern list's phrase → fix, plus the gate's own violations), is re-gated
+      // through the SAME five gates, at most PUBLIC_COPY_MAX_REWRITES times. Still rejected → it lands as
+      // rejected with its compliance_events row (the human surface), never silently dropped.
+      let rewriteAttempts = 0
+      if (!complianceResult.allowed) {
+        const { rewritePublicCopyUntilCompliant, scanPublicCopy, renderFindingsForRewrite } = await import("@/lib/kernel/marketing/public-copy-rewrite")
+        let latest = variation
+        let latestGate = complianceResult
+        const loop = await rewritePublicCopyUntilCompliant({
+          text: `${variation.headline} ${variation.primaryText} ${variation.description}`,
+          surface: "ad",
+          gate: async (text) => {
+            const scan = await scanPublicCopy(text, "ad")
+            const findings = [...scan.findings, ...(latestGate.violations ?? []).map((v) => ({ phrase: v, fix: "Describe the home and the service; promise no outcome; name no protected class.", reference: "lib/kernel/compliance.ts evaluateOutbound", severity: "blocker" as const }))]
+            return { ok: latestGate.allowed && scan.ok, findings, warnings: scan.warnings }
+          },
+          rewrite: async (_text, findings) => {
+            const { text } = await generateTextRouted({
+              feature: "marketing_script_generation",
+              brokerageId,
+              userId,
+              prompt:
+                `Rewrite this ${campaign.platform} ad creative so EVERY finding below is resolved. Keep the same intent and the character limits (headline ≤40, primaryText ≤125, description ≤30). Fair Housing Act applies: describe the home and the service, never who should want it; no guarantees.\n\n` +
+                `Current creative:\n${JSON.stringify({ headline: latest.headline, primaryText: latest.primaryText, description: latest.description, callToAction: latest.callToAction })}\n\n` +
+                `Findings:\n${renderFindingsForRewrite(findings)}\n\nRespond with ONLY a JSON object {"headline","primaryText","description","callToAction"}.`,
+              maxTokens: 400,
+            })
+            const m = text.match(/\{[\s\S]*\}/)
+            if (!m) return null
+            const parsed = JSON.parse(m[0]) as Partial<AdCreativeVariation>
+            if (typeof parsed.headline !== "string" || typeof parsed.primaryText !== "string") return null
+            latest = { ...latest, headline: parsed.headline, primaryText: parsed.primaryText, description: typeof parsed.description === "string" ? parsed.description : latest.description, callToAction: typeof parsed.callToAction === "string" ? parsed.callToAction : latest.callToAction }
+            latestGate = await gateFor(latest)
+            return `${latest.headline} ${latest.primaryText} ${latest.description}`
+          },
+        })
+        rewriteAttempts = loop.rewrites
+        variation = latest
+        complianceResult = latestGate
+      }
 
       // ── 7. Insert into ad_creative_variations ─────────────────────────────────
       const approvalStatus = complianceResult.allowed ? "draft" : "rejected"
-      
+
       const { data: creativeRecord, error: insertError } = await supabase
         .from("ad_creative_variations")
         .insert({
@@ -411,7 +456,8 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
             gate_name: "evaluateOutbound",
             message_type: "social",
             violations: complianceResult.violations || [],
-            blocked_reason: complianceResult.blockedReason ?? null,
+            // The loop's evidence for the reviewer: how many AI rewrites ran before the human got it.
+            blocked_reason: `${complianceResult.blockedReason ?? "compliance"}${rewriteAttempts ? ` (after ${rewriteAttempts} AI rewrite${rewriteAttempts === 1 ? "" : "s"} — escalated to a human)` : ""}`,
             allowed: false,
           })
           if (complianceLogError) {

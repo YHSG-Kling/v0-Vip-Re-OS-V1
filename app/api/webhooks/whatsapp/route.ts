@@ -221,6 +221,20 @@ async function handleInboundWhatsapp(params: {
       .single()
     if (error || !newContact) return
     contactId = newContact.id
+    // ENRICH NOW (wave 142, lane 142D — owner: "enrichment should happen as soon as a new contact or form
+    // submission comes in"). This door inserts the contact WITH a phone — the one identifier the rail can
+    // buy on — and emits no kernel contact event, so nothing ever queued it: the row waited for nobody, not
+    // even the cron, which drains only queued rows. Same idiom as lib/ads/ad-lead-intake.ts: voided (a
+    // WhatsApp lead must land even if the queue write is refused); suppression, dedup, the backlog cap, the
+    // budget gate and the inline drain all live inside the writer. A staged row (tenant unresolved) has no
+    // tenant budget to spend and stays for the admin's assignment, as the comment above says.
+    if (brokerageId) {
+      const tenantId = brokerageId
+      const newContactId = newContact.id
+      void import("@/lib/enrichment/contact-enrichment-core")
+        .then((m) => m.queueContactEnrichment({ contactId: newContactId, brokerageId: tenantId, triggerType: "whatsapp_dm", supabase: svc }))
+        .catch((err) => console.error("[whatsapp] enrichment queue failed for the new contact (no queue row — the cron cannot backstop it):", err instanceof Error ? err.message : String(err)))
+    }
   }
 
   if (!contactId) return

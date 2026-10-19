@@ -6,7 +6,13 @@ name: e2e
 # Triggers: nightly + manual (these are DB-heavy, so not on every push). Without the secrets the
 # simulators skip their live layer gracefully and the run still passes (safe for forks).
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      ui_smoke_base_url:
+        description: "Deployed preview / production URL for the Playwright UI smoke (job ui-smoke). Empty → the repository variable UI_SMOKE_BASE_URL, else a STATED skip."
+        required: false
+        default: ""
+        type: string
   schedule:
     - cron: "0 7 * * *"   # 07:00 UTC nightly
 
@@ -53,3 +59,28 @@ jobs:
       # this catches anything that landed on main between deploys.
       - name: Full guard chain
         run: npm run guard
+
+  # PRODUCTION UI SMOKE (wave 142, lane 142I — the wave-141 blocker "Playwright smoke in CI").
+  # Runs the @smoke Playwright specs (e2e/ui-smoke.spec.ts + portal-login.spec.ts: public pages,
+  # no seeded session) against a DEPLOYED URL — the workflow_dispatch input, else the repository
+  # variable UI_SMOKE_BASE_URL (Settings → Variables). playwright.config.ts reads the same variable
+  # and skips its local webServer when it is set. Without a URL the job prints a STATED skip and
+  # exits 0 — the readiness guard (scripts/production-readiness-guard.ts B11) reads this job as
+  # WAITING_EXTERNAL until a run with a URL is recorded; a skip is never a pass.
+  ui-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      UI_SMOKE_BASE_URL: ${{ inputs.ui_smoke_base_url || vars.UI_SMOKE_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/node-deps
+      - name: Stated skip — no deployed URL configured
+        if: env.UI_SMOKE_BASE_URL == ''
+        run: echo "⊘ skipped — UI_SMOKE_BASE_URL is not set (workflow input or repository variable); the UI smoke needs a deployed preview URL and is never faked green"
+      - name: Install Playwright Chromium
+        if: env.UI_SMOKE_BASE_URL != ''
+        run: npx playwright install --with-deps chromium
+      - name: Playwright UI smoke against the deployed URL (desktop + phone projects)
+        if: env.UI_SMOKE_BASE_URL != ''
+        run: npx playwright test --grep "@smoke|portal login"

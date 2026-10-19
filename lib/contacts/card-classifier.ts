@@ -42,6 +42,28 @@ import type { VendorCategory } from "@/lib/kernel/vendor-categories"
 import { stampFieldProvenance, type FieldProvenance } from "@/lib/lead-pipeline/enrichment-column-map"
 
 export type CardSubjectType = "sphere" | "agent" | "potential_contact" | "contact" | "vendor" | "unknown"
+/** The six classes as data (one spelling with the live CHECK — scripts/business-card-classification-simulator.ts asserts equality). */
+export const CARD_SUBJECT_TYPES: readonly CardSubjectType[] = ["sphere", "agent", "potential_contact", "contact", "vendor", "unknown"]
+
+// ─── WAVE 142 (lane 142D) — THE PRE-SCAN CHOICE AND THE ENTITY A SCAN BECAME ─────────────────
+// Owner, verbatim (2026-10-18): "it depends on what type of person it is — user type they are vendor,
+// contact or agent. before scanning, the user chooses which type and then scans." Both shapes are PURE
+// vocabulary shared by the action (app/actions/business-card/business-card-actions.ts) and the review
+// surface, so neither can drift from the other.
+/** What the scanning agent chooses BEFORE the scan: a concrete class, or "auto" — the reader + notes SUGGEST,
+ *  the scan is HELD, and the human confirms the type before anything is filed. */
+export type PreScanChoice = CardSubjectType | "auto"
+/** WHICH domain entity a scan became — the truthful answer to "what did this card get saved as". `none` is a
+ *  sphere / unclassified card kept as a scan row on purpose (never a contact). */
+export type ScanEntity = { kind: "contact" | "vendor" | "recruit" | "none"; id: string | null }
+/** PURE — the pre-scan choice a caller may pass, or null (the 3-way legacy `target` still counts as a choice). */
+export function resolvePreScanChoice(subjectType: unknown, legacyTarget?: unknown): { kind: "explicit"; type: CardSubjectType } | { kind: "auto" } | null {
+  if (subjectType === "auto") return { kind: "auto" }
+  if (typeof subjectType === "string" && (CARD_SUBJECT_TYPES as readonly string[]).includes(subjectType)) return { kind: "explicit", type: subjectType as CardSubjectType }
+  if (legacyTarget === "recruit") return { kind: "explicit", type: "agent" }
+  if (legacyTarget === "vendor" || legacyTarget === "contact") return { kind: "explicit", type: legacyTarget }
+  return null
+}
 
 export interface CardSubjectClassification {
   subjectType: CardSubjectType

@@ -60,6 +60,65 @@ type AnyClient = { from: (table: string) => any }
 export const COMMISSION_LEDGER_STATUSES = ["pending", "approved", "paid", "disputed"] as const
 export type CommissionLedgerStatus = (typeof COMMISSION_LEDGER_STATUSES)[number]
 
+// ─── THE SEVEN PAYMENT STATES, DERIVED (wave 142, lane 142C) ────────────────────────────────────
+// Owner verbatim (2026-10-18): "Track: expected · preliminary · approved/final · payment_initiated ·
+// payment_recorded · payment_received/verified · reconciled/settled." The four-value status above is
+// MIRRORED onto commission_splits and the seven-year stamp (transaction_commissions) by the kernel and
+// read by every finance proof, so the owner's states are NOT a fifth status column: they are DERIVED
+// from status + the timestamps the row carries (deposit_received_at, paid_at) + the m787 stamps
+// (payment_initiated_at, payment_received_at, reconciled_at) + the CDA's preliminary statement. One
+// vocabulary (CLAUDE.md §6), one derivation, read by the finance page badge and the agent's panel.
+export const COMMISSION_PAYMENT_STATES = ["expected", "preliminary", "approved_final", "payment_initiated", "payment_recorded", "payment_received", "reconciled"] as const
+export type CommissionPaymentState = (typeof COMMISSION_PAYMENT_STATES)[number]
+
+export interface CommissionPaymentStateInput {
+  status: string | null | undefined
+  deposit_received_at?: string | null
+  /** The title company's preliminary settlement statement is on file (closing_disclosure_agreement.preliminary_cd_uploaded_at). */
+  preliminary_statement_at?: string | null
+  payment_initiated_at?: string | null
+  paid_at?: string | null
+  payment_received_at?: string | null
+  reconciled_at?: string | null
+}
+
+/**
+ * PURE — the later state wins; a disputed row is HELD at the state its evidence reached (held: true).
+ *   expected          — the waterfall's expected figures, nothing received yet
+ *   preliminary       — the preliminary statement is on file and/or the brokerage received the deposit
+ *   approved_final    — the brokerage authorized the amount (status approved; CDA broker-signed or the
+ *                       no-CDA close auto-approval)
+ *   payment_initiated — the payout instruction was issued (check cut / direct deposit submitted) but the
+ *                       ledger has not posted the payment
+ *   payment_recorded  — the ledger posted the payment (status paid, paid_at)
+ *   payment_received  — the agent attested the money arrived
+ *   reconciled        — reconciled against the actual connected accounting integration or a statement
+ */
+export function deriveCommissionPaymentState(row: CommissionPaymentStateInput): { state: CommissionPaymentState; held: boolean; basis: string } {
+  const status = (row.status ?? "").toLowerCase()
+  const held = status === "disputed"
+  if (row.reconciled_at) return { state: "reconciled", held, basis: "reconciled_at" }
+  if (row.payment_received_at) return { state: "payment_received", held, basis: "payment_received_at" }
+  if (status === "paid" || row.paid_at) return { state: "payment_recorded", held, basis: status === "paid" ? "status paid" : "paid_at" }
+  if (row.payment_initiated_at) return { state: "payment_initiated", held, basis: "payment_initiated_at" }
+  if (status === "approved") return { state: "approved_final", held, basis: "status approved" }
+  if (row.deposit_received_at || row.preliminary_statement_at) {
+    return { state: "preliminary", held, basis: row.deposit_received_at ? "deposit_received_at" : "preliminary statement on file" }
+  }
+  return { state: "expected", held, basis: held ? "disputed before any evidence" : "no evidence yet" }
+}
+
+/** The tenant-facing label of each derived state (one spelling for every surface). */
+export const COMMISSION_PAYMENT_STATE_LABELS: Record<CommissionPaymentState, string> = {
+  expected: "Expected",
+  preliminary: "Preliminary",
+  approved_final: "Approved — final",
+  payment_initiated: "Payment initiated",
+  payment_recorded: "Payment recorded",
+  payment_received: "Payment received",
+  reconciled: "Reconciled",
+}
+
 /** The only recipient_type whose row corresponds to an agent_commissions row. */
 export const AGENT_RECIPIENT_TYPE = "agent"
 

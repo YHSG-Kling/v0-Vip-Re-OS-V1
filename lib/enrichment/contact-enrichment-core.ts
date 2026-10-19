@@ -65,6 +65,8 @@ import { validateEmail, validatePhone } from "@/lib/contact-validation"
 import { trackVendorUsageService } from "@/lib/vendor-governance"
 import { isContactInLiveDeal, contactsInLiveDeals } from "./deal-suppression"
 import { hasUsableIdentifier, contactPointsToBuy } from "./identifier-guard"
+// Wave 142 (lane 142D): the inline drain dispatch — pure, the drain itself is imported lazily inside it.
+import { dispatchInlineEnrichmentDrain, type InlineEnrichmentDrain, type InlineDrainDispatch } from "./inline-drain"
 
 export { hasUsableIdentifier, contactPointsToBuy }
 
@@ -216,10 +218,18 @@ export async function queueContactEnrichment(params: {
   /** Skip if the contact was enriched within this many days. */
   freshnessDays?: number
   supabase?: SupabaseClient<any, any, any>
+  /**
+   * Wave 142 (lane 142D): the INLINE drain for the row just written (lib/enrichment/inline-drain.ts) —
+   * omitted = the default drain inside the app runtime (fire-and-forget, never awaited, never a reason to
+   * fail the capture); a function = an injected seam (proofs); `false` = cron only.
+   */
+  inlineDrain?: InlineEnrichmentDrain | false
 }): Promise<{
   queued: boolean
   reason?: "already_queued" | "recently_enriched" | "live_deal" | "not_found" | "no_identifier" | "backlog" | "error"
   error?: string
+  /** Wave 142: whether the just-written row was handed to the inline drain, and why / why not. */
+  drain?: InlineDrainDispatch
 }> {
   const { contactId, brokerageId } = params
   if (!contactId || !brokerageId) {
@@ -309,7 +319,8 @@ export async function queueContactEnrichment(params: {
   // and the drain asks the same rule before any contact-point provider is paid.
   const enrichments_needed: string[] = ["skip_trace", ...contactPointsToBuy(contact)]
 
-  const { error: insertError } = await supabase.from("lead_enrichment_queue").insert({
+  // The row's id is READ BACK (.select) so the inline drain below can name exactly this row.
+  const { data: queueRow, error: insertError } = await supabase.from("lead_enrichment_queue").insert({
     contact_id: contactId,
     lead_id: null,
     brokerage_id: brokerageId,
@@ -320,9 +331,10 @@ export async function queueContactEnrichment(params: {
     queued_at: new Date().toISOString(),
     retry_count: 0,
     max_retries: 3,
-  })
+  }).select("id").single()
 
   if (insertError) return { queued: false, reason: "error", error: insertError.message }
+  const queueEntryId = (queueRow as { id?: string } | null)?.id ?? null
 
   // Emitted through the canonical kernel emitter so the reactor fan-out runs — a
   // bare lifecycle_events INSERT silently suppresses every downstream channel.
@@ -335,7 +347,7 @@ export async function queueContactEnrichment(params: {
       entityType: "contact",
       entityId: contactId,
       contactId,
-      metadata: { trigger_type: params.triggerType },
+      metadata: { trigger_type: params.triggerType, queue_entry_id: queueEntryId },
       // A contact queued twice in a tight loop should not fan out twice.
       dedupeKey: `enrichment_queued:${contactId}`,
       dedupeWindowSec: 300,
@@ -345,7 +357,13 @@ export async function queueContactEnrichment(params: {
     console.error("[enrichment] CONTACT_ENRICHMENT_QUEUED emit failed:", err)
   }
 
-  return { queued: true }
+  // ENRICH NOW (wave 142, lane 142D): the row just written is handed to the SAME drain the cron runs,
+  // fire-and-forget — the capture that called us returns at once; the cron is the backstop.
+  const drain = queueEntryId
+    ? dispatchInlineEnrichmentDrain({ brokerageId, queueEntryId }, params.inlineDrain)
+    : { dispatched: false, reason: "not_app_runtime" as const }
+
+  return { queued: true, drain }
 }
 
 /**

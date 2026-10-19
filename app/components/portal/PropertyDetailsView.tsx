@@ -222,6 +222,7 @@ export function PropertyDetailsView({
             variant="outline"
             size="icon"
             onClick={handleSaveProperty}
+            aria-label={isSaved ? "Remove from saved" : "Save property"}
             disabled={isPending}
             className={`bg-transparent ${isSaved ? "text-red-500" : ""}`}
           >

@@ -76,7 +76,9 @@
  * returned 0 rows where the NEW one returns the row. Probes deleted, counts
  * confirmed back to the pre-existing 10 milestones and 0 everywhere else.
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { stripComments } from "./strip-comments"
 import {
@@ -112,11 +114,29 @@ console.log("\n── every declared vocabulary matches the live CHECK exactly �
     ["transaction_deadlines.status", DEADLINE_STATUSES, CHECK_VOCABULARIES.transaction_deadlines?.status ?? []],
     ["transaction_documents.status", DOCUMENT_STATUSES, CHECK_VOCABULARIES.transaction_documents?.status ?? []],
     ["contract_signatures.esign_status", CONTRACT_ESIGN_STATUSES, CHECK_VOCABULARIES.contract_signatures?.esign_status ?? []],
-    ["listing_agreements.esign_status", LISTING_AGREEMENT_ESIGN_STATUSES, CHECK_VOCABULARIES.listing_agreements?.esign_status ?? []],
   ]
   for (const [name, declared, live] of pairs) {
     check(`${name}: ${declared.length} declared, ${live.length} live — same set`,
       declared.length === live.length && subsetOf(declared, live))
+  }
+  // listing_agreements.esign_status (wave 142, lane 142B): the ladder is the ONE e-sign packet
+  // lifecycle (lib/esign/packet-states.ts) and is WIDENED by m783. The RULE, not the waypoint
+  // (CLAUDE.md §2): every value the live cache admits is on the ladder, and the ladder equals the
+  // CHECK of the LATEST migration that defines listing_agreements_esign_status_check — so this holds
+  // while m783 is written-not-applied (cache ⊂ ladder) and after it is applied and the cache is
+  // regenerated (cache = ladder), and fails only when code and the defining migration disagree.
+  {
+    const live = CHECK_VOCABULARIES.listing_agreements?.esign_status ?? []
+    const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "supabase", "migrations")
+    const defining = readdirSync(migrationsDir).filter((f) => /^m\d+-.*\.sql$/.test(f)).sort((a, b) => Number(a.match(/^m(\d+)/)![1]) - Number(b.match(/^m(\d+)/)![1]))
+      .filter((f) => /listing_agreements_esign_status_check/.test(readFileSync(join(migrationsDir, f), "utf8")))
+    const latest = defining[defining.length - 1]
+    const sql = latest ? readFileSync(join(migrationsDir, latest), "utf8") : ""
+    const m = sql.match(/listing_agreements_esign_status_check\s*\n?\s*CHECK\s*\(esign_status IS NULL OR esign_status IN \(([^)]+)\)/)
+    const migrationSet = (m?.[1] ?? "").split(",").map((s) => s.trim().replace(/'/g, "")).filter(Boolean).sort()
+    check(`listing_agreements.esign_status: every live CHECK value (${live.length}) is on the ladder (${LISTING_AGREEMENT_ESIGN_STATUSES.length})`, subsetOf(live, LISTING_AGREEMENT_ESIGN_STATUSES))
+    check(`listing_agreements.esign_status: the ladder equals the latest defining migration's CHECK (${latest ?? "none found"})`,
+      migrationSet.length > 0 && migrationSet.join() === [...LISTING_AGREEMENT_ESIGN_STATUSES].sort().join())
   }
 }
 

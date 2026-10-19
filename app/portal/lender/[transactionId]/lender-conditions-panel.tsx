@@ -208,7 +208,7 @@ export function LenderConditionsPanel({ loanId, initialConditions }: LenderCondi
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                  onClick={() => removeCondition(index)}
+                  aria-label="Remove condition" onClick={() => removeCondition(index)}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>

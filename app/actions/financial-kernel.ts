@@ -23,6 +23,12 @@ import {
   recalculateCommissionState,
   markCommissionApproved,
   markCommissionPaid,
+  initiateCommissionPayout,
+  attestCommissionReceived,
+  reconcileCommissionPayment,
+  type InitiateCommissionPayoutInput,
+  type AttestCommissionReceivedInput,
+  type ReconcileCommissionPaymentInput,
   markCommissionDisputed,
   resolveCommissionDispute,
   createExpenseRecord,
@@ -417,6 +423,39 @@ export async function markCommissionPaidAction(
     // real audit trail, wrong tenant. The session's brokerage is the only one
     // this action will ever act against.
     return await markCommissionPaid({ ...input, brokerageId: ctx.brokerageId, ctx })
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+}
+
+// ── THE PAYMENT STATES AFTER APPROVAL (wave 142, lane 142C) — session tenant only (§4), same shape
+// as markCommissionPaidAction: a body-supplied brokerageId is accepted and ignored.
+
+/** The brokerage issued the payout instruction (check cut / direct deposit submitted) on an approved commission. */
+export async function initiateCommissionPayoutAction(input: Omit<InitiateCommissionPayoutInput, "ctx" | "brokerageId"> & { brokerageId?: string }) {
+  try {
+    const ctx = await getFinancialActorContext()
+    return await initiateCommissionPayout({ ...input, brokerageId: ctx.brokerageId, ctx })
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+}
+
+/** The agent's receipt attestation (amount, date, payer, method, reference, evidence) on a paid commission. */
+export async function attestCommissionReceivedAction(input: Omit<AttestCommissionReceivedInput, "ctx" | "brokerageId"> & { brokerageId?: string }) {
+  try {
+    const ctx = await getFinancialActorContext()
+    return await attestCommissionReceived({ ...input, brokerageId: ctx.brokerageId, ctx })
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+}
+
+/** A finance admin reconciles a paid commission against the connected accounting integration or a statement reference. */
+export async function reconcileCommissionPaymentAction(input: Omit<ReconcileCommissionPaymentInput, "ctx" | "brokerageId"> & { brokerageId?: string }) {
+  try {
+    const ctx = await getFinancialActorContext()
+    return await reconcileCommissionPayment({ ...input, brokerageId: ctx.brokerageId, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
   }

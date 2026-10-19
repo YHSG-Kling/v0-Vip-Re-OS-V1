@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1842 of 1908 pairs) — storing them would be
+ * overwhelming majority (1843 of 1909 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -61,7 +61,7 @@
  * ── COMPOSITE FOREIGN KEYS, AND WHY THIS MAP IS NOT TOTAL ───────────────────────────
  * This header used to claim "every foreign key single-column, and no (table, column) pair carrying
  * FKs to two different targets, so the map is total and unambiguous". That was true when written
- * and is FALSE now: 1 foreign key spans more than one column.
+ * and is FALSE now: 0 foreign keys span more than one column.
  * `live_foreign_keys_json()` unnests `conkey`, so a composite FK arrives once PER COLUMN, and one
  * column can carry a single-column FK to one table AND be part of a composite FK to another.
  *
@@ -73,10 +73,10 @@
  * targets. Such a column is left OUT of the map and published in SCHEMA_FK_COLUMN_AMBIGUOUS with
  * all of its candidates — the map holds one target per column and cannot say "two", so it says
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
- * 1 column is in that state.
+ * 0 columns are in that state.
  *
- * MEASURED AT GENERATION: 1994 edges across 732 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1908 unordered
+ * MEASURED AT GENERATION: 1998 edges across 732 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1909 unordered
  * table pairs carry at least one FK; 66
  * carry more than one and are listed below. 15 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-14
+ * generated: 2026-10-19
  * source: public.live_foreign_keys_json()
- * body-sha256: f8ad0c332a442925e8bc9e70f3af70a60215dad492daa30ee8a9f26bb54a65b0
+ * body-sha256: ef9f7797211d51ee8761a62c2207843564685003ba2e605b930d29832541fa14
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -122,7 +122,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "agent_chat_preferences": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "agent_client_messages": { "approved_by": "users", "brokerage_id": "brokerages" },
   "agent_commission_profiles": { "agent_id": "agents", "brokerage_id": "brokerages" },
-  "agent_commissions": { "agent_id": "agents", "approved_by": "users", "brokerage_id": "brokerages", "transaction_id": "transactions" },
+  "agent_commissions": { "agent_id": "agents", "approved_by": "users", "brokerage_id": "brokerages", "payment_received_by": "users", "reconciled_by": "users", "transaction_id": "transactions" },
   "agent_coordination_log": { "brokerage_id": "brokerages" },
   "agent_credentials": { "brokerage_id": "brokerages", "created_by": "users" },
   "agent_credit_budgets": { "agent_id": "agents", "brokerage_id": "brokerages" },
@@ -233,7 +233,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "brokerage_twin_snapshots": { "brokerage_id": "brokerages", "previous_snapshot_id": "brokerage_twin_snapshots", "team_id": "teams" },
   "brokerages": { "ai_isa_system_user_id": "users" },
   "budgets": { "agent_id": "agents", "brokerage_id": "brokerages" },
-  "business_card_scans": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "reviewed_by": "users", "subject_user_id": "users" },
+  "business_card_scans": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "recruit_id": "recruits", "reviewed_by": "users", "subject_user_id": "users", "vendor_id": "vendors" },
   "business_expenses": { "agent_id": "agents", "brokerage_id": "brokerages", "team_id": "teams" },
   "buyer_behavior_log": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings" },
   "buyer_behavior_predictions": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
@@ -839,7 +839,6 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
  *  being picked silently. A consumer that meets one of these columns must SKIP the embed, not
  *  guess — see resolveColumnTarget() in scripts/schema-cache-builders.ts for why. */
 export const SCHEMA_FK_COLUMN_AMBIGUOUS: Record<string, Record<string, string[]>> = {
-  "vendor_subscriptions": { "brokerage_id": ["brokerages","vendor_plans"] },
 }
 
 /** Every candidate target for an FK column that has more than one, or [] when the column is
@@ -855,6 +854,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "ad_campaigns|users": 2,
   "agent_book_transfers|agents": 2,
   "agent_book_transfers|users": 2,
+  "agent_commissions|users": 3,
   "agent_mentor_relationships|agents": 2,
   "agent_relationships|agents": 2,
   "agents|commission_adjustments": 2,
@@ -916,7 +916,6 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "users|vendor_contact_assignments": 2,
   "users|vendors": 2,
   "users|video_scripts_library": 3,
-  "vendor_plans|vendor_subscriptions": 2,
 }
 
 /** How many distinct foreign keys join these two tables, in EITHER direction.

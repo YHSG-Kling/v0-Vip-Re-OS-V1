@@ -31,6 +31,10 @@
 import { landingPageCopy, type MagnetType, type LandingContent } from "@/lib/marketing/lead-magnet-copy"
 import { detectFairHousingViolations } from "@/lib/compliance-rules/fair-housing-patterns"
 import { createLeadMagnet, defaultFieldsForType, type LeadMagnetField, type CreateLeadMagnetInput } from "@/lib/kernel/lead-magnets"
+// Wave 142 (lane 142E): the FAIR-HOUSING REWRITE LOOP for public copy — a flagged draft is REWRITTEN by the
+// model with the specific findings (phrase → compliant fix), rechecked, capped at PUBLIC_COPY_MAX_REWRITES,
+// then ESCALATED to the human reviewer (the draft lands on the safe baseline with the trail kept on it).
+import { rewritePublicCopyUntilCompliant, renderFindingsForRewrite, type CopyFinding } from "@/lib/kernel/marketing/public-copy-rewrite"
 
 /** The AI_TASK_ROUTING key (lib/ai/models.ts) — scripts/ai-routing-coverage-guard.ts requires the literal at the call site.
  *  @proofSeam the proof asserts the routing row + the recorded authoring feature against it. */
@@ -69,6 +73,10 @@ interface DraftGeneratorRequest {
   area: string | null
   brand: string | null
   audience: string | null
+  /** Wave 142: non-empty on a REWRITE — the fair-housing findings the previous draft failed on. */
+  violations?: CopyFinding[]
+  /** 0 for the first draft, 1..n for rewrites. */
+  attempt?: number
 }
 
 /** Injectable model seam (tests pass a stub; production = routedDraftGenerator). */
@@ -168,11 +176,15 @@ export function composeMagnetDraft(
   return { spec, fromAi }
 }
 
+/** Everything a visitor would READ on the page — the text the fair-housing scan and the rewrite loop see. */
+function draftPublicText(spec: MagnetDraftSpec): string {
+  return [spec.name, spec.description, spec.headline, spec.subhead, spec.cta, ...spec.bullets, spec.thankYou,
+    ...spec.fields.map((f) => f.label), ...spec.faq.flatMap((f) => [f.question, f.answer])].join("\n")
+}
+
 /** Post-hoc Fair-Housing scan of everything a visitor would read. A HIGH-severity hit refuses the copy. @proofSeam asserted directly. */
 export function draftFairHousingVerdict(spec: MagnetDraftSpec): { ok: boolean; flagged: string[]; high: string[] } {
-  const text = [spec.name, spec.description, spec.headline, spec.subhead, spec.cta, ...spec.bullets, spec.thankYou,
-    ...spec.fields.map((f) => f.label), ...spec.faq.flatMap((f) => [f.question, f.answer])].join("\n")
-  const hits = detectFairHousingViolations(text)
+  const hits = detectFairHousingViolations(draftPublicText(spec))
   const flagged = hits.map((h) => h.phrase)
   const high = hits.filter((h) => h.severity === "high").map((h) => h.phrase)
   return { ok: high.length === 0, flagged, high }
@@ -197,12 +209,18 @@ const routedDraftGenerator: DraftGenerator = async (req) => {
       "FAIR HOUSING, non-negotiable: never reference or imply race, religion, national origin, family status, disability, sex, or use steering language ('safe neighborhood', 'perfect for families', 'great for retirees', 'exclusive community'). " +
       "Use ONLY the facts in the concept — invent no prices, dates, statistics, names or guarantees. Write like a sharp human, never like a template.",
     )
+    // THE REWRITE (wave 142): the findings reach the writer as the comments it must resolve — the exact
+    // phrase and its compliant fix — never only as a post-hoc refusal (CLAUDE.md §5).
+    const violationBlock = req.violations?.length
+      ? `\n\nYour previous draft failed the fair-housing review with these findings:\n${renderFindingsForRewrite(req.violations)}\nRewrite the WHOLE draft so EVERY finding is resolved — describe the home, the process and the service, never who should want it. Same concept, same structure.`
+      : ""
     const prompt =
       `Magnet type: ${req.magnetType.replace(/_/g, " ")}.\n` +
       `Concept (from the agent): ${req.concept}\n` +
       (req.area ? `Area served: ${req.area}\n` : "") +
       (req.audience ? `Audience: ${req.audience}\n` : "") +
-      `Return ONLY a JSON object: {"name": "page title ≤60 chars", "description": "2 sentences of intro copy", "headline": "hero headline ≤12 words", "subhead": "one supporting sentence", "cta": "button label ≤5 words", "bullets": ["three benefit bullets"], "thankYou": "one warm sentence shown after submit", "questions": [{"label": "an extra qualifying question (max ${MAX_EXTRA_QUESTIONS})", "type": "text|select|number|textarea", "required": false, "options": ["only for select"]}], "faq": [{"question": "a real question this audience asks", "answer": "a concise, honest answer"}]}`
+      `Return ONLY a JSON object: {"name": "page title ≤60 chars", "description": "2 sentences of intro copy", "headline": "hero headline ≤12 words", "subhead": "one supporting sentence", "cta": "button label ≤5 words", "bullets": ["three benefit bullets"], "thankYou": "one warm sentence shown after submit", "questions": [{"label": "an extra qualifying question (max ${MAX_EXTRA_QUESTIONS})", "type": "text|select|number|textarea", "required": false, "options": ["only for select"]}], "faq": [{"question": "a real question this audience asks", "answer": "a concise, honest answer"}]}` +
+      violationBlock
     const { text } = await generateTextRouted({
       feature: "lead_magnet_draft",
       brokerageId: req.brokerageId,
@@ -261,7 +279,8 @@ interface DraftLeadMagnetOutput {
   /** true when the model's copy was used; false when the deterministic baseline stood in (and why). */
   fromAi?: boolean
   fallbackReason?: string | null
-  fairHousing?: { flagged: string[]; high: string[] }
+  /** Wave 142: the rewrite loop's outcome — how many rewrites ran and whether a human now owns the copy. */
+  fairHousing?: { flagged: string[]; high: string[]; rewrites: number; escalated: boolean }
   error?: string
 }
 
@@ -287,14 +306,33 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
 
   let composed = composeMagnetDraft(magnetType, concept, { area: input.area, brand: input.brand }, generated)
   let fallbackReason: string | null = generated ? null : "model lane unavailable — deterministic baseline used"
-  // The verdict on what the MODEL wrote is what the reviewer sees — it is kept even after the fallback
-  // replaces the copy (the baseline is clean by construction; re-scanning it would erase the finding).
-  const fh = draftFairHousingVerdict(composed.spec)
-  if (!fh.ok) {
-    // The model's copy is refused; the baseline (already Fair-Housing-safe) stands in. The finding stays
-    // on the draft for the reviewer — a hard flag escalates to a human, never ships (CLAUDE.md §5).
-    fallbackReason = `AI copy refused by the fair-housing scan (${fh.high.join(", ")}) — deterministic baseline used`
-    composed = composeMagnetDraft(magnetType, concept, { area: input.area, brand: input.brand }, null)
+  // THE REWRITE LOOP (wave 142, lane 142E; owner: "any fair housing flags on copy ai should rewrite with
+  // those comments in mind"). What the MODEL wrote is scanned (the ONE pattern list + the public gate's
+  // blockers); a flagged draft goes BACK to the model with the findings as comments, is rechecked, at most
+  // PUBLIC_COPY_MAX_REWRITES times. Still flagged → the baseline (Fair-Housing-safe by construction) stands
+  // in and the draft is ESCALATED to the human reviewer with the whole trail — a hard flag never ships
+  // unreviewed (CLAUDE.md §5). The verdict recorded is the one on the model's LAST attempt, kept even after
+  // the fallback replaces the copy (re-scanning the baseline would erase the finding).
+  let latest = composed
+  const ctx = { area: input.area, brand: input.brand }
+  const loop = generated
+    ? await rewritePublicCopyUntilCompliant({
+        text: draftPublicText(composed.spec),
+        surface: "lead_magnet",
+        brokerageName: input.brand ?? null,
+        rewrite: async (_text, findings, attempt) => {
+          const regenerated = await generator({ brokerageId: input.brokerageId, userId: input.createdBy, magnetType, concept, area: input.area ?? null, brand: input.brand ?? null, audience: input.audience ?? null, violations: findings, attempt }).catch(() => null)
+          if (!regenerated) return null
+          latest = composeMagnetDraft(magnetType, concept, ctx, regenerated)
+          return draftPublicText(latest.spec)
+        },
+      })
+    : { ok: true, text: "", rewrites: 0, findings: [] as CopyFinding[], warnings: [] as string[], escalated: false, trail: [] as Array<{ attempt: number; findings: string[] }> }
+  composed = latest
+  const fh = { ok: loop.ok, flagged: [...new Set(loop.trail.flatMap((t) => t.findings))], high: loop.findings.map((f) => f.phrase) }
+  if (!loop.ok) {
+    fallbackReason = `AI copy refused by the fair-housing scan after ${loop.rewrites} rewrite${loop.rewrites === 1 ? "" : "s"} (${fh.high.join(", ")}) — deterministic baseline used; escalated to the reviewer`
+    composed = composeMagnetDraft(magnetType, concept, ctx, null)
   }
   const now = (deps.now ?? new Date()).toISOString()
   const spec = composed.spec
@@ -317,6 +355,8 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
         from_ai_copy: composed.fromAi,
         fallback_reason: fallbackReason,
         fair_housing_flags: fh.flagged,
+        // Wave 142: the rewrite loop's evidence — attempts, the trail, and whether a HUMAN now owns it.
+        fair_housing: { ok: loop.ok, rewrites: loop.rewrites, escalated: loop.escalated, findings: loop.findings.map((f) => ({ phrase: f.phrase, fix: f.fix, reference: f.reference })), warnings: loop.warnings, trail: loop.trail },
         generated_at: now,
         requested_by: input.createdBy,
       },
@@ -336,7 +376,7 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
         reasonDetail: `AI draft of a ${magnetType} lead magnet from the agent's concept`,
         riskClass: "LOW_RISK_WRITE",
         systemSource: "lead_magnets",
-        detail: { magnetType, feature: LEAD_MAGNET_DRAFT_FEATURE, from_ai_copy: composed.fromAi, fallback_reason: fallbackReason, fair_housing_flags: fh.flagged, questions: spec.fields.length },
+        detail: { magnetType, feature: LEAD_MAGNET_DRAFT_FEATURE, from_ai_copy: composed.fromAi, fallback_reason: fallbackReason, fair_housing_flags: fh.flagged, fair_housing_rewrites: loop.rewrites, fair_housing_escalated: loop.escalated, questions: spec.fields.length },
       },
       () => createLeadMagnet(createInput, { client: deps.client }),
       {
@@ -349,5 +389,30 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
     return { success: false, error: (e as Error)?.message ?? String(e) }
   }
   if (!result.success || !result.magnetId) return { success: false, error: result.error ?? "The draft was not created." }
-  return { success: true, magnetId: result.magnetId, slug: result.slug, magnetType, draft: spec, fromAi: composed.fromAi, fallbackReason, fairHousing: { flagged: fh.flagged, high: fh.high } }
+
+  // ESCALATION TO A HUMAN (wave 142): the cap was reached with findings still present — the requester is told
+  // in-app that this draft needs their rewrite before it can publish (publishLeadMagnet re-scans the public copy
+  // and refuses a hard flag). Best-effort: a lost bell never undoes the draft that already landed.
+  if (loop.escalated) {
+    try {
+      const client = (deps.client ?? (await import("@/lib/supabase/service")).createServiceClient()) as { from: (t: string) => any }
+      const { error: bellErr } = await client.from("notifications").insert({
+        user_id: input.createdBy,
+        brokerage_id: input.brokerageId,
+        type: "lead_magnet_fair_housing_review",
+        title: "AI draft needs your fair-housing review",
+        body: `The AI rewrote "${spec.name}" ${loop.rewrites} time${loop.rewrites === 1 ? "" : "s"} and the copy still mentioned ${fh.high.join(", ")}. The safe baseline is on the draft — edit it before publishing.`,
+        entity_type: "lead_capture_form",
+        entity_id: result.magnetId,
+        is_read: false,
+        priority: "high",
+        channel: "in_app",
+        created_at: now,
+      })
+      if (bellErr) console.warn("[lead-magnets] fair-housing escalation bell not recorded:", bellErr.message)
+    } catch (e) {
+      console.warn("[lead-magnets] fair-housing escalation bell threw:", (e as Error)?.message ?? String(e))
+    }
+  }
+  return { success: true, magnetId: result.magnetId, slug: result.slug, magnetType, draft: spec, fromAi: composed.fromAi, fallbackReason, fairHousing: { flagged: fh.flagged, high: fh.high, rewrites: loop.rewrites, escalated: loop.escalated } }
 }

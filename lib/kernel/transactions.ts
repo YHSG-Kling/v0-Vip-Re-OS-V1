@@ -28,7 +28,6 @@ import { KernelEvent }         from "@/lib/kernel/events"
 // the direct call would have skipped all of them.
 import { isValidUUID }         from "@/lib/validations"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
-import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -1363,36 +1362,40 @@ export async function closeTransactionCommand(params: {
         .eq("id", txBefore.listing_id), { table: "listings", flow: "listing_sold_on_close", brokerageId: params.brokerageId, reason: "listing status mirror on close; the transaction close already landed" })
     }
 
-    // 2. Buyer + seller contacts → lifetime_customer
-    //    (Lifetime Customers retention surface depends on this conversion;
-    //     prior to this fix only the listing-close path converted the seller,
-    //     and the transaction-close path converted neither party.)
+    // 2 + 4. Buyer + seller contacts → lifetime_customer, and their post-close touchpoint schedule.
+    //    (Lifetime Customers retention surface depends on this conversion; prior to the wave-27 fix
+    //     only the listing-close path converted the seller, and the transaction-close path converted
+    //     neither party.) WAVE 142 (lane 142C; owner: "Lifetime conversion after verified closing +
+    //     complete records; CLOSED / PAYOUT PENDING until payout verified where rules require; no
+    //     duplicate conversions"): the inline contact write that stood here (BOTH columns, error READ)
+    //     and the touchpoint schedule that stood at step 4 MOVED to the ONE writer
+    //     lib/kernel/lifetime-conversion.ts promoteDealContactsToLifetime, which the payout path
+    //     (lib/kernel/financial.ts markCommissionPaid → releaseLifetimeConversionOnPayout) shares, so a
+    //     tenant that holds conversion until the agent is paid converts ONCE, there, never twice. The
+    //     close itself is the verified closing (the gates above), its records the ones this command
+    //     requires; the tenant's policy (brokerage_settings.settings.lifetime_conversion) decides
+    //     convert-now vs hold. Not failed over: the transaction really did close and unwinding it over
+    //     a downstream promotion would be the larger harm — every refusal is logged by name.
     const lifetimeContactIds: string[] = []
     if (txBefore?.buyer_contact_id)  lifetimeContactIds.push(txBefore.buyer_contact_id)
     if (txBefore?.seller_contact_id) lifetimeContactIds.push(txBefore.seller_contact_id)
     if (lifetimeContactIds.length > 0) {
-      // THE ERROR IS NOW READ — the comment below already named this exact defect
-      // ("this write swallows its result, so a refusal would look exactly like a
-      // success and closed deals would stop becoming lifetime customers in
-      // silence") and the `.then(() => null, () => null)` that caused it is gone.
-      // Not failed over: the transaction really did close and unwinding it over a
-      // downstream promotion would be the larger harm.
-      const { error: lifetimePromotionError } = await supabase
-        .from("contacts")
-        // BOTH COLUMNS, deliberately. `contacts_lifetime_consistent` (dropped by m539
-        // along with the `lifetime` spelling it policed) said a lifetime-typed contact
-        // must agree with the lifecycle column. m539 does not re-point that CHECK onto
-        // the survivor, so the invariant is kept HERE instead, at the writer, and
-        // asserted by scripts/contact-vocabulary-guard.ts. (This write USED TO swallow
-        // its result — see the note above; it no longer does.)
-        .update({ contact_type: LIFETIME_CUSTOMER_TYPE, lifecycle_state: LIFETIME_CUSTOMER_TYPE, updated_at: nowIso })
-        .in("id", lifetimeContactIds)
-        .eq("brokerage_id", params.brokerageId)
-      if (lifetimePromotionError) {
-        console.error(
-          `[transactions] lifetime-customer promotion REFUSED for contacts ${lifetimeContactIds.join(", ")}:`,
-          lifetimePromotionError.message,
-        )
+      try {
+        const { readLifetimeConversionPolicy, lifetimeConversionVerdict, promoteDealContactsToLifetime, holdLifetimeConversionPendingPayout } = await import("@/lib/kernel/lifetime-conversion")
+        const policy = await readLifetimeConversionPolicy(supabase, params.brokerageId)
+        const verdict = lifetimeConversionVerdict({ closed: true, requiredRecordsComplete: true, payoutVerified: false, requirePayoutVerified: policy.requirePayoutVerified })
+        if (verdict.action === "convert") {
+          const promotion = await promoteDealContactsToLifetime(supabase, {
+            brokerageId: params.brokerageId, transactionId: params.transactionId, contactIds: lifetimeContactIds,
+            agentRecordId, closeDate: today, nowIso,
+          })
+          for (const e of promotion.errors) console.error(`[transactions] lifetime conversion at close: ${e}`)
+        } else {
+          const hold = await holdLifetimeConversionPendingPayout(supabase, { brokerageId: params.brokerageId, transactionId: params.transactionId, contactIds: lifetimeContactIds, agentRecordId, nowIso })
+          if (hold.error) console.error(`[transactions] lifetime conversion HOLD (${verdict.label}) not recorded: ${hold.error}`)
+        }
+      } catch (e) {
+        console.error("[transactions] lifetime conversion step failed:", e instanceof Error ? e.message : String(e))
       }
     }
 
@@ -1407,47 +1410,11 @@ export async function closeTransactionCommand(params: {
       })
     } catch {}
 
-    // 4. Lifetime-customer touchpoint schedule — both buyer and seller now
-    //    enter the post-close nurture sequence (3-day, 30-day, 6-month,
-    //    1-year anniversary, 18-month referral ask). Previously this
-    //    function was defined but never called from anywhere — orphaned.
-    //    Resolve agents.id from agent user once so we can attribute the
-    //    touchpoints correctly.
-    try {
-      const { data: agentRow } = await supabase
-        .from("agents")
-        .select("id")
-        .eq("user_id", params.agentId)
-        .maybeSingle()
-      const agentId = agentRow?.id ?? null
-      if (agentId && lifetimeContactIds.length > 0) {
-        const closeDate = new Date(today)
-        const schedule = [
-          { type: "post_close_3_day",     daysAfter: 3,        channel: "video" },
-          { type: "post_close_30_day",    daysAfter: 30,       channel: "sms"   },
-          { type: "post_close_6_month",   daysAfter: 180,      channel: "email" },
-          { type: "home_anniversary",     daysAfter: 365,      channel: "video" },
-          { type: "referral_request",     daysAfter: 18 * 30,  channel: "sms"   },
-        ]
-        const rows = lifetimeContactIds.flatMap(contactId =>
-          schedule.map(s => {
-            const d = new Date(closeDate)
-            d.setDate(d.getDate() + s.daysAfter)
-            return {
-              brokerage_id:           params.brokerageId,
-              contact_id:             contactId,
-              agent_id:               agentId,
-              touchpoint_type:        s.type,
-              channel:                s.channel,
-              scheduled_date:         d.toISOString().split("T")[0],
-              status:                 "scheduled",
-              related_transaction_id: params.transactionId,
-            }
-          })
-        )
-        await sentinelWrite(supabase, supabase.from("lifetime_customer_touchpoints").insert(rows), { table: "lifetime_customer_touchpoints", flow: "lifetime_customer_touchpoints_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
-      }
-    } catch {}
+    // 4. TOMBSTONE (wave 142, lane 142C): the lifetime-customer touchpoint schedule (3-day, 30-day,
+    //    6-month, anniversary, 18-month referral ask) that stood here moved to the survivor
+    //    lib/kernel/lifetime-conversion.ts promoteDealContactsToLifetime (POST_CLOSE_TOUCHPOINTS), written
+    //    ONCE per transaction (an existing schedule for related_transaction_id is the guard) by step 2
+    //    above or by the payout release — never twice.
 
     // 5. Closing-gift task for the agent — surfaces in their inbox as a
     //    high-priority next-action so they don't forget to send a gift.

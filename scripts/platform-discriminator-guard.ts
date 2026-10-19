@@ -135,10 +135,10 @@ export const CLASSIFICATION: Record<string, { verdict: Verdict; why: string }> =
     verdict: "both-columns",
     why: "Same lazy two-statement shape as notifications.ts: user_type first, then a second read for platform_role.",
   },
-  "app/actions/support.ts": {
-    verdict: "both-columns",
-    why: "user_type in (superadmin, support) first, then a lazy platform_role read. The `support` arm makes this the STAFF roster question, not the superadmin one — isPlatformStaffIdentity is its survivor, not isPlatformSuperadminIdentity.",
-  },
+  // RETIRED (wave 142, lane 142A): "app/actions/support.ts" — its lazy both-columns read and the
+  // `userType === "support"` arm beside it are gone; the office queue's cross-tenant verdict is now
+  // requirePlatformCapability("support") (the console's one gate) and the tenant pin is
+  // lib/support/ticket-scope.ts. 2 → 0 spellings; the baseline was re-recorded.
   "app/actions/vendor-budget.ts": {
     verdict: "both-columns",
     why: "Correct both-columns test, and this file carries the canonical prose explanation (lines 136-147) that a dozen other headers cite by file:line. Converting the code without moving that explanation would orphan every citation.",
@@ -409,6 +409,12 @@ export function discriminatorSpellingsIn(raw: string): Finding[] {
       ok: mod.isPlatformSuperadminIdentity("system", "marketing") === false &&
           mod.isPlatformSuperadminIdentity("support", "support") === false,
       why: "the four-role roster is the STAFF question; only superadmin is the OS user",
+    },
+    {
+      name: "a user_type of 'support' with NO platform_role carries NO platform capability (wave 142: 'support' is also a tenant seat type)",
+      ok: mod.platformStaffCan(mod.resolvePlatformRoleIdentity("support", null), "support") === false &&
+          mod.platformStaffCan(mod.resolvePlatformRoleIdentity("support", "support"), "support") === true,
+      why: "owner ruling 2026-10-18: a tenant seat typed 'support' reads only its own brokerage's support queue; the platform-staff CRUD writes the same user_type beside platform_role='support', and ONLY the platform_role half may admit across tenants",
     },
     {
       name: "the role derivation returns the roster role and NULL for everything else — a user_type is never read as a role",

@@ -131,16 +131,19 @@ export function ComingSoonCommandCard({
       // Fire marketing in parallel — non-blocking failures
       const marketing: Promise<any>[] = []
 
+      // Wave 142 (lane 142H): the two textareas above say "edit before publishing / sending" — the
+      // reviewed copy is what goes out. Before this, both calls regenerated their own text and the
+      // agent's edits were silently dropped (unwired generation).
       if (selectedPlatforms.length > 0) {
         marketing.push(
-          createListingPosts({ propertyId: listingId, agentId: userId, brokerageId, platforms: selectedPlatforms })
+          createListingPosts({ propertyId: listingId, agentId: userId, brokerageId, platforms: selectedPlatforms, contentOverride: socialPost })
             .catch(() => null)
         )
       }
 
       if (transactionId) {
         marketing.push(
-          prepareListingEmailCampaign({ transactionId, campaignType: "coming_soon" })
+          prepareListingEmailCampaign({ transactionId, campaignType: "coming_soon", bodyOverride: emailBody })
             .catch(() => null)
         )
       }
@@ -155,7 +158,7 @@ export function ComingSoonCommandCard({
   function handleEmailCampaign() {
     if (!transactionId) return
     startSendingEmail(async () => {
-      const result = await prepareListingEmailCampaign({ transactionId, campaignType: "coming_soon" })
+      const result = await prepareListingEmailCampaign({ transactionId, campaignType: "coming_soon", bodyOverride: emailBody })
       if (result.success) {
         showToast("success", "Email campaign sent to matching buyers.")
       } else {

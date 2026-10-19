@@ -517,7 +517,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => router.push("/dashboard/marketing/blog")}>
+          <Button variant="ghost" size="icon" aria-label="Back to blog" onClick={() => router.push("/dashboard/marketing/blog")}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div>
@@ -587,7 +587,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
       {error && (
         <div className="mb-4 p-3 rounded-md bg-destructive/10 text-destructive text-sm flex items-center justify-between">
           <span>{error}</span>
-          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setError(null)}>
+          <Button variant="ghost" size="icon" className="h-6 w-6" aria-label="Dismiss error" onClick={() => setError(null)}>
             <X className="h-3 w-3" />
           </Button>
         </div>

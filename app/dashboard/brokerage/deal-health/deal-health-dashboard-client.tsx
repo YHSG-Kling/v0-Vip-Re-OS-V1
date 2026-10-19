@@ -184,7 +184,7 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
       )}
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {(["critical", "at_risk", "watch", "healthy"] as RiskLevel[]).map(level => {
           const config = RISK_CONFIG[level]
           const Icon = config.icon
@@ -245,7 +245,7 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
       </div>
 
       {/* Deals Table */}
-      <div className="border rounded-lg overflow-hidden">
+      <div className="border rounded-lg overflow-x-auto">
         <table className="w-full">
           <thead className="bg-muted/50">
             <tr>

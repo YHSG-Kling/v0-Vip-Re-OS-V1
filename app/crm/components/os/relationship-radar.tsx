@@ -69,7 +69,7 @@ export function RelationshipRadar({
       </CardHeader>
       <CardContent>
         {/* 5-tile grid */}
-        <div className="grid grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           {/* Engagement Score */}
           <div className="text-center p-3 bg-gray-50 rounded-lg">
             <div className="relative inline-flex items-center justify-center">

@@ -27,7 +27,15 @@ export const TICKET_LANES = ["tenant_to_platform", "user_to_brokerage"] as const
 
 export type TicketStatus = (typeof TICKET_STATUSES)[number]
 export type TicketPriority = (typeof TICKET_PRIORITIES)[number]
+export type TicketCategory = (typeof TICKET_CATEGORIES)[number]
 export type TicketLane = (typeof TICKET_LANES)[number]
+
+/** PURE: the priority ladder — a higher index is more urgent. Used by the AI triage so it can only ever
+ *  RAISE a submitter's priority (more attention), never lower it. */
+export function ticketPriorityRank(p: string | null | undefined): number {
+  const i = (TICKET_PRIORITIES as readonly string[]).indexOf(p ?? "")
+  return i < 0 ? 1 : i
+}
 
 /** PURE: is this a lane the database will actually store? */
 export function isTicketLane(v: unknown): v is TicketLane {

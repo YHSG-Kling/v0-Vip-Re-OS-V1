@@ -113,7 +113,7 @@ export function PayoutReadinessPanel({
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Summary Stats */}
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <div className="p-2 rounded-lg bg-green-50 border border-green-200 text-center">
             <p className="text-xs text-green-700">Ready</p>
             <p className="text-lg font-bold text-green-600">{summary.ready}</p>

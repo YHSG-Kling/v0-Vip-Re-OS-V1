@@ -151,7 +151,7 @@ export function ContactMessagePanel({ vendorId, contactId, contactName }: Contac
             />
             <Button
               size="icon"
-              className="h-9 w-9 shrink-0"
+              className="h-9 w-9 shrink-0" aria-label="Send message"
               onClick={handleSend}
               disabled={isPending || !body.trim()}
             >

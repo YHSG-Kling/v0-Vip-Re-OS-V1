@@ -604,7 +604,23 @@ export async function getAgentCommissions(agentId: string, year?: number, opts?:
     return { ok: false as const, error: `Could not load commissions: ${error.message}`, commissions: [] }
   }
 
-  return { ok: true as const, error: null, commissions: data ?? [] }
+  // THE DERIVED PAYMENT STATE rides on every row (wave 142, lane 142C): expected · preliminary ·
+  // approved_final · payment_initiated · payment_recorded · payment_received · reconciled — ONE
+  // derivation (lib/commission/ledger-sync.ts) over status + the stamps the row carries, so the
+  // tracker shows the owner's seven states without a fifth status column.
+  const { deriveCommissionPaymentState } = await import("@/lib/commission/ledger-sync")
+  const commissions = (data ?? []).map((c: Record<string, unknown>) => ({
+    ...c,
+    payment_state: deriveCommissionPaymentState({
+      status: c.status as string | null,
+      deposit_received_at: (c.deposit_received_at as string | null) ?? null,
+      payment_initiated_at: (c.payment_initiated_at as string | null) ?? null,
+      paid_at: (c.paid_at as string | null) ?? null,
+      payment_received_at: (c.payment_received_at as string | null) ?? null,
+      reconciled_at: (c.reconciled_at as string | null) ?? null,
+    }),
+  }))
+  return { ok: true as const, error: null, commissions }
 }
 
 

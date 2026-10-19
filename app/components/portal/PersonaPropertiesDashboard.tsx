@@ -994,7 +994,7 @@ export default function PersonaPropertiesDashboard({
               size="icon" 
               variant="secondary" 
               className="h-8 w-8 rounded-full"
-              onClick={() => handleSaveProperty(property)}
+              aria-label="Save property" onClick={() => handleSaveProperty(property)}
             >
               <Heart className="w-4 h-4" />
             </Button>
@@ -1002,6 +1002,7 @@ export default function PersonaPropertiesDashboard({
               size="icon" 
               variant="secondary" 
               className="h-8 w-8 rounded-full"
+              aria-label="Rate property"
               onClick={() => {
                 setSelectedProperty(property)
                 setShowRatingDialog(true)
@@ -1787,7 +1788,7 @@ export default function PersonaPropertiesDashboard({
                             size="icon"
                             variant="ghost"
                             className="h-6 w-6"
-                            onClick={() => openAlertEditor(search)}
+                            aria-label="Edit alert" onClick={() => openAlertEditor(search)}
                           >
                             <Pencil className="h-3 w-3" />
                           </Button>

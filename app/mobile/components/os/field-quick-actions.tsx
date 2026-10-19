@@ -140,7 +140,7 @@ export function FieldQuickActions({ agentId, contacts = [] }: FieldQuickActionsP
                           size="icon"
                           variant="ghost"
                           className="h-7 w-7"
-                          onClick={() => handleCall(contact.phone!)}
+                          aria-label="Call" onClick={() => handleCall(contact.phone!)}
                         >
                           <Phone className="h-3 w-3 text-green-600" />
                         </Button>
@@ -148,7 +148,7 @@ export function FieldQuickActions({ agentId, contacts = [] }: FieldQuickActionsP
                           size="icon"
                           variant="ghost"
                           className="h-7 w-7"
-                          onClick={() => handleText(contact.phone!)}
+                          aria-label="Text" onClick={() => handleText(contact.phone!)}
                         >
                           <MessageSquare className="h-3 w-3 text-blue-600" />
                         </Button>
@@ -160,7 +160,7 @@ export function FieldQuickActions({ agentId, contacts = [] }: FieldQuickActionsP
                           size="icon"
                           variant="ghost"
                           className="h-7 w-7"
-                          onClick={() => setSelectedContact(contact.id)}
+                          aria-label="Open contact" onClick={() => setSelectedContact(contact.id)}
                         >
                           <Clock className="h-3 w-3 text-orange-600" />
                         </Button>

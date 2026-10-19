@@ -405,6 +405,7 @@ export function VideoPlayerClient({
                     <Button
                       variant="ghost"
                       size="icon"
+                      aria-label={isPlaying ? "Pause" : "Play"}
                       onClick={togglePlayPause}
                     >
                       {isPlaying ? (
@@ -414,7 +415,7 @@ export function VideoPlayerClient({
                       )}
                     </Button>
 
-                    <Button variant="ghost" size="icon" onClick={toggleMute}>
+                    <Button variant="ghost" size="icon" aria-label={isMuted ? "Unmute" : "Mute"} onClick={toggleMute}>
                       {isMuted ? (
                         <VolumeX className="h-5 w-5" />
                       ) : (
@@ -444,7 +445,7 @@ export function VideoPlayerClient({
                       </DropdownMenuContent>
                     </DropdownMenu>
 
-                    <Button variant="ghost" size="icon" onClick={toggleFullscreen}>
+                    <Button variant="ghost" size="icon" aria-label="Full screen" onClick={toggleFullscreen}>
                       <Maximize className="h-5 w-5" />
                     </Button>
                   </div>

@@ -33,6 +33,14 @@ export interface AddressLookupResult {
   lastSalePrice: number | null
   lastSaleDate: string | null       // ISO date
   neighborhoodSummary: string | null
+  /** Wave 142 (142C) — the parcel's LEGAL DESCRIPTION exactly as the county recorder / assessor
+   *  publishes it (lot / block / plat / section-township-range / metes-and-bounds), or null. Read by
+   *  lib/forms/legal-description.ts as the owner's "osint" source — accepted there ONLY together with
+   *  `legalDescriptionSource` (the page it was read from), a legal-description shape and not-low
+   *  confidence, then flagged for human verification. Never a street address, never paraphrased. */
+  legalDescription: string | null
+  /** The URL / record name the legal description was read from — the citation the acceptance requires. */
+  legalDescriptionSource: string | null
   dataConfidence: 'high' | 'medium' | 'low'
   sources: string[]                 // e.g. ['county_assessor', 'zillow_public']
 }
@@ -42,7 +50,7 @@ const EMPTY_RESULT: AddressLookupResult = {
   lotSizeAcres: null, propertyType: null, stories: null,
   garageSpaces: null, hasPool: null, hasHoa: null,
   taxAssessedValue: null, annualPropertyTax: null, hoaMonthlyFee: null, lastSalePrice: null, lastSaleDate: null,
-  neighborhoodSummary: null, dataConfidence: 'low', sources: [],
+  neighborhoodSummary: null, legalDescription: null, legalDescriptionSource: null, dataConfidence: 'low', sources: [],
 }
 
 /**
@@ -91,6 +99,8 @@ and public real estate databases. Return ONLY a JSON object with these fields
   "lastSalePrice": <integer in dollars or null>,
   "lastSaleDate": <"YYYY-MM-DD" or null>,
   "neighborhoodSummary": <1–2 sentence factual summary of the neighborhood or null>,
+  "legalDescription": <the parcel's legal description EXACTLY as the county recorder/assessor publishes it (lot/block/plat, subdivision, section-township-range or metes-and-bounds). Copy it verbatim from a county or public-record page; never paraphrase, never substitute the street address, null if not found>,
+  "legalDescriptionSource": <the URL or record name the legal description was copied from, or null>,
   "dataConfidence": <"high"|"medium"|"low">,
   "sources": [<list of data sources found>]
 }
@@ -130,6 +140,8 @@ Respond with ONLY the JSON object. No explanation, no markdown.
       lastSalePrice: parsed.lastSalePrice ?? null,
       lastSaleDate: parsed.lastSaleDate ?? null,
       neighborhoodSummary: parsed.neighborhoodSummary ?? null,
+      legalDescription: typeof parsed.legalDescription === 'string' && parsed.legalDescription.trim() ? parsed.legalDescription.trim() : null,
+      legalDescriptionSource: typeof parsed.legalDescriptionSource === 'string' && parsed.legalDescriptionSource.trim() ? parsed.legalDescriptionSource.trim() : null,
       dataConfidence: parsed.dataConfidence ?? 'low',
       sources: Array.isArray(parsed.sources) ? parsed.sources : [],
     }

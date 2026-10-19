@@ -203,7 +203,7 @@ export function TitleTransactionList({ transactions }: { transactions: Transacti
                         <TableCell>{formatDateOrTBD(closeDate)}</TableCell>
                         <TableCell>
                           <Button variant="ghost" size="icon" asChild>
-                            <Link href={`/portal/title/${txn.transaction_id}`}>
+                            <Link href={`/portal/title/${txn.transaction_id}`} aria-label="Open transaction">
                               <ChevronRight className="h-4 w-4" />
                             </Link>
                           </Button>

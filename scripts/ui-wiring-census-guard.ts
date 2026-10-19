@@ -78,6 +78,45 @@
  * spot), so a word in element text can read as a token; the mobile census is
  * lexical (class strings), it cannot see computed classes or CSS modules; the
  * sub-touch rule reads Tailwind height classes only.
+ *
+ * ── WAVE 142 (lane 142H — complete feature / UI / mobile / product-journey audit) ──
+ * The hard-zero population is now EVERY product journey the owner named (JOURNEYS
+ * below: listings · offers · transactions & closing · legal forms & e-sign · CDA &
+ * commissions · buyer/seller CRM · agents & vendors · lead acquisition · AI ISA &
+ * communications · marketing/media/books/video · portals · websites · settings ·
+ * billing · support · education · managers & operations · reports), reported PER
+ * JOURNEY with its denominator. MEASURED AT fec8b6a95 with the wave-141 finders:
+ * 0 dead surfaces anywhere. The finders below were added for the shapes that
+ * census could not see — and each found live defects on the journeys:
+ *   STATE_ONLY_ACTION_HANDLER  a handler NAMED as a persisting action (save / submit
+ *                              / send / generate / publish / sync / upload / …) whose
+ *                              body only sets local state: the TC "Contact Vendor"
+ *                              form whose submit was setTimeout(() => setSent(true))
+ *                              ("Request Sent" — nothing sent); the seller-update
+ *                              "Save as Draft" that cleared two flags and saved nothing
+ *   CHANGE_STATE_UNREAD        a Select / Input / Textarea whose state is read by
+ *                              nothing but its own control: the ROI "Date Window", the
+ *                              video-analytics range, the lead-magnet QR label, the
+ *                              Coming-Soon card's editable AI post and email teaser
+ *                              (activation regenerated both and dropped the edits —
+ *                              UNWIRED GENERATION)
+ *   SUCCESS_BEFORE_RESULT      a success toast before the first await (0 at HEAD)
+ *   EMPTY_SELECT_ITEM_VALUE    <SelectItem value=""> — Radix throws at runtime (0)
+ *   HASH_HREF                  <a href="#"> / <Link href="#"> with no handler (0)
+ *   DIALOG/SHEET_NO_TITLE      a DialogContent / SheetContent with no title anywhere
+ *                              in the file — screen readers announce nothing (1: the
+ *                              public listing page's video + gallery dialogs)
+ *   ICON_BUTTON_NO_LABEL (a11y.*, ratchet)  size="icon" buttons with no accessible
+ *                              name: 95 at HEAD across the app, all 95 labelled by the
+ *                              lane (aria-label / title / sr-only); the ratchet holds 0
+ * MOBILE: the hard zeros (raw table without scroll, fixed ≥400px width, fixed
+ * sidebar) now hold over the widened population (14 / 2 / 6 found at HEAD — the
+ * settings rail, the CRM contact rail, the workflow builder rail, 13 raw tables —
+ * all adapted); the five wave-141 ratchets keep their MEASURED population
+ * (MOBILE_RATCHET_PREFIXES) so they only ever fall, and the widened journeys ratchet
+ * under their own keys (journeys.*). An OUTSIDE-LANE exemption (another lane owns
+ * the file this wave) must keep reproducing its finding or be deleted (X1) — it
+ * can never outlive the defect it names.
  */
 import { readFileSync, existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -97,8 +136,9 @@ const lineOf = (s: string, i: number) => s.slice(0, i).split("\n").length
 
 // ── Populations ───────────────────────────────────────────────────────────────
 const APP_TSX = walkTs(join(ROOT, "app")).filter((f) => f.endsWith(".tsx") && !/\/app\/components\/ui\//.test(f) && !/\/app\/api\//.test(f))
-/** Subscriber / agent critical paths (lane 141I prompt): a dead surface here is P0/P1 and fails. */
-export const CRITICAL_PREFIXES = [
+/** The wave-141 critical paths (lane 141I prompt) — the MEASURED population of the five mobile ratchets
+ *  (2026-10-14); it stays exactly this so those counts only ever fall. */
+export const MOBILE_RATCHET_PREFIXES = [
   "app/signup", "app/get-started", "app/login", "app/onboarding", "app/dashboard/onboarding", "app/dashboard/getting-started",
   "app/dashboard/admin/users", "app/settings/users", "app/dashboard/settings/team", "app/dashboard/settings/teams", "app/vendor-invite",
   "app/crm/contacts", "app/leads", "app/dashboard/listings", "app/listings", "app/offers", "app/dashboard/offers",
@@ -107,7 +147,52 @@ export const CRITICAL_PREFIXES = [
   "app/dashboard/marketing/lead-magnets", "app/lm", "app/site", "app/dashboard/tools/home-value",
   "app/portal", "app/components/portal", "app/vendor", "app/lender",
 ]
-const isCritical = (f: string) => CRITICAL_PREFIXES.some((p) => f === p || f.startsWith(p + "/"))
+/** Wave 142 (lane 142H): EVERY product journey — a dead surface or a mobile hard-zero hit anywhere here is
+ *  P0/P1 and fails. Prefixes may overlap (the CDA pages sit under transactions); a file reports under its
+ *  LONGEST matching prefix. The wave-141 paths are all inside. */
+export const JOURNEYS: Record<string, string[]> = {
+  "subscriber onboarding": ["app/signup", "app/get-started", "app/login", "app/onboarding", "app/dashboard/onboarding", "app/dashboard/getting-started", "app/pricing"],
+  "users, seats & teams": ["app/dashboard/admin/users", "app/settings/users", "app/dashboard/settings/team", "app/dashboard/settings/teams", "app/vendor-invite", "app/dashboard/team", "app/dashboard/teams"],
+  "buyer / seller CRM": ["app/crm", "app/dashboard/buyers", "app/dashboard/sphere", "app/sphere", "app/past-clients", "app/lifetime-customers", "app/dashboard/buyer-broker-agreements", "app/dashboard/showings", "app/showings", "app/dashboard/cma", "app/dashboard/open-house", "app/dashboard/open-houses", "app/open-house", "app/dashboard/tasks", "app/tasks", "app/dashboard/calendar", "app/calendar", "app/components/contact"],
+  "lead acquisition": ["app/leads", "app/dashboard/acquisition", "app/dashboard/marketing/lead-magnets", "app/lm", "app/qr", "app/home-value", "app/dashboard/tools/home-value", "app/buyer-intake", "app/widget", "app/embed", "app/dashboard/agent/qr-codes", "app/dashboard/agent/business-cards", "app/dashboard/admin/lead-intake", "app/components/features/lead-magnets"],
+  "listings": ["app/dashboard/listings", "app/listings", "app/listing", "app/dashboard/listing-appointments", "app/properties", "app/components/dashboard/listings", "app/components/listings", "app/components/listing-landing"],
+  "offers": ["app/offers", "app/dashboard/offers"],
+  "transactions & closing": ["app/transactions", "app/dashboard/transactions", "app/transaction", "app/title", "app/components/transactions", "app/components/coordinator", "app/dashboard/coordinator"],
+  "legal forms & e-sign": ["app/components/form-wizard", "app/dashboard/forms", "app/forms", "app/dashboard/admin/forms", "app/dashboard/admin/transaction-forms", "app/dashboard/documents", "app/documents", "app/components/forms", "app/components/shared/SendForSignaturesPanel.tsx"],
+  "CDA & commissions": ["app/dashboard/transactions/[id]/cda", "app/dashboard/financials", "app/financials", "app/dashboard/income-truth", "app/dashboard/admin/fees"],
+  "compliance": ["app/dashboard/compliance", "app/compliance", "app/approvals", "app/components/compliance", "app/dashboard/admin/compliance", "app/dashboard/admin/compliance-ledger"],
+  "agents & vendors": ["app/dashboard/agent", "app/dashboard/vendors", "app/vendor", "app/dashboard/partners", "app/referral-partners", "app/recruiting", "app/dashboard/recruiting-roi", "app/dashboard/referrals", "app/referrals", "app/lender", "app/components/lender", "app/components/title", "app/dashboard/admin/agents", "app/dashboard/admin/vendor-approvals"],
+  "AI ISA & communications": ["app/dashboard/ai-isa", "app/dashboard/isa", "app/dashboard/ai-tools", "app/dashboard/ai-quality", "app/dashboard/voice", "app/dashboard/voice-intelligence", "app/dashboard/chat", "app/dashboard/inbox", "app/dashboard/communications", "app/components/ai-copilot", "app/components/ai-identity", "app/components/shared/internal-ai-assistant.tsx", "app/components/shared/page-context-assistant.tsx", "app/components/layout/unified-inbox-slideout.tsx", "app/mobile", "app/video-assistant"],
+  "marketing, media, books & video": ["app/dashboard/marketing", "app/dashboard/campaigns", "app/dashboard/social", "app/social-planner", "app/dashboard/content", "app/content-studio", "app/dashboard/video", "app/dashboard/videos", "app/newsletters", "app/v", "app/dashboard/admin/content-studio", "app/dashboard/admin/marketing-campaigns", "app/dashboard/admin/marketing-approvals", "app/dashboard/admin/campaign-center", "app/dashboard/admin/asset-manager-actions", "app/dashboard/admin/composition-library", "app/dashboard/admin/direct-mail-performance", "app/components/features/video", "app/components/video"],
+  "portals": ["app/portal", "app/components/portal", "app/(external-portal)", "app/p"],
+  "websites": ["app/site", "app/team", "app/components/settings/YourWebsiteCard.tsx", "app/dashboard/settings/branding", "app/dashboard/settings/embeds", "app/dashboard/settings/widget", "app/dashboard/marketing/video-pages", "app/dashboard/marketing/seo"],
+  "settings": ["app/settings", "app/dashboard/settings", "app/dashboard/profile", "app/components/settings", "app/dashboard/admin/phone-settings", "app/dashboard/admin/locations", "app/dashboard/admin/brand"],
+  "billing": ["app/dashboard/admin/billing", "app/settings/billing", "app/dashboard/admin/usage", "app/components/features/admin"],
+  "support & help": ["app/dashboard/help", "app/support", "app/dashboard/admin/support-tickets", "app/dashboard/superadmin/support", "app/dashboard/support"],
+  "education": ["app/academy", "app/dashboard/education", "app/dashboard/coaching", "app/dashboard/admin/education", "app/dashboard/admin/learning-modules", "app/dashboard/challenges", "app/dashboard/onboarding/training", "app/dashboard/onboarding/mentorship"],
+  "managers & operations": ["app/dashboard/operations", "app/dashboard/coordination", "app/dashboard/intelligence", "app/dashboard/briefing", "app/dashboard/system", "app/dashboard/diagnosis", "app/dashboard/jobs", "app/workflows", "app/dashboard/goals", "app/dashboard/admin/command-center", "app/dashboard/admin/approvals", "app/dashboard/admin/automations", "app/dashboard/admin/cron-health", "app/dashboard/admin/data-health", "app/dashboard/admin/manager-trust", "app/dashboard/admin/sla-monitor", "app/dashboard/admin/tenant-safety", "app/dashboard/admin/provider-intelligence", "app/dashboard/admin/system", "app/dashboard/superadmin", "app/dashboard/brokerage", "app/dashboard/patterns"],
+  "reports": ["app/dashboard/reports", "app/dashboard/reporting", "app/dashboard/analytics", "app/analytics", "app/dashboard/insights", "app/dashboard/intelligence-report", "app/dashboard/market-insights", "app/dashboard/leaderboard", "app/dashboard/agent/roi", "app/dashboard/admin/agent-scorecard", "app/dashboard/wealth"],
+}
+/** Every journey prefix — the hard-zero population (a superset of the wave-141 paths). */
+export const CRITICAL_PREFIXES = [...new Set(Object.values(JOURNEYS).flat())]
+const underPrefix = (f: string, p: string) => f === p || f.startsWith(p + "/")
+const isCritical = (f: string) => CRITICAL_PREFIXES.some((p) => underPrefix(f, p))
+const inRatchetPopulation = (f: string) => MOBILE_RATCHET_PREFIXES.some((p) => underPrefix(f, p))
+/** The journey a file reports under — its LONGEST matching prefix; null outside every journey. */
+export function journeyOf(f: string): string | null {
+  let best: { name: string; len: number } | null = null
+  for (const [name, prefixes] of Object.entries(JOURNEYS)) for (const p of prefixes) if (underPrefix(f, p) && (!best || p.length > best.len)) best = { name, len: p.length }
+  return best?.name ?? null
+}
+/**
+ * A finding in a file ANOTHER LANE owns this wave (the lane prompt: "report their UI defects as outside-lane
+ * with file:line"). Each entry is reported, not failed — and X1 deletes it the moment the finding stops
+ * reproducing, so an exemption can never outlive the defect it names.
+ */
+export const OUTSIDE_LANE_EXEMPTIONS: Array<{ file: string; kind: string; lane: string; why: string }> = [
+  { file: "app/dashboard/agent/business-cards/page.tsx", kind: "RAW_TABLE_NO_SCROLL", lane: "142D (business-card scanner page)", why: "the recent-scans <table> (:664) has no horizontal scroll container; lane D owns the scanner page this wave — reported in lane 142H's notes, one-line fix: overflow-x-auto on its wrapper" },
+]
+const isExempt = (h: { file: string; kind: string }) => OUTSIDE_LANE_EXEMPTIONS.some((e) => e.file === h.file && e.kind === h.kind)
 
 // ── Tag reader (shared by both censuses) ──────────────────────────────────────
 /** The opening tag that starts at `<Name` — attrs text and where it ends; `{…}` and strings stepped over. */
@@ -267,6 +352,86 @@ export function deadSurfaces(file: string, raw: string, opts: { exportsOf?: (m: 
     if (/\bname=/.test(body)) continue
     push(m.index!, "FORM_NO_SUBMIT", tag.attrs)
   }
+
+  // ── wave 142 (lane 142H): the shapes the first census could not see ──────────
+  // STATE_ONLY_ACTION_HANDLER — a handler NAMED as a persisting action whose body only sets local state
+  // (plus toasts / preventDefault / timers / pure helpers): a "Save" that saves nothing, a submit that fakes
+  // a send with setTimeout, a "Generate" that calls nothing. Opening a dialog or switching a UI mode is not
+  // an action (UI setters are excluded) and a handler that calls ANY other function is left alone.
+  for (const m of src.matchAll(/(?:const|function)\s+((?:handle|on)?[A-Za-z]\w*)\s*(?:=\s*(?:async\s*)?\([^)]*\)\s*=>|\([^)]*\))\s*\{/g)) {
+    const name = m[1]
+    if (!ACTION_HANDLER_NAME.test(name)) continue
+    const body = handlerBody(src, m.index! + m[0].length - 1); if (body === null) continue
+    const b = blankStrings(body)
+    if (!b.trim() || /\bawait\b|\bfetch\(|\.then\(|startTransition|router\.|window\.|location\.|document\.|navigator\.|dispatch\(|mutate|\.submit\(|\.click\(/.test(b)) continue
+    const calls = [...b.matchAll(/\b([A-Za-z_$][\w$.]*)\s*\(/g)].map((c) => c[1])
+    if (calls.length === 0 || !calls.every((c) => TRIVIAL_CALL.test(c))) continue
+    const setters = calls.filter((c) => /^set[A-Z]/.test(c))
+    if (setters.length === 0 || setters.every((c) => UI_STATE_SETTER.test(c))) continue
+    // An OPENER: a handler that opens a dialog / sheet / drawer (pre-filling its fields first) hands the
+    // action to that surface's own submit — handleBookVendor → setBookingDialogOpen(true) is not dead.
+    if (setters.some((c) => UI_OPENER_SETTER.test(c))) continue
+    push(m.index!, "STATE_ONLY_ACTION_HANDLER", `${name} → ${calls.join(",")}`)
+  }
+  // CHANGE_STATE_UNREAD — onValueChange / onCheckedChange / onChange sets state that nothing reads but the
+  // control itself (`value={x}` on the same control is not a reader). A <Tabs>/<Accordion>/<Collapsible>
+  // pair IS consumed by the control (it shows content by value) and is not a selector.
+  for (const m of src.matchAll(/on(ValueChange|CheckedChange|Change|PressedChange)=\{\s*(?:\(\s*\w*\s*\)\s*=>\s*)?set([A-Z]\w*)\s*(?:\(\s*[\w.]*\s*\))?\s*\}/g)) {
+    const cap = m[2]; const name = cap[0].toLowerCase() + cap.slice(1)
+    if (!new RegExp(`\\[\\s*${name}\\s*,\\s*set${cap}\\s*\\]\\s*=\\s*useState`).test(code)) continue
+    const tagStart = src.lastIndexOf("<", m.index!)
+    const tagName = /^<([A-Za-z][A-Za-z0-9.]*)/.exec(src.slice(tagStart, tagStart + 40))?.[1] ?? ""
+    if (/^Tabs$|TabsList|^Accordion|^Collapsible|^Carousel|^ToggleGroup$/.test(tagName)) continue
+    const stripped = code.replace(new RegExp(`\\b(value|checked|defaultValue|pressed|selected)=\\{\\s*${name}\\s*\\}`, "g"), "")
+    const mentions = [...stripped.matchAll(new RegExp(`(?<![A-Za-z0-9_$.])${name}(?![A-Za-z0-9_$])`, "g"))].length
+    if (mentions <= 1) push(m.index!, "CHANGE_STATE_UNREAD", `<${tagName}> set${cap} → ${name} read nowhere but its own control`)
+  }
+  // SUCCESS_BEFORE_RESULT — an async handler that claims success BEFORE its first await.
+  for (const m of src.matchAll(/(?:const|function)\s+(\w+)\s*(?:=\s*async\s*\([^)]*\)\s*=>|=\s*async\s+function\s*\([^)]*\))\s*\{|async\s+function\s+(\w+)\s*\([^)]*\)\s*\{/g)) {
+    const body = handlerBody(src, m.index! + m[0].length - 1); if (body === null) continue
+    const aw = body.search(/\bawait\b/); if (aw < 0) continue
+    const claim = body.search(/toast\.success\(|variant:\s*["']success["']|title:\s*["'`](Saved|Sent|Done|Success|Updated|Created|Published|Deleted|Approved|Submitted|Scheduled|Connected)\b/i)
+    if (claim >= 0 && claim < aw) push(m.index!, "SUCCESS_BEFORE_RESULT", `${m[1] ?? m[2]} claims success before its first await`)
+  }
+  // EMPTY_SELECT_ITEM_VALUE — Radix Select throws at runtime on value="".
+  for (const m of src.matchAll(/<SelectItem\b[^>]*\bvalue=(?:""|''|\{""\}|\{''\})/g)) push(m.index!, "EMPTY_SELECT_ITEM_VALUE", m[0])
+  // HASH_HREF — <a href="#"> / <Link href="#"> with no handler: a link that goes nowhere.
+  for (const m of src.matchAll(/<(a|Link)\b/g)) {
+    const tag = openingTag(src, m.index!); if (!tag) continue
+    if (!/\bhref=["']#["']/.test(tag.attrs) || /\bonClick=/.test(tag.attrs)) continue
+    push(m.index!, "HASH_HREF", `${m[1]} ${tag.attrs}`)
+  }
+  // DIALOG_NO_TITLE / SHEET_NO_TITLE — a DialogContent / SheetContent with no title anywhere in the file.
+  const dlg = (src.match(/<DialogContent\b/g) ?? []).length
+  if (dlg > 0 && !/DialogTitle/.test(src)) push(src.search(/<DialogContent\b/), "DIALOG_NO_TITLE", `${dlg} DialogContent, no DialogTitle`)
+  const sht = (src.match(/<SheetContent\b/g) ?? []).length
+  if (sht > 0 && !/SheetTitle/.test(src)) push(src.search(/<SheetContent\b/), "SHEET_NO_TITLE", `${sht} SheetContent, no SheetTitle`)
+  return hits
+}
+/** Handler names that promise persistence / dispatch (past-tense callbacks like handleCreated and openers like handleCreateOpen are not actions). */
+const ACTION_HANDLER_NAME = /^(handle|on)?(save|submit|send|generate|publish|sync|upload|export|import|invite|approve|reject|pay|launch|convert|regenerate|resend|verify|connect|disconnect|schedule|book|archive|delete)(?!d\b|ed\b|Complete|Success|Error|Change|Open|Click)/i
+/** Calls a state-only body may contain and still be state-only (setters, toasts, timers, pure helpers, local collection methods). */
+const TRIVIAL_CALL = /^(set[A-Z]\w*|toast(\.\w+)?|alert|console\.\w+|e\.(preventDefault|stopPropagation)|event\.(preventDefault|stopPropagation)|String|Number|Boolean|Array\.from|Math\.\w+|Date\.now|Date|JSON\.\w+|Object\.\w+|parseInt|parseFloat|isNaN|isFinite|setTimeout|clearTimeout|requestAnimationFrame|structuredClone|encodeURIComponent|decodeURIComponent|crypto\.randomUUID|Set|Map|\w+\.(trim|toLowerCase|toUpperCase|filter|map|includes|find|findIndex|some|every|push|slice|splice|split|join|replace|test|has|get|set|delete|add|toFixed|startsWith|endsWith|indexOf|concat|forEach|reduce|flatMap|sort|reverse|at|keys|values|entries|toString|localeCompare|getTime|toISOString))$/
+/** Setters that merely open / close / switch a UI mode — a handler that only does this is a UI affordance, not a dead action. */
+const UI_STATE_SETTER = /^set\w*(Open|Dialog|Modal|Mode|Step|Show\w*|Visible|Expanded|Selected\w*|Active\w*|Editing\w*|Tab|View|Sheet|Drawer|Panel|Preview|Hover\w*|Focus\w*|Menu|Confirm\w*|Pending|Loading|Busy|Submitting|Saving)$/
+/** Setters that OPEN a surface whose own submit carries the action (the handler is an opener, whatever else it pre-fills). */
+const UI_OPENER_SETTER = /^set(\w*(Open|Dialog|Modal|Sheet|Drawer)|Show\w+)$/
+
+/** ACCESSIBILITY (wave 142): a size="icon" button with no accessible name — no aria-label / title on it, no
+ *  sr-only text or labelled child inside it, no visible text. A ratchet over the whole app (a11y.*). */
+export function a11yHits(file: string, raw: string): Hit[] {
+  const src = stripComments(raw)
+  const hits: Hit[] = []
+  for (const m of src.matchAll(/<Button\b/g)) {
+    const tag = openingTag(src, m.index!); if (!tag) continue
+    if (!/size=["']icon/.test(tag.attrs) || /aria-label|title=|aria-labelledby/.test(tag.attrs)) continue
+    if (tag.selfClosing) { hits.push({ file, line: lineOf(src, m.index!), kind: "ICON_BUTTON_NO_LABEL", detail: tag.attrs.replace(/\s+/g, " ").slice(0, 90) }); continue }
+    const close = src.indexOf("</Button>", tag.end)
+    const inner = src.slice(tag.end, close < 0 ? tag.end + 400 : close)
+    // visible text: a run of letters at the start of the body or after a child tag (`<X />Close`, `Close`)
+    if (/sr-only|aria-label|title=/.test(inner) || /(^|>)\s*[A-Za-z][^<>{}]*\s*(<|$)/.test(inner)) continue
+    hits.push({ file, line: lineOf(src, m.index!), kind: "ICON_BUTTON_NO_LABEL", detail: tag.attrs.replace(/\s+/g, " ").slice(0, 90) })
+  }
   return hits
 }
 
@@ -275,7 +440,9 @@ export function mobileHits(file: string, raw: string): Hit[] {
   const src = stripComments(raw)
   const hits: Hit[] = []
   const push = (i: number, kind: string, detail: string) => hits.push({ file, line: lineOf(src, i), kind, detail: detail.replace(/\s+/g, " ").slice(0, 90) })
-  const hasScroll = /overflow-x-auto/.test(src)
+  // A horizontal scroll container: overflow-x-auto / overflow-auto / overflow-x-scroll, or a Radix
+  // ScrollArea with a horizontal ScrollBar (wave 142: the referral kanban scrolls through one).
+  const hasScroll = /overflow-(x-)?auto|overflow-x-scroll|<ScrollBar\b[^>]*orientation=["']horizontal["']/.test(src)
   for (const m of src.matchAll(/<([A-Za-z][A-Za-z0-9.]*)\b/g)) {
     const tag = openingTag(src, m.index!); if (!tag) continue
     const cls = /className=\{?["'`]([^"'`]*)["'`]/.exec(tag.attrs)?.[1]; if (!cls) continue
@@ -284,7 +451,9 @@ export function mobileHits(file: string, raw: string): Hit[] {
     if (fixed && Number(fixed[2]) >= 3 && !/\b(sm|md|lg|xl):grid-cols-/.test(cls) && name !== "TabsList")
       push(m.index!, Number(fixed[2]) >= 4 ? "GRID_COLS_4PLUS_NO_BREAKPOINT" : "GRID_COLS_3_NO_BREAKPOINT", cls)
     for (const w of cls.matchAll(/(?:^|\s)(?:min-)?w-\[(\d{3,4})px\]/g)) if (Number(w[1]) >= 400 && !hasScroll && !/\b(sm|md|lg):w-/.test(cls) && !/\bw-full\b/.test(cls)) push(m.index!, "FIXED_WIDTH_400PLUS_NO_SCROLL", `${w[0].trim()} · ${cls}`)
-    if (/(^|\s)w-(64|72|80|96)(\s|$)/.test(cls) && /\b(shrink-0|flex-shrink-0|border-[lr])\b/.test(cls) && !/\b(sm|md|lg|xl):(w-|hidden|block|flex)/.test(cls) && !/\bhidden\b|\bw-full\b/.test(cls))
+    // A fixed rail: w-64…w-96 that is bordered, or shrink-0 in a file with no horizontal scroll container
+    // (a shrink-0 column INSIDE a scrolling kanban row is adapted by design — wave 142).
+    if (/(^|\s)w-(64|72|80|96)(\s|$)/.test(cls) && /\b(shrink-0|flex-shrink-0|border-[lr])\b/.test(cls) && !/\b(sm|md|lg|xl):(w-|hidden|block|flex)/.test(cls) && !/\bhidden\b|\bw-full\b/.test(cls) && (/\bborder-[lr]\b/.test(cls) || !hasScroll))
       push(m.index!, "FIXED_SIDEBAR_NO_BREAKPOINT", cls)
     if ((name === "Button" || name === "button") && /(^|\s)(h-[4-7]|size-[4-7])(\s|$)/.test(cls)) push(m.index!, "SUB_TOUCH_BUTTON", cls)
     if (/\bflex\b/.test(cls) && /\bwhitespace-nowrap\b/.test(cls) && !/overflow-x-auto|flex-wrap|truncate/.test(cls)) push(m.index!, "NOWRAP_FLEX_ROW", cls)
@@ -362,48 +531,110 @@ async function main() {
     mh(`<div className="grid grid-cols-5 gap-3">x</div>`).includes("GRID_COLS_4PLUS_NO_BREAKPOINT") && !mh(`<div className="grid grid-cols-2 lg:grid-cols-5">x</div>`).includes("GRID_COLS_4PLUS_NO_BREAKPOINT") && !mh(`<TabsList className="grid w-full grid-cols-5">x</TabsList>`).includes("GRID_COLS_4PLUS_NO_BREAKPOINT") &&
     mh(`<Button className="h-7 text-xs">x</Button>`).includes("SUB_TOUCH_BUTTON") && !mh(`<Button className="h-9">x</Button>`).includes("SUB_TOUCH_BUTTON") &&
     mh(`<div className="flex items-center whitespace-nowrap">x</div>`).includes("NOWRAP_FLEX_ROW") &&
-    mh(`<div className="md:hidden">cards</div><div className="hidden md:block"><Table /></div>`).includes("TABLE_WITH_CARD_VARIANT") && mh(`<Table />`).includes("TABLE_NO_CARD_VARIANT"))
+    mh(`<div className="md:hidden">cards</div><div className="hidden md:block"><Table /></div>`).includes("TABLE_WITH_CARD_VARIANT") && mh(`<Table />`).includes("TABLE_NO_CARD_VARIANT") &&
+    // wave 142: overflow-auto and a horizontal ScrollBar are scroll containers; a shrink-0 column inside a scrolling row is not a sidebar, a bordered rail still is
+    !mh(`<div className="overflow-auto"><table className="w-full"><tr><td>x</td></tr></table></div>`).includes("RAW_TABLE_NO_SCROLL") &&
+    !mh(`<ScrollArea><div className="flex min-w-[1200px]">x</div><ScrollBar orientation="horizontal" /></ScrollArea>`).includes("FIXED_WIDTH_400PLUS_NO_SCROLL") &&
+    !mh(`<div className="overflow-x-auto"><div className="w-72 flex-shrink-0 flex flex-col">col</div></div>`).includes("FIXED_SIDEBAR_NO_BREAKPOINT") &&
+    mh(`<div className="overflow-x-auto"><aside className="w-72 border-r shrink-0">x</aside></div>`).includes("FIXED_SIDEBAR_NO_BREAKPOINT"))
+  check("P13 wave 142 — a handler NAMED save/submit/send/generate that only sets local state is caught (a setTimeout-faked submit too); one that awaits an action, calls a callback, or only opens a dialog is not; a local toggle is not an action",
+    kinds(`const handleSave = () => { setSaved(true); toast({ title: "Saved" }) }`).includes("STATE_ONLY_ACTION_HANDLER") &&
+    kinds(`const handleSubmit = async (e) => { e.preventDefault(); setLoading(true); setTimeout(() => { setSent(true); setLoading(false) }, 1000) }`).includes("STATE_ONLY_ACTION_HANDLER") &&
+    kinds(`const handleGenerate = () => { setResult("x") }`).includes("STATE_ONLY_ACTION_HANDLER") &&
+    !kinds(`const handleSave = async () => { const r = await saveAction(x); if (!r.ok) setError(r.error) }`).includes("STATE_ONLY_ACTION_HANDLER") &&
+    !kinds(`const handleSave = () => { onSave(form) }`).includes("STATE_ONLY_ACTION_HANDLER") &&
+    !kinds(`const handleCreate = () => { setCreateOpen(true) }`).includes("STATE_ONLY_ACTION_HANDLER") &&
+    !kinds(`const handleBook = (v) => { setSelectedVendor(v); setBookingServiceType(v.category || ""); setBookingDialogOpen(true) }`).includes("STATE_ONLY_ACTION_HANDLER") &&
+    !kinds(`const handleCreated = () => { setItems([]) }`).includes("STATE_ONLY_ACTION_HANDLER") &&
+    !kinds(`const toggleItem = (id) => { setSelected((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]) }`).includes("STATE_ONLY_ACTION_HANDLER"))
+  check("P14 wave 142 — a Select / Input whose state nothing reads but its own control is caught; one that is rendered or sent is not; a Tabs value/onValueChange pair is not a selector",
+    kinds(`const [range, setRange] = useState("30d")\nreturn <Select value={range} onValueChange={setRange}><SelectTrigger /></Select>`).includes("CHANGE_STATE_UNREAD") &&
+    kinds(`const [label, setLabel] = useState("")\nreturn <Input value={label} onChange={(e) => setLabel(e.target.value)} />`).includes("CHANGE_STATE_UNREAD") &&
+    !kinds(`const [range, setRange] = useState("30d")\nreturn <><Select value={range} onValueChange={setRange}><SelectTrigger /></Select><p>{range}</p></>`).includes("CHANGE_STATE_UNREAD") &&
+    !kinds(`const [tab, setTab] = useState("a")\nreturn <Tabs value={tab} onValueChange={setTab}><TabsContent value="a">x</TabsContent></Tabs>`).includes("CHANGE_STATE_UNREAD"))
+  check("P15 wave 142 — a success toast BEFORE the first await is caught; after it is not",
+    kinds(`const handleSend = async () => { toast.success("Sent"); await send() }`).includes("SUCCESS_BEFORE_RESULT") &&
+    !kinds(`const handleSend = async () => { await send(); toast.success("Sent") }`).includes("SUCCESS_BEFORE_RESULT"))
+  check("P16 wave 142 — an empty SelectItem value, a href=\"#\" with no handler, and a Dialog / Sheet with no title are caught; their honest forms are not",
+    kinds(`<SelectItem value="">All</SelectItem>`).includes("EMPTY_SELECT_ITEM_VALUE") && !kinds(`<SelectItem value="all">All</SelectItem>`).includes("EMPTY_SELECT_ITEM_VALUE") &&
+    kinds(`<a href="#">x</a>`).includes("HASH_HREF") && !kinds(`<a href="#" onClick={go}>x</a>`).includes("HASH_HREF") && !kinds(`<Link href="/x">x</Link>`).includes("HASH_HREF") &&
+    kinds(`<Dialog><DialogContent>x</DialogContent></Dialog>`).includes("DIALOG_NO_TITLE") && !kinds(`<Dialog><DialogContent><DialogTitle>T</DialogTitle>x</DialogContent></Dialog>`).includes("DIALOG_NO_TITLE") &&
+    kinds(`<Sheet><SheetContent>x</SheetContent></Sheet>`).includes("SHEET_NO_TITLE") && !kinds(`<Sheet><SheetContent><SheetHeader><SheetTitle>T</SheetTitle></SheetHeader></SheetContent></Sheet>`).includes("SHEET_NO_TITLE"))
+  const ah = (s: string) => a11yHits("fixture.tsx", s).map((h) => h.kind)
+  check("P17 wave 142 — a size=\"icon\" button with no accessible name is caught; aria-label, title, sr-only text, a labelled child link, or visible text is not",
+    ah(`<Button size="icon"><X /></Button>`).includes("ICON_BUTTON_NO_LABEL") &&
+    !ah(`<Button size="icon" aria-label="Close"><X /></Button>`).includes("ICON_BUTTON_NO_LABEL") &&
+    !ah(`<Button size="icon" title="Close"><X /></Button>`).includes("ICON_BUTTON_NO_LABEL") &&
+    !ah(`<Button size="icon"><X /><span className="sr-only">Close</span></Button>`).includes("ICON_BUTTON_NO_LABEL") &&
+    !ah(`<Button size="icon" asChild><Link href="/x" aria-label="Open"><X /></Link></Button>`).includes("ICON_BUTTON_NO_LABEL") &&
+    !ah(`<Button size="icon">Close</Button>`).includes("ICON_BUTTON_NO_LABEL"))
+  check("P18 wave 142 — journeyOf reports a file under its LONGEST matching prefix; a file outside every journey is null; the wave-141 ratchet population sits inside the journeys",
+    journeyOf("app/dashboard/transactions/[id]/cda/page.tsx") === "CDA & commissions" && journeyOf("app/dashboard/transactions/page.tsx") === "transactions & closing" &&
+    journeyOf("app/components/ui/button.tsx") === null && MOBILE_RATCHET_PREFIXES.every((p) => isCritical(p + "/page.tsx")))
 
   // ── A · dead-surface census ────────────────────────────────────────────────
   console.log("\n[A · dead-surface census — stripped source over app/**/*.tsx]")
   const all: Hit[] = []
+  const a11y: Hit[] = []
   let buttons = 0, menuItems = 0
+  const perJourney: Record<string, { modules: number; buttons: number; dead: number; mobile: number; a11y: number }> = {}
+  for (const name of Object.keys(JOURNEYS)) perJourney[name] = { modules: 0, buttons: 0, dead: 0, mobile: 0, a11y: 0 }
   for (const abs of APP_TSX) {
     const raw = readFileSync(abs, "utf8")
     const s = stripComments(raw)
-    buttons += (s.match(/<(Button|button)(?=[\s/>])/g) ?? []).length
+    const b = (s.match(/<(Button|button)(?=[\s/>])/g) ?? []).length
+    buttons += b
     menuItems += (s.match(/<(DropdownMenuItem|ContextMenuItem|CommandItem|MenubarItem)(?=[\s/>])/g) ?? []).length
-    all.push(...deadSurfaces(rel(abs), raw))
+    const dead = deadSurfaces(rel(abs), raw)
+    const access = a11yHits(rel(abs), raw)
+    all.push(...dead)
+    a11y.push(...access)
+    const j = journeyOf(rel(abs))
+    if (j) { perJourney[j].modules++; perJourney[j].buttons += b; perJourney[j].dead += dead.length; perJourney[j].a11y += access.length }
   }
   const byKind = (hits: Hit[]) => { const o: Record<string, Hit[]> = {}; for (const h of hits) (o[h.kind] ??= []).push(h); return o }
   const aByKind = byKind(all)
-  const critical = all.filter((h) => isCritical(h.file))
-  console.log(`    denominator: ${APP_TSX.length} modules · ${buttons} buttons · ${menuItems} menu items · ${CRITICAL_PREFIXES.length} critical-path prefixes`)
+  const critical = all.filter((h) => isCritical(h.file) && !isExempt(h))
+  console.log(`    denominator: ${APP_TSX.length} modules · ${buttons} buttons · ${menuItems} menu items · ${Object.keys(JOURNEYS).length} journeys / ${CRITICAL_PREFIXES.length} prefixes (hard zero) · ${APP_TSX.filter((f) => !isCritical(rel(f))).length} modules outside every journey (ratchet)`)
   for (const [k, v] of Object.entries(aByKind).sort((a, b) => b[1].length - a[1].length)) {
     console.log(`    ${k}: ${v.length}`)
     for (const h of v.slice(0, 12)) console.log(`      ${isCritical(h.file) ? "P0/P1 " : "      "}${h.file}:${h.line}  ${h.detail}`)
     if (v.length > 12) console.log(`      … ${v.length - 12} more`)
   }
-  console.log("    BLIND SPOTS: prop-passed handlers judged at the leaf; clickable-parent recognition is window-bounded (400 chars); JSX text unmasked; a handler that calls a real action and then lies about its result is test:ui-delivery's domain, not this one.")
+  console.log(`    a11y ICON_BUTTON_NO_LABEL: ${a11y.length} (ratchet; the first 8)`)
+  for (const h of a11y.slice(0, 8)) console.log(`      ${h.file}:${h.line}  ${h.detail}`)
+  console.log("    BLIND SPOTS: prop-passed handlers judged at the leaf; clickable-parent recognition is window-bounded (400 chars); JSX text unmasked; a handler that calls a real action and then lies about its result is test:ui-delivery's domain, not this one; STATE_ONLY reads handler NAMES (an unnamed inline arrow that saves nothing is not seen); CHANGE_STATE_UNREAD cannot see a read through a ref or a closure in another file.")
   check("A1 the census population is real (≥ 1,000 modules, ≥ 3,000 buttons)", APP_TSX.length >= 1000 && buttons >= 3000, `${APP_TSX.length} / ${buttons}`)
-  check("A2 ZERO dead surfaces on the subscriber/agent critical paths (P0/P1)", critical.length === 0, critical.map((h) => `${h.kind} ${h.file}:${h.line}`).join(", "))
+  check("A2 ZERO dead surfaces on every product journey (P0/P1) — wave 141's critical paths and wave 142's journeys alike", critical.length === 0, critical.map((h) => `${h.kind} ${h.file}:${h.line}`).join(", "))
 
   // ── B · mobile census over the critical flows ──────────────────────────────
   console.log("\n[B · mobile census — critical flows, static class analysis at 390px]")
   const criticalFiles = [...new Set(APP_TSX.filter((f) => isCritical(rel(f))))]
   const mob: Hit[] = []
-  for (const abs of criticalFiles) mob.push(...mobileHits(rel(abs), readFileSync(abs, "utf8")))
-  const mByKind = byKind(mob)
-  console.log(`    denominator: ${criticalFiles.length} critical-flow modules; ${(mByKind.TABLE_WITH_CARD_VARIANT ?? []).length + (mByKind.TABLE_NO_CARD_VARIANT ?? []).length} with a table`)
-  for (const [k, v] of Object.entries(mByKind).sort((a, b) => b[1].length - a[1].length)) {
-    console.log(`    ${k}: ${v.length}`)
-    if (k !== "SUB_TOUCH_BUTTON" && k !== "GRID_COLS_3_NO_BREAKPOINT" && k !== "TABLE_WITH_CARD_VARIANT") for (const h of v.slice(0, 40)) console.log(`      ${h.file}:${h.line}  ${h.detail}`)
+  for (const abs of criticalFiles) {
+    const hs = mobileHits(rel(abs), readFileSync(abs, "utf8"))
+    mob.push(...hs)
+    const j = journeyOf(rel(abs))
+    if (j) perJourney[j].mobile += hs.filter((h) => /^(RAW_TABLE_NO_SCROLL|FIXED_WIDTH_400PLUS_NO_SCROLL|FIXED_SIDEBAR_NO_BREAKPOINT)$/.test(h.kind)).length
   }
-  console.log("    BLIND SPOTS: lexical class scan (no computed classes, no CSS modules, no runtime measurement); the sub-touch rule reads Tailwind height classes only and the design-system default (h-9 = 36px) is below the 44px target by design — an OWNER item, not a per-file fix.")
-  const zero = (k: string) => (mByKind[k] ?? []).length
-  check("B1 no raw <table> on a critical flow lacks a horizontal scroll container", zero("RAW_TABLE_NO_SCROLL") === 0, (mByKind.RAW_TABLE_NO_SCROLL ?? []).map((h) => `${h.file}:${h.line}`).join(", "))
-  check("B2 no fixed ≥ 400px width on a critical flow without a scroll container or a breakpoint", zero("FIXED_WIDTH_400PLUS_NO_SCROLL") === 0, (mByKind.FIXED_WIDTH_400PLUS_NO_SCROLL ?? []).map((h) => `${h.file}:${h.line}`).join(", "))
-  check("B3 no fixed sidebar (w-64…w-96, shrink-0/border) on a critical flow without a breakpoint", zero("FIXED_SIDEBAR_NO_BREAKPOINT") === 0, (mByKind.FIXED_SIDEBAR_NO_BREAKPOINT ?? []).map((h) => `${h.file}:${h.line}`).join(", "))
+  const mByKind = byKind(mob)
+  /** The wave-141 ratchet population (MOBILE_RATCHET_PREFIXES) — a subset of the journeys. */
+  const mobRatchet = mob.filter((h) => inRatchetPopulation(h.file))
+  const mrByKind = byKind(mobRatchet)
+  console.log(`    denominator: ${criticalFiles.length} journey modules (${criticalFiles.filter((f) => inRatchetPopulation(rel(f))).length} in the wave-141 ratchet population); ${(mByKind.TABLE_WITH_CARD_VARIANT ?? []).length + (mByKind.TABLE_NO_CARD_VARIANT ?? []).length} with a table`)
+  for (const [k, v] of Object.entries(mByKind).sort((a, b) => b[1].length - a[1].length)) {
+    console.log(`    ${k}: ${v.length} (wave-141 population ${(mrByKind[k] ?? []).length})`)
+    if (k !== "SUB_TOUCH_BUTTON" && k !== "GRID_COLS_3_NO_BREAKPOINT" && k !== "TABLE_WITH_CARD_VARIANT" && k !== "TABLE_NO_CARD_VARIANT" && k !== "GRID_COLS_4PLUS_NO_BREAKPOINT") for (const h of v.slice(0, 40)) console.log(`      ${h.file}:${h.line}  ${h.detail}${isExempt(h) ? "  (OUTSIDE-LANE — " + OUTSIDE_LANE_EXEMPTIONS.find((e) => e.file === h.file && e.kind === h.kind)!.lane + ")" : ""}`)
+  }
+  console.log("\n    per journey (modules · buttons · dead · mobile hard-zero hits · unlabelled icon buttons):")
+  for (const [name, p] of Object.entries(perJourney)) console.log(`      ${name.padEnd(34)} ${String(p.modules).padStart(4)} · ${String(p.buttons).padStart(5)} · ${p.dead} · ${p.mobile} · ${p.a11y}`)
+  console.log("    BLIND SPOTS: lexical class scan (no computed classes, no CSS modules, no runtime measurement); the sub-touch rule reads Tailwind height classes only and the design-system default (h-9 = 36px) is below the 44px target by design — an OWNER item, not a per-file fix; a rail hidden by a PARENT in another file (hidden lg:flex around a pane) reads as fixed unless the pane itself carries a breakpoint.")
+  const hard = (k: string) => (mByKind[k] ?? []).filter((h) => !isExempt(h))
+  check("B1 no raw <table> on any journey lacks a horizontal scroll container", hard("RAW_TABLE_NO_SCROLL").length === 0, hard("RAW_TABLE_NO_SCROLL").map((h) => `${h.file}:${h.line}`).join(", "))
+  check("B2 no fixed ≥ 400px width on any journey without a scroll container or a breakpoint", hard("FIXED_WIDTH_400PLUS_NO_SCROLL").length === 0, hard("FIXED_WIDTH_400PLUS_NO_SCROLL").map((h) => `${h.file}:${h.line}`).join(", "))
+  check("B3 no fixed sidebar (w-64…w-96, bordered or shrink-0 outside a scroll row) on any journey without a breakpoint", hard("FIXED_SIDEBAR_NO_BREAKPOINT").length === 0, hard("FIXED_SIDEBAR_NO_BREAKPOINT").map((h) => `${h.file}:${h.line}`).join(", "))
+  const stale = OUTSIDE_LANE_EXEMPTIONS.filter((e) => !mob.some((h) => h.file === e.file && h.kind === e.kind) && !all.some((h) => h.file === e.file && h.kind === e.kind))
+  check("X1 every OUTSIDE-LANE exemption still reproduces the finding it names (a fixed one must be deleted — an exemption never outlives its defect)", stale.length === 0, stale.map((e) => `${e.file} ${e.kind} (${e.lane})`).join(", "))
   /** The PRIMARY lists this lane adapted (table → cards below md). A rule on each file, not a count. */
   const PRIMARY_LISTS = ["app/settings/users/users-management-client.tsx", "app/dashboard/admin/users/invitations/invitations-table.tsx", "app/settings/billing/invoice-history-table.tsx", "app/dashboard/transactions/page.tsx"]
   const primaryMissing = PRIMARY_LISTS.filter((f) => !(mByKind.TABLE_WITH_CARD_VARIANT ?? []).some((h) => h.file === f))
@@ -426,6 +657,31 @@ async function main() {
   check("C4 embedded intelligence is MOUNTED, not merely exported: NextBestActionPanel on the CRM board, AgentNextBestActions on the agent dashboard, follow-up + buyer-insights cards on the contact detail", /<NextBestActionPanel\b/.test(crm) && /<AgentNextBestActions\b/.test(agent) && /followup-card/.test(contactPages) && /buyer-insights-panel/.test(contactPages))
   const academy = read("app/academy/page.tsx")
   check("C5 the academy category cards are controls (onSelect wired, aria-pressed, list filtered by resourceType)", /onSelect=\{\(\) => setResourceType/.test(academy) && /aria-pressed=/.test(academy) && /visibleResources/.test(academy))
+  // ── wave 142 (lane 142H): the surfaces this lane wired — rules, not waypoints ──
+  const comingSoon = read("app/components/dashboard/listings/lifecycle/coming-soon-command-card.tsx")
+  const socialAction = read("app/actions/social-media-automation.ts"), emailAction = read("app/actions/email-campaigns.ts")
+  check("C6 the Coming-Soon card ships the agent's REVIEWED copy: the edited social post reaches createListingPosts (contentOverride) and the edited teaser reaches prepareListingEmailCampaign (bodyOverride), and both actions read the field they declare",
+    /createListingPosts\(\{[^}]*contentOverride:\s*socialPost\b/.test(comingSoon) && /prepareListingEmailCampaign\(\{[^}]*bodyOverride:\s*emailBody\b/.test(comingSoon) &&
+    /contentOverride\?:\s*string/.test(socialAction) && /params\.contentOverride/.test(socialAction) &&
+    /bodyOverride\?:\s*string/.test(emailAction) && /params\.bodyOverride/.test(emailAction))
+  const videoAnalytics = read("app/dashboard/videos/analytics/page.tsx"), videoAction = read("app/actions/video-generation.ts")
+  check("C7 the video-analytics range reaches its read: the page passes { sinceDays } to getVideoPerformanceStats and the action applies it to the project query",
+    /getVideoPerformanceStats\([^)]*\{\s*sinceDays\b/.test(videoAnalytics) && /opts\?\.sinceDays[\s\S]{0,200}\.gte\("created_at"/.test(videoAction))
+  const roiPage = read("app/dashboard/campaigns/roi/page.tsx"), roiClient = read("app/dashboard/campaigns/roi/roi-dashboard-client.tsx")
+  check("C8 the ROI 'Date Window' reaches its read: the page resolves ?window= through resolveRoiWindow and passes the bounds to getChannelPerformanceData; the client's select writes the URL (router.replace) and says what the window applies to",
+    /searchParams/.test(roiPage) && /resolveRoiWindow\(/.test(roiPage) && /getChannelPerformanceData\([^)]*windowStart,\s*windowEnd\)/.test(roiPage) &&
+    /onValueChange=\{changeWindow\}/.test(roiClient) && /router\.replace\(`\?window=\$\{v\}`\)/.test(roiClient) && /Applies to the Channel Comparison/.test(roiClient))
+  const composer = read("app/components/listings/SellerUpdateComposer.tsx"), sellerUpdates = read("app/actions/seller-updates.ts")
+  check("C9 'Save as Draft' on the seller-update composer persists through the drafts survivor: the composer calls saveSellerUpdateDraft and loads loadSellerUpdateDraft back; the action writes ai_message_drafts with the seller_update trigger and reads the pending row by it; the send stamps the draft sent",
+    /saveSellerUpdateDraft\(\{/.test(composer) && /loadSellerUpdateDraft\(listingId\)/.test(composer) &&
+    /from\("ai_message_drafts"\)[\s\S]{0,400}trigger_event:\s*SELLER_UPDATE_DRAFT_TRIGGER/.test(sellerUpdates) &&
+    /\.eq\("trigger_event",\s*SELLER_UPDATE_DRAFT_TRIGGER\)[\s\S]{0,120}\.eq\("status",\s*"pending"\)/.test(sellerUpdates) &&
+    /status:\s*"sent"[\s\S]{0,300}\.eq\("trigger_event",\s*SELLER_UPDATE_DRAFT_TRIGGER\)/.test(sellerUpdates))
+  const settingsSidebar = read("app/components/settings/SettingsSidebar.tsx"), settingsLayout = read("app/settings/layout.tsx")
+  check("C10 the settings rail adapts: a md:hidden horizontal section strip, the w-64 aside hidden below md, and the layout stacks (flex-col md:flex-row)",
+    /<nav[^>]*className="[^"]*\bmd:hidden\b/.test(settingsSidebar) && /<aside className="hidden md:block w-64/.test(settingsSidebar) && /flex flex-col md:flex-row h-screen/.test(settingsLayout))
+  const vendorContact = read("app/transaction/vendors/contact/page.tsx")
+  check("C11 the TC 'Contact Vendor' route never renders a form again — it redirects to the vendor directory (the booking survivor) and carries no <form>", /redirect\(['"]\/dashboard\/vendors['"]\)/.test(vendorContact) && !/<form\b/.test(vendorContact) && !/setTimeout/.test(vendorContact))
 
   // ── S · Playwright smoke (opt-in; honest SKIPPED otherwise) ────────────────
   console.log("\n[S · Playwright smoke at 1280 / 820 / 390 — opt-in]")
@@ -459,15 +715,19 @@ async function main() {
   console.log("\n[R · ratchets — shrink-only counts outside the hard zeros]")
   const counts: Record<string, number> = {}
   for (const [k, v] of Object.entries(aByKind)) counts[`dead.${k}`] = v.length
-  for (const k of ["GRID_COLS_4PLUS_NO_BREAKPOINT", "GRID_COLS_3_NO_BREAKPOINT", "NOWRAP_FLEX_ROW", "SUB_TOUCH_BUTTON", "TABLE_NO_CARD_VARIANT"]) counts[`mobile.${k}`] = zero(k)
+  const MOBILE_RATCHET_KINDS = ["GRID_COLS_4PLUS_NO_BREAKPOINT", "GRID_COLS_3_NO_BREAKPOINT", "NOWRAP_FLEX_ROW", "SUB_TOUCH_BUTTON", "TABLE_NO_CARD_VARIANT"]
+  // mobile.* keeps the wave-141 MEASURED population (so it only falls); journeys.* is the wave-142 population; a11y.* is the whole app.
+  for (const k of MOBILE_RATCHET_KINDS) counts[`mobile.${k}`] = (mrByKind[k] ?? []).length
+  for (const k of MOBILE_RATCHET_KINDS) counts[`journeys.${k}`] = (mByKind[k] ?? []).length
+  counts["a11y.ICON_BUTTON_NO_LABEL"] = a11y.length
   if (process.argv.includes("--write-baseline")) {
-    writeFileSync(BASELINE_PATH, JSON.stringify({ _: "Shrink-only ratchets for scripts/ui-wiring-census-guard.ts (lane 141I, measured 2026-10-14 after the lane's fixes). dead.* = dead-surface hits OUTSIDE the critical paths (critical paths are a hard zero); mobile.* = static mobile findings on the critical flows that are published, not failed. Each may only fall; regenerate deliberately with --write-baseline and say why in the commit.", counts }, null, 2) + "\n")
+    writeFileSync(BASELINE_PATH, JSON.stringify({ _: "Shrink-only ratchets for scripts/ui-wiring-census-guard.ts. dead.* = dead-surface hits OUTSIDE the journeys (the journeys are a hard zero); mobile.* = static mobile findings on the wave-141 critical paths (lane 141I, measured 2026-10-14 — that population is frozen so these only fall); journeys.* = the same findings over every product journey (lane 142H, measured 2026-10-19 after the lane's fixes); a11y.* = icon buttons without an accessible name over the whole app (142H). Each may only fall; regenerate deliberately with --write-baseline and say why in the commit.", counts }, null, 2) + "\n")
     console.log(`    baseline written: ${JSON.stringify(counts)}`)
   }
   const baseline = existsSync(BASELINE_PATH) ? (JSON.parse(readFileSync(BASELINE_PATH, "utf8")) as { counts: Record<string, number> }).counts : {}
   const grew = Object.entries(counts).filter(([k, n]) => n > (baseline[k] ?? 0)).map(([k, n]) => `${k} ${baseline[k] ?? 0} → ${n}`)
   console.log(`    counts: ${Object.entries(counts).map(([k, n]) => `${k}=${n}`).join(" · ")}`)
-  check("R1 no ratcheted count grew (dead surfaces off the critical paths; mobile findings on them)", grew.length === 0, grew.join(", "))
+  check("R1 no ratcheted count grew (dead surfaces off the journeys; mobile findings on the wave-141 paths and on the journeys; unlabelled icon buttons)", grew.length === 0, grew.join(", "))
   check("R2 the baseline file exists and names every ratcheted key", Object.keys(counts).every((k) => k in baseline), Object.keys(counts).filter((k) => !(k in baseline)).join(", "))
 
   console.log(`\nRESULT: ${pass} passed, ${fail} failed`)

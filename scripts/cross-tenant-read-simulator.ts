@@ -70,18 +70,22 @@
  *         policy that returns nothing to anybody is a different bug, not a fix.
  *         Self-skips without SUPABASE creds.
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
 import { walkTs } from "./runtime-roots"
 import { join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
-import { isPlatformStaffIdentity } from "../lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity, TENANT_ADMIN_USER_TYPES } from "../lib/auth/resolve-user-role"
 import { blankComments } from "./strip-comments"
+import { stripSqlComments } from "./strip-sql-comments"
+import { claimOf } from "./migration-status"
+import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
+import { LIVE_TABLES } from "./live-tables"
 
 let pass = 0, fail = 0
 const fails: string[] = []
-const check = (n: string, c: boolean) => {
-  if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) }
+const check = (n: string, c: boolean, detail?: string) => {
+  if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}${detail ? ` — ${detail}` : ""}`) }
 }
 
 const ROOT = process.cwd()
@@ -446,6 +450,128 @@ function sourceLayer() {
     /platform-staff-roster/.test(resolver))
 }
 
+// ─── m781 / m782 — THE LEGACY user_type 'superadmin' ARMS LEAVE THE CATALOGUE ──
+//
+// Wave 142 (lane 142A; owner 2026-10-18: "review migration with constraint drop on
+// dead inline superadmin user_type"). The live census of 2026-10-18 found 37
+// policies on 29 tables still carrying an inline `user_type … 'superadmin'` arm —
+// dead since m780 (0 live rows carry the marker; the helpers read platform_role
+// only) but still EXPRESSIBLE. m781 rewrites each with ALTER POLICY; m782 (owner
+// SQL) removes the value from users_user_type_check so no policy can grow the arm
+// back. THE RULE asserted over whatever m781 declares — never a count pinned to
+// today's 37: every expression (a) carries no user TYPE read as platform
+// authority and (b) classifies tenant-tested or platform-gated; and a policy on a
+// table that carries NO brokerage_id (a platform table) must be platform-gated.
+// Each absence has its positive control: the pre-fix shapes, verbatim.
+
+/** A user TYPE read as platform authority: `user_type = 'superadmin'`, `… = ANY (ARRAY[… 'superadmin' …])`,
+ *  and the subselect form `(SELECT users.user_type …) = ANY (…)`. `super_admin` (never a legal value) too.
+ *  A span may not cross into a platform_role arm, which legitimately lists 'superadmin'. */
+const LEGACY_TYPE_ARM = /\b(?:user_type|current_user_type\(\))(?:(?!platform_role)[\s\S]){0,160}?=\s*(?:'super_?admin'|ANY\s*\(\s*ARRAY\s*\[[^\]]*'super_?admin'[^\]]*\])/
+
+interface AlterPolicy { table: string; policy: string; expressions: Array<{ kind: "USING" | "WITH CHECK"; text: string }> }
+
+/** The text inside the parenthesis that opens at `openIdx`, balanced. */
+function balancedParen(src: string, openIdx: number): string {
+  let depth = 0
+  for (let i = openIdx; i < src.length; i++) {
+    if (src[i] === "(") depth++
+    else if (src[i] === ")") { depth--; if (depth === 0) return src.slice(openIdx + 1, i) }
+  }
+  return src.slice(openIdx + 1)
+}
+
+/** PURE — every `ALTER POLICY <name> ON public.<table> [USING (…)] [WITH CHECK (…)]` in comment-stripped SQL. */
+export function parseAlterPolicies(sql: string): AlterPolicy[] {
+  const out: AlterPolicy[] = []
+  const re = /ALTER POLICY\s+(\w+)\s+ON\s+public\.(\w+)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(sql))) {
+    const end = sql.indexOf(";", m.index)
+    const stmt = sql.slice(m.index, end < 0 ? sql.length : end)
+    const expressions: AlterPolicy["expressions"] = []
+    for (const kind of ["USING", "WITH CHECK"] as const) {
+      const at = stmt.search(new RegExp(`\\b${kind}\\s*\\(`))
+      if (at >= 0) expressions.push({ kind, text: balancedParen(stmt, stmt.indexOf("(", at)) })
+    }
+    out.push({ policy: m[1], table: m[2], expressions })
+  }
+  return out
+}
+
+// The pre-fix expressions, VERBATIM from the 2026-10-18 census (pg_policies.qual).
+const PRE_M781 = {
+  shapeP: "((brokerage_id IN ( SELECT users.brokerage_id FROM users WHERE (users.id = auth.uid()))) OR (EXISTS ( SELECT 1 FROM users WHERE ((users.id = auth.uid()) AND (users.user_type = 'superadmin'::text)))))",
+  shapePBesidePlatformRole: "(EXISTS ( SELECT 1 FROM users u WHERE ((u.id = auth.uid()) AND ((u.user_type = 'superadmin'::text) OR (u.platform_role = ANY (ARRAY['superadmin'::text, 'support'::text])) OR (u.brokerage_id = agentic_invocation_log.brokerage_id)))))",
+  shapeT: "((brokerage_id = current_user_brokerage_id()) AND (current_user_type() = ANY (ARRAY['broker'::text, 'broker_admin'::text, 'admin'::text, 'superadmin'::text, 'team_lead'::text])))",
+  shapeTSuperAdminSpelling: "((brokerage_id = current_user_brokerage_id()) AND (EXISTS ( SELECT 1 FROM users WHERE ((users.id = auth.uid()) AND (users.user_type = ANY (ARRAY['agent'::text, 'broker'::text, 'superadmin'::text, 'super_admin'::text, 'tc'::text]))))))",
+  shapeTSubselect: "((brokerage_id = ( SELECT users.brokerage_id FROM users WHERE (users.id = auth.uid()) LIMIT 1)) AND (( SELECT users.user_type FROM users WHERE (users.id = auth.uid()) LIMIT 1) = ANY (ARRAY['broker'::text, 'admin'::text, 'superadmin'::text, 'compliance_officer'::text])))",
+  noTenantPredicate: "(current_user_type() = ANY (ARRAY['broker'::text, 'broker_admin'::text, 'admin'::text, 'superadmin'::text, 'team_lead'::text]))",
+}
+
+function m781Layer() {
+  console.log("\n[m781 · pure — the finder for a user TYPE read as platform authority]")
+  check("CONTROL: SHAPE P (the EXISTS … user_type = 'superadmin' arm) IS flagged", LEGACY_TYPE_ARM.test(PRE_M781.shapeP))
+  check("CONTROL: SHAPE P beside a platform_role arm IS flagged (the dead disjunct, not the roster one)", LEGACY_TYPE_ARM.test(PRE_M781.shapePBesidePlatformRole))
+  check("CONTROL: SHAPE T (current_user_type() = ANY (… 'superadmin' …)) IS flagged", LEGACY_TYPE_ARM.test(PRE_M781.shapeT))
+  check("CONTROL: the never-legal 'super_admin' spelling IS flagged", LEGACY_TYPE_ARM.test(PRE_M781.shapeTSuperAdminSpelling))
+  check("CONTROL: the subselect form ((SELECT users.user_type …) = ANY (…)) IS flagged", LEGACY_TYPE_ARM.test(PRE_M781.shapeTSubselect))
+  check("CONTROL: a platform_role arm listing 'superadmin' is NOT flagged — platform_role IS the authority column", !LEGACY_TYPE_ARM.test("(u.platform_role = ANY (ARRAY['superadmin'::text, 'support'::text]))") && !LEGACY_TYPE_ARM.test("is_platform_admin()"))
+  check("CONTROL: a roster array WITHOUT the legacy value is NOT flagged", !LEGACY_TYPE_ARM.test(PRE_M781.shapeT.replace("'superadmin'::text, ", "")))
+  check("CONTROL: the predicate-less SHAPE T classifies CROSS-TENANT (no boundary, no platform gate)", classifyPolicyExpression(PRE_M781.noTenantPredicate).crossTenant === true)
+  check("CONTROL: the parser reads USING and WITH CHECK with nested parentheses", (() => {
+    const p = parseAlterPolicies("ALTER POLICY p ON public.t\n  USING ((a = f(x)) AND (b IN (SELECT 1)))\n  WITH CHECK (c = g());\nALTER POLICY q ON public.u WITH CHECK (d);")
+    return p.length === 2 && p[0].expressions.length === 2 && p[0].expressions[0].text === "(a = f(x)) AND (b IN (SELECT 1))" && p[0].expressions[1].text === "c = g()" && p[1].expressions[0].kind === "WITH CHECK"
+  })())
+  check("CONTROL: a comment quoting the pre-fix shape cannot manufacture a finding (SQL comments stripped first)", !LEGACY_TYPE_ARM.test(stripSqlComments("-- was: users.user_type = 'superadmin'\nALTER POLICY p ON public.t USING (is_platform_admin());")))
+
+  console.log("\n[m781 · the file — every rewritten policy confines by brokerage or gates on a platform identity]")
+  const file = "supabase/migrations/m781-legacy-superadmin-user-type-arms-leave-the-live-policies.sql"
+  if (!existsSync(join(ROOT, file))) { check(`${file} exists`, false); return }
+  const rawSql = readFileSync(join(ROOT, file), "utf8")
+  const sql = stripSqlComments(rawSql)
+  check("m781 states its status on line 1 (the lane stamp or APPLIED LIVE)", /WRITTEN, NOT APPLIED|APPLIED LIVE/.test(rawSql.split("\n")[0]))
+  check("m781 is MCP-applicable one statement per call: ALTER POLICY only — no DROP / CREATE POLICY, no DROP TABLE", !/\b(DROP|CREATE)\s+POLICY\b|\bDROP\s+TABLE\b/i.test(sql))
+  const policies = parseAlterPolicies(sql)
+  check(`m781 is non-degenerate: ${policies.length} ALTER POLICY statements, every one carrying an expression`, policies.length > 0 && policies.every((p) => p.expressions.length > 0))
+  check("every (table, policy) pair is rewritten once", new Set(policies.map((p) => `${p.table}.${p.policy}`)).size === policies.length)
+  const live = new Set<string>(LIVE_TABLES as readonly string[])
+  const notLive = policies.filter((p) => !live.has(p.table))
+  check(`every table named is LIVE (${notLive.length} not in LIVE_TABLES)`, notLive.length === 0, notLive.map((p) => p.table).join(","))
+  // BLIND SPOT, published beside the number: scripts/schema-snapshot.ts is the REFERENCED∩live subset —
+  // a live relation no code names (marketing_campaign_triggers at fec8b6a95) carries no column list
+  // here, so the platform-table rule below cannot judge it from the cache. Its own rewritten qual
+  // names `brokerage_id` (a policy cannot reference a column the table lacks), which is why the
+  // confinement check above still holds for it; the column census for such a table is the live DB's.
+  const unsnapshotted = [...new Set(policies.filter((p) => !SCHEMA_SNAPSHOT[p.table]).map((p) => p.table))]
+  console.log(`      · ${unsnapshotted.length} table(s) in m781 absent from the referenced schema snapshot (unreferenced live relations): ${unsnapshotted.join(", ") || "none"}`)
+  check("…and each such table's rewritten qual confines by brokerage_id in its own text (the evidence the snapshot cannot give)", policies.filter((p) => !SCHEMA_SNAPSHOT[p.table]).every((p) => p.expressions.every((e) => /\bbrokerage_id\s*=\s*(?:public\.)?current_user_brokerage_id\(\)/.test(e.text))))
+  const legacy = policies.filter((p) => p.expressions.some((e) => LEGACY_TYPE_ARM.test(e.text)))
+  check(`no rewritten expression reads a user TYPE as platform authority (found ${legacy.length})`, legacy.length === 0, legacy.map((p) => `${p.table}.${p.policy}`).join(","))
+  const unconfined = policies.filter((p) => p.expressions.some((e) => { const v = classifyPolicyExpression(e.text); return !v.tenantTested && !v.platformGated }))
+  check(`every rewritten expression confines by brokerage or gates on a platform identity (found ${unconfined.length} unconfined)`, unconfined.length === 0, unconfined.map((p) => `${p.table}.${p.policy}`).join(","))
+  // The rule applies where the snapshot KNOWS the table's columns; an unsnapshotted table is judged above.
+  const platformTables = policies.filter((p) => !!SCHEMA_SNAPSHOT[p.table] && !SCHEMA_SNAPSHOT[p.table].includes("brokerage_id"))
+  const platformTablesUngated = platformTables.filter((p) => p.expressions.some((e) => !classifyPolicyExpression(e.text).platformGated))
+  check(`a policy on a table with NO brokerage_id (a platform table; ${platformTables.length} here: ${[...new Set(platformTables.map((p) => p.table))].join(", ")}) is platform-gated (${platformTablesUngated.length} not)`, platformTables.length > 0 && platformTablesUngated.length === 0, platformTablesUngated.map((p) => `${p.table}.${p.policy}`).join(","))
+  check("CONTROL: the platform-table rule is derived from the snapshot (cron_health_snapshot carries no brokerage_id; agents does)", !(SCHEMA_SNAPSHOT.cron_health_snapshot ?? ["brokerage_id"]).includes("brokerage_id") && (SCHEMA_SNAPSHOT.agents ?? []).includes("brokerage_id"))
+  const roleArrays = policies.flatMap((p) => p.expressions.flatMap((e) => [...e.text.matchAll(/ARRAY\s*\[([^\]]*)\]/g)].map((m) => m[1])))
+  check("no roster array in m781 lists 'superadmin' or 'super_admin' as a user TYPE (platform_role arrays excepted)", policies.every((p) => p.expressions.every((e) => !/(?:user_type|current_user_type\(\))[^;]*?ARRAY\s*\[[^\]]*'super_?admin'/.test(e.text.replace(/platform_role\s*=\s*ANY\s*\(\s*ARRAY\s*\[[^\]]*\]\s*\)/g, "")))) && roleArrays.length > 0)
+
+  console.log("\n[m782 · the constraint — the value stops being storable, 'support' stays]")
+  const cFile = "supabase/migrations/m782-owner-sql-users-user-type-check-without-superadmin.sql"
+  if (!existsSync(join(ROOT, cFile))) { check(`${cFile} exists`, false); return }
+  const cRaw = readFileSync(join(ROOT, cFile), "utf8")
+  const cSql = stripSqlComments(cRaw)
+  check("m782 is stamped as the OWNER's SQL-editor action and claims NOT applied (the MCP holds the DROP)", /OWNER SQL EDITOR/.test(cRaw.split("\n")[0]) && claimOf(cRaw) !== "unstated")
+  const list = cSql.match(/ADD CONSTRAINT users_user_type_check\s+CHECK\s*\(user_type = ANY \(ARRAY\[([^\]]*)\]\)\)/)?.[1] ?? ""
+  const values = list.split(",").map((s) => s.trim().replace(/::text$/, "").replace(/^'|'$/g, "")).filter(Boolean)
+  check("m782 re-declares users_user_type_check WITHOUT 'superadmin' (and never 'super_admin')", values.length > 0 && !values.includes("superadmin") && !values.includes("super_admin"))
+  check("…and keeps every operational admin roster seat and the staff CRUD's own user types storable (admin, support, system)", [...TENANT_ADMIN_USER_TYPES, "support", "system", "agent", "vendor", "contact"].every((v) => values.includes(v)))
+  check("the DROP and the ADD ride ONE ALTER TABLE (never an unconstrained column between them)", /ALTER TABLE public\.users\s+DROP CONSTRAINT IF EXISTS users_user_type_check\s*,\s*ADD CONSTRAINT users_user_type_check/.test(cSql))
+  check("a pre-check REFUSES the swap while any row still carries the legacy marker", /RAISE EXCEPTION/.test(cSql) && /user_type = 'superadmin'/.test(cSql))
+}
+
 // ─── LIVE ────────────────────────────────────────────────────────────────────
 
 interface IsolationReport {
@@ -550,6 +676,7 @@ async function main() {
   console.log("══════════════════════════════════════════════════")
   pureLayer()
   sourceLayer()
+  m781Layer()
   await liveLayer()
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

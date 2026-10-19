@@ -432,7 +432,7 @@ export function DocumentActionsDialog({
                     size="icon"
                     variant="ghost"
                     className="h-7 w-7 shrink-0"
-                    onClick={() => setSigners((prev) => prev.filter((_, j) => j !== i))}
+                    aria-label="Remove signer" onClick={() => setSigners((prev) => prev.filter((_, j) => j !== i))}
                   >
                     <Trash2 className="h-3 w-3" />
                   </Button>

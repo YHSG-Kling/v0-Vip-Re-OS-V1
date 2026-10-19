@@ -565,34 +565,59 @@ async function runHandler(
     }
 
     case "omnipresence_topic_fanout": {
-      // Take one topic from content_topic_bank and queue it across the
-      // named channels in one approval click. Each channel runs through
-      // its own canonical staging path so compliance/cooldown/tenant
-      // gates apply per-channel — the fanout doesn't bypass any of
-      // them; it just collapses 4 resolutions into 1.
+      // Take one topic from content_topic_bank — OR, since wave 142 (lane 142E, the owner's "omnipresence
+      // philosophy" for every lead-attraction system), one APPROVED LEAD MAGNET — and queue it across the
+      // named channels in one approval click. Each channel runs through its own canonical staging path so
+      // compliance/cooldown/tenant gates apply per-channel — the fanout doesn't bypass any of them; it just
+      // collapses 4 resolutions into 1. A magnet fans out as its page's headline + offer + landing URL, so
+      // every channel points back at the capture page and the creative reference (lead_magnet_id) rides the
+      // staged row for follow-up.
       const topicId = String(input.topic_id ?? "")
+      const leadMagnetId = String(input.lead_magnet_id ?? "")
       const channels = Array.isArray(input.channels)
         ? (input.channels as unknown[]).map(String).filter((c) =>
             ["newsletter", "blog", "social", "direct_mail_postcard"].includes(c))
         : []
-      if (!topicId || channels.length === 0) {
-        return { status: "failed", result: { error: "topic_id and at least one channel required" } }
+      if ((!topicId && !leadMagnetId) || channels.length === 0) {
+        return { status: "failed", result: { error: "topic_id or lead_magnet_id and at least one channel required" } }
       }
       const svc = createServiceClient()
-      // Tenant + existence check on the topic.
-      const { data: topic } = await svc.from("content_topic_bank")
-        .select("id, brokerage_id, topic_title, value_angle")
-        .eq("id", topicId)
-        .maybeSingle()
-      const t = topic as { id: string; brokerage_id: string | null; topic_title: string; value_angle: string | null } | null
-      if (!t) return { status: "failed", result: { error: "topic not found" } }
-      // Topic must be either platform-wide (brokerage_id null) or owned
-      // by this brokerage — same scope rule as pickTopics.
-      if (t.brokerage_id !== null && t.brokerage_id !== brokerageId) {
-        return { status: "failed", result: { error: "topic outside tenant" } }
+      let t: { id: string; brokerage_id: string | null; topic_title: string; value_angle: string | null } | null = null
+      let magnet: { id: string; slug: string; landingUrl: string } | null = null
+      if (leadMagnetId) {
+        // THE MAGNET MUST BE THIS TENANT'S AND PUBLISHED — a draft has no public page to send anyone to.
+        const { data: form, error: formErr } = await svc.from("lead_capture_forms")
+          .select("id, brokerage_id, name, slug, is_active, landing_content, settings")
+          .eq("id", leadMagnetId).eq("brokerage_id", brokerageId).maybeSingle()
+        if (formErr) return { status: "failed", result: { error: `lead magnet unreadable: ${formErr.message}` } }
+        const f = form as { id: string; name: string; slug: string; is_active: boolean | null; landing_content: Record<string, unknown> | null; settings: Record<string, unknown> | null } | null
+        if (!f) return { status: "failed", result: { error: "lead magnet not found or tenant mismatch" } }
+        const lifecycle = ((f.settings ?? {}) as { lifecycle?: { state?: string } }).lifecycle
+        if (!f.is_active || lifecycle?.state === "draft") return { status: "failed", result: { error: "lead magnet is not published — approve and publish it first" } }
+        const origin = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/+$/, "")
+        if (!origin) return { status: "failed", result: { error: "no configured origin (NEXT_PUBLIC_APP_URL) — the landing URL cannot be built" } }
+        const lc = (f.landing_content ?? {}) as { headline?: string; subhead?: string; bullets?: string[] }
+        const landingUrl = `${origin}/lm/${f.slug}`
+        magnet = { id: f.id, slug: f.slug, landingUrl }
+        const offer = [lc.subhead, ...(Array.isArray(lc.bullets) ? lc.bullets.slice(0, 3) : [])].filter((s): s is string => typeof s === "string" && !!s.trim()).join(" · ")
+        t = { id: f.id, brokerage_id: brokerageId, topic_title: lc.headline?.trim() || f.name, value_angle: `${offer ? `${offer} — ` : ""}${landingUrl}` }
+      } else {
+        // Tenant + existence check on the topic.
+        const { data: topic } = await svc.from("content_topic_bank")
+          .select("id, brokerage_id, topic_title, value_angle")
+          .eq("id", topicId)
+          .maybeSingle()
+        t = topic as { id: string; brokerage_id: string | null; topic_title: string; value_angle: string | null } | null
+        if (!t) return { status: "failed", result: { error: "topic not found" } }
+        // Topic must be either platform-wide (brokerage_id null) or owned
+        // by this brokerage — same scope rule as pickTopics.
+        if (t.brokerage_id !== null && t.brokerage_id !== brokerageId) {
+          return { status: "failed", result: { error: "topic outside tenant" } }
+        }
       }
 
       const fanout: Record<string, { ok: boolean; ref?: string; error?: string }> = {}
+      const creativeRef = magnet ? { lead_magnet_id: magnet.id, landing_url: magnet.landingUrl } : { topic_id: topicId }
 
       for (const ch of channels) {
         if (ch === "newsletter") {
@@ -604,7 +629,7 @@ async function runHandler(
             if (!brokerUserId) { fanout.newsletter = { ok: false, error: "no broker user" }; continue }
             const r = await stageNewsletterDraft(
               { userId: brokerUserId, brokerageId },
-              { title: t.topic_title, subjectLine: t.topic_title, topic: t.topic_title, audience: "all" },
+              { title: t.topic_title, subjectLine: t.topic_title, topic: magnet ? `${t.topic_title}. ${t.value_angle}` : t.topic_title, audience: "all" },
             )
             fanout.newsletter = r.success
               ? { ok: true, ref: r.draftId ?? undefined }
@@ -613,6 +638,21 @@ async function runHandler(
             fanout.newsletter = { ok: false, error: (e as Error).message }
           }
         } else if (ch === "blog") {
+          if (magnet) {
+            // A magnet has no bank row to boost — stage the blog draft directly, pointing at the capture page.
+            try {
+              const { stageBlogDraft } = await import("@/lib/wizard-staging/content-staging")
+              const { data: broker } = await svc.from("users")
+                .select("id").eq("brokerage_id", brokerageId).order("created_at", { ascending: true }).limit(1).maybeSingle()
+              const brokerUserId = (broker?.id as string | undefined) ?? null
+              if (!brokerUserId) { fanout.blog = { ok: false, error: "no broker user" }; continue }
+              const r = await stageBlogDraft({ userId: brokerUserId, brokerageId }, { title: t.topic_title, topic: `${t.value_angle ?? ""}\n\nGet it here: ${magnet.landingUrl}` })
+              fanout.blog = r.success ? { ok: true, ref: r.draftId ?? undefined } : { ok: false, error: r.error ?? "stage failed" }
+            } catch (e) {
+              fanout.blog = { ok: false, error: (e as Error).message }
+            }
+            continue
+          }
           // Mark the topic so the next blog cadence tick pulls it.
           // The blog cron's pickTopics will surface this topic first
           // because we set status='fresh' + boost engagement_score.
@@ -627,13 +667,13 @@ async function runHandler(
             fanout.blog = { ok: false, error: (e as Error).message }
           }
         } else if (ch === "social") {
-          // Queue a draft social_posts row tagged with the topic.
+          // Queue a draft social_posts row tagged with the topic (or the magnet + its landing URL).
           try {
             const { data: post, error } = await svc.from("social_posts").insert({
               brokerage_id: brokerageId,
-              content:      t.value_angle ?? t.topic_title,
+              content:      magnet ? `${t.topic_title}\n${t.value_angle ?? magnet.landingUrl}` : (t.value_angle ?? t.topic_title),
               status:       "draft",
-              post_brief:   { topic_id: topicId, source: "marketing_agent_omnipresence" },
+              post_brief:   { ...creativeRef, source: "marketing_agent_omnipresence" },
               created_at:   new Date().toISOString(),
             }).select("id").single()
             fanout.social = error
@@ -642,6 +682,9 @@ async function runHandler(
           } catch (e) {
             fanout.social = { ok: false, error: (e as Error).message }
           }
+        } else if (ch === "direct_mail_postcard" && magnet) {
+          // content_topic_uses keys on a topic row; a magnet has none. Not faked as queued — reported.
+          fanout.direct_mail_postcard = { ok: false, error: "direct mail fans out from a topic-bank row; a lead magnet goes out by mail through the farm-mail campaign with its QR" }
         } else if (ch === "direct_mail_postcard") {
           // The agent says "spin this topic to direct mail" — but the
           // actual farm dispatch requires an agentId + farm + lots of
@@ -673,7 +716,7 @@ async function runHandler(
       const anyOk = Object.values(fanout).some((v) => v.ok)
       return {
         status: anyOk ? "succeeded" : "failed",
-        result: { topic_id: topicId, fanout },
+        result: { topic_id: topicId || null, lead_magnet_id: magnet?.id ?? null, fanout },
       }
     }
 

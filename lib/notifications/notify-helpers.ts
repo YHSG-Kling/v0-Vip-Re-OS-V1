@@ -31,6 +31,7 @@ import { bestEffort } from "@/lib/db/best-effort"
 import { rawRoleVariantsFor, type CanonicalRole } from "@/lib/security/types"
 import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
+import type { EsignPacketState } from "@/lib/esign/packet-states"
 import {
   composeClientMessage,
   composeCounterpartyMessage,
@@ -143,6 +144,89 @@ export async function notifyEsignSigned(
     }),
     "the e-sign completion itself (OFFER_AUDIT_EVENT.BUYER_SIGNED activity row) was already written and error-checked by the caller before this runs; this is only the bell that rings for it, and `supabase` here is caller-supplied and may be either client kind, so bestEffort (not sentinelWrite, which needs a service-role client to reach the ledger) is the always-safe instrument",
   )
+}
+
+// ─── notifyEsignPacketHop ───────────────────────────────────────────────────
+
+export interface NotifyEsignPacketHopInput {
+  brokerageId:   string
+  /** The packet state just recorded (lib/esign/packet-states.ts) — becomes the notification type. */
+  state:         EsignPacketState
+  /** `offer` deep-links the offer; `listing` the listing (the agreement hangs off it). */
+  entityType:    "offer" | "listing"
+  entityId:      string
+  /** users.id of the responsible agent (offers.agent_id RESOLVED agents → users; listing_agreements.agent_user_id). */
+  agentUserId:   string | null
+  /** Extra users.id the caller resolved (a TC on the deal, the listing agent on an in-house offer). */
+  alsoNotifyUserIds?: (string | null | undefined)[]
+  /** Compliance hops also page the brokerage's TC + compliance_officer bench (the roster notifyComplianceFlag uses). */
+  includeComplianceRoles?: boolean
+  title:         string
+  body:          string
+  priority?:     NotificationPriority
+}
+
+/**
+ * THE HOP BELL (wave 142, lane 142B; owner: "Immediate notifications at every hop; no duplicates").
+ * One notification per (packet record, state) — a redelivered webhook or a re-entered loop that
+ * records the same hop again writes NOTHING (the dedupe reads the row that already exists, keyed
+ * on entity + type, never on a timestamp). In-app only: the compliance BLOCKERS themselves still
+ * travel through notifyComplianceFlag (multi-channel, deduped on the blocker set), so a
+ * correction_required hop never rings a second bell for the same finding.
+ */
+export async function notifyEsignPacketHop(
+  supabase: SupabaseClient,
+  input: NotifyEsignPacketHopInput,
+): Promise<{ notified_count: number; recipient_user_ids: string[]; deduped: boolean }> {
+  const type = `esign.packet.${input.state}`
+  // DEDUPE — the hop was already announced for this record. `error` is read: a refused read must
+  // not look like "never announced" and page everyone again on every retry.
+  const { data: existing, error: existingErr } = await supabase
+    .from("notifications")
+    .select("id")
+    .eq("brokerage_id", input.brokerageId)
+    .eq("entity_type", input.entityType)
+    .eq("entity_id", input.entityId)
+    .eq("type", type)
+    .limit(1)
+  if (existingErr) {
+    console.error("[notify-helpers] notifyEsignPacketHop dedupe read refused:", existingErr.message)
+    return { notified_count: 0, recipient_user_ids: [], deduped: false }
+  }
+  if ((existing ?? []).length > 0) return { notified_count: 0, recipient_user_ids: [], deduped: true }
+
+  const recipientSet = new Set<string>()
+  if (input.agentUserId) recipientSet.add(input.agentUserId)
+  for (const uid of input.alsoNotifyUserIds ?? []) if (uid) recipientSet.add(uid)
+  if (input.includeComplianceRoles) {
+    const { data: staff, error: staffError } = await supabase
+      .from("users")
+      .select("id")
+      .eq("brokerage_id", input.brokerageId)
+      .in("user_type", [...rawRoleVariantsFor(["tc", "compliance_officer"])])
+    if (staffError) console.error("[notify-helpers] notifyEsignPacketHop staff lookup failed:", staffError.message)
+    for (const u of staff ?? []) if (u.id) recipientSet.add(u.id as string)
+  }
+  const recipients = Array.from(recipientSet)
+  if (recipients.length === 0) return { notified_count: 0, recipient_user_ids: [], deduped: false }
+
+  const rows = recipients.map((uid) => ({
+    user_id:      uid,
+    brokerage_id: input.brokerageId,
+    type,
+    title:        input.title,
+    body:         input.body,
+    entity_type:  input.entityType,
+    entity_id:    input.entityId,
+    priority:     input.priority ?? "medium",
+    channel:      "in_app",
+  }))
+  const { data: inserted, error } = await supabase.from("notifications").insert(rows).select("id")
+  if (error) {
+    console.error("[notify-helpers] notifyEsignPacketHop insert failed:", error.message)
+    return { notified_count: 0, recipient_user_ids: [], deduped: false }
+  }
+  return { notified_count: (inserted ?? rows).length, recipient_user_ids: recipients, deduped: false }
 }
 
 // ─── notifyComplianceFlag ───────────────────────────────────────────────────

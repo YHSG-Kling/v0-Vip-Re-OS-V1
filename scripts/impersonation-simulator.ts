@@ -115,7 +115,7 @@ async function liveLayer() {
   const cleanup: Array<{ table: string; id: string }> = []
   try {
     const { data: brk } = await svc.from("brokerages").insert({ name: "ZZIMP tenant", email: "zzimp@example.com", plan_tier: "brokerage", onboarding_status: "pending" }).select("id").single()
-    const { data: staff } = await svc.from("users").insert({ email: "zzimp-staff@example.com", first_name: "Imp", last_name: "Staff", user_type: "superadmin", platform_role: "superadmin", is_contact: false }).select("id").single()
+    const { data: staff } = await svc.from("users").insert({ email: "zzimp-staff@example.com", first_name: "Imp", last_name: "Staff", user_type: "admin", platform_role: "superadmin", is_contact: false }).select("id").single()
     const { data: nonstaff } = await svc.from("users").insert({ email: "zzimp-agent@example.com", first_name: "Imp", last_name: "Agent", user_type: "agent", is_contact: false }).select("id").single()
     const brokerageId = (brk as any).id, staffId = (staff as any).id, nonstaffId = (nonstaff as any).id
     cleanup.push({ table: "brokerages", id: brokerageId }, { table: "users", id: staffId }, { table: "users", id: nonstaffId })

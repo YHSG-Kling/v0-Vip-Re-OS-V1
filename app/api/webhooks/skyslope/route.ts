@@ -1,7 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId } from "@/lib/forms/esign-execution-loop"
+import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId, recordEnvelopeTerminalState } from "@/lib/forms/esign-execution-loop"
+import { providerTerminalState } from "@/lib/esign/packet-states"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SKYSLOPE WEBHOOK HANDLER
@@ -85,6 +86,13 @@ export async function POST(request: NextRequest) {
       const { quarantineDriftedPayload } = await import("@/lib/kernel/ingress-continuity")
       const q = await quarantineDriftedPayload(supabase as any, { connector: "skyslope", source: "esign_completion", raw: body, missing: adapted.missingRequired, eventType: event || status })
       return NextResponse.json({ received: true, quarantined: true, ref: q.ref })
+    }
+    // THE PROVIDER'S TERMINAL OUTCOME (wave 142, lane 142B): a declined / voided / expired envelope is
+    // recorded on the matched records through the ONE packet writer instead of being ignored.
+    const terminal = !isCompleted ? providerTerminalState(event, status) : null
+    if (terminal && envelopeId) {
+      const recorded = await recordEnvelopeTerminalState(supabase as any, { provider: "skyslope", envelopeId, state: terminal, reason: status || event || null })
+      return NextResponse.json({ received: true, action: "terminal", state: terminal, envelopeId, offers: recorded.offers, agreements: recorded.agreements, refused: recorded.refused.length })
     }
     if (!isCompleted || !envelopeId) {
       return NextResponse.json({ received: true, action: "ignored", event, status })

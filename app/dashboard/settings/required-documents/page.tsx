@@ -84,7 +84,7 @@ export default async function RequiredDocsSettingsPage() {
           The documents your deals must have on file before submitting to compliance. Rules cascade
           agent → team → brokerage (most specific wins per classification). Attach a blank template
           to any rule so agents grab the exact form you require — upload new form files in{" "}
-          <a href="/dashboard/admin/transaction-forms" className="text-primary underline underline-offset-2">Transaction Forms</a>.
+          <a href="/dashboard/admin/transaction-forms" className="text-primary underline underline-offset-2">Legal Forms</a>.
         </p>
       </div>
 

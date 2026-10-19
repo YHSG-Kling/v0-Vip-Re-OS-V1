@@ -141,7 +141,7 @@ export function OnboardingCurriculumEditor() {
                   <div className="space-y-1.5"><Label className="text-xs">Step key *</Label>
                     <Input value={form.stepKey} onChange={(e) => setForm({ ...form, stepKey: e.target.value })} placeholder="upload_license" /></div>
                 </div>
-                <div className="grid grid-cols-4 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   <div className="space-y-1.5"><Label className="text-xs">Day</Label>
                     <Input type="number" min={ONBOARDING_STEP_DAY_MIN} max={ONBOARDING_STEP_DAY_MAX} value={form.dayNumber} onChange={(e) => setForm({ ...form, dayNumber: e.target.value })} /></div>
                   <div className="space-y-1.5"><Label className="text-xs">Order</Label>
@@ -191,8 +191,8 @@ export function OnboardingCurriculumEditor() {
                   </div>
                   {!s.isPlatformDefault && (
                     <div className="flex gap-1 shrink-0">
-                      <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => startEdit(s)}><Pencil className="h-3.5 w-3.5" /></Button>
-                      <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => handleDelete(s)}><Trash2 className="h-3.5 w-3.5 text-red-600" /></Button>
+                      <Button size="icon" variant="ghost" className="h-7 w-7" aria-label="Edit step" onClick={() => startEdit(s)}><Pencil className="h-3.5 w-3.5" /></Button>
+                      <Button size="icon" variant="ghost" className="h-7 w-7" aria-label="Delete step" onClick={() => handleDelete(s)}><Trash2 className="h-3.5 w-3.5 text-red-600" /></Button>
                     </div>
                   )}
                 </div>

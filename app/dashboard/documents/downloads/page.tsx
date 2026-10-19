@@ -199,7 +199,7 @@ export default async function DocumentDownloadsPage({ searchParams }: { searchPa
         ))}
       </div>
 
-      <Card className="overflow-hidden">
+      <Card className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
             <tr>

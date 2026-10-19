@@ -536,6 +536,7 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
                 size="icon"
                 variant="ghost"
                 className="h-7 w-7"
+                aria-label="Close inbox"
                 onClick={() => onOpenChange(false)}
               >
                 <X className="h-4 w-4" />

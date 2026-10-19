@@ -121,7 +121,7 @@ export function TwinCard({ twin, canEdit }: Props) {
           {canEdit && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-7 w-7 -mr-1 -mt-1" disabled={pending}>
+                <Button variant="ghost" size="icon" className="h-7 w-7 -mr-1 -mt-1" aria-label="Twin actions" disabled={pending}>
                   <MoreVertical className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>

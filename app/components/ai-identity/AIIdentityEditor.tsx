@@ -676,7 +676,7 @@ export function AIIdentityEditor({
                     size="icon"
                     variant="ghost"
                     className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                    onClick={() => removeFaq(i)}
+                    aria-label="Remove this FAQ" onClick={() => removeFaq(i)}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -745,7 +745,7 @@ export function AIIdentityEditor({
                     size="icon"
                     variant="ghost"
                     className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                    onClick={() => removeObjection(i)}
+                    aria-label="Remove this objection" onClick={() => removeObjection(i)}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>

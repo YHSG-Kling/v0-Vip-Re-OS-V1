@@ -298,7 +298,7 @@ export default function PropertyDetailPage() {
                 </p>
               </div>
               <div className="flex gap-2">
-                <Button size="icon" variant="outline" onClick={handleSave} disabled={saving}>
+                <Button size="icon" variant="outline" aria-label="Save property" onClick={handleSave} disabled={saving}>
                   <Heart className="h-5 w-5" />
                 </Button>
                 {/* Had no handler. The canonical share link for a listing is

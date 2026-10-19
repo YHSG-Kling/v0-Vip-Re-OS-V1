@@ -36,7 +36,7 @@
  * coOwners data_steward (the catalog, the credential cascade) and compliance_officer (the never-invented
  * legal description, the tenant credential boundary).
  */
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments, blankStrings } from "./strip-comments"
 import {
@@ -232,16 +232,22 @@ const gateBlank = legalDescriptionGate([{ name: "Purchase Agreement", fields: [{
 check("THE GATE: a blank Legal Description makes the packet INCOMPLETE, naming the document and the field, and says it is never invented",
   !gateBlank.complete && gateBlank.blank.length === 1 && /Purchase Agreement/.test(gateBlank.reason ?? "") && /Legal Description/.test(gateBlank.reason ?? "") && /never invented/.test(gateBlank.reason ?? ""))
 check("the gate passes a filled field and a form without the field", legalDescriptionGate([{ name: "A", fields: [{ name: "Legal Description", value: "LOT 1" }] }, { name: "B", fields: [{ name: "Buyer Name", value: "" }] }]).complete)
-const mig = existsSync(join(ROOT, "supabase/migrations/m768-legal-description-on-the-canonical-property-records.sql")) ? read("supabase/migrations/m768-legal-description-on-the-canonical-property-records.sql") : ""
-check("m768 exists and is honestly stamped (the lane stamp, or APPLIED LIVE once the integrator applies it)", /^-- ── (WRITTEN, NOT APPLIED|APPLIED LIVE)/.test(mig))
+// THE RULE, not a waypoint (wave 142): the vocabulary is whatever the LATEST migration that defines the
+// legal_description_source CHECK says (m768 wrote agent | rentcast; m786 widened it) — never a pinned file.
+const migDir = join(ROOT, "supabase/migrations")
+const sourceMigs = readdirSync(migDir)
+  .filter((f) => /^m\d+-.*\.sql$/.test(f) && /legal_description_source IN \(/.test(readFileSync(join(migDir, f), "utf8")))
+  .sort((a, b) => Number(a.match(/^m(\d+)/)![1]) - Number(b.match(/^m(\d+)/)![1]))
+const mig = sourceMigs.length ? read(`supabase/migrations/${sourceMigs[sourceMigs.length - 1]}`) : ""
+check("a migration defines the legal_description_source CHECK, and the LATEST one is honestly stamped (the lane stamp, or APPLIED LIVE once the integrator applies it)", sourceMigs.length > 0 && /^-- ── (WRITTEN, NOT APPLIED|APPLIED LIVE)/.test(mig), sourceMigs.join(", "))
 const checkValues = [...mig.matchAll(/legal_description_source IN \(([^)]+)\)/g)].map((m) => m[1].split(",").map((s) => s.trim().replace(/'/g, "")).sort().join())
-check("ONE vocabulary: the m768 CHECK (both tables) equals LEGAL_DESCRIPTION_SOURCES, and a model is not a source",
-  checkValues.length === 2 && checkValues.every((v) => v === [...LEGAL_DESCRIPTION_SOURCES].sort().join()) && !(LEGAL_DESCRIPTION_SOURCES as readonly string[]).some((s) => /ai|model|llm/.test(s)))
+check(`ONE vocabulary: the latest defining migration's CHECK (${sourceMigs[sourceMigs.length - 1] ?? "none"}, both tables) equals LEGAL_DESCRIPTION_SOURCES, and a model is not a source`,
+  checkValues.length === 2 && checkValues.every((v) => v === [...LEGAL_DESCRIPTION_SOURCES].sort().join()) && !(LEGAL_DESCRIPTION_SOURCES as readonly string[]).some((s) => /ai|model|llm/.test(s)), checkValues.join(" | "))
 const runner = code("lib/intelligence/offer-property-prefill-runner.ts")
 check("READER: resolveKnownPropertyFacts selects legal_description on BOTH records into KnownPropertyFacts.legalDescription",
   /from\("listings"\)\.select\("[^"]*legal_description/.test(runner) && /from\("transactions"\)\.select\("[^"]*legal_description/.test(runner) && /facts\.legalDescription = /.test(runner))
 const ld = code("lib/forms/legal-description.ts")
-check("WRITERS: the record write is tenant-pinned and COUNTED (.select('id')), for both records", /update\(\{ legal_description: value, legal_description_source: source/.test(ld) && /\.eq\("brokerage_id", args\.brokerageId\)\s*\n?\s*\.select\("id"\)/.test(ld) && /data\.length === 0/.test(ld))
+check("WRITERS: the record write is tenant-pinned and COUNTED (.select('id')), for both records, the source beside the value (wave 142: with provenance)", /legal_description: value, legal_description_source: provenance\.source/.test(ld) &&/\.eq\("brokerage_id", args\.brokerageId\)\s*\n?\s*\.select\("id"\)/.test(ld) && /data\.length === 0/.test(ld))
 check("the capability is RentCast's property record ONLY (approved, metered in rentcast.ts) — never BatchData, never Versium, never a model",
   /@\/lib\/property\/rentcast/.test(ld) && /legalDescription/.test(ld) && !/batchdata|versium|generateText|generateObject|anthropic|openai/i.test(bare("lib/forms/legal-description.ts")))
 check("POSITIVE CONTROL: the model finder recognises a model call", /generateText|generateObject/.test(`const r = await generateText({ prompt })`))

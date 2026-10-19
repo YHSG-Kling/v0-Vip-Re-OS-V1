@@ -105,7 +105,7 @@ export function QuickDialSearch({ agentId, brokerageId }: QuickDialSearchProps) 
                 size="icon"
                 variant="default"
                 className="min-h-[44px] min-w-[44px] bg-emerald-500 hover:bg-emerald-600"
-                onClick={() => handleCall(contact.phone)}
+                aria-label="Call" onClick={() => handleCall(contact.phone)}
               >
                 <Phone className="h-5 w-5" />
               </Button>

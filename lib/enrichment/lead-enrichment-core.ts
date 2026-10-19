@@ -74,6 +74,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isLeadInLiveDeal } from "./deal-suppression"
 import { hasUsableIdentifier } from "./identifier-guard"
 import { leadEnrichmentIsFresh, leadHasEnrichmentEvidence } from "./lead-freshness"
+// Wave 142 (lane 142D): the inline drain dispatch — pure, the drain itself is imported lazily inside it.
+import { dispatchInlineEnrichmentDrain, type InlineEnrichmentDrain, type InlineDrainDispatch } from "./inline-drain"
 
 // NOT re-exported. The contact core re-exports `hasUsableIdentifier` because its
 // callers reach it through that file; nothing reaches the pure helpers through
@@ -126,6 +128,8 @@ export interface LeadQueueOutcome {
   queued: boolean
   reason?: LeadQueueRefusal
   error?: string
+  /** Wave 142 (lane 142D): whether the just-written row was handed to the inline drain, and why / why not. */
+  drain?: InlineDrainDispatch
 }
 
 /**
@@ -167,6 +171,8 @@ export async function queueLeadEnrichment(params: {
   enrichmentType?: string
   freshnessDays?: number
   supabase?: SupabaseClient<any, any, any>
+  /** Wave 142 (lane 142D): the INLINE drain seam — see lib/enrichment/inline-drain.ts (omitted = app-runtime default; false = cron only). */
+  inlineDrain?: InlineEnrichmentDrain | false
 }): Promise<LeadQueueOutcome> {
   try {
     const { leadId, brokerageId } = params
@@ -270,7 +276,8 @@ export async function queueLeadEnrichment(params: {
     if (!lead.email) enrichments_needed.push("email_append")
     if (!lead.phone) enrichments_needed.push("phone_append")
 
-    const { error: insertError } = await supabase.from("lead_enrichment_queue").insert({
+    // The row's id is READ BACK (.select) so the inline drain below can name exactly this row.
+    const { data: queueRow, error: insertError } = await supabase.from("lead_enrichment_queue").insert({
       lead_id: leadId,
       contact_id: null,
       brokerage_id: brokerageId,
@@ -285,11 +292,17 @@ export async function queueLeadEnrichment(params: {
       queued_at: new Date().toISOString(),
       retry_count: 0,
       max_retries: 3,
-    })
+    }).select("id").single()
 
     if (insertError) return { queued: false, reason: "error", error: insertError.message }
+    const queueEntryId = (queueRow as { id?: string } | null)?.id ?? null
 
-    return { queued: true }
+    // ENRICH NOW (wave 142, lane 142D): the SAME drain the cron runs, for this one row, fire-and-forget.
+    const drain = queueEntryId
+      ? dispatchInlineEnrichmentDrain({ brokerageId, queueEntryId }, params.inlineDrain)
+      : { dispatched: false, reason: "not_app_runtime" as const }
+
+    return { queued: true, drain }
   } catch (error) {
     // The contract every create door relies on: this function cannot throw.
     console.error("[lead-enrichment] queueLeadEnrichment error:", error)

@@ -99,14 +99,10 @@ export async function GET(req: NextRequest) {
       vendorBriefs = vscout.briefs
     } catch (e: any) { errors.push(`vendor-scout: ${e?.message ?? String(e)}`) }
 
-    // CURRICULUM AUTHOR — the OS teaches itself to teach: detect recurring knowledge gaps from real
-    // signal (objection drills + compliance flags) and author gated draft micro-courses for the new ones.
-    let curriculaAuthored = 0
-    try {
-      const { runCurriculumAuthorAll } = await import("@/lib/education/curriculum-author")
-      const authored = await runCurriculumAuthorAll(supabase)
-      curriculaAuthored = authored.authored
-    } catch (e: any) { errors.push(`curriculum-author: ${e?.message ?? String(e)}`) }
+    // TOMBSTONE (wave 142G) — the CURRICULUM AUTHOR step (runCurriculumAuthorAll) no longer runs here: this is the
+    // talent-pipeline cron and the author is the education owner's loop. SURVIVOR:
+    // app/api/cron/education-delivery/route.ts (the education cron, same recruiting_manager owner in CRON_MANAGER),
+    // which now also runs the repeat measure beside it. Nothing was deleted from lib/education.
 
     // TIER ONBOARDING CURRICULUM — the OS trains new subscribers out of the gate: author the tier- and
     // role-appropriate onboarding path (idempotent safety net for the SUBSCRIPTION_CREATED emit).
@@ -213,9 +209,9 @@ export async function GET(req: NextRequest) {
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, portfolioBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, anniversariesEmitted, challengesFinalized, execStandups, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, portfolioBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, anniversariesEmitted, challengesFinalized, execStandups, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, portfolioBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, anniversariesEmitted, challengesFinalized, execStandups, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, portfolioBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, anniversariesEmitted, challengesFinalized, execStandups, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

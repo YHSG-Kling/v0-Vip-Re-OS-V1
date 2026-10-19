@@ -49,7 +49,26 @@ export function SettingsSidebar() {
   const items = menuItems.filter((i) => i.personal || isBrokerageRole || i.href === '/settings/developers');
 
   return (
-    <aside className="w-64 bg-white border-r border-gray-200 h-full">
+    <>
+      {/* Phones (wave 142, lane 142H): the same sections as a horizontally scrolling strip above the
+          content — the fixed 256px rail is desktop-only (app/settings/layout.tsx stacks below md). */}
+      <nav aria-label="Settings sections" className="md:hidden border-b border-gray-200 bg-white">
+        <ul className="flex gap-1 px-3 py-2 whitespace-nowrap overflow-x-auto">
+          {items.map((item) => (
+            <li key={item.href}>
+              <Link
+                href={item.href}
+                className={`inline-block px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                  pathname === item.href ? 'bg-blue-50 text-blue-700' : 'text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                {item.label}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    <aside className="hidden md:block w-64 bg-white border-r border-gray-200 h-full">
       <div className="px-6 py-6 border-b border-gray-200">
         <h1 className="text-xl font-bold text-gray-900">Settings</h1>
       </div>
@@ -72,5 +91,6 @@ export function SettingsSidebar() {
         </ul>
       </nav>
     </aside>
+    </>
   );
 }

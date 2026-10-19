@@ -360,9 +360,9 @@ export function FormsLibraryClient({
                     <AlertCircle className="h-4 w-4 text-amber-700" />
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-amber-900">No transaction provider connected</p>
+                    <p className="text-sm font-semibold text-amber-900">No legal-forms provider connected</p>
                     <p className="text-xs text-amber-700">
-                      Connect a transaction management provider in Settings to access forms directly.
+                      Connect a legal-forms provider in Settings to access forms directly.
                     </p>
                   </div>
                 </div>
@@ -393,7 +393,7 @@ export function FormsLibraryClient({
           <TabsList className="flex-wrap h-auto gap-1">
             <TabsTrigger value="transaction-forms" className="text-xs">
               <ClipboardList className="h-3 w-3 mr-1.5" />
-              Transaction Forms
+              Legal Forms
             </TabsTrigger>
             <TabsTrigger value="state-forms" className="text-xs">
               <Shield className="h-3 w-3 mr-1.5" />
@@ -427,7 +427,7 @@ export function FormsLibraryClient({
                 happens in their window; FILLING stays native below (where the
                 AI prefill lives); sending stays launchEsignEnvelope. */}
             {(() => {
-              // With no transaction provider connected, the window offered is the e-sign DEFAULT
+              // With no legal-forms provider connected, the window offered is the e-sign DEFAULT
               // (catalog DEFAULT_ESIGN_PROVIDER). Lane 89A: DocuSign — sending happens INSIDE the
               // platform (embedded sender view, the platform's DocuSign account when the brokerage
               // has not connected its own); a portal-send default (Google) would name its Drive steps.
@@ -476,7 +476,7 @@ export function FormsLibraryClient({
             })()}
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div>
-                <p className="text-sm font-medium">Available Transaction Forms</p>
+                <p className="text-sm font-medium">Available legal forms</p>
                 <p className="text-xs text-muted-foreground">
                   Forms loaded from your brokerage&apos;s connected provider and state requirements.
                 </p>
@@ -502,11 +502,11 @@ export function FormsLibraryClient({
               <Card>
                 <CardContent className="py-12 text-center">
                   <ClipboardList className="h-8 w-8 mx-auto text-muted-foreground/40 mb-3" />
-                  <p className="text-sm font-medium text-muted-foreground">No transaction forms found</p>
+                  <p className="text-sm font-medium text-muted-foreground">No legal forms found</p>
                   <p className="text-xs text-muted-foreground mt-1">
                     {activeCred
                       ? "Forms will appear here once synced from your provider."
-                      : "Connect a transaction provider in Settings to load forms."}
+                      : "Connect a legal-forms provider in Settings to load forms."}
                   </p>
                   {isAdminOrBroker && (
                     <Link href="/dashboard/settings/integrations">

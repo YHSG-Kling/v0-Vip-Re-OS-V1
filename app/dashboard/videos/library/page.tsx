@@ -609,14 +609,14 @@ function VideoLibraryContent() {
                 <Button
                   variant={viewMode === "grid" ? "default" : "outline"}
                   size="icon"
-                  onClick={() => setViewMode("grid")}
+                  aria-label="Grid view" aria-pressed={viewMode === "grid"} onClick={() => setViewMode("grid")}
                 >
                   <Grid className="h-4 w-4" />
                 </Button>
                 <Button
                   variant={viewMode === "list" ? "default" : "outline"}
                   size="icon"
-                  onClick={() => setViewMode("list")}
+                  aria-label="List view" aria-pressed={viewMode === "list"} onClick={() => setViewMode("list")}
                 >
                   <List className="h-4 w-4" />
                 </Button>
@@ -672,7 +672,7 @@ function VideoLibraryContent() {
                       </div>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Script actions">
                             <MoreVertical className="h-4 w-4" />
                           </Button>
                         </DropdownMenuTrigger>
@@ -791,7 +791,7 @@ function VideoLibraryContent() {
                     </span>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+                        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label="Script actions">
                           <MoreVertical className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>

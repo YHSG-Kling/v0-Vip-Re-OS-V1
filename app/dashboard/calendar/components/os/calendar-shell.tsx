@@ -449,13 +449,13 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
       {/* Week Navigation */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="icon" onClick={prevWeek}>
+          <Button variant="outline" size="icon" aria-label="Previous week" onClick={prevWeek}>
             <ChevronLeft className="h-4 w-4" />
           </Button>
           <Button variant="outline" size="sm" onClick={goToToday}>
             Today
           </Button>
-          <Button variant="outline" size="icon" onClick={nextWeek}>
+          <Button variant="outline" size="icon" aria-label="Next week" onClick={nextWeek}>
             <ChevronRight className="h-4 w-4" />
           </Button>
         </div>

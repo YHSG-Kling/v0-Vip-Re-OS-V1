@@ -37,6 +37,9 @@ export interface DealInvestigation {
     person:    Record<string, unknown> | null
     mls:       Record<string, unknown> | null
     property:  Record<string, unknown> | null
+    /** Wave 142 (lane 142D): the online_presence capability — Versium's real-estate / online-presence
+     *  indicators (OUR shape; protected characteristics dropped inside the adapter). */
+    onlinePresence: Record<string, unknown> | null
   }
   cost:          number
   warnings:      string[]
@@ -49,7 +52,7 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
   const result: DealInvestigation = {
     contactId: params.contactId,
     summary:   "",
-    sources:   { person: null, mls: null, property: null },
+    sources:   { person: null, mls: null, property: null, onlinePresence: null },
     cost:      0,
     warnings:  [],
   }
@@ -150,6 +153,33 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
     }
   } catch (e) { result.warnings.push(`rentcast property record: ${(e as Error).message}`) }
 
+  // (3b) ONLINE PRESENCE — wave 142 (lane 142D; owner: "'Online Presence Indicator - Real Estate' and
+  // other real-estate indicators … exposed through existing kernel-governed capabilities"). The
+  // online_presence CAPABILITY (lib/ai-isa/property-lookup-rail.ts runVersiumOnlinePresenceLeg): one
+  // Versium full-demographic match, within what is left of this run's cap, budget-gated and booked by the
+  // leg; protected characteristics never leave the adapter. A refusal leaves the source null and says why.
+  try {
+    if (contact.brokerage_id && result.cost + 0.05 <= cap) {
+      const { runVersiumOnlinePresenceLeg } = await import("@/lib/ai-isa/property-lookup-rail")
+      const op = await runVersiumOnlinePresenceLeg({
+        brokerageId: contact.brokerage_id,
+        identity: {
+          firstName: contact.first_name ?? null, lastName: contact.last_name ?? null,
+          email: contact.email ?? null, phone: contact.phone ?? null,
+          address: contact.mailing_address ?? null, city: contact.mailing_city ?? null, state: contact.mailing_state ?? null, zip: contact.mailing_zip ?? null,
+        },
+        systemSource: "deal_investigator",
+        metadata: { contactId: contact.id },
+        attribution: { contactId: contact.id },
+      })
+      result.cost += op.cost
+      result.sources.onlinePresence = op.indicators ? ({ ...op.indicators, provenance: op.provenance } as unknown as Record<string, unknown>) : null
+      if (!op.answered && op.skipped) result.warnings.push(`online presence: ${op.skipped}`)
+    } else if (contact.brokerage_id) {
+      result.warnings.push("cap reached before online presence — skipped")
+    }
+  } catch (e) { result.warnings.push(`online presence: ${(e as Error).message}`) }
+
   // (4) Synthesize — one paragraph, AI-ISA-ready, via the Vercel AI Gateway.
   if (!process.env.AI_GATEWAY_API_KEY) {
     result.summary = "AI Gateway not configured — sources collected; no synthesis."
@@ -167,7 +197,8 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
           "Lead with the strongest motivation signal. End with a concrete next-step suggestion. NO bullet points.\n\n" +
           `PERSON (PeopleData): ${JSON.stringify(result.sources.person).slice(0, 2000)}\n\n` +
           `MLS (RentCast): ${JSON.stringify(result.sources.mls).slice(0, 1500)}\n\n` +
-          `PROPERTY RECORD (RentCast): ${JSON.stringify(result.sources.property).slice(0, 1500)}`,
+          `PROPERTY RECORD (RentCast): ${JSON.stringify(result.sources.property).slice(0, 1500)}\n\n` +
+          `REAL-ESTATE INDICATORS (Versium online presence — a research signal, never a reason to treat anyone differently): ${JSON.stringify(result.sources.onlinePresence).slice(0, 800)}`,
       }],
     })
     if (llm.ok && llm.content) {

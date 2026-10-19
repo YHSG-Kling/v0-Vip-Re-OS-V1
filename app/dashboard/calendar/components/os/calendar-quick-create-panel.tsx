@@ -221,7 +221,7 @@ export function CalendarQuickCreatePanel({ agentId, brokerageId, onClose, onCrea
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <CardTitle className="text-lg">Quick Create Event</CardTitle>
-            <Button variant="ghost" size="icon" onClick={onClose}>
+            <Button variant="ghost" size="icon" aria-label="Close" onClick={onClose}>
               <X className="h-4 w-4" />
             </Button>
           </div>

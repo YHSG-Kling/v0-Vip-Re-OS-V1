@@ -63,6 +63,15 @@
  * live constraint. Retires the day a migration re-declares the five-member
  * list.
  *
+ * BASELINED 2026-10-18, cause 2 — users.user_type. m782 (wave 142, lane 142A) is
+ * the OWNER's SQL-editor file: it re-declares users_user_type_check WITHOUT
+ * 'superadmin' (the dead legacy platform marker — 0 live rows; platform staff
+ * live in platform_role since m780) and the Supabase MCP holds the DROP
+ * CONSTRAINT for the owner. The FILE is right; the live CHECK (and the snapshot)
+ * still carry fourteen values. Retires by APPLYING: once the owner runs m782 the
+ * integrator regenerates scripts/check-vocabularies.ts (thirteen values) and this
+ * entry dissolves. Entered by hand, not by UPDATE_VOCAB_SNAPSHOT_BASELINE=1.
+ *
  * DO NOT re-run UPDATE_VOCAB_SNAPSHOT_BASELINE=1 to absorb a cause-2 entry
  * without recording it here. A baseline that cannot tell "we accepted this" from
  * "we have not done this yet" is a list of things nobody will ever look at again.

@@ -611,7 +611,7 @@ export function PatternsDashboardClient({
 
       {/* Action Sheet */}
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-        <SheetContent className="w-[500px] sm:max-w-[500px]">
+        <SheetContent className="w-full sm:w-[500px] sm:max-w-[500px]">
           {selectedPattern && (
             <>
               <SheetHeader>

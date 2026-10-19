@@ -314,7 +314,21 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // header. Sibling wave-141 lanes bump this line for their own files — the integrator sums them.
 // Wave 141 integration (2026-10-14): m765, m768, m777, m779 applied live via MCP; m739 (3 × DROP INDEX) and m771 (DROP COLUMN) are
 // held by the MCP for the owner's confirmation — both remain the owner's SQL-editor action, so two files still claim NOT APPLIED.
-const NOT_APPLIED_BASELINE = 2
+// 2 → 4 (wave 142, lane 142A — legacy superadmin cleanup): m781-legacy-superadmin-user-type-arms-leave-
+// the-live-policies.sql (37 ALTER POLICY rewrites, MCP-applicable one statement per call) and m782-owner-
+// sql-users-user-type-check-without-superadmin.sql (OWNER SQL editor: the DROP CONSTRAINT the MCP holds),
+// both WRITTEN NOT APPLIED. Deliberate bump, named per this guard's instruction; drops back as the
+// integrator applies m781 and the owner runs m782 (and flips each header). Sibling wave-142 lanes bump
+// this line for their own files — the integrator sums them.
+// 2 → 3 (wave 142, lane 142D — business-card typed entity linkage): m789-business-card-scans-typed-entity-
+// linkage.sql, WRITTEN NOT APPLIED — business_card_scans.vendor_id (FK vendors) / recruit_id (FK recruits) /
+// routed_entity_type (CHECK contact | vendor | recruit | none) beside contact_id, so a scan says which domain
+// entity it became (owner 2026-10-18: "why is the business card being saved as a contactid?"). Deliberate
+// bump, named per this guard's own instruction; drops back once the integrator applies it and flips the header.
+// Wave 142 integration sum: 2 (m739, m771 owner SQL) + 2 (142A: m781, m782) + 1 (142D: m789) + the other lanes'
+// written-not-applied files (142B m783, 142C m786-788, 142E m791-792 as they land) — set to the exact count of files
+// claiming NOT APPLIED at integration time; lowered again as the integrator applies them via MCP.
+const NOT_APPLIED_BASELINE = 5
 // 1 → 2 (wave 141, lane 141B — immediate operations): m779-user-invitations-failed-dispatch-status.sql,
 // WRITTEN NOT APPLIED — user_invitations.status admits 'failed' (an invite whose email could not be dispatched
 // in the creating request is shown to the admin as FAILED with a Resend, owner ruling 2026-10-14). Deliberate

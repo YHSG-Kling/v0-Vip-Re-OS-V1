@@ -1075,16 +1075,16 @@ export default function LifetimeCustomersPage() {
                             </div>
                           </div>
                           <div className="flex items-center gap-1">
-                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); if (client.phone) window.location.href = `tel:${client.phone}` }}>
+                            <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Call" onClick={(e) => { e.stopPropagation(); if (client.phone) window.location.href = `tel:${client.phone}` }}>
                               <Phone className="w-4 h-4" />
                             </Button>
-                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); if (client.email) window.location.href = `mailto:${client.email}` }}>
+                            <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Email" onClick={(e) => { e.stopPropagation(); if (client.email) window.location.href = `mailto:${client.email}` }}>
                               <Mail className="w-4 h-4" />
                             </Button>
-                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); handleGenerateTouchpoint(client.id, 'check_in', 'AI Suggested Touch') }}>
+                            <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Suggest a touchpoint" onClick={(e) => { e.stopPropagation(); handleGenerateTouchpoint(client.id, 'check_in', 'AI Suggested Touch') }}>
                               <Sparkles className="w-4 h-4" />
                             </Button>
-                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); setSelectedClient(client); setShowLogTouchpoint(true) }}>
+                            <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Log a touchpoint" onClick={(e) => { e.stopPropagation(); setSelectedClient(client); setShowLogTouchpoint(true) }}>
                               <Calendar className="w-4 h-4" />
                             </Button>
                           </div>

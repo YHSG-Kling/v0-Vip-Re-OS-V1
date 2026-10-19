@@ -119,7 +119,7 @@ export default function ContactDetailPane({ contact, sentimentSummary, agentId }
 
   if (!contact) {
     return (
-      <div className="w-64 border-l border-border bg-background flex items-center justify-center text-sm text-muted-foreground p-4 text-center">
+      <div className="w-full lg:w-64 border-l border-border bg-background flex items-center justify-center text-sm text-muted-foreground p-4 text-center">
         Select a conversation to see contact details
       </div>
     )
@@ -143,7 +143,7 @@ export default function ContactDetailPane({ contact, sentimentSummary, agentId }
   }
 
   return (
-    <div className="w-64 border-l border-border bg-background overflow-y-auto shrink-0">
+    <div className="w-full lg:w-64 border-l border-border bg-background overflow-y-auto shrink-0">
       <div className="p-4 space-y-4">
 
         {/* Authority block banner */}

@@ -125,7 +125,7 @@ export function MeetingBriefCard({ event, agentId, onClose }: MeetingBriefCardPr
             <FileText className="h-4 w-4" />
             Meeting Details
           </CardTitle>
-          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
+          <Button variant="ghost" size="icon" className="h-6 w-6" aria-label="Close" onClick={onClose}>
             <X className="h-3 w-3" />
           </Button>
         </div>

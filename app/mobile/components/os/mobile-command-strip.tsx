@@ -97,7 +97,7 @@ export function MobileCommandStrip({ agentId }: MobileCommandStripProps) {
       {/* Expanded Secondary Actions */}
       {expanded && (
         <div className="px-4 py-3 border-b bg-muted/50 animate-in slide-in-from-bottom-2">
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {secondaryActions.map((action) => (
               <Link key={action.label} href={action.href}>
                 <Button

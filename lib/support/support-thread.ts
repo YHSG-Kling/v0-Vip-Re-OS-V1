@@ -125,6 +125,8 @@ export interface TicketThread {
   requesterName: string | null
   satisfactionRating: number | null
   messages: TicketMessage[]
+  /** Wave 142G — what the AI triage decided (lifecycle_events support.ticket_triaged), or null when never triaged. */
+  triage: import("@/lib/support/ticket-triage").TicketTriageSummary | null
 }
 
 /** Load a ticket with its brokerage identity, requester name, and full message thread. */
@@ -136,10 +138,13 @@ export async function loadTicketThread(svc: Svc, ticketId: string): Promise<Tick
   if (!t) return null
   const tk = t as any
 
-  const [{ data: brk }, { data: msgs }, agentRow] = await Promise.all([
+  const { loadTicketTriage } = await import("@/lib/support/ticket-triage")
+  const [{ data: brk }, { data: msgs }, agentRow, triage] = await Promise.all([
     tk.brokerage_id ? svc.from("brokerages").select("name").eq("id", tk.brokerage_id).maybeSingle() : Promise.resolve({ data: null }),
     svc.from("support_ticket_messages").select("id, ticket_id, author_user_id, author_kind, body, created_at").eq("ticket_id", ticketId).order("created_at", { ascending: true }).limit(500),
     tk.agent_id ? svc.from("agents").select("users(first_name, last_name)").eq("id", tk.agent_id).maybeSingle() : Promise.resolve({ data: null }),
+    // Best-effort read-back of the AI triage evidence — a refused read renders as "not triaged", never a broken thread.
+    loadTicketTriage(svc, ticketId).catch(() => null),
   ])
   const u = (agentRow.data as any)?.users
   const uu = Array.isArray(u) ? u[0] : u
@@ -151,5 +156,6 @@ export async function loadTicketThread(svc: Svc, ticketId: string): Promise<Tick
     requesterName: uu ? [uu.first_name, uu.last_name].filter(Boolean).join(" ") || null : null,
     satisfactionRating: tk.satisfaction_rating ?? null,
     messages: ((msgs ?? []) as any[]).map((m) => ({ id: m.id, ticketId: m.ticket_id, authorUserId: m.author_user_id, authorKind: m.author_kind, body: m.body, createdAt: m.created_at })),
+    triage,
   }
 }

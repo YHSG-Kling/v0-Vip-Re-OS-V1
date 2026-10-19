@@ -980,7 +980,16 @@ async function checkAndFirePerformanceEvents(brokerageId: string, tracking: any)
   }
 }
 
-export async function getVideoPerformanceStats(agentId: string, _brokerageId?: string) {
+export async function getVideoPerformanceStats(
+  agentId: string,
+  _brokerageId?: string,
+  /**
+   * Wave 142 (lane 142H): the analytics page's range select ("Last 7 / 30 / 90 days / This year") set state
+   * that nothing read. The rollups in video_performance_tracking are lifetime per video, so the honest
+   * window is the VIDEOS CREATED in it — applied here, where the page can reach it.
+   */
+  opts?: { sinceDays?: number | null },
+) {
   const auth = await requireCaller()
   if (!auth.ok) {
     return {
@@ -1009,6 +1018,9 @@ export async function getVideoPerformanceStats(agentId: string, _brokerageId?: s
 
   if (isValidUUID(agentId)) {
     projectQuery = projectQuery.eq("agent_id", agentId)
+  }
+  if (opts?.sinceDays && opts.sinceDays > 0) {
+    projectQuery = projectQuery.gte("created_at", new Date(Date.now() - opts.sinceDays * 86_400_000).toISOString())
   }
 
   const { data: videos } = await projectQuery

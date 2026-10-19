@@ -40,7 +40,7 @@ export function WorkflowCommandStrip({ stats, loading, onRefresh }: WorkflowComm
       </div>
 
       {/* 4-tile radar */}
-      <div className="grid grid-cols-4 gap-3 mt-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
         <div className="flex items-center gap-2 rounded-md bg-blue-50 border border-blue-200 px-3 py-2">
           <Play className="h-4 w-4 text-blue-600" />
           <div>

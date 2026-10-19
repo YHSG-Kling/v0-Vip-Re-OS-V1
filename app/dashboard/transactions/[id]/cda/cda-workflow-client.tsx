@@ -66,7 +66,12 @@ import {
   closeCdaAction,
   recordNonCdaPayoutPreferenceAction,
   getCdaForTransactionAction,
+  // Wave 142 (142C): the preliminary-statement review loop and the external-broker return path.
+  requestPreliminaryCdCorrectionAction,
+  confirmPreliminaryCdReviewAction,
+  returnExternallySignedCdaAction,
 } from "@/app/actions/cda-portal"
+import { preliminaryReviewOf } from "@/lib/transactions/cda-closing-policy"
 import { CdaTemplateFieldsCard } from "./cda-template-fields-card"
 // agents.id → users.id. transactions.agent_id is an agents FK;
 // notifications.user_id is a users FK. Resolve, never substitute.
@@ -121,6 +126,8 @@ interface CDAWorkflowClientProps {
     closed_at: string | null
     uses_cda: boolean | null
     non_cda_payout_method: string | null
+    /** Wave 142 (142C): carries preliminary_statement (the review state) and broker_esign / title_delivery evidence. */
+    field_values?: Record<string, unknown> | null
   } | null
   /** brokerages.offers_cda — false routes the agent to the payout-preference path. */
   offersCda: boolean
@@ -383,6 +390,76 @@ export function CDAWorkflowClient({
     })
   }
 
+  // ── WAVE 142 (142C): the statement REVIEW LOOP and the external-broker RETURN ──────────────────
+  // The review state lives on the CDA (field_values.preliminary_statement, pure rules in
+  // lib/transactions/cda-closing-policy.ts). A correction request BLOCKS broker approval until title's
+  // revised statement arrives; "figures reconcile" marks the version reviewed. AI never fills the CDA
+  // and never alters title's document — the reviewer types what the statement says, the server
+  // compares deterministically.
+  const prelimReview = preliminaryReviewOf(cda?.field_values ?? null)
+  const [reviewBusy, setReviewBusy] = useState(false)
+  const [reviewError, setReviewError] = useState<string | null>(null)
+  const [correctionOpen, setCorrectionOpen] = useState(false)
+  const [corrField, setCorrField] = useState<"sales_price" | "gross_commission" | "agent_net" | "brokerage_net" | "seller_credits" | "closing_costs">("gross_commission")
+  const [corrStatement, setCorrStatement] = useState("")
+  const [corrExpected, setCorrExpected] = useState("")
+  const [corrNote, setCorrNote] = useState("")
+  const [externalSignedBusy, setExternalSignedBusy] = useState(false)
+  const [externalSignedError, setExternalSignedError] = useState<string | null>(null)
+
+  async function handleConfirmPrelimReview() {
+    if (!cda) return
+    setReviewError(null); setReviewBusy(true)
+    try {
+      const res = await confirmPreliminaryCdReviewAction({ cdaId: cda.id })
+      if (!res.success) { setReviewError(res.error ?? "Could not record the review."); return }
+      router.refresh()
+    } finally { setReviewBusy(false) }
+  }
+
+  async function handleRequestPrelimCorrection() {
+    if (!cda) return
+    setReviewError(null); setReviewBusy(true)
+    try {
+      const statementValue = Number(corrStatement), expectedValue = Number(corrExpected)
+      const res = await requestPreliminaryCdCorrectionAction({
+        cdaId: cda.id,
+        items: Number.isFinite(statementValue) && Number.isFinite(expectedValue) && corrStatement.trim() && corrExpected.trim()
+          ? [{ field: corrField, statementValue, expectedValue }]
+          : [],
+        message: corrNote.trim() || undefined,
+      })
+      if (!res.success) { setReviewError(res.error ?? "Could not send the correction request."); return }
+      setCorrectionOpen(false); setCorrStatement(""); setCorrExpected(""); setCorrNote("")
+      router.refresh()
+    } finally { setReviewBusy(false) }
+  }
+
+  async function handleExternalSignedCdaUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file || !cda) return
+    setExternalSignedError(null); setExternalSignedBusy(true)
+    try {
+      const supabase = createClient()
+      const path = `transactions/${transaction.id}/cda-signed-external/${Date.now()}_${file.name}`
+      const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+      const stored = await putAndSign(supabase, { bucket: "transaction-documents", path, body: file, contentType: file.type || undefined, reason: "cda_signed_external_upload" })
+      if (!stored.ok) { setExternalSignedError(`Upload failed: ${stored.error}`); return }
+      const res = await returnExternallySignedCdaAction({ cdaId: cda.id, fileName: file.name, fileUrl: stored.signedUrl })
+      if (!res.success) {
+        await removeOrRecordOrphan(supabase, { bucket: "transaction-documents", objectPath: stored.path, reason: "cda_signed_external_refused", detail: res.error ?? "the signed CDA return was refused" })
+        setExternalSignedError(res.error ?? "Could not record the signed CDA.")
+        return
+      }
+      router.refresh()
+    } catch {
+      setExternalSignedError("Upload failed — please try again.")
+    } finally {
+      setExternalSignedBusy(false)
+      e.target.value = ""
+    }
+  }
+
   async function handlePreliminaryCdUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -595,14 +672,65 @@ export function CDAWorkflowClient({
               </CardHeader>
               <CardContent>
                 {cda?.preliminary_cd_uploaded_at ? (
-                  <Alert>
-                    <CheckCircle2 className="h-4 w-4" />
-                    <AlertTitle>Preliminary CD received</AlertTitle>
-                    <AlertDescription>
-                      Recorded {new Date(cda.preliminary_cd_uploaded_at).toLocaleString()}. The
-                      agent has been notified to draft the CDA.
-                    </AlertDescription>
-                  </Alert>
+                  <div className="space-y-3">
+                    <Alert>
+                      <CheckCircle2 className="h-4 w-4" />
+                      <AlertTitle>Preliminary CD received{prelimReview && prelimReview.version > 1 ? ` — version ${prelimReview.version}` : ""}</AlertTitle>
+                      <AlertDescription>
+                        Recorded {new Date(cda.preliminary_cd_uploaded_at).toLocaleString()}. The
+                        agent has been notified to draft the CDA.
+                        {prelimReview?.status === "correction_requested" && (
+                          <span className="block mt-1 font-medium">Correction requested from title{prelimReview.requested_at ? ` on ${new Date(prelimReview.requested_at).toLocaleDateString()}` : ""} — broker approval is held until the revised statement arrives.</span>
+                        )}
+                        {prelimReview?.status === "reviewed" && (
+                          <span className="block mt-1">Figures reconciled with the executed contract and the waterfall{prelimReview.reviewed_at ? ` on ${new Date(prelimReview.reviewed_at).toLocaleDateString()}` : ""}.</span>
+                        )}
+                      </AlertDescription>
+                    </Alert>
+                    {/* Wave 142 (142C): the agent / TC review — compare the title company's statement with the
+                        executed contract + waterfall; document a discrepancy → correction request to title. */}
+                    {prelimReview && prelimReview.status === "pending_review" && (
+                      <div className="space-y-2">
+                        {!correctionOpen ? (
+                          <div className="flex flex-wrap gap-2">
+                            <Button size="sm" variant="outline" disabled={reviewBusy} onClick={handleConfirmPrelimReview}>Figures reconcile with the contract + waterfall</Button>
+                            <Button size="sm" variant="outline" disabled={reviewBusy} onClick={() => setCorrectionOpen(true)}>Request a correction from title</Button>
+                          </div>
+                        ) : (
+                          <div className="border rounded p-3 space-y-2 text-sm">
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                              <select className="border rounded px-2 py-1.5" value={corrField} onChange={(e) => setCorrField(e.target.value as typeof corrField)}>
+                                <option value="sales_price">Sales price</option>
+                                <option value="gross_commission">Gross commission</option>
+                                <option value="agent_net">Agent net</option>
+                                <option value="brokerage_net">Brokerage net</option>
+                                <option value="seller_credits">Seller credits / concessions</option>
+                                <option value="closing_costs">Closing costs</option>
+                              </select>
+                              <input className="border rounded px-2 py-1.5" inputMode="decimal" placeholder="Statement shows ($)" value={corrStatement} onChange={(e) => setCorrStatement(e.target.value)} />
+                              <input className="border rounded px-2 py-1.5" inputMode="decimal" placeholder="Contract / waterfall expects ($)" value={corrExpected} onChange={(e) => setCorrExpected(e.target.value)} />
+                            </div>
+                            <Textarea rows={2} placeholder="Note to title (optional)" value={corrNote} onChange={(e) => setCorrNote(e.target.value)} />
+                            <div className="flex gap-2">
+                              <Button size="sm" disabled={reviewBusy} onClick={handleRequestPrelimCorrection}>Send the correction request</Button>
+                              <Button size="sm" variant="ghost" disabled={reviewBusy} onClick={() => setCorrectionOpen(false)}>Cancel</Button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {reviewError && <p className="text-sm text-destructive">{reviewError}</p>}
+                    {/* The broker signs OUTSIDE VIPAgents: the agent downloads the filled CDA, delivers it, and returns
+                        the signed copy here (refused by the server for an on-platform brokerage). */}
+                    {cda.status === "submitted" && !cda.broker_approved_at && (
+                      <div className="border rounded p-3 space-y-1 text-sm">
+                        <p className="font-medium">Broker signs outside the platform?</p>
+                        <p className="text-muted-foreground text-xs">Download the completed CDA, have your managing broker sign it, then return the signed copy. The signed document on file is the authorization — never an envelope that was merely sent.</p>
+                        <input type="file" accept="application/pdf,image/*" disabled={externalSignedBusy} onChange={handleExternalSignedCdaUpload} className="text-xs" />
+                        {externalSignedError && <p className="text-destructive text-xs">{externalSignedError}</p>}
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div className="space-y-3">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

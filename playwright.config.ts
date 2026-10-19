@@ -8,12 +8,15 @@ import { defineConfig, devices } from "@playwright/test"
  * NOT run inside the restricted build/agent container, which has no app Supabase
  * env and cannot download browsers.
  *
- * Set E2E_BASE_URL to test an already-running deployment (preview/staging);
- * otherwise Playwright boots `npm run dev` locally.
+ * Set UI_SMOKE_BASE_URL (the production UI smoke — `.github/workflows/e2e.yml`
+ * job `ui-smoke`, wave 142 lane 142I) or E2E_BASE_URL to test an already-running
+ * deployment (preview / staging); otherwise Playwright boots `npm run dev` locally.
  *
  * Authenticated offer→transaction flows need a seeded test user + Supabase
  * session — see e2e/README.md. Public/unauthenticated pages smoke-test as-is.
  */
+const deployedBaseUrl = process.env.UI_SMOKE_BASE_URL?.trim() || process.env.E2E_BASE_URL?.trim() || null
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
@@ -21,11 +24,16 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? "github" : "list",
   use: {
-    baseURL: process.env.E2E_BASE_URL ?? "http://localhost:3000",
+    baseURL: deployedBaseUrl ?? "http://localhost:3000",
     trace: "on-first-retry",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
-  webServer: process.env.E2E_BASE_URL
+  projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    // The phone-width project the readiness matrix named as missing (lane 141I finding:
+    // "no 820 / 390 viewport project exists for the mobile smoke") — the same specs at 393 px.
+    { name: "mobile-chromium", use: { ...devices["Pixel 5"] } },
+  ],
+  webServer: deployedBaseUrl
     ? undefined
     : {
         command: "npm run dev",

@@ -198,18 +198,44 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
       or(expr: string) {
         // Wave 102 (102D): + `gte` / `lte` — the attribution's deal window (lib/intelligence/roi-ledger.ts
         // `contract_date.gte.<day>,close_date.gte.<day>`). Everything else still THROWS.
-        const terms = expr.split(",").map((t) => {
-          const m = /^([\w]+)\.(eq|is|gte|lte)\.(.*)$/.exec(t.trim())
+        // Wave 142 (lane 142J, the support-isolation canary): + `in.(a,b,c)` — the platform-staff recipient
+        // resolver's grammar (lib/notifications/platform-staff.ts `platform_role.in.(superadmin,admin,…)`). The
+        // comma INSIDE the parentheses is part of the term, so terms are split at depth 0 only.
+        const rawTerms: string[] = []
+        let depth = 0, cur = ""
+        for (const ch of expr) {
+          if (ch === "(") depth++
+          else if (ch === ")") depth = Math.max(0, depth - 1)
+          if (ch === "," && depth === 0) { rawTerms.push(cur); cur = "" } else cur += ch
+        }
+        rawTerms.push(cur)
+        const terms = rawTerms.map((t) => {
+          const m = /^([\w]+)\.(eq|is|gte|lte|in)\.(.*)$/.exec(t.trim())
           if (!m) throw new Error(`memSupabase: unsupported or() term "${t}"`)
           filterCols.push(m[1])
           return m
         })
         filters.push((r) => terms.some(([, col, op, v]) =>
           op === "eq" ? String(val(r, col)) === v
+          : op === "in" ? new Set(parseList(v)).has(String(val(r, col)))
           : op === "gte" ? val(r, col) !== null && val(r, col) !== undefined && String(val(r, col)) >= v
           : op === "lte" ? val(r, col) !== null && val(r, col) !== undefined && String(val(r, col)) <= v
           : v === "null" ? val(r, col) === null || val(r, col) === undefined
           : (() => { throw new Error(`memSupabase: unsupported or() is.${v}`) })()))
+        return b
+      },
+      // Wave 142 (lane 142J, the listing-lifecycle canary): PostgREST's generic `.filter(col, op, value)` — the
+      // grammar lib/esign-webhooks/finalize-packet.ts matches signed documents with
+      // (`.filter("metadata->>signature_request_id", "eq", envelopeId)`). `eq` / `neq` / `is` (null) / `in`
+      // ("(a,b)") are honoured through the same JSON-path reader as `eq`; anything else THROWS, so a proof can
+      // never silently match a filter this fake does not understand.
+      filter(col: string, operator: string, v: unknown) {
+        filterCols.push(col)
+        if (operator === "eq") filters.push((r) => val(r, col) === v)
+        else if (operator === "neq") filters.push((r) => val(r, col) !== v)
+        else if (operator === "is") filters.push((r) => (v === null ? val(r, col) === null || val(r, col) === undefined : val(r, col) === v))
+        else if (operator === "in") { const set = new Set(parseList(v as string)); filters.push((r) => set.has(String(val(r, col)))) }
+        else throw new Error(`memSupabase: unsupported filter(${operator})`)
         return b
       },
       gte(col: string, v: any) { filterCols.push(col); filters.push((r) => val(r, col) !== null && val(r, col) !== undefined && val(r, col) >= v); return b },

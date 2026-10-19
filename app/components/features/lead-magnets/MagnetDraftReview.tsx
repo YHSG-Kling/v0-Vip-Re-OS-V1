@@ -22,7 +22,11 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { CheckCircle2, Loader2, Plus, Save, Trash2, Wand2 } from "lucide-react"
+// Wave 142: the book the magnet carries (staged pipeline) + the one "who fills this form" roster.
+import { BookProjectPanel } from "./BookProjectPanel"
+import { FORM_DECLARABLE_CONTACT_TYPES } from "@/lib/lead-magnets/form-contact-types"
 
 type PublishChannel = "qr_code" | "email" | "landing_page" | "social"
 const PUBLISH_CHANNELS: ReadonlyArray<{ id: PublishChannel; label: string }> = [
@@ -52,8 +56,12 @@ export function MagnetDraftReview({ magnetId, onPublished, onSaved }: Props) {
   const [authoredBy, setAuthoredBy] = useState<"ai" | "human">("human")
   const [authoringNote, setAuthoringNote] = useState<string | null>(null)
   const [fairHousingFlags, setFairHousingFlags] = useState<string[]>([])
+  const [fairHousing, setFairHousing] = useState<{ rewrites: number; escalated: boolean; findings: Array<{ phrase: string; fix: string }> }>({ rewrites: 0, escalated: false, findings: [] })
   const [clonedFromName, setClonedFromName] = useState<string | null>(null)
   const [landingBase, setLandingBase] = useState<LandingContent | null>(null)
+  const [magnetType, setMagnetType] = useState("generic_form")
+  const [defaultContactType, setDefaultContactType] = useState("")
+  const [bookStage, setBookStage] = useState<string | null>(null)
 
   const [name, setName] = useState("")
   const [headline, setHeadline] = useState("")
@@ -77,8 +85,12 @@ export function MagnetDraftReview({ magnetId, onPublished, onSaved }: Props) {
       setAuthoredBy(m.authoredBy)
       setAuthoringNote(m.authoringNote)
       setFairHousingFlags(m.fairHousingFlags)
+      setFairHousing(m.fairHousing)
       setClonedFromName(m.clonedFromName)
       setLandingBase(m.landing)
+      setMagnetType(m.magnetType)
+      setDefaultContactType(m.defaultContactType)
+      setBookStage(m.bookStage)
       setName(m.name)
       setHeadline(m.landing?.headline ?? "")
       setSubhead(m.landing?.subhead ?? "")
@@ -127,7 +139,7 @@ export function MagnetDraftReview({ magnetId, onPublished, onSaved }: Props) {
     }
     const saved = await saveMagnetLandingContentAction(magnetId, landing)
     if (!saved.success) { setError(saved.error ?? "The page copy was not saved"); return false }
-    const settings = await updateMagnetSettingsAction(magnetId, { name: name.trim(), thankYouMessage: thankYou.trim(), fields: cleanFields })
+    const settings = await updateMagnetSettingsAction(magnetId, { name: name.trim(), thankYouMessage: thankYou.trim(), fields: cleanFields, ...(magnetType === "generic_form" ? { defaultContactType } : {}) })
     if (!settings.success) { setError(settings.error ?? "The settings were not saved"); return false }
     setLandingBase(landing)
     onSaved?.()
@@ -176,11 +188,19 @@ export function MagnetDraftReview({ magnetId, onPublished, onSaved }: Props) {
           {clonedFromName ? ` Cloned from "${clonedFromName}".` : ""}
         </CardDescription>
         {authoringNote && <p className="text-xs text-amber-800">{authoringNote}</p>}
-        {fairHousingFlags.length > 0 && (
-          <p className="text-xs text-destructive">Fair-housing review: the draft mentioned {fairHousingFlags.join(", ")} — check the copy before publishing.</p>
-        )}
+        {fairHousing.escalated ? (
+          <div className="text-xs text-destructive space-y-1" role="alert">
+            <p>Fair-housing review needed: the AI rewrote this copy {fairHousing.rewrites} time{fairHousing.rewrites === 1 ? "" : "s"} and it still mentioned {fairHousing.findings.map((f) => `"${f.phrase}"`).join(", ") || fairHousingFlags.join(", ")}. The safe baseline is on the page — publishing re-checks the copy and refuses a hard flag.</p>
+            {fairHousing.findings.length > 0 && <ul className="list-disc pl-4">{fairHousing.findings.map((f) => <li key={f.phrase}>{f.phrase} → {f.fix}</li>)}</ul>}
+          </div>
+        ) : fairHousingFlags.length > 0 ? (
+          <p className="text-xs text-amber-800">Fair-housing review: an earlier draft mentioned {fairHousingFlags.join(", ")}{fairHousing.rewrites > 0 ? ` — the AI rewrote it ${fairHousing.rewrites} time${fairHousing.rewrites === 1 ? "" : "s"} and the current copy is clean` : ""}. Publishing re-checks the copy.</p>
+        ) : null}
       </CardHeader>
       <CardContent className="space-y-6">
+        {bookStage && (
+          <BookProjectPanel magnetId={magnetId} onStage={setBookStage} />
+        )}
         <div className="space-y-2">
           <Label htmlFor="dr-name">Title</Label>
           <Input id="dr-name" value={name} onChange={(e) => setName(e.target.value)} />
@@ -233,6 +253,21 @@ export function MagnetDraftReview({ magnetId, onPublished, onSaved }: Props) {
           })}
         </div>
 
+        {magnetType === "generic_form" && (
+          <div className="space-y-2">
+            <Label>Who fills this form?</Label>
+            <Select value={defaultContactType || "unspecified"} onValueChange={(v) => setDefaultContactType(v === "unspecified" ? "" : v)}>
+              <SelectTrigger aria-label="Who fills this form"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="unspecified">Unspecified — capture only, no automatic welcome</SelectItem>
+                {FORM_DECLARABLE_CONTACT_TYPES.map((v) => (
+                  <SelectItem key={v} value={v}>{v === "both" ? "Buyers and sellers" : v === "buyer" ? "Buyers" : "Sellers"}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
         {isDraft && (
           <div className="space-y-2">
             <Label>Publish to</Label>
@@ -256,9 +291,9 @@ export function MagnetDraftReview({ magnetId, onPublished, onSaved }: Props) {
             Save
           </Button>
           {isDraft && (
-            <Button onClick={handleApproveAndPublish} disabled={isPending || channels.length === 0} className="flex-1">
+            <Button onClick={handleApproveAndPublish} disabled={isPending || channels.length === 0 || (!!bookStage && bookStage !== "ready_for_review")} className="flex-1" title={bookStage && bookStage !== "ready_for_review" ? "The book is still being written" : undefined}>
               {isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <CheckCircle2 className="h-4 w-4 mr-2" />}
-              Approve and publish
+              {bookStage && bookStage !== "ready_for_review" ? "Finish the book to publish" : "Approve and publish"}
             </Button>
           )}
         </div>

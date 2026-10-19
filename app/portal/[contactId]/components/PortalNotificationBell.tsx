@@ -104,7 +104,7 @@ export function PortalNotificationBell({ contactId, initialUnread }: Props) {
   return (
     <Popover open={open} onOpenChange={handleOpen}>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" className="relative h-9 w-9">
+        <Button variant="ghost" size="icon" className="relative h-9 w-9" aria-label="Notifications">
           <Bell className="h-5 w-5" />
           {unread > 0 && (
             <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white">

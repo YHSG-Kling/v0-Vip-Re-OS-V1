@@ -129,7 +129,7 @@ export default function TransactionFormsClient({ initialForms }: { initialForms:
             <FileText className="h-8 w-8 mx-auto mb-2 opacity-30" />
             <p className="text-sm">
               {forms.length === 0
-                ? "No transaction forms uploaded yet. Click \"Upload Form\" to add your first."
+                ? "No legal forms uploaded yet. Click \"Upload Form\" to add your first."
                 : "No forms match the current filter."}
             </p>
           </CardContent>

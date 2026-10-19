@@ -3954,7 +3954,7 @@ export function TransactionDetailClient({
                                 {isClientHiddenDealDocType(d.doc_type) ? (
                                   <span className="text-xs text-muted-foreground whitespace-nowrap">Never shown to client</span>
                                 ) : (
-                                  <label className="flex items-center gap-1 text-xs text-muted-foreground whitespace-nowrap">
+                                  <label className="flex items-center gap-1 text-xs text-muted-foreground">
                                     <Switch
                                       checked={d.client_visible === true}
                                       disabled={togglingDocId === d.id}
@@ -4989,7 +4989,7 @@ export function TransactionDetailClient({
                   <CardHeader className="pb-3">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <Building2 className="h-4 w-4" />
-                      Transaction Forms Provider
+                      Legal-forms provider
                       {formsProvider && (
                         <Badge
                           variant={formsProvider.is_configured ? "default" : "secondary"}
@@ -5035,12 +5035,12 @@ export function TransactionDetailClient({
                   </CardContent>
                 </Card>
 
-                {/* Available Transaction Forms */}
+                {/* Available legal forms */}
                 <Card>
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between">
                       <CardTitle className="text-sm">
-                        Available Transaction Forms
+                        Available legal forms
                       </CardTitle>
                       <Badge variant="secondary" className="text-xs">
                         {availableForms.length} form{availableForms.length !== 1 ? "s" : ""}

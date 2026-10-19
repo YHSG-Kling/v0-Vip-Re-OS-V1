@@ -245,11 +245,11 @@ export default function ListingSharePage() {
         <CardContent className="space-y-3">
           <div className="flex gap-2">
             <Input value={publicUrl} readOnly className="text-xs font-mono" />
-            <Button variant="outline" size="icon" onClick={copyLink}>
+            <Button variant="outline" size="icon" aria-label={copied ? "Link copied" : "Copy link"} onClick={copyLink}>
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
             <Button variant="outline" size="icon" asChild>
-              <a href={publicUrl} target="_blank" rel="noopener noreferrer">
+              <a href={publicUrl} target="_blank" rel="noopener noreferrer" aria-label="Open the public listing page">
                 <ExternalLink className="h-4 w-4" />
               </a>
             </Button>

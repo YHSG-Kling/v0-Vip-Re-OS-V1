@@ -777,14 +777,14 @@ export function KnowledgeBaseClient({
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => openEditKnowledgeArticle(article)}
+                          aria-label="Edit article" onClick={() => openEditKnowledgeArticle(article)}
                         >
                           <Edit className="h-4 w-4" />
                         </Button>
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => handleDeleteKnowledgeArticle(article.id)}
+                          aria-label="Delete article" onClick={() => handleDeleteKnowledgeArticle(article.id)}
                         >
                           <Trash2 className="h-4 w-4 text-destructive" />
                         </Button>
@@ -856,14 +856,14 @@ export function KnowledgeBaseClient({
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => openEditArticle(article)}
+                        aria-label="Edit article" onClick={() => openEditArticle(article)}
                       >
                         <Edit className="h-4 w-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => handleDelete(article.id)}
+                        aria-label="Delete article" onClick={() => handleDelete(article.id)}
                       >
                         <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>

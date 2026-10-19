@@ -187,7 +187,7 @@ export function RepeatBusinessPanel({
         {sphereSegments && (
           <div>
             <h4 className="text-sm font-medium mb-2">Sphere Health</h4>
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div className="flex flex-col items-center p-2 rounded-lg border bg-emerald-50">
                 <Users className="h-4 w-4 text-emerald-600 mb-1" />
                 <span className="text-lg font-bold text-emerald-700">{sphereSegments.champions}</span>

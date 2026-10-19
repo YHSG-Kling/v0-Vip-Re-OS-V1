@@ -217,7 +217,7 @@ export function CoordinatorTransactionList({ transactions }: { transactions: Tra
                         </div>
 
                         {/* Action Button */}
-                        <Button variant="ghost" size="icon" asChild className="flex-shrink-0">
+                        <Button variant="ghost" size="icon" asChild className="flex-shrink-0" aria-label="Open transaction">
                           <Link href={`/transactions/${txn.id}`}>
                             <ChevronRight className="h-5 w-5" />
                           </Link>

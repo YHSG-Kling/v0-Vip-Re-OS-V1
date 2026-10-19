@@ -2,7 +2,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { listLeadMagnets, createLeadMagnet, publishLeadMagnet, getMagnetPerformance, cloneLeadMagnet, defaultFieldsForType, type LeadMagnetField } from "@/lib/kernel/lead-magnets"
+import { listLeadMagnets, createLeadMagnet, publishLeadMagnet, getMagnetPerformance, cloneLeadMagnet, defaultFieldsForType, leadMagnetBookRefOf, type LeadMagnetField } from "@/lib/kernel/lead-magnets"
+import { FORM_DECLARABLE_CONTACT_TYPES } from "@/lib/lead-magnets/form-contact-types"
 import { headers } from "next/headers"
 
 /**
@@ -108,11 +109,15 @@ export async function createLeadMagnetAction(input: {
   publish_state?: "draft" | "live"
   /** AI landing copy generated in the builder, persisted WITH the row (one write, not a second save). */
   landing?: import("@/lib/marketing/lead-magnet-copy").LandingContent | null
+  /** Wave 142 (the Forms Manager merge): who fills a CUSTOM form — buyer / seller / both — so the kernel
+   *  stamps the contact type and the welcome / manager handoff fire (FORM_DECLARABLE_CONTACT_TYPES). */
+  default_contact_type?: string | null
 }) {
   try {
     const ctx = await getAgentContext()
     if (!ctx.brokerageId || !ctx.agentId) return { success: false as const, error: "Not authenticated" }
     const magnetType = input.magnet_type as Parameters<typeof createLeadMagnet>[0]["magnetType"]
+    const declaredContactType = (FORM_DECLARABLE_CONTACT_TYPES as readonly string[]).includes(String(input.default_contact_type ?? "")) ? String(input.default_contact_type) : null
     // The tenant's extra questions ride on top of the canonical identity fields — the same validator the
     // AI draft uses (lib/lead-magnets/ai-draft.ts mergeExtraQuestions), so a typed field and an
     // AI-proposed one obey one rule.
@@ -137,7 +142,10 @@ export async function createLeadMagnetAction(input: {
       fields,
       publishState: input.publish_state ?? "live",
       landingContent: input.landing ?? null,
-      settings: { authoring: { by: "human", requested_by: ctx.userId, generated_at: new Date().toISOString(), from_ai_copy: !!input.landing } },
+      settings: {
+        authoring: { by: "human", requested_by: ctx.userId, generated_at: new Date().toISOString(), from_ai_copy: !!input.landing },
+        ...(declaredContactType ? { default_contact_type: declaredContactType } : {}),
+      },
     })
     // Persist the notification preference into the dedicated `settings` jsonb bag
     // (added in l40-s01) — NOT landing_content, which the AI-landing-copy save
@@ -229,12 +237,17 @@ export async function getLeadMagnetDraftAction(magnetId: string) {
     const row = data as { id: string; name: string; slug: string; magnet_type: string | null; fields: LeadMagnetField[] | null; is_active: boolean | null; thank_you_message: string | null; tcpa_disclosure_text: string | null; redirect_url: string | null; landing_content: Record<string, unknown> | null; settings: Record<string, unknown> | null }
     const settings = (row.settings ?? {}) as Record<string, unknown>
     const lifecycle = (settings.lifecycle ?? null) as { state?: string; published_at?: string | null; approved_by?: string | null } | null
-    const authoring = (settings.authoring ?? null) as { by?: string; fallback_reason?: string | null; fair_housing_flags?: string[]; concept?: string } | null
+    const authoring = (settings.authoring ?? null) as { by?: string; fallback_reason?: string | null; fair_housing_flags?: string[]; concept?: string; kind?: string; fair_housing?: { rewrites?: number; escalated?: boolean; findings?: Array<{ phrase: string; fix: string }> } } | null
     const provenance = (settings.provenance ?? null) as { cloned_from_id?: string; cloned_from_name?: string } | null
+    const book = (settings.book ?? null) as { stage?: string } | null
     return {
       success: true as const,
       magnet: {
         id: row.id, name: row.name, slug: row.slug, magnetType: row.magnet_type ?? "generic_form",
+        // Wave 142: the declared persona (Forms Manager merge), the fair-housing escalation, the book stage.
+        defaultContactType: (FORM_DECLARABLE_CONTACT_TYPES as readonly string[]).includes(String(settings.default_contact_type ?? "")) ? String(settings.default_contact_type) : "",
+        fairHousing: { rewrites: authoring?.fair_housing?.rewrites ?? 0, escalated: authoring?.fair_housing?.escalated === true, findings: authoring?.fair_housing?.findings ?? [] },
+        bookStage: book && typeof book === "object" && typeof book.stage === "string" ? book.stage : null,
         fields: Array.isArray(row.fields) ? row.fields : [],
         isActive: row.is_active === true,
         lifecycleState: (lifecycle?.state === "draft" ? "draft" : "published") as "draft" | "published",
@@ -313,7 +326,7 @@ export async function publishLeadMagnetAction(
     const ctx = await getAgentContext()
     if (!ctx.brokerageId || !ctx.agentId) return { success: false as const, error: "Not authenticated" }
     if (!channels?.length) return { success: false as const, error: "At least one channel required" }
-    return publishLeadMagnet({
+    const published = await publishLeadMagnet({
       magnetId,
       brokerageId: ctx.brokerageId,
       channels,
@@ -325,8 +338,106 @@ export async function publishLeadMagnetAction(
       // … baseUrl" — a publish that fails for a reason no user can act on.
       baseUrl: process.env.NEXT_PUBLIC_APP_URL || (await requestOrigin()),
     })
+    // OMNIPRESENCE (wave 142, lane 142E; owner: "any lead attraction systems should include the omnipresence
+    // philosophy"): a magnet approved for social / email is PROPOSED as one omnipresence_topic_fanout action
+    // (lib/agents/marketing-agent-actions.ts — newsletter + blog + social through each channel's own staging
+    // and gates) on the marketing-actions approval surface. Proposed, never auto-sent: the human who approved
+    // the page approves its distribution with one more click. Best-effort; the publish already landed.
+    const fanoutChannels = [...(channels.includes("social") ? ["social", "blog"] : []), ...(channels.includes("email") ? ["newsletter"] : [])]
+    if (published.success && fanoutChannels.length > 0) {
+      try {
+        const { recordProposedActions } = await import("@/lib/agents/marketing-agent-actions")
+        await recordProposedActions({
+          brokerageId: ctx.brokerageId,
+          managedAgentSessionId: null,
+          actions: [{
+            action_type: "omnipresence_topic_fanout",
+            action_input: { lead_magnet_id: magnetId, channels: fanoutChannels },
+            rationale: `The lead magnet was approved and published with ${channels.join(", ")} — fan its page out across ${fanoutChannels.join(", ")} so every channel points at the capture page.`,
+          }],
+        })
+      } catch (e) {
+        console.warn("[lead-magnets] omnipresence proposal not recorded:", (e as Error)?.message ?? String(e))
+      }
+    }
+    return published
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to publish" }
+  }
+}
+
+// ── THE BOOK (wave 142, lane 142E) — lib/lead-magnets/book-creator.ts on the booklet / PDF / delivery survivors ──
+
+/** Concept + audience → a DRAFT lead magnet carrying a NEW book project (stage research). Tenant + actor from the session. */
+export async function startBookProjectAction(input: { concept: string; audience: "buyer" | "seller"; area?: string | null; brand?: string | null }) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId || !ctx.agentId) return { success: false as const, error: "Not authenticated" }
+    const { startBookProject } = await import("@/lib/lead-magnets/book-creator")
+    const r = await startBookProject({ brokerageId: ctx.brokerageId, agentId: ctx.agentId, createdBy: ctx.userId, concept: input.concept, audience: input.audience, area: input.area ?? null, brand: input.brand ?? null, actor: { userType: ctx.role ?? null } })
+    if (!r.success || !r.magnetId) return { success: false as const, error: r.error ?? "The book project was not created." }
+    return { success: true as const, magnetId: r.magnetId, slug: r.slug ?? "", title: r.title ?? "" }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to start the book" }
+  }
+}
+
+/** Run the book's NEXT stage (research → outline → chapters → fact check → edit → layout → ready). The review surface auto-continues until done. */
+export async function advanceBookProjectAction(magnetId: string) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
+    const { advanceBookProject } = await import("@/lib/lead-magnets/book-creator")
+    const r = await advanceBookProject({ brokerageId: ctx.brokerageId, magnetId, actorUserId: ctx.userId, actor: { userType: ctx.role ?? null } })
+    if (!r.success) return { success: false as const, stage: r.stage ?? null, error: r.error ?? "The stage did not land." }
+    return { success: true as const, stage: r.stage!, done: !!r.done, note: r.note ?? "", book: bookSummaryOf(r.project ?? null) }
+  } catch (err: any) {
+    return { success: false as const, stage: null, error: err?.message ?? "Failed to advance the book" }
+  }
+}
+
+/** The book project on a magnet (tenant-scoped read) — what the review surface renders. */
+export async function getBookProjectAction(magnetId: string) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
+    const supabase = createServiceClient()
+    const { data, error } = await supabase.from("lead_capture_forms").select("id, settings").eq("id", magnetId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (error) return { success: false as const, error: error.message }
+    if (!data) return { success: false as const, error: "Magnet not found" }
+    const settings = ((data as { settings?: Record<string, unknown> | null }).settings ?? {}) as Record<string, unknown>
+    const project = (settings.book ?? null) as import("@/lib/lead-magnets/book-creator").BookProject | null
+    return { success: true as const, book: bookSummaryOf(project), ref: leadMagnetBookRefOf(settings) }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to load the book" }
+  }
+}
+
+/** The reviewer's OWN rewrite of a chapter (an escalated one, or any): re-scanned for fair housing, saved, and a finished book goes back to layout for a fresh PDF. */
+export async function reviseBookChapterAction(magnetId: string, chapter: number, body: string) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId) return { success: false as const, stage: null, error: "Not authenticated" }
+    const { reviseBookChapter } = await import("@/lib/lead-magnets/book-creator")
+    const r = await reviseBookChapter({ brokerageId: ctx.brokerageId, magnetId, chapter, body, actorUserId: ctx.userId })
+    if (!r.success) return { success: false as const, stage: r.stage ?? null, error: r.error ?? "The revision was not saved." }
+    return { success: true as const, stage: r.stage!, done: !!r.done, note: r.note ?? "", book: bookSummaryOf(r.project ?? null) }
+  } catch (err: any) {
+    return { success: false as const, stage: null, error: err?.message ?? "Failed to revise the chapter" }
+  }
+}
+
+/** The review surface's view of a project — never the whole manuscript on every poll (an ESCALATED chapter carries its body, so the human can rewrite it). Not exported ("use server"). */
+function bookSummaryOf(p: import("@/lib/lead-magnets/book-creator").BookProject | null) {
+  if (!p) return null
+  return {
+    stage: p.stage, title: p.title, subtitle: p.subtitle, tagline: p.tagline, audience: p.audience,
+    outline: (p.outline ?? []).map((o) => o.heading),
+    chapters: p.chapters.map((c, i) => ({ n: i + 1, heading: c.heading, words: c.words, edited: !!c.edited, escalated: !!c.edited?.escalated, findings: c.edited?.findings ?? [], preview: c.body.slice(0, 280), body: c.edited?.escalated ? c.body : null })),
+    factFindings: p.fact_check?.findings.length ?? 0,
+    needsHumanReview: p.needs_human_review ?? [],
+    pdfUrl: p.pdf_url, documentId: p.document_id, pageCount: p.page_count,
+    cost: p.cost, log: p.log.slice(-8), updatedAt: p.updated_at,
   }
 }
 
@@ -365,6 +476,15 @@ export async function updateMagnetSettingsAction(magnetId: string, settings: Rec
     if (Array.isArray(s.fields)) updatePayload.fields = s.fields
     const active = isActive !== undefined ? isActive : (typeof s.isActive === "boolean" ? s.isActive : undefined)
     if (active !== undefined) updatePayload.is_active = active
+    // Wave 142 (the Forms Manager merge): the declared persona lives in the settings bag — MERGED onto what the
+    // row holds (lifecycle / authoring / book), never a clobbering write; "" clears it.
+    if (typeof s.defaultContactType === "string") {
+      const { data: cur, error: curErr } = await supabase.from("lead_capture_forms").select("settings").eq("id", magnetId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      if (curErr) return { success: false as const, error: `settings unreadable: ${curErr.message}` }
+      const { default_contact_type: _prior, ...rest } = (((cur as { settings?: Record<string, unknown> | null } | null)?.settings ?? {}) as Record<string, unknown>)
+      const v = s.defaultContactType.trim().toLowerCase()
+      updatePayload.settings = (FORM_DECLARABLE_CONTACT_TYPES as readonly string[]).includes(v) ? { ...rest, default_contact_type: v } : rest
+    }
     if (Object.keys(updatePayload).length === 1) return { success: false as const, error: "No recognized settings to update" }
     const { error } = await supabase
       .from("lead_capture_forms")

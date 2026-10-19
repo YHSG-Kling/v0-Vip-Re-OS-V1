@@ -1070,7 +1070,15 @@ export async function markCommissionPaid(
     // then mirrored to 'paid' against a row still reading 'pending'.
     const { error: payError } = await supabase
       .from("agent_commissions")
-      .update({ status: newStatus, paid_at: paidAt, payment_method: method ?? null })
+      .update({
+        status: newStatus, paid_at: paidAt, payment_method: method ?? null,
+        // Wave 142 (142C): the payout instruction is INITIATED at latest when it is RECORDED. The stamp is
+        // written only when the row carries the column (select("*") above returns every live column), so
+        // this never names an absent column before m787 is applied — PGRST204 would refuse the whole payout.
+        ...("payment_initiated_at" in (commission as Record<string, unknown>)
+          ? { payment_initiated_at: (commission as { payment_initiated_at?: string | null }).payment_initiated_at ?? paidAt }
+          : {}),
+      })
       .eq("id", commissionId)
     if (payError) {
       return { success: false, error: `Could not mark the commission paid: ${payError.message}` }
@@ -1143,12 +1151,241 @@ export async function markCommissionPaid(
       }
     } catch { /* ledger lock is best-effort; the reaper reconciles any miss */ }
 
+    // LIFETIME CONVERSION HELD FOR THIS PAYOUT? (wave 142, lane 142C; owner: "CLOSED / PAYOUT PENDING
+    // until payout verified where rules require"). A tenant whose policy holds the customer's lifetime
+    // conversion until the agent is paid releases it HERE, through the ONE writer the close path uses
+    // (lib/kernel/lifetime-conversion.ts) — idempotent, so a convert-at-close tenant is a no-op.
+    try {
+      const transactionId = (commission as { transaction_id?: string | null }).transaction_id ?? null
+      if (transactionId) {
+        const { releaseLifetimeConversionOnPayout } = await import("@/lib/kernel/lifetime-conversion")
+        const released = await releaseLifetimeConversionOnPayout(supabase, { brokerageId, transactionId, actorUserId: ctx.userId })
+        for (const e of released.promotion?.errors ?? []) console.error(`[financial] lifetime release after payout: ${e}`)
+      }
+    } catch (e) { console.error("[financial] lifetime release after payout failed:", e instanceof Error ? e.message : String(e)) }
+
     return {
       success: true,
       data: { commissionId, paidAt, status: newStatus },
     }
   } catch (error) {
     return { success: false, error: String(error) }
+  }
+}
+
+// ─── THE PAYMENT STATES AFTER APPROVAL (wave 142, lane 142C) ──────────────────────────────────
+// Owner (2026-10-18): "payment_initiated · payment_recorded · payment_received/verified ·
+// reconciled/settled. Manual agent receipt confirmation = attestation (amount, date, payer, method,
+// evidence). QuickBooks match only against the ACTUAL connected integration." The four-value status
+// stays the ledger's vocabulary (mirrored onto commission_splits + transaction_commissions); these
+// three writers stamp the m787 columns the derived state (lib/commission/ledger-sync.ts
+// deriveCommissionPaymentState) reads. Each one READS its refusal; a PGRST204 on an m787 column is
+// reported by name (the migration is not applied), never swallowed.
+
+const M787_COLUMNS = /payment_initiated_at|payment_received_at|payment_received_by|payment_received_attestation|reconciled_at|reconciled_by|reconciled_via|reconciled_reference/
+
+function m787Refusal(message: string): string | null {
+  return M787_COLUMNS.test(message) ? `m787 (agent_commissions payment-state columns) is not applied: ${message}` : null
+}
+
+async function readAgentCommissionRow(supabase: ReturnType<typeof createServiceClient>, commissionId: string, brokerageId: string) {
+  const { data, error } = await supabase.from("agent_commissions").select("*").eq("id", commissionId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error) return { row: null, error: `Commission read refused: ${error.message}` }
+  if (!data) return { row: null, error: "Commission not found" }
+  return { row: data as Record<string, unknown>, error: null }
+}
+
+export interface InitiateCommissionPayoutInput {
+  ctx:          FinancialActorContext
+  commissionId: string
+  brokerageId:  string
+  /** How the brokerage is paying the agent — the owner's two instruments. */
+  method:       "check" | "direct_deposit"
+  /** Check number / ACH batch reference, when known. */
+  reference?:   string | null
+  initiatedAt?: string
+}
+
+/**
+ * initiateCommissionPayout — the brokerage ISSUED the payout instruction (a check cut, a direct deposit
+ * submitted) on an APPROVED commission; the ledger has not posted it yet (that is markCommissionPaid).
+ * Finance admins only; an already-initiated row is reported as such, not re-stamped.
+ */
+export async function initiateCommissionPayout(
+  input: InitiateCommissionPayoutInput,
+): Promise<KernelFinancialResult<{ commissionId: string; initiatedAt: string; alreadyInitiated: boolean }>> {
+  const { ctx, commissionId, brokerageId } = input
+  const supabase = createServiceClient()
+  try {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
+      return { success: false, error: "Insufficient permissions to initiate a payout" }
+    }
+    if (input.method !== "check" && input.method !== "direct_deposit") return { success: false, error: "payout_method_invalid: check or direct_deposit" }
+    const { row, error } = await readAgentCommissionRow(supabase, commissionId, brokerageId)
+    if (!row) return { success: false, error: error ?? "Commission not found" }
+    if (row.status === "paid" || row.payment_initiated_at) {
+      return { success: true, data: { commissionId, initiatedAt: String(row.payment_initiated_at ?? row.paid_at ?? ""), alreadyInitiated: true } }
+    }
+    if (row.status !== "approved") return { success: false, error: `A payout is initiated only on an APPROVED commission (status: ${String(row.status)})` }
+    const initiatedAt = input.initiatedAt ?? new Date().toISOString()
+    const { data: stamped, error: stampErr } = await supabase
+      .from("agent_commissions")
+      .update({ payment_initiated_at: initiatedAt, payment_method: input.method, updated_at: initiatedAt })
+      .eq("id", commissionId)
+      .eq("brokerage_id", brokerageId)
+      .select("id")
+    if (stampErr) return { success: false, error: m787Refusal(stampErr.message) ?? `Could not record the payout initiation: ${stampErr.message}` }
+    if (!stamped || stamped.length === 0) return { success: false, error: "Commission not found" }
+    await sentinelWrite(supabase, supabase.from("activities").insert({
+      brokerage_id: brokerageId,
+      transaction_id: (row.transaction_id as string | null) ?? null,
+      agent_id: (row.agent_id as string | null) ?? null,
+      entity_type: "agent_commission",
+      activity_type: "commission_payment_initiated",
+      title: `Payout initiated by ${input.method === "check" ? "check" : "direct deposit"}`,
+      description: `${input.reference ? `Reference ${input.reference}. ` : ""}Initiated by the brokerage; the ledger posts the payment when it is recorded.`,
+      status: "completed",
+      completed_at: initiatedAt,
+      priority: "medium",
+      notes: JSON.stringify({ commission_id: commissionId, method: input.method, reference: input.reference ?? null, initiated_by: ctx.userId }),
+    }), { table: "activities", flow: "commission_payment_initiated_activity", brokerageId, reason: "evidence trail of the initiation; the stamp on the row already landed" })
+    return { success: true, data: { commissionId, initiatedAt, alreadyInitiated: false } }
+  } catch (e) {
+    return { success: false, error: String(e) }
+  }
+}
+
+export interface AttestCommissionReceivedInput {
+  ctx:          FinancialActorContext
+  commissionId: string
+  brokerageId:  string
+  attestation: {
+    amount:       number
+    /** ISO date the money arrived. */
+    receivedAt:   string
+    payer:        string
+    method:       "check" | "direct_deposit" | "wire" | "other"
+    reference?:   string | null
+    evidenceUrl?: string | null
+  }
+}
+
+/**
+ * attestCommissionReceived — the AGENT's manual receipt confirmation: an ATTESTATION (amount, date,
+ * payer, method, reference, evidence) on a PAID commission, by the agent who owns the row or a finance
+ * admin on their behalf. The attested amount is compared with the ledger's net (said on the record as
+ * amount_matches_ledger, never silently corrected). Idempotent: a second attestation is refused by name.
+ */
+export async function attestCommissionReceived(
+  input: AttestCommissionReceivedInput,
+): Promise<KernelFinancialResult<{ commissionId: string; receivedAt: string; amountMatchesLedger: boolean }>> {
+  const { ctx, commissionId, brokerageId, attestation } = input
+  const supabase = createServiceClient()
+  try {
+    const { row, error } = await readAgentCommissionRow(supabase, commissionId, brokerageId)
+    if (!row) return { success: false, error: error ?? "Commission not found" }
+    const ownRow = !!ctx.agentId && ctx.agentId === row.agent_id
+    if (!ownRow && !isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
+      return { success: false, error: "Only the agent who owns this commission (or a finance admin on their behalf) can attest its receipt" }
+    }
+    if (row.status !== "paid") return { success: false, error: `Receipt is attested on a PAID commission (status: ${String(row.status)})` }
+    if (row.payment_received_at) return { success: false, error: `already_attested at ${String(row.payment_received_at)}` }
+    const amount = Number(attestation.amount)
+    if (!Number.isFinite(amount) || amount <= 0) return { success: false, error: "attestation.amount must be a positive number" }
+    if (!attestation.receivedAt || Number.isNaN(Date.parse(attestation.receivedAt))) return { success: false, error: "attestation.receivedAt must be a date" }
+    if (!attestation.payer?.trim()) return { success: false, error: "attestation.payer is required" }
+    if (!["check", "direct_deposit", "wire", "other"].includes(attestation.method)) return { success: false, error: "attestation.method invalid" }
+    const ledgerNet = Number(row.net_to_agent ?? row.agent_commission ?? NaN)
+    const amountMatchesLedger = Number.isFinite(ledgerNet) ? Math.abs(ledgerNet - amount) < 1 : false
+    const now = new Date().toISOString()
+    const record = {
+      amount,
+      received_at: attestation.receivedAt,
+      payer: attestation.payer.trim(),
+      method: attestation.method,
+      reference: attestation.reference?.trim() || null,
+      evidence_url: attestation.evidenceUrl?.trim() || null,
+      attested_by: ctx.userId,
+      attested_at: now,
+      on_behalf: !ownRow,
+      ledger_net: Number.isFinite(ledgerNet) ? ledgerNet : null,
+      amount_matches_ledger: amountMatchesLedger,
+    }
+    const { data: stamped, error: stampErr } = await supabase
+      .from("agent_commissions")
+      .update({ payment_received_at: attestation.receivedAt, payment_received_by: ctx.userId, payment_received_attestation: record, updated_at: now })
+      .eq("id", commissionId)
+      .eq("brokerage_id", brokerageId)
+      .select("id")
+    if (stampErr) return { success: false, error: m787Refusal(stampErr.message) ?? `Could not record the attestation: ${stampErr.message}` }
+    if (!stamped || stamped.length === 0) return { success: false, error: "Commission not found" }
+    if (!amountMatchesLedger) {
+      // The agent says a different amount arrived than the ledger paid — the finance seats hear it now.
+      try {
+        const { notifyBrokerageAdmins } = await import("@/lib/notifications/brokerage-admins")
+        await notifyBrokerageAdmins(supabase as never, brokerageId, {
+          type: "commission_receipt_mismatch",
+          title: "Agent attested a different payout amount",
+          body: `The agent attested receiving $${amount.toLocaleString("en-US")} (${attestation.method}, ${attestation.payer.trim()}); the ledger paid $${Number.isFinite(ledgerNet) ? ledgerNet.toLocaleString("en-US") : "unknown"}. Review before reconciling.`,
+          entityType: "agent_commission",
+          entityId: commissionId,
+          priority: "high",
+        })
+      } catch (e) { console.error("[financial] receipt-mismatch notice failed:", e instanceof Error ? e.message : String(e)) }
+    }
+    return { success: true, data: { commissionId, receivedAt: attestation.receivedAt, amountMatchesLedger } }
+  } catch (e) {
+    return { success: false, error: String(e) }
+  }
+}
+
+export interface ReconcileCommissionPaymentInput {
+  ctx:          FinancialActorContext
+  commissionId: string
+  brokerageId:  string
+  /** quickbooks = matched against the ACTUAL connected integration's confirmed export; manual = a bank / statement reference. */
+  via:          "quickbooks" | "manual"
+  reference?:   string | null
+}
+
+/**
+ * reconcileCommissionPayment — the payout is RECONCILED. Via 'quickbooks' only when the row carries
+ * quickbooks_synced_at (the export the connected integration confirmed — a bookkeeping entry is never
+ * verified funds, and nothing is matched against an integration that is not connected); via 'manual'
+ * with a bank / statement reference. Finance admins only, on a PAID row; idempotent by name.
+ */
+export async function reconcileCommissionPayment(
+  input: ReconcileCommissionPaymentInput,
+): Promise<KernelFinancialResult<{ commissionId: string; reconciledAt: string; via: "quickbooks" | "manual" }>> {
+  const { ctx, commissionId, brokerageId } = input
+  const supabase = createServiceClient()
+  try {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
+      return { success: false, error: "Insufficient permissions to reconcile a payout" }
+    }
+    if (input.via !== "quickbooks" && input.via !== "manual") return { success: false, error: "via must be quickbooks or manual" }
+    const { row, error } = await readAgentCommissionRow(supabase, commissionId, brokerageId)
+    if (!row) return { success: false, error: error ?? "Commission not found" }
+    if (row.status !== "paid") return { success: false, error: `Only a PAID commission is reconciled (status: ${String(row.status)})` }
+    if (row.reconciled_at) return { success: false, error: `already_reconciled at ${String(row.reconciled_at)} via ${String(row.reconciled_via)}` }
+    const reference = input.reference?.trim() || null
+    if (input.via === "quickbooks") {
+      if (!row.quickbooks_synced_at) return { success: false, error: "quickbooks_not_synced: this commission has no confirmed QuickBooks export to match against — reconcile manually with a statement reference, or sync it first" }
+    } else if (!reference || reference.length < 3) {
+      return { success: false, error: "A manual reconciliation needs a bank / statement reference" }
+    }
+    const now = new Date().toISOString()
+    const { data: stamped, error: stampErr } = await supabase
+      .from("agent_commissions")
+      .update({ reconciled_at: now, reconciled_by: ctx.userId, reconciled_via: input.via, reconciled_reference: input.via === "quickbooks" ? (reference ?? String(row.quickbooks_export_id ?? "")) || null : reference, updated_at: now })
+      .eq("id", commissionId)
+      .eq("brokerage_id", brokerageId)
+      .select("id")
+    if (stampErr) return { success: false, error: m787Refusal(stampErr.message) ?? `Could not record the reconciliation: ${stampErr.message}` }
+    if (!stamped || stamped.length === 0) return { success: false, error: "Commission not found" }
+    return { success: true, data: { commissionId, reconciledAt: now, via: input.via } }
+  } catch (e) {
+    return { success: false, error: String(e) }
   }
 }
 

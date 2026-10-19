@@ -11,6 +11,8 @@ import { PayoutButton } from '@/app/components/features/financial/PayoutButton'
 import { ApproveCommissionButton } from '@/app/components/features/financial/ApproveCommissionButton'
 import { DepositReceivedButton } from '@/app/components/features/financial/DepositReceivedButton'
 import { ExportCSVButton } from '@/app/components/features/financial/ExportCSVButton'
+import { CommissionPaymentStateCell } from '@/app/components/features/financial/CommissionPaymentStateCell'
+import { COMMISSION_PAYMENT_STATE_LABELS } from '@/lib/commission/ledger-sync'
 import {
   CommissionIntelligencePanel,
   FinancialActionStack,
@@ -258,6 +260,22 @@ export default async function CommissionsPage() {
                             </>
                           )}
                         </Badge>
+                        {/* Wave 142 (142C): the owner's seven payment states, derived once server-side
+                            (getAgentCommissions → deriveCommissionPaymentState), with the agent's receipt
+                            attestation and the finance admin's reconciliation as the two human doors. */}
+                        {c.payment_state && (
+                          <CommissionPaymentStateCell
+                            commissionId={c.id}
+                            state={c.payment_state.state}
+                            label={COMMISSION_PAYMENT_STATE_LABELS[c.payment_state.state as keyof typeof COMMISSION_PAYMENT_STATE_LABELS] ?? c.payment_state.state}
+                            held={!!c.payment_state.held}
+                            canInitiate={isBrokerAdmin && c.status === 'approved' && !c.payment_initiated_at}
+                            canAttest={c.status === 'paid' && !c.payment_received_at && (c.agent_id === agentId || isBrokerAdmin)}
+                            canReconcile={isBrokerAdmin && c.status === 'paid' && !c.reconciled_at}
+                            ledgerNet={c.net_to_agent ?? c.agent_commission ?? null}
+                            quickbooksSynced={!!c.quickbooks_synced_at}
+                          />
+                        )}
                       </td>
                       {isBrokerAdmin && (
                         <td className="py-3 px-2 text-center">

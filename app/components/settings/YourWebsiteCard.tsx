@@ -241,7 +241,7 @@ export function YourWebsiteCard() {
                           </>
                         )}
 
-                        <table className="w-full text-[11px] text-left">
+                        <div className="overflow-x-auto"><table className="w-full text-[11px] text-left">
                           <thead>
                             <tr className="text-gray-400">
                               <th className="font-medium pr-2">Type</th>
@@ -263,7 +263,7 @@ export function YourWebsiteCard() {
                               </tr>
                             ))}
                           </tbody>
-                        </table>
+                        </table></div>
 
                         {guide && guide.cautions.length > 0 && (
                           <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-amber-800">

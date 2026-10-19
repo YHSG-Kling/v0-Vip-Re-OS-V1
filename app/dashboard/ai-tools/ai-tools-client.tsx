@@ -744,7 +744,7 @@ function ToolCard({
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 shrink-0"
+            className="h-7 w-7 shrink-0" aria-label="Toggle favorite"
             onClick={(e) => {
               e.stopPropagation()
               onToggleFavorite()

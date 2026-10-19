@@ -22,6 +22,15 @@ export interface PublishParams {
   accessToken: string
   accountId: string
   hashtags?: string[]
+  /**
+   * YouTube only (wave 142, lane 142F): the upload's privacyStatus. This used to be the literal
+   * "public" inside publishToYouTube. It is now CLASSIFICATION-DRIVEN at the gate — nothing that is
+   * not public marketing is ever queued onto this rail (lib/video/public-video.ts classifyPublicVideo
+   * → lib/video/youtube-publish.ts), so every tenant post that reaches here IS public and takes the
+   * default; the platform's own product video names it explicitly. Never "unlisted" or "private" as
+   * a way to ship client media — that media is refused before a post exists.
+   */
+  privacyStatus?: "public" | "unlisted" | "private"
 }
 
 export interface PublishResult {
@@ -302,7 +311,8 @@ async function publishToYouTube(params: PublishParams): Promise<PublishResult> {
         categoryId: "22", // People & Blogs
       },
       status: {
-        privacyStatus: "public",
+        // Classification-driven (see PublishParams.privacyStatus): the gate admits public marketing only.
+        privacyStatus: params.privacyStatus ?? "public",
         selfDeclaredMadeForKids: false,
       },
     },

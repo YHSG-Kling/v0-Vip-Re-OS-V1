@@ -187,7 +187,7 @@ export default function BrokerageFatiguePage() {
 
       <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
         {/* Summary cards */}
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {(["critical", "high", "moderate", "fresh"] as RiskLevel[]).map(level => {
             const c = SUMMARY_COLORS[level]
             return (
@@ -274,7 +274,7 @@ export default function BrokerageFatiguePage() {
             </p>
           </div>
         ) : (
-          <div className="rounded-lg border border-border bg-card overflow-hidden">
+          <div className="rounded-lg border border-border bg-card overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40">

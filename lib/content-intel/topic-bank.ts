@@ -87,8 +87,11 @@ export async function pickTopics(args: {
    *  seasonalCategories): a topic overlapping them gets SEASONAL_BOOST. A lift, never a
    *  filter — an off-season topic that is winning still surfaces. */
   boostCategories?: string[]
+  /** Wave 142 (lane 142E): the client seam — a caller that already holds the verified client its sweep runs
+   *  on (the lead-magnet suggestion runner, an in-memory proof) passes it; default the service client. */
+  client?: ReturnType<typeof createServiceClient>
 }): Promise<TopicCandidate[]> {
-  const svc   = createServiceClient()
+  const svc   = args.client ?? createServiceClient()
   const limit = Math.min(args.limit ?? 6, 25)
 
   let q = svc.from("content_topic_bank")

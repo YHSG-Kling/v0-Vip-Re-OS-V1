@@ -522,7 +522,7 @@ export function MarketInsightsDashboardClient({
           </Select>
           <Dialog open={addMarketOpen} onOpenChange={setAddMarketOpen}>
             <DialogTrigger asChild>
-              <Button variant="outline" size="icon">
+              <Button variant="outline" size="icon" aria-label="Add market">
                 <Plus className="h-4 w-4" />
               </Button>
             </DialogTrigger>

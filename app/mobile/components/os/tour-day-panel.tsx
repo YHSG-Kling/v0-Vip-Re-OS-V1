@@ -220,6 +220,7 @@ export function TourDayPanel({ tours }: TourDayPanelProps) {
                           size="icon"
                           variant="ghost"
                           className="h-7 w-7"
+                          aria-label="Get directions"
                           onClick={() =>
                             handleGetDirections(stop.property_address, stop.city, stop.state)
                           }
@@ -231,7 +232,7 @@ export function TourDayPanel({ tours }: TourDayPanelProps) {
                             size="icon"
                             variant="ghost"
                             className="h-7 w-7"
-                            onClick={() => handleCallAgent(stop.listing_agent_phone!)}
+                            aria-label="Call listing agent" onClick={() => handleCallAgent(stop.listing_agent_phone!)}
                           >
                             <Phone className="h-3 w-3 text-green-600" />
                           </Button>

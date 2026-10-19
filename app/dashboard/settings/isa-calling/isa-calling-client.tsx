@@ -358,7 +358,7 @@ export function IsaCallingClient(props: Props) {
                       <Button
                         size="icon"
                         variant="ghost"
-                        onClick={() => handleDelete(num.id)}
+                        aria-label="Remove number" onClick={() => handleDelete(num.id)}
                         disabled={isPending}
                       >
                         <Trash2 className="h-4 w-4 text-muted-foreground" />

@@ -59,7 +59,17 @@ export const SYSTEM_DEFAULTS: Readonly<Record<string, string>> = {
   // embedded in the platform window; wave 88 had Google). Google, Dotloop and every API provider
   // stay selectable through provider_overrides — a selection always wins over the default.
   esign:        DEFAULT_ESIGN_PROVIDER,
-  transaction:  "dotloop",
+  // TOMBSTONE (wave 142, lane 142I — production blocker 7/8 of the wave-141 report): `transaction: "dotloop"`
+  // is DELETED. The LEGAL-FORMS (transaction) provider has NO platform default — its credential is the
+  // TENANT's (wave 141: "Transaction-provider credentials are the TENANT's; no shared cross-tenant
+  // credentials"), and Dotloop is UNCERTIFIED for the capability (lib/integrations/providers/catalog.ts
+  // providerOfferVerdict("transaction", "dotloop") refuses at its first required cell: credentials — no OAuth
+  // lifecycle). Owner: "dotloop is not the only … they all should be fully functional for the tenants to
+  // choose." The resolver already honours only a user / team / brokerage SELECTION and answers NONE otherwise
+  // (lib/integrations/providers/provider-resolver.ts resolveTransactionProviderSelection); the settings mirror
+  // (app/actions/settings/provider-settings-actions.ts) dropped the same line; the integrations table renders
+  // "no platform default". THE RULE, held by scripts/production-readiness-guard.ts B8: a per-tenant capability
+  // default in this table is either ABSENT (the tenant selects) or CERTIFIED by the capability matrix.
   crm:          "follow_up_boss",
   accounting:   "quickbooks",
   idx:          "idxbroker",   // IDX/MLS feed — subscriber connects their own

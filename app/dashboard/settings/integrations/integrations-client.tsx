@@ -36,7 +36,7 @@ import { providerSelectionVerdict } from "@/lib/connections/scope"
 // the PAYMENTS capability (lib/kernel/providers.ts SYSTEM_DEFAULTS — Stripe by default).
 const PROVIDER_TYPES = ["esign", "transaction", "accounting", "payment", "sms", "email", "voice", "calendar", "mls", "crm"] as const
 const TYPE_LABELS: Record<string, string> = {
-  esign: "E-SIGN", transaction: "TRANSACTION / FORMS", accounting: "ACCOUNTING", payment: "PAYMENTS",
+  esign: "E-SIGN", transaction: "LEGAL-FORMS PROVIDER", accounting: "ACCOUNTING", payment: "PAYMENTS",
 }
 
 // eSign + transaction options are derived from the unified provider catalog
@@ -292,7 +292,7 @@ export function IntegrationsClient({
                             {PLATFORM_LABELS[override.provider_key] ?? override.provider_key}
                             {stored && !stored.ok && <p className="text-[11px] text-amber-700 mt-0.5">Unavailable — {stored.reason}</p>}
                           </>
-                        : <span className="text-gray-400 italic">{type === "esign" ? `Default — ${PROVIDER_CATALOG[DEFAULT_ESIGN_PROVIDER].label}` : platformDefault ? `Default — ${PLATFORM_LABELS[platformDefault] ?? platformDefault}` : "Kernel default"}</span>}
+                        : <span className="text-gray-400 italic">{type === "esign" ? `Default — ${PROVIDER_CATALOG[DEFAULT_ESIGN_PROVIDER].label}` : platformDefault ? `Default — ${PLATFORM_LABELS[platformDefault] ?? platformDefault}` : "No platform default — your selection decides"}</span>}
                     </td>
                     <td className="px-4 py-3">
                       {override ? (stored && !stored.ok ? (

@@ -647,7 +647,7 @@ export default function SequenceBuilderClient({
           {/* Step table */}
           <section>
             <h2 className="text-sm font-semibold text-foreground mb-4">Step Performance</h2>
-            <div className="rounded-lg border border-border overflow-hidden">
+            <div className="rounded-lg border border-border overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>

@@ -80,7 +80,7 @@ export function OverageCalculator({ brokerageId, projectionDays = 30 }: OverageC
                   </span>
                 )}
               </div>
-              <div className="grid grid-cols-4 gap-2 text-sm">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
                 <div className="bg-gray-50 px-2 py-1 rounded">
                   <p className="text-gray-600">Current</p>
                   <p className="font-mono font-semibold">{Math.round(data.current)}</p>

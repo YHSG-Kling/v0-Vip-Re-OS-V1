@@ -1,8 +1,9 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import { ROI_WINDOW_OPTIONS, isRoiWindowKey, resolveRoiWindow, type RoiWindowKey } from "./roi-window"
 import {
   Card,
   CardContent,
@@ -127,6 +128,8 @@ interface ROIDashboardClientProps {
   channelPerformance: any[]
   topCampaigns: any[]
   agents: any[]
+  /** The window the server page fetched the channel comparison for (from ?window=). */
+  window: RoiWindowKey
   accessError?: string
 }
 
@@ -139,6 +142,7 @@ export function ROIDashboardClient({
   channelPerformance,
   topCampaigns,
   agents,
+  window: windowKey,
   accessError,
 }: ROIDashboardClientProps) {
   const router = useRouter()
@@ -146,7 +150,17 @@ export function ROIDashboardClient({
   const [selectedCampaignType, setSelectedCampaignType] = useState<string>("all")
   const [selectedStatus, setSelectedStatus] = useState<string>("all")
   const [selectedAgent, setSelectedAgent] = useState<string>("all")
-  const [dateWindow, setDateWindow] = useState<string>("this_month")
+  // Wave 142 (lane 142H): `dateWindow` was set by the select and read by NOTHING. The window lives in the
+  // URL so the server page re-fetches the channel comparison for it (useTransition keeps the select
+  // responsive while the page re-renders — vercel-react-best-practices rendering-usetransition-loading).
+  const [dateWindow, setDateWindow] = useState<RoiWindowKey>(windowKey)
+  const [windowPending, startWindowChange] = useTransition()
+  const windowLabel = resolveRoiWindow(dateWindow).label
+  const changeWindow = (v: string) => {
+    if (!isRoiWindowKey(v)) return
+    setDateWindow(v)
+    startWindowChange(() => router.replace(`?window=${v}`))
+  }
   const [sortBy, setSortBy] = useState<string>("roi_percentage")
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc")
   const [activeTab, setActiveTab] = useState<string>("campaigns")
@@ -435,17 +449,21 @@ export function ROIDashboardClient({
 
                 <div className="flex flex-col gap-1.5">
                   <label className="text-sm font-medium">Date Window</label>
-                  <Select value={dateWindow} onValueChange={setDateWindow}>
+                  <Select value={dateWindow} onValueChange={changeWindow} disabled={windowPending}>
                     <SelectTrigger className="w-[160px]">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="this_month">This Month</SelectItem>
-                      <SelectItem value="last_month">Last Month</SelectItem>
-                      <SelectItem value="last_90_days">Last 90 Days</SelectItem>
-                      <SelectItem value="ytd">Year to Date</SelectItem>
+                      {ROI_WINDOW_OPTIONS.map((o) => (
+                        <SelectItem key={o.key} value={o.key}>{o.label}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
+                  {/* campaign_roi rows are lifetime totals per campaign (no period columns) — the window
+                      applies where the data is windowed, and says so rather than pretending. */}
+                  <p className="text-[11px] text-muted-foreground max-w-[220px]">
+                    Applies to the Channel Comparison tab. Campaign rows are lifetime totals.
+                  </p>
                 </div>
               </div>
             </CardContent>
@@ -579,7 +597,8 @@ export function ROIDashboardClient({
             <CardHeader>
               <CardTitle>Channel ROI Comparison</CardTitle>
               <CardDescription>
-                Compare ROI performance across marketing channels
+                Compare ROI performance across marketing channels · {windowLabel}
+                {windowPending ? " (updating…)" : ""}
               </CardDescription>
             </CardHeader>
             <CardContent>

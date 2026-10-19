@@ -15,10 +15,35 @@ export const KNOWN_PROPERTY_FIELD_LABELS = [
   "Property Address", "Legal Description", "Property County", "Property City", "Property State", "Property Zip", "APN",
 ] as const
 
+// ─── THE SHAPE RULE (wave 142, lane 142C; owner: "never invented, never the street address") ──────
+// The vocabulary a recorded legal description is written in (lot / block / plat / subdivision / PLSS /
+// metes-and-bounds / condominium units). A STREET ADDRESS carries none of it.
+const LEGAL_TOKEN_RE = /\b(LOT|LOTS|BLOCK|BLK|SUBDIVISION|SUBD|PLAT|PARCEL|METES|BOUNDS|TOWNSHIP|TWP|RANGE|RNG|SECTION|SEC|TRACT|UNIT|PHASE|CONDOMINIUM|CONDO|ADDITION|ADDN|SURVEY|ABSTRACT|BOOK|PAGE|PB|PG|ACRE|ACRES)\b\.?/i
+const STREET_SUFFIX_RE = /\b(st|street|ave|avenue|rd|road|dr|drive|ln|lane|blvd|boulevard|ct|court|cir|circle|way|pl|place|ter|terrace|pkwy|parkway|hwy|highway|trl|trail)\b\.?/i
+const STREET_ADDRESS_RE = /^\s*\d{1,6}[a-z]?\s+[a-z0-9 .'#-]+$/i
+
+/**
+ * PURE — a legal description from any NON-HUMAN source (the listing record, RentCast, public-record
+ * research) is accepted only when it reads like a legal description and never when it reads like a
+ * street address. A model summary, a postal line or a bare parcel number is refused by name. Applied by
+ * lib/forms/legal-description.ts resolveLegalDescriptionForForm before any researched value is written.
+ */
+export function looksLikeLegalDescription(value: string | null | undefined): { ok: boolean; reason: "ok" | "empty" | "too_short" | "street_address" | "no_legal_tokens" } {
+  const v = (value ?? "").trim()
+  if (!v) return { ok: false, reason: "empty" }
+  if (v.length < 8) return { ok: false, reason: "too_short" }
+  const hasLegalTokens = LEGAL_TOKEN_RE.test(v)
+  if (STREET_ADDRESS_RE.test(v) && STREET_SUFFIX_RE.test(v) && !hasLegalTokens) return { ok: false, reason: "street_address" }
+  if (!hasLegalTokens) return { ok: false, reason: "no_legal_tokens" }
+  return { ok: true, reason: "ok" }
+}
+
 export interface KnownPropertyFacts {
   address?: string | null
   /** legal description — only present when the property/parcel record carries it (often unknown). */
   legalDescription?: string | null
+  /** who supplied legalDescription (listings/transactions.legal_description_source: agent | listing | rentcast | public_record), when known. */
+  legalDescriptionSource?: string | null
   apn?: string | null
   county?: string | null
   /** property city/state/zip — only used to fill PROPERTY-prefixed fields, never a bare city/state. */

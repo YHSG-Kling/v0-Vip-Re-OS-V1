@@ -457,7 +457,7 @@ export function CollaborativeSearchDashboard({
           </Select>
           <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
             <DialogTrigger asChild>
-              <Button variant="outline" size="icon">
+              <Button variant="outline" size="icon" aria-label="New search">
                 <Plus className="h-4 w-4" />
               </Button>
             </DialogTrigger>

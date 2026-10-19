@@ -142,7 +142,7 @@ export function CoachingInsightsPanel({ insights, agentId }: CoachingInsightsPan
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 shrink-0"
-                  onClick={() => handleDismiss(insight.id)}
+                  aria-label="Dismiss insight" onClick={() => handleDismiss(insight.id)}
                   disabled={dismissing === insight.id}
                 >
                   <X className="h-4 w-4" />

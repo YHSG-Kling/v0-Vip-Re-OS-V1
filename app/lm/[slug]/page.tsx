@@ -3,6 +3,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { HomeValueForm } from "@/app/components/lead-magnet-forms/HomeValueForm"
 import { GenericCaptureForm } from "@/app/components/lead-magnet-forms/GenericCaptureForm"
 import { parseLeadMagnetAttribution } from "@/lib/lead-magnets/attribution"
+import { LandingVideo } from "@/app/components/public-site/LandingVideo"
 import type { Metadata } from "next"
 
 type SearchParams = Record<string, string | string[] | undefined>
@@ -47,11 +48,14 @@ async function viewerMayPreview(formBrokerageId: string): Promise<boolean> {
 
 type LandingContent = import("@/lib/marketing/lead-magnet-copy").LandingContent
 
-/** Narrow the persisted jsonb to the LandingContent we render (defensive — old rows have none). */
-function landingOf(form: { landing_content?: unknown }): LandingContent | null {
-  const lc = form.landing_content as Partial<LandingContent> | null | undefined
+/** Narrow the persisted jsonb to the LandingContent we render (defensive — old rows have none).
+ *  `videoProjectId` rides beside it: app/api/cron/poll-did-videos writes it with videoUrl, and it
+ *  is how the page finds the reel's poster frame (wave 142, lane 142F). */
+function landingOf(form: { landing_content?: unknown }): (LandingContent & { videoProjectId: string | null }) | null {
+  const lc = form.landing_content as (Partial<LandingContent> & { videoProjectId?: unknown }) | null | undefined
   if (!lc || typeof lc !== "object" || !lc.headline) return null
   return {
+    videoProjectId: typeof lc.videoProjectId === "string" ? lc.videoProjectId : null,
     headline:   String(lc.headline),
     subhead:    String(lc.subhead ?? ""),
     cta:        String(lc.cta ?? ""),
@@ -100,6 +104,25 @@ async function getLeadMagnetCardUrl(formId: string, brokerageId: string): Promis
     .maybeSingle()
   if (error) return null
   return (data as { output_url?: string | null } | null)?.output_url ?? null
+}
+
+/**
+ * The poster frame for the landing video (wave 142, lane 142F): the reel's own thumbnail,
+ * read IN THE FORM'S TENANT. Null when there is none — the player then opens on its first
+ * frame, and the fallback (a source that cannot play) shows the still or a text line, never
+ * the browser's broken-media box. {error} is READ; a refused read is simply no poster.
+ */
+async function getLandingVideoPoster(videoProjectId: string | null, brokerageId: string): Promise<string | null> {
+  if (!videoProjectId) return null
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("ai_video_projects")
+    .select("thumbnail_url")
+    .eq("id", videoProjectId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (error) return null
+  return (data as { thumbnail_url?: string | null } | null)?.thumbnail_url ?? null
 }
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
@@ -160,6 +183,7 @@ export default async function LeadMagnetLandingPage({ params, searchParams }: Pa
   // ATTRIBUTION (wave 141): the ad / QR / utm parameters the URL carried, sanitized here, posted with the
   // submission, VERIFIED by the kernel against this magnet's own tenant before anything is stamped.
   const attribution = parseLeadMagnetAttribution(sp)
+  const videoPoster = landing?.videoUrl ? await getLandingVideoPoster(landing.videoProjectId, form.brokerage_id) : null
 
   return (
     <main className="min-h-screen bg-background flex items-start justify-center py-10 px-4">
@@ -179,14 +203,15 @@ export default async function LeadMagnetLandingPage({ params, searchParams }: Pa
             <h1 className="text-2xl font-semibold tracking-tight">{landing.headline}</h1>
             {landing.subhead && <p className="mt-2 text-muted-foreground">{landing.subhead}</p>}
             {/* Auto-rendered avatar presentation (playbook installs) — the agent
-                explains, in their own cloned voice, why the visitor should care. */}
+                explains, in their own cloned voice, why the visitor should care.
+                ONE video slot (wave 142, lane 142F): poster from the reel's own
+                thumbnail, and a functional fallback when the source cannot play. */}
             {landing.videoUrl && (
-              <video
-                controls
-                playsInline
-                preload="metadata"
-                className="mt-4 w-full rounded-xl border shadow-sm"
+              <LandingVideo
                 src={landing.videoUrl}
+                poster={videoPoster}
+                title={landing.headline}
+                className="mt-4 w-full rounded-xl border shadow-sm"
               />
             )}
             {landing.bullets.length > 0 && (

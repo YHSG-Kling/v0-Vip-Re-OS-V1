@@ -31,7 +31,7 @@
  */
 import { randomUUID } from "node:crypto"
 import { registerHooks } from "node:module"
-import { memSupabase, type MemClient, type Row } from "../in-memory-supabase"
+import { memSupabase, type MemClient, type MemOptions, type Row } from "../in-memory-supabase"
 
 export const CANARY_TAG = "wave140-canary"
 export const CANARY_EMAIL_DOMAIN = "wave140-canary.test"
@@ -53,7 +53,9 @@ const STUB_BY_SPEC: Record<string, string> = {
   // scope here). In a canary the session IS the synthetic tenant's actor, so it resolves to the same
   // tenant-seeded client. BLIND SPOT, published: RLS is not modelled — the tenant predicates the
   // kernel writes are what scope the reads, which is exactly what the chains assert.
-  "@/lib/supabase/server": "export const createClient = async () => { const s = globalThis.__W140.svc; if (!s) throw new Error('canary: no client installed (setSvc first)'); return s }",
+  // WAVE 142 (lane 142J): the real module also exports `createClient as createServerClient` (lib/supabase/server.ts:64 —
+  // lib/events/event-helpers.ts imports that name); the stub mirrors both so a kernel event fan-out links here.
+  "@/lib/supabase/server": "export const createClient = async () => { const s = globalThis.__W140.svc; if (!s) throw new Error('canary: no client installed (setSvc first)'); return s }; export const createServerClient = createClient",
 }
 registerHooks({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- node:module's ResolveHookSync shape (the repo's idiom)
@@ -98,8 +100,12 @@ const CANARY_UNIQUE: Record<string, string[][]> = {
 /**
  * The canary client. In-memory by default; the live service client under CANARY_LIVE.
  * The in-memory one carries the provider stubs the kernel reaches for (auth.admin, rpc, storage).
+ *
+ * WAVE 142 (lane 142J): `opts` passes the in-memory client's REFUSAL shapes through (a table that is refused
+ * RLS-style, a missing table, a missing column) so a canary can prove a best-effort rail is best-effort — the
+ * immediate-enrichment canary refuses lead_enrichment_queue and asserts the capture still succeeds. Ignored live.
  */
-export function canaryClient(seed: Record<string, Row[]> = {}): CanarySvc {
+export function canaryClient(seed: Record<string, Row[]> = {}, opts: Pick<MemOptions, "refuse" | "missingTables" | "missingColumns"> = {}): CanarySvc {
   if (LIVE) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createClient } = require("@supabase/supabase-js") as typeof import("@supabase/supabase-js")
@@ -108,7 +114,7 @@ export function canaryClient(seed: Record<string, Row[]> = {}): CanarySvc {
     ;(live as unknown as { canary: CanaryControls }).canary = { authCalls: [], faults: {} }
     return live as unknown as CanarySvc
   }
-  const mem = memSupabase(seed, { stampCreatedAt: true, uuidIds: true, unique: CANARY_UNIQUE })
+  const mem = memSupabase(seed, { stampCreatedAt: true, uuidIds: true, unique: CANARY_UNIQUE, ...opts })
   const authUsers: Array<{ id: string; email: string }> = []
   const controls: CanaryControls = { authCalls: [], faults: {} }
   const admin = {
@@ -146,7 +152,14 @@ export function canaryClient(seed: Record<string, Row[]> = {}): CanarySvc {
   const m = mem as unknown as Record<string, unknown>
   // signInWithOtp is the portal-invite email (captureContact's non-fatal portal invite): a PROVIDER REFUSAL,
   // read by the kernel as an error — never a TypeError from a missing door (wave 141).
-  m.auth = { admin, signInWithOtp: async () => ({ data: { user: null, session: null }, error: { message: "canary: the portal invite (OTP email) is not sent", code: "canary_refused" } }) }
+  m.auth = {
+    admin,
+    signInWithOtp: async () => ({ data: { user: null, session: null }, error: { message: "canary: the portal invite (OTP email) is not sent", code: "canary_refused" } }),
+    // WAVE 142 (lane 142J): a canary has NO SESSION — the session gate (lib/auth/require-caller.ts resolveCallerIdentity →
+    // supabase.auth.getUser()) must read "nobody is signed in", never a TypeError from a missing door, so a sessionless
+    // automation (auto-execute-offer presenting CRON_SECRET) takes its own admitted path and a session-only door refuses.
+    getUser: async () => ({ data: { user: null }, error: { message: "canary: no session (a sessionless automation, or nobody signed in)", code: "canary_no_session" } }),
+  }
   m.rpc = async (fn: string) => ({ data: null, error: { message: `canary: rpc ${fn} is not modelled (refused, not faked)`, code: "42883" } })
   m.storage = { from: () => ({ upload: async () => ({ data: null, error: { message: "canary: storage is not modelled" } }), remove: async () => ({ data: null, error: null }) }) }
   m.canary = controls
@@ -179,10 +192,11 @@ export function canary(chain: string) {
       console.log(`    ${ok ? "✓" : "✗"} ${step}${evidence ? ` — ${evidence.slice(0, 200)}` : ""}`)
       return ok
     },
-    /** A step written against another lane's CONTRACT whose module does not exist at HEAD (wave 141):
-     *  recorded as pending — it does not fail the canary and it is NOT a pass; the release gate reads it. */
+    /** A step written against another lane's CONTRACT whose module does not exist at HEAD (wave 141; wave 142
+     *  reuses it — the wave is read off the lane, "141B" → WAVE141, "142C" → WAVE142): recorded as pending — it
+     *  does not fail the canary and it is NOT a pass; the release gate reads it. */
     hook(lane: string, contract: string, evidence = ""): void {
-      steps.push({ step: `WAVE141 HOOK (${lane}): ${contract}`, ok: true, evidence, hook: lane })
+      steps.push({ step: `WAVE${lane.slice(0, 3)} HOOK (${lane}): ${contract}`, ok: true, evidence, hook: lane })
       console.log(`    ⏳ HOOK ${lane} — ${contract.slice(0, 160)}${evidence ? ` — ${evidence.slice(0, 120)}` : ""}`)
     },
     blind(s: string) { blindSpots.push(s) },

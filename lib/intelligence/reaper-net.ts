@@ -107,6 +107,19 @@ export const REAPER_NET: ReaperEntry[] = [
     },
   },
   {
+    // Wave 142 (142C): the DEADLINE on every open CDA — signed + approved + at title before the scheduled
+    // closing in the tenant's zone; 48h/24h reminders, then escalation to the admins + finance bus.
+    domain: "cda_deadline",
+    manager: "deal_coordinator",
+    lane: "proactive",
+    protects: "open CDAs that must be signed, approved and at title before the scheduled closing",
+    run: async (b, svc) => {
+      const { reapCdaDeadlines } = await import("@/lib/transactions/cda-delivery-reaper")
+      const r = await reapCdaDeadlines(b, svc)
+      return norm({ scanned: r.scanned, escalated: r.escalated, reaped: r.reminded })
+    },
+  },
+  {
     domain: "lifetime_touchpoints",
     manager: "sphere_of_influence",
     lane: "proactive",

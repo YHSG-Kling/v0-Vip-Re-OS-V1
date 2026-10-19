@@ -10,6 +10,8 @@ import type { LandingContent } from "@/lib/marketing/lead-magnet-copy"
 // Wave 141 (lane 141E): the attribution contract is PURE and shared with the ad writer and the public
 // page (lib/lead-magnets/attribution.ts) — one spelling of the query string, sanitized here again.
 import { sanitizeLeadMagnetAttribution, sourceChannelFor, touchpointChannelFor, type LeadMagnetAttribution } from "@/lib/lead-magnets/attribution"
+// Wave 142 (lane 142E): the ONE "who fills this form" roster (pure module shared with the builder / review surfaces).
+import { FORM_DECLARABLE_CONTACT_TYPES, declarableContactType } from "@/lib/lead-magnets/form-contact-types"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -134,6 +136,24 @@ export interface PublishLeadMagnetOutput {
   error?: string
 }
 
+/**
+ * Wave 142 (lane 142E — the Forms Manager / lead-magnet merge): the contact types a FORM may DECLARE for
+ * its submitters (lead_capture_forms.settings.default_contact_type). Honoured only when the magnet's own
+ * intent (classifyMagnetIntent) says nothing — a generic form. The roster lives in the pure module
+ * lib/lead-magnets/form-contact-types.ts (shared with the builder / review surfaces); re-exported here so
+ * the kernel's callers read it from the kernel. An unrecognised value is dropped (an INSERT the CHECK
+ * refuses would lose the whole capture).
+ */
+export { FORM_DECLARABLE_CONTACT_TYPES }
+
+/** The book a buyer/seller-guide magnet delivers instead of the 5-chapter booklet (lib/lead-magnets/book-creator.ts). */
+export interface LeadMagnetBookRef {
+  pdfUrl: string
+  documentId: string | null
+  title: string
+  chapters: number
+}
+
 export interface CaptureFormSubmissionInput {
   formId: string
   brokerageId: string
@@ -142,6 +162,13 @@ export interface CaptureFormSubmissionInput {
   userAgent?: string
   tcpaConsentGiven?: boolean
   source?: string
+  /**
+   * Wave 142: the intake-time locale the DOOR resolved (lib/contact-pipeline/contact-capture.ts
+   * resolveCapturedLanguage — the ONE resolver; form field, else Accept-Language, both mapped). Stamped on a
+   * NEW contact as contacts.metadata.captured_language, the same place captureContact writes it; never
+   * overwrites an existing contact's.
+   */
+  language?: string | null
   /**
    * Wave 141 (lane 141E): where the visitor came from (campaign / ad campaign / creative / QR / utm).
    * Sanitized again here; `campaignId` is VERIFIED against the magnet's own tenant before anything is
@@ -186,6 +213,19 @@ export interface GenerateQRCodeOutput {
  *  on its (movable) landing URL — see the note on generateQRCode. */
 export function leadMagnetQrLabel(magnetId: string): string {
   return `lead_magnet:${magnetId}`
+}
+
+/**
+ * PURE (wave 142): the FINISHED book a magnet carries, read from lead_capture_forms.settings.book — only a
+ * project that reached ready_for_review with a hosted PDF counts; anything earlier is null (the booklet
+ * path stands in). One reader for the capture (delivery) and the review surface. @proofSeam asserted directly.
+ */
+export function leadMagnetBookRefOf(settings: Record<string, unknown> | null | undefined): LeadMagnetBookRef | null {
+  const book = ((settings ?? {}) as Record<string, unknown>).book as Record<string, unknown> | null | undefined
+  if (!book || typeof book !== "object") return null
+  if (book.stage !== "ready_for_review" || typeof book.pdf_url !== "string" || !book.pdf_url) return null
+  const chapters = Array.isArray(book.chapters) ? book.chapters.length : 0
+  return { pdfUrl: book.pdf_url, documentId: typeof book.document_id === "string" ? book.document_id : null, title: String(book.title ?? "Your guide"), chapters }
 }
 
 export interface TrackMagnetEventInput {
@@ -498,6 +538,46 @@ export async function publishLeadMagnet(
   // recorded around the activation itself (recording-only claim: a re-publish is a new record, not a replay).
   const { withActionLedger } = await import("@/lib/kernel/action-ledger")
   const curSettings = (((form as { settings?: Record<string, unknown> | null }).settings ?? {}) as Record<string, unknown>)
+
+  // THE HUMAN'S PUBLISH IS THE LAST FAIR-HOUSING GATE (wave 142, lane 142E). Whatever the reviewer edited the
+  // public copy into is scanned once more here — the ONE pattern list + the public gate's blockers — and a
+  // hard flag REFUSES the publish naming the findings. Warnings pass through (CLAUDE.md §5). A magnet with
+  // no landing copy has nothing public to scan beyond its name and thank-you line.
+  {
+    const { data: pageRow, error: pageErr } = await supabase
+      .from("lead_capture_forms")
+      .select("name, thank_you_message, landing_content")
+      .eq("id", input.magnetId)
+      .eq("brokerage_id", input.brokerageId)
+      .maybeSingle()
+    if (pageErr) return { success: false, error: `Could not read the page copy before publishing: ${pageErr.message}` }
+    const lc = ((pageRow as { landing_content?: Record<string, unknown> | null } | null)?.landing_content ?? {}) as Record<string, unknown>
+    const faq = Array.isArray(lc.faq) ? (lc.faq as Array<{ question?: unknown; answer?: unknown }>) : []
+    const publicText = [
+      (pageRow as { name?: string | null } | null)?.name, (pageRow as { thank_you_message?: string | null } | null)?.thank_you_message,
+      lc.headline, lc.subhead, lc.cta, ...(Array.isArray(lc.bullets) ? lc.bullets : []), ...faq.flatMap((f) => [f?.question, f?.answer]),
+    ].filter((s): s is string => typeof s === "string" && s.trim().length > 0).join("\n")
+    const { scanPublicCopy } = await import("@/lib/kernel/marketing/public-copy-rewrite")
+    const scan = await scanPublicCopy(publicText, "lead_magnet")
+    if (!scan.ok) {
+      return { success: false, error: `Fair-housing review: the page copy still says ${scan.findings.map((f) => `"${f.phrase}"`).join(", ")} — rewrite it (${scan.findings.map((f) => f.fix).join("; ")}) before publishing.` }
+    }
+  }
+
+  // A BOOK MAGNET PUBLISHES ONLY WITH ITS FINISHED, REVIEWABLE BOOK (wave 142): a half-written manuscript has
+  // no deliverable, so the page would promise a book the capture cannot send. Fail closed, name the stage.
+  {
+    const book = (curSettings.book ?? null) as { stage?: string; needs_human_review?: number[] } | null
+    if (book && typeof book === "object" && book.stage && book.stage !== "ready_for_review") {
+      return { success: false, error: `The book is still being written (stage: ${book.stage.replace(/_/g, " ")}) — finish it before publishing this lead magnet.` }
+    }
+    // A chapter the AI could not make compliant within its cap is the HUMAN's to rewrite (reviseBookChapter) —
+    // until then the PDF still carries the steering text, so the publish fails closed naming the chapters.
+    if (book && typeof book === "object" && Array.isArray(book.needs_human_review) && book.needs_human_review.length > 0) {
+      const n = book.needs_human_review.length
+      return { success: false, error: `Fair-housing review: chapter${n === 1 ? "" : "s"} ${book.needs_human_review.join(", ")} of the book still need${n === 1 ? "s" : ""} your rewrite (the AI reached its cap) — revise ${n === 1 ? "it" : "them"} before publishing.` }
+    }
+  }
   const prevLifecycle = (curSettings.lifecycle ?? {}) as Partial<LeadMagnetLifecycle>
   const lifecycle: LeadMagnetLifecycle = {
     state: "published",
@@ -957,8 +1037,13 @@ export async function captureFormSubmission(
         // Vocabulary: lib/contact-promotion/qualification.ts CONTACT_STATUSES.
         status:     "new",
       }
-      if (intentRouting.contactType) newRow.contact_type = intentRouting.contactType
-      capturedContactType = (intentRouting.contactType as string | null) ?? null
+      // Wave 142: the form's DECLARED persona (settings.default_contact_type — the Forms Manager's one unique
+      // piece, merged onto this kernel) fills in only when the magnet type itself says nothing.
+      const declaredType = declarableContactType((((form as { settings?: Record<string, unknown> | null }).settings ?? {}) as Record<string, unknown>).default_contact_type)
+      const resolvedContactType = intentRouting.contactType ?? declaredType
+      if (resolvedContactType) newRow.contact_type = resolvedContactType
+      capturedContactType = resolvedContactType
+      if (input.language) newRow.metadata = { captured_language: input.language }
       // The error is READ. `if (newContact)` below already fails closed, but a
       // refused INSERT and a client that simply returned no row were
       // indistinguishable — so a rejected contact create (a CHECK on
@@ -1126,7 +1211,9 @@ export async function captureFormSubmission(
         agentUserId = (formAgent as { user_id?: string | null } | null)?.user_id ?? null
       }
       const { deliverMagnet } = await import("@/lib/marketing/lead-magnet-delivery-runner")
-      await deliverMagnet({ brokerageId: input.brokerageId, contactId, agentUserId, magnetType, ctx: { area: data.city ?? null } }, supabase)
+      // Wave 142: a magnet that carries a FINISHED BOOK (settings.book, lib/lead-magnets/book-creator.ts)
+      // delivers that PDF; the deliverable records the magnet + document refs so follow-up can find it.
+      await deliverMagnet({ brokerageId: input.brokerageId, contactId, agentUserId, magnetType, magnetId: input.formId, book: leadMagnetBookRefOf((form as { settings?: Record<string, unknown> | null }).settings), ctx: { area: data.city ?? null } }, supabase)
     } catch (err) {
       console.warn("[lead-magnets] deliverable failed:", err)
     }

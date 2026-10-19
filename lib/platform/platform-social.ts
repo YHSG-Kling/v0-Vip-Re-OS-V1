@@ -84,9 +84,11 @@ function credentialPlatformKey(channel: PlatformSocialChannel): string {
 export interface ChannelDispatchSupport {
   supported: boolean
   /** lib/social/publisher.ts platform key when supported. */
-  publisherPlatform?: "linkedin" | "twitter" | "facebook" | "instagram"
+  publisherPlatform?: "linkedin" | "twitter" | "facebook" | "instagram" | "youtube"
   /** The Graph API cannot post text-only to this channel — publish must carry an image. */
   requiresImage?: boolean
+  /** The channel takes VIDEO uploads only — publish must carry the draft's rendered video_url (wave 142, lane 142F). */
+  requiresVideo?: boolean
   /** Honest reason/caveat (shown verbatim in the UI). */
   reason?: string
 }
@@ -111,7 +113,18 @@ export function channelDispatchSupport(channel: PlatformSocialChannel): ChannelD
         reason: "Instagram posts need an image — auto-publish asks for an image URL (use the Image library above); text-only posts are impossible via the API.",
       }
     case "youtube":
-      return { supported: false, reason: "YouTube takes video uploads only — render the video, then upload and record the permalink manually." }
+      // Wave 142 (lane 142F; owner: "all videos that are not personal should also be added to
+      // youtube"): WIRED, honestly scoped. The platform's own product reels
+      // (lib/platform/product-content-autopilot.ts → platform_social_drafts.video_url, attached by
+      // the render route) upload through the SAME publishToYouTube resumable path tenants use, on
+      // the platform channel's own OAuth token (youtube.upload). A TEXT draft on this channel is
+      // still impossible — YouTube has no text post — so the action refuses one with this reason.
+      return {
+        supported: true,
+        publisherPlatform: "youtube",
+        requiresVideo: true,
+        reason: "YouTube takes video uploads only — a draft with a rendered video is uploaded to the company channel; a text-only draft cannot be posted here.",
+      }
     case "tiktok":
       return { supported: false, reason: "TikTok takes video posts only — post the rendered video manually." }
   }

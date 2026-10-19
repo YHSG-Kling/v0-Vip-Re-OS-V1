@@ -93,6 +93,11 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { createHash } from "node:crypto"
 import { getStageDefinition, type ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 import type { UnexecutedDocument } from "@/lib/listings/listing-activation-gate"
+// THE PACKET'S COMPLIANCE HOPS (wave 142, lane 142B; owner: "only after compliance approval: FULLY
+// EXECUTED (listing)"): the newest listing agreement's esign_status walks compliance_pending →
+// correction_required | compliance_approved → fully_executed through the ONE writer. The gate is unchanged.
+import { advanceEsignPacketState } from "@/lib/esign/packet-state-writer"
+import type { EsignPacketState } from "@/lib/esign/packet-states"
 
 type ListingComplianceTrigger =
   | "agreement_executed"   // the executed agreement just landed — the loop's first run
@@ -169,6 +174,12 @@ export async function runListingComplianceLoop(
     return { outcome: "outside_window", stage, blockers: [], notified: false, reason: `stage ${stage ?? "(none)"} is not between ${WINDOW_START} and ${WINDOW_END}` }
   }
 
+  // ── 1b · THE PACKET ENTERS COMPLIANCE — recorded on the newest listing agreement before the gate runs.
+  //        Inside the window only: an activation refused later (MLS_READY) re-tells the roles below but the
+  //        agreement is already past review, and the ladder would refuse the regression anyway.
+  const stamp = (to: EsignPacketState, extra: { notify?: boolean; detail?: string | null } = {}) => stampAgreementPacket(supabase, brokerageId, listingId, to, params.actorUserId ?? null, extra)
+  if (inWindow) await stamp("compliance_pending")
+
   // ── 2 · THE gate. Imported dynamically for the same reason lib/kernel/listings.ts does:
   //        it reaches a `server-only` module that the tsx guards cannot load.
   const { assertListingActivationAllowed } = await import("@/lib/listings/listing-activation-gate")
@@ -223,6 +234,9 @@ export async function runListingComplianceLoop(
     await writeGateState(supabase, listingId, brokerageId, meta, {
       state: "blocked", blockers, blockers_hash: hash, checked_at: new Date().toISOString(), trigger,
     })
+    // The deficiency list already rang through notifyComplianceFlag above (deduped on the blocker set);
+    // the hop is recorded without a second bell (owner: "no duplicates").
+    if (inWindow) await stamp("correction_required", { notify: false })
     return { outcome: "blocked", stage, blockers, notified, reason: gate.reason }
   }
 
@@ -242,6 +256,9 @@ export async function runListingComplianceLoop(
       await writeGateState(supabase, listingId, brokerageId, meta, {
         state: "passed_awaiting_date", blockers: [], blockers_hash: blockerHash([]), checked_at: new Date().toISOString(), trigger,
       })
+      // Compliance approved ⇒ the agreement is FULLY EXECUTED (owner); the stage waits only on the MLS date.
+      await stamp("compliance_approved", { notify: false })
+      await stamp("fully_executed", { detail: "The listing waits on its MLS start date." })
       return {
         outcome: "passed_awaiting_date", stage, blockers: [], notified: false,
         reason: "compliance passed; the MLS start date is not on the listing, so it stays at LISTING_AGREEMENT_SIGNED until one is set",
@@ -282,7 +299,26 @@ export async function runListingComplianceLoop(
   await writeGateState(supabase, listingId, brokerageId, meta, {
     state: "passed", blockers: [], blockers_hash: blockerHash([]), checked_at: new Date().toISOString(), trigger, advanced: hops,
   })
+  // compliance_approved is RECORDED (evidence); fully_executed is ANNOUNCED — one bell for the one moment.
+  await stamp("compliance_approved", { notify: false })
+  await stamp("fully_executed", { detail: `The listing moved to ${WINDOW_END}.` })
   return { outcome: "advanced", stage: WINDOW_END, blockers: [], notified: false, reason: null }
+}
+
+/** One packet hop on the listing's newest agreement; a ladder refusal is logged, never thrown into the loop. */
+async function stampAgreementPacket(
+  supabase: SupabaseClient,
+  brokerageId: string,
+  listingId: string,
+  to: EsignPacketState,
+  actorUserId: string | null,
+  extra: { notify?: boolean; detail?: string | null },
+): Promise<void> {
+  const r = await advanceEsignPacketState(supabase as any, {
+    brokerageId, record: { table: "listing_agreements", listingId }, to,
+    source: actorUserId ? "ui" : "system", actorUserId, notify: extra.notify, detail: extra.detail ?? null,
+  })
+  if (!r.ok) console.warn(`[listing-compliance-loop] listing ${listingId} agreement packet → ${to} not recorded: ${r.reason}`)
 }
 
 /** listings.agent_id is an agents.id; notifications want users.id. The two are DISJOINT (§3). */

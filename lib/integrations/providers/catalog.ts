@@ -1,5 +1,15 @@
 // lib/integrations/providers/catalog.ts
-// SINGLE SOURCE OF TRUTH for transaction / e-sign providers.
+// SINGLE SOURCE OF TRUTH for LEGAL-FORMS / e-sign providers.
+//
+// VOCABULARY (owner, 2026-10-18, wave 142): "the 'transaction provider' is the real-estate LEGAL-FORMS
+// provider — call it the legal-forms provider so it is never confused with the transaction/contract
+// lifecycle (Listing → Offer → Signatures → Compliance → Fully Executed Contract → Transaction → Closing)".
+// The UI copy, labels and this header say LEGAL-FORMS PROVIDER (LEGAL_FORMS_PROVIDER_LABEL below). The CODE
+// identifiers keep their spelling on purpose — `capabilities.transactionForms`, the `transaction` capability
+// key, `provider_overrides.provider_type = 'transaction'`, `offers.form_source`, resolveTransactionFormsProvider
+// — because the first three are stored DB vocabularies (a rename is a migration, listed in the lane notes),
+// and the function names are read by proofs in every lane; a second identifier spelling beside them would
+// be the §6 defect the ruling is correcting.
 //
 // Every provider the app knows about is declared here exactly once, with whether
 // it is IMPLEMENTED (has a working ITransactionProvider class in provider-resolver)
@@ -21,10 +31,14 @@ export type ProviderName =
   | "brokermint"
   | "formsimplicity"
 
+/** THE ONE tenant-facing name of the forms capability (owner, wave 142): never "transaction provider". */
+export const LEGAL_FORMS_PROVIDER_LABEL = "legal-forms provider"
+
 export interface ProviderCapabilities {
   /** Can send documents for e-signature through this provider. */
   esign: boolean
-  /** Hosts a transaction-form library / transaction management. */
+  /** Hosts a LEGAL-FORMS library / transaction management (the tenant-facing name is LEGAL_FORMS_PROVIDER_LABEL;
+   *  the key keeps its spelling — see the header). */
   transactionForms: boolean
   /** Supports rendering its UI inside an app iframe (most do NOT — CSP/X-Frame). */
   embed: boolean
@@ -265,8 +279,8 @@ export const PROVIDER_CAPABILITY_MATRIX: Record<ProviderName, ProviderMatrixRow>
   google_esign: {
     credentials:          B("no vendor credential by design (portal send): the agent's own Google connection + drive.file grant — lib/esign/google-esign-handoff.ts googleEsignReadiness; the manual Drive rail without it"),
     settings:             B(SETTINGS),
-    forms:                M("PROVIDER_CATALOG.google_esign transactionForms:false", "not a transaction-forms provider — the platform library serves the forms"),
-    transaction_creation: M("PROVIDER_CATALOG.google_esign transactionForms:false", "not a transaction provider"),
+    forms:                M("PROVIDER_CATALOG.google_esign transactionForms:false", "not a legal-forms provider — the platform library serves the forms"),
+    transaction_creation: M("PROVIDER_CATALOG.google_esign transactionForms:false", "not a legal-forms provider"),
     document_upload:      B("lib/esign/dispatch-packet.ts:186-205 places the FILLED packet in the agent's Drive (lib/esign/google-drive-upload.ts buildDriveMultipartBody)"),
     form_fill:            B(IN_APP_FILL),
     esign:                B("lib/esign/dispatch-packet.ts:180-231 — the Drive hand-off (Google publishes no eSignature API: support.google.com/docs/answer/12315692); the agent requests the signature in the Drive window"),
@@ -353,12 +367,12 @@ export function providerOfferVerdict(capability: OfferCapability, provider?: str
   const entry = getCatalogEntry(provider)
   if (!entry) return { ok: false, provider: String(provider ?? ""), step: "unknown", reason: `'${provider ?? ""}' is not a provider this platform knows` }
   const claims = capability === "esign" ? entry.capabilities.esign : entry.capabilities.transactionForms
-  if (!claims) return { ok: false, provider: entry.name, step: "capability", reason: `${entry.label} does not offer ${capability === "esign" ? "e-signature" : "transaction / forms management"}` }
+  if (!claims) return { ok: false, provider: entry.name, step: "capability", reason: `${entry.label} does not offer ${capability === "esign" ? "e-signature" : "legal forms / transaction management"}` }
   const row = PROVIDER_CAPABILITY_MATRIX[entry.name]
   for (const step of CAPABILITY_REQUIRED_STEPS[capability]) {
     const cell = row[step]
     if (cell.status !== "BUILT") {
-      return { ok: false, provider: entry.name, step, reason: `${entry.label} is unavailable for ${capability === "esign" ? "e-signature" : "transactions / forms"} — ${step.replace(/_/g, " ")} is ${cell.status}: ${cell.reason ?? cell.evidence}` }
+      return { ok: false, provider: entry.name, step, reason: `${entry.label} is unavailable for ${capability === "esign" ? "e-signature" : "legal forms / transactions"} — ${step.replace(/_/g, " ")} is ${cell.status}: ${cell.reason ?? cell.evidence}` }
     }
   }
   return { ok: true, provider: entry.name }

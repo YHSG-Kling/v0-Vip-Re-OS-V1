@@ -531,10 +531,21 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
     await notifyHumans(svc, deps, touch, req, body, { targetAdmins: true, staff })
     return { ok: false, completed: false, stalledAt: at, error: record.last_error ?? `stalled at ${at}`, record }
   }
+  // THE BILLING ACTOR IS THE APPROVING BROKERAGE ADMIN, NEVER THE SUBJECT (owner, wave 142: "fix the
+  // Stripe handoff to use the APPROVING BROKERAGE ADMIN (not the subject user)"). The consent call runs
+  // this migration AS THE SUBJECT (kind "subject"), and the Stripe side (lib/billing/subscriber-handoff.ts)
+  // admits only an admin OF THE TARGET or platform staff — so every Stripe-linked adoption handed the
+  // subject's id over, was refused actor_not_authorized, and stalled at stripe_handoff_pending on consent.
+  // The approval IS the request: initiated_by_user_id is the target admin who filed it
+  // (app/actions/brokerage-transfer.ts requireAdoptingAdmin). A target admin retrying a stalled run is
+  // that admin re-approving it, so their own id is passed; the subject and a system continuation carry
+  // the original approver. The ledger keeps the RUNNING actor (who pressed the button) and records the
+  // approver beside it.
+  const approvingAdminUserId = input.actor.kind === "target_admin" ? input.actor.userId : req.initiated_by_user_id
 
   return ledgered<RunTransferMigrationResult>(svc, {
     brokerageId: targetId, action: "tenant.transfer.migrate", actorUserId, subjectId: req.id, key: `transfer:migrate:${req.id}:attempt:${record.attempts}`, riskClass: "FINANCIAL",
-    detail: { source_brokerage_id: sourceId, attempt: record.attempts, pending: transferStepsPending(record), effective_at: effectiveAt },
+    detail: { source_brokerage_id: sourceId, attempt: record.attempts, pending: transferStepsPending(record), effective_at: effectiveAt, approving_admin_user_id: approvingAdminUserId },
   }, async () => {
     await persist()
 
@@ -637,7 +648,7 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
     // ── billing handoff: the ONE billing call; not ok = nothing changed, archive waits ──
     const okB = await step("billing_handoff", async () => {
       const handoff = deps.billingHandoff ?? (await import("@/lib/billing/subscriber-billing-handoff")).handoffSubscriberBillingToBrokerage
-      const r = await handoff(svc, { sourceBrokerageId: sourceId, targetBrokerageId: targetId, effectiveAt, transferRequestId: req.id, actorUserId })
+      const r = await handoff(svc, { sourceBrokerageId: sourceId, targetBrokerageId: targetId, effectiveAt, transferRequestId: req.id, actorUserId: approvingAdminUserId })
       const p = await patchRequest(svc, req.id, { billing_handoff: r }, deps)
       if (!p.ok) return { error: `billing handoff evidence not recorded: ${p.error}` }
       if (!r.ok) return { error: `billing handoff pending (${r.code}): ${r.error}` }

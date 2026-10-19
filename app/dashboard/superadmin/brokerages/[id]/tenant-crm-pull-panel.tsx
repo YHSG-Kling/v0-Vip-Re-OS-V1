@@ -191,7 +191,7 @@ export function TenantCrmPullPanel({ brokerageId }: { brokerageId: string }) {
             {preview.sample.length > 0 && (
               <div>
                 <div className="font-medium mb-1">Sample</div>
-                <table className="w-full text-[11px]">
+                <div className="overflow-x-auto"><table className="w-full text-[11px]">
                   <thead><tr className="text-left text-muted-foreground"><th className="pr-3">Name</th><th className="pr-3">Email</th><th className="pr-3">Phone</th><th>City/State</th></tr></thead>
                   <tbody>
                     {preview.sample.map((s, i) => (
@@ -201,7 +201,7 @@ export function TenantCrmPullPanel({ brokerageId }: { brokerageId: string }) {
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </table></div>
               </div>
             )}
             {preview.problems.length > 0 && (

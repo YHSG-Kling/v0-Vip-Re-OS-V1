@@ -998,6 +998,19 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
       }
     }
 
+    // ── 1c. WAVE 142 (lane 142F) — an APPROVED PUBLIC MARKETING video whose render just landed ─
+    // The approval hook (lib/kernel/approval-queue-aggregator.ts applyMarketingAssetApproval
+    // "video") queues YouTube only when a file exists; a video approved before its render
+    // finished reaches this second and last point. Same classifier, same tenant switch, same
+    // idempotency (lib/video/youtube-publish.ts) — a personal or client video is refused with
+    // its reason. Never a second post for a video the approval hook already queued.
+    if (video_id) {
+      const { queueYouTubeAutoPublish } = await import("@/lib/video/youtube-publish")
+      const yt = await queueYouTubeAutoPublish(svc as any, video_id)
+      if (yt.queued) summary.push(yt.alreadyQueued ? "youtube already queued" : "youtube queued")
+      else summary.push(`youtube not queued (${yt.reason})`)
+    }
+
     // ── 2. Listing videos → attach to the property landing page ─────────────
     // listing_media is the canonical table the public listing detail page
     // reads from. media_type='video' + file_url=video_url. We let the

@@ -1,7 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId } from "@/lib/forms/esign-execution-loop"
+import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId, recordEnvelopeTerminalState } from "@/lib/forms/esign-execution-loop"
+import { providerTerminalState } from "@/lib/esign/packet-states"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AUTHENTISIGN WEBHOOK HANDLER  (Lone Wolf Authentisign)
@@ -58,8 +59,8 @@ export async function POST(request: NextRequest) {
 
     // Authentisign envelope events:
     //   - "signing.completed"   all signers have signed
-    //   - "signing.declined"    a signer declined (not handled here yet)
-    //   - "signing.expired"     envelope expired (not handled here yet)
+    //   - "signing.declined"    a signer declined  → recorded on the packet (wave 142, below)
+    //   - "signing.expired"     envelope expired   → recorded on the packet (wave 142, below)
     // SCHEMA ADAPTATION: documented shapes are direct paths; new shapes adapt
     // via taught aliases (drift, ledgered) or QUARANTINE — never lost.
     const { adaptPayload, ESIGN_COMPLETION_CONTRACTS } = await import("@/lib/kernel/schema-adaptation")
@@ -79,6 +80,13 @@ export async function POST(request: NextRequest) {
       const { quarantineDriftedPayload } = await import("@/lib/kernel/ingress-continuity")
       const q = await quarantineDriftedPayload(supabase as any, { connector: "authentisign", source: "esign_completion", raw: body, missing: adapted.missingRequired, eventType: event || status })
       return NextResponse.json({ received: true, quarantined: true, ref: q.ref })
+    }
+    // THE PROVIDER'S TERMINAL OUTCOME (wave 142, lane 142B): signing.declined / signing.expired / voided
+    // are recorded on the matched records through the ONE packet writer instead of being ignored.
+    const terminal = !isCompleted ? providerTerminalState(event, status) : null
+    if (terminal && envelopeId) {
+      const recorded = await recordEnvelopeTerminalState(supabase as any, { provider: "authentisign", envelopeId, state: terminal, reason: status || event || null })
+      return NextResponse.json({ received: true, action: "terminal", state: terminal, envelopeId, offers: recorded.offers, agreements: recorded.agreements, refused: recorded.refused.length })
     }
     if (!isCompleted || !envelopeId) {
       return NextResponse.json({ received: true, action: "ignored", event, status })

@@ -276,7 +276,7 @@ export function RecipientsTab({
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8"
-                        onClick={() => handleRemoveRecipient(recipient.id)}
+                        aria-label="Remove recipient" onClick={() => handleRemoveRecipient(recipient.id)}
                       >
                         <Trash2 className="h-4 w-4 text-muted-foreground" />
                       </Button>

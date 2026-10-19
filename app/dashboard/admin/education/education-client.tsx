@@ -233,7 +233,7 @@ export function EducationContentClient({ brokerageId, initialModules }: Props) {
                       size="icon"
                       variant="ghost"
                       className="h-7 w-7"
-                      onClick={() => setExpandedId(expandedId === mod.id ? null : mod.id)}
+                      aria-label={expandedId === mod.id ? "Collapse module" : "Expand module"} onClick={() => setExpandedId(expandedId === mod.id ? null : mod.id)}
                     >
                       {expandedId === mod.id
                         ? <ChevronUp className="h-4 w-4" />
@@ -244,7 +244,7 @@ export function EducationContentClient({ brokerageId, initialModules }: Props) {
                       size="icon"
                       variant="ghost"
                       className="h-7 w-7 text-destructive"
-                      onClick={() => handleDelete(mod.id)}
+                      aria-label="Delete module" onClick={() => handleDelete(mod.id)}
                       disabled={isPending}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -400,7 +400,7 @@ export function EducationContentClient({ brokerageId, initialModules }: Props) {
                         size="icon"
                         variant="ghost"
                         className="h-8 w-8 shrink-0 text-destructive"
-                        onClick={() => removeQuestion(qi)}
+                        aria-label="Remove question" onClick={() => removeQuestion(qi)}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>

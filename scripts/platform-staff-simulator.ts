@@ -181,7 +181,7 @@ async function main() {
       (listed as any)?.user_type === "support" && (listed as any)?.brokerage_id === null)
 
     // promote support → superadmin (sets BOTH columns coherently)
-    await svc.from("users").update({ user_type: "superadmin", platform_role: "superadmin" }).eq("id", staffId)
+    await svc.from("users").update({ user_type: "admin", platform_role: "superadmin" }).eq("id", staffId)
     const { data: promoted } = await svc.from("users").select("user_type, platform_role").eq("id", staffId).single()
     check("role change persists (support → superadmin, both columns)",
       (promoted as any).user_type === "superadmin" && (promoted as any).platform_role === "superadmin")

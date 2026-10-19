@@ -109,7 +109,7 @@ function dispatchStatusFor(kind: "google" | "api", embedded: boolean): "sent" | 
 export function describeProviderWindowSend(input: { provider: string; envelopeId?: string | null; propertyAddress: string }): DispatchPacketResult {
   const entry = getCatalogEntry(input.provider)
   if (!entry || !entry.capabilities.transactionForms || entry.portalSend) {
-    return { ok: false, error: `'${input.provider}' is not a transaction-forms provider — pick the forms from your transaction provider's window, or from your library.` }
+    return { ok: false, error: `'${input.provider}' is not a legal-forms provider — pick the forms from your legal-forms provider's window, or from your library.` }
   }
   if (!entry.capabilities.esign) {
     return { ok: false, kind: "api", providerName: entry.name, error: `${entry.label} has no e-signature — fill the forms there, then send them for signature through your e-sign provider (select the filled PDFs from your library).` }

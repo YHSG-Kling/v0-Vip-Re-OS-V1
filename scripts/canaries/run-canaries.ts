@@ -27,6 +27,13 @@
  * against another lane's contract whose module is absent at HEAD is a WAVE141 HOOK (⏳ pending — counted
  * beside the RESULT line, never a pass); the census of pending hooks is printed from the registry's
  * probes so the integrator sees exactly what to wire. `CANARY_ONLY=<key>[,<key>]` runs a subset.
+ *
+ * WAVE 142 (lane 142J — final convergence): thirteen more canaries on the SAME harness, one per journey on the
+ * owner's list (support-isolation, listing-lifecycle, offer-lifecycle, form-wizard, preliminary-cd, cda-closing,
+ * commission-payment, lifetime, immediate-enrichment, autonomous-marketing, video-pipeline, ai-by-your-side,
+ * commercial-platform), every one IN-MEMORY ONLY (the live database has never been operated — a live run would
+ * prove nothing). Steps written against lanes 142A–I's contracts are WAVE142 HOOKS (same probes, same ⏳), and the
+ * census prints one line per wave.
  */
 import "./_harness"
 import type { CanaryReport } from "./_harness"
@@ -63,14 +70,18 @@ async function main() {
   console.log("\n──────────────────────────────────────────────────────────────")
   for (const r of reports) console.log(` ${r.report.passed ? "PASS" : "FAIL"}  ${r.key.padEnd(20)} steps ${r.report.steps.filter((s) => s.ok && !s.hook).length}/${r.report.steps.filter((s) => !s.hook).length}${r.report.hooks ? `  hooks ${r.report.hooks}` : ""}  deleted ${r.report.cleanup.reduce((n, c) => n + Math.max(0, c.deleted), 0)}  residual ${r.report.residual}${r.report.skipped ? "  (skipped)" : ""}`)
   // THE HOOK CENSUS — read from the registry's probes (stripped source), not from the steps, so the
-  // runner and the release gate (production-readiness-guard section G) print the same facts.
-  const census = hookCensus()
-  const byLane = new Map<string, number>()
-  for (const h of census.pending) byLane.set(h.lane, (byLane.get(h.lane) ?? 0) + 1)
-  console.log(` WAVE141 HOOKS: ${census.pending.length} pending (${[...byLane].map(([l, n]) => `${l}×${n}`).join(", ") || "none"}), ${census.landed.length} landed${census.landed.length ? ` (${census.landed.map((h) => `${h.lane}@${h.at}`).join(", ")})` : ""}`)
+  // runner and the release gate (production-readiness-guard section G) print the same facts. One line per
+  // wave (lane 142J): the wave-141 hooks landed through integration; the wave-142 hooks are the lanes A–I
+  // still to land at fec8b6a95.
+  for (const wave of ["141", "142"] as const) {
+    const census = hookCensus(wave)
+    const byLane = new Map<string, number>()
+    for (const h of census.pending) byLane.set(h.lane, (byLane.get(h.lane) ?? 0) + 1)
+    console.log(` WAVE${wave} HOOKS: ${census.pending.length} pending (${[...byLane].map(([l, n]) => `${l}×${n}`).join(", ") || "none"}), ${census.landed.length} landed${census.landed.length ? ` (${census.landed.map((h) => `${h.lane}@${h.at}`).join(", ")})` : ""}`)
+  }
   console.log(` RESULT: canaries ${reports.length}, passed ${reports.length - failedCanaries.length}, failed ${failedCanaries.length}; steps ${passedSteps}/${steps.length - hookSteps.length}; hooks pending ${hookSteps.length}; rows deleted ${deleted}`)
   if (failedCanaries.length > 0) { console.log(` ✗ failed: ${failedCanaries.map((r) => r.key).join(", ")}`); process.exit(1) }
-  console.log(hookSteps.length ? ` ✅ every business chain ran end-to-end and cleaned up — ${hookSteps.length} contract step(s) still behind a WAVE141 HOOK (the release gate reads them as NOT CERTIFIED)` : " ✅ every business chain ran end-to-end and cleaned up")
+  console.log(hookSteps.length ? ` ✅ every business chain ran end-to-end and cleaned up — ${hookSteps.length} contract step(s) still behind a WAVE141/WAVE142 HOOK (the release gate reads them as NOT CERTIFIED)` : " ✅ every business chain ran end-to-end and cleaned up")
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

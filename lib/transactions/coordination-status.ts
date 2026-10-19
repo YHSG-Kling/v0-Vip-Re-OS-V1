@@ -25,6 +25,12 @@
 // 'pending' on a document ladder that says 'requested', 'out_for_signature'
 // where the ladder says 'sent', 'executed' where it says 'fully_signed'. The
 // code moves onto the database's vocabulary, not the reverse. No migration.
+//
+// WAVE 142 (lane 142B): the listing_agreements ladder — shared byte-for-byte by offers.esign_status —
+// is now the ONE e-sign packet lifecycle in lib/esign/packet-states.ts, widened by m783 with the
+// owner's compliance states. The tuple below derives from it (§6: one spelling).
+
+import { ESIGN_PACKET_STATES, type EsignPacketState } from "@/lib/esign/packet-states"
 
 // ── Milestones ───────────────────────────────────────────────────────────────
 
@@ -153,10 +159,13 @@ export const CONTRACT_ESIGN_AWAITING_STATUSES = [
 
 // ── E-sign: listing_agreements (a DIFFERENT ladder — do not cross the two) ───
 
-export const LISTING_AGREEMENT_ESIGN_STATUSES = [
-  "pending", "sent", "partially_signed", "fully_signed", "voided", "declined",
-] as const
-export type ListingAgreementEsignStatus = (typeof LISTING_AGREEMENT_ESIGN_STATUSES)[number]
+// MERGED (wave 142, lane 142B; CLAUDE.md §6 — one vocabulary per function): this tuple restated the
+// listing_agreements.esign_status CHECK, which offers.esign_status shares byte-for-byte. The ONE
+// packet lifecycle (the owner's draft → sent → partially_signed → all_signed → compliance_pending →
+// correction_required → compliance_approved → fully_executed · declined/voided/expired, m783) now
+// lives in lib/esign/packet-states.ts; this name survives for its readers and DERIVES from it.
+export const LISTING_AGREEMENT_ESIGN_STATUSES = ESIGN_PACKET_STATES
+export type ListingAgreementEsignStatus = EsignPacketState
 
 /**
  * Signed by every party. The seller-listing execution engine wrote 'executed'

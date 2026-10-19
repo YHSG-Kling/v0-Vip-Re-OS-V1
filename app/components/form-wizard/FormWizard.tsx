@@ -10,13 +10,23 @@
  *   buyer-detail offer creation flow, replacing OfferInitiationFlow +
  *   OfferFormWizard once those are retired.
  *
- * Step pattern (both modes):
- *   1. Context     — property address, parties
- *   2. Forms       — pick the right document set
- *   3. Fill        — populate forms (provider iframe if applicable)
- *   4. Signers     — collect signer roles + emails
- *   5. E-Sign      — review + dispatch
- *   6. Monitor     — track signature progress
+ * THE SEQUENCE (wave 142, lane 142B; owner: "formwizard steps should be correct" — Purpose → Property →
+ * Parties → Terms → Recommended Forms → Complete → Review → E-sign/Deliver) is lib/forms/form-wizard-sequence.ts
+ * FORM_WIZARD_SEQUENCE; this component renders from it (step numbers are never spelled here). Every step
+ * component below SURVIVES under the owner's order — EXTENDED, not rewritten:
+ *   purpose           — "Are we preparing listing forms or an offer?" (StepPurpose, new)
+ *   property          — Step1Context (property address, MLS #, listing details)
+ *   parties           — Step4Signers (the CRM contact pick, roles, emails)
+ *   terms             — StepTerms (new): the coach's conversational intake per purpose; the offer's answers
+ *                       become the offer record's real terms (offerTermsToCreateOfferFields)
+ *   recommended_forms — Step2Forms, led by RecommendedFormsPanel (new): the state's verified package
+ *                       joined to the ACTUAL library + legal-forms provider forms; nothing invented
+ *   complete          — Step3Fill (verified-data prefill, AI-assisted completion with human review, manual
+ *                       edit, legal-description gate)
+ *   review            — StepReview (new): the packet, the parties, the terms, what is incomplete
+ *   esign             — Step5ESign (where they sign, the tenant's e-sign provider, send / provider window)
+ *   monitor           — the send's outcome
+ * CDA is NOT a step (owner). The draft autosaves to the forms kernel (saveFormDraftAction) and resumes.
  *
  * Strategic AI features (price advisor, escalation, buyer letter,
  * contingency reco) will be added as optional steps inside mode="offer"
@@ -62,14 +72,25 @@ import { buildEsignAnchorPlanAction } from "@/app/actions/buyer-offer/esign-anch
 import { resolveOfferPropertyPrefillAction } from "@/app/actions/buyer-offer/prefill-offer"
 import Link from "next/link"
 import { PROPERTY_TYPE_OPTIONS } from "@/lib/constants"
+// THE SPINE (wave 142, lane 142B): the owner's sequence, the coach's intake, the recommendation and the
+// term → record mapping are PURE and proven without a browser (scripts/listing-offer-lifecycle-guard.ts).
+import {
+  FORM_WIZARD_OPENING_QUESTION, FORM_WIZARD_STEP_LABELS, FORM_WIZARD_PURPOSES, AI_COACH_RULES,
+  stepNumber, stepKeyAt, intakeQuestionsFor, missingRequiredIntake, offerTermsToCreateOfferFields,
+  offerFormSourceFor, recommendForms,
+  type IntakeAnswers, type FormWizardPurpose, type FormWizardStepKey, type AvailableForm, type IntakeQuestion,
+} from "@/lib/forms/form-wizard-sequence"
+// AUTOSAVE / RESUME on the forms kernel's draft commands (lib/kernel/forms.ts saveFormDraft / loadFormDraft —
+// built, and until now called by nothing in the wizard).
+import { saveFormDraftAction, loadFormDraftAction } from "@/app/actions/forms-kernel"
 
-type TransactionProvider = "dotloop" | "docusign" | "skyslope" | "authentisign" | "brokermint" | "formsimplicity"
+type LegalFormsProvider = "dotloop" | "docusign" | "skyslope" | "authentisign" | "brokermint" | "formsimplicity"
 
 /** The connected transaction provider's own window (lane 88C). `embedMode` comes from the
  *  catalog's evidence-backed frameability: "iframe" only where the vendor documents framing
  *  (SkySlope Forms); everything else opens as a POPUP beside the platform — an iframe of a
  *  vendor that forbids framing renders blank, which is what the old dotloop "?embed=1" did. */
-interface ProviderWindow { provider: TransactionProvider; embedUrl: string | null; embedMode: "iframe" | "popup"; label: string }
+interface ProviderWindow { provider: LegalFormsProvider; embedUrl: string | null; embedMode: "iframe" | "popup"; label: string }
 
 /** The in-window e-sign step (lane 88C): DocuSign's embedded sender view (iframe) or the
  *  Google Drive eSignature window (popup — Google has no API and does not frame). */
@@ -85,13 +106,13 @@ function openProviderPopup(url: string) {
 }
 
 interface FormRef {
-  source: "my_forms" | "transaction_provider"
+  source: "my_forms" | "legal_forms_provider"
   formRef: string
   name: string
   scope?: "brokerage" | "team" | "agent"
-  /** When source === "transaction_provider", the provider id of the source. */
-  providerName?: TransactionProvider
-  /** When source === "transaction_provider", optional issuer / category for display. */
+  /** When source === "legal_forms_provider", the provider id of the source. */
+  providerName?: LegalFormsProvider
+  /** When source === "legal_forms_provider", optional issuer / category for display. */
   issuer?:    string
   category?:  string
   stateCode?: string
@@ -132,7 +153,9 @@ interface WizardState {
   listPrice?: number
   sellerName?: string
   propertyType?: string
-  // Step 2 — Form Selection
+  // Terms — the coach's intake answers (lib/forms/form-wizard-sequence.ts), keyed by question.
+  terms?: IntakeAnswers
+  // Recommended Forms — Form Selection
   selectedForms: FormRef[]
   // Step 3 — Fill Forms (provider forms filled via iframe; "my forms" tracked manually)
   filledFormRefs: string[]
@@ -151,12 +174,12 @@ interface WizardState {
   // Step 3 — THE PROVIDER-WINDOW PATH (lane 89A): what the transaction provider's window reported
   // (SkySlope Forms posts its file / envelope ids to the host page) so the deal can record the send
   // that happened inside the provider. Null until the provider window says something.
-  providerWindow?: { provider: TransactionProvider; fileId?: string | null; envelopeId?: string | null; status?: string | null } | null
+  providerWindow?: { provider: LegalFormsProvider; fileId?: string | null; envelopeId?: string | null; status?: string | null } | null
   // Step 5/6
   offerId?: string
   esignProvider?: string | null
-  transactionProvider?: TransactionProvider | null
-  transactionProviderEmbedUrl?: string | null
+  legalFormsProvider?: LegalFormsProvider | null
+  legalFormsProviderEmbedUrl?: string | null
 }
 
 export interface FormWizardProps {
@@ -199,15 +222,24 @@ interface StagedPacket {
   prefilled: Record<string, unknown>      // contact + property + agent prefills the agent should verify
 }
 
-const STEP_LABELS_OFFER = ["Context", "Forms", "Fill", "Signers", "E-Sign", "Monitor"]
-const STEP_LABELS_LISTING = ["Context", "Forms", "Fill", "Signers", "E-Sign", "Monitor"]
-
-function stepLabels(mode: "offer" | "listing") {
-  return mode === "offer" ? STEP_LABELS_OFFER : STEP_LABELS_LISTING
+/** The owner's sequence, one list for both purposes (the labels are the spine's — never restated here). */
+function stepLabels(_mode: "offer" | "listing"): readonly string[] {
+  return FORM_WIZARD_STEP_LABELS
 }
 
-export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, agentName, agentEmail, open, onClose, documentId }: FormWizardProps) {
+/** The draft the wizard autosaves (never a signed URL, never a filled path — those are re-derived). */
+type WizardDraft = Pick<WizardState, "propertyAddress" | "propertyCity" | "propertyState" | "propertyZip" | "mlsNumber" | "listPrice" | "sellerName" | "propertyType" | "terms" | "selectedForms" | "signers" | "fieldValues" | "anchorRoles"> & { purpose: FormWizardPurpose; step: number; done?: boolean }
+
+export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserId, teamId, agentName, agentEmail, open, onClose, documentId }: FormWizardProps) {
+  // THE PURPOSE is the agent's answer to the opening question (StepPurpose), seeded by the door that opened
+  // the wizard; every `mode` read below follows it, so the step components are unchanged.
+  const [purpose, setPurpose] = useState<FormWizardPurpose>(initialMode)
+  const mode = purpose
   const [step, setStep] = useState(1)
+  const stepKey: FormWizardStepKey = stepKeyAt(step)
+  // Resume: the saved draft's timestamp when one was applied on open.
+  const [resumedFrom, setResumedFrom] = useState<string | null>(null)
+  const [draftChecked, setDraftChecked] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [myForms, setMyForms] = useState<{ name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }[]>([])
@@ -259,13 +291,68 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
     selectedForms: [],
     filledFormRefs: [],
     signers: buildInitialSigners(mode, contact, agentName, agentEmail),
-    transactionProvider: null,
-    transactionProviderEmbedUrl: null,
+    legalFormsProvider: null,
+    legalFormsProviderEmbedUrl: null,
   }))
 
   const update = useCallback(<K extends keyof WizardState>(key: K, value: WizardState[K]) => {
     setState(prev => ({ ...prev, [key]: value }))
   }, [])
+
+  // Switching the purpose re-seeds the parties for that purpose and clears the terms (they are per purpose).
+  const choosePurpose = useCallback((next: FormWizardPurpose) => {
+    if (next === purpose) return
+    setPurpose(next)
+    setState(prev => ({ ...prev, signers: buildInitialSigners(next, contact, agentName, agentEmail), terms: {}, selectedForms: [], filledFormRefs: [] }))
+  }, [purpose, contact, agentName, agentEmail])
+
+  // ── AUTOSAVE / RESUME (wave 142) — the forms kernel's draft, keyed by purpose + the person it is for ──
+  const draftFormName = `form-wizard:${purpose}`
+  const draftContextId = contact?.id ?? agentUserId
+  useEffect(() => {
+    if (!open || documentId || draftChecked) return
+    setDraftChecked(true)
+    ;(async () => {
+      try {
+        const res = await loadFormDraftAction({ form_name: `form-wizard:${initialMode}`, context_id: draftContextId })
+        const draft = res.success ? (res.data?.draft ?? null) : null
+        const saved = (draft?.field_values ?? null) as WizardDraft | null
+        if (!saved || saved.done || !draft) return
+        // Only onto a PRISTINE wizard — the agent's typing always wins over a saved draft.
+        setState(prev => {
+          if (prev.propertyAddress || prev.offerId || prev.listingId) return prev
+          return {
+            ...prev,
+            propertyAddress: saved.propertyAddress ?? "", propertyCity: saved.propertyCity ?? "", propertyState: saved.propertyState ?? "", propertyZip: saved.propertyZip ?? "",
+            mlsNumber: saved.mlsNumber, listPrice: saved.listPrice, sellerName: saved.sellerName, propertyType: saved.propertyType,
+            terms: saved.terms ?? {}, selectedForms: saved.selectedForms ?? [], signers: saved.signers?.length ? saved.signers : prev.signers,
+            fieldValues: saved.fieldValues, anchorRoles: saved.anchorRoles,
+          }
+        })
+        if (saved.purpose === "listing" || saved.purpose === "offer") setPurpose(saved.purpose)
+        setResumedFrom(draft.updated_at)
+      } catch { /* a draft that cannot be read is simply not resumed — the wizard starts clean */ }
+    })()
+  }, [open, documentId, draftChecked, draftContextId, initialMode])
+
+  useEffect(() => {
+    if (!open || documentId) return
+    if (!state.propertyAddress && !state.terms && state.selectedForms.length === 0) return
+    const done = stepKey === "monitor"
+    const payload: WizardDraft = {
+      purpose, step, done,
+      propertyAddress: state.propertyAddress, propertyCity: state.propertyCity, propertyState: state.propertyState, propertyZip: state.propertyZip,
+      mlsNumber: state.mlsNumber, listPrice: state.listPrice, sellerName: state.sellerName, propertyType: state.propertyType,
+      terms: state.terms, selectedForms: state.selectedForms, signers: state.signers, fieldValues: state.fieldValues, anchorRoles: state.anchorRoles,
+    }
+    const t = setTimeout(() => {
+      saveFormDraftAction({ form_name: draftFormName, context_type: purpose, context_id: draftContextId, field_values: payload as unknown as Record<string, unknown> })
+        .then(r => { if (!r.success) console.warn("[FormWizard] draft not saved:", r.error) })
+        .catch(e => console.warn("[FormWizard] draft not saved:", e))
+    }, 1500)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, documentId, purpose, step, state.propertyAddress, state.propertyCity, state.propertyState, state.propertyZip, state.mlsNumber, state.listPrice, state.propertyType, state.terms, state.selectedForms, state.signers, state.fieldValues, state.anchorRoles])
 
   // ── Packet preload — runs once when wizard opens with a documentId ──────
   // Pulls the staged packet from documents.metadata + filledPacket content,
@@ -388,8 +475,8 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
         setError((err as { error?: string }).error ?? "Could not approve packet")
         return
       }
-      // Surface as a step-5 jump so the agent can send for eSign next
-      setStep(5)
+      // Surface as a jump to the e-sign step so the agent can send for eSign next
+      setStep(stepNumber("esign"))
     } finally {
       setApproving(false)
     }
@@ -451,7 +538,7 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
         setEsignScope(data.esignScope ?? null)
         setEsignIsDefault(data.esignIsDefault === true)
         setEsignSetupError(data.esignError ?? null)
-        setState(prev => ({ ...prev, transactionProvider: data.provider ?? null, transactionProviderEmbedUrl: data.embedUrl ?? null }))
+        setState(prev => ({ ...prev, legalFormsProvider: data.provider ?? null, legalFormsProviderEmbedUrl: data.embedUrl ?? null }))
       } else {
         const err = await res.json().catch(() => ({}))
         setProviderInfo(null)
@@ -465,8 +552,10 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
 
   const goToStep = useCallback(async (next: number) => {
     setError(null)
-    if (next === 2 && step < 2) await loadStep2()
-    if (next === 4 && step === 3) {
+    // The libraries + provider settings load on the way into Recommended Forms; leaving Complete marks the
+    // packet filled for Review. Keys, never numbers (the sequence is the spine's).
+    if (next === stepNumber("recommended_forms") && step < next) await loadStep2()
+    if (next === stepNumber("review") && step === stepNumber("complete")) {
       setState(prev => ({ ...prev, filledFormRefs: prev.selectedForms.map(f => f.formRef) }))
     }
     setStep(next)
@@ -491,25 +580,19 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
         resolvedListingId = lookup.listingId
       }
 
+      // THE TERMS ARE THE AGENT'S ANSWERS (wave 142): the Terms step's intake becomes the offer record's
+      // real terms — this call used to send `offer_price: 0, earnest_money: 0, financing_type: "conventional"`
+      // and 21/10/21-day placeholders. `form_source` is spelled in the column's CHECK vocabulary
+      // (offerFormSourceFor): the old "my_forms,transaction_provider" join was a value offers.form_source
+      // refuses, so the whole insert was refused.
       const result = await createOffer(contact.id, brokerageId, agentUserId, {
         property_address: state.propertyAddress,
         property_city: state.propertyCity,
         property_state: state.propertyState,
         property_zip: state.propertyZip,
         listing_id: resolvedListingId,
-        offer_price: 0,
-        earnest_money: 0,
-        financing_type: "conventional",
-        financing_contingency: true,
-        financing_contingency_days: 21,
-        inspection_contingency: true,
-        inspection_period_days: 10,
-        appraisal_contingency: true,
-        appraisal_contingency_days: 21,
-        closing_date: "",
-        possession_terms: "at_closing",
-        escalation_clause: false,
-        form_source: state.selectedForms.map(f => f.source).join(","),
+        ...offerTermsToCreateOfferFields(state.terms ?? {}),
+        form_source: offerFormSourceFor(state.selectedForms.map(f => ({ source: f.source, providerName: f.providerName ?? null }))),
         form_provider_ref: state.selectedForms.map(f => f.formRef).join(","),
         // esign_provider is stamped by the SEND (submitForSignature → dispatch core) with the
         // method that actually carried the packet — not guessed here before anything is sent.
@@ -567,7 +650,7 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
       setHandoff(("handoff" in sent ? sent.handoff : null) ?? null)
       setSendNotice(("message" in sent ? sent.message : null) ?? null)
       if ("handoff" in sent && sent.handoff?.mode === "popup" && sent.handoff.urls[0]) openProviderPopup(sent.handoff.urls[0].url)
-      setStep(6)
+      setStep(stepNumber("monitor"))
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Unknown error")
     } finally {
@@ -648,8 +731,8 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
       // transaction provider's window — record that on the listing instead of stopping.
       const providerWindow = providerWindowSend(state)
       if (docs.length === 0 && !providerWindow) {
-        setSendNotice("Draft listing created. No filled form from your library was selected, so nothing was sent — add the listing agreement from My Forms (or send it from your provider) to get it signed.")
-        setStep(6)
+        setSendNotice("Draft listing created. No filled form from your library was selected, so nothing was sent — add the listing agreement from My Forms (or send it from your legal-forms provider) to get it signed.")
+        setStep(stepNumber("monitor"))
         return
       }
       const sent = await sendListingAgreementForSignatureAction({
@@ -670,7 +753,7 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
         ? `Listing agreement sent to the seller via ${sent.esignProvider}.`
         : `Listing agreement staged in ${sent.esignProvider} — send it from the window that just opened.`))
       if (sent.handoff?.mode === "popup" && sent.handoff.urls[0]) openProviderPopup(sent.handoff.urls[0].url)
-      setStep(6)
+      setStep(stepNumber("monitor"))
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Unknown error")
     } finally {
@@ -698,7 +781,10 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
           {/* NAR 2024: submitForSignature refuses until the buyer's commission disclosure is
               recorded, and a brand-new offer never has one — so the wizard's own send could
               never succeed. The existing disclosure dialog clears it in place; then Send again. */}
-          {step === 5 && mode === "offer" && blocker === "commission_disclosure_required" && state.offerId && (
+          {resumedFrom && stepKey !== "monitor" && (
+            <p className="mb-4 text-xs text-muted-foreground">Resumed your saved draft from {new Date(resumedFrom).toLocaleString()}. Everything you enter keeps saving.</p>
+          )}
+          {stepKey === "esign" && mode === "offer" && blocker === "commission_disclosure_required" && state.offerId && (
             <div className="mb-4 rounded-lg border p-3 flex items-center justify-between gap-3">
               <p className="text-xs text-muted-foreground">Record the buyer&apos;s commission disclosure, then press Send for E-Sign again.</p>
               <CommissionDisclosureDialog
@@ -710,7 +796,7 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
               />
             </div>
           )}
-          {step === 5 && esignSetupError && (
+          {stepKey === "esign" && esignSetupError && (
             <Alert className="mb-4">
               <AlertCircle className="h-4 w-4" />
               <AlertDescription className="text-xs">
@@ -719,7 +805,7 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
               </AlertDescription>
             </Alert>
           )}
-          {step === 5 && sendNotice && !error && (
+          {stepKey === "esign" && sendNotice && !error && (
             <p className="mb-4 text-xs text-emerald-700">{sendNotice}</p>
           )}
 
@@ -732,8 +818,11 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
             />
           )}
 
-          {step === 1 && <Step1Context mode={mode} state={state} update={update} />}
-          {step === 2 && (
+          {stepKey === "purpose" && <StepPurpose purpose={purpose} onChoose={choosePurpose} />}
+          {stepKey === "property" && <Step1Context mode={mode} state={state} update={update} />}
+          {stepKey === "parties" && <Step4Signers state={state} update={update} mode={mode} />}
+          {stepKey === "terms" && <StepTerms mode={mode} state={state} update={update} />}
+          {stepKey === "recommended_forms" && (
             <Step2Forms
               mode={mode}
               state={state}
@@ -771,10 +860,10 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
               }}
             />
           )}
-          {step === 3 && <Step3Fill state={state} mode={mode} agentName={agentName} providerInfo={providerInfo} update={update} />}
-          {step === 4 && <Step4Signers state={state} update={update} mode={mode} />}
-          {step === 5 && <Step5ESign state={state} mode={mode} esignProvider={esignProvider} esignMode={esignMode} esignScope={esignScope} esignIsDefault={esignIsDefault} update={update} busy={busy} onSubmit={mode === "offer" ? handleSubmitOffer : handleSubmitListing} />}
-          {step === 6 && mode === "listing" && state.listingId && (
+          {stepKey === "complete" && <Step3Fill state={state} mode={mode} agentName={agentName} providerInfo={providerInfo} update={update} />}
+          {stepKey === "review" && <StepReview mode={mode} state={state} esignProvider={esignProvider} providerInfo={providerInfo} />}
+          {stepKey === "esign" && <Step5ESign state={state} mode={mode} esignProvider={esignProvider} esignMode={esignMode} esignScope={esignScope} esignIsDefault={esignIsDefault} update={update} busy={busy} onSubmit={mode === "offer" ? handleSubmitOffer : handleSubmitListing} />}
+          {stepKey === "monitor" && mode === "listing" && state.listingId && (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <Check className="h-10 w-10 text-emerald-600" />
               <h3 className="text-lg font-semibold">Draft listing created</h3>
@@ -795,7 +884,7 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
               </Button>
             </div>
           )}
-          {step === 6 && mode === "offer" && state.offerId && (
+          {stepKey === "monitor" && mode === "offer" && state.offerId && (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <Check className="h-10 w-10 text-emerald-600" />
               <h3 className="text-lg font-semibold">{handoff ? "Offer ready to send" : "Offer sent for signature"}</h3>
@@ -817,9 +906,9 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
         <div className="border-t px-6 py-4 flex items-center justify-between">
           <Button variant="outline" onClick={() => step > 1 ? setStep(s => s - 1) : onClose()} disabled={busy}>
             <ChevronLeft className="h-4 w-4 mr-1" />
-            {step === 1 ? "Cancel" : "Back"}
+            {stepKey === "purpose" ? "Cancel" : "Back"}
           </Button>
-          {step < 5 && stagedPacket && step >= 1 && (
+          {step < stepNumber("esign") && stagedPacket && step >= 1 && (
             <Button
               variant="default"
               onClick={approvePacket}
@@ -831,13 +920,13 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
               Approve Packet
             </Button>
           )}
-          {step < 5 && (
-            <Button onClick={() => goToStep(step + 1)} disabled={busy || !canAdvance(step, state, mode)}>
-              Next
+          {step < stepNumber("esign") && (
+            <Button onClick={() => goToStep(step + 1)} disabled={busy || !canAdvance(stepKey, state, mode)}>
+              {stepKey === "review" ? "Approve packet & continue" : stepKey === "recommended_forms" ? "Approve forms" : "Next"}
               <ChevronRight className="h-4 w-4 ml-1" />
             </Button>
           )}
-          {step === 5 && (
+          {stepKey === "esign" && (
             <Button onClick={mode === "offer" ? handleSubmitOffer : handleSubmitListing} disabled={busy}>
               {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               {/* The listing lane now creates the draft AND sends the filled agreement
@@ -850,7 +939,7 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
                   : (mode === "offer" ? "Send for E-Sign" : "Create Draft & Send Agreement")}
             </Button>
           )}
-          {step === 6 && (
+          {stepKey === "monitor" && (
             <Button onClick={onClose}>Done</Button>
           )}
         </div>
@@ -875,11 +964,14 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
  * listing. The listing_agent row stays optional on purpose — on an offer it is often
  * unknown at draft time, and blocking on it would stop a legitimate draft.
  */
-function canAdvance(step: number, state: WizardState, mode: "offer" | "listing"): boolean {
-  if (step === 1) return state.propertyAddress.trim().length > 0
-  if (step === 2) return state.selectedForms.length > 0
-  if (step === 3) return true
-  if (step === 4) {
+function canAdvance(step: FormWizardStepKey, state: WizardState, mode: "offer" | "listing"): boolean {
+  if (step === "purpose") return true
+  if (step === "property") return state.propertyAddress.trim().length > 0
+  // The coach names what is missing (StepTerms); the required answers gate the packet, not the coach.
+  if (step === "terms") return missingRequiredIntake(mode, state.terms ?? {}).length === 0
+  if (step === "recommended_forms") return state.selectedForms.length > 0
+  if (step === "complete" || step === "review") return true
+  if (step === "parties") {
     const counterpartyRole = mode === "offer" ? "buyer" : "seller"
     const hasCounterparty = state.signers.some(
       (s) => s.role === counterpartyRole && s.email.trim().length > 0,
@@ -913,9 +1005,9 @@ function packetDocuments(state: WizardState): Array<{ name: string; storagePath:
  * window posted, when it did). Null when a library packet exists — that packet is dispatched.
  */
 function providerWindowSend(state: WizardState): { provider: string; envelopeId?: string | null } | null {
-  const providerForms = state.selectedForms.filter(f => f.source === "transaction_provider")
+  const providerForms = state.selectedForms.filter(f => f.source === "legal_forms_provider")
   if (providerForms.length === 0 || packetDocuments(state).length > 0) return null
-  const provider = state.providerWindow?.provider ?? providerForms[0].providerName ?? state.transactionProvider
+  const provider = state.providerWindow?.provider ?? providerForms[0].providerName ?? state.legalFormsProvider
   if (!provider) return null
   return { provider, envelopeId: state.providerWindow?.envelopeId ?? state.providerWindow?.fileId ?? null }
 }
@@ -976,7 +1068,138 @@ function buildInitialSigners(
   return signers
 }
 
-function StepBar({ step, labels }: { step: number; labels: string[] }) {
+// ─── Purpose — the opening question (wave 142) ───────────────────────────────
+
+function StepPurpose({ purpose, onChoose }: { purpose: FormWizardPurpose; onChoose: (p: FormWizardPurpose) => void }) {
+  const labels: Record<FormWizardPurpose, { title: string; detail: string }> = {
+    listing: { title: "Listing forms", detail: "A listing agreement packet for a seller — representation, period, price, disclosures." },
+    offer:   { title: "An offer", detail: "A purchase offer packet for a buyer — on one of our listings or an outside property." },
+  }
+  return (
+    <div className="space-y-4">
+      <h3 className="font-semibold">{FORM_WIZARD_OPENING_QUESTION}</h3>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {FORM_WIZARD_PURPOSES.map(p => (
+          <button key={p} type="button" onClick={() => onChoose(p)}
+            className={`text-left rounded-lg border p-4 hover:bg-muted/50 ${purpose === p ? "border-primary ring-1 ring-primary" : ""}`}>
+            <p className="text-sm font-medium">{labels[p].title}</p>
+            <p className="text-xs text-muted-foreground mt-1">{labels[p].detail}</p>
+          </button>
+        ))}
+      </div>
+      <div className="rounded-lg border p-3 bg-muted/30">
+        <p className="text-xs font-medium flex items-center gap-1.5"><Sparkles className="h-3.5 w-3.5" /> How the coach works</p>
+        <ul className="mt-1 space-y-0.5">
+          {AI_COACH_RULES.map(r => <li key={r} className="text-xs text-muted-foreground">· {r}</li>)}
+        </ul>
+      </div>
+    </div>
+  )
+}
+
+// ─── Terms — the coach's conversational intake (wave 142) ───────────────────
+
+function TermInput({ q, value, onChange }: { q: IntakeQuestion; value: IntakeAnswers[string]; onChange: (v: IntakeAnswers[string]) => void }) {
+  if (q.kind === "boolean") {
+    return (
+      <div className="flex gap-2">
+        {[{ v: true, l: "Yes" }, { v: false, l: "No" }].map(o => (
+          <Button key={o.l} type="button" size="sm" variant={value === o.v ? "default" : "outline"} onClick={() => onChange(o.v)}>{o.l}</Button>
+        ))}
+      </div>
+    )
+  }
+  if (q.kind === "select") {
+    return (
+      <select className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={typeof value === "string" ? value : ""} onChange={e => onChange(e.target.value || null)}>
+        <option value="">Choose…</option>
+        {(q.options ?? []).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    )
+  }
+  return (
+    <Input className="h-9 text-sm" type={q.kind === "number" ? "number" : q.kind === "date" ? "date" : "text"}
+      value={value === null || value === undefined ? "" : String(value)}
+      onChange={e => onChange(q.kind === "number" ? (e.target.value === "" ? null : Number(e.target.value)) : e.target.value)} />
+  )
+}
+
+function StepTerms({ mode, state, update }: { mode: "offer" | "listing"; state: WizardState; update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void }) {
+  const answers = state.terms ?? {}
+  const questions = intakeQuestionsFor(mode, answers)
+  const missing = missingRequiredIntake(mode, answers)
+  const setAnswer = (key: string, v: IntakeAnswers[string]) => update("terms", { ...answers, [key]: v })
+  return (
+    <div className="space-y-4">
+      <h3 className="font-semibold">{mode === "offer" ? "Offer terms" : "Listing terms"}</h3>
+      <p className="text-sm text-muted-foreground">
+        Answer what you know; the coach explains each one. Your answers are the terms the forms carry —
+        the coach never writes a price, a date or a legal term for you.
+      </p>
+      <div className="space-y-3">
+        {questions.map(q => (
+          <div key={q.key} className="rounded-lg border p-3 space-y-1.5">
+            <Label className="text-sm">{q.prompt}{q.required ? " *" : ""}</Label>
+            <TermInput q={q} value={answers[q.key]} onChange={v => setAnswer(q.key, v)} />
+            <p className="text-xs text-muted-foreground flex gap-1.5"><Sparkles className="h-3.5 w-3.5 shrink-0 mt-0.5" /><span>{q.coach}</span></p>
+          </div>
+        ))}
+      </div>
+      {missing.length > 0 ? (
+        <p className="text-xs text-amber-700">Still needed before the forms are recommended: {missing.join("; ")}.</p>
+      ) : (
+        <p className="text-xs text-emerald-700">Every required term is answered. Next, the coach recommends the forms your state package and these terms call for.</p>
+      )}
+    </div>
+  )
+}
+
+// ─── Review — the packet before it is sent (wave 142) ───────────────────────
+
+function StepReview({ mode, state, esignProvider, providerInfo }: { mode: "offer" | "listing"; state: WizardState; esignProvider: string | null; providerInfo: ProviderWindow | null | "loading" }) {
+  const answers = state.terms ?? {}
+  const questions = intakeQuestionsFor(mode, answers).filter(q => answers[q.key] !== undefined && answers[q.key] !== null && answers[q.key] !== "")
+  const libraryForms = state.selectedForms.filter(f => f.source === "my_forms")
+  const providerForms = state.selectedForms.filter(f => f.source === "legal_forms_provider")
+  const missing = missingRequiredIntake(mode, answers)
+  const fmt = (q: IntakeQuestion) => {
+    const v = answers[q.key]
+    if (typeof v === "boolean") return v ? "Yes" : "No"
+    if (q.kind === "select") return q.options?.find(o => o.value === v)?.label ?? String(v)
+    return String(v)
+  }
+  return (
+    <div className="space-y-4">
+      <h3 className="font-semibold">Review the packet</h3>
+      <p className="text-sm text-muted-foreground">Everything below goes to the signers next. Approving the packet is your decision — the coach only shows what it has.</p>
+      <div className="rounded-lg border p-4 space-y-3 bg-muted/30">
+        <div><p className="text-xs text-muted-foreground">Purpose</p><p className="text-sm font-medium">{mode === "offer" ? "Offer" : "Listing forms"}</p></div>
+        <div><p className="text-xs text-muted-foreground">Property</p><p className="text-sm font-medium">{state.propertyAddress}{state.propertyCity ? `, ${state.propertyCity}` : ""}{state.propertyState ? `, ${state.propertyState}` : ""}{state.propertyZip ? ` ${state.propertyZip}` : ""}</p></div>
+        <div>
+          <p className="text-xs text-muted-foreground">Parties ({state.signers.filter(s => s.email).length} with email)</p>
+          {state.signers.map((s, i) => <p key={i} className="text-xs">{SIGNER_ROLE_LABELS[s.role]}: {s.name || "—"}{s.email ? ` · ${s.email}` : " · no email"}</p>)}
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">Terms</p>
+          {questions.length === 0 ? <p className="text-xs">None answered.</p> : questions.map(q => <p key={q.key} className="text-xs">{q.prompt} <span className="font-medium">{fmt(q)}</span></p>)}
+          {missing.length > 0 && <p className="text-xs text-amber-700">Missing: {missing.join("; ")}</p>}
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">Packet ({state.selectedForms.length})</p>
+          {libraryForms.map(f => <p key={f.formRef} className="text-xs">{f.name} · in-platform{state.filledForms?.[f.formRef]?.filledPath ? " · filled" : " · not filled yet"}</p>)}
+          {providerForms.map(f => <p key={f.formRef} className="text-xs">{f.name} · {getCatalogEntry(f.providerName)?.label ?? f.providerName ?? "legal-forms provider"} (filled in its window)</p>)}
+          {state.selectedForms.length === 0 && <p className="text-xs text-amber-700">No forms selected.</p>}
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">Delivery</p>
+          <p className="text-xs">Legal forms: {providerInfo && providerInfo !== "loading" ? providerInfo.label : "platform library"} · Signatures: {getCatalogEntry(esignProvider)?.label ?? esignProvider ?? "your e-sign provider"}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function StepBar({ step, labels }: { step: number; labels: readonly string[] }) {
   return (
     <div className="flex items-center gap-1 mt-2">
       {labels.map((label, i) => {
@@ -1083,6 +1306,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
   const selected = state.selectedForms
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [showRecommendationNote, setShowRecommendationNote] = useState(false)
 
   function toggleMyForm(f: typeof myForms[0]) {
     const exists = selected.find(s => s.formRef === f.path && s.source === "my_forms")
@@ -1128,14 +1352,14 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
 
   function toggleProviderForm(f: ProviderFormItem) {
     if (!providerInfo || providerInfo === "loading") return
-    const exists = selected.find(s => s.source === "transaction_provider" && s.formRef === f.formId)
+    const exists = selected.find(s => s.source === "legal_forms_provider" && s.formRef === f.formId)
     if (exists) {
-      update("selectedForms", selected.filter(s => !(s.source === "transaction_provider" && s.formRef === f.formId)))
+      update("selectedForms", selected.filter(s => !(s.source === "legal_forms_provider" && s.formRef === f.formId)))
     } else {
       update("selectedForms", [
         ...selected,
         {
-          source:       "transaction_provider",
+          source:       "legal_forms_provider",
           formRef:      f.formId,
           name:         f.name,
           providerName: providerInfo.provider,
@@ -1150,15 +1374,72 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
   const scopeIcon = (scope: "brokerage" | "team" | "agent") =>
     scope === "brokerage" ? <Building2 className="h-3 w-3" /> : scope === "team" ? <Users className="h-3 w-3" /> : <User className="h-3 w-3" />
 
+  // THE RECOMMENDATION (wave 142): the state's verified package joined to what is ACTUALLY available
+  // (library + legal-forms provider), filtered by the Terms answers. Pure; nothing invented.
+  const available: AvailableForm[] = [
+    ...myForms.map(f => ({ ref: f.path, name: f.name, source: "my_forms" as const })),
+    ...((providerInfo && providerInfo !== "loading" && providerForms) ? providerForms.map(f => ({ ref: f.formId, name: f.name, source: "legal_forms_provider" as const, providerName: providerInfo.provider, category: f.category ?? null })) : []),
+  ]
+  const stateCode = state.propertyState.trim().toUpperCase()
+  let statePackage: ReturnType<typeof getStateForms> | null = null
+  if (stateCode.length === 2) { try { statePackage = getStateForms(stateCode, mode) } catch { statePackage = null } }
+  const recommendation = recommendForms({ purpose: mode, answers: state.terms ?? {}, statePackage, available, stateCode })
+  const recommendedRefs = recommendation.recommended.map(r => r.ref)
+  const allRecommendedSelected = recommendedRefs.length > 0 && recommendedRefs.every(ref => selected.some(s => s.formRef === ref))
+  const selectRecommended = () => {
+    const add = recommendation.recommended.filter(r => !selected.some(s => s.formRef === r.ref && s.source === r.source))
+    if (add.length === 0) return
+    update("selectedForms", [...selected, ...add.map(r => r.source === "my_forms"
+      ? { source: "my_forms" as const, formRef: r.ref, name: r.name, scope: myForms.find(f => f.path === r.ref)?.scope }
+      : { source: "legal_forms_provider" as const, formRef: r.ref, name: r.name, providerName: r.providerName as LegalFormsProvider | undefined })])
+  }
+
   return (
     <div className="space-y-4">
-      <h3 className="font-semibold">Select Forms</h3>
-      <p className="text-sm text-muted-foreground">Choose forms from your library and/or your transaction provider. You can select from both.</p>
+      <h3 className="font-semibold">Recommended Forms</h3>
+      <p className="text-sm text-muted-foreground">The coach recommends the forms your state package and your terms call for — only forms you actually have, from your library or your legal-forms provider. Approve the packet, add or remove as you see fit.</p>
+
+      <div className="rounded-lg border p-3 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-medium flex items-center gap-1.5"><Sparkles className="h-3.5 w-3.5" /> Recommended for this {mode === "offer" ? "offer" : "listing"}{stateCode.length === 2 ? ` (${stateCode})` : ""}</p>
+          <Button size="sm" variant="outline" disabled={recommendedRefs.length === 0 || allRecommendedSelected} onClick={selectRecommended}>
+            {allRecommendedSelected ? "Recommended forms selected" : `Select recommended (${recommendedRefs.length})`}
+          </Button>
+        </div>
+        {stateCode.length !== 2 && <p className="text-xs text-muted-foreground">Enter the property&apos;s state on the Property step to see its verified package.</p>}
+        {stateCode.length === 2 && !statePackage && <p className="text-xs text-destructive">No verified package for {stateCode}.</p>}
+        {recommendation.recommended.length === 0 && statePackage && (
+          <p className="text-xs text-muted-foreground">{providerInfo && providerInfo !== "loading" && providerForms === null ? "Load your legal-forms provider's library (the tab below) to recommend from it too." : "Nothing in your library or provider matches the package yet — add the forms, or pick them from your legal-forms provider."}</p>
+        )}
+        {recommendation.recommended.length > 0 && (
+          <ul className="space-y-0.5">
+            {recommendation.recommended.map(r => (
+              <li key={`${r.source}-${r.ref}`} className="text-xs flex items-start gap-1.5">
+                {selected.some(s => s.formRef === r.ref) ? <Check className="h-3 w-3 text-emerald-600 mt-0.5 shrink-0" /> : <Sparkles className="h-3 w-3 text-muted-foreground mt-0.5 shrink-0" />}
+                <span>{r.name} <span className="text-muted-foreground">· {r.reason}{r.source === "legal_forms_provider" ? ` · from ${getCatalogEntry(r.providerName)?.label ?? r.providerName}` : " · your library"}</span></span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {recommendation.missing.length > 0 && (
+          <ul className="space-y-0.5">
+            {recommendation.missing.map(m => (
+              <li key={m.packageForm} className="text-xs flex items-start gap-1.5"><AlertCircle className="h-3 w-3 text-amber-600 mt-0.5 shrink-0" /><span>{m.packageForm} <span className="text-muted-foreground">· {m.why}</span></span></li>
+            ))}
+          </ul>
+        )}
+        {statePackage && (
+          <button type="button" className="text-[11px] text-muted-foreground underline" onClick={() => setShowRecommendationNote(v => !v)}>
+            {showRecommendationNote ? "Hide" : "Why these?"}
+          </button>
+        )}
+        {showRecommendationNote && <p className="text-[11px] text-muted-foreground">Required forms and the agency disclosure come from the state&apos;s verified package; an addendum is recommended only when a term you answered calls for it (financing, inspection, appraisal, escalation, a sale contingency, a pre-1978 home, an association). The coach never adds a form nobody has.</p>}
+      </div>
 
       <Tabs defaultValue="my-forms">
         <TabsList className="w-full">
           <TabsTrigger value="my-forms" className="flex-1">My Forms</TabsTrigger>
-          <TabsTrigger value="provider" className="flex-1">Transaction Provider</TabsTrigger>
+          <TabsTrigger value="provider" className="flex-1">Legal-forms provider</TabsTrigger>
           <TabsTrigger value="upload" className="flex-1">Upload</TabsTrigger>
         </TabsList>
 
@@ -1204,7 +1485,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
             <Alert>
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>
-                No transaction provider configured.{" "}
+                No legal-forms provider configured.{" "}
                 <a href="/settings/integrations" className="underline">Set one up in Integrations.</a>
               </AlertDescription>
             </Alert>
@@ -1247,7 +1528,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
               {!providerFormsLoading && !providerFormsError && providerForms && providerForms.length > 0 && (
                 <div className="space-y-2">
                   {providerForms.map(f => {
-                    const checked = !!selected.find(s => s.source === "transaction_provider" && s.formRef === f.formId)
+                    const checked = !!selected.find(s => s.source === "legal_forms_provider" && s.formRef === f.formId)
                     return (
                       <label key={f.formId} className="flex items-center gap-3 p-3 border rounded-lg cursor-pointer hover:bg-muted/50">
                         <Checkbox checked={checked} onCheckedChange={() => toggleProviderForm(f)} />
@@ -1337,7 +1618,7 @@ function StatePackagePanel({ mode, stateCode, myForms, selected, onSelect }: {
 }) {
   const code = stateCode.trim().toUpperCase()
   if (code.length !== 2) {
-    return <p className="text-xs text-muted-foreground">Enter the property&apos;s state in step 1 to see its {mode === "offer" ? "offer" : "listing agreement"} package.</p>
+    return <p className="text-xs text-muted-foreground">Enter the property&apos;s state on the Property step to see its {mode === "offer" ? "offer" : "listing agreement"} package.</p>
   }
   let pkg: ReturnType<typeof getStateForms>
   try { pkg = getStateForms(code, mode) } catch (e) {
@@ -1360,7 +1641,7 @@ function StatePackagePanel({ mode, stateCode, myForms, selected, onSelect }: {
             {m.file ? <Check className="h-3 w-3 text-emerald-600 mt-0.5 shrink-0" /> : <AlertCircle className="h-3 w-3 text-amber-600 mt-0.5 shrink-0" />}
             <span>
               {m.required}
-              <span className="text-muted-foreground"> · {m.kind}{m.file ? ` → ${m.file.name}` : " — not in your library (add it, or pick it from your transaction provider)"}</span>
+              <span className="text-muted-foreground"> · {m.kind}{m.file ? ` → ${m.file.name}` : " — not in your library (add it, or pick it from your legal-forms provider)"}</span>
             </span>
           </li>
         ))}
@@ -1381,7 +1662,7 @@ function Step3Fill({ state, mode, agentName, providerInfo, update }: {
   update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void
 }) {
   const myFormsList = state.selectedForms.filter(f => f.source === "my_forms")
-  const hasProvider = state.selectedForms.some(f => f.source === "transaction_provider")
+  const hasProvider = state.selectedForms.some(f => f.source === "legal_forms_provider")
   // The deal's parties as the wizard already knows them (the contact it was opened from,
   // the agent's own profile) — prefilled ONLY into name fields that name that party.
   const parties = {
@@ -1643,7 +1924,7 @@ function Step3Fill({ state, mode, agentName, providerInfo, update }: {
           {myFormsList.length === 0 && (
             <p className="text-xs text-muted-foreground">
               Select the forms, fill them and send them for signature inside {providerInfo.label}
-              {providerInfo.embedMode === "iframe" ? " above" : "'s window"}; step 5 then records that send on this deal. To sign through a different
+              {providerInfo.embedMode === "iframe" ? " above" : "'s window"}; the E-Sign step then records that send on this deal. To sign through a different
               e-sign provider instead, download the filled PDFs from {providerInfo.label} and add them under My Forms → Upload.
             </p>
           )}
@@ -1909,7 +2190,7 @@ function Step5ESign({ state, mode, esignProvider, esignMode, esignScope, esignIs
   return (
     <div className="space-y-4">
       <h3 className="font-semibold">
-        {mode === "offer" ? "Review & Send for E-Sign" : "Review & Send the Listing Agreement"}
+        {mode === "offer" ? "Send for E-Sign" : "Send the Listing Agreement"}
       </h3>
       {mode === "listing" && (
         <p className="text-xs text-muted-foreground">
@@ -1922,7 +2203,7 @@ function Step5ESign({ state, mode, esignProvider, esignMode, esignScope, esignIs
       {providerWindow ? (
         <p className="text-xs text-muted-foreground">
           The forms you selected from {getCatalogEntry(providerWindow.provider)?.label ?? providerWindow.provider} were filled and sent for
-          signature inside its window (step 3). Pressing the button records that send on this {mode === "offer" ? "offer" : "listing"}
+          signature inside its window (the Complete step). Pressing the button records that send on this {mode === "offer" ? "offer" : "listing"}
           {providerWindow.envelopeId ? ` (envelope ${providerWindow.envelopeId})` : ""}; signed copies return through the provider connection.
         </p>
       ) : esignMode === "embedded_send" ? (
@@ -2017,10 +2298,10 @@ function Step5ESign({ state, mode, esignProvider, esignMode, esignScope, esignIs
 
       <div className="rounded-lg border p-4 space-y-2">
         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Providers</p>
-        {state.transactionProvider && (
+        {state.legalFormsProvider && (
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="text-xs">Forms from:</Badge>
-            <span className="text-sm capitalize">{state.transactionProvider}</span>
+            <span className="text-sm capitalize">{state.legalFormsProvider}</span>
           </div>
         )}
         {providerWindow ? (

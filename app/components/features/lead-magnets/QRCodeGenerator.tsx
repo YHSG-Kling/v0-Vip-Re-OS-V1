@@ -39,7 +39,11 @@ export function QRCodeGenerator({
       ? { qrCodeId: existingQrCodeId, qrImageUrl: existingQrImageUrl }
       : null
   )
-  const [label, setLabel] = useState(`Lead Magnet: ${magnetSlug}`)
+  // TOMBSTONE (wave 142, lane 142H): a "QR Code Label" input lived here and went NOWHERE —
+  // generateQRCodeAction never took it, and it cannot: qr_codes has ONE text column for the label and
+  // that column IS the idempotency key (`Lead Magnet QR: <magnetId>`, lib/marketing/tracked-qr.ts:152
+  // "the key IS the stored label … a prettier label is not worth a key"). A tenant label would need its
+  // own column (a migration — owner item), so the dead input is gone rather than kept as a promise.
   // THE EXISTING CODE'S RECORD (lane 85E, census 6d — the missing reader of
   // GET /api/lead-magnets/qr/[magnetId]'s session-gated record arm). A magnet
   // that already had a code opened this card knowing only its id: no tracked
@@ -175,19 +179,6 @@ export function QRCodeGenerator({
             </Button>
           </div>
         </div>
-
-        {/* Label */}
-        {!qrImageUrl && (
-          <div className="space-y-2">
-            <Label htmlFor="qr-label">QR Code Label</Label>
-            <Input
-              id="qr-label"
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              placeholder="e.g. Yard Sign QR Code"
-            />
-          </div>
-        )}
 
         {error && <p className="text-sm text-destructive">{error}</p>}
 

@@ -8,6 +8,9 @@ import { getCatalogEntry } from "@/lib/integrations/providers/catalog"
 import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
 import { OFFER_EVENT, OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 import { logEventAndTrigger } from "@/lib/events/event-helpers"
+// THE SENT HOP (wave 142, lane 142B): evidence + the agent's deduped bell for the status this send stamps.
+import { recordEsignPacketHop } from "@/lib/esign/packet-state-writer"
+import type { EsignPacketState } from "@/lib/esign/packet-states"
 import {
   planOutboundWatch,
   OUTSIDE_LISTING_AGENT_EMAIL_KEY,
@@ -444,6 +447,17 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
       blockerType: "offer_update_failed",
       providerError,
     }
+  }
+  // THE SENT / STAGED HOP (owner: "notifications at every hop (sent, …)"): the evidence row and the
+  // deduped bell for the state just stamped above (the owner's `draft` is the live `pending`,
+  // lib/esign/packet-states.ts) — a re-send of a packet already 'sent' rings nothing.
+  {
+    const stampedState: EsignPacketState = dispatch.status === "sent" ? "sent" : "pending"
+    const hop = await recordEsignPacketHop(supabase, {
+      brokerageId: callerRow.brokerage_id as string, record: { table: "offers", id: offerId },
+      state: stampedState, source: "ui", actorUserId: userId, provider: dispatch.providerName ?? null, envelopeId: envelopeId ?? null,
+    })
+    if (!hop.ok) console.error(`[submit-for-signature] offer ${offerId} ${stampedState} hop not recorded: ${hop.reason}`)
   }
 
   // Sync the operational index. Until this pass the signature-requested event

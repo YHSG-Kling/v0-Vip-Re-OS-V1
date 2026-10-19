@@ -49,6 +49,11 @@ import { evalAnchorExecution, type FormAnchorStatus, type AnchorExecutionResult 
 import { recordLifecycleEvent } from "@/lib/events/lifecycle-event-core"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
+// THE ONE PACKET LIFECYCLE (wave 142, lane 142B): "already past all-signed" is asked of the ladder,
+// never of one literal — a packet in compliance_pending is past fully_signed, and a redelivered
+// "envelope completed" must not regress it. The hop bell + evidence ride the one writer.
+import { isAtOrPastAllSigned, type EsignTerminalFailureState } from "@/lib/esign/packet-states"
+import { advanceEsignPacketState, recordEsignPacketHop } from "@/lib/esign/packet-state-writer"
 
 type AnySupabase = SupabaseClient<any, any, any>
 
@@ -429,7 +434,7 @@ async function applyReadyWrites(
         : Promise.resolve({ data: null } as any)
   const { data: matchedOffer } = await offerLookup
 
-  if (matchedOffer && (matchedOffer as any).esign_status !== "fully_signed") {
+  if (matchedOffer && !isAtOrPastAllSigned((matchedOffer as any).esign_status)) {
     wroteSomething = true
     const { error: offerStampError } = await supabase
       .from("offers")
@@ -453,6 +458,15 @@ async function applyReadyWrites(
     if (!offerEvt.ok) console.error(`[esign-execution-loop] offer ${(matchedOffer as any).id} ESIGN_COMPLETED event not recorded: ${offerEvt.error}`)
 
     if (!offerStampError && (matchedOffer as any).brokerage_id) {
+      // THE ALL-SIGNED HOP (owner: "signing complete → … notify agent + responsible compliance → auto-submit
+      // the packet to compliance"): the bell + evidence for the stamp just written, deduped per (offer,
+      // state) so a redelivery rings nothing; then the compliance loop, which records its own hops.
+      const hop = await recordEsignPacketHop(supabase, {
+        brokerageId: (matchedOffer as any).brokerage_id as string,
+        record: { table: "offers", id: (matchedOffer as any).id as string },
+        state: "fully_signed", source: "webhook", provider: ctx.providerSource, envelopeId: ctx.envelopeId,
+      })
+      if (!hop.ok) console.error(`[esign-execution-loop] offer ${(matchedOffer as any).id} all-signed hop not recorded: ${hop.reason}`)
       try {
         const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
         await runOfferComplianceLoop(supabase as any, {
@@ -491,6 +505,16 @@ async function applyReadyWrites(
       .select("lifecycle_stage, brokerage_id")
       .eq("id", (matchedAgreement as any).listing_id)
       .maybeSingle()
+
+    if (!agreementExecutedErr && (listingRow as any)?.brokerage_id) {
+      // THE ALL-SIGNED HOP for the listing agreement — bell + evidence, deduped (wave 142, lane 142B).
+      const hop = await recordEsignPacketHop(supabase, {
+        brokerageId: (listingRow as any).brokerage_id as string,
+        record: { table: "listing_agreements", id: (matchedAgreement as any).id as string },
+        state: "fully_signed", source: "webhook", provider: ctx.providerSource, envelopeId: ctx.envelopeId,
+      })
+      if (!hop.ok) console.error(`[esign-execution-loop] listing agreement ${(matchedAgreement as any).id} all-signed hop not recorded: ${hop.reason}`)
+    }
 
     if ((listingRow as any)?.brokerage_id && (listingRow as any).lifecycle_stage === "LISTING_AGREEMENT_INITIATED") {
       await transitionLifecycle({
@@ -539,4 +563,51 @@ async function applyReadyWrites(
   }
 
   return wroteSomething
+}
+
+export interface EnvelopeTerminalStateResult {
+  brokerageId: string | null
+  /** The packet records the provider's outcome landed on. */
+  offers: number
+  agreements: number
+  /** Every refusal, by name — never silence (a record at fully_executed is never regressed; a tenant that cannot be resolved records nothing). */
+  refused: string[]
+}
+
+/**
+ * THE PROVIDER'S TERMINAL OUTCOME (wave 142, lane 142B; owner: "notifications at every hop … failed/
+ * declined/expired"). The four webhooks used to `ignore` a declined / voided / expired envelope —
+ * the agent learned of it from the provider's email, or never. The outcome is recorded on the matched
+ * offer (provider_envelope_id) and listing agreement (provider_ref) through the ONE writer: the ladder
+ * refuses it over a fully executed packet, dedupes a redelivery, leaves the evidence row and rings the
+ * agent's bell (high priority). Tenant = the envelope's resolved brokerage (resolveEnvelopeBrokerageId —
+ * ambiguous across tenants ⇒ refused, nothing written). Never throws into a webhook.
+ */
+export async function recordEnvelopeTerminalState(
+  supabase: AnySupabase,
+  input: { provider: string; envelopeId: string; state: EsignTerminalFailureState; reason?: string | null },
+): Promise<EnvelopeTerminalStateResult> {
+  const out: EnvelopeTerminalStateResult = { brokerageId: null, offers: 0, agreements: 0, refused: [] }
+  const brokerageId = await resolveEnvelopeBrokerageId(supabase, input.envelopeId)
+  if (!brokerageId) { out.refused.push(`envelope ${input.envelopeId}: no single tenant resolves it — nothing recorded`); return out }
+  out.brokerageId = brokerageId
+  const detail = input.reason ? `Provider said: ${input.reason}` : null
+
+  const { data: offers, error: offersErr } = await supabase
+    .from("offers").select("id").eq("brokerage_id", brokerageId).eq("provider_envelope_id", input.envelopeId)
+  if (offersErr) out.refused.push(`offers read refused: ${offersErr.message}`)
+  for (const o of (offers ?? []) as Array<{ id: string }>) {
+    const r = await advanceEsignPacketState(supabase, { brokerageId, record: { table: "offers", id: o.id }, to: input.state, source: "webhook", provider: input.provider, envelopeId: input.envelopeId, detail })
+    if (r.ok) { if (!r.noop) out.offers++ } else out.refused.push(`offer ${o.id}: ${r.reason}`)
+  }
+
+  const { data: agreements, error: agreementsErr } = await supabase
+    .from("listing_agreements").select("id").eq("brokerage_id", brokerageId).eq("provider_ref", input.envelopeId)
+  if (agreementsErr) out.refused.push(`listing_agreements read refused: ${agreementsErr.message}`)
+  for (const a of (agreements ?? []) as Array<{ id: string }>) {
+    const r = await advanceEsignPacketState(supabase, { brokerageId, record: { table: "listing_agreements", id: a.id }, to: input.state, source: "webhook", provider: input.provider, envelopeId: input.envelopeId, detail })
+    if (r.ok) { if (!r.noop) out.agreements++ } else out.refused.push(`listing agreement ${a.id}: ${r.reason}`)
+  }
+  for (const line of out.refused) console.error(`[esign-execution-loop] terminal ${input.state} via ${input.provider}: ${line}`)
+  return out
 }

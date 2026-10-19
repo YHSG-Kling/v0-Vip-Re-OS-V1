@@ -198,7 +198,7 @@ export function LenderLoanList({ loans }: { loans: Loan[] }) {
                       <TableCell>
                         {transactionId && (
                           <Button variant="ghost" size="icon" asChild>
-                            <Link href={`/portal/lender/${transactionId}`}>
+                            <Link href={`/portal/lender/${transactionId}`} aria-label="Open loan">
                               <ChevronRight className="h-4 w-4" />
                             </Link>
                           </Button>

@@ -44,6 +44,14 @@
  *      otherwise NOT CERTIFIED with its reasons (never silently green). The
  *      verdict line "RELEASE: READY / NOT READY" is the integrator's reading;
  *      "guards green" alone is never READY.
+ *   B  PRODUCTION BLOCKERS (wave 142, lane 142I) — every blocker of the wave-141
+ *      final report re-proved at HEAD from code + header stamps and CLASSIFIED
+ *      (PASS / BLOCKED / WAITING_EXTERNAL / PENDING lane / UNSUPPORTED); the
+ *      legal-forms default rule (a per-tenant default is absent or certified);
+ *      the Playwright UI smoke wiring; no live row is read.
+ *   G′ WAVE 142 GATES (lane 142I) — the thirteen wave-142 ruling areas mapped to
+ *      the proof keys lanes 142A–G register BY CONTRACT, hookLanes naming the lane;
+ *      canaries are lane 142J's (the integrator fills the column from its notes).
  *
  * Measurement (CLAUDE.md §2): code tokens are read from stripComments +
  * blankStrings source; every absence assertion has a positive control.
@@ -59,6 +67,8 @@ import { CRON_MANAGER, MAINTENANCE_DOMAINS, MANAGERS } from "../lib/kernel/manag
 import { WEBHOOK_CONTRACT, type WebhookContractEntry } from "../lib/providers/webhook-contract"
 import { classifyProxyPath } from "../app/constants/auth"
 import { TENANT_POLICY_SETTINGS_KEYS } from "../lib/kernel/tenant-policy"
+import { claimOf } from "./migration-status"
+import { providerOfferVerdict, DEFAULT_ESIGN_PROVIDER } from "../lib/integrations/providers/catalog"
 
 const ROOT = process.cwd()
 let pass = 0, fail = 0
@@ -670,6 +680,270 @@ check("X6 POSITIVE CONTROL — a row with no status / no lane is incomplete; a h
   })())
 
 // ═════════════════════════════════════════════════════════════════════════════
+// WAVE 142 (lane 142I) — THE PRODUCTION BLOCKERS RE-PROVED AT HEAD.
+// The wave-141 final report closed with nine owner blockers (fifteen items). Each is re-proved here
+// from CODE — stripped source (a comment or a tombstone is not a rule), header stamps (a migration
+// file's own claim, read through the ONE classifier scripts/migration-status.ts claimOf) and the
+// workflow files — and CLASSIFIED beside its check:
+//   PASS              the code-side rule holds at HEAD (everything the repo can prove);
+//   BLOCKED           an owner / platform-staff configuration the code refuses to fake (an env key, a
+//                     Stripe price, a tier snapshot, owner-held DDL) — the code's refusal IS the proof;
+//   WAITING_EXTERNAL  a credential, a DNS record or a run that lives outside the repo;
+//   PENDING <lane>    a wave-142 lane contract whose proof key has not landed (reads NOT CERTIFIED in G′);
+//   UNSUPPORTED       a stated limitation — never a fake control.
+// This guard reads NO live row: the live database has not been operated (support_tickets 0, offers 0,
+// every render table 0 on 2026-10-19), so any live reader of an operational count classifies "0 rows"
+// NOT_APPLICABLE, never PASS; the structural checks below (columns, policies, settings, routes) are the
+// code-provable half.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── B · PRODUCTION BLOCKERS ──────────────────────────────────────────────────
+console.log("\n[B · production blockers re-proved at HEAD — the code-side rule of every wave-141 blocker, classified]")
+/** Comments blanked, STRINGS INTACT — the probe's subject is a literal (a table, a status, an env key, a vendor). */
+const bc = (p: string) => blankComments(read(p))
+type ProofState = "ok" | "absent" | "unchained" | "no-file"
+/** Every guard* chain joined — membership is the word-boundary rule, never a position (wave 107). */
+const guardChain = Object.entries(pkg.scripts).filter(([k]) => k.startsWith("guard")).map(([, v]) => v).join(" && ")
+/** PURE — one proof key's state: registered in package.json, in a guard chain, its script on disk. */
+function proofStateFor(key: string, scripts: Record<string, string>, chain: string, fileExists: (rel: string) => boolean): ProofState {
+  const script = scripts[key]
+  if (!script) return "absent"
+  if (!new RegExp(`npm run ${esc(key)}(\\s|&|$)`).test(chain)) return "unchained"
+  const file = script.match(/(scripts\/[\w./\[\]-]+\.ts)/)?.[1]
+  if (file && !fileExists(file)) return "no-file"
+  return "ok"
+}
+const proofState = (key: string) => proofStateFor(key, pkg.scripts, guardChain, (rel) => existsSync(join(ROOT, rel)))
+type BlockerClass = "PASS" | "BLOCKED" | "WAITING_EXTERNAL" | "PENDING" | "UNSUPPORTED"
+interface BlockerRow { id: string; blocker: string; classification: BlockerClass; who: string; reading: string }
+const blockerRows: BlockerRow[] = []
+const classify = (id: string, blocker: string, classification: BlockerClass, who: string, reading: string) => { blockerRows.push({ id, blocker, classification, who, reading }) }
+
+// B1 — SECRETS_ENCRYPTION_KEY + re-seal
+const secretCrypto = codeOf(read("lib/security/secret-crypto.ts"))
+const readinessCode = codeOf(read("lib/kernel/tenant-readiness.ts"))
+const readinessBc = bc("lib/kernel/tenant-readiness.ts")
+/** PURE — the readiness contract's security check BLOCKS (never passes, never repairs) when encryption is unconfigured. */
+function securityCheckFailsClosed(code: string): boolean {
+  return /requiredSecurityState:\s*async[\s\S]{0,600}?if\s*\(!configured\)\s*return\s+blocked\(/.test(code)
+}
+check("B1 SECRETS_ENCRYPTION_KEY — a new secret write refuses without it (SecretStorageRefusedError), isEncryptionConfigured is the one reader, the readiness contract BLOCKS requiredSecurityState (never repairs), the re-seal action exists and is mounted on the OS Sentinel board, and the key is a CORE env (E1–E3)",
+  /class SecretStorageRefusedError/.test(secretCrypto) && /export function isEncryptionConfigured/.test(secretCrypto) && securityCheckFailsClosed(readinessCode)
+  && /export async function resealLegacyPlaintextSecretsAction/.test(codeOf(read("app/actions/superadmin/secret-migration.ts")))
+  && /\bresealLegacyPlaintextSecretsAction\b/.test(codeOf(read("app/dashboard/superadmin/sentinel/os-sentinel-board.tsx")))
+  && (CORE_ENV as readonly string[]).includes("SECRETS_ENCRYPTION_KEY"))
+check("B1c POSITIVE CONTROL — a security check that PASSES when unconfigured is not fail-closed; one that BLOCKS is",
+  !securityCheckFailsClosed(`requiredSecurityState: async (c) => { const configured = x(); if (!configured) return pass(""); return pass("") },`)
+  && securityCheckFailsClosed(`requiredSecurityState: async (c) => { const configured = x(); if (!configured) return blocked(""); return pass("") },`))
+classify("B1", "SECRETS_ENCRYPTION_KEY in Production + re-seal", "BLOCKED", "owner sets the Vercel env; platform staff run the OS Sentinel re-seal", "code refuses plaintext and blocks readiness without the key; the env value is not readable here")
+
+// B2 — the four required platform lanes (Twilio voice_sms, email, Stripe payments, AI gateway ai_llm)
+const requiredCats = [...(readinessBc.match(/REQUIRED_PROVIDER_CATEGORIES[^=]*=\s*new Set\(\[([^\]]*)\]\)/)?.[1] ?? "").matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]).sort()
+const RULING_LANES = ["ai_llm", "email", "payments", "voice_sms"]
+check(`B2 the required provider lanes are exactly the ruling's four (${requiredCats.join(", ") || "none read"}), a dark required lane BLOCKS the readiness contract (owner: platform), the posture derives platform_dark from an absent platform key, and each lane's env key is written in .env.example`,
+  requiredCats.join() === RULING_LANES.join() && /providerState:\s*async[\s\S]{0,900}?if\s*\(darkRequired\.length\)\s*return\s+blocked\(/.test(readinessCode)
+  && /return \{ state: "platform_dark", ready: false \}/.test(bc("lib/platform/provider-posture.ts"))
+  && ["TWILIO_ACCOUNT_SID", "SENDGRID_API_KEY", "STRIPE_SECRET_KEY", "AI_GATEWAY_API_KEY"].every((n) => envExampleNames.has(n)))
+classify("B2", "Twilio / email / Stripe / AI-gateway lanes lit at platform level", "BLOCKED", "platform staff set the platform env keys", "the contract blocks providerState while a required lane is dark; the keys are not readable here")
+
+// B3 — Stripe tier / seat / metered / setup / vendor prices
+const planCatalog = bc("lib/billing/plan-catalog.ts")
+check("B3 prices are NEVER code literals: PRICE_NOT_CONFIGURED is the one typed state, isConfiguredPriceCents the one test, the plan checkout refuses through planPriceNotConfigured, the incident is raised through raisePriceNotConfiguredIncident, and the price proofs (plan-catalog, billing-convergence) are chained",
+  /export const PRICE_NOT_CONFIGURED = "price_not_configured"/.test(planCatalog) && /export function isConfiguredPriceCents/.test(planCatalog)
+  && /planPriceNotConfigured\(/.test(codeOf(read("lib/billing/subscription-activation.ts")))
+  && /export async function raisePriceNotConfiguredIncident/.test(codeOf(read("lib/billing/price-not-configured.ts")))
+  && proofState("test:plan-catalog") === "ok" && proofState("test:billing-convergence") === "ok")
+classify("B3", "Stripe tier / seat / metered / setup / vendor price ids", "BLOCKED", "owner administers subscription_tiers.*_price_cents + Stripe price ids", "every money move refuses price_not_configured; the live catalogue is not read here (the database has not been operated)")
+
+// B4 — one canonical config snapshot per tier
+const trialFunnel = bc("lib/platform/trial-funnel.ts")
+const canonicalTiers = [...(bc("lib/kernel/tenant-creation.ts").match(/export const CANONICAL_TIERS[^=]*=\s*\[([^\]]*)\]/)?.[1] ?? "").matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1])
+check(`B4 the tier snapshot is read from platform_config_snapshots by payload.recommendedTier and is null when absent; the readiness contract BLOCKS the snapshot check without one; ${canonicalTiers.length} canonical tier(s) each need one (${canonicalTiers.join(", ")})`,
+  /\.from\("platform_config_snapshots"\)[\s\S]{0,300}?\.eq\("payload->>recommendedTier", tier\)/.test(trialFunnel) && /if \(error \|\| !data\) return null/.test(trialFunnel)
+  && /snapshot:\s*async[\s\S]{0,600}?if\s*\(!snap\)\s*return\s+blocked\(/.test(readinessCode) && canonicalTiers.length >= 4)
+classify("B4", "one canonical config snapshot per tier", "BLOCKED", "platform staff capture one snapshot per canonical tier", `${canonicalTiers.length} tiers; the contract blocks the snapshot check for a tenant on a tier with none`)
+
+// B5 — owner-held DDL + the reviewed superadmin / RLS migration (lane 142A writes it)
+const MIG = "supabase/migrations"
+const migrationFiles = readdirSync(join(ROOT, MIG)).filter((f) => f.endsWith(".sql"))
+const migrationNamed = (n: number) => migrationFiles.find((f) => new RegExp(`^m${n}-`).test(f)) ?? null
+const stampOf = (f: string | null) => (f ? claimOf(read(`${MIG}/${f}`)) : "absent")
+const ownerSqlStamped = (f: string | null) => !!f && /OWNER SQL/i.test(read(`${MIG}/${f}`).slice(0, 600))
+/** PURE — the policy census of an ALTER POLICY migration. SQL `--` comments are removed FIRST (CLAUDE.md §2 — the
+ *  same idiom parseMigrationAdds uses); quoted literals are KEPT because the retired inline arm IS a quoted literal.
+ *  Counts statements, ALTER POLICY statements, DROPs (refused: the MCP holds destructive DDL for the owner), inline
+ *  user_type superadmin arms, and policies confined by neither a brokerage predicate nor a platform identity.
+ *  BLIND SPOT: a `--` inside a quoted literal truncates that line (as in parseMigrationAdds). */
+function rlsPolicyCensus(sql: string): { statements: number; alterPolicy: number; drops: number; superadminArms: number; unconfined: number } {
+  const code = sql.split("\n").map((l) => { const i = l.indexOf("--"); return i >= 0 ? l.slice(0, i) : l }).join("\n")
+  const out = { statements: 0, alterPolicy: 0, drops: 0, superadminArms: 0, unconfined: 0 }
+  for (const raw of code.split(";")) {
+    const stmt = raw.trim()
+    if (!stmt) continue
+    out.statements++
+    if (/^DROP\s/i.test(stmt)) out.drops++
+    if (/\bALTER\s+POLICY\b/i.test(stmt)) {
+      out.alterPolicy++
+      if (/\buser_type\b[^;]*'super_?admin'/i.test(stmt)) out.superadminArms++
+      if (!/\bbrokerage_id\b|\bis_platform_admin\s*\(\)|\bis_platform_staff\s*\(\)|\bcurrent_user_brokerage_id\s*\(\)/i.test(stmt)) out.unconfined++
+    }
+  }
+  return out
+}
+const m739 = migrationNamed(739), m771 = migrationNamed(771), m780 = migrationNamed(780), m781 = migrationNamed(781), m782 = migrationNamed(782)
+const m780Sql = m780 ? read(`${MIG}/${m780}`) : ""
+check("B5a the owner-held DDL files exist and state their status (739: three DROP INDEX; 771: DROP COLUMN), and 780 defines is_platform_admin + is_platform_staff on platform_role",
+  !!m739 && !!m771 && !!m780 && ["applied", "not_applied"].includes(stampOf(m739)) && ["applied", "not_applied"].includes(stampOf(m771))
+  && /CREATE OR REPLACE FUNCTION public\.is_platform_admin\(\)/.test(m780Sql) && /CREATE OR REPLACE FUNCTION public\.is_platform_staff\(\)/.test(m780Sql), `739 ${stampOf(m739)}, 771 ${stampOf(m771)}, 780 ${stampOf(m780)}`)
+const m781Census = m781 ? rlsPolicyCensus(read(`${MIG}/${m781}`)) : null
+check("B5b when the reviewed ALTER POLICY migration (lane 142A's, 781) is present: no DROP statement, ≥1 ALTER POLICY, no inline user_type superadmin arm, every altered policy confined by brokerage or gated on a platform identity, and a stated header",
+  !m781 || (m781Census!.drops === 0 && m781Census!.alterPolicy > 0 && m781Census!.superadminArms === 0 && m781Census!.unconfined === 0 && stampOf(m781) !== "unstated"),
+  m781Census ? `${m781} ${JSON.stringify(m781Census)} stamp ${stampOf(m781)}` : "absent at HEAD (lane 142A contract)")
+const m782Sql = m782 ? read(`${MIG}/${m782}`) : ""
+const m782NewCheck = m782Sql.match(/ADD\s+CONSTRAINT\s+users_user_type_check[\s\S]*?\(([\s\S]*?)\)\s*\)?\s*;/i)?.[1] ?? ""
+check("B5c when the owner-SQL users_user_type_check file (lane 142A's, 782) is present: it is stamped OWNER SQL, drops and re-adds users_user_type_check, and the new vocabulary omits 'superadmin'",
+  !m782 || (ownerSqlStamped(m782) && /DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?users_user_type_check/i.test(m782Sql) && /ADD\s+CONSTRAINT\s+users_user_type_check/i.test(m782Sql) && m782NewCheck.length > 0 && !/'superadmin'/.test(m782NewCheck)),
+  m782 ? `${m782} owner-stamped ${ownerSqlStamped(m782)}` : "absent at HEAD (lane 142A contract)")
+check("B5d POSITIVE CONTROL — the policy census catches an inline superadmin arm, an unconfined policy and a DROP; a confined ALTER POLICY passes; a commented-out DROP is not a statement",
+  (() => { const c = rlsPolicyCensus("-- DROP POLICY x ON t;\nALTER POLICY p ON public.t USING (user_type = 'superadmin' OR brokerage_id = current_user_brokerage_id());\nALTER POLICY q ON public.t USING (true);\nDROP POLICY r ON public.t;\nALTER POLICY s ON public.t USING (is_platform_admin());"); return c.statements === 4 && c.alterPolicy === 3 && c.superadminArms === 1 && c.unconfined === 1 && c.drops === 1 })())
+/** PURE — live authority arms testing the dead user_type 'superadmin' (strings intact, comments blanked). */
+function superadminTypeArms(bcSrc: string): number { return (bcSrc.match(/\b(?:user_type|userType)\s*(?:===?|!==?)\s*["']superadmin["']/g) ?? []).length }
+const armFiles = [...RT].filter(([, t]) => superadminTypeArms(t.bc) > 0).map(([f]) => f)
+console.log(`    reading: ${armFiles.length} runtime file(s) still test user_type === 'superadmin' as an authority arm (lane 142A's census; 0 live rows carry that type): ${armFiles.join(", ") || "none"}`)
+check("B5e POSITIVE CONTROL — the arm finder sees a live arm and not a comment", superadminTypeArms(`const s = profile?.user_type === "superadmin" || x`) === 1 && superadminTypeArms(blankComments(`// user_type === "superadmin"\nconst y = 1`)) === 0)
+const migClass = (f: string | null, pendingLane: string, who: string): [BlockerClass, string] => !f ? ["PENDING", `${pendingLane} contract — file not landed`] : stampOf(f) === "applied" ? ["PASS", `${f} stamped applied`] : ["BLOCKED", `${f} stamped ${stampOf(f)} — ${who}`]
+for (const [id, label, f, lane, who] of [["B5.1", "739 three DROP INDEX", m739, "integrator", "owner SQL editor (the MCP holds destructive DDL)"], ["B5.2", "771 DROP COLUMN global_settings (the retired CRM key — lane 141D)", m771, "integrator", "owner SQL editor"], ["B5.3", "781 ALTER POLICY set (37 policies)", m781, "142A", "integrator applies via MCP, one statement per call"], ["B5.4", "782 users_user_type_check without superadmin", m782, "142A", "owner SQL editor (DROP CONSTRAINT is held)"]] as const) {
+  const [cls, reading] = migClass(f, lane, who)
+  classify(id, label, cls, who, reading)
+}
+
+// B6 — Mapbox / Open-Meteo / Google Ads declarations + credentials
+const adapters = bc("lib/kernel/provider-adapters.ts"), registry = bc("lib/agentic-os/connector-registry.ts")
+const adapterEnv = (key: string) => [...(adapters.match(new RegExp(`^\\s*${key}:\\s*\\{[^\\n]*`, "m"))?.[0] ?? "").matchAll(/envVars:\s*\[([^\]]*)\]/g)].flatMap((m) => [...m[1].matchAll(/"([A-Z0-9_]+)"/g)].map((x) => x[1]))
+const b6Env = { mapbox: adapterEnv("mapbox"), open_meteo: adapterEnv("open_meteo"), google_ads: adapterEnv("google_ads") }
+check(`B6 Mapbox / Open-Meteo / Google Ads each declare their credential env (${Object.entries(b6Env).map(([k, v]) => `${k}: ${v.join("+") || "none"}`).join("; ")}), every one is written in .env.example, Google Ads speaks ONE version constant with its published sunset, and Mapbox has a platform probe`,
+  b6Env.mapbox.includes("MAPBOX_TOKEN") && b6Env.open_meteo.includes("OPEN_METEO_API_KEY") && b6Env.google_ads.includes("GOOGLE_ADS_DEVELOPER_TOKEN")
+  && Object.values(b6Env).flat().every((n) => envExampleNames.has(n))
+  && /export const GOOGLE_ADS_API_VERSION = "v\d+"/.test(registry) && /deprecatedAfter:\s*GOOGLE_ADS_API_SUNSET_AFTER/.test(adapters)
+  && /^\s*mapbox:\s*\{/m.test(bc("lib/agentic-os/connector-probe.ts")))
+classify("B6", "Mapbox license + tokens; Open-Meteo commercial key; Google Ads developer token + OAuth", "WAITING_EXTERNAL", "owner obtains the credentials; platform staff set the env", "declarations, env names, version + sunset and the probe are code; the keys are not readable here")
+
+// B7 — certified tenant-selected LEGAL-FORMS + e-sign configurations
+/** PURE — inside one "use server" export, the certification verdict is read BEFORE the provider_overrides write. */
+function verdictBeforeWrite(bcSrc: string, fn: string): boolean {
+  const start = bcSrc.search(new RegExp(`export\\s+async\\s+function\\s+${fn}\\b`))
+  if (start < 0) return false
+  const body = bcSrc.slice(start)
+  const v = body.search(/\bproviderSelectionVerdict\(/), w = body.search(/\.from\("provider_overrides"\)/)
+  return v >= 0 && w >= 0 && v < w
+}
+check("B7 a tenant's e-sign / legal-forms SELECTION is certified by the capability matrix at BOTH write doors (verdict before the provider_overrides write) and in the menu — one rule, providerSelectionVerdict → providerOfferVerdict",
+  /providerOfferVerdict\(capability, key\)/.test(codeOf(read("lib/connections/scope.ts")))
+  && verdictBeforeWrite(bc("app/actions/settings/integrations.ts"), "upsertProviderOverride") && verdictBeforeWrite(bc("app/actions/settings/provider-settings-actions.ts"), "saveProviderOverride")
+  && /providerSelectionVerdict\(/.test(codeOf(read("app/dashboard/settings/integrations/integrations-client.tsx"))))
+check("B7c POSITIVE CONTROL — a door that writes before it asks the verdict is caught", !verdictBeforeWrite(`export async function spec() { await svc.from("provider_overrides").upsert({}); providerSelectionVerdict("esign", "x") }`, "spec") && verdictBeforeWrite(`export async function spec() { const v = providerSelectionVerdict("esign", "x"); await svc.from("provider_overrides").upsert({}) }`, "spec"))
+classify("B7", "certified tenant-selected legal-forms + e-sign configurations", "PASS", "tenant selects; the matrix certifies", "no tenant has selected yet (the database has not been operated) — per-tenant state is NOT_APPLICABLE live")
+
+// B8 — NO uncertified default legal-forms integration (the kernel table + its settings mirror)
+/** PURE — the value a SYSTEM_DEFAULTS table (kernel or mirror) assigns to a provider type: a quoted vendor, an
+ *  UPPER_CASE constant (the e-sign default reads the catalog constant), or null when the type has NO default. */
+function tableDefault(src: string, type: string): string | null {
+  const table = src.match(/SYSTEM_DEFAULTS[^=]*=\s*\{([\s\S]*?)\n\}/)?.[1] ?? ""
+  const m = table.match(new RegExp(`^\\s*${type}:\\s*(?:"([a-z_]+)"|([A-Z_]+))\\s*,`, "m"))
+  return m ? (m[1] ?? m[2]) : null
+}
+const kernelTable = bc("lib/kernel/providers.ts"), mirrorTable = bc("app/actions/settings/provider-settings-actions.ts")
+const certifiedOrAbsent = (v: string | null) => v === null || providerOfferVerdict("transaction", v).ok
+const providerResolver = read("lib/integrations/providers/provider-resolver.ts")
+check(`B8 THE LEGAL-FORMS DEFAULT RULE — a per-tenant transaction default in SYSTEM_DEFAULTS (kernel: ${tableDefault(kernelTable, "transaction") ?? "none"}; settings mirror: ${tableDefault(mirrorTable, "transaction") ?? "none"}) is absent or CERTIFIED by the matrix; the e-sign default is the catalog constant and certified; the transaction resolver never consults the kernel default (NONE without a selection)`,
+  certifiedOrAbsent(tableDefault(kernelTable, "transaction")) && certifiedOrAbsent(tableDefault(mirrorTable, "transaction"))
+  && tableDefault(kernelTable, "esign") === "DEFAULT_ESIGN_PROVIDER" && tableDefault(mirrorTable, "esign") === "DEFAULT_ESIGN_PROVIDER" && providerOfferVerdict("esign", DEFAULT_ESIGN_PROVIDER).ok
+  && !/SYSTEM_DEFAULTS/.test(codeOf(providerResolver)) && /source: "none"/.test(blankComments(providerResolver)))
+check("B8c POSITIVE CONTROL — the retired `transaction: \"dotloop\"` default is UNCERTIFIED for the capability (its first required cell refuses) and the table reader sees it; the e-sign line is read as the catalog constant",
+  !providerOfferVerdict("transaction", "dotloop").ok
+  && tableDefault(`export const SYSTEM_DEFAULTS: Readonly<Record<string, string>> = {\n  esign:        DEFAULT_ESIGN_PROVIDER,\n  transaction:  "dotloop",\n  crm:          "follow_up_boss",\n}\n`, "transaction") === "dotloop"
+  && tableDefault(`const SYSTEM_DEFAULTS = {\n  esign: DEFAULT_ESIGN_PROVIDER,\n}\n`, "esign") === "DEFAULT_ESIGN_PROVIDER"
+  && tableDefault(`const SYSTEM_DEFAULTS = {\n  esign: DEFAULT_ESIGN_PROVIDER,\n}\n`, "transaction") === null)
+classify("B8", "no uncertified default legal-forms integration", "PASS", "lane 142I", "the kernel table and its mirror carry no transaction default; the tenant selects a certified provider")
+
+// B9 — the baseline system URL + custom-domain DNS readiness (no wildcard prerequisite)
+const siteUrlSrc = bc("lib/platform/site-url.ts")
+const hardDomain = (s: string) => /https?:\/\/(?!\$\{)[a-z0-9-]+\.[a-z]{2,}/i.test(s)
+check("B9 the baseline website is served at a PATH under the one app origin (tenantWebsitePath = /site/<slug>), the origin resolver hard-codes no domain, and the custom-domain state machine is pending_dns → verifying → active with a fail-closed DNS probe",
+  !hardDomain(siteUrlSrc) && /export function siteUrl\(\)/.test(siteUrlSrc)
+  && /export function tenantWebsitePath\(slug: string\): string \{ return `\/site\/\$\{slug\}` \}/.test(bc("lib/kernel/tenant-creation.ts"))
+  && /export const CUSTOM_DOMAIN_STATUSES = \["pending_dns", "verifying", "active", "error", "removed"\]/.test(bc("lib/platform/custom-domains.ts")) && /export async function probeDomainDns/.test(codeOf(read("lib/platform/custom-domains.ts"))))
+check("B9c POSITIVE CONTROL — a hard-coded origin is caught; the VERCEL_URL template is not", hardDomain(`const u = "https://vipagents.com"`) && !hardDomain("return `https://${vercel.trim()}`"))
+classify("B9", "subdomain wildcard / DNS readiness", "PASS", "none — the baseline URL needs no wildcard", "path-based baseline; a tenant's own custom domain is WAITING_EXTERNAL per tenant (its DNS)")
+classify("B9b", "system subdomain per tenant (wildcard + cert + proxy branch)", "UNSUPPORTED", "owner call", "not built (lane 141G finding stands); the baseline /site/<slug> URL serves every tenant without it")
+
+// B10 — portal privacy settings
+/** PURE — privacy switches that neither bind a handler nor are disabled with the truth beside them (a dead toggle). */
+function deadSwitches(src: string): number {
+  let n = 0
+  for (const m of stripComments(src).matchAll(/<Switch\b([^>]*)\/?>/g)) if (!/\bonCheckedChange\b/.test(m[1]) && !/\bdisabled\b/.test(m[1])) n++
+  return n
+}
+const portalSettingsPage = read("app/components/portal/PortalSettingsPage.tsx")
+check("B10 the portal's privacy OBLIGATIONS are wired (Request Data Export / Delete file a data-subject request through fileDataSubjectRequestFromPortal) and no privacy switch is a dead toggle (every <Switch> binds onCheckedChange or is disabled with the truth beside it)",
+  /export async function fileDataSubjectRequestFromPortal/.test(codeOf(read("app/actions/portal-settings.ts"))) && /\bfileDataSubjectRequestFromPortal\(/.test(codeOf(portalSettingsPage)) && deadSwitches(portalSettingsPage) === 0)
+check("B10c POSITIVE CONTROL — a handler-less, enabled switch is a dead toggle; a disabled one and a bound one are not", deadSwitches(`<Switch defaultChecked />`) === 1 && deadSwitches(`<Switch defaultChecked disabled aria-label="x" />`) === 0 && deadSwitches(`<Switch checked={v} onCheckedChange={set} />`) === 0)
+classify("B10", "portal privacy settings", "PASS", "none", "DSR export / delete doors wired; the two preference switches are disabled with the truth (no column, writer or reader — UNSUPPORTED preference, stated; owner call to build)")
+
+// B11 — Playwright production UI smoke in CI
+const e2eYml = read(".github/workflows/e2e.yml"), pwConfig = bc("playwright.config.ts")
+check("B11 the Playwright UI smoke is runnable against a deployed URL: e2e.yml job reads UI_SMOKE_BASE_URL (input or repository variable), states its skip without one, runs `playwright test`; playwright.config.ts reads the same variable and carries a phone-width project; the @smoke spec exists; e2e/README.md documents it; test:e2e is registered",
+  /UI_SMOKE_BASE_URL/.test(e2eYml) && /skipped — UI_SMOKE_BASE_URL is not set/.test(e2eYml) && /playwright test/.test(e2eYml)
+  && /process\.env\.UI_SMOKE_BASE_URL/.test(pwConfig) && /mobile-chromium/.test(pwConfig)
+  && existsSync(join(ROOT, "e2e/ui-smoke.spec.ts")) && /@smoke/.test(read("e2e/ui-smoke.spec.ts")) && /UI_SMOKE_BASE_URL/.test(read("e2e/README.md")) && !!pkg.scripts["test:e2e"])
+classify("B11", "Playwright production smoke in CI", "WAITING_EXTERNAL", "owner sets UI_SMOKE_BASE_URL (repository variable) or dispatches with a preview URL", "the job, the config read and the spec are code; no browser and no app env exist in this container, so no run is claimed")
+
+// B12 — tenant support isolation (lane 142A's contract)
+/** PURE — the retired cross-brokerage arm: a TENANT user type admitted to every brokerage's tickets. */
+const supportTypeArm = (bcSrc: string) => /\b(?:userType|user_type)\s*===?\s*["']support["']/.test(bcSrc)
+const supportArmPresent = supportTypeArm(bc("app/actions/support.ts"))
+const b12Key = proofState("test:support-isolation")
+console.log(`    reading B12: test:support-isolation ${b12Key}; the tenant-type 'support' cross-brokerage arm in app/actions/support.ts is ${supportArmPresent ? "PRESENT (lane 142A removes it)" : "gone"}`)
+check("B12 the platform support console gates on requirePlatformCapability(\"support\") — platform_role, never a tenant user_type", /requirePlatformCapability\("support"\)/.test(bc("app/actions/superadmin/support-console.ts")))
+check("B12c POSITIVE CONTROL — the 'support' user_type arm is recognised in code and not in a comment", supportTypeArm(`if (ctx.userType === "support") return true`) && !supportTypeArm(blankComments(`// ctx.userType === "support"\nconst x = 1`)))
+classify("B12", "tenant support isolation", b12Key === "ok" && !supportArmPresent ? "PASS" : "PENDING", "lane 142A", `proof ${b12Key}; cross-brokerage 'support' arm ${supportArmPresent ? "present" : "gone"}`)
+
+// B13 — CDA policy configuration (brokerage setting present + consistent)
+const brokerageCols = [...(read("scripts/schema-snapshot.ts").match(/^\s*brokerages:\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1])
+const CDA_COLUMNS = ["offers_cda", "cda_onboarding_at", "non_cda_payout_default"]
+const cdaSetup = bc("app/actions/brokerage-cda-setup.ts")
+check("B13 the brokerage CDA setting is three live columns (offers_cda, cda_onboarding_at, non_cda_payout_default) with ONE roster-gated writer that stamps all three consistently (payout default null when CDA is offered), read by the commission reconciliation and the CDA page",
+  CDA_COLUMNS.every((c) => brokerageCols.includes(c))
+  && /export async function setBrokerageCdaSettingAction/.test(cdaSetup) && /offers_cda:\s*input\.offersCda/.test(cdaSetup) && /cda_onboarding_at:\s*new Date\(\)\.toISOString\(\)/.test(cdaSetup) && /non_cda_payout_default:\s*input\.offersCda \? null :/.test(cdaSetup) && /isBrokerageFinanceAdmin\(/.test(cdaSetup)
+  && /\.select\("offers_cda"\)/.test(bc("lib/commission/reconcile-tracking.ts")) && /\.select\("offers_cda"\)/.test(bc("app/dashboard/transactions/[id]/cda/page.tsx")))
+classify("B13", "CDA policy configuration", "PASS", "tenant admin (finance roster) sets it", "structural; a tenant's value is NOT_APPLICABLE live (0 closing_disclosure_agreement rows — never operated)")
+
+// B14 — Remotion / video readiness (lane 142F's playable-output contract)
+const renderCoord = bc("lib/remotion/render-coordinator.ts"), mediaHost = bc("lib/remotion/media-host.ts")
+const playabilityProbeLanded = /\bftyp\b|\bmoov\b|\bEBML\b|ffprobe|playab/i.test(renderCoord + mediaHost)
+const b14Key = proofState("test:video-pipeline-truth")
+console.log(`    reading B14: test:video-pipeline-truth ${b14Key}; playable-output probe at the completion path ${playabilityProbeLanded ? "landed" : "pending (lane 142F)"}; live render rows 0 → NOT_APPLICABLE`)
+check("B14 the video completion path and its reaper exist (finalizeCoordinatedRender, hostRenderedMedia, video-pipeline-reaper) and ONE status vocabulary (CANONICAL_VIDEO_STATUSES)",
+  /export async function finalizeCoordinatedRender/.test(renderCoord) && /export async function hostRenderedMedia/.test(mediaHost) && existsSync(join(ROOT, "lib/video/video-pipeline-reaper.ts")) && /export const CANONICAL_VIDEO_STATUSES/.test(bc("lib/video/video-status.ts")))
+classify("B14", "Remotion / video readiness (playable output)", b14Key === "ok" && playabilityProbeLanded ? "PASS" : "PENDING", "lane 142F", `proof ${b14Key}; probe ${playabilityProbeLanded ? "landed" : "pending"}; remotion_composition_renders 0 rows live`)
+
+// B15 — support / incident operations
+const immOps = [...(bc("lib/kernel/immediate-operations.ts").match(/export const IMMEDIATE_OPERATIONS = \[([^\]]*)\]/)?.[1] ?? "").matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1])
+const RULING_OPS = ["tenant_creation", "user_creation", "invitation", "seat_provisioning", "billing_activation", "provider_connection", "phone_a2p"]
+check(`B15 support / incident operations: the support-sla cron is registered and owned, its route runs runSupportSlaSweep, IMMEDIATE_OPERATIONS covers the ruling's operations (${immOps.length} declared), the escalation signal has a registered consumer, and tenant readiness is a health detector`,
+  CRON_REGISTRY.some((e) => cronBase(e.path) === "/api/cron/support-sla") && unownedCrons([{ path: "/api/cron/support-sla" }], CRON_MANAGER).length === 0
+  && /runSupportSlaSweep\(/.test(codeOf(read("app/api/cron/support-sla/route.ts"))) && RULING_OPS.every((o) => immOps.includes(o))
+  && /export const OPERATION_SIGNAL_TYPE = "operation_failure_escalated"/.test(bc("lib/kernel/immediate-operations.ts")) && /handleOperationFailureEscalated/.test(codeOf(read("lib/kernel/manager-signals.ts")))
+  && /"tenant_readiness"/.test(bc("lib/kernel/os-health.ts")), RULING_OPS.filter((o) => !immOps.includes(o)).join(", "))
+classify("B15", "support / incident operations readiness", "PASS", "cron_manager / data_steward", "structural; support_tickets 0 rows live → NOT_APPLICABLE until operated")
+
+console.log("    ┌ blocker table (classification is the reading; the check above it is the rule)")
+for (const r of blockerRows) console.log(`    │ ${r.id.padEnd(5)} ${r.classification.padEnd(17)} ${r.blocker} — who: ${r.who} — ${r.reading}`)
+const tally = (["PASS", "BLOCKED", "WAITING_EXTERNAL", "PENDING", "UNSUPPORTED"] as BlockerClass[]).map((c) => `${c} ${blockerRows.filter((r) => r.classification === c).length}`).join(", ")
+console.log(`    └ census: ${blockerRows.length} rows — ${tally}`)
+console.log("    BLIND SPOT: this section reads CODE, HEADER STAMPS and WORKFLOW FILES, never the database or the deployment env — an env key, a Stripe price, a snapshot row, an applied policy or a Playwright run is proven only by the integrator's live check / the recorded CI run; a header stamp is the migration's own claim (test:migration-claim adjudicates it against the ledger).")
+
+// ═════════════════════════════════════════════════════════════════════════════
 // WAVE 141 (lane 141J) — THE RELEASE GATE.
 // Owner (2026-10-14): "RELEASE GATE: READY requires every PASS in the owner's list (security, tenant
 // isolation, role safety, brokerage identity, subscriber migration, Stripe proration, provisioning,
@@ -684,9 +958,9 @@ check("X6 POSITIVE CONTROL — a row with no status / no lane is incomplete; a h
 console.log("\n[G · release gate — every owner gate → the proofs + canaries that certify it; no proof ⇒ NOT CERTIFIED]")
 /** The owner's list, verbatim order (the ruling). */
 const OWNER_GATE_NAMES = ["security", "tenant isolation", "role safety", "brokerage identity", "subscriber migration", "Stripe proration", "provisioning", "users/invites", "website", "custom domain", "transaction providers", "e-sign", "CDA", "legal description", "CRM rules", "lead magnets", "AI creation", "QR/barcode", "business card scanner", "coupons", "A2P", "provider experience", "UI wiring", "mobile", "self-healing", "build/CI"] as const
-interface ReleaseGate {
-  gate: (typeof OWNER_GATE_NAMES)[number]
-  /** package.json test:* keys. Lanes 141A–I's keys are named by CONTRACT (their prompts): while a key is absent the gate reads NOT CERTIFIED. */
+interface GateSpec {
+  gate: string
+  /** package.json test:* keys. Lanes 141A–I's (and 142A–G's) keys are named by CONTRACT (their prompts): while a key is absent the gate reads NOT CERTIFIED. */
   proofs: string[]
   /** scripts/canaries roster keys (CANARY_KEYS); a canary with a WAVE141 HOOK still pending does not certify. */
   canaries: string[]
@@ -698,10 +972,15 @@ interface ReleaseGate {
   ci?: string[]
   /** A verdict this guard cannot read (it lives outside the repo) — the gate can only reach EXTERNAL, never CERTIFIED, here. */
   external?: string
+  /** Wave 142 (lane 142I): the lanes whose contracts the gate waits on — documentation beside hookLanes. */
+  lanes?: string[]
 }
+interface ReleaseGate extends GateSpec { gate: (typeof OWNER_GATE_NAMES)[number] }
 const RELEASE_GATES: ReleaseGate[] = [
-  { gate: "security", proofs: ["test:secrets-rls", "test:credential-migration", "test:rls-public-grant", "test:rls-anon-escape", "test:webhook-contract", "test:production-readiness"], canaries: [] },
-  { gate: "tenant isolation", proofs: ["test:tenant-scope", "test:conditional-tenant-predicate", "test:sessionless-use-server-census", "test:brokerage-identity"], canaries: ["seat", "same-name-brokerage"] },
+  // Wave 142 (lane 142I): the lane contracts of wave 142 are added to the gates they certify — a key absent at HEAD
+  // reads NOT CERTIFIED until the lane lands (the wave-141 rule, unchanged). test:support-isolation is lane 142A's.
+  { gate: "security", proofs: ["test:secrets-rls", "test:credential-migration", "test:rls-public-grant", "test:rls-anon-escape", "test:webhook-contract", "test:production-readiness", "test:support-isolation"], canaries: [], lanes: ["142A"] },
+  { gate: "tenant isolation", proofs: ["test:tenant-scope", "test:conditional-tenant-predicate", "test:sessionless-use-server-census", "test:brokerage-identity", "test:support-isolation"], canaries: ["seat", "same-name-brokerage"], lanes: ["142A"] },
   { gate: "role safety", proofs: ["test:role-vocabulary", "test:immediate-operations"], canaries: ["crm-inbound"], hookLanes: ["141B"] },
   { gate: "brokerage identity", proofs: ["test:brokerage-identity"], canaries: ["solo-subscriber", "same-name-brokerage"] },
   { gate: "subscriber migration", proofs: ["test:brokerage-identity"], canaries: ["brokerage-adoption"] },
@@ -710,15 +989,15 @@ const RELEASE_GATES: ReleaseGate[] = [
   { gate: "users/invites", proofs: ["test:seat-user-convergence", "test:immediate-operations"], canaries: ["seat", "user-invite"] },
   { gate: "website", proofs: ["test:tenant-baseline", "test:tenant-creation"], canaries: ["subscriber"] },
   { gate: "custom domain", proofs: ["test:domain-api", "test:custom-domain-flow"], canaries: ["custom-domain"] },
-  { gate: "transaction providers", proofs: ["test:transaction-provider-matrix", "test:form-wizard-esign", "test:provider-adapter"], canaries: ["transaction-provider"] },
-  { gate: "e-sign", proofs: ["test:form-wizard-esign", "test:transaction-provider-matrix"], canaries: ["cda-esign", "transaction-provider"] },
-  { gate: "CDA", proofs: ["test:cda-flow", "test:cda-process-chain", "test:cda-esign", "test:transaction-provider-matrix"], canaries: ["cda-esign"] },
-  { gate: "legal description", proofs: ["test:transaction-provider-matrix"], canaries: ["legal-description"] },
+  { gate: "transaction providers", proofs: ["test:transaction-provider-matrix", "test:form-wizard-esign", "test:provider-adapter", "test:listing-offer-lifecycle"], canaries: ["transaction-provider"], lanes: ["142B"] },
+  { gate: "e-sign", proofs: ["test:form-wizard-esign", "test:transaction-provider-matrix", "test:listing-offer-lifecycle"], canaries: ["cda-esign", "transaction-provider"], lanes: ["142B"] },
+  { gate: "CDA", proofs: ["test:cda-flow", "test:cda-process-chain", "test:cda-esign", "test:transaction-provider-matrix", "test:cda-closing-flow"], canaries: ["cda-esign"], lanes: ["142C"] },
+  { gate: "legal description", proofs: ["test:transaction-provider-matrix", "test:cda-closing-flow"], canaries: ["legal-description"], lanes: ["142C"] },
   { gate: "CRM rules", proofs: ["test:crm-boundaries", "test:crm-pull", "test:crm-sync-credential"], canaries: ["crm-outbound", "crm-inbound"] },
-  { gate: "lead magnets", proofs: ["test:lead-magnet-creation", "test:lead-magnet-flow", "test:lead-magnet-embed"], canaries: ["lead-magnet"] },
-  { gate: "AI creation", proofs: ["test:lead-magnet-creation", "test:ai-routing-coverage", "test:cost-completeness"], canaries: ["lead-magnet"] },
+  { gate: "lead magnets", proofs: ["test:lead-magnet-creation", "test:lead-magnet-flow", "test:lead-magnet-embed", "test:autonomous-marketing"], canaries: ["lead-magnet"], lanes: ["142E"] },
+  { gate: "AI creation", proofs: ["test:lead-magnet-creation", "test:ai-routing-coverage", "test:cost-completeness", "test:autonomous-marketing"], canaries: ["lead-magnet"], lanes: ["142E"] },
   { gate: "QR/barcode", proofs: ["test:qr-and-card-scanner", "test:qr-registry", "test:marketing-qr"], canaries: ["lead-magnet"], hookLanes: ["141F"] },
-  { gate: "business card scanner", proofs: ["test:qr-and-card-scanner"], canaries: ["business-card"] },
+  { gate: "business card scanner", proofs: ["test:qr-and-card-scanner", "test:entity-types", "test:immediate-enrichment"], canaries: ["business-card"], lanes: ["142D"] },
   { gate: "coupons", proofs: ["test:coupons-and-handoff", "test:plan-catalog"], canaries: ["coupon"] },
   { gate: "A2P", proofs: ["test:phone-a2p-automation", "test:tenant-readiness"], canaries: [] },
   { gate: "provider experience", proofs: ["test:ui-wiring-census", "test:integration-status", "test:provider-adapter", "test:production-readiness"], canaries: [] },
@@ -727,7 +1006,6 @@ const RELEASE_GATES: ReleaseGate[] = [
   { gate: "self-healing", proofs: ["test:self-healing", "test:os-health", "test:healing-policy"], canaries: ["self-healing"] },
   { gate: "build/CI", proofs: ["test:proxy-graph-budget"], canaries: [], ci: [".github/workflows/build.yml", ".github/workflows/guards.yml"], external: "the build + guards workflow runs green on the RELEASE commit — read from GitHub by the integrator, never from this repo" },
 ]
-type ProofState = "ok" | "absent" | "unchained" | "no-file"
 type CanaryState = "ok" | "unknown" | "pending"
 interface GateVerdict { gate: string; state: "CERTIFIED" | "NOT CERTIFIED" | "EXTERNAL"; owner: string; proofs: Array<{ key: string; state: ProofState }>; canaries: Array<{ key: string; state: CanaryState; lanes: string[] }>; reasons: string[] }
 interface GateEnv {
@@ -743,15 +1021,9 @@ interface GateEnv {
   managers: ReadonlySet<string>
 }
 /** PURE — one gate's verdict from the environment. */
-function certifyGate(g: ReleaseGate, env: GateEnv): GateVerdict {
-  const proofs = g.proofs.map((key) => {
-    const script = env.scripts[key]
-    if (!script) return { key, state: "absent" as ProofState }
-    if (!new RegExp(`npm run ${esc(key)}(\\s|&|$)`).test(env.chain)) return { key, state: "unchained" as ProofState }
-    const file = script.match(/(scripts\/[\w./\[\]-]+\.ts)/)?.[1]
-    if (file && !env.fileExists(file)) return { key, state: "no-file" as ProofState }
-    return { key, state: "ok" as ProofState }
-  })
+function certifyGate(g: GateSpec, env: GateEnv): GateVerdict {
+  // ONE proof-state rule (proofStateFor, section B) — the blockers table and both gate tables read it.
+  const proofs = g.proofs.map((key) => ({ key, state: proofStateFor(key, env.scripts, env.chain, env.fileExists) }))
   const canaries = g.canaries.map((key) => {
     if (!env.roster.includes(key)) return { key, state: "unknown" as CanaryState, lanes: [] }
     // Lane 141K: only the lanes this gate's contract names block it (hookLanes); unnamed = every pending hook blocks.
@@ -768,7 +1040,7 @@ function certifyGate(g: ReleaseGate, env: GateEnv): GateVerdict {
   const clean = reasons.length === 0
   return { gate: g.gate, state: clean ? (g.external ? "EXTERNAL" : "CERTIFIED") : "NOT CERTIFIED", owner, proofs, canaries, reasons: g.external && clean ? [`external verdict required: ${g.external}`] : reasons }
 }
-const guardChain = Object.entries(pkg.scripts).filter(([k]) => k.startsWith("guard")).map(([, v]) => v).join(" && ")
+// guardChain is defined once in section B (wave 142) and read here.
 const proofOwner = new Map<string, string>()
 for (const d of Object.values(MAINTENANCE_DOMAINS) as Array<{ manager: string; proof: string }>) if (!proofOwner.has(d.proof)) proofOwner.set(d.proof, d.manager)
 const census = hookCensus()
@@ -813,8 +1085,67 @@ const gateDocMissing = OWNER_GATE_NAMES.filter((n) => !gateRows.includes(n.toLow
 check("G8a POSITIVE CONTROL — the gate-row parser reads a five-cell row, skips the header and the rule, and ignores a six-cell capability row", parseGateRows("| Gate | P | C | O | R |\n|---|---|---|---|---|\n| coupons | a | b | c | d |\n| six | a | b | c | d | e |").join() === "coupons" && parseMatrixRows("| coupons | a | b | c | d |").length === 0)
 check(`G8 docs/architecture/READINESS-MATRIX.md carries the release-gate table with a row per owner gate (${gateRows.length}/${OWNER_GATE_NAMES.length})`, gateDoc.length > 0 && gateDocMissing.length === 0, gateDocMissing.join(", "))
 check("G9 the production architecture doc names the release gate section", /release gate/i.test(doc))
+
+// ── G′ · WAVE 142 GATES (lane 142I) ──────────────────────────────────────────
+// The wave-142 ruling's FINAL VERIFICATION list (the lane-J canary areas): security/support, listing, offer,
+// FormWizard, preliminary HUD/CD, CDA, commissions/payment, lifetime, intelligence, marketing, video,
+// AI/support/education, commercial/platform. Each maps to the proof keys lanes 142A–G register BY CONTRACT
+// (their prompts) plus the chained survivors that already certify the area; `hookLanes` names the lane whose
+// pending canary hook blocks the gate (the same rule as the wave-141 table). The canary column is lane 142J's
+// (scripts/canaries/*): it is EMPTY here on purpose — the integrator fills it from lane J's notes, and G3 then
+// holds every named canary to the roster.
+console.log("\n[G′ · wave 142 gates — the ruling's thirteen areas → the lane contracts (A–G) + chained survivors]")
+const WAVE142_LANE_IDS = ["142A", "142B", "142C", "142D", "142E", "142F", "142G", "142H", "142I", "142J"]
+/** The proof keys lanes 142A–G register, BY CONTRACT — read from $S/prompt142A…G (one owner per key). */
+const WAVE142_CONTRACT_PROOFS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  "142A": ["test:support-isolation"], "142B": ["test:listing-offer-lifecycle"], "142C": ["test:cda-closing-flow"],
+  "142D": ["test:immediate-enrichment", "test:entity-types"], "142E": ["test:autonomous-marketing"], "142F": ["test:video-pipeline-truth"], "142G": ["test:ai-by-your-side"],
+})
+const WAVE142_GATES: GateSpec[] = [
+  { gate: "security/support", lanes: ["142A"], hookLanes: ["142A"], proofs: ["test:support-isolation", "test:cross-tenant-read", "test:platform-discriminator", "test:support-console"], canaries: [] },
+  { gate: "listing", lanes: ["142B"], hookLanes: ["142B"], proofs: ["test:listing-offer-lifecycle", "test:listing-compliance-loop", "test:listing-documents-gate", "test:esign-execution-loop"], canaries: [] },
+  { gate: "offer", lanes: ["142B"], hookLanes: ["142B"], proofs: ["test:listing-offer-lifecycle", "test:offer-compliance-loop", "test:transaction-creation-gate", "test:esign-execution-loop"], canaries: [] },
+  { gate: "FormWizard", lanes: ["142B"], hookLanes: ["142B"], proofs: ["test:listing-offer-lifecycle", "test:form-wizard-esign", "test:transaction-provider-matrix"], canaries: [] },
+  { gate: "preliminary HUD/CD", lanes: ["142C"], hookLanes: ["142C"], proofs: ["test:cda-closing-flow", "test:cda-flow"], canaries: [] },
+  { gate: "CDA", lanes: ["142C"], hookLanes: ["142C"], proofs: ["test:cda-closing-flow", "test:cda-esign", "test:cda-delivery"], canaries: [] },
+  { gate: "commissions/payment", lanes: ["142C"], hookLanes: ["142C"], proofs: ["test:cda-closing-flow", "test:commission-ledger-sync", "test:commission-finalization"], canaries: [] },
+  { gate: "lifetime", lanes: ["142C"], hookLanes: ["142C"], proofs: ["test:cda-closing-flow", "test:lifetime-ledger", "test:conversion-finality"], canaries: [] },
+  { gate: "intelligence", lanes: ["142D"], hookLanes: ["142D"], proofs: ["test:entity-types", "test:immediate-enrichment", "test:business-card-classification", "test:enrichment-one-rail", "test:provider-adapter"], canaries: [] },
+  { gate: "marketing", lanes: ["142E"], hookLanes: ["142E"], proofs: ["test:autonomous-marketing", "test:lead-magnet-creation", "test:topic-claim-scope"], canaries: [] },
+  { gate: "video", lanes: ["142F"], hookLanes: ["142F"], proofs: ["test:video-pipeline-truth", "test:render-from-approval", "test:did-live-agent"], canaries: [] },
+  { gate: "AI/support/education", lanes: ["142G"], hookLanes: ["142G"], proofs: ["test:ai-by-your-side", "test:immediate-operations", "test:curriculum-author"], canaries: [] },
+  { gate: "commercial/platform", lanes: ["142H", "142I", "142J"], hookLanes: ["142H", "142I", "142J"], proofs: ["test:production-readiness", "test:tenant-readiness", "test:subscriber-convergence", "test:coupons-and-handoff", "test:ui-wiring-census", "test:canaries"], canaries: [] },
+]
+const verdicts142 = WAVE142_GATES.map((g) => certifyGate(g, gateEnv))
+const certified142 = verdicts142.filter((v) => v.state === "CERTIFIED"), notCertified142 = verdicts142.filter((v) => v.state !== "CERTIFIED")
+for (const v of verdicts142) console.log(`    ${v.state.padEnd(13)} ${v.gate.padEnd(22)} owner ${v.owner.padEnd(22)} lanes ${(WAVE142_GATES.find((g) => g.gate === v.gate)!.lanes ?? []).join("+").padEnd(14)} proofs ${v.proofs.map((p) => `${p.key.replace(/^test:/, "")}${mark(p.state)}`).join(" ")}${v.reasons.length ? `\n                  · ${v.reasons.join("\n                  · ")}` : ""}`)
+const contractKeys = Object.values(WAVE142_CONTRACT_PROOFS).flat()
+const contractLanded = contractKeys.filter((k) => proofState(k) === "ok"), contractPending = contractKeys.filter((k) => proofState(k) === "absent"), contractUnchained = contractKeys.filter((k) => proofState(k) === "unchained")
+console.log(`    census: ${WAVE142_GATES.length} wave-142 gates; ${contractKeys.length} lane contract keys — ${contractLanded.length} landed+chained (${contractLanded.join(", ") || "none"}), ${contractUnchained.length} registered but unchained (${contractUnchained.join(", ") || "none"}), ${contractPending.length} pending (${contractPending.join(", ") || "none"}); canary column: lane 142J's (empty here by design)`)
+check("G10 every wave-142 gate names ≥1 proof and waits on a wave-142 lane (hookLanes ⊆ the lane ids); every lane contract key (A–G) is named by ≥1 wave-142 gate",
+  WAVE142_GATES.every((g) => g.proofs.length > 0 && (g.hookLanes ?? []).length > 0 && g.hookLanes!.every((l) => WAVE142_LANE_IDS.includes(l))) && contractKeys.every((k) => WAVE142_GATES.some((g) => g.proofs.includes(k))),
+  contractKeys.filter((k) => !WAVE142_GATES.some((g) => g.proofs.includes(k))).join(", "))
+check("G11 no contract key is claimed by two lanes, and every non-contract proof a wave-142 gate names is registered + chained TODAY (a survivor named here must already certify)",
+  new Set(contractKeys).size === contractKeys.length && WAVE142_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys.includes(k)).every((k) => proofState(k) === "ok"),
+  WAVE142_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys.includes(k) && proofState(k) !== "ok").join(", "))
+check("G12 POSITIVE CONTROL — a wave-142 gate naming an absent contract key reads NOT CERTIFIED 'not registered (lane contract not landed)'; a 142-lane hook pending on a named canary blocks only a gate whose hookLanes names that lane",
+  (() => {
+    const env142: GateEnv = { ...gateEnv, scripts: { "test:spec": "tsx scripts/spec.ts" }, chain: "npm run test:spec", fileExists: () => true, roster: ["hooked142"], pending: new Map([["hooked142", ["142F"]]]), ownerOf: () => "data_steward" }
+    const a = certifyGate({ gate: "specimen", proofs: ["test:__wave142_specimen__"], canaries: [], hookLanes: ["142Z"] }, env142)
+    const b = certifyGate({ gate: "video", proofs: ["test:spec"], canaries: ["hooked142"], hookLanes: ["142F"] }, env142)
+    const c3 = certifyGate({ gate: "marketing", proofs: ["test:spec"], canaries: ["hooked142"], hookLanes: ["142E"] }, env142)
+    return a.state === "NOT CERTIFIED" && /not registered/.test(a.reasons[0]) && b.state === "NOT CERTIFIED" && /142F/.test(b.reasons[0]) && c3.state === "CERTIFIED"
+  })())
+const gateDoc142 = matrix.split(/^## /m).find((s) => /^Wave 142 release gate/i.test(s)) ?? ""
+const gateRows142 = parseGateRows(gateDoc142)
+console.log(`    reading: READINESS-MATRIX.md "Wave 142 release gate" section ${gateDoc142 ? `present — ${gateRows142.length} gate row(s)` : "absent (lane 142J writes it; the integrator fills the canary column from its notes)"}`)
+check("G13 when the matrix carries a wave-142 release-gate section, it has a five-cell row per wave-142 gate (the rule applies the moment the section lands)",
+  !gateDoc142 || WAVE142_GATES.every((g) => gateRows142.includes(g.gate.toLowerCase())), WAVE142_GATES.filter((g) => !gateRows142.includes(g.gate.toLowerCase())).map((g) => g.gate).join(", "))
+
 console.log(`\nRELEASE GATE: ${certified.length}/${RELEASE_GATES.length} certified, ${external.length} external-verdict, ${notCertified.length} not certified${notCertified.length ? ` — ${notCertified.map((v) => v.gate).join(", ")}` : ""}`)
-console.log(`RELEASE: ${notCertified.length === 0 && external.length === 0 ? "READY — every owner gate certified in-repo" : "NOT READY — " + (notCertified.length ? `${notCertified.length} gate(s) not certified` : "") + (external.length ? `${notCertified.length ? "; " : ""}${external.length} gate(s) await an external verdict (${external.map((v) => v.gate).join(", ")})` : "")}`)
+console.log(`WAVE 142 GATE: ${certified142.length}/${WAVE142_GATES.length} certified, ${notCertified142.length} not certified${notCertified142.length ? ` — ${notCertified142.map((v) => v.gate).join(", ")}` : ""}`)
+const openGates = notCertified.length + notCertified142.length
+console.log(`RELEASE: ${openGates === 0 && external.length === 0 ? "READY — every owner gate (wave 141 + wave 142) certified in-repo" : "NOT READY — " + (openGates ? `${openGates} gate(s) not certified (wave 141 ${notCertified.length}, wave 142 ${notCertified142.length})` : "") + (external.length ? `${openGates ? "; " : ""}${external.length} gate(s) await an external verdict (${external.map((v) => v.gate).join(", ")})` : "")}`)
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
 if (fail) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }

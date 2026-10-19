@@ -179,7 +179,7 @@ export default async function ConnectorHealingPage() {
           <Card><CardContent className="p-6 text-sm text-muted-foreground">No recent proposals.</CardContent></Card>
         ) : (
           <Card>
-            <CardContent className="p-0">
+            <CardContent className="p-0 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="text-xs text-muted-foreground border-b">
                   <tr><th className="text-left p-3">Connector</th><th className="text-left p-3">Kind</th><th className="text-left p-3">Summary</th><th className="text-left p-3">Status</th><th className="text-left p-3">When</th></tr>

@@ -20,7 +20,7 @@ export const dynamic = "force-dynamic"
 
 export const metadata = {
   title: "Transaction Form Library | Admin",
-  description: "Upload and manage state-specific transaction forms used by the AI form-fill engine.",
+  description: "Upload and manage state-specific legal forms used by the AI form-fill engine.",
 }
 
 export default async function TransactionFormsPage() {
@@ -35,7 +35,7 @@ export default async function TransactionFormsPage() {
   // each answer their own half, never coalesced (same gate as the API route).
   if (!brokerageId) redirect("/dashboard/onboarding")
   if (!isTenantAdminOrPlatformStaff(userRow ?? {})) {
-    return <RoleGateNotice surface="Transaction forms" audience="brokerage admins and platform staff" />
+    return <RoleGateNotice surface="Legal forms" audience="brokerage admins and platform staff" />
   }
 
   const { data: forms } = await supabase
@@ -51,7 +51,7 @@ export default async function TransactionFormsPage() {
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">Transaction Form Library</h1>
         <p className="text-sm text-muted-foreground max-w-2xl">
-          Upload custom transaction forms (state-specific addenda, brokerage representation
+          Upload custom legal forms (state-specific addenda, brokerage representation
           disclosures, custom forms). The AI form-fill engine uses these alongside the
           built-in 50-state registry when assembling offer and listing packets for your agents.
         </p>

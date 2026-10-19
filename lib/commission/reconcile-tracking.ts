@@ -80,10 +80,14 @@ export async function finalizeCommissionAtClose(
 ): Promise<{ autoApproved: number; offersCda: boolean }> {
   const { data: brk } = await svc
     .from("brokerages")
-    .select("offers_cda")
+    .select("offers_cda, non_cda_payout_default")
     .eq("id", params.brokerageId)
     .maybeSingle()
-  const offersCda = (brk as { offers_cda?: boolean } | null)?.offers_cda ?? false
+  // ONE answer to "does this brokerage use a CDA?" (wave 142, lane 142C): resolveCdaMode — the CDA page
+  // used to default the undeclared setting to TRUE while this read defaulted it to FALSE.
+  const { resolveCdaMode } = await import("@/lib/transactions/cda-closing-policy")
+  const b = brk as { offers_cda?: boolean | null; non_cda_payout_default?: string | null } | null
+  const offersCda = resolveCdaMode({ offersCda: b?.offers_cda, nonCdaPayoutDefault: b?.non_cda_payout_default }).mode === "cda"
 
   // Non-CDA: no CDA authorization step exists, so closing the deal authorizes the amount.
   if (offersCda) return { autoApproved: 0, offersCda }

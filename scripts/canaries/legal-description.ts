@@ -23,6 +23,12 @@ export async function run() {
   const G = globalThis as unknown as { __W141_RENTCAST: { calls: Array<Record<string, unknown>>; answer: string | null } }
   G.__W141_RENTCAST = { calls: [], answer: null }
   stubModule("@/lib/property/rentcast", `export async function getRentcastPropertyDetailWithOutcome(args) { const g = globalThis.__W141_RENTCAST; g.calls.push(args); return g.answer ? { detail: { legalDescription: g.answer }, outcome: "ok", eligibility: { eligible: true, reason: "canary recorder" } } : { detail: null, outcome: "unconfigured", eligibility: { eligible: false, reason: "canary: no RentCast key in this runtime" } } }`)
+  // WAVE 142 (142C): the public-record research (lib/property/address-lookup.ts, a PAID Perplexity call through
+  // the gateway) is the resolver's 4th source — a RECORDER here too, answering "nothing found", so no model call
+  // can leave this process and the ask-a-human steps below still see the human asked.
+  const G2 = globalThis as unknown as { __W142_ADDRESS_LOOKUP: { calls: Array<Record<string, unknown>> } }
+  G2.__W142_ADDRESS_LOOKUP = { calls: [] }
+  stubModule("@/lib/property/address-lookup", `export async function lookupPropertyByAddress(args) { globalThis.__W142_ADDRESS_LOOKUP.calls.push(args); return { legalDescription: null, legalDescriptionSource: null, dataConfidence: "low", sources: [] } }`)
   const rc = G.__W141_RENTCAST
   const { buildPropertyPrefill, KNOWN_PROPERTY_FIELD_LABELS } = await import("../../lib/intelligence/offer-property-prefill")
   const FORM = ["Property Address", "Legal Description", "Purchase Price", "Buyer City", "Earnest Money"]
@@ -87,7 +93,7 @@ export async function run() {
   const cross = await resolveLegalDescriptionForForm(svc, { brokerageId: B2, userId: U, listingId: L1, typedValue: "STOLEN" })
   c.step("141C tenant boundary: a caller naming another tenant cannot write onto this tenant's record — the pinned update matches no row (persisted null), the record is unchanged", cross.persisted === null && listing(L1)?.legal_description === TYPED, "")
   const mod = strippedRepo("lib/forms/legal-description.ts") ?? ""
-  c.step("141C never model-authored, wired where the form is filled: the resolver names no LLM / gateway call; its sources are exactly the m768 CHECK's (agent | rentcast); the wizard door (prefill-storage-form.ts) resolves it before the fill", !/generateText|generateObject|gatewayChat|Routed\(/.test(mod) && LEGAL_DESCRIPTION_SOURCES.join() === "agent,rentcast" && /resolveLegalDescriptionForForm\(/.test(strippedRepo("app/actions/buyer-offer/prefill-storage-form.ts") ?? ""), "")
+  c.step("141C never model-authored, wired where the form is filled: the resolver names no LLM / gateway call; its sources include the m768 pair (agent | rentcast) and never a model (the full vocabulary is held equal to the LATEST defining migration's CHECK by test:transaction-provider-matrix — wave 142 widened it to listing + public_record); the wizard door (prefill-storage-form.ts) resolves it before the fill", !/generateText|generateObject|gatewayChat|Routed\(/.test(mod) && ["agent", "rentcast"].every((s) => (LEGAL_DESCRIPTION_SOURCES as readonly string[]).includes(s)) && !(LEGAL_DESCRIPTION_SOURCES as readonly string[]).some((s) => /ai|model|llm/.test(s)) &&/resolveLegalDescriptionForForm\(/.test(strippedRepo("app/actions/buyer-offer/prefill-storage-form.ts") ?? ""), "")
   c.blind("RentCast is a recorder (no key, no request): the real module's gate / meter / cache are test:cost-completeness + test:provider-adapter. m768 was APPLIED LIVE 2026-10-14 (integrator, Supabase MCP) — in memory the columns exist by construction; live, the reader degrades to null with a logged refusal until it is applied. The mapping onto a PROVIDER field (SkySlope / Dotloop form field names) is the forms wizard's (test:form-wizard-esign, test:pdf-form-fill).")
   const { cleanup, residual, mismatches } = await cleanupCanary(svc, B)
   c.step("cleanup: every tagged row deleted with .select() counts; residual 0", mismatches.length === 0 && residual === 0, cleanup.map((x) => `${x.table}:${x.deleted}`).join(" "))

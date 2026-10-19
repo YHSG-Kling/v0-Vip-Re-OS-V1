@@ -484,6 +484,18 @@ export async function finalizeCoordinatedRender(
       status:        "failed",
       errorMessage:  (e as Error).message,
     })
+    // IMMEDIATE OWNERSHIP (wave 142, lane 142F): an output the host refused as
+    // unplayable would, before the probe, have been stamped succeeded — so it is
+    // raised to the Asset Manager in THIS request, not on the next OS-health sweep.
+    // Every other class stays on the queue's bounded retry + the sweep. Best-effort.
+    try {
+      const { escalateRenderFailure } = await import("./render-escalation")
+      await escalateRenderFailure(svc, {
+        brokerageId: intent.brokerageId, renderId, compositionId: composition.composition_id, error: (e as Error).message,
+      })
+    } catch (escErr) {
+      console.warn("[render-coordinator] render failure escalation did not land:", (escErr as Error).message)
+    }
     return { ok: false, error: (e as Error).message }
   }
 }

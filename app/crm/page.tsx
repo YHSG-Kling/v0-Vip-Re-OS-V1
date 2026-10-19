@@ -1368,8 +1368,10 @@ export default function CRMPage() {
               />
             </div>
 
-            {/* Two-panel body: sticky sidebar + scrollable tab area */}
-            <div className="flex flex-1 min-h-0 overflow-hidden mt-4">
+            {/* Two-panel body: sticky sidebar + scrollable tab area. Below lg (wave 142, lane 142H) it
+                STACKS — tabs first, the deal/deep-link rail after — and the body scrolls as one; a
+                fixed 256px rail beside the tabs left a phone ~130px for the contact itself. */}
+            <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-y-auto lg:overflow-hidden mt-4">
 
               {/* ── LEFT SIDEBAR — slim deep-link rail.
                    Identity, contact info, portal link, AI Pilot, channel toggles,
@@ -1378,7 +1380,7 @@ export default function CRMPage() {
                      - Active Deal (related listing/transaction)
                      - Quick deep-links that open dialogs or other routes
                 ── */}
-              <aside className="w-64 shrink-0 border-r bg-muted/20 flex flex-col overflow-y-auto px-4 py-4 gap-4">
+              <aside className="w-full lg:w-64 shrink-0 border-t lg:border-t-0 lg:border-r bg-muted/20 flex flex-col lg:overflow-y-auto px-4 py-4 gap-4 order-last lg:order-none">
                 {/* Portal invite status — small banner at top. Three states kept
                     distinct: a live status, no invite row, and a REFUSED read.
                     Previously it rendered only when a row existed, so "never
@@ -1935,7 +1937,7 @@ export default function CRMPage() {
               </aside>
 
               {/* ── RIGHT AREA — tabbed content ── */}
-              <main className="flex-1 min-w-0 overflow-y-auto px-4 py-4">
+              <main className="flex-none lg:flex-1 min-w-0 lg:overflow-y-auto px-4 py-4">
                 {/* AI ISA Handoff Brief — shown when this contact was qualified
                     and assigned by the AI ISA. Pulled from contacts.isa_handoff_brief. */}
                 {(selectedContact as { isa_handoff_brief?: IsaHandoffBriefShape | null })?.isa_handoff_brief && (
@@ -2222,14 +2224,14 @@ export default function CRMPage() {
                                   <div className="flex gap-1.5 shrink-0">
                                     {l.loan_officer_phone && (
                                       <a href={`tel:${l.loan_officer_phone}`}>
-                                        <Button size="icon" variant="ghost" className="h-7 w-7">
+                                        <Button size="icon" variant="ghost" className="h-7 w-7" aria-label="Call">
                                           <Phone className="h-3.5 w-3.5" />
                                         </Button>
                                       </a>
                                     )}
                                     {l.loan_officer_email && (
                                       <a href={`mailto:${l.loan_officer_email}`}>
-                                        <Button size="icon" variant="ghost" className="h-7 w-7">
+                                        <Button size="icon" variant="ghost" className="h-7 w-7" aria-label="Email">
                                           <Mail className="h-3.5 w-3.5" />
                                         </Button>
                                       </a>
@@ -2249,14 +2251,14 @@ export default function CRMPage() {
                                   <div className="flex gap-1.5 shrink-0">
                                     {m.phone && (
                                       <a href={`tel:${m.phone}`}>
-                                        <Button size="icon" variant="ghost" className="h-7 w-7">
+                                        <Button size="icon" variant="ghost" className="h-7 w-7" aria-label="Call">
                                           <Phone className="h-3.5 w-3.5" />
                                         </Button>
                                       </a>
                                     )}
                                     {m.email && (
                                       <a href={`mailto:${m.email}`}>
-                                        <Button size="icon" variant="ghost" className="h-7 w-7">
+                                        <Button size="icon" variant="ghost" className="h-7 w-7" aria-label="Email">
                                           <Mail className="h-3.5 w-3.5" />
                                         </Button>
                                       </a>
@@ -2288,14 +2290,14 @@ export default function CRMPage() {
                                     <div className="flex gap-1.5 shrink-0">
                                       {vendor?.phone && (
                                         <a href={`tel:${vendor.phone}`}>
-                                          <Button size="icon" variant="ghost" className="h-7 w-7">
+                                          <Button size="icon" variant="ghost" className="h-7 w-7" aria-label="Call">
                                             <Phone className="h-3.5 w-3.5" />
                                           </Button>
                                         </a>
                                       )}
                                       {vendor?.email && (
                                         <a href={`mailto:${vendor.email}`}>
-                                          <Button size="icon" variant="ghost" className="h-7 w-7">
+                                          <Button size="icon" variant="ghost" className="h-7 w-7" aria-label="Email">
                                             <Mail className="h-3.5 w-3.5" />
                                           </Button>
                                         </a>

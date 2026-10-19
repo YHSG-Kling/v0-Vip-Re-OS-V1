@@ -3,6 +3,7 @@ import { redirect, notFound } from "next/navigation"
 import { TRANSACTION_STAGES } from "@/lib/transactions/transaction-stages"
 import { isBrokerageFinanceAdminGrantRole } from "@/lib/auth/resolve-user-role"
 import { CDAWorkflowClient } from "./cda-workflow-client"
+import { resolveCdaMode } from "@/lib/transactions/cda-closing-policy"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = "force-dynamic"
@@ -199,7 +200,9 @@ export default async function CDAPage({ params }: PageProps) {
       userId={user.id}
       canCorrectEntries={isBrokerageFinanceAdminGrantRole(userType)}
       cda={cda}
-      offersCda={(brokerage as { offers_cda?: boolean | null } | null)?.offers_cda ?? true}
+      // ONE answer (wave 142, lane 142C): resolveCdaMode — an undeclared setting never manufactures a
+      // mandatory CDA (this page used to default it to TRUE while finalizeCommissionAtClose said FALSE).
+      offersCda={resolveCdaMode({ offersCda: (brokerage as { offers_cda?: boolean | null } | null)?.offers_cda }).cdaRequired}
       agent={agent}
       agentCap={agentCap}
       capUnavailable={!!capError}

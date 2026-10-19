@@ -1,7 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId } from "@/lib/forms/esign-execution-loop"
+import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId, recordEnvelopeTerminalState } from "@/lib/forms/esign-execution-loop"
+import { providerTerminalState } from "@/lib/esign/packet-states"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOCUSIGN CONNECT WEBHOOK HANDLER
@@ -79,6 +80,14 @@ export async function POST(request: NextRequest) {
       const { quarantineDriftedPayload } = await import("@/lib/kernel/ingress-continuity")
       const q = await quarantineDriftedPayload(supabase as any, { connector: "docusign", source: "esign_completion", raw: body, missing: adapted.missingRequired, eventType: event || envelopeStatus })
       return NextResponse.json({ received: true, quarantined: true, ref: q.ref })
+    }
+    // THE PROVIDER'S TERMINAL OUTCOME (wave 142, lane 142B): envelope-declined / envelope-voided /
+    // expired used to be "ignored" — the agent heard it from DocuSign's email, or never. Recorded on the
+    // matched offer / listing agreement through the ONE packet writer (ladder-guarded, deduped, bell).
+    const terminal = !isCompleted ? providerTerminalState(event, envelopeStatus) : null
+    if (terminal && envelopeId) {
+      const recorded = await recordEnvelopeTerminalState(supabase as any, { provider: "docusign", envelopeId, state: terminal, reason: envelopeStatus || event || null })
+      return NextResponse.json({ received: true, action: "terminal", state: terminal, envelopeId, offers: recorded.offers, agreements: recorded.agreements, refused: recorded.refused.length })
     }
     if (!isCompleted || !envelopeId) {
       // We log non-completion events but don't take action on them.

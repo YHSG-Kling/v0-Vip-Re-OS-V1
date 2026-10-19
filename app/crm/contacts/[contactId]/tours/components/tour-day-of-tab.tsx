@@ -445,11 +445,11 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
 
       {/* Stop navigator */}
       <div className="flex items-center justify-between">
-        <Button variant="outline" size="icon" onClick={() => { setCurrentIdx(i => Math.max(0, i-1)); setShowRating(false) }} disabled={currentIdx === 0}>
+        <Button variant="outline" size="icon" aria-label="Previous showing" onClick={() => { setCurrentIdx(i => Math.max(0, i-1)); setShowRating(false) }} disabled={currentIdx === 0}>
           <ChevronLeft className="h-4 w-4" />
         </Button>
         <p className="text-sm font-semibold">SHOWING {currentIdx + 1} of {sortedStops.length}</p>
-        <Button variant="outline" size="icon" onClick={() => { setShowRating(true) }} disabled={showRating}>
+        <Button variant="outline" size="icon" aria-label="Rate this showing and continue" onClick={() => { setShowRating(true) }} disabled={showRating}>
           <ChevronRight className="h-4 w-4" />
         </Button>
       </div>
