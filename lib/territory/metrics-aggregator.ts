@@ -267,7 +267,7 @@ export async function setFarmTerritoryMode(
 ): Promise<void> {
   const supabase = createServiceClient()
 
-  const { data: existing, error: readError } = await supabase
+  const { data: settingsRow, error: readError } = await supabase
     .from("global_settings")
     .select("additional_settings")
     .eq("brokerage_id", brokerageId)
@@ -277,9 +277,9 @@ export async function setFarmTerritoryMode(
   // first time Settings → General is opened. Before that there is NO row, and an UPDATE that matches
   // nothing RESOLVES with no error (CLAUDE.md §3) — so the rows are COUNTED and zero is a refusal,
   // never a silent "saved".
-  if (!existing) throw new Error("This brokerage has no settings row yet — open Settings → General once (it seeds the row), then set the farm territory mode again.")
+  if (!settingsRow) throw new Error("No settings row exists for this brokerage yet — open Settings → General once (it seeds the row), then set the farm territory mode again.")
 
-  const current = (existing.additional_settings ?? {}) as Record<string, unknown>
+  const current = (settingsRow.additional_settings ?? {}) as Record<string, unknown>
 
   const { data: updated, error } = await supabase
     .from("global_settings")
