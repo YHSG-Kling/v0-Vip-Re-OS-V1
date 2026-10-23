@@ -481,6 +481,7 @@ function VideoLibraryContent() {
 
   async function handleDeleteScript(scriptId: string) {
     if (!confirm("Are you sure you want to delete this script?")) return
+    const { toast } = await import("sonner")
 
     try {
       // fetch RESOLVES on a 403 / 404 / 500 — only a network failure throws. The response was never read, so a refused
