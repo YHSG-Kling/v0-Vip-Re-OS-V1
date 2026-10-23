@@ -27,6 +27,7 @@ import {
   saveCdaTemplateFieldDefsAction,
 } from "@/app/actions/cda-template-field-actions"
 import { toast } from "sonner"
+import { CDA_WATERFALL_KEYS, CDA_TRANSACTION_KEYS } from "@/lib/transactions/cda-template-fields"
 
 type Source = "waterfall" | "transaction" | "agent_input" | "static"
 type FieldType = "currency" | "percent" | "date" | "text"
@@ -44,20 +45,16 @@ type Row = {
   confidence?: number
 }
 
-const WATERFALL_OPTS: Array<{ key: string; label: string; type: FieldType }> = [
-  { key: "gross_commission", label: "Gross Commission", type: "currency" },
-  { key: "agent_net", label: "Agent Net Commission", type: "currency" },
-  { key: "brokerage_net", label: "Brokerage Net Commission", type: "currency" },
-  { key: "agent_split_percent", label: "Agent Split %", type: "percent" },
-  { key: "fees", label: "Fees", type: "currency" },
-  { key: "team_split", label: "Team Split", type: "currency" },
-  { key: "revenue_share", label: "Revenue Share", type: "currency" },
-]
-const TRANSACTION_OPTS: Array<{ key: string; label: string; type: FieldType }> = [
-  { key: "property_address", label: "Property Address", type: "text" },
-  { key: "close_date", label: "Closing Date", type: "date" },
-  { key: "sale_price", label: "Sale Price", type: "currency" },
-]
+// TOMBSTONE (wave 143, lane 143C): the editor's own copies of the waterfall / transaction option lists are gone -
+// they were a TWIN of the grounding catalog and had already drifted (a catalog key the editor could not offer is a
+// binding a broker could never make). SURVIVOR: lib/transactions/cda-template-fields.ts:25 CDA_WATERFALL_KEYS /
+// CDA_TRANSACTION_KEYS (import-free, safe in a client bundle - the classifier reaches lib/ai/generate, server-only) - the ONE list of source_keys a binding may reference.
+const WATERFALL_OPTS: Array<{ key: string; label: string; type: FieldType }> = Object.entries(CDA_WATERFALL_KEYS).map(
+  ([key, v]) => ({ key, label: v.label, type: v.field_type }),
+)
+const TRANSACTION_OPTS: Array<{ key: string; label: string; type: FieldType }> = Object.entries(CDA_TRANSACTION_KEYS).map(
+  ([key, v]) => ({ key, label: v.label, type: v.field_type }),
+)
 
 function defaultsForSource(source: Source): { source_key: string | null; field_type: FieldType } {
   if (source === "waterfall") return { source_key: WATERFALL_OPTS[0].key, field_type: WATERFALL_OPTS[0].type }

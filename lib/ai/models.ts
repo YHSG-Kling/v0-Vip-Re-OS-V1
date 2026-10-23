@@ -150,6 +150,11 @@ export const AI_TASK_ROUTING: Record<string, {
   // the LEDGER (ai_tool_usage now sees the spend), not the cost.
   review_request_generation: { model: "gpt-4o",       fallback: "claude-sonnet", reason: "Post-close review request — short client email/text/script" },
   sphere_touchpoint_generation: { model: "gpt-4o",    fallback: "claude-sonnet", reason: "Lifetime-customer touchpoint — personal check-in in the agent's brand voice" },
+  // Wave 143 (143E): the follow-up arbiter (lib/ai-isa/followup-arbiter.ts) — ONE short structured verdict per person
+  // (pick an option id from a closed menu + a bounded wait + a rationale). Cheapest adequate lane: the platform's
+  // deterministic gates run before and after it, a refused / unavailable reply keeps the planner's own verdict, and one
+  // sweep spends at most the tenant policy's arbiter.maxDecisionsPerRun decisions.
+  followup_arbitration:      { model: "claude-haiku",  fallback: "gpt-4o-mini",  reason: "Follow-up arbitration — one short closed-menu JSON verdict per person; deterministic limits enforce around it" },
   blog_post_generation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Long-form blog — SEO + brand voice" },
   ai_reply_coach:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Coaching agent reply drafts — nuanced tone guidance" },
   smart_reply_generation:    { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Generate smart reply suggestions for inbound messages" },

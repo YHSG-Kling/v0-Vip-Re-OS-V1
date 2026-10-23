@@ -23,12 +23,14 @@ export interface PublishParams {
   accountId: string
   hashtags?: string[]
   /**
-   * YouTube only (wave 142, lane 142F): the upload's privacyStatus. This used to be the literal
-   * "public" inside publishToYouTube. It is now CLASSIFICATION-DRIVEN at the gate — nothing that is
-   * not public marketing is ever queued onto this rail (lib/video/public-video.ts classifyPublicVideo
-   * → lib/video/youtube-publish.ts), so every tenant post that reaches here IS public and takes the
-   * default; the platform's own product video names it explicitly. Never "unlisted" or "private" as
-   * a way to ship client media — that media is refused before a post exists.
+   * YouTube only: the upload's privacyStatus — REQUIRED, with NO default (wave 143, lane 143F; the 142K
+   * open item). It was the literal "public" inside publishToYouTube (wave 142), then a `?? "public"`
+   * default that let any caller that forgot to say broadcast: a human-drafted YouTube post of a thank-you
+   * video would have uploaded public. Now every caller NAMES it, and a call without one is refused before
+   * any byte leaves (fail closed). The tenant cron resolves it per post at SEND time from the SAME
+   * classification the queue used (lib/video/youtube-publish.ts resolveYouTubePrivacy: a file that is a
+   * public-marketing video goes "public"; a file that is a client / personal / unapproved video goes
+   * "private" — never broadcast); the platform's own product video names "public" explicitly.
    */
   privacyStatus?: "public" | "unlisted" | "private"
 }
@@ -286,6 +288,10 @@ async function publishToYouTube(params: PublishParams): Promise<PublishResult> {
   if (!params.mediaUrls || params.mediaUrls.length === 0) {
     throw new Error("YouTube requires video media")
   }
+  // Explicit or nothing: an upload that does not say who may watch it does not happen (see PublishParams.privacyStatus).
+  if (params.privacyStatus !== "public" && params.privacyStatus !== "unlisted" && params.privacyStatus !== "private") {
+    throw new Error("YouTube upload requires an explicit privacyStatus (public | unlisted | private) — refusing to broadcast on a default")
+  }
 
   // YouTube uses a resumable upload: the init call returns the upload URL in the Location response
   // HEADER, then video bytes are PUT to that URL. Now fully on the gateway — the init reads
@@ -311,8 +317,8 @@ async function publishToYouTube(params: PublishParams): Promise<PublishResult> {
         categoryId: "22", // People & Blogs
       },
       status: {
-        // Classification-driven (see PublishParams.privacyStatus): the gate admits public marketing only.
-        privacyStatus: params.privacyStatus ?? "public",
+        // Explicit, resolved by the caller from the classification (see PublishParams.privacyStatus) — no default.
+        privacyStatus: params.privacyStatus,
         selfDeclaredMadeForKids: false,
       },
     },

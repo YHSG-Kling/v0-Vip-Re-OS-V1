@@ -109,6 +109,8 @@ interface PageData {
    * rail has no view counter of its own and must not be given a fabricated one.
    */
   projectId: string | null
+  /** Wave 143: the reel's YouTube copy (video_metadata.youtube.url, https only) — the player slot's working fallback. Null until published there / on the render rail. */
+  youtubeUrl: string | null
 }
 
 async function loadPage(slug: string): Promise<PageData | null> {
@@ -188,7 +190,7 @@ async function loadPage(slug: string): Promise<PageData | null> {
     userId:      render.agent_user_id,
   })
 
-  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures, projectId: null }
+  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures, projectId: null, youtubeUrl: null }
 }
 
 /** Load a published reel from the canonical ai_video_projects rail and shape it
@@ -282,7 +284,10 @@ async function loadProjectPage(
     input_props: null,
   }
 
-  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures, projectId: proj.id }
+  // The write-back's own shape (lib/video/youtube-publish.ts recordYouTubePublishOnAsset): https URL or nothing.
+  const ytUrl = (proj.video_metadata?.youtube as { url?: unknown } | undefined)?.url
+  const youtubeUrl = typeof ytUrl === "string" && /^https:\/\/\S+$/.test(ytUrl) ? ytUrl : null
+  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures, projectId: proj.id, youtubeUrl }
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
@@ -358,6 +363,8 @@ export default async function VideoLandingPage({ params }: { params: Promise<{ s
             src={data.render.output_url!}
             poster={data.render.thumbnail_url}
             projectId={data.projectId}
+            title={data.title}
+            youtubeUrl={data.youtubeUrl}
           />
         </div>
 

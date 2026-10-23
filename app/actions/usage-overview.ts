@@ -11,6 +11,9 @@ import { resolveActingContext } from "@/lib/platform/acting-context"
 import { currentUsagePeriod } from "@/lib/usage/period"
 import { createServiceClient } from "@/lib/supabase/service"
 import { toPlanTier } from "@/lib/billing/plan-tier"
+import { METRIC_LABELS, LIVE_STOCK_METRICS, COUNTER_BACKED_METRICS } from "@/lib/usage/metric-labels"
+import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 export interface MetricSnapshot {
   metric: string
@@ -21,6 +24,13 @@ export interface MetricSnapshot {
   unlimited: boolean
   /** UI tone — green / amber / red */
   status: "ok" | "warning" | "exceeded"
+  /**
+   * Where `used` comes from. "counter" = a usage_counters row some writer increments; "live" = counted
+   * from the tenant's own rows when this was read (a STOCK, not a flow); "unmeasured" = nothing measures
+   * this metric yet — `used` is 0 BECAUSE NOTHING COUNTED, not because nothing was used, and the UI must
+   * say "Not measured yet" instead of drawing a green 0%.
+   */
+  source: "counter" | "live" | "unmeasured"
 }
 
 export interface TopConsumer {
@@ -39,22 +49,12 @@ export interface UsageOverview {
   topConsumers: TopConsumer[]
 }
 
-const METRIC_LABELS: Record<string, string> = {
-  llm_calls: "AI requests",
-  video_minutes: "Video generation",
-  active_users: "Active users",
-  contacts_count: "Contacts",
-  active_transactions: "Active transactions",
-  sms_sent: "SMS sent",
-  emails_sent: "Emails sent",
-  storage_gb: "Storage (GB)",
-  live_avatar_minutes: "Live AI minutes",
-  live_avatar_sessions: "Live AI sessions",
-  tts_characters: "Voice synthesis (chars)",
-  voice_clones_created: "Twin voices created",
-  avatars_created: "Twin avatars created",
-  ai_voice_minutes: "AI calling (min)",
-}
+// TOMBSTONE (orphan doctrine §1.1, wave 143J): the private METRIC_LABELS table that stood here
+// moved to lib/usage/metric-labels.ts:METRIC_LABELS — this is a "use server" module (every export is
+// a public endpoint, async only), so three other surfaces that talk about the same plan limits could
+// not import it and each invented its own numbers (see that file's header). It also carried FOURTEEN of
+// the seventeen live metrics; the survivor carries all seventeen (ai_tokens_monthly and the two
+// live_assistant_* metrics printed as their raw column names on this page).
 
 // TRUE ADMIN GATE (operational usage view, team_lead already included) —
 // repointed to the ONE tenant roster (isAdminOrBroker below). 'superadmin' was
@@ -98,7 +98,7 @@ export async function loadUsageOverview(): Promise<{
   const planTier = toPlanTier(brokerage?.plan_tier)
 
   // 2. Counters + limits — pull both, join in memory
-  const [{ data: counters }, { data: limits }] = await Promise.all([
+  const [{ data: counters, error: countersError }, { data: limits, error: limitsError }] = await Promise.all([
     // READERS FILTER ON period_start ALONE — lib/usage/period.ts states the rule
     // verbatim: "the start identifies the month, and keying reads on the end is
     // how the old rows became unreachable". period_end is part of the row's
@@ -120,19 +120,51 @@ export async function loadUsageOverview(): Promise<{
       .eq("plan_tier", planTier),
   ])
 
+  // A refused read RESOLVES (CLAUDE.md §3): without these two reads an unreadable counter table rendered
+  // as "nothing used, no limits" — a clean, green, empty meter. Refuse out loud instead.
+  if (countersError || limitsError) {
+    return { ok: false, error: "Usage could not be read right now. Please try again." }
+  }
+
   const usedByMetric = new Map<string, number>()
   for (const c of counters ?? []) {
     usedByMetric.set(c.metric, Number(c.value ?? 0))
   }
 
+  // STOCK metrics are not flows — nothing increments them — so they are counted LIVE from the tenant's
+  // own rows, scoped by the SESSION's brokerage (never a parameter). Before this, contacts_count,
+  // active_transactions and active_users had no usage_counters writer anywhere, so every tenant saw
+  // "0 / 500 contacts" however many they held. A count that cannot be read leaves the metric
+  // UNMEASURED ("Not measured yet"), never zero.
+  const liveUsed = new Map<string, number>()
+  const wanted = new Set((limits ?? []).map((l) => l.metric))
+  if (wanted.has("contacts_count")) {
+    const { count, error } = await supabase.from("contacts").select("id", { count: "exact", head: true }).eq("brokerage_id", ctx.brokerageId)
+    if (!error && count !== null) liveUsed.set("contacts_count", count)
+  }
+  if (wanted.has("active_transactions")) {
+    const { count, error } = await supabase
+      .from("transactions").select("id", { count: "exact", head: true })
+      .eq("brokerage_id", ctx.brokerageId).in("status", [...TRANSACTION_STATUSES_OPEN])
+    if (!error && count !== null) liveUsed.set("active_transactions", count)
+  }
+  if (wanted.has("active_users")) {
+    // THE SEAT GATE'S OWN COUNT (lib/kernel/seat-usage.ts) — licensed producers, never "everyone with a login".
+    const seats = await resolveSeatUsage(supabase, ctx.brokerageId)
+    if (seats.ok) liveUsed.set("active_users", seats.seatCount)
+  }
+
   const metrics: MetricSnapshot[] = (limits ?? []).map((l) => {
-    const used = usedByMetric.get(l.metric) ?? 0
+    const source: MetricSnapshot["source"] = LIVE_STOCK_METRICS.has(l.metric)
+      ? (liveUsed.has(l.metric) ? "live" : "unmeasured")
+      : (COUNTER_BACKED_METRICS.has(l.metric) || usedByMetric.has(l.metric) ? "counter" : "unmeasured")
+    const used = source === "live" ? (liveUsed.get(l.metric) ?? 0) : source === "counter" ? (usedByMetric.get(l.metric) ?? 0) : 0
     const limit = Number(l.limit_value ?? -1)
     const unlimited = limit < 0
     const percent = !unlimited && limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0
     const softThresh = Number(l.soft_limit_threshold ?? 0.8) * 100
     const status: MetricSnapshot["status"] =
-      unlimited ? "ok" :
+      unlimited || source === "unmeasured" ? "ok" :
         percent >= 100 ? "exceeded" :
           percent >= softThresh ? "warning" : "ok"
     return {
@@ -143,6 +175,7 @@ export async function loadUsageOverview(): Promise<{
       percent,
       unlimited,
       status,
+      source,
     }
   })
 

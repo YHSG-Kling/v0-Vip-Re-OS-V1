@@ -38,6 +38,8 @@ import { MlsCheckPanel } from "../components/mls-check-panel"
 import { ListingFormsPanel } from "@/app/components/dashboard/listings/lifecycle/listing-forms-panel"
 import { resolveTransactionFormsProvider } from "@/lib/kernel/forms"
 import { CompletedDocumentsPanel } from "@/app/components/dashboard/listings/lifecycle/completed-documents-panel"
+// THE MLS LIVE DATE, ONE READER (wave 143, lane 143A): planned vs verified is decided in compute-dom, never re-derived here.
+import { resolveMlsLiveDates } from "@/lib/listings/compute-dom"
 import { CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
@@ -79,7 +81,7 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     // the copy the Fair Housing / MLS review reads, the property facts are what
     // the pricing model prices, and dotloop_loop_id is written by two paths and
     // was read by NOTHING for document status.
-    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, open_house_marketing_date, open_house_event_date, agent_id, brokerage_id, list_price, seller_contact_id, marketing_tier_id, status, mls_number, mls_link, public_remarks, property_type, bedrooms, bathrooms, sqft, year_built, lot_size, has_pool, dotloop_loop_id")
+    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, mls_live_date_actual, go_live_confirmed_at, go_live_confirmed_source, mls_live_date_basis, mls_live_timezone, metadata, open_house_marketing_date, open_house_event_date, agent_id, brokerage_id, list_price, seller_contact_id, marketing_tier_id, status, mls_number, mls_link, public_remarks, property_type, bedrooms, bathrooms, sqft, year_built, lot_size, has_pool, dotloop_loop_id")
     .eq("id", listingId)
     .eq("brokerage_id", userRow.brokerage_id)
 
@@ -567,6 +569,11 @@ const { data: listingVendorBookings } = await supabase
   if (!publishReady) blockers.push("Missing required listing fields")
   if (!hasMlsNumber) blockers.push("No MLS number entered")
   blockers.push(...complianceBlockers)
+  // THE PLANNED MLS LIVE DATE (wave 143, lane 143A): the same rule validateListingLaunchReadiness enforces at the door —
+  // a listing whose planned go-live date has not arrived is coming soon, not active; a VERIFIED live date lifts it.
+  const mlsLive = resolveMlsLiveDates(listing as any)
+  const plannedDateBlocked = mlsLive.basis === "planned" && mlsLive.plannedInFuture
+  if (plannedDateBlocked) blockers.push(`The planned MLS live date (${mlsLive.planned}) has not arrived — coming soon until then`)
   // Marketing tier is superadmin-controlled — only surface the blocker to superadmins
   if (!marketingReady && isSuperAdmin) blockers.push("No marketing tier selected")
 
@@ -963,7 +970,7 @@ const { data: listingVendorBookings } = await supabase
           listingId={listingId}
           agentId={user.id}
           brokerageId={userRow.brokerage_id}
-          canLaunch={mediaReady && publishReady && marketingReady && hasMlsNumber && complianceBlockers.length === 0}
+          canLaunch={mediaReady && publishReady && marketingReady && hasMlsNumber && complianceBlockers.length === 0 && !plannedDateBlocked}
           blockers={blockers}
           isSuperAdmin={isSuperAdmin}
         />
@@ -982,8 +989,10 @@ const { data: listingVendorBookings } = await supabase
           sellerContactId={listing.seller_contact_id ?? null}
         />
         <StageTimeline
-          listing={listing}
+          listing={listing as any}
           lifecycleEvents={lifecycleEvents ?? []}
+          agreement={listingAgreement ? { esign_status: (listingAgreement as any).esign_status ?? null, fully_executed_at: (listingAgreement as any).fully_executed_at ?? null } : null}
+          lifecycleStage={currentStage}
         />
       </aside>
     </div>

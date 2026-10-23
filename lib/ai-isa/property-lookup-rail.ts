@@ -209,6 +209,11 @@ import {
   VERSIUM_MATCH_CREDIT_USD, type VersiumIdentity, type VersiumContactCall, type VersiumDemographicCall, type VersiumProvenance,
   // Wave 142 (lane 142D): the B2B2C crosswalk + the full-demographic real-estate indicators (audited in the adapter).
   type VersiumB2B2CIdentity, type VersiumB2B2COutput, type VersiumB2B2CCall, type VersiumFullDemographicCall, type VersiumRealEstateIndicators,
+  // Wave 143 (lane 143D): the published credit weights drive the pre-flight worst case (a bill is a number, not a guess), and the
+  // free audience-size estimate is the sixth Versium capability on this rail (owner_contact, reverse_contact, property_facts,
+  // business_identity, online_presence, audience_estimate).
+  VERSIUM_CREDIT_WEIGHTS, versiumCreditsUsd, versiumB2B2CWorstCaseCredits,
+  type VersiumAudienceFilters, type VersiumAudienceEstimate, type VersiumEstimateCall,
 } from "@/lib/external/versium-client"
 import { BATCHDATA_BILLED_PULL_OPT_IN } from "@/lib/buyer-search/listing-source-order"
 import { MAPBOX_SKU_USD, GOOGLE_MAPS_SKU_USD } from "@/lib/vendor-governance/cost-normalizer"
@@ -300,6 +305,7 @@ export type ProviderCapability =
   | "map_render"             // a map of coordinates — static image or browser tiles (wave 140, lane 140I)
   | "business_identity"      // a BUSINESS identity (LinkedIn URL / name + city + state) ↔ its consumer contact points — the B2B2C crosswalk (wave 142, lane 142D)
   | "online_presence"        // observed online real-estate activity + property/behaviour indicators for a known person (wave 142, lane 142D)
+  | "audience_estimate"      // HOW MANY people match a geography + housing-fact filter — a FREE size read for look-alike RESEARCH, never a targeting list (wave 143, lane 143D)
 
 export interface ProviderRouteEntry {
   provider: ContactDataProvider
@@ -392,8 +398,16 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
   business_identity: [
     { provider: "versium", unitCostUsd: VERSIUM_MATCH_CREDIT_USD, keyedBy: "person_identifier" },
   ],
+  // Billing note (wave 143, 143D): the unit here is the cost ORDER (one credit); the real bill is credits × the published
+  // weight — online_presence bills VERSIUM_CREDIT_WEIGHTS.full_demographic (3) credits per matched record.
   online_presence: [
     { provider: "versium", unitCostUsd: VERSIUM_MATCH_CREDIT_USD, keyedBy: "person_identifier" },
+  ],
+  // Wave 143 (lane 143D; owner: "consider Versium for lead-acquisition steps … research what customers have in common"):
+  // Versium's B2C ListGen ESTIMATES API sizes an audience for $0 ("can be called as many times as requested without
+  // incurring in any charge" — api-documentation.versium.com/reference/estimates-api). ONE provider sells it; the unit is 0.
+  audience_estimate: [
+    { provider: "versium", unitCostUsd: 0, keyedBy: "geography" },
   ],
 }
 
@@ -404,7 +418,17 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
  * (lib/kernel/os-health.ts): a sole-provider COMPLIANCE capability (dnc_tcpa) still sends the incident to a human,
  * a sole-provider research capability never blocks the failover of the provider's other capabilities.
  */
-export const DEGRADABLE_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set<ProviderCapability>(["online_presence", "business_identity"])
+export const DEGRADABLE_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set<ProviderCapability>(["online_presence", "business_identity", "audience_estimate"])
+
+/**
+ * Capabilities whose route row is FREE (unit 0) — each carries the vendor statement that makes it free. Every OTHER
+ * route row must be priced above zero (scripts/provider-cost-routing-guard.ts holds both halves of the rule, with a
+ * positive control): a zero on a paid capability is a missing price, a zero here is a documented one.
+ * @proofSeam kept exported for scripts/provider-cost-routing-guard.ts, which asserts the free-row rule and its positive control
+ */
+export const FREE_CAPABILITIES: ReadonlyMap<ProviderCapability, string> = new Map<ProviderCapability, string>([
+  ["audience_estimate", "Versium B2C ListGen Estimates API — \"can be called as many times as requested without incurring in any charge\" (api-documentation.versium.com/reference/estimates-api, read 2026-10-23)"],
+])
 
 /**
  * Capabilities whose provider ORDER is an owner ruling rather than cheapest-first. Every other
@@ -778,8 +802,10 @@ export async function runVersiumBusinessIdentityLeg(
 ): Promise<VersiumBusinessIdentityLegResult> {
   const outputs: readonly VersiumB2B2COutput[] = req.outputs?.length ? req.outputs : ["consumer_email"]
   const none: VersiumBusinessIdentityLegResult = { answered: false, businessEmails: [], consumerEmails: [], consumerMobiles: [], consumerAddress: null, cost: 0, skipped: null, provenance: {} }
-  // Worst case: one crosswalk credit + one credit per output asked (versium-client.ts — the documented billing unit).
-  const pre = await versiumLegPreflight({ capability: "business_identity", brokerageId: req.brokerageId, worstCaseUsd: Math.round((1 + outputs.length) * VERSIUM_MATCH_CREDIT_USD * 100) / 100, injectedCall: !!deps.call, deps })
+  // Worst case: each output's PUBLISHED weight (business_email 2, the others 1) + the crosswalk once per consumer request
+  // (versium-client.ts versiumB2B2CWorstCaseCredits — the Output Sample's Billing table). 143D: it was (1 + outputs) credits,
+  // which understated a business_email ask by one credit and any multi-output ask by its extra crosswalks.
+  const pre = await versiumLegPreflight({ capability: "business_identity", brokerageId: req.brokerageId, worstCaseUsd: versiumCreditsUsd(versiumB2B2CWorstCaseCredits(outputs)), injectedCall: !!deps.call, deps })
   if (!pre.ok) return { ...none, skipped: pre.skipped }
   try {
     const { appendVersiumB2B2C } = await import("@/lib/external/versium-client")
@@ -831,7 +857,8 @@ export async function runVersiumOnlinePresenceLeg(
   deps: VersiumLegDeps & { call?: VersiumFullDemographicCall } = {},
 ): Promise<VersiumOnlinePresenceLegResult> {
   const none: VersiumOnlinePresenceLegResult = { answered: false, indicators: null, cost: 0, skipped: null, provenance: null }
-  const pre = await versiumLegPreflight({ capability: "online_presence", brokerageId: req.brokerageId, worstCaseUsd: VERSIUM_MATCH_CREDIT_USD, injectedCall: !!deps.call, deps })
+  // Worst case: the published full_demographic weight — 3 match credits per matched record (143D; it was asked as ONE credit).
+  const pre = await versiumLegPreflight({ capability: "online_presence", brokerageId: req.brokerageId, worstCaseUsd: versiumCreditsUsd(VERSIUM_CREDIT_WEIGHTS.full_demographic), injectedCall: !!deps.call, deps })
   if (!pre.ok) return { ...none, skipped: pre.skipped }
   try {
     const { appendVersiumRealEstateIndicators } = await import("@/lib/external/versium-client")
@@ -849,6 +876,42 @@ export async function runVersiumOnlinePresenceLeg(
       })
     }
     return { answered: !!r.indicators, indicators: r.indicators, cost: r.cost, skipped: r.error && !r.indicators ? `error: ${r.error}` : null, provenance: r.provenance }
+  } catch (e) {
+    return { ...none, skipped: `error: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
+export interface VersiumAudienceEstimateLegResult {
+  answered: boolean
+  estimate: VersiumAudienceEstimate | null
+  /** Always 0 — the estimate is free; carried so every Versium leg result states its cost. */
+  cost: 0
+  skipped: string | null
+}
+
+/**
+ * THE AUDIENCE-ESTIMATE LEG (wave 143, lane 143D) — HOW MANY people match a geography + housing-fact filter, for
+ * look-alike RESEARCH sizing. FREE (Versium's ListGen Estimates API), so there is no budget pre-flight and nothing to
+ * book — but it is still a CAPABILITY on this rail: the route is read through routeCapability (a Versium in cool-down is
+ * routed around, an unconfigured one is skipped), the call rides the ONE egress with the tenant on the log row, and the
+ * filter object cannot express a protected characteristic (versium-client.ts versiumEstimateQueryFor refuses any other
+ * key by name). A research number, never a targeting list. Tenant-attributed only (no tenant, no read). Never throws.
+ */
+export async function runVersiumAudienceEstimateLeg(
+  req: { brokerageId: string | null; filters: VersiumAudienceFilters },
+  deps: { call?: VersiumEstimateCall; providerHealth?: ProviderHealthFn } = {},
+): Promise<VersiumAudienceEstimateLegResult> {
+  const none: VersiumAudienceEstimateLegResult = { answered: false, estimate: null, cost: 0, skipped: null }
+  if (!req.brokerageId) return { ...none, skipped: "no_brokerage" }
+  try {
+    const { isVersiumConfigured, estimateVersiumAudience } = await import("@/lib/external/versium-client")
+    if (!deps.call && !isVersiumConfigured()) return { ...none, skipped: "unconfigured" }
+    const health = await (deps.providerHealth ?? defaultProviderHealth)("versium").catch(() => null)
+    const route = routeCapability("audience_estimate", { versium: health })
+    if (!route.providers.includes("versium")) return { ...none, skipped: route.skipped.map((s) => `provider_failing: ${s.reason}`).join("; ") || "no_provider_on_route" }
+    const estimate = await estimateVersiumAudience(req.filters, { call: deps.call, brokerageId: req.brokerageId })
+    if (estimate.skipped) return { ...none, estimate, skipped: estimate.skipped === "refused_filter" ? `refused_filter: ${estimate.refused.join(", ")}` : estimate.skipped }
+    return { answered: estimate.estimatedRecords !== null, estimate, cost: 0, skipped: estimate.error && estimate.estimatedRecords === null ? `error: ${estimate.error}` : null }
   } catch (e) {
     return { ...none, skipped: `error: ${e instanceof Error ? e.message : String(e)}` }
   }

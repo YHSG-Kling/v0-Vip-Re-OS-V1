@@ -9,14 +9,14 @@ import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCan
 export async function run() {
   const c = canary("Seat: add user → role → tenant → permissions → READY")
   if (LIVE) return c.report([], 0, "refused in CANARY_LIVE mode: a seat invite is an outbound email — in-memory only")
-  const B = uuid(), B2 = uuid(), ADMIN = uuid(), ADMIN2 = uuid(), TEAM = uuid()
+  const B = uuid(), B2 = uuid(), ADMIN = uuid(), ADMIN2 = uuid(), TEAM = uuid(), TEAM2 = uuid()
   const svc = canaryClient({
     brokerages: [{ id: B, name: `${CANARY_TAG} Brokerage`, plan_tier: "brokerage", slug: `${CANARY_TAG}-b1` }, { id: B2, name: `${CANARY_TAG} Other`, plan_tier: "team", slug: `${CANARY_TAG}-b2` }],
     users: [
       { id: ADMIN, email: `admin@${CANARY_EMAIL_DOMAIN}`, user_type: "broker_owner", brokerage_id: B },
       { id: ADMIN2, email: `admin2@${CANARY_EMAIL_DOMAIN}`, user_type: "broker_owner", brokerage_id: B2 },
     ],
-    teams: [{ id: TEAM, brokerage_id: B, name: `${CANARY_TAG} team`, team_lead_id: ADMIN }],
+    teams: [{ id: TEAM, brokerage_id: B, name: `${CANARY_TAG} team`, team_lead_id: ADMIN }, { id: TEAM2, brokerage_id: B, name: `${CANARY_TAG} team 2`, team_lead_id: null }],
   })
   setSvc(svc)
   const { inviteTenantMember, assignUserRoleAndEntitlements, resolveUserWorkspaceContext } = await import("../../lib/kernel/users")
@@ -34,6 +34,12 @@ export async function run() {
   const ctx = await resolveUserWorkspaceContext(U)
   c.step("permissions: resolveUserWorkspaceContext resolves the seat to ITS tenant", JSON.stringify(ctx).includes(B), JSON.stringify(ctx).slice(0, 180))
   const again = await inviteTenantMember({ brokerageId: B, teamId: TEAM, email, firstName: "Canary", lastName: "Agent", userType: "agent", callerUserId: ADMIN })
+  // THE TEAM LEAD ANCHOR (wave 143G): a team_lead seated on a team that names no lead becomes its lead — the column lead
+  // visibility, unknown-sender routing and the leader's revenue-share row read. A led team keeps its lead.
+  const tl = await inviteTenantMember({ brokerageId: B, teamId: TEAM2, email: `lead@${CANARY_EMAIL_DOMAIN}`, firstName: "Canary", lastName: "Lead", userType: "team_lead", callerUserId: ADMIN })
+  c.step("team lead anchor: a team_lead seated on a team with no lead becomes that team's lead (teams.team_lead_id)", tl.success && svc.tables.teams?.find((t) => t.id === TEAM2)?.team_lead_id === tl.userId, `lead=${svc.tables.teams?.find((t) => t.id === TEAM2)?.team_lead_id} user=${tl.userId}`)
+  const tl2 = await inviteTenantMember({ brokerageId: B, teamId: TEAM, email: `lead2@${CANARY_EMAIL_DOMAIN}`, firstName: "Canary", lastName: "Colead", userType: "team_lead", callerUserId: ADMIN })
+  c.step("team lead anchor is FILL-ABSENT: a second team_lead on an already-led team does not displace its lead", tl2.success && svc.tables.teams?.find((t) => t.id === TEAM)?.team_lead_id === ADMIN, "")
   c.step("idempotency: re-inviting the same member is a no-op (one users row, one pending invitation)", again.success && (svc.tables.users ?? []).filter((x) => x.email === email).length === 1 && (svc.tables.user_invitations ?? []).filter((i) => i.brokerage_id === B && i.email === email).length === 1, again.error ?? "")
   const steal = await inviteTenantMember({ brokerageId: B2, email, userType: "agent", callerUserId: ADMIN2 })
   c.step("POSITIVE CONTROL (tenant boundary): another brokerage's admin inviting this email is REFUSED, the row stays home", !steal.success && svc.tables.users?.find((x) => x.id === U)?.brokerage_id === B, steal.error ?? "captured")

@@ -503,7 +503,8 @@ const LEDGER: Record<string, Ruling> = {
   ...group([
     "app/actions/lifetime-customer-touchpoints.ts::sendAnniversaryMessage",
     "app/actions/lifetime-customer-touchpoints.ts::sendBirthdayMessage",
-    "app/actions/lifetime-customer-touchpoints.ts::sendReferralRequest",
+    // sendReferralRequest left this list (wave 143, lane 143E): deleted with a tombstone naming its survivor
+    // lib/sphere/followup-moments.ts — a fixed or retired finding must leave the LEDGER (it only tightens).
   ], { kind: "adjudicated", why: "CLIENT SEAM FILLED — resolveTouchpointActor takes opts.client ?? createClient() and opts.agentId ?? auth.getUser(); app/api/cron/lifetime-customer-touchpoints passes { agentId, client: supabase } (service) on every call, so neither cookie read runs." }),
   "app/actions/ai-isa/engage-contact.ts::engageContact": { kind: "adjudicated", why: "NETWORK-ONLY SESSION READ — refuseForeignNetworkTenant reads headers() and requireCaller() ONLY when the request carries a `next-action` header (a server action invoked over the network). The sessionless callers (app/api/cron/speed-to-lead > lib/ai-isa/speed-to-lead.ts, the stale-contact cron via initiateAIISAContactEngagement) call it directly inside a route handler — no next-action header, so the cookie read never runs and the trusted brokerageId stands; outside request scope headers() throws and is caught as 'not network-invoked'. Wave 100 integrator: closes the caller-claimed-tenant IDOR lane 100B flagged on this public export." },
   "app/actions/open-house-automation.ts::processEventFollowups": { kind: "adjudicated", why: "CLIENT SEAM FILLED — processEventFollowups(eventId, client) uses client ?? createClient(); app/api/cron/open-house-followup passes svc. Lane 86E threaded the SAME client into its analytics tail (generateEventAnalytics built its own cookie client and wrote an all-zero open_house_analytics row from the cron)." },
@@ -567,9 +568,13 @@ ok("every LEDGER entry is still a finding (a fixed or retired one must leave the
 
 console.log("\n═══ 3. FIXED (lanes 86E, 86F) — sessionless callers now reach a server-only core, not the cookie door ═══")
 {
-  const FIXED: Array<{ door: string; caller: string; core: string }> = [
+  // `via` (wave 143, lane 143E): the caller reaches the server-only core THROUGH one named, non-"use server" engine instead of
+  // importing it directly — the RULE ("a sessionless caller never reaches the cookie door; it reaches a server-only core") is
+  // unchanged, so the caller must import the engine AND the engine must hand off to the core. The review-request-on-close cron now
+  // runs lib/reputation/review-ask.ts askForReviewAtClose, which drafts through review-request-draft.ts.
+  const FIXED: Array<{ door: string; caller: string; core: string; via?: string }> = [
     { door: "app/actions/dotloop-integration.ts::syncDotloopDocuments", caller: "app/api/cron/dotloop-sync/route.ts", core: "lib/transactions/dotloop-document-sync.ts" },
-    { door: "app/actions/ai-review-automation.ts::aiGenerateReviewRequest", caller: "app/api/cron/review-request-on-close/route.ts", core: "lib/reputation/review-request-draft.ts" },
+    { door: "app/actions/ai-review-automation.ts::aiGenerateReviewRequest", caller: "app/api/cron/review-request-on-close/route.ts", core: "lib/reputation/review-request-draft.ts", via: "lib/reputation/review-ask.ts" },
     { door: "app/actions/ai-sphere-management.ts::aiGenerateTouchpoint", caller: "lib/sphere-resonance/run-resonance-scan.ts", core: "lib/sphere-resonance/touchpoint-draft.ts" },
     // lane 86F
     { door: "app/actions/ai-listing-intake.ts::aiGenerateListingDescription", caller: "lib/workflow/intelligence/listing-presentation-builder.ts", core: "lib/listings/listing-description-core.ts" },
@@ -579,7 +584,16 @@ console.log("\n═══ 3. FIXED (lanes 86E, 86F) — sessionless callers now r
     ok(`${x.door} is no longer reached by a sessionless path`, !findingKeys.has(x.door))
     const callerSrc = existsSync(x.caller) ? stripComments(readFileSync(x.caller, "utf8")) : ""
     const coreSpec = `@/${x.core.replace(/\.ts$/, "")}`
-    ok(`…${x.caller} imports the core (${x.core}) instead`, callerSrc.includes(coreSpec))
+    if (x.via) {
+      const viaSpec = `@/${x.via.replace(/\.ts$/, "")}`
+      const viaSrc = existsSync(x.via) ? stripComments(readFileSync(x.via, "utf8")) : ""
+      const coreBase = x.core.split("/").pop()!.replace(/\.ts$/, "")
+      ok(`…${x.caller} imports the engine (${x.via}) and the engine hands off to the core (${x.core}) — never the cookie door`,
+        callerSrc.includes(viaSpec) && (viaSrc.includes(`./${coreBase}`) || viaSrc.includes(coreSpec)) && !COOKIE_CLIENT_SPECIFIER.test(viaSrc) && !hasUseServerDirective(viaSrc))
+      ok("(control) a caller that imports neither the engine nor the core fails the rule", !("import x from \"y\"".includes(viaSpec)))
+    } else {
+      ok(`…${x.caller} imports the core (${x.core}) instead`, callerSrc.includes(coreSpec))
+    }
     const coreSrc = existsSync(x.core) ? readFileSync(x.core, "utf8") : ""
     const coreStripped = stripComments(coreSrc)
     ok(`…and the core is server-only, never "use server", and builds no cookie client`,

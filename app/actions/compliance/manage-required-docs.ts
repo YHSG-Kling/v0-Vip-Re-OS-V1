@@ -19,6 +19,7 @@ import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
 import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
 import type { DocumentClassification } from "@/lib/compliance/required-documents"
+import { asChecklistStage, asContractSubtype, asFinancingKind, asRepresentation } from "@/lib/compliance/checklist-dimensions"
 
 /**
  * WHO ADMINISTERS THE REQUIRED-DOCUMENT LIST.
@@ -123,6 +124,44 @@ export interface AddRequiredDocInput {
   stateCode?:     string | null
   blockOnMissing: boolean
   description?:   string | null
+  /**
+   * The m806 dimensions — each null/omitted = "any" (lib/compliance/checklist-dimensions.ts).
+   * Validated against the ONE vocabulary below; a value outside it is refused here rather than
+   * left for the database CHECK to refuse as a resolved-but-empty write.
+   */
+  requiredStage?:   string | null
+  financingKind?:   string | null
+  contractSubtype?: string | null
+  representation?:  string | null
+}
+
+/**
+ * The dimension columns a rule write may carry, validated, as the insert/filter shape. Columns are
+ * included ONLY when set: m806 is WRITTEN, NOT APPLIED until the integrator applies it, and an insert
+ * that names an absent column is refused WHOLE (PGRST204) — so a rule without dimensions must write
+ * byte-for-byte what it wrote before.
+ */
+function ruleDimensions(input: Pick<AddRequiredDocInput, "requiredStage" | "financingKind" | "contractSubtype" | "representation">):
+  | { ok: true; columns: Record<string, string> }
+  | { ok: false; error: string } {
+  const columns: Record<string, string> = {}
+  const checks: Array<[string, string | null | undefined, (v: unknown) => unknown, string]> = [
+    ["required_stage",   input.requiredStage,   asChecklistStage,   "stage"],
+    ["financing_kind",   input.financingKind,   asFinancingKind,    "financing kind"],
+    ["contract_subtype", input.contractSubtype, asContractSubtype,  "contract type"],
+    ["representation",   input.representation,  asRepresentation,   "representation"],
+  ]
+  for (const [column, raw, narrow, label] of checks) {
+    if (raw === null || raw === undefined || raw === "") continue
+    if (!narrow(raw)) return { ok: false, error: `"${raw}" is not a valid ${label}` }
+    columns[column] = raw
+  }
+  return { ok: true, columns }
+}
+
+/** The next policy_version for a row read with select('*'); undefined while m806 is unapplied (the column is absent). */
+function nextPolicyVersion(row: Record<string, unknown>): { policy_version: number } | Record<string, never> {
+  return typeof row.policy_version === "number" ? { policy_version: row.policy_version + 1 } : {}
 }
 
 export async function addRequiredDocument(
@@ -134,22 +173,34 @@ export async function addRequiredDocument(
   if (!canManage(actor, input.scope, input.scopeId)) return { ok: false, error: "Forbidden for your role/scope" }
   if (!input.classification) return { ok: false, error: "Pick a document classification" }
 
+  const dims = ruleDimensions(input)
+  if (!dims.ok) return { ok: false, error: dims.error }
+
   const svc = createServiceClient()
   const stateCode = input.stateCode ? input.stateCode.toUpperCase() : null
 
-  // Idempotent per (brokerage, scope, scopeId, classification, deal_type, state).
-  // state_code needs different PostgREST operators: .is(null) for the US-baseline
-  // rows, .eq(value) for state-specific ones (.is() rejects a non-null string).
+  // Idempotent per (brokerage, scope, scopeId, classification, deal_type, state, and — wave 143 —
+  // each m806 dimension). state_code needs different PostgREST operators: .is(null) for the
+  // US-baseline rows, .eq(value) for state-specific ones (.is() rejects a non-null string).
+  // The dimensions are compared in code (sameDims) on a star select: a PostgREST filter that NAMES a
+  // dimension column is refused whole while m806 is unapplied, and a rule that differs from the
+  // generic one only by a dimension is NOT its duplicate.
   let dupQ = svc
     .from("brokerage_required_documents")
-    .select("id")
+    .select("*")
     .eq("brokerage_id", actor.brokerageId)
     .eq("scope_type", input.scope)
     .eq("scope_id", input.scopeId)
     .eq("classification", input.classification)
     .eq("deal_type", input.dealType)
   dupQ = stateCode === null ? dupQ.is("state_code", null) : dupQ.eq("state_code", stateCode)
-  const { data: existing } = await dupQ.maybeSingle()
+  const { data: candidates, error: dupErr } = await dupQ
+  // A refused duplicate read must not become "no duplicate" — that is how a double rule is written.
+  if (dupErr) return { ok: false, error: `could not check for an existing rule: ${dupErr.message}` }
+  const sameDims = (row: Record<string, unknown>) =>
+    (["required_stage", "financing_kind", "contract_subtype", "representation"] as const)
+      .every((c) => ((row[c] as string | null | undefined) ?? null) === (dims.columns[c] ?? null))
+  const existing = (candidates ?? []).find((r: Record<string, unknown>) => sameDims(r)) as { id?: string } | undefined
   if (existing?.id) return { ok: true, id: existing.id as string, duplicate: true }
 
   const { data: inserted, error } = await svc
@@ -165,6 +216,7 @@ export async function addRequiredDocument(
       block_on_missing: input.blockOnMissing,
       description:      input.description?.trim() || null,
       created_by:       actor.userId,
+      ...dims.columns,
     })
     .select("id")
     .single()
@@ -193,7 +245,7 @@ export async function setRequiredDocTemplate(
   const svc = createServiceClient()
   const { data: row } = await svc
     .from("brokerage_required_documents")
-    .select("id, brokerage_id, scope_type, scope_id")
+    .select("*")
     .eq("id", input.id)
     .maybeSingle()
   if (!row || row.brokerage_id !== actor.brokerageId) return { ok: false, error: "Not found in your brokerage" }
@@ -211,7 +263,7 @@ export async function setRequiredDocTemplate(
 
   const { error } = await svc
     .from("brokerage_required_documents")
-    .update({ template_form_id: input.formId })
+    .update({ template_form_id: input.formId, ...nextPolicyVersion(row) })
     .eq("id", input.id)
     .eq("brokerage_id", actor.brokerageId)
   if (error) return { ok: false, error: error.message }
@@ -249,7 +301,7 @@ export async function setRequiredDocBlocking(
   const svc = createServiceClient()
   const { data: row } = await svc
     .from("brokerage_required_documents")
-    .select("id, brokerage_id, scope_type, scope_id")
+    .select("*")
     .eq("id", input.id)
     .maybeSingle()
   if (!row || row.brokerage_id !== actor.brokerageId) return { ok: false, error: "Not found in your brokerage" }
@@ -257,7 +309,7 @@ export async function setRequiredDocBlocking(
 
   const { error } = await svc
     .from("brokerage_required_documents")
-    .update({ block_on_missing: input.blockOnMissing })
+    .update({ block_on_missing: input.blockOnMissing, ...nextPolicyVersion(row) })
     .eq("id", input.id)
     .eq("brokerage_id", actor.brokerageId)
   if (error) return { ok: false, error: error.message }
@@ -284,12 +336,16 @@ export async function removeRequiredDoc(
   if (!row || row.brokerage_id !== actor.brokerageId) return { ok: false, error: "Not found in your brokerage" }
   if (!canManage(actor, row.scope_type as Scope, row.scope_id as string)) return { ok: false, error: "Forbidden for your role/scope" }
 
-  const { error } = await svc
+  // A DELETE that matches nothing also resolves with no error (CLAUDE.md §3) — count what came back, so a
+  // rule that was already gone, or refused by the tenant predicate, is not reported as removed.
+  const { data: removed, error } = await svc
     .from("brokerage_required_documents")
     .delete()
     .eq("id", input.id)
     .eq("brokerage_id", actor.brokerageId)
+    .select("id")
   if (error) return { ok: false, error: error.message }
+  if (!removed || removed.length === 0) return { ok: false, error: "That rule was not removed — it no longer exists in your brokerage" }
 
   revalidatePath("/dashboard/settings/required-documents")
   return { ok: true }

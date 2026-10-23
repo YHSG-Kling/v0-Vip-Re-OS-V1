@@ -291,13 +291,20 @@ async function main() {
     const CRON = "app/api/cron/review-request-on-close/route.ts"
     const cron = blankStrings(code(CRON))
     const RAW_DEFAULT = /review_request_delay_days\s*\?\?|const\s+DEFAULT_DELAY_DAYS\s*=/
-    check("the cron reads the delay through normalizeReviewRequestDelay and derives its window from the same module",
-      /normalizeReviewRequestDelay\(\s*s\.review_request_delay_days\s*\)/.test(cron) && /REVIEW_REQUEST_LOOKBACK_DAYS\s*\*/.test(cron)
-        && /REVIEW_REQUEST_MIN_AGE_DAYS\s*\*/.test(cron) && !RAW_DEFAULT.test(cron))
+    // WAVE 143 (143E) — the RULE, not the waypoint. The delay read moved from the cron into the ONE review-ask engine
+    // (lib/reputation/review-ask.ts askForReviewAtClose, which the cron runs per closing): the rule is unchanged — the delay is read
+    // through normalizeReviewRequestDelay (never a raw `?? default`), the cron's sweep window derives from the same module, and a
+    // refused settings read REFUSES the ask rather than sending on the default day.
+    const ENGINE = "lib/reputation/review-ask.ts"
+    const engine = blankStrings(code(ENGINE))
+    check("the review-ask path reads the delay through normalizeReviewRequestDelay (engine) and the cron derives its window from the same module",
+      /normalizeReviewRequestDelay\(\s*\(settingsRow as \{ review_request_delay_days\?: unknown \} \| null\)\?\.review_request_delay_days\s*\)/.test(engine)
+        && /askForReviewAtClose\(/.test(cron) && /REVIEW_REQUEST_LOOKBACK_DAYS\s*\*/.test(cron)
+        && /REVIEW_REQUEST_MIN_AGE_DAYS\s*\*/.test(cron) && !RAW_DEFAULT.test(cron) && !RAW_DEFAULT.test(engine))
     check("POSITIVE CONTROL — the pre-86H local default is flagged",
       RAW_DEFAULT.test(`const DEFAULT_DELAY_DAYS = 5\n x = s.review_request_delay_days ?? DEFAULT_DELAY_DAYS`))
-    check("the cron READS the settings error (a refused read fails the run, never 'everyone on the default')",
-      /error:\s*settingsError/.test(cron) && /if \(settingsError\) throw/.test(cron))
+    check("the engine READS the settings error (a refused read refuses the ask, never 'everyone on the default')",
+      /error:\s*settingsError/.test(engine) && /if \(settingsError\) return push\(\{ status: "skipped", reason: "settings_unreadable"/.test(code(ENGINE)))
     const seam = code("lib/live-agent/face-render.ts")
     check("face-render's normalizer filters by the ONE provider list the writer validates against",
       /FACE_RENDER_PROVIDERS: readonly FaceRenderProvider\[\] = DEFAULT_FACE_PROVIDER_ORDER/.test(seam) && /raw\.filter\(isFaceRenderProvider\)/.test(seam)

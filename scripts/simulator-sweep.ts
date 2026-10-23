@@ -65,7 +65,10 @@ const targets = Object.keys(pkg.scripts)
     s.startsWith("test:") &&
     !wired.has(s) &&
     s !== "test:sweep" &&
-    /tsx\s+scripts\/[\w.-]+\.ts/.test(pkg.scripts[s] ?? ""))
+    // Optional tsx flags (`tsx --conditions=react-server scripts/x.ts`) — the narrower `tsx\s+scripts/` form
+    // silently excluded four unwired proofs (accounting-scopes, accuracy-gate-telemetry, zoom-lane,
+    // zoom-embed), two of which had gone red unseen (docs/operations/TEST-MATRIX.md, Findings F1/F2).
+    /tsx\s+(?:--?[\w=.-]+\s+)*scripts\/[\w.-]+\.ts/.test(pkg.scripts[s] ?? ""))
   .sort()
 
 const CONCURRENCY = Math.max(2, Math.min(8, cpus().length - 2))

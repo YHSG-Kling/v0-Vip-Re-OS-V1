@@ -139,6 +139,10 @@ export const RECORDABLE_EVENTS: Record<RecordableAction, RecordableEvent> = {
       // means "not recorded" (NULL), never a fabricated name or date.
       { key: "documentName", label: "Document name", type: "text", required: false, help: "What the signed agreement file is called (e.g. \"Exclusive Right to Sell — 44 Birch\"). Optional." },
       { key: "effectiveDate", label: "Effective date (yyyy-mm-dd)", type: "text", required: false, help: "The effective date stated ON the agreement, if different from today. Leave blank to record none." },
+      // The PLANNED MLS live date (wave 143, lane 143A): a plan the agent and seller made, recorded as a plan — it is
+      // verified later, from the MLS/IDX feed, never by being typed. Blank keeps the date already on the listing; none
+      // is invented, and the listing waits at LISTING_AGREEMENT_SIGNED until one is set.
+      { key: "plannedMlsLiveDate", label: "Planned MLS live date (yyyy-mm-dd)", type: "text", required: false, help: "The day you plan to go live on the MLS. Leave blank to keep the date already on the listing (none is invented)." },
       { key: "listingRate", label: "Listing side commission %", type: "number", required: false },
       { key: "buyerRate", label: "Buyer side commission %", type: "number", required: false },
       // Owner ruling (2026-08-27): "listing agreement total commission rate is

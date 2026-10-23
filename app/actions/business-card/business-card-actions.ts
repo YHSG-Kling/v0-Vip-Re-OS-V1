@@ -17,6 +17,7 @@ import {
   confidentCardFields,
   decideCardFieldWrite,
   humanConfirmedExtraction,
+  isExistingTenantMember,
   parseCardExtraction,
   resolvePreScanChoice,
   unconfirmedCardNote,
@@ -79,6 +80,9 @@ type ScanResultShape = {
    *  unclassified card that produced NO contacts row, which is exactly the "saved as a contactid"
    *  reading the owner refused. A card that became nothing says `none`. */
   entity: ScanEntity
+  /** Wave 143 (143D): set when the "agent" card is a colleague who already has a seat in THIS tenant — nothing was filed
+   *  (entity `none`); the review surface can say "already on your team" instead of a bare "no record". */
+  existingUserId?: string | null
   cardSubjectType: CardSubjectType
   subjectUserId: string | null
   viable: boolean
@@ -379,21 +383,28 @@ async function routeClassifiedCard(args: {
   const cardEmail = (confident.email ?? "").trim().toLowerCase()
   const cardPhone = (confident.phone ?? "").trim()
   if (cardEmail || cardPhone) {
-    const userQuery = supabase.from("users").select("id, user_type").eq("brokerage_id", brokerageId)
-    const { data: matchedUser } = await (cardEmail ? userQuery.eq("email", cardEmail) : userQuery.eq("phone", cardPhone)).maybeSingle()
+    // Wave 143 (lane 143D): the three identity lookups used `.maybeSingle()` and read only `data` — two rows sharing an email
+    // (a contact duplicated before the merge ran) is a PGRST116 REFUSAL that resolved as "no match", so a card for a person
+    // who already exists was filed as a stranger; a refused read looked the same (CLAUDE.md §3: supabase-js RESOLVES
+    // refusals). `.limit(1)` takes the first of many, and the error is READ and said — the lookup is advisory (the type was
+    // chosen before the scan), so a refused one degrades to "no match" LOUDLY instead of silently.
+    const firstMatch = async <T,>(table: "users" | "contacts" | "vendors", columns: string): Promise<T | null> => {
+      const q = supabase.from(table).select(columns).eq("brokerage_id", brokerageId)
+      const { data, error } = await (cardEmail ? q.eq("email", cardEmail) : q.eq("phone", cardPhone)).limit(1)
+      if (error) { console.error(`[businessCardUpload] ${table} identity lookup refused (treated as no match):`, error.code, error.message); return null }
+      return ((data ?? [])[0] as T | undefined) ?? null
+    }
+    const matchedUser = await firstMatch<{ id: string; user_type: string | null }>("users", "id, user_type")
     if (matchedUser) {
-      const mu = matchedUser as { id: string; user_type: string | null }
-      subjectUserId = mu.id
-      subjectUserType = mu.user_type ?? null
+      subjectUserId = matchedUser.id
+      subjectUserType = matchedUser.user_type ?? null
     } else {
-      const contactQuery = supabase.from("contacts").select("id").eq("brokerage_id", brokerageId)
-      const { data: matchedContact } = await (cardEmail ? contactQuery.eq("email", cardEmail) : contactQuery.eq("phone", cardPhone)).maybeSingle()
+      const matchedContact = await firstMatch<{ id: string }>("contacts", "id")
       if (matchedContact) {
-        matchedContactId = (matchedContact as { id: string }).id
+        matchedContactId = matchedContact.id
       } else {
-        const vendorQuery = supabase.from("vendors").select("id").eq("brokerage_id", brokerageId)
-        const { data: matchedVendor } = await (cardEmail ? vendorQuery.eq("email", cardEmail) : vendorQuery.eq("phone", cardPhone)).maybeSingle()
-        if (matchedVendor) matchedVendorId = (matchedVendor as { id: string }).id
+        const matchedVendor = await firstMatch<{ id: string }>("vendors", "id")
+        if (matchedVendor) matchedVendorId = matchedVendor.id
       }
     }
   }
@@ -482,7 +493,32 @@ async function routeClassifiedCard(args: {
     return { ...resultBase, contactId: null, vendorId: vendor.id, recruitId: null, entity: { kind: "vendor", id: vendor.id } }
   }
 
+  // Wave 143 (lane 143D) — BROKERAGE AFFILIATION: a card whose email / phone is ALREADY a user of THIS tenant in an internal seat
+  // (agent, broker, team lead, admin, ISA, TC …) is a colleague, not a recruit. A recruits row is a prospect from OUTSIDE the
+  // brokerage; filing a teammate as one pollutes the recruiting funnel and makes a recruiter "recruit" their own team. A matched
+  // portal CONTACT or VENDOR seat does not count (that person is a client / a vendor who may also be a fellow agent elsewhere).
+  // The scan keeps `subject_user_id`, files nothing, and says why — never an account, never a recruit.
+  const existingMember = isExistingTenantMember(cardSubjectType, subjectUserId, subjectUserType)
+
   if (cardSubjectType === "agent") {
+    if (existingMember) {
+      // A colleague already in this tenant: nothing is filed (no recruit, no account). Same typed-column answer as a
+      // sphere card — routed_entity_type 'none' — with the extracted_data saying WHICH user it already is.
+      const { error: scanUpdateMemberError } = await supabase.from("business_card_scans").update({
+        extracted_data: { ...extracted, field_confidence: extraction.confidence, routed_to: "existing_member", existing_user_id: subjectUserId, existing_user_type: subjectUserType },
+        ...classificationColumns,
+        routed_entity_type: "none",
+      }).eq("id", scanRef.id)
+      if (scanUpdateMemberError) console.error("[businessCardUpload] scan classification update (existing member) failed:", scanUpdateMemberError)
+      await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: brokerageId,
+        entityType: "business_card",
+        entityId: scanRef.id,
+        event: KernelEvent.BUSINESS_CARD_APPROVED,
+        metadata: { scanId: scanRef.id, routed_to: "existing_member", card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy, human_confirmed: args.human },
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      return { ...resultBase, contactId: null, vendorId: null, recruitId: null, entity: { kind: "none", id: null }, existingUserId: subjectUserId }
+    }
     // A fellow agent's card = a RECRUITING prospect (agents are platform
     // users, owner rule) — NEVER a CRM contact. recruits.status CHECK
     // vocabulary verified live.

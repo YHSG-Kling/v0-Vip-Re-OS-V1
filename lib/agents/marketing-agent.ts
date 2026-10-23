@@ -60,6 +60,9 @@ Own the brand/promotion marketing lane (1:many broadcast). Each week, scan:
   • The brokerage's broadcast cadence: newsletter, social, blog, ad
   • Recent engagement on each channel — fold winners into next week's mix
   • De-conflict log — never queue past the broadcast frequency cap
+  • MARKET LEADERSHIP signals (AI-search visibility, competitor moves, public reputation themes, our own best performers,
+    local-event topics) — the kickoff ranks them by the strength of their evidence; turn the strongest into ORIGINAL pieces
+    (never copy or paraphrase a competitor), and say plainly when a week has no such signal
 
 Produce a ranked weekly plan the agent approves; you NEVER auto-publish.
 
@@ -112,6 +115,10 @@ const TEMPLATE: AgentTemplate = {
 }
 
 interface MarketingSnapshot {
+  /** Wave 143 (143E) — MARKET LEADERSHIP: AI-search visibility, competitor intelligence, public reputation themes, own content
+   *  performance and local-event topics, read from their survivors (lib/content-intel/market-leadership.ts) and ranked by the
+   *  evidence's own magnitude. Evidence + briefs for ORIGINAL content, never copy; null = the loader itself failed. */
+  marketLeadership: import("@/lib/content-intel/market-leadership").LeadershipSignals | null
   pendingListingPromos: number
   newListingsThisWeek:  number
   atRiskListings:       number
@@ -930,7 +937,18 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     console.error(`[marketing-agent] direct-mail performance signals failed for ${brokerageId}:`, (e as Error).message)
   }
 
+  // Wave 143 (143E): the market-leadership streams (AI-search visibility, competitor intel, reputation themes, own
+  // performance, local-event topics). Each stream is a survivor's reader; a refused one is a published blind spot inside.
+  let marketLeadership: MarketingSnapshot["marketLeadership"] = null
+  try {
+    const { loadMarketLeadershipSignals } = await import("@/lib/content-intel/market-leadership")
+    marketLeadership = await loadMarketLeadershipSignals(svc, brokerageId)
+  } catch (e) {
+    console.error(`[marketing-agent] market-leadership signals failed for ${brokerageId}:`, (e as Error).message)
+  }
+
   return {
+    marketLeadership,
     pendingListingPromos,
     newListingsThisWeek,
     atRiskListings,
@@ -1064,6 +1082,12 @@ export async function spawnMarketingAgentForBrokerage(params: {
         `  ${i + 1}. ${f.kind} on ${f.channel} → ${f.composition} (${f.mood} mood) · mean signal ${f.meanSignal} over ${f.sample} video${f.sample === 1 ? "" : "s"}`
       ).join("\n")
 
+  let marketLeadershipLines = "──── MARKET LEADERSHIP ────\n(the market-leadership loader failed this week — plan from the topic bank and the brokerage's own listings and closings)"
+  if (snap.marketLeadership) {
+    const { rankLeadershipOpportunities, renderLeadershipBriefForKickoff } = await import("@/lib/content-intel/market-leadership")
+    marketLeadershipLines = renderLeadershipBriefForKickoff(snap.marketLeadership, rankLeadershipOpportunities(snap.marketLeadership))
+  }
+
   const kickoff = params.kickoff ?? [
     renderBrokerageContextForKickoff(brokerage),
     "",
@@ -1080,6 +1104,8 @@ export async function spawnMarketingAgentForBrokerage(params: {
     "a rising at-risk count or a falling send count changes the plan before",
     "any topic does):",
     snapshotDeltaLines,
+    "",
+    marketLeadershipLines,
     "",
     "──── CONTENT INTELLIGENCE — TOP TOPICS FROM THE BANK ────",
     "Lead every asset this week with one of these. The audience is asking",

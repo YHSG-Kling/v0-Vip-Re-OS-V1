@@ -30,7 +30,9 @@ const AREA_CODE_TO_STATE: Record<string, string> = {
 }
 
 // IANA timezone per state (population-weighted primary timezone)
-const STATE_TO_IANA_TIMEZONE: Record<string, string> = {
+// EXPORTED (wave 143, lane 143A): lib/listings/compute-dom.ts resolves a listing's MLS-live-date timezone from the
+// property's state through THIS map — one state→timezone table in the tree, never a second copy (CLAUDE.md §6).
+export const STATE_TO_IANA_TIMEZONE: Record<string, string> = {
   AL: "America/Chicago", AK: "America/Anchorage", AZ: "America/Phoenix",
   AR: "America/Chicago", CA: "America/Los_Angeles", CO: "America/Denver",
   CT: "America/New_York", DC: "America/New_York", DE: "America/New_York",

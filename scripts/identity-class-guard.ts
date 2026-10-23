@@ -636,9 +636,16 @@ console.log("\n═══ 2. The three verified defects stay fixed ═══")
   const agentsWrites  = (txk.match(/agent_id:\s+agentRecordId/g) ?? []).length
   const agentsFilters = (txk.match(/\.eq\("agent_id", agentRecordId\)/g) ?? []).length
   const usersWrites   = (txk.match(/agent_id:\s+params\.agentId/g) ?? []).length
-  ok("the transactions kernel writes activities / agent_commission_profiles /\n    commission_calculations / review_requests with the AGENTS id —\n    commission_calculations is money, and it was a foreign-key violation",
-    agentsWrites === 5 && agentsFilters === 1,
+  // WAVE 143 (143E) — the RULE, not the waypoint count. The review_requests write LEFT the kernel (closeTransactionCommand no longer
+  // inserts it; tombstone in lib/kernel/transactions.ts → lib/reputation/review-ask.ts, whose agents-id handoff identity-fallback-guard
+  // asserts), taking the count from FIVE agents-class writes to FOUR. The rule is "every agent_id write the kernel still makes is
+  // agents-class": no users-class write (asserted next) and at least one agents-class write is still there (so the count cannot
+  // read zero because the finder went blind — the control below).
+  const KERNEL_WRITES_AGENT_ID = /agent_id:\s+agentRecordId/g
+  ok("the transactions kernel writes activities / agent_commission_profiles /\n    commission_calculations with the AGENTS id (the review_requests write moved to\n    the review-ask engine) — commission_calculations is money, and it was a foreign-key violation",
+    agentsWrites > 0 && agentsFilters === 1 && !/from\("review_requests"\)/.test(txk),
     `agentRecordId writes: ${agentsWrites}, filters: ${agentsFilters}`)
+  ok("(control) the finder still sees an agents-class write when one is present", (`await x.insert({ agent_id: agentRecordId })`.match(KERNEL_WRITES_AGENT_ID) ?? []).length === 1)
   ok("...and NO users-class agent_id write is left — since m366 there is no\n    column in this file for one to be correct in",
     usersWrites === 0, `params.agentId writes left: ${usersWrites}`)
 

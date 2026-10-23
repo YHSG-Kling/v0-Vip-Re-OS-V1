@@ -39,7 +39,16 @@ import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
  */
 export const PUBLIC_MARKETING_VIDEO_TYPES = [
   "agent_intro",
+  // Wave 143 (lane 143F; owner: "all approved non-personal videos → YouTube"): the AVATAR / EXPLAINER and EDUCATION
+  // kinds are broadcast classes when they are made for NOBODY. They are also client-facing kinds
+  // (client-video-delivery.ts CLIENT_FACING_VIDEO_TYPES — delivered to the ONE contact they were made for), and the
+  // same contact_id rule below separates the two readings, exactly as it does for market_update. An education-OS
+  // module video (learning_module_id) is the platform's training content, not marketing — refused by name.
+  // listing_tour stays OUT: the CMA presentation assembler stages one before a listing agreement exists, with no
+  // contact_id on the project — broadcasting a seller's home at presentation time would be a disclosure.
+  "avatar_explainer",
   "coming_soon",
+  "education",
   "just_listed",
   "just_sold",
   "listing_promo",
@@ -56,6 +65,8 @@ interface PublicVideoRow {
   audience_type?: string | null
   usage_intent?: string | null
   contact_id?: string | null
+  /** Set on an education-OS module video (platform training content, never marketing). */
+  learning_module_id?: string | null
   approval_status?: string | null
   status?: string | null
   compliance_status?: string | null
@@ -65,6 +76,7 @@ interface PublicVideoRow {
 type PublicVideoRefusal =
   | "personal_or_client_kind"
   | "addressed_to_a_contact"
+  | "education_module_video"
   | "in_house_audience"
   | "mls_only_cut"
   | "not_approved"
@@ -80,6 +92,7 @@ type PublicVideoVerdict =
 export function classifyPublicVideo(row: PublicVideoRow): PublicVideoVerdict {
   if (!PUBLIC_TYPES.has(String(row.video_type ?? ""))) return { public: false, reason: "personal_or_client_kind" }
   if (row.contact_id) return { public: false, reason: "addressed_to_a_contact" }
+  if (row.learning_module_id) return { public: false, reason: "education_module_video" }
   if (row.audience_type === "in_house") return { public: false, reason: "in_house_audience" }
   if (row.usage_intent === "mls") return { public: false, reason: "mls_only_cut" }
   if (row.approval_status !== "approved" && row.approval_status !== "published") return { public: false, reason: "not_approved" }
@@ -153,7 +166,7 @@ function youtubeUrlOf(videoMetadata: unknown): string | null {
  */
 export async function pickSiteHeroVideo(svc: any, brokerageId: string): Promise<SiteHeroVideo | null> {
   const { data, error } = await svc.from("ai_video_projects")
-    .select("id, title, video_type, audience_type, usage_intent, contact_id, approval_status, status, compliance_status, video_url, thumbnail_url, public_slug, published_at, video_metadata")
+    .select("id, title, video_type, audience_type, usage_intent, contact_id, learning_module_id, approval_status, status, compliance_status, video_url, thumbnail_url, public_slug, published_at, video_metadata")
     .eq("brokerage_id", brokerageId)
     .eq("is_published", true)
     .not("public_slug", "is", null)

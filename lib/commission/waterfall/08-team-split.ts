@@ -3,7 +3,6 @@ import { centsToDollars } from '../utils'
 import type { WaterfallContext, DistributionRecord, CompanyObligationRecord } from '../types'
 import {
   resolveTeamLeadOverride,
-  isAgreementEffective,
   pickTeamTerms,
   type AgentNegotiatedTermRow,
   applyTeamCap,
@@ -14,6 +13,7 @@ import {
   type TeamCapLedgerRead,
   type TeamCapStatus,
 } from '../team-lead-split'
+import { loadTeamTermsAsOf, memberInEffectOn } from '../agreement-terms'
 
 /**
  * Read the team's cap ledger row for THIS agent — the row whose anniversary
@@ -100,7 +100,21 @@ async function resolveTeamLeadAgreement(
     .maybeSingle()
   if (teamError) throw new Error(`[team-split] teams lookup failed: ${teamError.message}`)
   if (!team || !(team as any).team_lead_id) return null
-  if (!isAgreementEffective((team as any).terms_effective_date ?? null, new Date())) return null
+
+  // WAVE 143 (lane 143C) — THE TEAM'S TERMS FOR THE DEAL'S PERIOD. This used to judge `terms_effective_date`
+  // against the wall clock and price the CURRENT teams row: a team that changed its split mid-year re-priced
+  // every deal still to be calculated. The versions the teams trigger writes (team_commission_profiles, m812)
+  // are judged on the transaction's date (stage 01's agreement.asOf); the live row is the fallback while the
+  // history is unavailable. null = no terms in force that day — the override is inert, exactly as before.
+  const asOfDate = context.agreement?.asOf ?? new Date().toISOString().slice(0, 10)
+  const teamTerms = await loadTeamTermsAsOf(supabase, {
+    brokerageId: context.brokerageId,
+    teamId,
+    agentId: context.agentId,
+    asOf: asOfDate,
+    liveTeam: team as any,
+  })
+  if (!teamTerms) return null
 
   // teams.team_lead_id is a USERS id → resolve to the lead's AGENTS id (same
   // brokerage). If the lead is not an agent, there is no distributable target → inert.
@@ -114,10 +128,8 @@ async function resolveTeamLeadAgreement(
   const leadAgentId = (leadAgent as any)?.id as string | null
   if (!leadAgentId) return null
 
-  const teamSplitType = (team as any).team_split_type === 'flat' ? 'flat' : 'percent'
-  const teamSplitValue = teamSplitType === 'flat'
-    ? Number((team as any).team_split_value ?? 0)
-    : Number((team as any).team_split_percent ?? 0)
+  const teamSplitType = teamTerms.splitType
+  const teamSplitValue = teamTerms.splitValue
 
   // ── THE AGENT'S OWN NEGOTIATED TERM OUTRANKS THE TEAM DEFAULT ─────────────
   //
@@ -132,24 +144,36 @@ async function resolveTeamLeadAgreement(
   // RESOLVES a failed query — an unchecked refusal here would silently fall back
   // to the team default and quietly charge the agent the rate they negotiated
   // away from.
-  const { data: negotiated, error: negotiatedError } = await supabase
-    .from('agent_commission_profiles')
-    .select('team_override_percent, is_active, effective_date')
-    .eq('agent_id', context.agentId)
-    .eq('brokerage_id', context.brokerageId)
-  if (negotiatedError) {
-    throw new Error(`[team-split] agent_commission_profiles lookup failed: ${negotiatedError.message}`)
+  //
+  // WAVE 143: the negotiated term is the one in force on the DEAL'S date — stage 01's resolved agreement
+  // (agent_commission_profile_versions, else the live agent_commission_profiles row). A context built without
+  // stage 01 (a hand-made test context) keeps the original live read.
+  let negotiatedRows: AgentNegotiatedTermRow[]
+  if (context.agreement) {
+    const t = context.agreement.terms
+    negotiatedRows = t
+      ? [{ team_override_percent: t.team_override_percent ?? null, is_active: t.is_active !== false, effective_date: null }]
+      : []
+  } else {
+    const { data: negotiated, error: negotiatedError } = await supabase
+      .from('agent_commission_profiles')
+      .select('team_override_percent, is_active, effective_date')
+      .eq('agent_id', context.agentId)
+      .eq('brokerage_id', context.brokerageId)
+    if (negotiatedError) {
+      throw new Error(`[team-split] agent_commission_profiles lookup failed: ${negotiatedError.message}`)
+    }
+    negotiatedRows = (negotiated ?? []) as unknown as AgentNegotiatedTermRow[]
   }
 
   const terms = pickTeamTerms({
-    profiles: (negotiated ?? []) as unknown as AgentNegotiatedTermRow[],
+    profiles: negotiatedRows,
     teamSplitType,
     teamSplitValue,
-    today: new Date().toISOString().slice(0, 10),
+    today: asOfDate,
   })
 
-  const rawCap = (team as any).cap_amount
-  const capAmount = rawCap === null || rawCap === undefined ? null : Number(rawCap)
+  const capAmount = teamTerms.capAmount
 
   return {
     teamId: (team as any).id,
@@ -158,6 +182,13 @@ async function resolveTeamLeadAgreement(
     splitValue: terms.splitValue,
     capAmount,
     source: terms.source,
+    evidence: {
+      teamId: (team as any).id as string,
+      source: teamTerms.source,
+      effectiveFrom: teamTerms.effectiveFrom,
+      asOf: asOfDate,
+      signedAgreement: teamTerms.signedAgreement ?? null,
+    },
   }
 }
 
@@ -173,17 +204,20 @@ export async function applyTeamSplit(
 ): Promise<WaterfallContext> {
   const supabase = createServiceClient()
 
-  // Query team members for this agent
-  const { data: teamMembers, error } = await supabase
+  // Query team members for this agent. WAVE 143 (lane 143C): a dated membership is judged on the DEAL'S period
+  // (team_members.effective_from/effective_to), not on today's is_active flag — a member who has since left still
+  // shares the deal they were on, and one who has not started yet does not. Undated rows keep the is_active reading.
+  const { data: memberRows, error } = await supabase
     .from('team_members')
     .select('*')
     .eq('agent_id', context.agentId)
     .eq('brokerage_id', context.brokerageId)
-    .eq('is_active', true)
 
   if (error) {
     throw new Error(`[team-split] Failed to fetch team members: ${error.message}`)
   }
+  const memberAsOf = context.agreement?.asOf ?? new Date().toISOString().slice(0, 10)
+  const teamMembers = (memberRows ?? []).filter((m: any) => memberInEffectOn(m, memberAsOf))
 
   const teamDistributions: DistributionRecord[] = []
   const companyObligations: CompanyObligationRecord[] = [...(context.companyObligations ?? [])]
@@ -315,6 +349,7 @@ export async function applyTeamSplit(
   let teamCapStatus: TeamCapStatus = 'n/a'
   let teamAmountTowardsCap = 0
   let teamCapTeamId: string | null = null
+  let teamAgreementEvidence: WaterfallContext['teamAgreement'] = context.teamAgreement
   try {
     const agreement = await resolveTeamLeadAgreement(supabase, context)
     // Net available to the lead's cut is what remains after member deductions.
@@ -322,6 +357,7 @@ export async function applyTeamSplit(
     const { leadCents, distribution } = resolveTeamLeadOverride(netForLead, context.agentId, agreement)
     if (distribution && agreement) {
       teamCapTeamId = agreement.teamId
+      if (agreement.evidence) teamAgreementEvidence = agreement.evidence
 
       // THE TEAM CAP (m461). teams.cap_amount NULL ⇒ uncapped, which is what
       // every team was before m461 — short-circuit without touching the ledger.
@@ -396,6 +432,7 @@ export async function applyTeamSplit(
     // and out to the caller so a CDA / P&L can explain the team's number.
     teamCapStatus,
     teamAmountTowardsCap,
-    teamCapTeamId
+    teamCapTeamId,
+    teamAgreement: teamAgreementEvidence,
   }
 }

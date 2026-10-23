@@ -801,6 +801,13 @@ export async function submitOfferToCompliance(
       return { success: false, error: "Transaction creation failed in offer-bridge" }
     }
 
+    // FREEZE THE EXECUTED TERMS (wave 143, lane 143A — contract precedence): the original and every executed counter of this
+    // offer's chain go to the immutable record, read back through governingContractTerms. Logged, never fatal.
+    {
+      const { freezeExecutedTermsAfterPromotion } = await import("@/lib/offers/governing-terms")
+      await freezeExecutedTermsAfterPromotion({ brokerageId: offer.brokerage_id as string, offerId, transactionId: result.transactionId, recordedBy: userId })
+    }
+
     // No supersede cascade. The original offer is always the parent root and
     // stays part of the executed contract; counters AMEND it, they don't
     // replace it. The has_counter checkbox on the parent (set by

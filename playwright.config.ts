@@ -29,6 +29,10 @@ export default defineConfig({
   },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    // The tablet width wave 142 named as missing ("no 820 / 390 viewport project exists"; only the 393 px phone was
+    // added). Chromium at an iPad-Air-class 820 × 1180 touch viewport — the width the static mobile census reads as the
+    // md breakpoint boundary — so desktop (1280) / tablet (820) / phone (393) are all real Playwright projects (wave 143J).
+    { name: "tablet-chromium", use: { ...devices["Desktop Chrome"], viewport: { width: 820, height: 1180 }, hasTouch: true, isMobile: false } },
     // The phone-width project the readiness matrix named as missing (lane 141I finding:
     // "no 820 / 390 viewport project exists for the mobile smoke") — the same specs at 393 px.
     { name: "mobile-chromium", use: { ...devices["Pixel 5"] } },

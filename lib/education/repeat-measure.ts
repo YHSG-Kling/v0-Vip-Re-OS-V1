@@ -68,11 +68,11 @@ export async function measureEducationRepeats(svc: Svc, params: { brokerageId: s
   const cutoff = new Date(now.getTime() - windowMs).toISOString()
 
   const { data: mods, error } = await svc.from("learning_modules")
-    .select("id, gap_tags, published_at, status, is_ai_generated")
+    .select("id, gap_tags, published_at, status, is_ai_generated, channels")
     .eq("brokerage_id", params.brokerageId).eq("is_ai_generated", true).eq("status", "published").lte("published_at", cutoff).limit(200)
   if (error) { out.errors.push(`learning_modules read refused: ${error.message}`); return out }
 
-  for (const m of (mods ?? []) as Array<{ id: string; gap_tags: string[] | null; published_at: string | null }>) {
+  for (const m of (mods ?? []) as Array<{ id: string; gap_tags: string[] | null; published_at: string | null; channels?: string[] | null }>) {
     out.modules++
     const topicKey = (m.gap_tags ?? []).find((t) => MEASURABLE_TAG.test(String(t))) ?? null
     if (!topicKey || !m.published_at) { out.skipped++; continue }
@@ -118,6 +118,14 @@ export async function measureEducationRepeats(svc: Svc, params: { brokerageId: s
     if (trend === "decreased") { out.decreased++; continue }
 
     // Not decreased (or never comparable) → the education owner's feed, once per asset (the bus dedupes per entity).
+    // THE NEXT FORMAT (wave 143G; owner: recurring problems → proposals for education / tutorials / VIDEOS): a written
+    // answer to a recurring support or assistant question that did not reduce the repeats earns the format not yet
+    // tried — a short video walkthrough of the same steps. The option is concrete and executable: the lesson's own
+    // video channel (publishLearningModuleAction(id, ["video"]) — the existing human-approved fan-out to an
+    // ai_video_projects draft + training_videos row). It is a recommendation on the finding, never an auto-publish and
+    // never a re-author loop (one finding per asset, as before).
+    const nextFormat: "video" | null = trend !== "no_baseline" && /^(support|question):/.test(topicKey) && !(m.channels ?? []).includes("video") ? "video" : null
+    const videoOption = nextFormat === "video" ? " A short video walkthrough of the same steps is the next format to try — publish this lesson on its video channel." : ""
     try {
       const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
       const r = await publishManagerSignal({
@@ -125,8 +133,8 @@ export async function measureEducationRepeats(svc: Svc, params: { brokerageId: s
         signalType: EDUCATION_REPEAT_SIGNAL_TYPE, entityType: "learning_module", entityId: m.id,
         message: trend === "no_baseline"
           ? `A published AI lesson (${topicKey.replace(/_/g, " ")}) has no recurrence baseline to compare against — ${afterCount} repeat(s) in the ${REPEAT_MEASURE_WINDOW_DAYS} days after it went live.`
-          : `A published AI lesson (${topicKey.replace(/_/g, " ")}) did not reduce the repeats: ${baseline} before → ${afterCount} after (${REPEAT_MEASURE_WINDOW_DAYS}-day windows). Re-author, re-deliver or retire?`,
-        payload: { topic_key: topicKey, before: baseline, after: afterCount, trend, baseline_source: baselineSource },
+          : `A published AI lesson (${topicKey.replace(/_/g, " ")}) did not reduce the repeats: ${baseline} before → ${afterCount} after (${REPEAT_MEASURE_WINDOW_DAYS}-day windows). Re-author, re-deliver or retire?${videoOption}`,
+        payload: { topic_key: topicKey, before: baseline, after: afterCount, trend, baseline_source: baselineSource, next_format: nextFormat },
       }, svc)
       if (r.ok) out.findings++
       else out.errors.push(`${m.id}: finding not published: ${r.reason}`)

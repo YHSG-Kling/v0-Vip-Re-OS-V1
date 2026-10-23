@@ -62,10 +62,13 @@
  *   LISTING_AGREEMENT_SIGNED → MLS_DATE_CONFIRMED → COMING_SOON_PREP
  * and each hop is checked against getStageDefinition(target).allowedFrom before
  * it is written. The middle stage records a FACT — the MLS start date — so the
- * first hop is taken only when listings.go_live_date is already on the row
- * (markAgreementSigned computes it at signature). Without it the pass is
- * recorded and the agent is told what is left, and the loop does not invent a
- * date to satisfy a stage.
+ * first hop is taken only when the PLANNED MLS live date (listings.go_live_date,
+ * read through compute-dom.ts resolveMlsLiveDates) is already on the row — a date
+ * a person set at intake, on the timeline or at signature (wave 143, lane 143A:
+ * markAgreementSigned no longer writes today's date into it). Without it the pass
+ * is recorded as `passed_awaiting_date`, the agreement is still approved and
+ * executed, and the loop does not invent a date to satisfy a stage; the moment
+ * the date is recorded (lib/listings/mls-live-date.ts) the loop runs again.
  *
  * The loop NEVER REGRESSES a listing. It only acts inside the window between
  * the executed agreement and coming-soon; any listing already past that window
@@ -93,6 +96,8 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { createHash } from "node:crypto"
 import { getStageDefinition, type ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 import type { UnexecutedDocument } from "@/lib/listings/listing-activation-gate"
+// THE MLS LIVE DATE, ONE READER (wave 143, lane 143A): planned vs verified is decided in compute-dom, never re-derived here.
+import { resolveMlsLiveDates } from "@/lib/listings/compute-dom"
 // THE PACKET'S COMPLIANCE HOPS (wave 142, lane 142B; owner: "only after compliance approval: FULLY
 // EXECUTED (listing)"): the newest listing agreement's esign_status walks compliance_pending →
 // correction_required | compliance_approved → fully_executed through the ONE writer. The gate is unchanged.
@@ -103,6 +108,7 @@ type ListingComplianceTrigger =
   | "agreement_executed"   // the executed agreement just landed — the loop's first run
   | "document_uploaded"    // a remediation upload — the loop's re-entry
   | "activation_refused"   // a human/autonomous MLS door was refused — tell the roles
+  | "mls_live_date_set"    // the planned MLS live date landed (lib/listings/mls-live-date.ts) — the hop that waited on it
 
 type ListingComplianceOutcome =
   | "advanced"              // gate passed and the listing moved to COMING_SOON_PREP
@@ -183,7 +189,10 @@ export async function runListingComplianceLoop(
   // ── 2 · THE gate. Imported dynamically for the same reason lib/kernel/listings.ts does:
   //        it reaches a `server-only` module that the tsx guards cannot load.
   const { assertListingActivationAllowed } = await import("@/lib/listings/listing-activation-gate")
-  const gate = await assertListingActivationAllowed(supabase, { brokerageId, listingId, door: `compliance loop (${trigger})` })
+  // inWindow ⇒ THIS RUN IS THE COMPLIANCE REVIEW (wave 143, lane 143A): obligation 1 asks for the provider's
+  // all-signed evidence, not for the `compliance_passed` mark this very run writes on a pass (the gate's
+  // `complianceReview` doc). Outside the window an `activation_refused` run mirrors the DOOR, so it asks the door's question.
+  const gate = await assertListingActivationAllowed(supabase, { brokerageId, listingId, door: `compliance loop (${trigger})`, complianceReview: inWindow })
 
   const meta = ((row as { metadata?: Record<string, unknown> | null }).metadata ?? {}) as Record<string, unknown>
   const prior = (meta.compliance_gate ?? {}) as { blockers_hash?: string }
@@ -244,6 +253,17 @@ export async function runListingComplianceLoop(
   if (!inWindow) {
     return { outcome: "outside_window", stage, blockers: [], notified: false, reason: `gate passed at ${stage}, which is past the window this loop advances` }
   }
+
+  // ── 5a · COMPLIANCE APPROVED — recorded BEFORE the stage hops (wave 143, lane 143A; closes 142K finding 5). ──
+  // The gate just passed in review mode, so this run IS the approval. It writes the compliance mark the
+  // agreement row has always carried in the SAME update as the ladder state (the ONE writer stamps each hop's
+  // companion column — lib/esign/packet-states.ts hopCompanionColumns), and it lands first because the
+  // stage machine's gated status (coming_soon) asks listingAgreementComplianceState, which reads that mark.
+  // `fully_executed` (and the execution stamp that goes with it, and ONLY it) follows below — never at the
+  // provider's completion.
+  await stamp("compliance_approved", { notify: false })
+  const markExecuted = (detail: string) => stamp("fully_executed", { detail })
+
   const { transitionLifecycle } = await import("@/lib/kernel/lifecycle")
   const { KernelEvent } = await import("@/lib/kernel/events")
   // inWindow === true above means stage is one of the two window stages, never null.
@@ -251,35 +271,40 @@ export async function runListingComplianceLoop(
   const hops: string[] = []
 
   if (current === WINDOW_START) {
-    const goLive = (row as { go_live_date?: string | null }).go_live_date ?? null
+    // THE PLANNED MLS LIVE DATE (wave 143, lane 143A): the stage records a FACT — a date the agent set —
+    // read through the ONE resolver (lib/listings/compute-dom.ts), so a verified date and a planned one are
+    // never confused. The loop still invents nothing: no date, no hop.
+    const goLive = resolveMlsLiveDates({ go_live_date: (row as { go_live_date?: string | null }).go_live_date ?? null }).planned
     if (!goLive) {
       await writeGateState(supabase, listingId, brokerageId, meta, {
         state: "passed_awaiting_date", blockers: [], blockers_hash: blockerHash([]), checked_at: new Date().toISOString(), trigger,
       })
       // Compliance approved ⇒ the agreement is FULLY EXECUTED (owner); the stage waits only on the MLS date.
-      await stamp("compliance_approved", { notify: false })
-      await stamp("fully_executed", { detail: "The listing waits on its MLS start date." })
+      await markExecuted("The listing waits on its planned MLS live date.")
       return {
         outcome: "passed_awaiting_date", stage, blockers: [], notified: false,
-        reason: "compliance passed; the MLS start date is not on the listing, so it stays at LISTING_AGREEMENT_SIGNED until one is set",
+        reason: "compliance passed; the planned MLS live date is not on the listing, so it stays at LISTING_AGREEMENT_SIGNED until one is set",
       }
     }
     if (!allowedHop(current, WINDOW_MID)) {
+      await markExecuted(`The stage move is pending (stage machine refuses ${current} → ${WINDOW_MID}).`)
       return { outcome: "unknown", stage, blockers: [], notified: false, reason: `stage machine refuses ${current} → ${WINDOW_MID}` }
     }
     const r1 = await transitionLifecycle({
       brokerageId, entityType: "listing_stage_machine", entityId: listingId,
       fromState: current, toState: WINDOW_MID, actorUserId: params.actorUserId ?? null,
       eventType: KernelEvent.LISTING_STAGE_CHANGED,
-      metadata: { source: "listing-compliance-loop", trigger, mls_start_date: goLive },
+      metadata: { source: "listing-compliance-loop", trigger, mls_start_date: goLive, mls_start_date_basis: "planned" },
     }, supabase as any)
     if (!r1.success) {
+      await markExecuted(`The stage move is pending (transition to ${WINDOW_MID} refused).`)
       return { outcome: "unknown", stage, blockers: [], notified: false, reason: `transition to ${WINDOW_MID} refused: ${r1.error ?? "no reason"}` }
     }
     hops.push(WINDOW_MID); current = WINDOW_MID
   }
 
   if (!allowedHop(current, WINDOW_END)) {
+    await markExecuted(`The stage move is pending (stage machine refuses ${current} → ${WINDOW_END}).`)
     return { outcome: "unknown", stage: current, blockers: [], notified: false, reason: `stage machine refuses ${current} → ${WINDOW_END}` }
   }
   // transitionLifecycle resolves the gate VERDICT itself for the gated stage and stamps
@@ -292,6 +317,7 @@ export async function runListingComplianceLoop(
     metadata: { source: "listing-compliance-loop", trigger, compliance_evidence: gate.detail.complianceEvidence },
   }, supabase as any)
   if (!r2.success) {
+    await markExecuted(`The stage move is pending (transition to ${WINDOW_END} refused).`)
     return { outcome: "unknown", stage: current, blockers: [], notified: false, reason: `transition to ${WINDOW_END} refused: ${r2.error ?? "no reason"}` }
   }
   hops.push(WINDOW_END)
@@ -299,9 +325,8 @@ export async function runListingComplianceLoop(
   await writeGateState(supabase, listingId, brokerageId, meta, {
     state: "passed", blockers: [], blockers_hash: blockerHash([]), checked_at: new Date().toISOString(), trigger, advanced: hops,
   })
-  // compliance_approved is RECORDED (evidence); fully_executed is ANNOUNCED — one bell for the one moment.
-  await stamp("compliance_approved", { notify: false })
-  await stamp("fully_executed", { detail: `The listing moved to ${WINDOW_END}.` })
+  // compliance_approved was RECORDED above (evidence); fully_executed is ANNOUNCED — one bell for the one moment.
+  await markExecuted(`The listing moved to ${WINDOW_END}.`)
   return { outcome: "advanced", stage: WINDOW_END, blockers: [], notified: false, reason: null }
 }
 

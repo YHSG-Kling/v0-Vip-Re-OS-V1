@@ -108,6 +108,9 @@ export function ReferralNetworkClient({
               <span className="truncate">{r.contactName ?? "A client"} → {r.receivingAgentName ?? "an agent"}</span>
               <div className="flex items-center gap-2 shrink-0">
                 {r.feePct != null && <span className="text-xs text-muted-foreground">{r.feePct}% fee</span>}
+                {r.earnedFee != null
+                  ? <span className="text-xs font-medium text-green-700">earned ${r.earnedFee.toLocaleString()}</span>
+                  : r.expectedFee != null && <span className="text-xs text-muted-foreground">expected ~${r.expectedFee.toLocaleString()}</span>}
                 <span className={"text-xs font-medium " + (r.status === "closed" ? "text-green-700" : "text-amber-700")}>{r.status}</span>
               </div>
             </div>

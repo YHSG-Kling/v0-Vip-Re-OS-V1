@@ -2963,7 +2963,12 @@ async function main() {
         && src("app/actions/lifetime-customer-touchpoints.ts").includes("dispatchEmail")
         && src("app/actions/lifetime-customer-touchpoints.ts").includes("dispatchSms")
         && !src("app/actions/lifetime-customer-touchpoints.ts").includes("sendAnniversaryComm")
-        && src("app/api/cron/review-request-on-close/route.ts").includes("dispatchEmail")
+        // WAVE 143 (143E): the dispatch moved from the cron into the ONE review-ask engine the cron runs — the rule (the ask is
+        // ACTUALLY dispatched, `sent` only on provider acceptance, drafted reported apart from processed) is asserted on both halves.
+        && (src("app/api/cron/review-request-on-close/route.ts").includes("dispatchEmail")
+          || (src("app/api/cron/review-request-on-close/route.ts").includes("askForReviewAtClose")
+            && src("lib/reputation/review-ask.ts").includes("dispatchEmail")
+            && /if \(!sent\.success\) \{[\s\S]{0,400}?why: "send_refused"[\s\S]{0,200}?continue[\s\S]{0,100}?\}[\s\S]{0,600}?status: "sent"/.test(src("lib/reputation/review-ask.ts"))))
         && src("app/api/cron/review-request-on-close/route.ts").includes("drafted")
         && src("lib/platform/tenant-sso.ts").includes("sso/providers")
         && src("app/actions/tenant-sso.ts").includes("checkSsoDomainAction")

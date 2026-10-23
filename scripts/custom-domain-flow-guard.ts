@@ -36,6 +36,10 @@
  *      attach/verify/detach), entitlement (mayUseAndAfford), post-condition re-read, DNS
  *      probe on connect AND check, roster-derived gate (no retyped role list), tenant from
  *      the session, counted removal, every "use server" export async.
+ *   K. landing pages INSIDE the tenant website (wave 143G) — /site/<slug>/lm/<form> proves the form
+ *      belongs to the site's tenant (tenant in the QUERY, a foreign form is a 404, an unreadable read fails
+ *      closed), renders the lead-magnet survivor (no second renderer), the storefront links to it, and a
+ *      connected domain's /lm/<form> is rewritten to it from the HOST's tenant (never the path's).
  *   J. registration — package.json script + guard-chain MEMBERSHIP (word boundary, never a
  *      position), MAINTENANCE_DOMAINS owner = TABLE_MANAGER of the table, co-owners named in
  *      prose and licensed by canRefer, the readiness matrix names this proof.
@@ -285,6 +289,66 @@ section("I. wiring — event, ledger, entitlement, post-condition, roster, sessi
   check("the card renders provider guides, the DNS feedback and the tenant message (wired, not shelved)", /providerGuides/.test(card) && /d\.dns\b/.test(card) && /tenantMessage/.test(card) && /routingNote/.test(card))
 }
 
+// ── K. LANDING PAGES INSIDE THE TENANT WEBSITE (wave 143G) ───────────────────
+section("K. landing pages live INSIDE the tenant website — tenant-proven, one renderer, served on the connected domain")
+{
+  const { memSupabase } = await import("./in-memory-supabase")
+  const { resolveTenantLandingForm } = await import("../lib/tenant-site/landing-page")
+  const { tenantLandingPagePath } = await import("../lib/kernel/tenant-creation")
+  const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", GONE = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+  const seed = () => ({
+    brokerages: [
+      { id: A, name: "Alpha Realty", slug: "alpha-1a2b", logo_url: null, primary_color: "#112233", deleted_at: null },
+      { id: B, name: "Beta Homes", slug: "beta-3c4d", logo_url: "https://cdn.test/b.png", primary_color: null, deleted_at: null },
+      { id: GONE, name: "Gone Co", slug: "gone-9z9z", logo_url: null, primary_color: null, deleted_at: "2026-01-01T00:00:00Z" },
+    ],
+    lead_capture_forms: [
+      { id: "f-a", slug: "home-value-aaa", brokerage_id: A, is_active: true },
+      { id: "f-b", slug: "buyer-guide-bbb", brokerage_id: B, is_active: true },
+      { id: "f-gone", slug: "orphan-ccc", brokerage_id: GONE, is_active: true },
+    ],
+  })
+  const svc = () => memSupabase(seed() as any)
+  const own = await resolveTenantLandingForm(svc(), "alpha-1a2b", "home-value-aaa")
+  check("a tenant's own landing page resolves through ITS website (site + form id returned)", own.ok && own.site.id === A && own.formId === "f-a" && own.site.name === "Alpha Realty" && own.site.primaryColor === "#112233")
+  const cross = await resolveTenantLandingForm(svc(), "alpha-1a2b", "buyer-guide-bbb")
+  check("ANOTHER tenant's landing page through this tenant's website is refused as not-found (no enumeration: same answer as a missing slug)", !cross.ok && cross.reason === "no_form", JSON.stringify(cross))
+  const crossOwn = await resolveTenantLandingForm(svc(), "beta-3c4d", "buyer-guide-bbb")
+  check("POSITIVE CONTROL: the same form through ITS OWN site resolves — the refusal above is the tenant predicate, not a missing row", crossOwn.ok && crossOwn.site.id === B && crossOwn.formId === "f-b")
+  const missing = await resolveTenantLandingForm(svc(), "alpha-1a2b", "does-not-exist")
+  check("an unknown landing slug on a real site is not-found", !missing.ok && missing.reason === "no_form")
+  const noSite = await resolveTenantLandingForm(svc(), "nobody-0000", "home-value-aaa")
+  check("an unknown site slug is no_site (the page 404s)", !noSite.ok && noSite.reason === "no_site")
+  const deleted = await resolveTenantLandingForm(svc(), "gone-9z9z", "orphan-ccc")
+  check("a DELETED brokerage's website serves no landing page (deleted_at honoured)", !deleted.ok && deleted.reason === "no_site")
+  const blank = await resolveTenantLandingForm(svc(), "  ", "home-value-aaa")
+  check("a blank site slug is refused before any read", !blank.ok)
+  const refusedSite = await resolveTenantLandingForm(memSupabase(seed() as any, { refuse: { brokerages: "RLS refused" } }), "alpha-1a2b", "home-value-aaa")
+  const refusedForm = await resolveTenantLandingForm(memSupabase(seed() as any, { refuse: { lead_capture_forms: "RLS refused" } }), "alpha-1a2b", "home-value-aaa")
+  check("FAIL CLOSED: a refused tenant read OR a refused form read is `unreadable` — never rendered as checked-and-fine", !refusedSite.ok && refusedSite.reason === "unreadable" && !refusedForm.ok && refusedForm.reason === "unreadable")
+  check("the in-website path is ONE spelling: /site/<slug>/lm/<form>, slug encoded", tenantLandingPagePath("alpha-1a2b", "home-value-aaa") === "/site/alpha-1a2b/lm/home-value-aaa" && tenantLandingPagePath("alpha-1a2b", "a b") === "/site/alpha-1a2b/lm/a%20b")
+
+  // SOURCE (stripped): the route, the resolver's predicate, the storefront links, the proxy rewrite.
+  const ROUTE = "app/site/[slug]/lm/[formSlug]/page.tsx", RESOLVER = "lib/tenant-site/landing-page.ts"
+  check("the route exists", existsSync(join(ROOT, ROUTE)) && existsSync(join(ROOT, RESOLVER)))
+  const route = code(ROUTE), resolver = code(RESOLVER)
+  const TENANT_IN_QUERY = /from\("lead_capture_forms"\)[\s\S]{0,200}\.eq\("brokerage_id",\s*row\.id\)/
+  check("the form is read WITH the site's brokerage in the predicate (tenant in the query, not compared after)", TENANT_IN_QUERY.test(resolver))
+  check("POSITIVE CONTROL: the predicate finder rejects a slug-only read (the detached /lm/[slug] shape)", !TENANT_IN_QUERY.test(`svc.from("lead_capture_forms").select("id").eq("slug", form).maybeSingle()`))
+  check("the route resolves through resolveTenantLandingForm and 404s on anything not ok", /resolveTenantLandingForm\(/.test(route) && /if \(!resolved\.ok\) notFound\(\)/.test(route))
+  check("ONE renderer: the route renders the lead-magnet survivor's own page and imports no capture form of its own", /import LeadMagnetLandingPage, \{ generateMetadata as leadMagnetMetadata \} from "@\/app\/lm\/\[slug\]\/page"/.test(route) && /await LeadMagnetLandingPage\(/.test(route) && !/GenericCaptureForm|HomeValueForm|lead_capture_forms/.test(route))
+  check("the page's canonical URL is the in-website path (search and AI search attribute it to the tenant's site)", /alternates:\s*\{\s*canonical:[\s\S]{0,120}tenantLandingPagePath\(/.test(route))
+  const site = code(SITE_PAGE)
+  const BARE_LM_HREF = /href=\{[^}]*`\/lm\//
+  check("the storefront links its landing pages INSIDE the website (tenantLandingPagePath), never to the bare /lm/ host", /tenantLandingPagePath\(b\.slug,/.test(site) && !BARE_LM_HREF.test(site))
+  check("POSITIVE CONTROL: the bare-/lm/ finder catches the retired link", BARE_LM_HREF.test("<a href={`/lm/${m.slug}`} className=\"x\">") && BARE_LM_HREF.test("href={valuationMagnet ? `/lm/${valuationMagnet.slug}` : \"#\"}"))
+  const p = code(PROXY)
+  const vanity = p.slice(p.indexOf("const slug = await customDomainSiteSlug(host)"), p.indexOf("// ── 1) Embed-blog CSP path"))
+  check("proxy: a connected domain's /lm/<form> is rewritten to /site/<HOST's slug>/lm/<form> (single segment)", /\/\^\\\/lm\\\/\(\[\^\/\]\+\)\\\/\?\$\/\.exec\(pathname\)/.test(vanity) && /NextResponse\.rewrite\(new URL\(`\/site\/\$\{slug\}\/lm\/\$\{landing\[1\]\}\$\{request\.nextUrl\.search\}`/.test(vanity))
+  check("proxy: the tenant in that rewrite is the host's mapped slug, never a value parsed from the path", !/\/site\/\$\{landing\[1\]\}/.test(vanity) && vanity.indexOf("landing") > vanity.indexOf("customDomainSiteSlug"))
+  check("readiness `website` check states the landing capability (pattern in evidence) — no second key, the capability IS the website", /landingPagePattern:\s*tenantLandingPagePath\(slug,/.test(code(READINESS)))
+}
+
 // ── J. REGISTRATION ──────────────────────────────────────────────────────────
 section("J. registration — chain membership, ownership, docs")
 {
@@ -304,6 +368,6 @@ section("J. registration — chain membership, ownership, docs")
 
 console.log(`\n${pass} passed, ${fail} failed`)
 console.log(`  denominators: ${CUSTOM_DOMAIN_STATUSES.length} statuses × ${SIGNALS.length} signals · ${DNS_PROVIDERS.length} providers × 2 hosts · rail files ${[LIB, ACTIONS, CARD, PROXY].length}`)
-console.log("  blind spots: the actions layer is proven by stripped-source census + the pure functions it calls, not mounted (it is a \"use server\" module behind a session); the real DNS resolver and the routing API are never called here (resolver injected, routing proven by endpoint census); the proxy's host cache TTL is not exercised.")
+console.log("  blind spots: the actions layer is proven by stripped-source census + the pure functions it calls, not mounted (it is a \"use server\" module behind a session); the real DNS resolver and the routing API are never called here (resolver injected, routing proven by endpoint census); the proxy's host cache TTL is not exercised. K (wave 143G): the in-website landing ROUTE and the proxy rewrite are proven by stripped source + the resolver's behaviour over an in-memory client, NOT mounted in a running Next server (no browser, no real vanity-host request); the survivor page's own rendering is test:lead-magnet-* territory; app/sitemap.ts and the lead-magnet URL producers still emit the bare /lm/<slug> (other lanes' files).")
 if (fail > 0) { console.log(`\nFAILED:\n  - ${fails.join("\n  - ")}`); process.exit(1) }
 console.log("RESULT: custom-domain-flow PASS")

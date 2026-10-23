@@ -171,6 +171,34 @@ export async function run() {
       c.step(`${h.lane} landed (${at}): the wizard renders the OWNER's sequence from ONE spine (Purpose → Property → Parties → Terms → Recommended Forms → Complete → Review → E-sign/Deliver; CDA is never a step) and opens with "${seq.FORM_WIZARD_OPENING_QUESTION}" (listing | offer are the only purposes); the coach's rules say it never invents legal terms, signatures or material facts; the intake names what is still missing (a blank offer misses the price; a blank listing misses the representation); the RECOMMENDATION returns only forms that EXIST (the state's verified package joined to the library / the legal-forms provider; a required form nobody has is NAMED under missing, never invented; a financing addendum only when the purchase is financed; no package → nothing); the TERMS become the offer's real fields (price 400000, cash → no financing / appraisal contingency, inspection 10 days); form_source is the column's word (in_app | the provider's name | manual)`, wizardBad.length === 0, `FL offer package: ${fl.required.length} required, ${fl.addenda.length} addenda; recommended cash ${cash.recommended.length} / financed ${financed.recommended.length}; missing ${cash.missing.length}${wizardBad.length ? `; FAILED: ${wizardBad.join(", ")} — cash ${JSON.stringify(cash.recommended.map((r) => r.name))} financed ${JSON.stringify(financed.recommended.map((r) => r.name))} missing ${JSON.stringify(cash.missing.map((m) => m.packageForm))} intake ${JSON.stringify(seq.missingRequiredIntake("offer", cashAnswers))}` : ""}`)
       continue
     }
+    if (/SOURCE \(a\)/.test(h.contract)) {
+      // WAVE142 HOOK (integrator): 142B — wired by lane 143B: the PLATFORM-MEDIA packet source (lib/forms/platform-form-packets.ts,
+      // m807 platform_form_packets, /api/form-wizard/platform-packets, superadmin approve/retire) on the existing fill rail.
+      const packets = await import("../../lib/forms/platform-form-packets")
+      const { checkFormPathsInScope } = await import("../../lib/forms/form-path-scope")
+      const m807 = listFiles("supabase/migrations", (f) => /\/m\d+-platform-form-packets\.sql$/.test(f))[0] ?? null
+      const sql = m807 ? readRepo(m807) ?? "" : ""
+      const approved = { id: "11111111-1111-4111-8111-111111111111", status: "approved", state: null, packet_type: "offer", field_count: 4, license_note: "Licensed to the platform by the association for member redistribution", license_expires_at: null, approved_by: "u1", storage_path: "platform/11111111-1111-4111-8111-111111111111/contract.pdf" }
+      const registry = (rows: Array<Record<string, unknown>>) => ({ from: () => ({ select: () => ({ in: () => Promise.resolve({ data: rows, error: null }) }) }) })
+      const actor = { brokerageId: B, teamId: null, userId: "u1" }
+      const admitted = await checkFormPathsInScope(registry([approved]), [approved.storage_path], actor)
+      const refusedDraft = await checkFormPathsInScope(registry([{ ...approved, status: "draft" }]), [approved.storage_path], actor)
+      const refusedExpired = await checkFormPathsInScope(registry([{ ...approved, license_expires_at: "2020-01-01" }]), [approved.storage_path], actor)
+      const failedClosed = await checkFormPathsInScope({ from: () => ({ select: () => ({ in: () => Promise.resolve({ data: null, error: { message: "boom" } }) }) }) }, [approved.storage_path], actor)
+      const wiring: Array<[string, boolean]> = [
+        ["m807 registers the packets with an approval-evidence CHECK", /platform_form_packets_approved_needs_evidence/.test(sql) && /field_count > 0/.test(sql)],
+        ["an approved, licensed, fillable packet is admitted by the fill action's scope check", admitted.ok],
+        ["a DRAFT and an EXPIRED licence are refused", !refusedDraft.ok && !refusedExpired.ok],
+        ["a refused registry read FAILS CLOSED", !failedClosed.ok && /could not verify/.test(failedClosed.error ?? "")],
+        ["the platform path grammar refuses traversal and depth", packets.parsePlatformPacketPath("platform/11111111-1111-4111-8111-111111111111/../x.pdf") === null && packets.parsePlatformPacketPath("platform/11111111-1111-4111-8111-111111111111/a/b.pdf") === null],
+        ["the wizard lists the platform group through the session-gated route and keeps ONE source vocabulary", /\/api\/form-wizard\/platform-packets/.test(wizard) && /scope: "platform"/.test(wizard) && !/source: "platform/.test(wizard)],
+        ["the fill action reaches the packet through checkFormPathsInScope (unchanged rail)", /checkFormPathsInScope/.test(strippedRepo("app/actions/buyer-offer/prefill-storage-form.ts") ?? "")],
+        ["approval is superadmin-gated and recorded", /requireSuperadmin\(\)/.test(strippedRepo("app/actions/superadmin/platform-form-packets.ts") ?? "") && /platform_form_packet\.approved/.test(readRepo("app/actions/superadmin/platform-form-packets.ts") ?? "")],
+      ]
+      const bad = wiring.filter(([, ok]) => !ok).map(([n]) => n)
+      c.step(`${h.lane} landed (${at}) — SOURCE (a): the PLATFORM holds licensed fillable packets (registry m807: approver, licence basis, expiry, ≥1 fillable field enforced by CHECK); tenants see only approved in-licence ones for the deal's state, through a session-gated route, as "My Forms" entries with scope platform; the same fill rail (verified-data prefill, autosave, versioned filled/ PDFs, download) takes them, and the scope check admits a platform path ONLY while its row is approved and in licence (fail closed); superadmin approves / retires with an audit row`, bad.length === 0, bad.join(" | ") || `${m807 ?? "m807 MISSING"}; ${wiring.length} checks`)
+      continue
+    }
     if (/SOURCE \(b\)/.test(h.contract)) {
       // WAVE142 HOOK (integrator): 142B — wired 142K: ONE tenant-facing spelling; the matrix per provider; no old spelling left.
       const { LEGAL_FORMS_PROVIDER_LABEL, PROVIDER_CAPABILITY_MATRIX } = await import("../../lib/integrations/providers/catalog")

@@ -550,56 +550,14 @@ export async function advanceStage(params: {
       } catch { /* cache invalidation is never load-bearing */ }
     }
 
-    // 5. Auto-schedule review request draft (5 days post-close)
-    // Creates a draft in review_requests so it's ready; agent is notified via task at day 5
-    void (async () => {
-      try {
-        // ai-review-automation takes an AGENTS id (m346). This passed
-        // params.userId, so the action's `.from("agents").eq("id", …).single()`
-        // found nothing and threw — the draft was never generated, and the catch
-        // below swallowed it as "non-blocking". The activities insert three lines
-        // down already resolved the right id; it is now resolved once, for both.
-        const agentRecordId = await resolveAgentId(supabase, params.userId)
-        if (agentRecordId) {
-          // Lane 86E: this called the "use server" aiGenerateReviewRequest, which read
-          // through the COOKIE client — refused whenever the stage moved without a
-          // session (the autonomous stage paths). The server-only core takes the
-          // tenant this function already holds (params.brokerageId) on the service
-          // client; the result is READ, not dropped.
-          const { draftReviewRequest } = await import("@/lib/reputation/review-request-draft")
-          const drafted = await draftReviewRequest(supabase, {
-            brokerageId: params.brokerageId,
-            transactionId: params.transactionId,
-            agentId: agentRecordId,
-            platform: "google",
-            channel: "email",
-          })
-          if (!drafted.success) console.error("[stage-progression] post-close review request not drafted (non-blocking):", drafted.error)
-        }
-
-        // Schedule an agent notification 5 days from now to send the review
-        const sendDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)
-        // The identity-class note below is exactly the kind of rejection the
-        // catch cannot see: supabase-js resolves an FK refusal as { error }.
-        const { error: reviewScheduledActivityError } = await supabase.from("activities").insert({
-          brokerage_id: params.brokerageId,
-          // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
-          agent_id: agentRecordId,
-          activity_type: "review_request_scheduled",
-          title: "Review request ready to send",
-          notes: `Auto-generated review request draft created. Recommend sending on ${sendDate.toLocaleDateString()}.`,
-          entity_type: "transaction",
-          entity_id: params.transactionId,
-          status: "pending",
-          scheduled_at: sendDate.toISOString(),
-        })
-        if (reviewScheduledActivityError) {
-          console.error("[stage-progression] review_request_scheduled activity REJECTED — the draft exists but nothing reminds the agent to send it:", reviewScheduledActivityError.message)
-        }
-      } catch {
-        // Non-blocking — review request draft failure doesn't affect close
-      }
-    })()
+    // 5. TOMBSTONE (wave 143, lane 143E): "Auto-schedule review request draft (5 days post-close)" — this hook drafted a
+    //    `pending` review_requests row at the stage move AND wrote a reminder activity a hard-coded 5 days out (ignoring
+    //    the tenant's review_request_delay_days). The pending row then made the review-request-on-close cron skip the
+    //    client (its dedupe was "any review_requests row for this contact"), so the autonomous ask never went out; the
+    //    reminder told the agent to send a draft nobody had reviewed. SURVIVOR: lib/reputation/review-ask.ts
+    //    askForReviewAtClose — the ONE path from a verified closing (status closed | funded) to a sent ask, called by
+    //    app/api/cron/review-request-on-close once the tenant's delay has elapsed. Nothing is written here: the closing
+    //    IS the trigger, and the engine owns timing, duplicates, platform, copy screening and the send.
   } else if (params.targetStage === "LOST") {
     // ── AI-PREDICTION CLOSE-TIME GRADER, lost side (owner round 36) ───────────
     // LOST is the other REAL terminal event — grading only wins would inflate

@@ -45,6 +45,10 @@ import { elevenLabsModelForLane, withNaturalPauses } from "@/lib/video/realism-p
 import { pickTopics, renderTopicsForPrompt, type TopicCandidate } from "@/lib/content-intel/topic-bank"
 import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
+import { probeMp3 } from "./episode-audio-spec"
+import { assemblePodcastEpisode } from "./episode-audio"
+import { assessOlderPersonsClaim, OLDER_PERSONS_WRITING_DIRECTIVE } from "@/lib/compliance/fair-housing-older-persons"
+import { loadOlderPersonsVerifications } from "@/lib/compliance/fair-housing-older-persons-store"
 
 export interface RunInput {
   brokerageId: string
@@ -170,17 +174,29 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
       brokerageId: input.brokerageId,
     })
     if (!tts.success || !tts.audioBuffer) throw new Error(`ElevenLabs failed: ${tts.error}`)
+    // THE AUDIO IS JUDGED BEFORE IT IS HOSTED (wave 143, lane 143F). A TTS call that "succeeds" with a JSON error body used to be
+    // stored as audio/mpeg and handed to every podcast client; now the bytes must probe as an MP3, and they are LEVELLED to the podcast
+    // target (−16 LUFS, −1 dBTP) and MEASURED (lib/podcast/episode-audio.ts). An unplayable buffer FAILS the run (the ledger row says
+    // why); a missing ffmpeg only skips the level — the raw audio still ships, and the run records that it was not levelled.
+    const rawProbe = probeMp3(tts.audioBuffer)
+    if (!rawProbe.ok) throw new Error(`ElevenLabs returned audio that is not playable: ${rawProbe.reasons.join("; ")}`)
+    const mastered = await assemblePodcastEpisode([tts.audioBuffer], { title: `${facts.brokerage_name} Weekly — ${input.isoWeek}` })
+    const audioBytes = mastered.ok ? mastered.buffer : tts.audioBuffer
+    const masterNote = mastered.ok
+      ? (mastered.evaluation.ready ? null : `audio levelled but outside the podcast spec: ${mastered.evaluation.failed.map((c) => `${c.id} (${c.measured})`).join("; ")}`.slice(0, 300))
+      : `audio not loudness-levelled: ${mastered.error}`.slice(0, 300)
     const audioUrl = await hostRenderedMedia(
       svc,
       `${input.brokerageId}/podcast/episodes/${ledgerId}.mp3`,
-      tts.audioBuffer,
+      audioBytes,
       "audio/mpeg",
       "media",
     )
 
-    // Estimated duration — ~155 words/minute spoken in the agent's voice.
+    // Duration: the MEASURED length of the file that was hosted when it could be measured; else ~155 words/minute spoken.
     const wordCount = script.split(/\s+/).filter(Boolean).length
-    const durationSeconds = Math.max(120, Math.round((wordCount / 155) * 60))
+    const estimatedSeconds = Math.max(120, Math.round((wordCount / 155) * 60))
+    const durationSeconds = mastered.ok && mastered.facts.durationSeconds ? Math.round(mastered.facts.durationSeconds) : estimatedSeconds
 
     // 6. Insert podcast_episodes (status='completed' + approval_status='pending_review';
     //    the distribute-podcast-episodes cron skips episodes that aren't
@@ -217,6 +233,8 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
       podcast_episode_id: episode.id,
       script_word_count:  wordCount,
       duration_seconds:   durationSeconds,
+      // A rendered run that skipped the loudness level says so (the settings card renders error_message) — never silent.
+      ...(masterNote ? { error_message: masterNote } : {}),
       completed_at:       new Date().toISOString(),
     }).eq("id", ledgerId)
     if (renderedErr) console.error(`[podcast-auto] run NOT marked rendered: ${renderedErr.message}`)
@@ -351,6 +369,7 @@ STYLE:
   origin, gender, sexual orientation, disability, source of income).
 - No phrases like "perfect for families" or "great starter for newlyweds".
 - No rate / valuation / appreciation guarantees.
+- ${OLDER_PERSONS_WRITING_DIRECTIVE}
 - No invented numbers — only use facts present in the topics or the
   brokerage tidbits.
 
@@ -367,6 +386,10 @@ segment labels read aloud.${fix}`
     return text.trim()
   }
 
+  // Wave 143 (lane 143F): a podcast is PUBLIC marketing — a "55+ / senior living" claim in the script passes only
+  // against the tenant's recorded, verified housing-for-older-persons exemption (42 U.S.C. § 3607(b)); otherwise the
+  // claim is a violation the redraft is told about, and a script that still carries it never becomes an episode.
+  const olderRecords = await loadOlderPersonsVerifications(args.svc as never, args.brokerageId)
   const result = await runWithComplianceRedraft({
     draft: ({ violations }) => draft(violations),
     gate:  async (script) => {
@@ -374,7 +397,11 @@ segment labels read aloud.${fix}`
         actorContext: { brokerageId: args.brokerageId, userId: args.hostUserId, role: "system" },
         journeyType:  "buyer", persona: "other", messageType: "social", content: script,
       }, { client: args.svc })
-      return { allowed: r.allowed, violations: r.violations }
+      const older = assessOlderPersonsClaim(script, olderRecords)
+      const olderHold = older.status === "unverified" || older.status === "unreadable" || older.status === "conditions_unmet"
+      const wording = older.inconsistentWording.filter((c) => !/adult\s+community/i.test(c.phrase)).map((c) => `"${c.phrase}" is inconsistent with housing-for-older-persons intent (24 CFR 100.306)`)
+      const violations = [...r.violations, ...(olderHold ? [`${older.reason} ${older.fix}`] : []), ...wording]
+      return { allowed: r.allowed && violations.length === r.violations.length, violations }
     },
   })
   if (!result.ok) throw new Error(`compliance failed after redraft: ${result.violations.join("; ")}`)

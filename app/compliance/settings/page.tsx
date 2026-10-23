@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Settings, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
 import { ProhibitedPhrasesPanel } from '@/app/dashboard/settings/components/prohibited-phrases-panel'
+import { OlderPersonsExemptionPanel } from '@/app/components/compliance/OlderPersonsExemptionPanel'
 
 /**
  * Compliance settings.
@@ -75,6 +76,10 @@ export default async function ComplianceSettingsPage() {
           panel itself resolves the caller and the brokerage from the session and
           hides its controls when the caller may not write. */}
       <ProhibitedPhrasesPanel />
+
+      {/* Wave 143 (lane 143F): the housing-for-older-persons exemption RECORD — a "55+" / "senior living" claim in
+          public copy, a video or a podcast passes only against a verified record for the community it names. */}
+      <OlderPersonsExemptionPanel />
 
       <Card>
         <CardHeader>

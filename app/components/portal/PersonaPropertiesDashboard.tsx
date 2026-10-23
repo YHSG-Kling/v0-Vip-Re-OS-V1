@@ -1165,7 +1165,12 @@ export default function PersonaPropertiesDashboard({
                     onClick={() => {
                       startTransition(async () => {
                         try {
-                          await requestShowing({
+                          // requestShowing RESOLVES a refusal ({ success:false, error }) — the
+                          // buyer-agreement gate, an unreadable contact, a refused insert. The
+                          // result was dropped and the catch ALSO said "Request sent", so the
+                          // buyer was told their agent would follow up on a request that was
+                          // never created (wave 143J).
+                          const requested = await requestShowing({
                             listingId:        listing.id,
                             contactId,
                             propertyAddress:  `${listing.address}, ${listing.city}`,
@@ -1174,9 +1179,13 @@ export default function PersonaPropertiesDashboard({
                             preferredDates:   [{ date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10), time: "10:00" }],
                             clientNotes:      "Coming soon interest — requesting early showing access.",
                           })
+                          if (!requested?.success) {
+                            toast({ title: "Showing not requested", description: (requested as { error?: string } | undefined)?.error ?? "We could not send your request. Please try again or message your agent.", variant: "destructive" })
+                            return
+                          }
                           toast({ title: "Showing requested!", description: "Your agent will confirm timing." })
                         } catch {
-                          toast({ title: "Request sent", description: "Your agent will follow up." })
+                          toast({ title: "Showing not requested", description: "We could not send your request. Please try again or message your agent.", variant: "destructive" })
                         }
                       })
                     }}

@@ -26,7 +26,7 @@
  * Pure: readFileSync + stripped source (scripts/strip-comments.ts) + scripts/in-memory-supabase.ts.
  * Denominators and blind spots are printed beside the numbers.
  */
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments, blankStrings } from "./strip-comments"
 import { memSupabase } from "./in-memory-supabase"
@@ -43,6 +43,7 @@ import {
 } from "../lib/video/public-video"
 import {
   queueYouTubeAutoPublish, recordYouTubePublishOnAsset, youtubeAutoPublishBrief, videoProjectIdFromBrief, youtubePostTypeFor,
+  resolveYouTubePrivacy, backfillYouTubeAutoPublish, sweepYouTubeBackfill,
 } from "../lib/video/youtube-publish"
 import { CLIENT_FACING_VIDEO_TYPES } from "../lib/video/client-video-delivery"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
@@ -158,6 +159,8 @@ async function main() {
     ["content_contract", "content_props_missing: JustListedReel is missing address, price"],
     ["claim_refused", "claim_refused: column \"retry_count\" does not exist"],
     ["asset_load_timeout", "A delayRender() \"Loading <Img> with src=https://cdn/photo.jpg\" was called but not cleared after 30000ms. See https://remotion.dev/docs/timeout for help."],
+    ["browser_network", "NetworkError: A network error occurred."],
+    ["browser_network", "Failed to load resource: net::ERR_CERT_AUTHORITY_INVALID https://fonts.gstatic.com/s/inter/v20/UcC73Fwr.woff2"],
     ["media_decode", "Error loading image with src: https://cdn/listing/404.jpg (cancelRender after 1 retry)"],
     ["bundle_resolve", "Module not found: Error: Can't resolve '@/lib/format/math' in '/vercel/path0/remotion/components'"],
     ["chromium_launch", "Failed to launch the browser process! /tmp/chromium: error while loading shared libraries"],
@@ -185,7 +188,20 @@ async function main() {
   check("censusRenderFailures folds rows by bucket with retry-exhausted counts and compositions", census.total === 4 && census.byBucket.unplayable_output?.count === 2 && census.byBucket.unplayable_output?.retryExhausted === 1 && census.byBucket.function_timeout?.count === 1 && census.byBucket.unknown?.count === 1 && census.byBucket.unplayable_output?.compositions.join() === "JustListedReel", JSON.stringify(census))
   check("an empty input is an honest empty census (0, no buckets)", censusRenderFailures([]).total === 0 && Object.keys(censusRenderFailures([]).byBucket).length === 0)
   check("describeRenderFailureCensus prints one line per bucket", describeRenderFailureCensus(census).length === 3)
-  check("the integrator's SQL names every bucket the code classifies (one vocabulary)", (["unplayable_output", "content_contract", "claim_refused", "asset_load_timeout", "media_decode", "bundle_resolve", "chromium_launch", "frame_interpolation", "ffmpeg_stitch", "function_timeout", "memory", "host_refused", "provider", "not_renderable"] as const).every((b) => LIVE_RENDER_FAILURE_CENSUS_SQL.includes(`'${b}'`)) && /from remotion_composition_renders/.test(LIVE_RENDER_FAILURE_CENSUS_SQL))
+  // WAVE 143 (lane 143F): the bucket list is DERIVED from the signatures, not copied here — a hard-coded list is a waypoint that
+  // went stale the day a bucket (browser_network) was added; the rule is "the SQL names every bucket the code can emit".
+  const emitted = [...new Set(RENDER_FAILURE_SIGNATURES.map((s) => s.bucket))]
+  check(`the integrator's SQL names every bucket the code classifies (${emitted.length} derived from the signatures — one vocabulary)`, emitted.length >= 15 && emitted.every((b) => LIVE_RENDER_FAILURE_CENSUS_SQL.includes(`'${b}'`)) && /from remotion_composition_renders/.test(LIVE_RENDER_FAILURE_CENSUS_SQL))
+  check("CONTROL: the derivation would catch a bucket the SQL forgot", !LIVE_RENDER_FAILURE_CENSUS_SQL.replace("'browser_network'", "'x'").includes("'browser_network'") && emitted.includes("browser_network"))
+  check("the browser_network signature records the MEASURED root cause (the module-scope font load that failed every composition) and the real-render evidence", (() => { const s = RENDER_FAILURE_SIGNATURES.find((x) => x.bucket === "browser_network"); return !!s && /MODULE scope/.test(s.rootCause) && /remotion-real-render-probe/.test(s.evidence) && /ProductPromoReel/.test(s.evidence) })())
+  const promo = code("remotion/ProductPromoReel.tsx")
+  check("THE FIX HOLDS: remotion/ProductPromoReel.tsx requests the Inter font only when the composition renders — no module-scope loadFont (it failed every composition's bundle)", /let interFamily: string \| null = null/.test(promo) && /function loadedInter\(\)/.test(promo) && !/^const \{[^}]*\} = loadFont\(/m.test(promo) && !/^loadFont\(/m.test(promo))
+  check("CONTROL: the old module-scope shape would still be found", /^const \{ fontFamily: loadedInterFamily \} = loadFont\(/m.test('const { fontFamily: loadedInterFamily } = loadFont("normal", { weights: ["400"] })'))
+  // A font loader at module scope = a line that starts in column 0 (not an import) and calls loadFont( — stripped source, so a comment naming it is not one.
+  const MODULE_SCOPE_FONT = /^(?!import\b)\S.*\bloadFont\(/m
+  check("CONTROL: the module-scope finder sees a column-0 loadFont call and ignores an indented one and an import", MODULE_SCOPE_FONT.test('const { fontFamily } = loadFont("normal", {})') && !MODULE_SCOPE_FONT.test('function f() {\n  if (x === null) x = loadFont("normal", {})\n}') && !MODULE_SCOPE_FONT.test('import { loadFont } from "@remotion/google-fonts/Inter"'))
+  const moduleScopeFonts = ["remotion"].flatMap((d) => { const out: string[] = []; const w = (x: string) => { for (const n of readdirSync(join(ROOT, x))) { const p = `${x}/${n}`; if (statSync(join(ROOT, p)).isDirectory()) w(p); else if (/\.tsx?$/.test(n)) out.push(p) } }; w(d); return out }).filter((f) => MODULE_SCOPE_FONT.test(code(f)))
+  check(`NO composition file under remotion/ calls a font loader at module scope (${moduleScopeFonts.length} found)`, moduleScopeFonts.length === 0, moduleScopeFonts.join(", "))
 
   section("B2 · the reader — the queue cron folds the week's failures on every tick")
   const cron = code("app/api/cron/composition-render-queue/route.ts")
@@ -282,7 +298,14 @@ async function main() {
   const personal = (/personalVideoTypes\s*=\s*\[([^\]]*)\]/.exec(orch)?.[1] ?? "").split(",").map((s) => s.trim().replace(/["']/g, "")).filter(Boolean)
   check(`PUBLIC ∩ the orchestrator's personalVideoTypes (${personal.join(", ")}) = ∅`, personal.length >= 3 && !PUBLIC_MARKETING_VIDEO_TYPES.some((t) => personal.includes(t)))
   const overlap = PUBLIC_MARKETING_VIDEO_TYPES.filter((t) => (CLIENT_FACING_VIDEO_TYPES as readonly string[]).includes(t))
-  check("PUBLIC ∩ CLIENT_FACING_VIDEO_TYPES = {market_update} only — a kind that is public when unaddressed and a client's when addressed (the contact_id rule separates them)", overlap.join() === "market_update")
+  // WAVE 143 (lane 143F): re-asserted as the RULE, not the waypoint. The overlap used to be {market_update} only; the owner's
+  // "all approved non-personal videos → YouTube" admits avatar_explainer and education too (made for nobody = broadcast; made
+  // for a contact = that contact's). The invariant that matters: EVERY overlapping kind is refused the moment it is addressed,
+  // and an education-OS module video is never marketing. The overlap list is DERIVED and each member is driven both ways.
+  check(`PUBLIC ∩ CLIENT_FACING_VIDEO_TYPES = [${overlap.join(", ")}] — each is public only when unaddressed (driven both ways below); listing_tour / presentation_chapter / pre_appointment / welcome stay OUT`, overlap.length >= 1 && overlap.every((t) => classifyPublicVideo({ ...pub, video_type: t }).public === true && classifyPublicVideo({ ...pub, video_type: t, contact_id: "c1" }).public === false) && !PUBLIC_MARKETING_VIDEO_TYPES.some((t) => ["listing_tour", "presentation_chapter", "pre_appointment", "welcome", "memory_video", "home_anniversary"].includes(t)))
+  check("…the owner's two new broadcast kinds (avatar_explainer, education) are in, unaddressed → PUBLIC; addressed → addressed_to_a_contact", overlap.includes("avatar_explainer") && overlap.includes("education") && (classifyPublicVideo({ ...pub, video_type: "avatar_explainer", contact_id: "c" }) as { reason?: string }).reason === "addressed_to_a_contact")
+  const moduleVideo = classifyPublicVideo({ ...pub, video_type: "education", learning_module_id: "m1" }) as { public: boolean; reason?: string }
+  check("…and an education-OS MODULE video (learning_module_id) is platform training, never marketing → education_module_video", !moduleVideo.public && moduleVideo.reason === "education_module_video")
 
   section("D2 · the tenant switch — default on, explicit off honoured, unreadable refuses")
   check(`'${VIDEO_AUTO_PUBLISH_POLICY_KEY}' is a registered tenant policy key (the constitution lists it)`, !!TENANT_POLICY_SETTINGS_KEYS[VIDEO_AUTO_PUBLISH_POLICY_KEY] && TENANT_POLICY_SETTINGS_KEYS[VIDEO_AUTO_PUBLISH_POLICY_KEY].store === "brokerage_settings.settings")
@@ -381,12 +404,78 @@ async function main() {
   check("NO UNAPPROVED PUBLISH: the rail's cron selects approval_status 'approved' only (the gate the queue rides)", /\.eq\("status", "scheduled"\)\s*\.eq\("approval_status", "approved"\)/.test(pubCron))
   check("the action ledger's own pin still holds (two (post, platform, account) cycles — nothing added, nothing lost)", (pubCron.match(/cycle:\s*`\$\{post\.id\}:/g) ?? []).length === 2)
   const publisher = code("lib/social/publisher.ts")
-  check("publishToYouTube's privacy is classification-driven (params.privacyStatus ?? 'public'), the hard-coded literal is gone", /privacyStatus: params\.privacyStatus \?\? "public"/.test(publisher) && !/privacyStatus: "public",/.test(publisher))
-  check("CONTROL: the old hard-coded literal would still be found", /privacyStatus: "public",/.test('status: { privacyStatus: "public", selfDeclaredMadeForKids: false }'))
+  // WAVE 143 (lane 143F; the 142K open item) — re-asserted as the RULE: the privacy is EXPLICIT. No default of any kind in
+  // the publisher (neither the old literal nor the `?? "public"` default that replaced it); a call without one is refused
+  // before any byte leaves; both cron call sites name it from the send-time classification.
+  check("publishToYouTube takes the privacy EXACTLY as the caller named it — no literal, no `?? \"public\"` default", /privacyStatus: params\.privacyStatus,/.test(publisher) && !/privacyStatus: "public"/.test(publisher) && !/privacyStatus\s*\?\?\s*["']/.test(publisher) && !/params\.privacyStatus\s*\?\?/.test(publisher))
+  check("…and REFUSES an upload that names none (fail closed before the init call)", /params\.privacyStatus !== "public" && params\.privacyStatus !== "unlisted" && params\.privacyStatus !== "private"[\s\S]{0,200}throw new Error\("YouTube upload requires an explicit privacyStatus/.test(publisher) && publisher.indexOf("requires an explicit privacyStatus") < publisher.indexOf('path: "/upload/youtube/v3/videos"'))
+  check("CONTROL: the old hard-coded literal AND the old default would both still be found", /privacyStatus: "public",/.test('status: { privacyStatus: "public", selfDeclaredMadeForKids: false }') && /params\.privacyStatus\s*\?\?\s*"public"/.test('privacyStatus: params.privacyStatus ?? "public",'))
+  check("the tenant cron NAMES the privacy at BOTH publish sites (single post + the fan-out's YouTube leg) from resolveYouTubePrivacy, and a refused resolution holds the post", (pubCron.match(/resolveYouTubePrivacy\(supabase, post\)/g) ?? []).length === 2 && (pubCron.match(/privacyStatus: (youtubePrivacy|fanYoutubePrivacy),/g) ?? []).length === 2 && /YouTube privacy could not be resolved — post held/.test(pubCron))
+  check("the cron runs the connect BACKFILL net before the due posts (sweepYouTubeBackfill, best-effort)", /sweepYouTubeBackfill\(supabase\)/.test(pubCron) && pubCron.indexOf("sweepYouTubeBackfill(supabase)") < pubCron.indexOf('.from("social_posts")'))
   const platformLib = code("lib/platform/platform-social.ts")
   check("the platform channel's YouTube is WIRED (supported, requiresVideo) and still honest about text drafts", /case "youtube":[\s\S]{0,900}supported: true,\s*publisherPlatform: "youtube",\s*requiresVideo: true/.test(platformLib))
   const platformAction = code("app/actions/superadmin/platform-social.ts")
   check("publishProductDraftAction uploads a VIDEO draft's video_url to YouTube (privacy public) and refuses a video draft on a text channel / a text draft on YouTube / a draft with no file", /mediaUrls: \[draftVideoUrl\], privacyStatus: "public"/.test(platformAction) && /isVideoDraft && !support\.requiresVideo/.test(platformAction) && /support\.requiresVideo && !isVideoDraft/.test(platformAction) && /has no video_url yet/.test(platformAction))
+
+  // ═══════════════════════════ D6 · WAVE 143 — send-time privacy + the connect backfill ═══════════════════════════
+  section("D6 · resolveYouTubePrivacy — decided at SEND time from the file's classification")
+  {
+    const mem = seed()
+    const pub1 = await resolveYouTubePrivacy(mem, { brokerage_id: B, media_urls: ["https://cdn/12-oak.mp4"], post_brief: youtubeAutoPublishBrief(VID) })
+    check("a public-marketing video's post → PUBLIC (classified_public_marketing)", pub1.ok && pub1.privacyStatus === "public" && pub1.basis === "classified_public_marketing", JSON.stringify(pub1))
+    const byFile = await resolveYouTubePrivacy(mem, { brokerage_id: B, media_urls: ["https://cdn/12-oak.mp4"], post_brief: "a human's own post" })
+    check("…matched by the FILE when the post has no brief (a human drafted it) — same verdict", byFile.ok && byFile.privacyStatus === "public" && byFile.basis === "classified_public_marketing")
+    const personal = seed({ video_type: "welcome" })
+    const priv = await resolveYouTubePrivacy(personal, { brokerage_id: B, media_urls: ["https://cdn/12-oak.mp4"], post_brief: "a human's own post" })
+    check("a human drafting a YouTube post of a PERSONAL video (welcome) → PRIVATE — client media is never broadcast (the 142F finding, closed)", priv.ok && priv.privacyStatus === "private" && priv.basis === "held_private_not_public_marketing" && /personal_or_client_kind/.test(priv.detail), JSON.stringify(priv))
+    const addressed = await resolveYouTubePrivacy(seed({ contact_id: "22222222-2222-4222-8222-222222222222" }), { brokerage_id: B, media_urls: ["https://cdn/12-oak.mp4"], post_brief: null })
+    check("…an ADDRESSED video → private; an UNAPPROVED cut (changed after it was queued) → private", addressed.ok && addressed.privacyStatus === "private" && (await resolveYouTubePrivacy(seed({ approval_status: "pending_review" }), { brokerage_id: B, media_urls: ["https://cdn/12-oak.mp4"], post_brief: youtubeAutoPublishBrief(VID) }) as { privacyStatus?: string }).privacyStatus === "private")
+    const unknownFile = await resolveYouTubePrivacy(mem, { brokerage_id: B, media_urls: ["https://cdn/some-other-upload.mp4"], post_brief: null })
+    check("a file that is NOT one of the tenant's video projects → public, basis human_post_unclassified_file (a person approved that post)", unknownFile.ok && unknownFile.privacyStatus === "public" && unknownFile.basis === "human_post_unclassified_file")
+    check("another tenant's identical file is never matched (tenant-pinned): the other tenant's post has no project → unclassified, NOT classified as ours", ((await resolveYouTubePrivacy(mem, { brokerage_id: "00000000-0000-4000-8000-0000000000b2", media_urls: ["https://cdn/12-oak.mp4"], post_brief: null })) as { basis?: string }).basis === "human_post_unclassified_file")
+    const refusedRead = await resolveYouTubePrivacy(memSupabase({}, { refuse: { ai_video_projects: "RLS" } }), { brokerage_id: B, media_urls: ["https://cdn/12-oak.mp4"], post_brief: null })
+    check("a REFUSED read gives NO answer (ok:false) — the cron holds the post; never a guessed 'public'", !refusedRead.ok && /refused/.test((refusedRead as { reason: string }).reason))
+    check("a post with no tenant cannot be classified (ok:false)", !(await resolveYouTubePrivacy(mem, { brokerage_id: null, media_urls: [], post_brief: null })).ok)
+  }
+
+  section("D7 · the connect backfill — videos approved BEFORE the channel was connected reach YouTube once it is")
+  {
+    const VID2 = "33333333-3333-4333-8333-333333333333", VID3 = "44444444-4444-4444-8444-444444444444", VID4 = "55555555-5555-4555-8555-555555555555"
+    const rows = [project(), project({ id: VID2, title: "Just sold: 9 Elm", video_type: "just_sold", video_url: "https://cdn/9-elm.mp4" }),
+      project({ id: VID3, video_type: "welcome", video_url: "https://cdn/welcome.mp4" }), project({ id: VID4, approval_status: "pending_review", video_url: "https://cdn/pending.mp4" })]
+    const noChannel = memSupabase({ ai_video_projects: rows, agents: [{ id: A, brokerage_id: B, user_id: U }], social_media_accounts: [], social_posts: [], brokerage_settings: [], marketing_assets: [] }, { uuidIds: true })
+    const before = await backfillYouTubeAutoPublish(noChannel, B)
+    check("BEFORE the channel is connected the backfill does nothing and says why (no active YouTube account)", before.queued === 0 && /no active YouTube account/.test(before.note ?? "") && noChannel.tables.social_posts.length === 0)
+    noChannel.tables.social_media_accounts.push({ id: "acct-yt", brokerage_id: B, agent_id: A, platform: "youtube", is_active: true })
+    const after = await backfillYouTubeAutoPublish(noChannel, B)
+    check("AFTER the connect: the two approved public-marketing videos are queued (2 posts); the personal (welcome) and the unapproved are NOT considered", after.queued === 2 && after.examined === 2 && noChannel.tables.social_posts.length === 2 && !noChannel.tables.social_posts.some((p) => /welcome|pending/.test(String(p.media_urls?.[0]))), JSON.stringify(after))
+    const again = await backfillYouTubeAutoPublish(noChannel, B)
+    check("running it again queues NOTHING more (the video_metadata.youtube stamp sets the queued ones aside; the brief key backs it) — idempotent", again.queued === 0 && again.examined === 0 && noChannel.tables.social_posts.length === 2)
+    const lim = memSupabase({ ai_video_projects: rows, agents: [{ id: A, brokerage_id: B, user_id: U }], social_media_accounts: [{ id: "acct-yt", brokerage_id: B, agent_id: A, platform: "youtube", is_active: true }], social_posts: [], brokerage_settings: [], marketing_assets: [] }, { uuidIds: true })
+    check("bounded: `limit: 1` queues one video per call, newest first", (await backfillYouTubeAutoPublish(lim, B, { limit: 1 })).queued === 1 && lim.tables.social_posts.length === 1)
+    const off = memSupabase({ ai_video_projects: rows, agents: [], social_media_accounts: [{ id: "a", brokerage_id: B, platform: "youtube", is_active: true }], social_posts: [], brokerage_settings: [{ brokerage_id: B, settings: { [VIDEO_AUTO_PUBLISH_POLICY_KEY]: { youtube: false } } }], marketing_assets: [] }, { uuidIds: true })
+    check("the tenant switch OFF → nothing queued, reason names the key", (await backfillYouTubeAutoPublish(off, B)).queued === 0 && /video_auto_publish/.test((await backfillYouTubeAutoPublish(off, B)).note ?? "") && off.tables.social_posts.length === 0)
+    const unreadable = memSupabase({ ai_video_projects: rows, social_media_accounts: [{ id: "a", brokerage_id: B, platform: "youtube", is_active: true }], social_posts: [] }, { refuse: { brokerage_settings: "RLS" } })
+    check("an UNREADABLE policy → nothing queued (fail closed)", (await backfillYouTubeAutoPublish(unreadable, B)).queued === 0 && /unreadable/.test((await backfillYouTubeAutoPublish(unreadable, B)).note ?? ""))
+    const other = memSupabase({ ai_video_projects: rows, agents: [{ id: A, brokerage_id: B, user_id: U }], social_media_accounts: [{ id: "a", brokerage_id: "00000000-0000-4000-8000-0000000000b2", platform: "youtube", is_active: true }], social_posts: [] }, { uuidIds: true })
+    check("another tenant's connected channel does not backfill THIS tenant (tenant-pinned)", (await backfillYouTubeAutoPublish(other, B)).queued === 0 && other.tables.social_posts.length === 0)
+    const sweep = memSupabase({ ai_video_projects: rows, agents: [{ id: A, brokerage_id: B, user_id: U }], social_media_accounts: [{ id: "acct-yt", brokerage_id: B, agent_id: A, platform: "youtube", is_active: true }], social_posts: [], brokerage_settings: [], marketing_assets: [] }, { uuidIds: true })
+    const sw = await sweepYouTubeBackfill(sweep)
+    check("the cron-side net: sweepYouTubeBackfill walks tenants that HAVE an active channel and queues their videos", sw.tenants === 1 && sw.queued === 2 && sweep.tables.social_posts.length === 2, JSON.stringify(sw))
+    check("…and a sweep with no connected channel anywhere does nothing", (await sweepYouTubeBackfill(memSupabase({ social_media_accounts: [] }))).tenants === 0)
+    check("CONTROL: a backfill that ignored classification would have queued the personal video — the welcome row is in the seed and was refused", rows.some((r) => r.video_type === "welcome") && !noChannel.tables.social_posts.some((p) => String(p.media_urls?.[0]).includes("welcome")))
+  }
+
+  section("D8 · the reel page (app/v/[slug]) mounts THE ONE SLOT — no bare <video>, a working fallback, the view counter intact")
+  {
+    const player = code("app/v/[slug]/video-player.tsx"), pageV = code("app/v/[slug]/page.tsx"), slotSrc = code("app/components/public-site/LandingVideo.tsx")
+    check("video-player.tsx renders <LandingVideo> and NO bare <video>", /<LandingVideo\b/.test(player) && !/<video[\s>]/.test(player), `bare <video> count ${(player.match(/<video[\s>]/g) ?? []).length}`)
+    check("…with the poster, the title, the YouTube copy as the fallback link, and the SAME one-view-per-mount counter (onPlay → trackVideoView)", /fallbackHref=\{youtubeUrl \?\? null\}/.test(player) && /poster=\{poster\}/.test(player) && /onPlay=\{handlePlay\}/.test(player) && /trackVideoView\(projectId\)/.test(player) && /fired\.current/.test(player))
+    check("LandingVideo forwards onPlay to the <video> (the slot is the only player; the counter rides it)", /onPlay\?: \(\) => void/.test(slotSrc) && /onPlay=\{onPlay\}/.test(slotSrc))
+    check("the page reads the YouTube write-back (https only) and hands the player title + youtubeUrl", /video_metadata\?\.youtube as \{ url\?: unknown \}/.test(pageV) && /\^https:\\\/\\\//.test(pageV) && /title=\{data\.title\}/.test(pageV) && /youtubeUrl=\{data\.youtubeUrl\}/.test(pageV))
+    const publicBare = ["app/lm", "app/site", "app/listings", "app/listing", "app/components/public-site", "app/components/listings", "app/v"].flatMap((d) => { const out: string[] = []; const walkDir = (x: string) => { for (const n of readdirSync(join(ROOT, x))) { const p = `${x}/${n}`; if (statSync(join(ROOT, p)).isDirectory()) walkDir(p); else if (/\.tsx$/.test(n)) out.push(p) } }; try { walkDir(d) } catch { /* directory absent */ } return out }).filter((f) => /<video[\s>]/.test(code(f)) && f !== "app/components/public-site/LandingVideo.tsx")
+    check(`NO public landing surface (lm / site / listings / public-site / v) renders a bare <video> outside the slot itself (${publicBare.length} found)`, publicBare.length === 0, publicBare.join(", "))
+  }
 
   // ═══════════════════════════ E · REGISTRATION ═══════════════════════════
   section("E · registration — package.json key, chain MEMBERSHIP, MAINTENANCE_DOMAINS owner")
@@ -404,8 +493,9 @@ async function main() {
   console.log(" Blind spots:")
   for (const b of [
     "the probe proves the container header, not every frame — a header-complete file with a corrupt codec payload passes (the ffmpeg -i duration probe stays best-effort)",
-    "the fan-out branch records only the YouTube leg's id; a youtube account under platform='all' publishes with the default privacy",
-    "tenant posts' privacy is 'public' by construction of the gate (no row-level privacy column exists on social_posts)",
+    "the fan-out branch records only the YouTube leg's id (its privacy is now resolved per leg at send time — D6)",
+    "social_posts has no row-level privacy column: the privacy is derived at send time from the file's classification (D6), not stored on the post — a human-composed YouTube post of a file that is NOT one of the tenant's video projects uploads 'public' (a person approved that post)",
+    "no YouTube call is made: the backfill, the queue and the privacy resolution are proven on an in-memory database; the channel authorization itself is WAITING_EXTERNAL (the tenant's own OAuth connection, Settings → Connections)",
     ...blind,
   ]) console.log(`   · ${b}`)
   if (failures.length) { console.log(" FAILURES:"); for (const f of failures) console.log(`   - ${f}`) }

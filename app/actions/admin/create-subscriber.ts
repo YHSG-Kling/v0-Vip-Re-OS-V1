@@ -3,6 +3,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { auditStaffAction, gateStaffAction } from "@/lib/platform/staff-action-gate"
 import { createTenantCore } from "@/lib/kernel/tenant-creation"
+import { invitationLandingUrl } from "@/lib/platform/site-url"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { stripe } from "@/lib/stripe"
 
@@ -257,7 +258,7 @@ export async function retrySubscriberInvite(params: {
         brokerage_id: params.brokerageId,
         user_type: targetType,
       },
-      redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
+      redirectTo: invitationLandingUrl(),
     })
     if (sendErr) return { success: false, error: sendErr.message }
     // A staff member mailing a tenant-owner magic link is a cross-tenant act;

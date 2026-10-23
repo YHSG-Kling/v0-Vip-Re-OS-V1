@@ -33,7 +33,7 @@ type Row = Record<string, any> // eslint-disable-line @typescript-eslint/no-expl
 export async function run() {
   const c = canary("Brokerage adoption: independent → verified location joins → consent → migrate → billing stopped (prorated) → brokerage seat → no data loss → no double billing")
   if (LIVE) return c.report([], 0, "refused in CANARY_LIVE mode: the transfer rail moves tenancy — in-memory only")
-  const S = uuid(), B = uuid(), X = uuid(), SOLO = uuid(), SOLO_AG = uuid(), ADMIN = uuid(), SUB_S = uuid(), SUB_B = uuid()
+  const S = uuid(), B = uuid(), X = uuid(), SOLO = uuid(), SOLO_AG = uuid(), ADMIN = uuid(), SUB_S = uuid(), SUB_B = uuid(), FORM = uuid()
   const svc = canaryClient({
     brokerages: [
       { id: S, name: `${CANARY_TAG} Harbor Realty`, plan_tier: "solo_agent", status: "active", slug: `${CANARY_TAG}-solo`, brokerage_on_platform: false, team_on_platform: false, created_at: nowIso() },
@@ -55,6 +55,9 @@ export async function run() {
       { id: uuid(), brokerage_id: S, agent_id: SOLO_AG, first_name: "Jordan", last_name: "Canary", email: `jordan@${CANARY_EMAIL_DOMAIN}`, status: "active", notes: CANARY_TAG },
     ],
     listings: [{ id: uuid(), brokerage_id: S, agent_id: SOLO_AG, address: "1 Canary Way", status: "active", notes: CANARY_TAG }],
+    // The solo subscriber's LANDING PAGE and its capture history (wave 143G): they move with the website.
+    lead_capture_forms: [{ id: FORM, brokerage_id: S, agent_id: SOLO_AG, slug: `${CANARY_TAG}-solo-guide`, name: `${CANARY_TAG} solo guide`, is_active: true }],
+    form_submissions: [{ id: uuid(), brokerage_id: S, form_id: FORM, agent_id: SOLO_AG }],
     subscriptions: [
       { id: SUB_S, brokerage_id: S, status: "active", stripe_customer_id: "cus_canary_solo", stripe_subscription_id: "sub_canary_solo", current_period_end: new Date(Date.now() + 20 * 864e5).toISOString(), created_at: nowIso(), updated_at: nowIso() },
       { id: SUB_B, brokerage_id: B, status: "active", stripe_customer_id: "cus_canary_hq", stripe_subscription_id: "sub_canary_hq", current_period_end: new Date(Date.now() + 25 * 864e5).toISOString(), created_at: nowIso(), updated_at: nowIso() },
@@ -145,6 +148,15 @@ export async function run() {
     c.step("141A/142A a retry by the adopting admin after the consent-run acts on NOTHING: alreadyCompleted, attempts stays 1, no second Stripe call, no second actor hand-off, the finished steps not re-run (the resumable step record exists for a stall an unconfigured Stripe would still cause — scripts/brokerage-identity-guard.ts D7)", retry.ok && retry.alreadyCompleted === true && final?.status === "completed" && transferMigrationComplete(final?.migration) && final?.migration?.attempts === 1 && stripeCalls.length === 1 && stripeActors.length === 1 && effectiveAt === effectiveAt1, retry.ok ? `attempts ${final?.migration?.attempts}; stripe calls ${stripeCalls.length}; readiness ${final?.readiness?.ready}` : retry.error)
     const after = soloRows(B)
     c.step("141A no data loss + provenance: every tagged solo row now carries brokerage_id = target with its agent_id and ids intact, none remains in the source, and the counts are recorded on the request", after.contacts === before.contacts && after.listings === before.listings && soloRows(S).contacts === 0 && soloRows(S).listings === 0 && tagged(svc.tables.contacts, B).every((r) => r.agent_id === SOLO_AG) && final?.migration?.counts?.contacts === before.contacts && final?.migration?.counts?.listings === before.listings && final?.migration?.counts?.members === 1, JSON.stringify(final?.migration?.counts).slice(0, 200))
+    // WAVE 143G — THE WEBSITE MOVES WITH THE SUBSCRIBER: the landing page and its capture history re-home to the target (a page left
+    // behind would keep filing leads under the archived source), and the archived source's website chat is then served by the target.
+    const formsAfter = (svc.tables.lead_capture_forms ?? []).filter((r) => r.id === FORM), subsAfter = (svc.tables.form_submissions ?? []).filter((r) => r.form_id === FORM)
+    c.step("143G the landing page and its capture history moved with the website: lead_capture_forms + form_submissions carry brokerage_id = target, none left in the source, the form's slug and agent intact", formsAfter.length === 1 && formsAfter[0].brokerage_id === B && formsAfter[0].agent_id === SOLO_AG && formsAfter[0].slug === `${CANARY_TAG}-solo-guide` && subsAfter.length === 1 && subsAfter[0].brokerage_id === B, JSON.stringify({ forms: formsAfter.map((r) => r.brokerage_id === B), subs: subsAfter.map((r) => r.brokerage_id === B) }))
+    {
+      const { resolveWidgetTenant } = await import("../../lib/widget/resolve-widget-tenant")
+      const w = await resolveWidgetTenant(svc as never, { brokerageSlug: `${CANARY_TAG}-solo` })
+      c.step("143G the archived source's website chat is served by the ADOPTING brokerage (the old embed keeps working and its leads land where the agent now works)", w.ok && w.tenant.brokerageId === B, JSON.stringify(w).slice(0, 200))
+    }
     const grants = svc.tables.user_role_assignments ?? []
     c.step("141A membership through the canonical movers: the owner is in the target as a PRODUCING agent (never an admin by adoption), their agents row moved, the source grant retired, a target grant exists", user(SOLO)?.brokerage_id === B && user(SOLO)?.user_type === "agent" && (svc.tables.agents ?? []).find((a) => a.id === SOLO_AG)?.brokerage_id === B && !grants.some((g) => g.user_id === SOLO && g.brokerage_id === S) && grants.some((g) => g.user_id === SOLO && g.brokerage_id === B && g.role === "agent"), `user_type=${user(SOLO)?.user_type}`)
     c.step("141A no double billing: the target's subscription is untouched; the source keeps ONE row (cancel_at written, status mirrored by Stripe's webhook — never a second row, never an invented refund); two subscription rows in all", sub(SUB_B)?.stripe_subscription_id === "sub_canary_hq" && !sub(SUB_B)?.cancel_at && (svc.tables.subscriptions ?? []).filter((s) => s.brokerage_id === S).length === 1 && (svc.tables.subscriptions ?? []).length === 2, "")

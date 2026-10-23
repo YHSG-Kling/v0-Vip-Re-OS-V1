@@ -195,13 +195,20 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
       return
     }
     startTransition(async () => {
-      await upsertFinancialProfile({
+      // upsertFinancialProfile RESOLVES a refusal ({ success:false, error }). Its result was
+      // dropped, so a bypass-verify went on to mark the buyer verified over a profile that was
+      // never written (wave 143J). A refused profile stops the bypass.
+      const profile = await upsertFinancialProfile({
         contactId,
         brokerageId,
         agentUserId,
         financeType,
         isCashBuyer: isCash,
       })
+      if (!profile.success) {
+        toast.error(profile.error ?? "Could not save the buyer's financial profile — verification was not recorded.")
+        return
+      }
       const result = await markFinanciallyVerified({
         contactId,
         brokerageId,

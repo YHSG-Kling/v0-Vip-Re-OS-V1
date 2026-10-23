@@ -836,6 +836,19 @@ for (const [id, label, f, lane, who] of [["B5.1", "739 three DROP INDEX", m739, 
   classify(id, label, cls, who, reading)
 }
 
+// B5′ — wave 143 (lane 143H): the decision-gated and the owner-approvable migrations. NOT owner-held DDL (an ALTER POLICY, an
+// UPDATE and two ALTER COLUMNs are accepted by the MCP) — they wait on a DECISION, or on a coupled code change shipping in the same
+// release. The statements of m795 are reproduced verbatim in docs/operations/OWNER-SQL.md (scripts/operations-docs-guard.ts holds it).
+const m795 = migrationNamed(795), m840 = migrationNamed(840), m841 = migrationNamed(841)
+for (const [id, label, f, lane, who] of [
+  ["B5.5", "795 tenant_safety_findings → platform staff only (changes what tenant admins see)", m795, "142A", "OWNER DECISION (tenant vs platform surface) + the re-homing of its three readers, then the integrator applies"],
+  ["B5.6", "840 the title company's preliminary statement has ONE doc_type spelling (data rewrite, 0 rows live)", m840, "143H", "owner approves the vocabulary change; the integrator applies with the four coupled code sites"],
+  ["B5.7", "841 global_settings.timezone can say 'not chosen' (NULL = derive from the brokerage's state)", m841, "143H", "the integrator applies; the reaper / milestone bridge / settings form read it in the same release"],
+] as const) {
+  const [cls, reading] = migClass(f, lane, who)
+  classify(id, label, cls, who, reading)
+}
+
 // B6 — Mapbox / Open-Meteo / Google Ads declarations + credentials
 const adapters = bc("lib/kernel/provider-adapters.ts"), registry = bc("lib/agentic-os/connector-registry.ts")
 const adapterEnv = (key: string) => [...(adapters.match(new RegExp(`^\\s*${key}:\\s*\\{[^\\n]*`, "m"))?.[0] ?? "").matchAll(/envVars:\s*\[([^\]]*)\]/g)].flatMap((m) => [...m[1].matchAll(/"([A-Z0-9_]+)"/g)].map((x) => x[1]))
@@ -955,6 +968,18 @@ check(`B15 support / incident operations: the support-sla cron is registered and
   && /export const OPERATION_SIGNAL_TYPE = "operation_failure_escalated"/.test(bc("lib/kernel/immediate-operations.ts")) && /handleOperationFailureEscalated/.test(codeOf(read("lib/kernel/manager-signals.ts")))
   && /"tenant_readiness"/.test(bc("lib/kernel/os-health.ts")), RULING_OPS.filter((o) => !immOps.includes(o)).join(", "))
 classify("B15", "support / incident operations readiness", "PASS", "cron_manager / data_steward", "structural; support_tickets 0 rows live → NOT_APPLICABLE until operated")
+
+// B16 — wave 143 (lane 143H): the operations documents are DERIVED from the code (scripts/operations-docs-guard.ts regenerates
+// them and fails on drift), so "every environment name, every provider, every owner step is written down" is checked, not asserted.
+const OPS_INV = "docs/operations/ENVIRONMENT-INVENTORY.md", OPS_CERT = "docs/operations/PROVIDER-CERTIFICATION.md"
+const OPS_DOCS = [OPS_INV, OPS_CERT, "docs/operations/OWNER-SQL.md", "docs/operations/ACTIVATION-CHECKLIST.md"]
+const derivedMarker = (md: string, id: string) => new RegExp(`<!-- GENERATED:${id}:BEGIN -->`).test(md)
+const b16Key = proofState("test:operations-docs")
+check("B16 the four operations documents exist, the inventory and the certification carry their GENERATED markers, and the guard that holds them to the code is on disk",
+  OPS_DOCS.every((p) => existsSync(join(ROOT, p))) && derivedMarker(read(OPS_INV), "env-inventory") && derivedMarker(read(OPS_CERT), "provider-contracts")
+  && existsSync(join(ROOT, "scripts/operations-docs-guard.ts")))
+check("B16c POSITIVE CONTROL — a hand-written document with no markers is not 'derived'", !derivedMarker("# hand-written inventory\n| NAME | x |\n", "env-inventory") && derivedMarker("<!-- GENERATED:env-inventory:BEGIN -->\nx", "env-inventory"))
+classify("B16", "environment inventory, provider certification, owner SQL and activation checklist derived from the code", b16Key === "ok" ? "PASS" : "PENDING", "lane 143H; the integrator registers test:operations-docs", `documents present; proof ${b16Key}`)
 
 console.log("    ┌ blocker table (classification is the reading; the check above it is the rule)")
 for (const r of blockerRows) console.log(`    │ ${r.id.padEnd(5)} ${r.classification.padEnd(17)} ${r.blocker} — who: ${r.who} — ${r.reading}`)

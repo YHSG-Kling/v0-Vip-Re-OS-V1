@@ -59,7 +59,7 @@ import { VENDOR_PRICING, vendorPriceState, type PriceState } from "@/lib/vendor-
 import { PROVIDER_HEALTH_POLICY } from "@/lib/agentic-os/connector-gateway"
 import { PROBE_SPECS } from "@/lib/agentic-os/connector-probe"
 import { SIMLI_USD_PER_STREAMING_MINUTE } from "@/lib/video/realism-profile"
-import { VERSIUM_REACH_MCP } from "@/lib/external/versium-client"
+import { VERSIUM_REACH_MCP, versiumProductsByStatus } from "@/lib/external/versium-client"
 
 // ─── the declaration ──────────────────────────────────────────────────────────
 
@@ -163,9 +163,11 @@ const ADAPTER_FACTS: Readonly<Record<string, AdapterFacts>> = {
   // BatchData stands — see CONTACT_PROVIDER_ROUTES.property_facts).
   // Wave 142 (142D): + the B2B2C crosswalk (business identity ↔ consumer contact points) and the
   // full-demographic real-estate / online-presence indicators — audited in lib/external/versium-client.ts.
-  versium: { serviceKeys: ["versium"], outputs: "owner/person email + phone append, household financials + demographic/property append, B2B2C business-identity crosswalk, online-presence / real-estate indicators", transport: "rest", version: "v2", ledger: "vendor_usage_tracking", booking: "meterVendorSpend (lib/vendor-governance/meter-vendor.ts)", gateway: true,
+  versium: { serviceKeys: ["versium"], outputs: "owner/person email + phone append, household financials + demographic/property append, B2B2C business-identity crosswalk, online-presence / real-estate indicators, free audience-size estimate", transport: "rest", version: "v2", ledger: "vendor_usage_tracking", booking: "meterVendorSpend (lib/vendor-governance/meter-vendor.ts)", gateway: true,
     // wave 142D: the vendor's MCP is DECLARED here so the inventory says why it is not the transport (never a hidden second rail).
-    urlNote: `Versium REACH MCP (${VERSIUM_REACH_MCP.url}; ${VERSIUM_REACH_MCP.transport}, ${VERSIUM_REACH_MCP.auth}) declared and NOT wired — ${VERSIUM_REACH_MCP.verdict}` },
+    // Wave 143 (143D): the MCP verdict is now ${status} with its exact dependencies, and the adapter declares the products it
+    // does NOT serve (the matrix in versium-client.ts is the one place that says why) — the certification reads it, never re-derives it.
+    urlNote: `Versium REACH MCP (${VERSIUM_REACH_MCP.url}; ${VERSIUM_REACH_MCP.transport}, ${VERSIUM_REACH_MCP.auth}) ${VERSIUM_REACH_MCP.status} — ${VERSIUM_REACH_MCP.verdict}. Waiting on: ${VERSIUM_REACH_MCP.waitingOn.length} dependencies (VERSIUM_REACH_MCP.waitingOn). Products waiting on a price or a person: ${versiumProductsByStatus("WAITING_EXTERNAL").map((p) => p.id).join(", ")}; owner decisions: ${versiumProductsByStatus("OWNER_DECISION").map((p) => p.id).join(", ")}` },
   // ── platform channels (SYSTEM_ONLY_TYPES) ──
   anthropic: { serviceKeys: ["vercel-ai-gateway", "anthropic", "anthropic-managed-agents", "anthropic-status"], aliases: ["ai_gateway", "vercel_ai_gateway", "managed_agents"], outputs: "model completions", transport: "gateway", version: "AI Gateway OpenAI-compatible v1", tenancyKey: "ai_gateway", priceKey: "anthropic_claude", ledger: "ai_tool_usage", booking: "logAIUsage (lib/ai/cost-tracking.ts)", geography: "global", statusUrl: "https://www.vercel-status.com", changelogUrl: "https://docs.anthropic.com/en/release-notes/api", gateway: true, envVars: ["AI_GATEWAY_API_KEY", "ANTHROPIC_API_KEY"] },
   did: { serviceKeys: ["did"], registryKey: "d_id", aliases: ["d_id"], outputs: "avatar video render", transport: "rest", version: "unversioned", priceKey: "did", ledger: "vendor_usage_tracking", booking: "meterVendorSpend (lib/did/index.ts)", geography: "global", gateway: true },
@@ -177,7 +179,8 @@ const ADAPTER_FACTS: Readonly<Record<string, AdapterFacts>> = {
   sendgrid: { serviceKeys: ["sendgrid", "sendgrid-status"], outputs: "email send, event + inbound webhooks", transport: "rest", version: "v3", baseUrl: "https://api.sendgrid.com/v3", docsUrl: "https://www.twilio.com/docs/sendgrid/api-reference", statusUrl: "https://status.sendgrid.com", priceKey: "sendgrid", ledger: "vendor_usage_tracking", booking: "logVendorUsage (lib/providers/dispatch.ts)", envVars: ["SENDGRID_API_KEY"], gateway: true },
   google: { serviceKeys: ["google_calendar", "gmail", "google-drive", "google-oauth", "google-userinfo"], aliases: ["google_esign", "google_workspace"], outputs: "calendar events, mail, Drive placement (Google eSignature hand-off)", transport: "rest", version: "v3", baseUrl: "https://www.googleapis.com/calendar/v3", docsUrl: "https://developers.google.com/calendar/api", statusUrl: "https://www.google.com/appsstatus/dashboard/", ledger: "tenant_account", booking: TENANT("OAuth account"), envVars: ["GOOGLE_OAUTH_CLIENT_ID"], geography: "global", gateway: true },
   docusign: { serviceKeys: ["docusign", "docusign-oauth"], outputs: "envelope send + completion", transport: "rest", version: "v2.1", baseUrl: "https://www.docusign.net/restapi", docsUrl: "https://developers.docusign.com/docs/esign-rest-api/", statusUrl: "https://status.docusign.com", ledger: "tenant_account", booking: TENANT("DocuSign account"), envVars: ["DOCUSIGN_OAUTH_HOST"], geography: "global", gateway: true },
-  dotloop: { serviceKeys: ["dotloop"], outputs: "loop / transaction sync", transport: "rest", version: "v2", baseUrl: "https://api-gateway.dotloop.com/public/v2", docsUrl: "https://dotloop.github.io/public-api/", ledger: "tenant_account", booking: TENANT("dotloop account"), envVars: ["DOTLOOP_API_KEY"], gateway: true },
+  // Wave 143 (143H): envVars is [] on purpose — the shared DOTLOOP_API_KEY / DOTLOOP_PROFILE_ID env account was REMOVED (tenant-owned credentials only; lib/integrations/providers/catalog.ts:291 + the dotloop-provider.ts tombstone). Declaring them here named a credential nothing reads.
+  dotloop: { serviceKeys: ["dotloop"], outputs: "loop / transaction sync", transport: "rest", version: "v2", baseUrl: "https://api-gateway.dotloop.com/public/v2", docsUrl: "https://dotloop.github.io/public-api/", ledger: "tenant_account", booking: TENANT("dotloop account"), envVars: [], gateway: true },
   follow_up_boss: { serviceKeys: ["followupboss"], aliases: ["fub"], outputs: "CRM people / events sync", transport: "rest", version: "v1", baseUrl: "https://api.followupboss.com/v1", docsUrl: "https://docs.followupboss.com/", ledger: "tenant_account", booking: TENANT("FUB key"), gateway: true },
   quickbooks: { serviceKeys: ["quickbooks"], aliases: ["qbo", "intuit"], outputs: "invoices, purchases, journal entries", transport: "rest", version: `v3 minorversion=${QBO_MINOR_VERSION}`, ledger: "tenant_account", booking: TENANT("QuickBooks company"), statusUrl: "https://status.developer.intuit.com", changelogUrl: "https://developer.intuit.com/app/developer/qbo/docs/release-notes", gateway: true },
   stripe: { serviceKeys: ["stripe"], outputs: "payments, transfers", transport: "sdk", version: "2026-02-25.clover", baseUrl: "https://api.stripe.com/v1", docsUrl: "https://docs.stripe.com/api", statusUrl: "https://status.stripe.com", changelogUrl: "https://docs.stripe.com/changelog", ledger: "tenant_account", booking: TENANT("Stripe account"), envVars: ["STRIPE_SECRET_KEY"], geography: "global", gateway: true },
@@ -452,7 +455,10 @@ function priceFor(names: Set<string>, facts: AdapterFacts): { unitUsd: number; u
     // facts also name a VENDOR_PRICING row, that row's typed STATE rides along (the map providers are
     // VARIABLE — volume bands, free tiers — not "fixed" because a route row holds a float).
     const declared = facts.priceKey ? VENDOR_PRICING[facts.priceKey] : undefined
-    return { unitUsd: Math.min(...routed.map((e) => e.unitCostUsd)), unit: "call/match", priceSource: declared ? `CONTACT_PROVIDER_ROUTES (state: VENDOR_PRICING.${facts.priceKey}${declared.priceSource ? ` — ${declared.priceSource}` : ""})` : "CONTACT_PROVIDER_ROUTES", priceState: declared ? vendorPriceState(facts.priceKey as string) : "fixed" }
+    // Wave 143 (143D): a FREE capability row (Versium's audience estimate, unit 0) is not the adapter's price — the
+    // cheapest PAID route sets it; an adapter whose every routed capability is free keeps 0 (and is not "paid").
+    const paidUnits = routed.map((e) => e.unitCostUsd).filter((u) => u > 0)
+    return { unitUsd: paidUnits.length ? Math.min(...paidUnits) : 0, unit: "call/match", priceSource: declared ? `CONTACT_PROVIDER_ROUTES (state: VENDOR_PRICING.${facts.priceKey}${declared.priceSource ? ` — ${declared.priceSource}` : ""})` : "CONTACT_PROVIDER_ROUTES", priceState: declared ? vendorPriceState(facts.priceKey as string) : "fixed" }
   }
   const k = facts.priceKey
   const platform = k ? (PLATFORM_VENDOR_RATES as Record<string, { perUnit: number; unit: string }>)[k] : undefined

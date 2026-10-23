@@ -2,6 +2,7 @@
 
 import { useRef } from "react"
 import { trackVideoView } from "@/app/actions/listing-video"
+import { LandingVideo } from "@/app/components/public-site/LandingVideo"
 
 /**
  * The public reel player, with the view counter attached.
@@ -33,12 +34,19 @@ export function VideoPlayer({
   src,
   poster,
   projectId,
+  title,
+  youtubeUrl,
 }: {
   src: string
   poster: string | null
   /** null when this page is serving a Remotion composition render, which has no
    *  view counter — no call is made rather than one against the wrong table. */
   projectId: string | null
+  /** The reel's title — the slot's accessible name and its still when no poster exists. */
+  title: string
+  /** The reel's YouTube copy (ai_video_projects.video_metadata.youtube.url) — the slot's WORKING fallback when
+   *  the file will not play. Null until published there; the page cannot link to itself. */
+  youtubeUrl?: string | null
 }) {
   const fired = useRef(false)
 
@@ -50,14 +58,18 @@ export function VideoPlayer({
     })
   }
 
+  // THE ONE SLOT (wave 143, lane 143F; the 142K open item). This page rendered its own bare <video>, so a file that
+  // would not play left the browser's grey broken-media box on the very page the landing slot's fallback links to.
+  // It now mounts the same LandingVideo every public surface uses: poster, no autoplay, and on a player error the
+  // poster + a quiet line + (when the reel is on the channel) a link to its YouTube copy.
   return (
-    <video
-      controls
-      playsInline
-      poster={poster ?? undefined}
+    <LandingVideo
       src={src}
+      poster={poster}
+      title={title}
+      fallbackHref={youtubeUrl ?? null}
       onPlay={handlePlay}
-      style={{ width: "100%", height: "100%", objectFit: "contain", background: "#000" }}
+      className="h-full w-full bg-black object-contain"
     />
   )
 }

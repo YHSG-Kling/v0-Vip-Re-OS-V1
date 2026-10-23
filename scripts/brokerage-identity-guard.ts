@@ -30,9 +30,16 @@
  *     code vocabularies, every TRANSFER_DATA_FAMILIES table is live and carries brokerage_id, every
  *     human route is a registered MANAGERS key, the rail's only billing call is the seam, doors gated,
  *     cards wired, no "platform-covered" in tenant copy.
+ *     E2 (wave 143G) FK CLOSURE — a moved family's FK children follow it: the landing-page tables are a
+ *     zero-exception rule (positive control); the rest is a published FROZEN ceiling that only goes down.
+ *  F. ARCHIVED SOURCE FORWARDS (wave 143G) — an archived workspace has no public surface of its own: its storefront
+ *     redirects, and its website chat is served, by the brokerage of its COMPLETED transfer (one hop, fail closed:
+ *     unreadable ⇒ 503, no transfer ⇒ 404); a same-name decoy is never the successor (positive control).
  * BLIND SPOTS (published): scripts/ is not scanned in A (its simulators look their own tagged test
  * brokerages up by name); the Stripe half of the handoff is lane 141H's (stubbed here); readiness is
- * a counted seam; RLS is not exercised (the fake has no policies).
+ * a counted seam; RLS is not exercised (the fake has no policies); the FK-closure census reads the
+ * GENERATED caches (a table created since the last regeneration is invisible to it); F proves the
+ * storefront redirect by stripped source, not by a mounted Next request.
  */
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
@@ -41,6 +48,7 @@ import { stripComments } from "./strip-comments"
 import { walkTs } from "./runtime-roots"
 import { memSupabase, type Row, type MemClient } from "./in-memory-supabase"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
+import { SCHEMA_FK_MAP } from "./schema-fk-map"
 import { LIVE_TABLES } from "./live-tables"
 import { MANAGERS, MAINTENANCE_DOMAINS, TABLE_MANAGER } from "../lib/kernel/manager-registry"
 import { createTenantCore, type TenantCreationDeps } from "../lib/kernel/tenant-creation"
@@ -487,6 +495,30 @@ console.log("\n[E · registration, derived vocabularies, wiring]")
   check("CONTROL: a table with no brokerage_id would be caught", !(SCHEMA_SNAPSHOT.subscription_tiers ?? []).includes("brokerage_id"))
   check("families are unique and never name a money / settings / evidence table", new Set(fams.map((f) => f.table)).size === fams.length && !fams.some((f) => /commission|subscriptions|billing|ledger|settings|policy|lifecycle_events|notifications|ai_tool_usage/.test(f.table)))
 
+  // FK CLOSURE (wave 143G). A transferred family's CHILDREN must follow it into the target: a row left behind in
+  // the archived source still references a parent that now lives in another tenant, and every target-side read
+  // (`.eq("brokerage_id", target)`) misses it. The closure is DERIVED from the generated caches — tables that
+  // carry brokerage_id AND have an FK into a moved family and are not themselves moved.
+  const famSet = new Set(TRANSFER_DATA_FAMILIES.map((f) => f.table))
+  const unmovedChildren = (families: ReadonlySet<string>) => Object.entries(SCHEMA_FK_MAP as Record<string, Record<string, string>>)
+    .filter(([t, fks]) => !families.has(t) && (SCHEMA_SNAPSHOT[t] ?? []).includes("brokerage_id") && Object.values(fks).some((parent) => families.has(parent)))
+    .map(([t]) => t).sort()
+  // (1) THE WEBSITE'S LANDING PAGES: a RULE, zero exceptions — nothing that FKs to a moved landing page stays behind.
+  const landingParents = new Set(["lead_capture_forms"])
+  const landingLeft = unmovedChildren(famSet).filter((t) => Object.values(SCHEMA_FK_MAP[t] ?? {}).some((parent) => landingParents.has(parent)))
+  check("LANDING PAGES: lead_capture_forms moves, and no table that FKs to it is left in the source tenant", famSet.has("lead_capture_forms") && landingLeft.length === 0, landingLeft.join(","))
+  const withoutSubmissions = new Set([...famSet].filter((t) => t !== "form_submissions"))
+  check("  POSITIVE CONTROL: with form_submissions dropped from the families, the closure finder names it (the rule is not vacuous)", unmovedChildren(withoutSubmissions).includes("form_submissions"))
+  // (2) THE REST: FROZEN DEBT, a ratchet that only goes DOWN. Published: the denominator is every table in the
+  // generated FK cache that carries brokerage_id; the exclusions are the families themselves. Money (commission_*,
+  // agent_commissions) is MEANT to stay (m765's rationale: money never crosses tenants); the remainder is deal /
+  // contact state that the owner has not yet ruled on — see lane 143G notes "Still open".
+  const FROZEN_UNMOVED_FK_CHILDREN = 286
+  const debt = unmovedChildren(famSet)
+  check(`FK-closure debt does not GROW: ${debt.length} unmoved child tables (frozen ceiling ${FROZEN_UNMOVED_FK_CHILDREN}; lower the ceiling when a family is added — a count that moves is the finding)`, debt.length <= FROZEN_UNMOVED_FK_CHILDREN, `grew by ${debt.length - FROZEN_UNMOVED_FK_CHILDREN}: ${debt.slice(0, 8).join(",")}`)
+  console.log(`    (published) FK-closure census: ${Object.keys(SCHEMA_FK_MAP).filter((t) => (SCHEMA_SNAPSHOT[t] ?? []).includes("brokerage_id")).length} tables in the FK cache carry brokerage_id; ${famSet.size} are moved families; ${debt.length} are unmoved children of a moved family; ${debt.filter((t) => /commission/.test(t)).length} of those are commission money that stays by design.`)
+
+
   const mig = "supabase/migrations/m765-brokerage-identity-declared-affiliation-and-transfer-requests.sql"
   check("m765 exists with a status header on line 1 (the lane stamp or APPLIED LIVE)", existsSync(join(root, mig)) && /WRITTEN, NOT APPLIED|APPLIED LIVE/.test(raw(mig).split("\n")[0]))
   const sql = raw(mig).replace(/--[^\n]*/g, "")
@@ -522,6 +554,61 @@ console.log("\n[E · registration, derived vocabularies, wiring]")
   const tenantCopy = [raw("app/settings/users/brokerage-adoption-card.tsx"), raw("app/settings/general/brokerage-affiliation-card.tsx"), raw("app/get-started/trial-funnel-form.tsx")].join("\n")
   check("tenant-facing copy never says 'platform-covered'", !/platform-covered/i.test(tenantCopy))
   check("events declared once in KernelEvent (requested / consented / declined / cancelled / stalled / completed / archived / affiliation declared)", ["brokerage_transfer_requested", "brokerage_transfer_consented", "brokerage_transfer_declined", "brokerage_transfer_cancelled", "brokerage_transfer_stalled", "brokerage_transfer_completed", "brokerage_archived", "brokerage_affiliation_declared"].every((e) => new RegExp(`'${e}'`).test(stripped("lib/kernel/events.ts"))))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// F · AN ARCHIVED SOURCE HAS NO PUBLIC SURFACE OF ITS OWN (wave 143G)
+// ═══════════════════════════════════════════════════════════════════════════════
+console.log("\n[F · an archived workspace forwards to the brokerage that adopted it — the storefront and the website chat]")
+{
+  const { resolveArchivedSiteSuccessor } = await import("../lib/tenant-site/successor")
+  const { resolveWidgetTenant } = await import("../lib/widget/resolve-widget-tenant")
+  const S = "s0000000-0000-4000-8000-000000000001", T = "t0000000-0000-4000-8000-000000000002", D = "d0000000-0000-4000-8000-000000000003", S2 = "s0000000-0000-4000-8000-000000000004", T2 = "t0000000-0000-4000-8000-000000000005"
+  const seedF = (): Record<string, Row[]> => ({
+    brokerages: [
+      { id: S, name: "Solo Sam", slug: "solo-sam-1", status: "archived", archived_at: "2026-10-01", deleted_at: null, widget_enabled: true },
+      { id: T, name: "Target Realty", slug: "target-realty-2", status: "active", archived_at: null, deleted_at: null, widget_enabled: true },
+      { id: D, name: "Solo Sam", slug: "solo-sam-3", status: "active", archived_at: null, deleted_at: null, widget_enabled: true },
+      { id: S2, name: "Solo Two", slug: "solo-two-4", status: "archived", archived_at: "2026-10-01", deleted_at: null, widget_enabled: true },
+      { id: T2, name: "Gone Target", slug: "gone-target-5", status: "archived", archived_at: "2026-10-02", deleted_at: null, widget_enabled: true },
+    ],
+    brokerage_transfer_requests: [
+      { id: "r1", source_brokerage_id: S, target_brokerage_id: T, status: "completed", completed_at: "2026-10-01" },
+      { id: "r2", source_brokerage_id: S2, target_brokerage_id: T2, status: "completed", completed_at: "2026-10-01" },
+    ],
+    agents: [
+      { id: "ag-t", brokerage_id: T, is_active: true },
+      { id: "ag-s", brokerage_id: S, is_active: true },
+    ],
+  })
+  const svcF = (over: Record<string, Row[]> = {}, opts: Record<string, unknown> = {}) => memSupabase({ ...seedF(), ...over } as any, opts as any)
+  const ok1 = await resolveArchivedSiteSuccessor(svcF(), S)
+  check("the archived source resolves to the target of ITS completed transfer (by the request row, not by name)", ok1.ok && ok1.successor.id === T && ok1.successor.slug === "target-realty-2", JSON.stringify(ok1))
+  check("  POSITIVE CONTROL: a same-name decoy tenant is never the successor (the request row is the proof)", ok1.ok && ok1.successor.id !== D)
+  const none = await resolveArchivedSiteSuccessor(svcF({ brokerage_transfer_requests: [] }), S)
+  check("no completed transfer ⇒ no successor", !none.ok && none.reason === "none")
+  const pending = await resolveArchivedSiteSuccessor(svcF({ brokerage_transfer_requests: [{ id: "r1", source_brokerage_id: S, target_brokerage_id: T, status: "migrating", completed_at: null }] }), S)
+  check("a transfer that is not COMPLETED forwards nowhere", !pending.ok && pending.reason === "none")
+  const targetArchived = await resolveArchivedSiteSuccessor(svcF(), S2)
+  check("a target that is itself archived is not a successor (one hop, never a chain — a loop is impossible)", !targetArchived.ok && targetArchived.reason === "none")
+  const refused = await resolveArchivedSiteSuccessor(svcF({}, { refuse: { brokerage_transfer_requests: "RLS refused" } }), S)
+  check("FAIL CLOSED: a refused request read is `unreadable`, not `none`", !refused.ok && refused.reason === "unreadable")
+
+  const w1 = await resolveWidgetTenant(svcF() as any, { brokerageSlug: "solo-sam-1" })
+  check("the website chat on the ARCHIVED workspace's slug is served by the adopting brokerage (leads land where the agent now works)", w1.ok && w1.tenant.brokerageId === T && w1.tenant.brokerageSlug === "target-realty-2", JSON.stringify(w1))
+  const w2 = await resolveWidgetTenant(svcF() as any, { brokerageSlug: "target-realty-2" })
+  check("  control: an ACTIVE workspace's chat is unchanged", w2.ok && w2.tenant.brokerageId === T)
+  const w3 = await resolveWidgetTenant(svcF({ brokerage_transfer_requests: [] }) as any, { brokerageSlug: "solo-sam-1" })
+  check("an archived workspace with NO completed transfer serves no chat (404, the same message as an unknown slug)", !w3.ok && w3.status === 404)
+  const w4 = await resolveWidgetTenant(svcF({}, { refuse: { brokerage_transfer_requests: "RLS refused" } }) as any, { brokerageSlug: "solo-sam-1" })
+  check("an unreadable successor lookup is a 503 (an outage is not a 404)", !w4.ok && w4.status === 503)
+  const w5 = await resolveWidgetTenant(svcF() as any, { brokerageSlug: "solo-sam-1", agentId: "ag-t" })
+  const w6 = await resolveWidgetTenant(svcF() as any, { brokerageSlug: "solo-sam-1", agentId: "ag-s" })
+  check("an agent-scoped widget on the archived slug resolves the agent in the SUCCESSOR tenant; an agent id of the archived tenant finds nothing", w5.ok && w5.tenant.agentId === "ag-t" && !w6.ok && w6.status === 404)
+
+  const sitePage = stripComments(raw("app/site/[slug]/page.tsx"))
+  check("the storefront: an archived brokerage forwards (permanentRedirect to the successor's site) or 404s — never a hollow page", /status\s*===\s*"archived"/.test(sitePage) && /resolveArchivedSiteSuccessor\(/.test(sitePage) && /permanentRedirect\(tenantWebsitePath\(data\.successorSlug\)\)/.test(sitePage))
+  check("  POSITIVE CONTROL: the finder sees a storefront that never reads the archive", !/status\s*===\s*"archived"/.test(stripComments(`const { data: b } = await svc.from("brokerages").select("id, slug").eq("slug", slug).maybeSingle()`)))
 }
 
 console.log(`\nBLIND SPOTS: scripts/ not scanned in A (simulators look up their own tagged brokerages by name); the Stripe SDK call is stubbed in D7/D7b (the Stripe-side tenancy gate, seat verdict and ledger run for real against the in-memory client); readiness is a counted seam; RLS not exercised.`)

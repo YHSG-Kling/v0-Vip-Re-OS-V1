@@ -43,6 +43,20 @@ export async function GET(request: Request) {
     const supabase = createServiceClient()
     const now = new Date()
 
+    // YOUTUBE CONNECT BACKFILL (wave 143, lane 143F; the 142K open item). A video approved BEFORE its tenant connected a
+    // YouTube channel was refused at approval ("no active YouTube account") and never retried. Every tenant with an
+    // ACTIVE channel gets its approved public-marketing videos that were never queued staged on the one rail below
+    // (bounded per tick; idempotent on the brief key). The approval and render-landed doors stay the primary path —
+    // this is the net under them. Best-effort: a refusal is printed, never allowed to hold the posts that are due.
+    let youtubeBackfill: Awaited<ReturnType<typeof import("@/lib/video/youtube-publish").sweepYouTubeBackfill>> | null = null
+    try {
+      const { sweepYouTubeBackfill } = await import("@/lib/video/youtube-publish")
+      youtubeBackfill = await sweepYouTubeBackfill(supabase)
+      if (youtubeBackfill.queued > 0 || youtubeBackfill.notes.length > 0) console.log(`[cron/publish-social-posts] youtube backfill: ${youtubeBackfill.queued} queued across ${youtubeBackfill.tenants} tenant(s)${youtubeBackfill.notes.length ? `; ${youtubeBackfill.notes.slice(0, 5).join(" | ")}` : ""}`)
+    } catch (e) {
+      console.error("[cron/publish-social-posts] youtube backfill failed:", (e as Error).message)
+    }
+
     // SELECT social_posts WHERE status='scheduled' AND approval_status='approved'
     // AND scheduled_for <= now() ORDER BY scheduled_for ASC LIMIT 20
     const { data: posts, error } = await supabase
@@ -188,9 +202,20 @@ export async function GET(request: Request) {
           let anyOk = false
           for (const acct of targets) {
             try {
+              // Wave 143 (lane 143F): the YouTube leg NAMES its privacy (resolved from the file's classification at
+              // send time) — the fan-out used to publish with the publisher's default. A refused read throws into this
+              // leg's own failure log; the other platforms are unaffected.
+              let fanYoutubePrivacy: "public" | "private" | undefined
+              if (String(acct.platform ?? "").toLowerCase() === "youtube") {
+                const { resolveYouTubePrivacy } = await import("@/lib/video/youtube-publish")
+                const priv = await resolveYouTubePrivacy(supabase, post)
+                if (!priv.ok) throw new Error(`YouTube privacy could not be resolved — leg held: ${priv.reason}`)
+                fanYoutubePrivacy = priv.privacyStatus
+              }
               const pr = await publishToSocialPlatform(acct.platform, {
                 content: fanContent, mediaUrls: post.media_urls || [],
                 accessToken: acct.access_token, accountId: acct.account_id, hashtags: post.hashtags || [],
+                privacyStatus: fanYoutubePrivacy,
               }, { brokerageId: post.brokerage_id, postId: post.id, cycle: `${post.id}:${acct.platform}:${acct.account_id}`, actorUserId: post.user_id ?? null })
               await sentinelWrite(supabase, supabase.from("social_publish_log").insert({
                 social_post_id: post.id, brokerage_id: post.brokerage_id, platform: acct.platform,
@@ -250,12 +275,26 @@ export async function GET(request: Request) {
         })
         const compliantContent = appendDisclosures(post.content, disclosures)
 
+        // Wave 143 (lane 143F; the 142K open item): a YouTube upload NAMES its privacy. It is decided HERE, at send
+        // time, from the classification of the file about to leave (lib/video/youtube-publish.ts resolveYouTubePrivacy):
+        // public marketing → public; one of our client / personal / unapproved videos → private; a refused read holds
+        // the post (the catch below records it) — the publisher no longer has a default to fall back on.
+        let youtubePrivacy: "public" | "private" | undefined
+        if (String(post.platform ?? "").toLowerCase() === "youtube") {
+          const { resolveYouTubePrivacy } = await import("@/lib/video/youtube-publish")
+          const priv = await resolveYouTubePrivacy(supabase, post)
+          if (!priv.ok) throw new Error(`YouTube privacy could not be resolved — post held: ${priv.reason}`)
+          youtubePrivacy = priv.privacyStatus
+          if (priv.privacyStatus === "private") console.warn(`[publish-social-posts] post ${post.id}: ${priv.detail}`)
+        }
+
         const publishResult = await publishToSocialPlatform(post.platform, {
           content: compliantContent,
           mediaUrls: post.media_urls || [],
           accessToken: decryptSecret(account.access_token) as string, // enc:v1 envelope (legacy plaintext passes through)
           accountId: account.account_id,
           hashtags: post.hashtags || [],
+          privacyStatus: youtubePrivacy,
         }, {
           // ACTION LEDGER (wave 98): one publish per (post, platform, account) — a post whose
           // 'published' flip failed is replayed on the next run, never re-posted.
@@ -407,7 +446,7 @@ export async function GET(request: Request) {
       context_id: contextId,
       records_processed: results.length,
       output_count: published,
-      metadata: { processed: results.length, published, failed },
+      metadata: { processed: results.length, published, failed, youtube_backfill: youtubeBackfill ? { tenants: youtubeBackfill.tenants, queued: youtubeBackfill.queued } : null },
     })
 
     return NextResponse.json({

@@ -26,6 +26,8 @@ export async function run() {
   // WIRED 142K (lane 142C): a SECOND deal's commission walks the seven payment states; its row carries the m787 columns
   // (applied live, so markCommissionPaid's "column exists" rule stamps the instruction instant) and the ledger's net.
   const TX2 = uuid(), C2 = uuid(), SPLIT2 = uuid(), STAMP2 = uuid()
+  // WAVE 143 (lane 143C): a THIRD deal whose commission funds are NOT yet recorded as received - the funds-received gate.
+  const TX3 = uuid(), C3 = uuid()
   const svc = canaryClient({
     brokerages: [{ id: B, name: `${CANARY_TAG} Brokerage`, plan_tier: "brokerage", slug: `${CANARY_TAG}-pay` }],
     users: [
@@ -36,10 +38,12 @@ export async function run() {
     transactions: [
       { id: TX, brokerage_id: B, agent_id: AG, status: "closed", stage: "CLOSED", property_address: `1 ${CANARY_TAG} Way`, sales_price: 400_000, close_date: nowIso().slice(0, 10) },
       { id: TX2, brokerage_id: B, agent_id: AG, status: "closed", stage: "CLOSED", property_address: `2 ${CANARY_TAG} Way`, sales_price: 400_000, close_date: nowIso().slice(0, 10) },
+      { id: TX3, brokerage_id: B, agent_id: AG, status: "closed", stage: "CLOSED", property_address: `3 ${CANARY_TAG} Way`, sales_price: 400_000, close_date: nowIso().slice(0, 10) },
     ],
     agent_commissions: [
-      { id: C1, brokerage_id: B, agent_id: AG, transaction_id: TX, status: "approved", amount: 16_800, paid_at: null, payment_method: null, created_at: nowIso(), updated_at: nowIso() },
-      { id: C2, brokerage_id: B, agent_id: AG, transaction_id: TX2, status: "approved", amount: 16_800, net_to_agent: 16_800, paid_at: null, payment_method: null, deposit_received_at: null, payment_initiated_at: null, payment_received_at: null, payment_received_by: null, payment_received_attestation: null, reconciled_at: null, reconciled_by: null, reconciled_via: null, reconciled_reference: null, quickbooks_synced_at: null, quickbooks_export_id: null, created_at: nowIso(), updated_at: nowIso() },
+      { id: C3, brokerage_id: B, agent_id: AG, transaction_id: TX3, status: "approved", amount: 16_800, net_to_agent: 16_800, paid_at: null, payment_method: null, deposit_received_at: null, payment_initiated_at: null, created_at: nowIso(), updated_at: nowIso() },
+      { id: C1, brokerage_id: B, agent_id: AG, transaction_id: TX, status: "approved", amount: 16_800, paid_at: null, payment_method: null, deposit_received_at: nowIso(), created_at: nowIso(), updated_at: nowIso() },
+      { id: C2, brokerage_id: B, agent_id: AG, transaction_id: TX2, status: "approved", amount: 16_800, net_to_agent: 16_800, paid_at: null, payment_method: null, deposit_received_at: nowIso(), payment_initiated_at: null, payment_received_at: null, payment_received_by: null, payment_received_attestation: null, reconciled_at: null, reconciled_by: null, reconciled_via: null, reconciled_reference: null, quickbooks_synced_at: null, quickbooks_export_id: null, created_at: nowIso(), updated_at: nowIso() },
     ],
     commission_splits: [
       { id: SPLIT, brokerage_id: B, commission_id: C1, status: "approved", amount: 16_800, paid_at: null },
@@ -62,7 +66,7 @@ export async function run() {
   c.step("DETERMINISTIC WATERFALL: 70 % of $24,000.00 → agent $16,800.00 / brokerage $7,200.00 in integer cents; an odd split (33.33 % of 1,001 ¢) rounds to integers whose sum is the gross — no cent is created or lost, no model anywhere in lib/commission/waterfall", split.agentPortionCents === 1_680_000 && split.brokeragePortionCents === 720_000 && odd.agentPortionCents + odd.brokeragePortionCents === 1_001 && Number.isInteger(odd.agentPortionCents) && listFiles("lib/commission/waterfall", (f) => /\.ts$/.test(f)).every((f) => !/generateText|generateObject|gatewayChat|Routed\(/.test(strippedRepo(f) ?? "")), `${split.agentPortionCents}/${split.brokeragePortionCents}; odd ${odd.agentPortionCents}+${odd.brokeragePortionCents}`)
 
   // ── 2 · the brokerage authorizes and pays by CHECK (the kernel's payout record) ──
-  const { markCommissionPaid } = await import("../../lib/kernel/financial")
+  const { markCommissionPaid, initiateCommissionPayout } = await import("../../lib/kernel/financial")
   type Ctx = Parameters<typeof markCommissionPaid>[0]["ctx"]
   const broker = { userId: ADMIN, agentId: null, brokerageId: B, userType: "broker", platformRole: null, isTenantPrincipal: true } as unknown as Ctx
   const agentActor = { userId: AG_U, agentId: AG, brokerageId: B, userType: "agent", platformRole: null, isTenantPrincipal: false } as unknown as Ctx
@@ -75,6 +79,11 @@ export async function run() {
   c.step("PAYOUT RECORDED: the broker pays by CHECK → agent_commissions reads paid with payment_method 'check' and a paid_at; the splits ledger mirrors paid; the seven-year DEAL STAMP (transaction_commissions, the agent recipient row) mirrors paid with the paid_date — one payout, three ledgers in agreement", paid.success && row?.status === "paid" && row?.payment_method === "check" && !!row?.paid_at && splitRow?.status === "paid" && stamp?.status === "paid" && !!stamp?.paid_date, paid.success ? `paid_at ${String(row?.paid_at).slice(0, 10)}; stamp ${stamp?.status}/${stamp?.paid_date}` : paid.error)
   const again = await markCommissionPaid({ ctx: broker, commissionId: C1, brokerageId: B, method: "direct_deposit" })
   c.step("NO DOUBLE PAYOUT: paying the same commission again is REFUSED by the transition table (paid is terminal) — the method stays 'check', paid_at unchanged; a correction is a linked adjustment, never a second payout", !again.success && /paid\s*→\s*paid|Invalid status transition/.test(again.error ?? "") && (svc.tables.agent_commissions ?? []).find((r) => r.id === C1)?.payment_method === "check", again.error ?? "paid twice")
+  // ── 2b · WAVE 143 (lane 143C): THE FUNDS-RECEIVED GATE - a payout needs the title company's payment recorded as received ──
+  const gateInit = await initiateCommissionPayout({ ctx: broker, commissionId: C3, brokerageId: B, method: "check" })
+  const gatePaid = await markCommissionPaid({ ctx: broker, commissionId: C3, brokerageId: B, method: "check" })
+  const c3Row = (svc.tables.agent_commissions ?? []).find((r) => r.id === C3) as Record<string, any> | undefined // eslint-disable-line @typescript-eslint/no-explicit-any -- the in-memory row
+  c.step("FUNDS RECEIVED BEFORE THE AGENT IS PAID (owner, no-CDA flow: 'title pays the brokerage; receipt verified; disbursement authorized; agent paid'): on a deal whose deposit is NOT recorded both initiating and recording a payout are REFUSED by name (funds_not_received) and the row stays approved with no instruction stamped; the same rule that let C1/C2 pay once the deposit was recorded", !gateInit.success && /funds_not_received/.test(gateInit.error ?? "") && !gatePaid.success && /funds_not_received/.test(gatePaid.error ?? "") && c3Row?.status === "approved" && !c3Row?.payment_initiated_at, gatePaid.error)
   const evidence = [...(svc.tables.lifecycle_events ?? []), ...(svc.tables.kernel_events ?? []), ...(svc.tables.agent_action_ledger ?? [])].filter((e) => JSON.stringify(e).includes(C1))
   console.log(`    evidence rows naming the payout: ${evidence.length} (${[...new Set(evidence.map((e) => String(e.event ?? e.event_type ?? e.action ?? "?")))].join(",") || "none"})`)
 
@@ -103,7 +112,7 @@ export async function run() {
     // WAVE142 HOOK (integrator): 142C — wired 142K: the seven states DERIVED (pure) and the no-CDA flow walked in memory
     // on ONE row through the kernel's three new writers + the existing payout record.
     const { deriveCommissionPaymentState, COMMISSION_PAYMENT_STATES, COMMISSION_PAYMENT_STATE_LABELS } = await import("../../lib/commission/ledger-sync")
-    const { initiateCommissionPayout, attestCommissionReceived, reconcileCommissionPayment } = await import("../../lib/kernel/financial")
+    const { attestCommissionReceived, reconcileCommissionPayment } = await import("../../lib/kernel/financial")
     const ladder = [{ status: "pending" }, { status: "pending", preliminary_statement_at: "x" }, { status: "approved" }, { status: "approved", payment_initiated_at: "x" }, { status: "paid", paid_at: "x" }, { status: "paid", payment_received_at: "x" }, { status: "paid", reconciled_at: "x" }].map((r) => deriveCommissionPaymentState(r).state)
     const held = deriveCommissionPaymentState({ status: "disputed", paid_at: "x" })
     c.step(`${h.lane} landed (${at}) — THE SEVEN PAYMENT STATES are DERIVED from the one four-value status + the evidence stamps (never a fifth status column — §6): expected → preliminary → approved_final → payment_initiated → payment_recorded → payment_received → reconciled, the later evidence wins; a DISPUTE holds the state its evidence reached (held) rather than inventing one; one tenant-facing label per state`, ladder.join() === [...COMMISSION_PAYMENT_STATES].join() && held.state === "payment_recorded" && held.held && COMMISSION_PAYMENT_STATES.every((s) => !!COMMISSION_PAYMENT_STATE_LABELS[s]), ladder.join(" → "))

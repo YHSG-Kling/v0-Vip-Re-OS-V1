@@ -101,6 +101,7 @@ import type { ProspectConversionResult } from "@/lib/platform/prospect-conversio
 import type { TenantOwnerParams, TenantOwnerResult, UserProvisioningParams, ProvisioningResult } from "@/lib/kernel/users"
 import type { ActivationCheckoutInput, ActivationCheckoutResult } from "@/lib/billing/subscription-activation"
 import type { DeclaredAffiliationInput } from "@/lib/kernel/brokerage-identity"
+import { invitationLandingUrl } from "@/lib/platform/site-url"
 
 export type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
 export const CANONICAL_TIERS: readonly CanonicalTier[] = ["solo_agent", "team", "brokerage", "multi_location"]
@@ -287,6 +288,16 @@ export function buildTenantSlug(brokerageName: string, suffix: string = Math.ran
 
 /** The storefront path a slug serves (app/site/[slug]) — ONE spelling. */
 export function tenantWebsitePath(slug: string): string { return `/site/${slug}` }
+
+/**
+ * A tenant LANDING PAGE's path INSIDE its website (app/site/[slug]/lm/[formSlug]) — ONE spelling (wave 143G; owner:
+ * "landing pages live inside the tenant website created automatically when the tenant subscribes"). The page is the
+ * lead-magnet survivor (app/lm/[slug]) rendered under the tenant's storefront after the form is proven to belong to
+ * THIS site's brokerage (lib/tenant-site/landing-page.ts resolveTenantLandingForm); on a connected custom domain the
+ * proxy serves it at /lm/<formSlug>. The bare platform-origin /lm/<slug> stays — links already printed, sent and
+ * scanned keep resolving.
+ */
+export function tenantLandingPagePath(siteSlug: string, formSlug: string): string { return `${tenantWebsitePath(siteSlug)}/lm/${encodeURIComponent(formSlug)}` }
 
 /** PURE: the default provisioning idempotency key — the owner email, lowercased
  *  (the same key lib/platform/prospect-capture.ts::upsertPlatformProspect uses). */
@@ -497,7 +508,7 @@ export async function createTenantCore(service: any, input: TenantCreationInput,
       const { provisionTenantOwner } = deps.provisionOwner ? { provisionTenantOwner: deps.provisionOwner } : await import("@/lib/kernel/users")
       owner = await provisionTenantOwner({
         email: adminEmail, firstName, lastName, brokerageId, brokerageName, tier: input.tier,
-        redirectTo: input.redirectTo ?? `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
+        redirectTo: input.redirectTo ?? invitationLandingUrl(),
         callerUserId: input.callerUserId,
       })
     }

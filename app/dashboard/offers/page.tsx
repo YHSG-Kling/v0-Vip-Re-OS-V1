@@ -2,6 +2,8 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { listPendingOfferIntentsForAgent } from "@/app/actions/offer-intents"
 import { BuyerOfferRequestsList } from "@/app/components/offer/buyer-offer-requests-list"
+import { listOutsideOffers } from "@/app/actions/buyer-offer/outside-offer-loop"
+import { OutsideOfferThreads } from "./outside-offer-threads"
 
 export const dynamic = "force-dynamic"
 export const metadata = { title: "Buyer Offer Requests" }
@@ -22,6 +24,9 @@ export default async function BuyerOfferRequestsPage() {
 
   const res = await listPendingOfferIntentsForAgent()
   const intents = res.success ? res.intents : []
+  // Offers on listings outside this brokerage — the send / reply / counter loop (wave 143A).
+  // Tenancy and authority are resolved inside the action from the session.
+  const outside = await listOutsideOffers()
 
   return (
     <div className="h-full flex flex-col overflow-y-auto">
@@ -42,6 +47,20 @@ export default async function BuyerOfferRequestsPage() {
           showLinkToContact
           emptyMessage="No pending buyer offer requests right now."
         />
+      </div>
+      <div className="px-6 py-4 border-t border-border">
+        <h2 className="text-sm font-semibold">Offers on outside listings</h2>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Send the offer to the verified listing agent, read their reply, and run the counter rounds. The platform never accepts or signs for anyone — it asks you to confirm what each reply means.
+        </p>
+      </div>
+      <div className="p-6 pt-2">
+        {!outside.success && (
+          <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+            {outside.error}
+          </div>
+        )}
+        <OutsideOfferThreads initialThreads={outside.threads} />
       </div>
     </div>
   )

@@ -246,14 +246,32 @@ export async function generatePodcastAudio(episodeId: string) {
 
         // No podcast_segments row: intermediate render artifacts retired —
         // episodes carry the consumable audio (open-loop sweep).
-        return { url: segUrl, duration: segment.estimatedDuration }
+        return { url: segUrl, duration: segment.estimatedDuration, buffer: audioBuffer }
       })
     )
 
-    // Combine all audio segments (in production, use FFmpeg or similar)
-    // For now, we'll just use the first segment as the full audio
-    const finalAudioUrl = audioSegments[0].url
-    const totalDuration = audioSegments.reduce((sum, seg) => sum + seg.duration, 0)
+    // WAVE 143 (lane 143F) — THE EPISODE IS THE WHOLE SHOW. This used to read "Combine all audio segments (in production, use FFmpeg or
+    // similar). For now, we'll just use the first segment as the full audio" — so a manual episode of intro + main + outro published the
+    // INTRO alone while recording the sum of the segments' ESTIMATED durations. The segments are now joined into ONE file, levelled to the
+    // podcast target (−16 LUFS / −1 dBTP) and MEASURED (lib/podcast/episode-audio.ts); the recorded duration is the file's own. A segment
+    // that is not playable audio (a TTS error body) or an assembly that fails FAILS the generation — an episode is never half a show.
+    const { assemblePodcastEpisode } = await import("@/lib/podcast/episode-audio")
+    const { probeMp3 } = await import("@/lib/podcast/episode-audio-spec")
+    const assembled = await assemblePodcastEpisode(audioSegments.map((s) => s.buffer), { title: episode.title ?? undefined })
+    // A ONE-segment script needs no assembly: if ffmpeg is unavailable the lone segment IS the whole show — it still has to PROBE as
+    // an MP3 (a TTS error body is never an episode). Two or more segments with no assembler would be half a show: that fails loud.
+    const loneProbe = audioSegments.length === 1 ? probeMp3(audioSegments[0].buffer) : null
+    if (!assembled.ok && !(loneProbe && loneProbe.ok)) throw new Error(`Podcast audio could not be assembled: ${assembled.ok ? "" : assembled.error}`)
+    const episodeBytes = assembled.ok ? assembled.buffer : audioSegments[0].buffer
+    if (!assembled.ok) console.warn(`[podcast-generation] episode ${episodeId}: single-segment audio published WITHOUT loudness levelling (${assembled.error})`)
+    const finalAudioUrl = await hostRenderedMedia(
+      createServiceClient(),
+      `${brokerageId}/podcast/episodes/${episodeId}.mp3`,
+      episodeBytes,
+      "audio/mpeg",
+      "media",
+    )
+    const totalDuration = (assembled.ok ? assembled.facts.durationSeconds : null) ?? audioSegments.reduce((sum, seg) => sum + seg.duration, 0)
 
     // Update episode with final audio
     const { data: completedEpisode, error: episodeDoneErr } = await supabase
@@ -263,7 +281,7 @@ export async function generatePodcastAudio(episodeId: string) {
         duration_seconds: Math.round(totalDuration),
         status: "completed",
         generation_completed_at: new Date().toISOString(),
-        segments: audioSegments,
+        segments: audioSegments.map(({ url, duration }) => ({ url, duration })), // the audio buffers never reach the row
       })
       .eq("id", episodeId)
       .select()

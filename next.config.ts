@@ -31,6 +31,31 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
+        // Wave 143 (lane 143H, security-review pre-deploy checklist "Security Headers"): the two
+        // response headers that are safe on EVERY path and change no behaviour for a correct response.
+        //   · X-Content-Type-Options: nosniff — a browser never reinterprets a response's MIME type.
+        //   · Referrer-Policy: strict-origin-when-cross-origin — the browsers' own default, made explicit
+        //     so a tenant site, a portal link and a magic link never leak a path across origins.
+        // DELIBERATELY NOT HERE (each is a decision, not a default; see PRODUCTION-ARCHITECTURE.md §15):
+        //   · framing — per-tenant frame-ancestors / X-Frame-Options are set by proxy.ts (embed allowlist);
+        //   · HSTS — set by the Vercel edge as a platform default (the activation checklist VERIFIES it with
+        //     `curl -sI`, it is not assumed); includeSubDomains from this app on a TENANT's custom domain
+        //     would be this app deciding the HSTS scope of someone else's DNS zone;
+        //   · a site-wide CSP — the dashboard inlines scripts/styles; a CSP that does not break it needs a
+        //     nonce rollout (report-only first), which is a release decision, not a header line.
+        // Headers from the more specific /widget rules below are merged by Next (different keys).
+        // The source is spelled '/(.*)' (the form Next's own security-headers guide uses) and NOT '/:path*':
+        // scripts/dangling-link-sweep.ts reads EVERY `source:` in this file as a redirect source, and
+        // `/:path*` would make it read every path as "served by a config redirect" (its own positive
+        // control "an alias no page or config redirect serves is caught" goes red). That conflation of
+        // headers() with redirects() is a latent defect in the sweep (lane 143H notes, Outside-lane).
+        source: '/(.*)',
+        headers: [
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'Referrer-Policy',         value: 'strict-origin-when-cross-origin' },
+        ],
+      },
+      {
         // iframe widget pages — allow embedding from any origin
         source: '/widget/:path*',
         headers: WIDGET_HEADERS,

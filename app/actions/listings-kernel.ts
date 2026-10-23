@@ -14,12 +14,7 @@
  */
 
 import { revalidatePath } from "next/cache"
-import {
-  verifyMlsSyndication,
-  type MlsVerification,
-  type MlsFeedObservation,
-  type MlsFeedSource,
-} from "@/lib/listings/mls-verification"
+import type { MlsVerification } from "@/lib/listings/mls-verification"
 import { createClient } from "@/lib/supabase/server"
 import { LISTING_STATUSES, isListingStatus } from "@/lib/constants"
 import {
@@ -153,6 +148,8 @@ export async function createListingWithSellerContact(params: {
   bathrooms?: number
   sqft?: number
   propertyType?: string
+  /** The PLANNED MLS live date (yyyy-mm-dd) — a plan typed at intake, never verified (wave 143, lane 143A). Optional. */
+  plannedMlsLiveDate?: string
   /** Form IDs selected during the listing initiation flow */
   selectedFormIds?: string[]
   /** Field values keyed by form name then field name */
@@ -186,6 +183,8 @@ export async function createListingWithSellerContact(params: {
     bathrooms:        params.bathrooms,
     sqft:             params.sqft,
     propertyType:     params.propertyType,
+    plannedMlsLiveDate: params.plannedMlsLiveDate,
+    actorUserId:      ctx.userId,
   })
   if (!listingResult.success) return { success: false, error: listingResult.error }
 
@@ -361,6 +360,8 @@ export async function createListingWithSellerContact(params: {
     success:  true,
     listing:  listingResult.listing,
     listingId: newListingId,
+    /** Non-null when the listing exists but its planned MLS live date was refused (wave 143, lane 143A). */
+    plannedDateWarning: listingResult.warning ?? null,
     sellerCreated: sellerResult.created,
     transaction,
     // Non-null when the seller-side deal row was deliberately NOT created because
@@ -512,129 +513,38 @@ export async function validateLaunchReadinessAction(listingId: string) {
 export async function verifyMlsSyndicationAction(listingId: string): Promise<{
   success: boolean
   verification?: MlsVerification
+  /** Set when the verdict was `confirmed` and the ACTUAL MLS live date was recorded on the listing (wave 143, lane 143A). */
+  recorded?: { actual: string; basis: string; source: string; noop: boolean } | null
   error?: string
 }> {
   const ctx = await resolveCallerContext()
   if ("error" in ctx) return { success: false, error: ctx.error }
+  if (!isValidUUID(listingId)) return { success: false, error: "Invalid listing ID" }
 
-  const supabase = await createClient()
-  const { data: listing, error: listingError } = await supabase
-    .from("listings")
-    .select("id, address, city, state, zip, brokerage_id, mls_number, listing_date, updated_at")
-    .eq("id", listingId)
-    .eq("brokerage_id", ctx.brokerageId)
-    .maybeSingle()
-
-  if (listingError) return { success: false, error: listingError.message }
-  if (!listing) return { success: false, error: "Listing not found in your brokerage" }
-
-  const target = normalizeStreet(listing.address as string | null)
-  if (!target) return { success: false, error: "This listing has no street address to match on" }
-
-  const observations: MlsFeedObservation[] = []
-  const consulted: MlsFeedSource[] = []
-
-  // ── Feed 1: RentCast's for-sale index, narrowed to this listing's zip/city.
-  const { searchRentcastSaleListings } = await import("@/lib/property/rentcast")
-  const rc = await searchRentcastSaleListings({
-    brokerageId: ctx.brokerageId,
-    filters: {
-      zipCode: (listing.zip as string | null) ?? undefined,
-      city: (listing.zip ? undefined : (listing.city as string | null)) ?? undefined,
-      state: (listing.state as string | null) ?? undefined,
-      limit: 50,
-    },
-  })
-  // A FAILED search is NOT an empty search. Only a feed we actually reached
-  // counts as consulted — otherwise a 401 from RentCast would silently become
-  // "your listing is not on the MLS", which is the worst possible lie here.
-  if (rc.success) {
-    consulted.push("rentcast")
-    for (const l of rc.listings) {
-      if (normalizeStreet(l.address) !== target) continue
-      observations.push({
-        source: "rentcast",
-        mlsNumber: l.mlsNumber,
-        mlsName: l.mlsName,
-        address: l.address,
-        status: l.status,
-      })
-    }
-  }
-
-  // ── Feed 2: the brokerage's own IDX connection, when they have one.
-  try {
-    const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
-    const idx = await IDXBrokerClient.forBrokerage(ctx.brokerageId, {
-      agentUserId: ctx.userId,
-      // The team rung — previously skipped, so a team's own IDX connection lost
-      // to the brokerage's.
-      teamId: ctx.teamId,
-    })
-    if (idx.isConfigured()) {
-      consulted.push("idx")
-      const rows = await idx.searchActiveListings({
-        city: (listing.city as string | null) ?? undefined,
-        state: (listing.state as string | null) ?? undefined,
-        zipCode: (listing.zip as string | null) ?? undefined,
-      })
-      for (const l of rows) {
-        if (normalizeStreet(l.address) !== target) continue
-        observations.push({
-          source: "idx",
-          mlsNumber: l.mlsNumber,
-          mlsName: null,
-          // searchActiveListings only ever returns ACTIVE rows — that is the
-          // method's contract and its name. Saying so beats leaving status null,
-          // which isActiveOnFeed would (correctly) refuse to treat as live.
-          address: l.address,
-          status: "active",
-        })
-      }
-    }
-  } catch {
-    // Unreachable IDX is not a finding about the listing. It stays out of
-    // `consulted`, so the verdict degrades to unverifiable rather than lying.
-  }
-
-  const verification = verifyMlsSyndication(
-    {
-      storedMlsNumber: (listing.mls_number as string | null) ?? null,
-      liveSince: ((listing.listing_date as string | null) ?? (listing.updated_at as string | null)) ?? null,
-    },
-    observations,
-    consulted,
+  // TOMBSTONE (wave 143, lane 143A): the feed consult (RentCast + IDX), the street matcher (normalizeStreet) and the last-check
+  // stamp that lived inline here moved onto ONE survivor so the cron sweep and this action cannot disagree —
+  // lib/listings/mls-live-verification.ts: consultMlsFeeds :75, normalizeStreet :43, verifyAndRecordMlsLive :133.
+  // GATE FIRST (the session decided the tenant above), THEN the service client: the verified-date write and its
+  // evidence row are system writes the agent's RLS role does not hold. Every statement inside is pinned to
+  // ctx.brokerageId; the listing is re-read inside the tenant before anything is consulted or written.
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { verifyAndRecordMlsLive } = await import("@/lib/listings/mls-live-verification")
+  const out = await verifyAndRecordMlsLive(
+    createServiceClient() as any,
+    { brokerageId: ctx.brokerageId, userId: ctx.userId, teamId: ctx.teamId, actorUserId: ctx.userId },
+    listingId,
   )
+  if (!out.ok) return { success: false, error: out.error }
 
-  return { success: true, verification }
-}
-
-/**
- * Street-line comparison key. Deliberately CONSERVATIVE: it only strips the
- * things that are pure formatting (case, punctuation, whitespace runs) and
- * normalises the handful of suffixes that every feed spells differently. It does
- * NOT try to be clever about unit numbers or directionals — a near-match this
- * calls "different" costs a `pending` verdict the agent can dismiss, while a
- * near-match it wrongly calls "same" would compare our listing against SOMEONE
- * ELSE'S MLS number and could raise a false contradiction against a correct row.
- */
-function normalizeStreet(raw: string | null | undefined): string | null {
-  if (!raw) return null
-  const first = raw.split(",")[0] ?? raw
-  const s = first
-    .toLowerCase()
-    .replace(/[.,#]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-  if (!s) return null
-  const SUFFIX: Record<string, string> = {
-    street: "st", avenue: "ave", av: "ave", boulevard: "blvd", drive: "dr",
-    road: "rd", lane: "ln", court: "ct", circle: "cir", place: "pl",
-    terrace: "ter", parkway: "pkwy", highway: "hwy", trail: "trl", way: "way",
-    north: "n", south: "s", east: "e", west: "w",
-    northeast: "ne", northwest: "nw", southeast: "se", southwest: "sw",
+  if (out.recorded?.ok && !out.recorded.noop) {
+    revalidatePath(`/dashboard/listings/${listingId}`)
+    revalidatePath(`/dashboard/listings/${listingId}/lifecycle`)
   }
-  return s.split(" ").map((w) => SUFFIX[w] ?? w).join(" ")
+  return {
+    success: true,
+    verification: out.verification,
+    recorded: out.recorded?.ok ? { actual: out.recorded.actual, basis: out.recorded.basis, source: out.recorded.source, noop: out.recorded.noop } : null,
+  }
 }
 
 // ─── Action: launchListingAction ─────────────────────────────────────────────
@@ -1225,6 +1135,10 @@ export async function sendListingAgreementForSignatureAction(params: {
     .eq("brokerage_id", ctx.brokerageId)
     .eq("listing_id", listing.id as string)
     .is("fully_executed_at", null)
+    // OPEN = not yet past the provider's all-signed on the ladder (wave 143, lane 143A). `fully_executed_at` alone no
+    // longer says "closed": it lands after COMPLIANCE, so a packet the provider completed and compliance is reviewing
+    // has no stamp yet and must not be re-pointed at a new envelope (the ladder would refuse the regression anyway).
+    .or("esign_status.is.null,esign_status.not.in.(fully_signed,compliance_pending,correction_required,compliance_approved,fully_executed)")
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()

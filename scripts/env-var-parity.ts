@@ -142,6 +142,42 @@ export function envReadsInSource(src: string): Array<{ name: string; line: numbe
   return out.filter((r) => ENV_NAME_RE.test(r.name))
 }
 
+/**
+ * WAVE 143 (lane 143H) — THE COMPUTED-KEY BLIND SPOT, CLOSED FOR THE DECLARATIVE FORM.
+ *
+ * Header BLIND SPOTS used to say "a computed process.env[key] is invisible to either regex". That was
+ * true and it was costing something: the OAuth routes and the social OAuth config READ their client
+ * credentials as `process.env[cfg.clientIdEnv]`, and the Stripe webhook doors read the signing secret
+ * as `process.env[PLATFORM_WEBHOOK_ENV[endpoint]]`. The NAME is a string literal on a declaration line
+ * (`clientIdEnv: "XERO_CLIENT_ID"`, `envKey: "DID_API_KEY"`, `secretEnv: ["…"]`), so it can be read
+ * statically — and measured at base 21da8e4e, TEN names the app really reads had no documented source
+ * (XERO_CLIENT_ID/SECRET, PINTEREST_APP_ID/SECRET, TIKTOK_CLIENT_KEY/SECRET, TWITTER_CLIENT_ID/SECRET,
+ * STRIPE_WEBHOOK_SECRET, STRIPE_VENDOR_WEBHOOK_SECRET). The same census found a registry that declared
+ * `D_ID_API_KEY` (a name nothing sets or reads — every other surface says DID_API_KEY).
+ *
+ * A declared name counts as READ for both arms (it is named where the code obtains the credential), so
+ * "documented, never read" no longer accuses a name that a declaration line proves is consumed.
+ * STILL BLIND: a name assembled at runtime (`${provider.toUpperCase()}_API_KEY`) has no literal.
+ */
+export function declaredEnvNamesInSource(src: string): Array<{ name: string; line: number }> {
+  const code = blankComments(src)
+  const out: Array<{ name: string; line: number }> = []
+  const single = /\b(?:clientIdEnv|clientSecretEnv|env_key|tokenEnv|keyEnv|apiKeyEnv|envKey)\s*:\s*(["'])([A-Z][A-Z0-9_]*)\1/g
+  let m: RegExpExecArray | null
+  while ((m = single.exec(code))) out.push({ name: m[2], line: lineOf(code, m.index) })
+  const arrays = /\b(?:secretEnv|envVars|envKeys)\s*:\s*\[([^\]]*)\]/g
+  while ((m = arrays.exec(code))) {
+    for (const lit of m[1].matchAll(/(["'])([A-Z][A-Z0-9_]*)\1/g)) out.push({ name: lit[2], line: lineOf(code, m.index) })
+  }
+  // A NAMED env table: `export const PLATFORM_ONLY_STRIPE_ENV = ["…"]` / `PLATFORM_WEBHOOK_ENV: Record<…> = { a: "…" }`
+  // — an identifier ending in _ENV assigned an array or object literal of ALL_CAPS strings.
+  const tables = /\b[A-Z][A-Z0-9_]*_ENV\b[^=\n]*=\s*(?:\[([^\]]*)\]|\{([^}]*)\})/g
+  while ((m = tables.exec(code))) {
+    for (const lit of (m[1] ?? m[2] ?? "").matchAll(/(["'])([A-Z][A-Z0-9_]*)\1/g)) out.push({ name: lit[2], line: lineOf(code, m.index) })
+  }
+  return out.filter((r) => ENV_NAME_RE.test(r.name))
+}
+
 /** Every RUNTIME file (scripts/runtime-roots.ts runtimeFiles — app/, lib/,
  *  services/, remotion/, proxy.ts, …), never a hand-listed pair of roots. */
 function scanCode(): EnvRead[] {
@@ -151,6 +187,18 @@ function scanCode(): EnvRead[] {
     let src: string
     try { src = readFileSync(abs, "utf8") } catch { continue }
     for (const r of envReadsInSource(src)) found.push({ ...r, file: rel })
+  }
+  return found
+}
+
+/** The declaration-line arm (see declaredEnvNamesInSource) over the same runtime corpus. */
+function scanDeclared(): EnvRead[] {
+  const found: EnvRead[] = []
+  for (const abs of runtimeFiles(root)) {
+    const rel = relative(root, abs).split(sep).join("/")
+    let src: string
+    try { src = readFileSync(abs, "utf8") } catch { continue }
+    for (const r of declaredEnvNamesInSource(src)) found.push({ ...r, file: rel })
   }
   return found
 }
@@ -316,6 +364,27 @@ function positiveControls(): string[] {
     "a property access `x.env.GHOST_VAR` is not a parameter read even in a bound file",
     !envReadsInSource("function f(env = process.env) { return ctx.env.GHOST_VAR }\n").some((r) => r.name === "GHOST_VAR"),
   )
+  // Wave 143 (143H) — the declaration-line arm.
+  expect(
+    "a config-declared name `clientIdEnv: \"GHOST_VAR\"` is found",
+    declaredEnvNamesInSource('const cfg = { clientIdEnv: "GHOST_VAR", clientSecretEnv: \'GHOST_SECRET\' }\n').map((r) => r.name).join() === "GHOST_VAR,GHOST_SECRET",
+  )
+  expect(
+    "a registry array `secretEnv: [\"A\", \"B\"]` yields both names",
+    declaredEnvNamesInSource('x = { secretEnv: ["GHOST_A", "GHOST_B"] }\n').map((r) => r.name).join() === "GHOST_A,GHOST_B",
+  )
+  expect(
+    "a named env table (array and Record forms) yields its names",
+    declaredEnvNamesInSource('export const ONLY_ENV = ["GHOST_A"] as const\nexport const WEBHOOK_ENV: Record<K, string> = { a: "GHOST_B", b: "GHOST_C" }\n').map((r) => r.name).join() === "GHOST_A,GHOST_B,GHOST_C",
+  )
+  expect(
+    "a declaration named inside a COMMENT is not a declared name",
+    declaredEnvNamesInSource('// clientIdEnv: "GHOST_VAR"\n/* envKey: "GHOST_VAR" */\nconst y = 1\n').length === 0,
+  )
+  expect(
+    "a lower-case declaration value is not an env name",
+    declaredEnvNamesInSource('x = { envKey: "not_an_env" }\n').length === 0,
+  )
   return problems
 }
 
@@ -330,6 +399,7 @@ if (typeof process !== "undefined" && /env-var-parity\.ts$/.test(process.argv[1]
   }
 
   const reads = scanCode()
+  const declaredReads = scanDeclared()
   const scrapingReads = reads.filter((r) => isScrapingPath(r.file))
   const liveReads = reads.filter((r) => !isScrapingPath(r.file))
 
@@ -337,33 +407,40 @@ if (typeof process !== "undefined" && /env-var-parity\.ts$/.test(process.argv[1]
 
   const readNamesLive = new Set(liveReads.map((r) => r.name))
   const readNamesScraping = new Set(scrapingReads.map((r) => r.name))
+  // Names a declaration line proves the app obtains (computed-key reads) that no direct read names.
+  const declaredOnly = Array.from(new Set(declaredReads.map((r) => r.name)))
+    .filter((n) => !readNamesLive.has(n) && !readNamesScraping.has(n))
+    .sort()
 
   // "No documented source" — EVERY read (lane 88E: scraping reopened in wave
   // 82, so the frozen-path exemption was stale; the split survives only as a
-  // reported count).
-  const undocumented = Array.from(new Set([...readNamesLive, ...readNamesScraping]))
+  // reported count). Wave 143: plus every name a declaration line names.
+  const undocumented = Array.from(new Set([...readNamesLive, ...readNamesScraping, ...declaredOnly]))
     .filter((n) => !docNames.has(n))
     .sort()
 
   // "Documented, never read" — never proposed for deletion (§1); a name read
   // only under a frozen scraping path still counts as READ for this arm, so
-  // scraping's own documented vars are not flagged as dead.
+  // scraping's own documented vars are not flagged as dead. A name a declaration
+  // line consumes (wave 143) is READ too.
   const unreadDocumented = Array.from(docNames)
-    .filter((n) => !readNamesLive.has(n) && !readNamesScraping.has(n))
+    .filter((n) => !readNamesLive.has(n) && !readNamesScraping.has(n) && !declaredOnly.includes(n))
     .sort()
 
   console.log("═".repeat(70))
   console.log(" ENV-VAR PARITY CENSUS — process.env.X read vs. X documented")
   console.log("═".repeat(70))
   console.log(`  ${reads.length} total read site(s) · ${new Set(reads.map((r) => r.name)).size} distinct name(s) read across ${new Set(reads.map((r) => r.file.split("/")[0])).size} runtime root(s)`)
+  console.log(`  ${declaredOnly.length} further distinct name(s) consumed through a config declaration line only (clientIdEnv/envKey/secretEnv/… — wave 143, computed-key reads): ${declaredOnly.join(", ") || "none"}`)
   console.log(`  ${readNamesScraping.size} distinct name(s) read only under scraping paths (exclusion retired in lane 88F — always 0)`)
   console.log(`  ${docNames.size} distinct name(s) documented across .env.example / vercel.json / .github/workflows/*.yml`)
   console.log(`  ${undocumented.length} read with NO documented source`)
   console.log(`  ${unreadDocumented.length} documented but never read`)
   console.log("")
   console.log("  FORMS READ: process.env.X · process.env[\"X\"] · const { X } = process.env · env.X where env binds process.env")
-  console.log("  BLIND SPOTS: a computed process.env[key] is invisible to either regex")
-  console.log("  (under-accusing); the workflow scan is regex-based, over-inclusive on")
+  console.log("  BLIND SPOTS: a computed process.env[key] is invisible to the read regexes unless its")
+  console.log("  NAME is a literal on a declaration line (clientIdEnv/envKey/secretEnv/…, read since")
+  console.log("  wave 143); a name assembled at runtime stays invisible (under-accusing); the workflow scan is regex-based, over-inclusive on")
   console.log("  purpose (can only shrink the undocumented list); vercel.json here truly")
   console.log("  carries no \"env\" key today, which is a real 0, not a parse failure.")
 
@@ -371,8 +448,8 @@ if (typeof process !== "undefined" && /env-var-parity\.ts$/.test(process.argv[1]
     console.log("")
     console.log("── read, no documented source ──")
     for (const n of undocumented) {
-      const first = reads.find((r) => r.name === n)!
-      const count = reads.filter((r) => r.name === n).length
+      const first = (reads.find((r) => r.name === n) ?? declaredReads.find((r) => r.name === n))!
+      const count = reads.filter((r) => r.name === n).length + declaredReads.filter((r) => r.name === n).length
       console.log(`  ✗ ${n}  (${count} site(s), first at ${first.file}:${first.line})`)
     }
   }

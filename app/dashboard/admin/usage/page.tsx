@@ -282,23 +282,39 @@ export default async function UsageMeteringDashboard() {
     brokEntry.tokens += t.tokens_used || 0
   })
 
-  // Check threshold alerts
-  const tierLimits = subscription?.subscription_tiers?.features || {}
-  const aiLimit = tierLimits.ai_calls_limit || 10000
-  const storageLimit = tierLimits.storage_limit_bytes || 10737418240 // 10GB default
-  const voiceLimit = tierLimits.voice_minutes_limit || 1000
-  
-  const aiUsagePct = (aiCallsMTD / aiLimit) * 100
-  const storageUsagePct = (storageMTD / storageLimit) * 100
-  const voiceUsagePct = (voiceMinutesMTD / voiceLimit) * 100
+  // Check threshold alerts — against the PLAN'S REAL ALLOWANCES (plan_limits), never an invented one.
+  // Wave 143J: this block read `features.ai_calls_limit || 10000`, `features.storage_limit_bytes || 10 GB`
+  // and `features.voice_minutes_limit || 1000` — keys the live subscription_tiers.features object does not
+  // carry — so EVERY tenant was alerted (or not) against numbers nobody set. A metric with no plan_limits
+  // row, an unlimited one (-1), or an unreadable read raises NO alert: silence about a number we do not
+  // have is honest; "AI calls at 94% of limit" against a made-up limit is not.
+  const planTierName: string | null = subscription?.subscription_tiers?.tier_name ?? null
+  const realLimits = new Map<string, number>()
+  if (planTierName) {
+    const { data: limitRows, error: limitError } = await supabase
+      .from("plan_limits")
+      .select("metric, limit_value")
+      .eq("plan_tier", planTierName)
+      .in("metric", ["ai_tokens_monthly", "ai_voice_minutes", "storage_gb"])
+    if (!limitError) for (const r of limitRows ?? []) if (Number(r.limit_value) > 0) realLimits.set(r.metric, Number(r.limit_value))
+  }
+  const pct = (used: number, limit: number | undefined, unit = 1) => (limit ? (used / (limit * unit)) * 100 : null)
+  // The AI allowance is TOKENS (plan_limits.ai_tokens_monthly — the counter every AI call bumps through lib/ai/cost-tracking.ts).
+  // The `llm_calls` limit is a different, narrower counter (the copilot summary and the seller-offer assistant only), so the
+  // raw AI-call count on this page was never comparable to it; the month's tokens come from the same ai_tool_usage rows the
+  // AI section below aggregates.
+  const aiTokensMTD = aiToolUsage.reduce((sum: number, t: any) => sum + (Number(t.tokens_used) || 0), 0)
+  const aiUsagePct = pct(aiTokensMTD, realLimits.get("ai_tokens_monthly"))
+  const storageUsagePct = pct(storageMTD, realLimits.get("storage_gb"), 1024 * 1024 * 1024)
+  const voiceUsagePct = pct(voiceMinutesMTD, realLimits.get("ai_voice_minutes"))
 
   const alerts: { type: string; severity: "amber" | "red"; message: string }[] = []
-  if (aiUsagePct >= 95) alerts.push({ type: "AI Calls", severity: "red", message: `AI calls at ${aiUsagePct.toFixed(0)}% of limit` })
-  else if (aiUsagePct >= 80) alerts.push({ type: "AI Calls", severity: "amber", message: `AI calls at ${aiUsagePct.toFixed(0)}% of limit` })
-  if (storageUsagePct >= 95) alerts.push({ type: "Storage", severity: "red", message: `Storage at ${storageUsagePct.toFixed(0)}% of limit` })
-  else if (storageUsagePct >= 80) alerts.push({ type: "Storage", severity: "amber", message: `Storage at ${storageUsagePct.toFixed(0)}% of limit` })
-  if (voiceUsagePct >= 95) alerts.push({ type: "Voice", severity: "red", message: `Voice minutes at ${voiceUsagePct.toFixed(0)}% of limit` })
-  else if (voiceUsagePct >= 80) alerts.push({ type: "Voice", severity: "amber", message: `Voice minutes at ${voiceUsagePct.toFixed(0)}% of limit` })
+  if (aiUsagePct !== null && aiUsagePct >= 95) alerts.push({ type: "AI Usage", severity: "red", message: `AI usage at ${aiUsagePct.toFixed(0)}% of the monthly token allowance` })
+  else if (aiUsagePct !== null && aiUsagePct >= 80) alerts.push({ type: "AI Usage", severity: "amber", message: `AI usage at ${aiUsagePct.toFixed(0)}% of the monthly token allowance` })
+  if (storageUsagePct !== null && storageUsagePct >= 95) alerts.push({ type: "Storage", severity: "red", message: `Storage at ${storageUsagePct.toFixed(0)}% of limit` })
+  else if (storageUsagePct !== null && storageUsagePct >= 80) alerts.push({ type: "Storage", severity: "amber", message: `Storage at ${storageUsagePct.toFixed(0)}% of limit` })
+  if (voiceUsagePct !== null && voiceUsagePct >= 95) alerts.push({ type: "Voice", severity: "red", message: `Voice minutes at ${voiceUsagePct.toFixed(0)}% of limit` })
+  else if (voiceUsagePct !== null && voiceUsagePct >= 80) alerts.push({ type: "Voice", severity: "amber", message: `Voice minutes at ${voiceUsagePct.toFixed(0)}% of limit` })
 
   // Prepare chart data
   const usageByTypeData = [
@@ -370,7 +386,7 @@ export default async function UsageMeteringDashboard() {
           <CardContent>
             <div className="text-2xl font-bold">{aiCallsMTD.toLocaleString()}</div>
             <p className="text-xs text-muted-foreground">
-              {aiUsagePct.toFixed(0)}% of {aiLimit.toLocaleString()} limit
+              {aiUsagePct === null ? `${aiTokensMTD.toLocaleString()} tokens · no plan limit set` : `${aiTokensMTD.toLocaleString()} tokens · ${aiUsagePct.toFixed(0)}% of ${realLimits.get("ai_tokens_monthly")!.toLocaleString()} allowance`}
             </p>
           </CardContent>
         </Card>
@@ -385,7 +401,7 @@ export default async function UsageMeteringDashboard() {
           <CardContent>
             <div className="text-2xl font-bold">{voiceMinutesMTD.toLocaleString()}</div>
             <p className="text-xs text-muted-foreground">
-              {voiceUsagePct.toFixed(0)}% of {voiceLimit.toLocaleString()} limit
+              {voiceUsagePct === null ? "No plan limit set" : `${voiceUsagePct.toFixed(0)}% of ${realLimits.get("ai_voice_minutes")!.toLocaleString()} limit`}
             </p>
           </CardContent>
         </Card>
@@ -400,7 +416,7 @@ export default async function UsageMeteringDashboard() {
           <CardContent>
             <div className="text-2xl font-bold">{formatBytes(storageMTD)}</div>
             <p className="text-xs text-muted-foreground">
-              {storageUsagePct.toFixed(0)}% of {formatBytes(storageLimit)} limit
+              {storageUsagePct === null ? "No plan limit set" : `${storageUsagePct.toFixed(0)}% of ${realLimits.get("storage_gb")!} GB limit`}
             </p>
           </CardContent>
         </Card>

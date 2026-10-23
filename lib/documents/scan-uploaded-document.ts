@@ -97,9 +97,20 @@ Per-classification extracted_fields shape:
   pre_approval_letter   → { lender_name, loan_type, max_loan_amount, issued_at, expires_at, borrower_name }
   proof_of_funds        → { institution, account_holder, available_funds, statement_date }
   id_document           → { document_type, full_name, expiration_date }
-  signed_contract       → { property_address, parties_signed[], signed_dates[], price, title_company, earnest_money_amount, earnest_money_due_days, contract_effective_date }
-  counter_offer         → { property_address, counter_price, counter_terms, seller_signed_at, round_label, earnest_money_due_days }
-  addendum              → { addendum_type, signed_parties[] }
+  signed_contract       → { property_address, parties_signed[], signed_dates[], price, title_company, earnest_money_amount, earnest_money_due_days, contract_effective_date,
+                            closing_date, seller_concession_amount, owner_title_policy_payer }
+  counter_offer         → { property_address, counter_price, counter_terms, seller_signed_at, round_label, earnest_money_due_days,
+                            signed_dates[], earnest_money_amount, closing_date, seller_concession_amount, owner_title_policy_payer }
+  addendum              → { addendum_type, signed_parties[], signed_dates[], price, earnest_money_amount, closing_date,
+                            seller_concession_amount, owner_title_policy_payer }
+                          (CONTRACT-TERM FIELDS — price, earnest_money_amount, closing_date, seller_concession_amount,
+                           owner_title_policy_payer — on signed_contract / counter_offer / addendum: report a term ONLY
+                           when THIS document states or changes it, as a number (dollars, no symbols), a yyyy-mm-dd
+                           date, or for owner_title_policy_payer exactly "buyer", "seller" or "split" (who the document
+                           says pays for the OWNER's title insurance policy; the lender's policy is a different line).
+                           Use null for any term the document does not state — never copy a term from your memory of
+                           the original contract, and never infer a payer from custom. These are compared against the
+                           settlement statement, so a guessed value would accuse a clean closing.)
   disclosure            → { disclosure_type, signed_parties[] }
   inspection_report     → { inspector_name, inspection_date, key_issues[] }
   appraisal_report      → { appraiser_name, appraised_value, appraisal_date }
@@ -107,7 +118,10 @@ Per-classification extracted_fields shape:
   hoa_documents         → { hoa_name, dues_amount, dues_frequency }
   closing_disclosure    → { closing_date, lender_name, loan_amount, cash_to_close,
                             total_closing_costs, owner_title_premium, lender_title_premium,
-                            settlement_fee, transfer_taxes, recording_fees }
+                            settlement_fee, transfer_taxes, recording_fees,
+                            sales_price, earnest_money_deposit, seller_credit_to_buyer,
+                            owner_title_policy_payer, commission_listing_broker,
+                            commission_buyer_broker, commission_total }
                           (dollar figures are the BORROWER-paid amounts as stated on the
                            document — page 2 sections B/C for title/settlement, section E
                            for recording_fees + transfer_taxes, section J for
@@ -127,7 +141,20 @@ Per-classification extracted_fields shape:
                            as a percentage number, not a string. Use null for any
                            figure not explicitly stated — never estimate.)
   seller_broker_agreement → { seller_name, brokerage_name, commission_rate, effective_date, expires_at }
-  preliminary_closing_statement → { closing_date, seller_proceeds, total_seller_costs, title_company }
+  preliminary_closing_statement → { closing_date, seller_proceeds, total_seller_costs, title_company,
+                            sales_price, earnest_money_deposit, seller_credit_to_buyer,
+                            owner_title_policy_payer, commission_listing_broker,
+                            commission_buyer_broker, commission_total }
+                          (SETTLEMENT-COMPARISON FIELDS on closing_disclosure and preliminary_closing_statement —
+                           sales_price, earnest_money_deposit, seller_credit_to_buyer, commission_* — are dollar
+                           amounts exactly as the statement prints them; commission_listing_broker and
+                           commission_buyer_broker are the real-estate commission lines paid to each side's
+                           broker, commission_total the combined figure only if the statement prints one.
+                           owner_title_policy_payer is "buyer" when the OWNER's title insurance premium appears in
+                           the buyer/borrower column, "seller" when it appears in the seller column, "split" when
+                           it appears in both, null when it is not shown. A buyer's Closing Disclosure often prints
+                           no commissions — leave them null rather than computing them. Never estimate or total
+                           lines yourself.)
   insurance_binder      → { carrier, policy_number, coverage_amount, annual_premium,
                             effective_date, expiry, insured_name, property_address }
                           (the BUYER'S hazard / homeowner's policy binder or
@@ -428,6 +455,28 @@ export async function scanUploadedDocument(params: {
       })
     } catch (err: any) {
       console.error("[scan] closing-cost accuracy hook failed (non-fatal):", err?.message ?? err)
+    }
+  }
+
+  // Post-scan hook 6 — CLOSING COMPLIANCE (wave 143): a settlement statement, or a contract / counter /
+  // addendum that can change the governing terms, was just read for a transaction. Re-ask the ONE closing
+  // check: contract terms (latest executed instrument wins, per term) against the settlement statement, the
+  // brokerage's closing-stage checklist, and the state's closing participants. Findings land in
+  // transaction_compliance_log; a signed term is never edited, only flagged. It is idle until a settlement
+  // statement exists, and it writes and notifies nothing when nothing changed.
+  const closingTxId = ((doc as any).transaction_id as string | null) ?? null
+  if (closingTxId && (classification === "closing_disclosure" || classification === "preliminary_closing_statement" ||
+      classification === "signed_contract" || classification === "counter_offer" || classification === "addendum")) {
+    try {
+      const { runClosingCompliance } = await import("@/lib/transactions/closing-compliance")
+      await runClosingCompliance(supabase as any, {
+        transactionId: closingTxId,
+        brokerageId:   doc.brokerage_id as string,
+        trigger:       classification === "closing_disclosure" || classification === "preliminary_closing_statement" ? "settlement_scanned" : "contract_document_scanned",
+        actorUserId:   ((doc as any).metadata?.uploaded_by as string | undefined) ?? null,
+      })
+    } catch (err: any) {
+      console.error("[scan] closing compliance hook failed (non-fatal):", err?.message ?? err)
     }
   }
 

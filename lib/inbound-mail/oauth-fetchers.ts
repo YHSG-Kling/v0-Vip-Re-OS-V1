@@ -43,6 +43,7 @@
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { splitAddressHeader, type ParsedInboundEmail, type InboundAttachment } from "./providers"
+import { inboundMetaFrom, normalizeMessageId } from "./message-meta"
 import type { ResolvedInboundProvider } from "./resolve-user-provider"
 import { googleOAuthClient, microsoftOAuthClient } from "@/lib/env/aliases"
 
@@ -146,8 +147,14 @@ export async function fetchGmailMessagesSinceHistory(params: {
 
     // Collect attachments + their bytes
     const attachments: InboundAttachment[] = []
+    // The FULL plain-text body (wave 143, lane 143A): `msg.snippet` is ~100 characters, which is not enough to tell an
+    // acceptance from a counter. The first text/plain part is decoded; the snippet stays the fallback.
+    let bodyTextFull = ""
     async function walk(part: any) {
       if (!part) return
+      if (!bodyTextFull && part.mimeType === "text/plain" && part.body?.data) {
+        try { bodyTextFull = Buffer.from(String(part.body.data).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8") } catch { /* keep the snippet */ }
+      }
       if (part.filename && part.body?.attachmentId) {
         const attRes = await callConnector<{ data?: string }>({
           connector: "gmail", baseUrl: "https://gmail.googleapis.com",
@@ -173,8 +180,10 @@ export async function fetchGmailMessagesSinceHistory(params: {
       fromName,
       toEmail,
       subject,
-      bodyText:   (msg.snippet ?? "").toString(),
+      bodyText:   bodyTextFull || (msg.snippet ?? "").toString(),
       attachments,
+      // Gmail's payload headers carry Message-ID / In-Reply-To / References / Authentication-Results (wave 143, 143A).
+      ...inboundMetaFrom(msg.payload?.headers, fromEmail),
     })
   }
 
@@ -216,6 +225,9 @@ export async function fetchOutlookMessage(params: {
     subject:    (msg.subject ?? "").toString().trim(),
     bodyText:   (msg.bodyPreview ?? "").toString(),
     attachments,
+    // Graph exposes the RFC Message-ID as `internetMessageId`; thread headers and authentication results are not in the
+    // default payload, so the thread match falls back to the offer token and the sender stays "unknown" (wave 143, 143A).
+    messageId:  normalizeMessageId(msg.internetMessageId == null ? null : String(msg.internetMessageId)),
   }
 }
 

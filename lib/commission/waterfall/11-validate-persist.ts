@@ -3,6 +3,7 @@ import { transitionLifecycle } from '@/lib/kernel/lifecycle'
 import { isCommissionFinalized } from '@/lib/commission/finalization'
 import { liveLedgerEntries } from '@/lib/commission/distribution-correction'
 import { withActionLedger } from '@/lib/kernel/action-ledger'
+import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { KernelEvent } from '@/lib/kernel/events'
 import { centsToDollars, dollarsToCents } from '../utils'
 import { CURRENT_ENGINE_VERSION } from '../types'
@@ -37,14 +38,28 @@ export async function validateAndPersist(
   // orphan lock by transaction_id + NULL commission_id) mark every distribution
   // row paid when the DEAL pays, and a company-books payable is not paid by the
   // deal's disbursement. It is persisted below to company_books_obligations.
+  //
+  // WAVE 143 (lane 143C) — GROSS ADJUSTMENTS ARE NOT DISTRIBUTIONS. A listing-agreement concession (stage 03) is
+  // already NETTED into adjustedGrossCents; counting its signed row in the identity below double-counted it, so
+  // EVERY deal carrying an active gross adjustment failed this validation (measured in memory at 21da8e4e:
+  // "Gross: $11500, Distributed: $11000" for a $500 credit on $12,000). The persisted row would also have been
+  // refused by the live DB (commission_distributions_calculated_amount_check: a negative `entry` row;
+  // commission_distributions_rule_id_fkey: rule_id is a commission_rules id, the row carried a
+  // commission_adjustments id). The concession's record stays commission_adjustments; this calculation cites it
+  // in commission_calculations (breakdown_json / engine_inputs). The REFERRAL fee (stage 03b) IS a payout: it is
+  // here, conserved, and funded by the deal.
   const allDistributions = [
-    ...context.grossAdjustments,
+    ...(context.referralDistributions ?? []),
     ...context.agentAdjustments,
     ...context.brokerageAdjustments,
     ...context.teamDistributions,
     ...context.revenueShareDistributions,
     ...context.feeDistributions
   ]
+  // The commission the brokerage actually RECEIVES: the gross after any seller concession. It is what the summary
+  // row, the CDA and the statement-vs-contract comparison must foot to (equal to grossCommissionCents when no
+  // concession exists).
+  const grossOfRecordCents = context.adjustedGrossCents
   const companyObligations = context.companyObligations ?? []
 
   // Validate waterfall
@@ -70,7 +85,8 @@ export async function validateAndPersist(
     return {
       success: true,
       preview: true,
-      gross_commission: centsToDollars(context.grossCommissionCents),
+      gross_commission: centsToDollars(grossOfRecordCents),
+      gross_adjustments: context.grossAdjustments,
       net_to_agent: centsToDollars(context.agentFinalNetCents),
       net_to_brokerage: centsToDollars(context.brokerageFinalCents),
       cap_applied: context.capApplied,
@@ -199,7 +215,7 @@ export async function validateAndPersist(
       return {
         success: true,
         commissionId: e?.id ?? existingCommissionId ?? undefined,
-        gross_commission: e ? Number(e.gross_commission) : centsToDollars(context.grossCommissionCents),
+        gross_commission: e ? Number(e.gross_commission) : centsToDollars(grossOfRecordCents),
         net_to_agent: e ? Number(e.net_to_agent) : centsToDollars(context.agentFinalNetCents),
         net_to_brokerage: e ? Number(e.net_to_brokerage) : centsToDollars(context.brokerageFinalCents),
         cap_applied: context.capApplied,
@@ -269,6 +285,29 @@ export async function validateAndPersist(
     }
   }
 
+  // 0c. LINK THE REFERRAL TO THIS DEAL (wave 143, lane 143C) — compare-and-swap, BEFORE anything is posted, so one
+  // referral can never pay on two closings (a second deal that read it unlinked finds the link taken and FAILS here
+  // rather than booking the fee twice). A re-run that already carries the link matches it by its own transaction id.
+  // Pre-m812 the column is absent: stage 03b then returned no link and this block is skipped (said, not silent).
+  if (context.referralLink && !context.referralLink.alreadyLinked) {
+    const { data: claimed, error: claimError } = await supabase
+      .from('referrals')
+      .update({ transaction_id: context.transactionId, updated_at: new Date().toISOString() })
+      .eq('id', context.referralLink.referralId)
+      .eq('brokerage_id', context.brokerageId)
+      .is('transaction_id', null)
+      .select('id')
+    if (claimError) {
+      throw new Error(`[commission-engine] referral ${context.referralLink.referralId} could not be linked to the deal: ${claimError.message}`)
+    }
+    if (!claimed || claimed.length !== 1) {
+      throw new Error(
+        `[commission-engine] referral ${context.referralLink.referralId} was linked to another closing while this one was calculated — ` +
+        `recalculate so the fee is not paid twice`
+      )
+    }
+  }
+
   // 1. Insert the summary row into the one commission ledger.
   // KEEP-ONE (m283/m284): agent_commissions absorbed the `commissions` twin.
   // agent_commission/brokerage_commission there are GENERATED from
@@ -281,7 +320,7 @@ export async function validateAndPersist(
       transaction_id: context.transactionId,
       brokerage_id: context.brokerageId,
       agent_id: context.agentId,
-      gross_commission: centsToDollars(context.grossCommissionCents),
+      gross_commission: centsToDollars(grossOfRecordCents),
       agent_split_percent: context.agentSplitPercent,
       net_to_agent: centsToDollars(context.agentFinalNetCents),
       net_to_brokerage: centsToDollars(context.brokerageFinalCents),
@@ -373,6 +412,17 @@ export async function validateAndPersist(
     inserted: (insertedDistributions ?? []) as Array<{ id: string; distribution_type: string; agent_id: string | null }>,
   })
 
+  // 2a'. THE CALCULATION'S OWN EVIDENCE (wave 143, lane 143C; LAW 5): which agreement priced this deal, on which
+  // date, from which signed record, with which concessions and referral — frozen beside the ledger so "the
+  // percentage we paid on" is provable after the fact, never reconstructed from today's profile.
+  await recordCalculationEvidence(supabase, {
+    context,
+    commissionId: commission.id as string,
+    triggeredBy: triggeredBy ?? null,
+    distributions: allDistributions,
+    grossOfRecordCents,
+  })
+
   // 2b. BRIDGE TO THE DASHBOARD/LIFECYCLE TABLE. The agent's earnings P&L dashboard
   // (app/dashboard/financials/reports) reads `agent_commissions`, NOT the engine's
   // `commissions` summary — so without this write a CLOSED deal's computed commission
@@ -392,8 +442,8 @@ export async function validateAndPersist(
       // (gross_commission × agent_split_percent). We can only set the inputs —
       // so derive the split that reproduces the engine's exact agent net:
       // gross × (agentNet/gross) = agentNet. Cap at [0,100] for safety.
-      const splitPercent = context.grossCommissionCents > 0
-        ? Math.min(100, Math.max(0, (context.agentFinalNetCents / context.grossCommissionCents) * 100))
+      const splitPercent = grossOfRecordCents > 0
+        ? Math.min(100, Math.max(0, (context.agentFinalNetCents / grossOfRecordCents) * 100))
         : 0
       // The try/catch around this block does NOT see a refused write: supabase-js
       // RESOLVES a constraint or RLS refusal as `{ error }` instead of throwing,
@@ -404,7 +454,7 @@ export async function validateAndPersist(
         transaction_id: context.transactionId,
         brokerage_id: context.brokerageId,
         agent_id: context.agentId,
-        gross_commission: centsToDollars(context.grossCommissionCents),
+        gross_commission: centsToDollars(grossOfRecordCents),
         agent_split_percent: splitPercent,
         status: 'pending',
         close_date: new Date().toISOString(),
@@ -562,7 +612,7 @@ export async function validateAndPersist(
       transaction_id:       context.transactionId,
       calculation_version:  CURRENT_ENGINE_VERSION,
       resolved_from:        context.resolvedFrom,
-      gross_commission:     centsToDollars(context.grossCommissionCents),
+      gross_commission:     centsToDollars(grossOfRecordCents),
       cap_applied:          context.capApplied,
       cap_status:           context.capStatus,
       team_cap_status:      context.teamCapStatus ?? 'n/a',
@@ -572,7 +622,7 @@ export async function validateAndPersist(
   return {
     success: true,
     commissionId: commission.id,
-    gross_commission: centsToDollars(context.grossCommissionCents),
+    gross_commission: centsToDollars(grossOfRecordCents),
     net_to_agent: centsToDollars(context.agentFinalNetCents),
     net_to_brokerage: centsToDollars(context.brokerageFinalCents),
     cap_applied: context.capApplied,
@@ -580,6 +630,7 @@ export async function validateAndPersist(
     team_cap_status: context.teamCapStatus ?? 'n/a',
     total_fees: centsToDollars(context.totalFeesCents),
     company_obligations: companyObligations,
+    gross_adjustments: context.grossAdjustments,
       distributions: distributionRows.map(d => ({
       distribution_type: (d as any).distribution_type as any,
       agent_id: (d as any).agent_id,
@@ -683,5 +734,99 @@ async function recordResidualLedgerEvidence(
     if (r.error) console.error('[commission-engine] COMMISSION_DISTRIBUTED audit row refused:', r.error)
   } catch (e) {
     console.error('[commission-engine] COMMISSION_DISTRIBUTED emit threw:', e)
+  }
+}
+
+/**
+ * The calculation's own evidence (wave 143, lane 143C). Two writes, neither able to un-post the money:
+ *   · commission_calculations — the FROZEN gross of record (total_commission = the adjusted gross the distributions
+ *     foot to; lib/kernel/economic-graph.ts reads exactly this for its conservation check) with breakdown_json (the
+ *     gross before concessions, the concessions, the referral deduction, the finals, the distributions by type) and
+ *     engine_inputs (the agreement version / date / signed record / findings the deal was priced with). The live
+ *     jsonb column engine_inputs existed with NO engine writer until now.
+ *   · agent_action_ledger — one row per commission (idempotent on it): who triggered, why, what evidence, which tool.
+ * Evidence never fails the posted money: a refused write is ledgered by the write sentinel / logged, and the
+ * distributions remain the record (the deal is already posted when this runs).
+ */
+async function recordCalculationEvidence(
+  supabase: ReturnType<typeof createServiceClient>,
+  input: {
+    context: WaterfallContext
+    commissionId: string
+    triggeredBy: string | null
+    distributions: Array<{ distribution_type: string; calculated_amount: number }>
+    grossOfRecordCents: number
+  },
+): Promise<void> {
+  const c = input.context
+  const byType: Record<string, number> = {}
+  for (const d of input.distributions) byType[d.distribution_type] = Math.round(((byType[d.distribution_type] ?? 0) + d.calculated_amount) * 100) / 100
+  const agreement = c.agreement
+  const engineInputs = {
+    engine_version: CURRENT_ENGINE_VERSION,
+    agreement: agreement
+      ? {
+          source: agreement.source,
+          version_id: agreement.versionId,
+          effective_from: agreement.effectiveFrom,
+          as_of: agreement.asOf,
+          as_of_source: agreement.asOfSource,
+          signed_agreement: agreement.signedAgreement,
+          signed_field_mismatches: agreement.signedFieldMismatches,
+          findings: agreement.findings,
+        }
+      : null,
+    team_agreement: c.teamAgreement ?? null,
+    applied: { agent_split_percent: c.agentSplitPercent, gross_rate_decimal: c.grossRateDecimal, resolved_from: c.resolvedFrom },
+    referral: { link: c.referralLink ?? null, deduction_cents: c.referralDeductionCents ?? 0, findings: c.referralFindings ?? [] },
+    revenue_share_skipped: c.revenueShareSkipped ?? null,
+    team_cap_status: c.teamCapStatus ?? 'n/a',
+  }
+  const breakdown = {
+    gross_commission_before_adjustments: centsToDollars(c.grossCommissionCents),
+    gross_adjustments: c.grossAdjustments.map((a) => ({ adjustment_id: a.rule_id ?? null, calculation_type: a.calculation_type, calculation_value: a.calculation_value ?? null, signed_amount: a.calculated_amount, notes: a.notes ?? null })),
+    adjusted_gross: centsToDollars(input.grossOfRecordCents),
+    referral_deduction: centsToDollars(c.referralDeductionCents ?? 0),
+    agent_final_net: centsToDollars(c.agentFinalNetCents),
+    brokerage_final: centsToDollars(c.brokerageFinalCents),
+    total_fees: centsToDollars(c.totalFeesCents),
+    distributions_by_type: byType,
+  }
+  await sentinelWrite(supabase, supabase.from('commission_calculations').insert({
+    transaction_id: c.transactionId,
+    brokerage_id: c.brokerageId,
+    agent_id: c.agentId,
+    total_commission: centsToDollars(input.grossOfRecordCents),
+    breakdown_json: breakdown,
+    engine_inputs: engineInputs,
+    calculation_version: CURRENT_ENGINE_VERSION,
+    calculated_at: new Date().toISOString(),
+  }), {
+    table: 'commission_calculations',
+    flow: 'commission_calculation_snapshot',
+    brokerageId: c.brokerageId,
+    reason: 'audit snapshot of the agreement + concessions a posted calculation used: the distributions already landed and are the money; its loss is ledgered, never silent',
+  })
+
+  try {
+    await withActionLedger<{ ok: boolean }>(
+      {
+        brokerageId: c.brokerageId,
+        action: 'finance.commission.calculated',
+        actor: input.triggeredBy ? { type: 'user', userId: input.triggeredBy } : { type: 'system' },
+        subject: { type: 'agent_commission', id: input.commissionId, ref: c.transactionId },
+        reasonCode: 'TRANSACTION_MILESTONE',
+        reasonDetail: `commission calculated on the ${agreement?.asOfSource ?? 'unknown'} ${agreement?.asOf ?? ''} agreement (${agreement?.source ?? 'unresolved'})`,
+        idempotencyKey: `commission-calc:${input.commissionId}`,
+        riskClass: 'FINANCIAL',
+        systemSource: 'commission_engine',
+        detail: { transaction_id: c.transactionId, commission_id: input.commissionId, ...engineInputs, breakdown },
+      },
+      async () => ({ ok: true }),
+      { settle: () => ({ status: 'executed', outcome: 'posted_pending_approval' }), replay: () => ({ ok: false }) },
+      { client: supabase },
+    )
+  } catch (e) {
+    console.error('[commission-engine] calculation evidence claim failed:', e)
   }
 }

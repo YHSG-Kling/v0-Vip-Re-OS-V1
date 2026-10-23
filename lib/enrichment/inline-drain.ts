@@ -53,9 +53,14 @@ const defaultInlineDrain: InlineEnrichmentDrain = async (target) => {
 /**
  * Fire-and-forget: schedule the drain for the row just written and return at once. Never throws, never
  * awaits the drain. `drain` — an injected seam (always runs), `false` (the caller opts out: cron only), or
- * omitted (the default drain, inside the app runtime only).
+ * omitted (the default drain, inside the app runtime only). `seams` are proof doors for the DEFAULT path only:
+ * `defaultDrain` replaces the orchestrator, `loadAfter` replaces the import of Next's after-response hook.
  */
-export function dispatchInlineEnrichmentDrain(target: InlineDrainTarget, drain?: InlineEnrichmentDrain | false): InlineDrainDispatch {
+export function dispatchInlineEnrichmentDrain(
+  target: InlineDrainTarget,
+  drain?: InlineEnrichmentDrain | false,
+  seams: { defaultDrain?: InlineEnrichmentDrain; loadAfter?: AfterLoader } = {},
+): InlineDrainDispatch {
   if (drain === false) return { dispatched: false, reason: "caller_opted_out" }
   let fn: InlineEnrichmentDrain | null = null
   let reason: InlineDrainDispatch["reason"]
@@ -63,13 +68,47 @@ export function dispatchInlineEnrichmentDrain(target: InlineDrainTarget, drain?:
   else {
     const why = inlineDrainEnabledByDefault()
     if (!why) return { dispatched: false, reason: process.env.ENRICHMENT_INLINE_DRAIN === "off" ? "env_off" : "not_app_runtime" }
-    fn = defaultInlineDrain; reason = why
+    fn = seams.defaultDrain ?? defaultInlineDrain; reason = why
   }
   const run = fn
   // Deferred to the microtask queue so the writer's own return value settles first; the catch is the
   // whole error policy — a failed inline drain is the cron's row, not the create door's failure.
-  void Promise.resolve()
+  const attempt = (): Promise<void> => Promise.resolve()
     .then(() => run(target))
+    .then(() => undefined)
     .catch((err) => console.error(`[enrichment] inline drain for queue row ${target.queueEntryId} failed (the cron backstop will retry):`, err instanceof Error ? err.message : String(err)))
+  // An INJECTED seam (a proof, a canary) runs on the next turn exactly as before — no Next runtime is in play. The DEFAULT
+  // drain runs inside the app server, where a serverless function is frozen once its response is sent: it is handed to the
+  // platform's after-response hook so the function stays alive until the drain settles (wave 143, lane 143D).
+  if (reason === "injected") void attempt()
+  else void scheduleAfterResponse(attempt, seams.loadAfter)
   return { dispatched: true, reason }
+}
+
+/** Loads Next's after-response hook (a seam so a proof can hand in a recorder, a thrower, or leave the real one). */
+type AfterLoader = () => Promise<(callback: () => Promise<unknown>) => void>
+
+/**
+ * WAVE 143 (lane 143D) — KEEP THE FUNCTION ALIVE UNTIL THE DRAIN SETTLES. At HEAD the default drain was a bare
+ * `void Promise.resolve().then(…)`: correct on a long-lived Node process, but on Vercel a function's work after its response
+ * is sent is not guaranteed to run (the instance can be frozen), so "enrich as soon as it comes in" quietly became "enrich on
+ * the cron" for exactly the doors (form submits, server actions) that matter most — the cron backstop caught it, 15 minutes
+ * late. Next 16's `after()` (next/server) schedules work to run after the response and keeps the invocation alive for it.
+ * `after()` THROWS outside a request scope (verified on next@16.2.7: "`after` was called outside a request scope"), so a cron
+ * run, a script or an import failure falls back to the bare run — the SAME behaviour as before, never a lost drain and
+ * never a thrown error into the capture. The capture is never awaited on either path.
+ */
+async function scheduleAfterResponse(
+  job: () => Promise<unknown>,
+  loadAfter: AfterLoader = async () => (await import("next/server")).after as (callback: () => Promise<unknown>) => void,
+): Promise<"after" | "bare"> {
+  try {
+    const after = await loadAfter()
+    after(job)
+    return "after"
+  } catch {
+    // outside a request scope (or Next unavailable): the bare run — the pre-143D behaviour, the cron stays the backstop
+    void job()
+    return "bare"
+  }
 }

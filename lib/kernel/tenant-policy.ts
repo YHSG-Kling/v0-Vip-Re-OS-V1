@@ -133,6 +133,17 @@ export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition>
   // platform ceiling (platform_settings.self_healing_ceilings, m753) — a tenant value above the ceiling is clamped, never
   // honored. Written only through the policy-proposal promotion path (improvement_proposals → mergeBrokerageSettings).
   self_healing:            { label: "Self-healing (diagnosis / research budgets, attempts per day, allowed remediation classes, auto-fix threshold)", store: "brokerage_settings.settings", defaultNote: "platform defaults ($0.05 diagnosis, $0.06 provider research, $0.10 / 6 calls law-rule research, 2 attempts/day, every declared playbook, auto-fix at ≥ 50% confidence) under the platform ceiling" },
+  // Wave 143 (143E; owner: "the follow-up timetable must not depend on code"): THE FOLLOW-UP POLICY — { guidance, guardrails
+  // {minHoursBetweenTouches, quietHours (narrow-only inside 8-21), agentActiveDays, callCooldownDays, coldCallCooldownDays},
+  // reengagement {...}, sphere {...}, nurture {...},
+  // postClose [{key, afterClosingDays, defaultChannel, intent}], arbiter {enabled, maxDecisionsPerRun, maxDeferDays} } read ONLY
+  // through lib/ai-isa/followup-policy.ts loadFollowupPolicy (clamped; legal floors never loosened) and reasoned over by
+  // lib/ai-isa/followup-arbiter.ts. Written only through mergeBrokerageSettings (the settings door or a policy proposal).
+  followup_policy:         { label: "Follow-up policy (guardrails, re-engagement envelope, post-close moments, arbiter)", store: "brokerage_settings.settings", defaultNote: "platform defaults (the historical 48h fatigue floor, 8-21 send window, Mon/Wed/Fri → 30d → 90d re-engagement, 3d/30d/6mo/1yr/18mo post-close moments); AI arbiter on" },
+  // Wave 143 (143E): WHERE A REVIEW REQUEST POINTS — { [platform]: { url }, agents?: { [agents.id]: { [platform]: { url } } },
+  // approval: "auto" | "agent_approves", platform_order?: string[] } read ONLY through lib/reputation/review-ask-policy.ts
+  // loadReputationProfiles. A placeholder / foreign-host URL is refused at read; no real URL = no review request is sent.
+  reputation_profiles:     { label: "Reputation profiles (review links per platform, send approval)", store: "brokerage_settings.settings", defaultNote: "none configured — no review request is sent until a real review link is set" },
   // Wave 142 (142F; owner: "all videos that are not personal should also be added to youtube"): { youtube: boolean } —
   // whether an APPROVED public-marketing video (lib/video/public-video.ts classifyPublicVideo: broadcast kind, addressed
   // to nobody, not in-house, not the MLS cut, finished + compliance passed) is queued onto the existing YouTube rail

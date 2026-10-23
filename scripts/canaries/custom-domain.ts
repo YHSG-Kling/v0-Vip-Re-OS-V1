@@ -27,10 +27,17 @@ export async function run() {
   c.step("validation refusals (immediate, specific): a scheme, a path, a port, a single label, *.vercel.app and the PLATFORM's own host are each refused by name", !validateCustomDomain("https://x.com", reserved).ok && !validateCustomDomain("x.com/site", reserved).ok && !validateCustomDomain("x.com:8080", reserved).ok && !validateCustomDomain("localhost", reserved).ok && !validateCustomDomain("tenant.vercel.app", reserved).ok && reserved.length > 0 && !validateCustomDomain(reserved.find((h) => h.includes(".")) ?? "vipagents.ai", reserved).ok, `reserved: ${reserved.join(",")}`)
   const apex = dnsInstructionsFor("canary-realty.com"), sub = dnsInstructionsFor("www.canary-realty.com")
   c.step("DNS instructions with EXACT values: apex → A @ 76.76.21.21; subdomain → CNAME www cname.vercel-dns.com", apex.length === 1 && apex[0].type === "A" && apex[0].name === "@" && apex[0].value === VERCEL_APEX_A_TARGET && sub.length === 1 && sub[0].type === "CNAME" && sub[0].name === "www" && sub[0].value === VERCEL_CNAME_TARGET, JSON.stringify([apex, sub]))
-  const B = uuid(), ADMIN = uuid(), D = uuid()
+  const B = uuid(), ADMIN = uuid(), D = uuid(), B2 = uuid()
   const svc = canaryClient({
-    brokerages: [{ id: B, name: `${CANARY_TAG} Brokerage`, plan_tier: "brokerage", slug: `${CANARY_TAG}-site` }],
+    brokerages: [
+      { id: B, name: `${CANARY_TAG} Brokerage`, plan_tier: "brokerage", slug: `${CANARY_TAG}-site` },
+      { id: B2, name: `${CANARY_TAG} Other`, plan_tier: "team", slug: `${CANARY_TAG}-other` },
+    ],
     users: [{ id: ADMIN, email: `admin@${CANARY_EMAIL_DOMAIN}`, user_type: "broker_owner", brokerage_id: B }],
+    lead_capture_forms: [
+      { id: uuid(), brokerage_id: B, slug: `${CANARY_TAG}-home-value`, name: `${CANARY_TAG} home value`, is_active: true },
+      { id: uuid(), brokerage_id: B2, slug: `${CANARY_TAG}-their-guide`, name: `${CANARY_TAG} their guide`, is_active: true },
+    ],
   })
   setSvc(svc)
   // THE ROW LIFECYCLE the action writes (app/actions/custom-domains.ts addCustomDomainAction) — the shape, in-memory.
@@ -48,6 +55,15 @@ export async function run() {
   const readiness = strippedRepo("lib/kernel/tenant-readiness.ts") ?? ""
   c.step("never required: the tenant readiness contract never reads tenant_custom_domains — the /site/<slug> storefront is the website check", readiness.length > 0 && !/tenant_custom_domains/.test(readiness), "")
   c.step("routing: proxy.ts rewrites a host to the tenant's site ONLY from an 'active' tenant_custom_domains row", /tenant_custom_domains/.test(strippedRepo("proxy.ts") ?? "") && /["']active["']/.test((strippedRepo("proxy.ts") ?? "").slice((strippedRepo("proxy.ts") ?? "").indexOf("tenant_custom_domains"), (strippedRepo("proxy.ts") ?? "").indexOf("tenant_custom_domains") + 600)), "")
+  // LANDING PAGES INSIDE THE TENANT WEBSITE (wave 143G): the website the baseline mints serves the tenant's landing pages at
+  // /site/<slug>/lm/<form> (and, on the connected domain, /lm/<form> through the proxy) — and ONLY the tenant's own.
+  const { resolveTenantLandingForm } = await import("../../lib/tenant-site/landing-page")
+  const { tenantLandingPagePath } = await import("../../lib/kernel/tenant-creation")
+  const own = await resolveTenantLandingForm(svc, `${CANARY_TAG}-site`, `${CANARY_TAG}-home-value`)
+  c.step("landing page: the tenant's own form resolves through its baseline website", own.ok && own.site.id === B, JSON.stringify(own).slice(0, 160))
+  const foreign = await resolveTenantLandingForm(svc, `${CANARY_TAG}-site`, `${CANARY_TAG}-their-guide`)
+  c.step("landing page: ANOTHER tenant's form through this tenant's website is refused (a vanity host can never serve a foreign landing page)", !foreign.ok && foreign.reason === "no_form", JSON.stringify(foreign).slice(0, 160))
+  c.step("landing page: the in-website path is the one spelling and the proxy serves a connected domain's /lm/<form> from the HOST's tenant", tenantLandingPagePath(`${CANARY_TAG}-site`, "x") === `/site/${CANARY_TAG}-site/lm/x` && /\/site\/\$\{slug\}\/lm\//.test(strippedRepo("proxy.ts") ?? ""), "")
   const regTokens = ["lib/platform/custom-domains.ts", "app/actions/custom-domains.ts"].flatMap((f) => registrarTokens(strippedRepo(f) ?? "").map((t) => `${f}:${t}`))
   c.step("no registrar path: neither the adapter nor the action carries a buy/register/transfer affordance (the platform never sells or hosts domains)", regTokens.length === 0, regTokens.join(",") || "0 tokens")
   c.step("POSITIVE CONTROL: the finder catches a specimen `buy_domain(` call", registrarTokens(`const r = await vercel.buy_domain({ name })`).length === 1)
@@ -99,6 +115,7 @@ export async function run() {
   }
   c.blind("The Vercel Domains API is never called (unconfigured by design in-memory): the live add/verify/SSL loop is test:domain-api's; the session-gated action (addCustomDomainAction) is modelled by writing the row shape it writes.")
   const { cleanup, residual, mismatches } = await cleanupCanary(svc, B)
-  c.step("cleanup: every tagged row deleted with .select() counts; residual 0", mismatches.length === 0 && residual === 0, cleanup.map((x) => `${x.table}:${x.deleted}`).join(" "))
-  return c.report(cleanup, residual)
+  const second = await cleanupCanary(svc, B2)
+  c.step("cleanup: every tagged row deleted with .select() counts; residual 0", mismatches.length === 0 && second.mismatches.length === 0 && residual + second.residual === 0, [...cleanup, ...second.cleanup].map((x) => `${x.table}:${x.deleted}`).join(" "))
+  return c.report([...cleanup, ...second.cleanup], residual + second.residual)
 }

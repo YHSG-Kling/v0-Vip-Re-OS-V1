@@ -84,7 +84,7 @@ const bd = await import("../lib/external/batchdata-client")
 const pdl = await import("../lib/external/peopledata-client")
 const aiTools = await import("../lib/external/batchdata-ai-tools")
 const { VENDOR_PRICING } = await import("../lib/vendor-governance/cost-normalizer")
-const { CONTACT_PROVIDER_ROUTES, resolveContactProviderRoute, OWNER_ORDERED_CAPABILITIES } = rail
+const { CONTACT_PROVIDER_ROUTES, resolveContactProviderRoute, OWNER_ORDERED_CAPABILITIES, FREE_CAPABILITIES } = rail
 type Capability = keyof typeof CONTACT_PROVIDER_ROUTES
 const caps = Object.keys(CONTACT_PROVIDER_ROUTES) as Capability[]
 // Wave 82 lane A: + reverse_contact (person-keyed BatchData REVERSE skip trace, PeopleData on a miss).
@@ -92,8 +92,10 @@ const caps = Object.keys(CONTACT_PROVIDER_ROUTES) as Capability[]
 // Wave 140 (lane 140I): + map_render (Mapbox first, Google Maps the fallback — the ONE map capability).
 // Wave 142 (lane 142D): + business_identity (the Versium B2B2C crosswalk) + online_presence (Versium's
 // full-demographic real-estate indicators) — one provider each, on the SAME rail, no second route table.
-check("eleven capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list, property_valuation, map_render, business_identity, online_presence)",
-  caps.sort().join(",") === "business_identity,dnc_tcpa,email_validation,map_render,motivated_seller_list,online_presence,owner_contact,person_profile,property_facts,property_valuation,reverse_contact")
+// Wave 143 (lane 143D): + audience_estimate (Versium's FREE B2C ListGen estimate — a documented-free row, FREE_CAPABILITIES).
+// The label states the DERIVED count (a hard-coded "eleven" was a waypoint: it went false the moment a capability was added).
+check(`${caps.length} capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list, property_valuation, map_render, business_identity, online_presence, audience_estimate)`,
+  caps.sort().join(",") === "audience_estimate,business_identity,dnc_tcpa,email_validation,map_render,motivated_seller_list,online_presence,owner_contact,person_profile,property_facts,property_valuation,reverse_contact")
 const rc = CONTACT_PROVIDER_ROUTES.reverse_contact
 // Re-anchored (wave 93, lane 93B2 — owner cost decision: "Versium first for owner/person email+phone
 // append, People Data Labs only when Versium misses"): Versium (an EXISTING vendor) leads both overlap
@@ -110,7 +112,19 @@ for (const cap of caps) {
   check(ruling
     ? `${cap}: providers are ordered by OWNER RULING, not price (${list.map((e) => `${e.provider} $${e.unitCostUsd}`).join(" → ")}) — ${ruling}`
     : `${cap}: providers are ordered cheapest-first (${list.map((e) => `${e.provider} $${e.unitCostUsd}`).join(" → ")})`,
-    list.length > 0 && (sorted || (typeof ruling === "string" && /owner/i.test(ruling))) && list.every((e) => e.unitCostUsd > 0))
+    // Wave 143: the price rule is "paid unless DOCUMENTED free" — a zero on a paid capability is a missing price; a zero on a
+    // FREE_CAPABILITIES row is the vendor's own statement (and must be EXACTLY zero, with the statement present).
+    list.length > 0 && (sorted || (typeof ruling === "string" && /owner/i.test(ruling)))
+      && (FREE_CAPABILITIES.has(cap) ? list.every((e) => e.unitCostUsd === 0) && String(FREE_CAPABILITIES.get(cap)).length > 40 : list.every((e) => e.unitCostUsd > 0)))
+}
+// POSITIVE CONTROL for the free-row rule: the predicate refuses a zero on a capability that is NOT declared free, and a non-zero on one that is.
+{
+  const priceRule = (cap: string, units: number[]) => FREE_CAPABILITIES.has(cap as never) ? units.every((u) => u === 0) : units.every((u) => u > 0)
+  check("POSITIVE CONTROL: a $0 row on a PAID capability (owner_contact) is REFUSED; a $0 row on audience_estimate (documented free) is accepted; a priced audience_estimate row is refused",
+    priceRule("owner_contact", [0]) === false && priceRule("audience_estimate", [0]) === true && priceRule("audience_estimate", [0.05]) === false)
+  check(`every FREE_CAPABILITIES member (${[...FREE_CAPABILITIES.keys()].join(", ")}) is routed, and no capability OUTSIDE it carries a zero`,
+    [...FREE_CAPABILITIES.keys()].every((c) => caps.includes(c as Capability))
+    && caps.filter((c) => !FREE_CAPABILITIES.has(c)).every((c) => CONTACT_PROVIDER_ROUTES[c].every((e) => e.unitCostUsd > 0)))
 }
 check("the cheapest-first exemption is NARROW: only property_valuation is owner-ordered (every other capability stays cost-sorted)",
   [...OWNER_ORDERED_CAPABILITIES.keys()].join(",") === "property_valuation")

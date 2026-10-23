@@ -61,6 +61,17 @@ export interface TeamLeadAgreement {
    * see that the 15% is what ran, not merely trust it.
    */
   source: "agent_negotiated" | "team_default"
+  /**
+   * EVIDENCE of the terms' period (wave 143, lane 143C): which team-terms version priced the override, the date it was
+   * judged on, and the agent's signed team agreement of record. Carried to the calculation snapshot; never money.
+   */
+  evidence?: {
+    teamId: string
+    source: "version" | "live_team"
+    effectiveFrom: string | null
+    asOf: string
+    signedAgreement: { id: string; fullyExecutedAt: string; documentUrl: string | null } | null
+  }
 }
 
 /**

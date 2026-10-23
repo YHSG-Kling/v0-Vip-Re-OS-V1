@@ -38,7 +38,15 @@ export interface CommissionStructureResolved {
 export async function getDefaultCommissionStructure(
   brokerageId: string,
   agentId?: string,
-  dealCommissionRate?: number
+  dealCommissionRate?: number,
+  /**
+   * WAVE 143 (lane 143C) — the agent's terms for the DEAL'S PERIOD, resolved by
+   * lib/commission/agreement-terms.ts (the version in force on the transaction's date). When this is
+   * passed (an object, or null = "no agreement terms in force"), the live profile is NOT read: today's
+   * percentage never prices a historic deal. Omitted (undefined) = the live profile, which is what every
+   * estimate / forecast / calculator caller wants. Only the commission engine passes it.
+   */
+  termsForPeriod?: Record<string, unknown> | null
 ): Promise<CommissionStructureResolved> {
 
   const supabase = createServiceClient()
@@ -59,10 +67,13 @@ export async function getDefaultCommissionStructure(
     )
   }
 
-  // 2️⃣ Get agent commission profile (optional)
-  let profile = null
+  // 2️⃣ Get agent commission profile (optional). termsForPeriod (wave 143) replaces the LIVE read with the
+  // agreement in force on the deal's date.
+  let profile: any = null
 
-  if (agentId) {
+  if (termsForPeriod !== undefined) {
+    profile = termsForPeriod
+  } else if (agentId) {
     const { data } = await supabase
       .from("agent_commission_profiles")
       .select("*")

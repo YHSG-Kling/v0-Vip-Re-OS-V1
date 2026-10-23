@@ -19,23 +19,12 @@
 import type { CdaFieldDef, CdaFieldSource, CdaFieldType } from "./cda-template-fields"
 
 // ── The catalog: the ONLY source_keys a binding may reference (grounding) ─────
-// Keys mirror cdaWaterfallContext() (waterfall) and buildContext() (transaction)
-// in the resolver/action — keep them in sync.
-export const CDA_WATERFALL_KEYS: Record<string, { label: string; field_type: CdaFieldType }> = {
-  gross_commission: { label: "Gross Commission", field_type: "currency" },
-  agent_net: { label: "Agent Net Commission", field_type: "currency" },
-  brokerage_net: { label: "Brokerage Net Commission", field_type: "currency" },
-  agent_split_percent: { label: "Agent Split %", field_type: "percent" },
-  fees: { label: "Fees", field_type: "currency" },
-  team_split: { label: "Team Split", field_type: "currency" },
-  revenue_share: { label: "Revenue Share", field_type: "currency" },
-}
-
-export const CDA_TRANSACTION_KEYS: Record<string, { label: string; field_type: CdaFieldType }> = {
-  property_address: { label: "Property Address", field_type: "text" },
-  close_date: { label: "Closing Date", field_type: "date" },
-  sale_price: { label: "Sale Price", field_type: "currency" },
-}
+// MOVED (wave 143, lane 143C) to lib/transactions/cda-template-fields.ts - the client-safe, import-free module that also
+// holds cdaWaterfallContext, whose keys these mirror. This file reaches lib/ai/generate (server-only) through its AI
+// pass, so the mapping-editor CLIENT component cannot import a catalog from here (scripts/client-server-only-guard.ts).
+// Re-exported so existing importers keep one name.
+import { CDA_WATERFALL_KEYS, CDA_TRANSACTION_KEYS } from "./cda-template-fields"
+export { CDA_WATERFALL_KEYS, CDA_TRANSACTION_KEYS }
 
 export interface SuggestedBinding extends CdaFieldDef {
   /** the raw AcroForm field name this binding came from (broker sees both). */
@@ -95,6 +84,10 @@ const MATCHERS: Array<(n: string, raw: string) => Match> = [
   // Gross / total commission before per-side nets.
   (n) => has(n, "gross", "total commission", "total due") || (has(n, "total") && has(n, "commission"))
     ? { source: "waterfall", source_key: "gross_commission", field_type: "currency", confidence: 0.82, reason: "gross/total commission" } : null,
+
+  // Referral fee - BEFORE the generic 'fee' rule, whose `has(n, "fee")` would otherwise claim "Referral Fee".
+  (n) => has(n, "referral")
+    ? { source: "waterfall", source_key: "referral", field_type: "currency", confidence: 0.8, reason: "a referral fee/payout line" } : null,
 
   // Fees (franchise/E&O/admin/royalty/processing or a generic 'fee').
   (n) => has(n, "franchise fee", "transaction fee", "admin fee", "compliance fee", "processing fee", "royalty", "e&o", "e o ", " eo ") || has(n, "fee")
@@ -197,7 +190,7 @@ export async function aiClassifyCdaFields(fieldNames: string[]): Promise<Suggest
     const catalog = [
       "waterfall.gross_commission (currency)", "waterfall.agent_net (currency)",
       "waterfall.brokerage_net (currency)", "waterfall.agent_split_percent (percent)",
-      "waterfall.fees (currency)", "waterfall.team_split (currency)", "waterfall.revenue_share (currency)",
+      "waterfall.fees (currency)", "waterfall.team_split (currency)", "waterfall.revenue_share (currency)", "waterfall.referral (currency)",
       "transaction.property_address (text)", "transaction.close_date (date)", "transaction.sale_price (currency)",
       "agent_input (the agent types it; for anything that isn't a known waterfall/transaction value)",
       "static (a fixed value the broker sets later)",

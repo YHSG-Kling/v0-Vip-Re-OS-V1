@@ -482,7 +482,7 @@ async function applyReadyWrites(
   }
 
   // ── Esign completion: listing_agreements ────────────────────────────────
-  const agreementSelect = "id, listing_id, fully_executed_at"
+  const agreementSelect = "id, listing_id, esign_status, agent_signed_at, seller_signed_at"
   const agreementLookup = ctx.matchedAgreementId
     ? supabase.from("listing_agreements").select(agreementSelect).eq("id", ctx.matchedAgreementId).maybeSingle()
     : ctx.envelopeId
@@ -492,13 +492,24 @@ async function applyReadyWrites(
         : Promise.resolve({ data: null } as any)
   const { data: matchedAgreement } = await agreementLookup
 
-  if (matchedAgreement && !(matchedAgreement as any).fully_executed_at) {
+  // "Not yet processed" is asked on the LADDER, exactly as the offer branch above does: a redelivery that finds the
+  // packet at all-signed or in compliance writes nothing and runs nothing twice (wave 143, lane 143A — this guard used
+  // to read `fully_executed_at`, the very stamp that now lands only after compliance approval).
+  if (matchedAgreement && !isAtOrPastAllSigned((matchedAgreement as any).esign_status)) {
     wroteSomething = true
+    // PROVIDER COMPLETION = ALL SIGNED, NEVER FULLY EXECUTED (wave 143, lane 143A — closes 142K finding 5): the
+    // provider says every party signed, so the two signature instants are stamped where they were empty (the
+    // compliance review's gate reads them as the signature evidence); `fully_executed_at` is the stamp of the ladder's
+    // `fully_executed` hop, written by the listing compliance loop after compliance approval and by nothing else.
     const { error: agreementExecutedErr } = await supabase
       .from("listing_agreements")
-      .update({ esign_status: "fully_signed", fully_executed_at: now })
+      .update({
+        esign_status: "fully_signed",
+        agent_signed_at: (matchedAgreement as any).agent_signed_at ?? now,
+        seller_signed_at: (matchedAgreement as any).seller_signed_at ?? now,
+      })
       .eq("id", (matchedAgreement as any).id)
-    if (agreementExecutedErr) console.error(`[esign-execution-loop] listing agreement NOT marked fully executed: ${agreementExecutedErr.message}`)
+    if (agreementExecutedErr) console.error(`[esign-execution-loop] listing agreement NOT marked all-signed: ${agreementExecutedErr.message}`)
 
     const { data: listingRow } = await supabase
       .from("listings")

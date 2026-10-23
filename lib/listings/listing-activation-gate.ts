@@ -20,8 +20,11 @@
  *   1. COMPLIANCE IS GOOD — the listing agreement for this listing was executed
  *      through the checkpoint that actually runs a compliance audit
  *      (app/actions/seller-listing/execution-engine.ts::markAgreementSigned),
- *      evidenced by a `listing_agreements` row carrying compliance_passed=true,
- *      esign_status=fully_signed AND fully_executed_at. A listing with no
+ *      evidenced by a `listing_agreements` row carrying compliance_passed=true
+ *      and an esign_status at or past ALL-SIGNED on the ladder (wave 143, lane
+ *      143A: `fully_executed_at` is the stamp of the ladder's `fully_executed`
+ *      hop, which lands only AFTER compliance approval, so it is no longer an
+ *      input to this question — see readListingCompliance). A listing with no
  *      agreement to point at has no compliance evidence at all, and "no
  *      evidence" is a REFUSAL, never a pass — exactly as the offer side treats a
  *      deal with no offer.
@@ -133,6 +136,21 @@ export interface ListingActivationGateParams {
   listingId: string
   /** Who/what is asking, for the refusal text ("MLS activation"). */
   door?: string
+  /**
+   * THIS RUN IS THE COMPLIANCE REVIEW ITSELF (wave 143, lane 143A — closes 142K finding 5). Only
+   * lib/listings/listing-compliance-loop.ts sets it, and only while the listing sits between
+   * LISTING_AGREEMENT_SIGNED and COMING_SOON_PREP.
+   *
+   * Obligation 1 asks "has the agreement cleared compliance?" — `compliance_passed`. For an agreement
+   * that came back through the e-sign PROVIDER, nothing has stamped that yet: the review that stamps it
+   * IS this run (obligations 2-4 below are its audit), so demanding the stamp as an INPUT to its own
+   * decision refused every provider-signed agreement forever. In review mode obligation 1 therefore asks
+   * for what the provider can truthfully say — the packet is at or past ALL-SIGNED on the ladder, with
+   * both parties' signature evidence on the row — and the loop writes `compliance_passed` (and, one hop
+   * later, `fully_executed_at`) when the whole gate passes. Every other door (activateMLS, launchListing,
+   * the status map) leaves this false and still requires the recorded `compliance_passed`.
+   */
+  complianceReview?: boolean
 }
 
 /**
@@ -277,13 +295,15 @@ async function readListingAnchors(
  * questions open, on the reasoning that they decide "the largest refusal
  * bucket". Both are answered, and neither is a bucket:
  *
- *   · CAN THE PRIMARY PATH SATISFY ALL THREE CONDITIONS AT ONCE? Yes.
+ *   · CAN THE PRIMARY PATH SATISFY THE CONDITIONS? Yes.
  *     markAgreementSigned's single INSERT writes `esign_status` =
- *     LISTING_AGREEMENT_EXECUTED_STATUS ("fully_signed"), `fully_executed_at` =
- *     now, and `compliance_passed` = true, in the same object, reached only
- *     after its own gate passed. Had any one of the three been absent from that
- *     insert this gate would have refused every listing forever — which is why
- *     it was checked key-by-key against the insert rather than assumed.
+ *     LISTING_AGREEMENT_EXECUTED_STATUS ("fully_signed") and `compliance_passed`
+ *     = true in the same object, reached only after its own gate passed (wave
+ *     143: it no longer writes `fully_executed_at` — the compliance loop's
+ *     fully_executed hop does, after compliance approval). The PROVIDER path
+ *     (a wizard-sent agreement that came back signed) carries no compliance
+ *     mark yet: the loop's run of this gate in `complianceReview` mode is the
+ *     review that writes it.
  *
  *   · DOES THE DOTLOOP WEBHOOK STAMP COMPLIANCE? No, and that is correct.
  *     app/api/webhooks/dotloop/route.ts only UPDATES an already-matched row's
@@ -303,14 +323,14 @@ async function readListingAnchors(
  */
 async function readListingCompliance(
   supabase: SupabaseClient,
-  params: { listingId: string; brokerageId: string },
+  params: { listingId: string; brokerageId: string; review?: boolean },
 ): Promise<
   | { ok: true; passed: boolean; evidence: string[]; why: string | null }
   | { ok: false; error: string }
 > {
   const { data: rows, error } = await supabase
     .from("listing_agreements")
-    .select("id, compliance_passed, esign_status, fully_executed_at, created_at")
+    .select("id, compliance_passed, esign_status, fully_executed_at, agent_signed_at, seller_signed_at, created_at")
     .eq("listing_id", params.listingId)
     .eq("brokerage_id", params.brokerageId)
     .order("created_at", { ascending: false })
@@ -328,12 +348,20 @@ async function readListingCompliance(
     }
   }
 
-  // The most recent agreement that is BOTH compliance-passed and fully executed.
+  // THE RULE (wave 143, lane 143A — 142K finding 5, ONE vocabulary): `fully_executed_at` is stamped by exactly
+  // ONE hop, the ladder's `fully_executed`, which lands only AFTER compliance approval. It is no longer an
+  // INPUT to the decision that approves compliance (the provider's completion used to stamp it, and the gate
+  // read the stamp back as proof). So the evidence is:
+  //   · the packet is at or past ALL-SIGNED on the ladder (the provider's statement),
+  //   · the compliance decision is on the row — `compliance_passed` — OR this run IS the review (review mode),
+  //     where both parties' signature evidence must be on the row instead,
+  //   · a row that CLAIMS `fully_executed` carries its stamp (a status without its execution is a half-stamped gate).
+  const signedBothSides = (a: Record<string, any>) => !!a.agent_signed_at && !!a.seller_signed_at
   const good = agreements.find(
     (a) =>
-      a.compliance_passed === true &&
       isAtOrPastAllSigned(a.esign_status) &&
-      !!a.fully_executed_at,
+      (params.review ? signedBothSides(a) : a.compliance_passed === true) &&
+      (a.esign_status !== "fully_executed" || !!a.fully_executed_at),
   )
   if (good) {
     return {
@@ -341,23 +369,27 @@ async function readListingCompliance(
       passed: true,
       evidence: [
         `listing_agreements.id=${good.id}`,
-        `compliance_passed=true`,
+        params.review ? `signature_evidence=agent+seller (compliance review in progress)` : `compliance_passed=true`,
         `esign_status=${good.esign_status}`,
-        `fully_executed_at=${good.fully_executed_at}`,
+        ...(good.fully_executed_at ? [`fully_executed_at=${good.fully_executed_at}`] : []),
       ],
       why: null,
     }
   }
 
-  // There IS an agreement, but it does not carry all three marks. Say WHICH is
-  // missing — "not compliant" without the reason sends a TC hunting.
+  // There IS an agreement, but it does not carry the marks. Say WHICH is missing — "not compliant" without
+  // the reason sends a TC hunting.
   const latest = agreements[0]
   const gaps: string[] = []
-  if (latest.compliance_passed !== true) gaps.push("its compliance review has not passed")
   if (!isAtOrPastAllSigned(latest.esign_status)) {
     gaps.push(`its e-sign status is "${latest.esign_status ?? "not recorded"}" — not yet "${LISTING_AGREEMENT_EXECUTED_STATUS}" (or a compliance state past it) on the ladder`)
+  } else if (params.review) {
+    if (!latest.agent_signed_at) gaps.push("the agent's signature is not evidenced on the agreement")
+    if (!latest.seller_signed_at) gaps.push("the seller's signature is not evidenced on the agreement")
+  } else if (latest.compliance_passed !== true) {
+    gaps.push("its compliance review has not passed")
   }
-  if (!latest.fully_executed_at) gaps.push("it was never marked fully executed")
+  if (latest.esign_status === "fully_executed" && !latest.fully_executed_at) gaps.push("it reads fully executed but carries no execution stamp")
 
   return {
     ok: true,
@@ -426,6 +458,7 @@ export async function assertListingActivationAllowed(
   const compliance = await readListingCompliance(supabase, {
     listingId: params.listingId,
     brokerageId: params.brokerageId,
+    review: params.complianceReview === true,
   })
   if (!compliance.ok) {
     return refuse([{

@@ -19,12 +19,22 @@ function main() {
   console.log("\n[waterfall context derivation]")
   const wf = cdaWaterfallContext({
     gross_commission: 20000, agent_net: 14000, brokerage_net: 6000,
-    distributions: [{ distribution_type: "fee", calculated_amount: 500 }, { distribution_type: "fee", calculated_amount: 250 }, { distribution_type: "team", calculated_amount: 1000 }],
+    // WAVE 143 (lane 143C) - THE FIXTURE SPEAKS THE LIVE VOCABULARY. This row used to say distribution_type "team" - a
+    // spelling commission_distributions_distribution_type_check REFUSES (the live set is agent | brokerage | fee | referral |
+    // residual | royalty | team_member) - and cdaWaterfallContext read the same impossible value, so the proof pinned the bug:
+    // team-split and revenue-share CDA lines were blank on every real deal. The RULE asserted now: each LIVE type maps to
+    // its context line, a voided row carries no money, and an absent type reads null (agreement-waterfall-guard derives the
+    // vocabulary from the CHECK cache itself).
+    distributions: [
+      { distribution_type: "fee", calculated_amount: 500 }, { distribution_type: "fee", calculated_amount: 250 }, { distribution_type: "team_member", calculated_amount: 1000 },
+      { distribution_type: "residual", calculated_amount: 300 }, { distribution_type: "referral", calculated_amount: 2000 }, { distribution_type: "referral", calculated_amount: 77, status: "voided" },
+    ],
   })
   check("gross/agent/brokerage carried", wf.gross_commission === 20000 && wf.agent_net === 14000 && wf.brokerage_net === 6000)
   check("split % derived (14000/20000 = 70%)", wf.agent_split_percent === 70)
   check("fees summed across distribution rows (500+250=750)", wf.fees === 750)
-  check("team split summed", wf.team_split === 1000)
+  check("team split summed from the LIVE type team_member", wf.team_split === 1000)
+  check("revenue share reads the LIVE type residual; the referral payout has its own line; a voided row carries no money", wf.revenue_share === 300 && wf.referral === 2000)
   check("zero gross → split null (no divide-by-zero)", cdaWaterfallContext({ gross_commission: 0, agent_net: 0 }).agent_split_percent === null)
 
   console.log("\n[field resolution + formatting]")

@@ -23,7 +23,9 @@ import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
-import { saveLifetimeConversionPolicy, saveLiveFaceProviderOrder, saveReviewRequestDelayDays } from "@/lib/settings/brokerage-settings-columns"
+import { saveFollowupPolicy, saveLifetimeConversionPolicy, saveLiveFaceProviderOrder, saveReputationProfiles, saveReviewRequestDelayDays } from "@/lib/settings/brokerage-settings-columns"
+import { FOLLOWUP_POLICY_KEY, platformFollowupPolicy, resolveFollowupPolicy } from "@/lib/ai-isa/followup-policy"
+import { REPUTATION_PROFILES_KEY, parseReputationProfiles } from "@/lib/reputation/review-ask-policy"
 import { parseLifetimeConversionPolicy } from "@/lib/kernel/lifetime-conversion"
 import {
   normalizeReviewRequestDelay,
@@ -152,4 +154,52 @@ export async function saveLifetimeConversionPolicyAction(requirePayoutVerified: 
   if (!w.ok) return w
   revalidatePath("/dashboard/admin/onboarding")
   return { ok: true as const, requirePayoutVerified: w.value.require_payout_verified }
+}
+
+// ─── settings.followup_policy (wave 143, lane 143E) ─────────────────────────────────────────
+
+/** The tenant's follow-up policy as the reader resolves it (platform defaults where never set), plus what is stored. */
+export async function getFollowupPolicyAction() {
+  const g = await gate("read", "the follow-up policy")
+  if (!g.ok) return g
+  const { data, error } = await createServiceClient().from("brokerage_settings").select("settings").eq("brokerage_id", g.brokerageId).maybeSingle()
+  if (error) return readRefusal(error)
+  const settings = (data as { settings?: Record<string, unknown> } | null)?.settings
+  const stored = settings && typeof settings === "object" ? (settings as Record<string, unknown>)[FOLLOWUP_POLICY_KEY] ?? null : null
+  // The SAME resolver the follow-up managers read with — one vocabulary.
+  const resolved = resolveFollowupPolicy(stored ?? undefined)
+  return { ok: true as const, canEdit: g.canEdit, stored, effective: resolved.policy, adjustments: resolved.adjustments, defaults: platformFollowupPolicy() }
+}
+
+/** `policy: null` resets to the platform defaults. A value the reader would have to correct is REFUSED with the reason. */
+export async function saveFollowupPolicyAction(policy: unknown) {
+  const g = await gate("write", "the follow-up policy")
+  if (!g.ok) return g
+  const w = await saveFollowupPolicy(createServiceClient(), g.brokerageId, policy, { type: "user", userId: g.userId, reason: "follow-up policy set" })
+  if (!w.ok) return w
+  revalidatePath("/referrals")
+  return { ok: true as const, stored: w.value }
+}
+
+// ─── settings.reputation_profiles (wave 143, lane 143E) ─────────────────────────────────────
+
+export async function getReputationProfilesAction() {
+  const g = await gate("read", "the reputation profiles")
+  if (!g.ok) return g
+  const { data, error } = await createServiceClient().from("brokerage_settings").select("settings").eq("brokerage_id", g.brokerageId).maybeSingle()
+  if (error) return readRefusal(error)
+  const settings = (data as { settings?: unknown } | null)?.settings
+  const parsed = parseReputationProfiles(settings)
+  const stored = settings && typeof settings === "object" ? (settings as Record<string, unknown>)[REPUTATION_PROFILES_KEY] ?? null : null
+  return { ok: true as const, canEdit: g.canEdit, stored, effective: { brokerage: parsed.brokerage, approval: parsed.approval, platformOrder: parsed.platformOrder }, rejected: parsed.rejected }
+}
+
+/** `profiles: null` clears the links (no review request is sent until a real link exists). A placeholder / foreign-host link is REFUSED. */
+export async function saveReputationProfilesAction(profiles: unknown) {
+  const g = await gate("write", "the reputation profiles")
+  if (!g.ok) return g
+  const w = await saveReputationProfiles(createServiceClient(), g.brokerageId, profiles, { type: "user", userId: g.userId, reason: "reputation profiles set" })
+  if (!w.ok) return w
+  revalidatePath("/referrals")
+  return { ok: true as const, stored: w.value }
 }

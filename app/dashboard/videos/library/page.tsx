@@ -39,6 +39,7 @@ import {
   Share2,
   Kanban,
   BarChart3,
+  Tv,
 } from "lucide-react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
@@ -430,11 +431,65 @@ function VideoLibraryContent() {
 
   // ─── Delete Script ─────────────────────────────────────────────────────────
 
+  // TV spot (wave 143, lane 143F): an approved public-marketing video becomes a TV-READY master — 16:9 1920×1080, 15/30/60 s, −24 LKFS,
+  // a caption sidecar — measured on the file itself (lib/video/tv-spot-produce.ts). "Ready" is every measurable check passing, never a
+  // promise a station accepts it.
+  async function handleTvSpot(script: VideoScript, force = false) {
+    const { toast } = await import("sonner")
+    const projectId = await resolveProjectIdForScript(script)
+    if (!projectId) {
+      toast.error("No video project found for this script. Generate a video first.")
+      return
+    }
+    const { makeTvSpotAction, getTvSpotAction } = await import("@/app/actions/tv-spot")
+    if (!force) {
+      const existing = await getTvSpotAction(projectId)
+      if (existing.success && existing.tvSpot) {
+        const t = existing.tvSpot
+        toast[t.ready ? "success" : "warning"](
+          t.ready ? `TV master is ready (${t.spec_version}): ${t.url}` : `A TV master exists but is not ready: ${t.checks.filter((c) => !c.ok).map((c) => `${c.id} (${c.measured})`).join("; ")}`,
+          { action: { label: "Re-master", onClick: () => { void handleTvSpot(script, true) } } },
+        )
+        return
+      }
+    }
+    toast.message("Making the TV master — measuring aspect, length, loudness and captions…")
+    const r = await makeTvSpotAction(projectId)
+    if (!r.success) {
+      toast.error(r.error)
+      return
+    }
+    if (r.ready) toast.success(`TV master ready: ${r.url}${r.captionTiming === "even" ? " — caption timing is an estimate; review it before it airs." : ""}`)
+    else toast.warning(`TV master made but NOT ready — ${r.failed.map((c) => `${c.id}: ${c.measured} (needs ${c.required})`).join("; ")}`)
+  }
+
+  // YouTube (wave 143, lane 143F): queue the tenant's approved, non-personal marketing videos on the connected channel NOW (the cron does the
+  // same sweep on its own; this is the owner's "I just connected it" button). Privacy is decided at send time from the file's classification.
+  async function handleQueueYouTube() {
+    const { toast } = await import("sonner")
+    toast.message("Checking your approved videos for the YouTube channel…")
+    const { queueApprovedVideosToYouTubeAction } = await import("@/app/actions/youtube-backfill")
+    const r = await queueApprovedVideosToYouTubeAction()
+    if (!r.success) {
+      toast.error(r.error)
+      return
+    }
+    if (r.note) toast.warning(r.note)
+    else if (r.queued > 0) toast.success(`${r.queued} approved video${r.queued === 1 ? "" : "s"} queued for YouTube${r.alreadyQueued ? ` (${r.alreadyQueued} already queued)` : ""}.`)
+    else toast.message(r.skipped.length ? `Nothing queued — ${r.skipped.map((s) => s.reason).slice(0, 2).join("; ")}` : "Nothing new to queue: every approved marketing video is already queued or on the channel.")
+  }
+
   async function handleDeleteScript(scriptId: string) {
     if (!confirm("Are you sure you want to delete this script?")) return
 
     try {
-      await fetch(`/api/video-scripts?id=${scriptId}`, { method: "DELETE" })
+      // fetch RESOLVES on a 403 / 404 / 500 — only a network failure throws. The response was never read, so a refused
+      // delete removed the script from the list (and closed its drawer) while it still existed (wave 143J).
+      const res = await fetch(`/api/video-scripts?id=${scriptId}`, { method: "DELETE" })
+      if (!res.ok) {
+        toast.error("Could not delete this script — it is still in your library.")
+        return
+      }
       setScripts((prev) => prev.filter((s) => s.id !== scriptId))
       if (selectedScript?.id === scriptId) {
         setDrawerOpen(false)
@@ -442,6 +497,7 @@ function VideoLibraryContent() {
       }
     } catch (error) {
       console.error("Error deleting script:", error)
+      toast.error("Could not delete this script — check your connection and try again.")
     }
   }
 
@@ -458,10 +514,16 @@ function VideoLibraryContent() {
               Manage your scripts, pipeline, and video analytics
             </p>
           </div>
-          <Button onClick={() => router.push("/dashboard/videos/create")}>
-            <Plus className="h-4 w-4 mr-2" />
-            Create Video
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => { void handleQueueYouTube() }}>
+              <Share2 className="h-4 w-4 mr-2" />
+              Send approved videos to YouTube
+            </Button>
+            <Button onClick={() => router.push("/dashboard/videos/create")}>
+              <Plus className="h-4 w-4 mr-2" />
+              Create Video
+            </Button>
+          </div>
         </div>
 
         {/* Tab Navigation */}
@@ -695,6 +757,12 @@ function VideoLibraryContent() {
                               Distribute
                             </DropdownMenuItem>
                           )}
+                          {script.approval_status === "approved" && (
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); void handleTvSpot(script) }}>
+                              <Tv className="h-4 w-4 mr-2" />
+                              TV spot
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleShowPerformance(script) }}>
                             <BarChart3 className="h-4 w-4 mr-2" />
                             Video Performance
@@ -808,6 +876,12 @@ function VideoLibraryContent() {
                           <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDistribute(script) }}>
                             <Share2 className="h-4 w-4 mr-2" />
                             Distribute
+                          </DropdownMenuItem>
+                        )}
+                        {script.approval_status === "approved" && (
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); void handleTvSpot(script) }}>
+                            <Tv className="h-4 w-4 mr-2" />
+                            TV spot
                           </DropdownMenuItem>
                         )}
                         <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleShowPerformance(script) }}>

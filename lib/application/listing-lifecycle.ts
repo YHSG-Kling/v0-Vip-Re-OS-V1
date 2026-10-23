@@ -971,39 +971,62 @@ export async function sendReviewRequestService(requestId: string, platform: stri
   }
   if (!request) return { success: false, error: "Review request not found" }
 
-  const reviewLinks: Record<string, string> = {
-    google: `https://g.page/r/YOUR_GOOGLE_PLACE_ID/review`,
-    zillow: `https://zillow.com/profile/YOUR_AGENT_ID/reviews`,
-    facebook: `https://facebook.com/YOUR_PAGE/reviews`,
+  // WAVE 143 (lane 143E) — this was the human "Send" button of the Reputation panel, and it (1) sent
+  // `https://g.page/r/YOUR_GOOGLE_PLACE_ID/review` (a placeholder) to a real client, (2) marked the request `sent`
+  // even when the contact had no phone or the SMS gate refused it, (3) could be double-clicked into two asks, and
+  // (4) was SMS-only. It now rides the same rules as the autonomous ask (lib/reputation/review-ask-policy.ts): a REAL
+  // platform link or a refusal, the channel the contact can actually receive, the copy screen, the action ledger's
+  // at-most-once cycle, and `sent` only when the gate dispatched.
+  const policy = await import("@/lib/reputation/review-ask-policy")
+  const askable = platform === "realtor" ? "realtor_com" : platform
+  if (!(policy.ASKABLE_REVIEW_PLATFORMS as readonly string[]).includes(askable)) {
+    return { success: false, error: `${platform} is not a platform review requests can point at` }
+  }
+  if (request.status === "sent" || request.status === "completed" || request.sent_at) {
+    return { success: false, error: "This review request was already sent — a client is asked once per closing." }
+  }
+  const link = policy.validateReviewLink(askable as import("@/lib/reputation/review-ask-policy").AskableReviewPlatform, request.review_url)
+  if (!link.ok) {
+    return { success: false, error: `This request has no real ${askable} review link (${link.reason}). Add the link on the Referrals page (Where review requests point), then draft the request again.` }
+  }
+  const channel = policy.chooseReviewChannel(request.contact ?? {})
+  if (!channel) return { success: false, error: "This client has no email or text-consented phone on file that can receive a review request." }
+
+  const ask = policy.composeManualReviewAsk({ firstName: request.contact?.first_name, address: request.transaction?.address, url: link.url })
+  const violations = policy.screenReviewAskCopy(ask)
+  if (violations.length > 0) return { success: false, error: `The message was held back (${violations.map((v) => v.code).join(", ")}).` }
+
+  const brokerageId = (request.brokerage_id ?? (request.contact as any)?.brokerage_id ?? "") as string
+  if (!brokerageId) return { success: false, error: "This review request has no brokerage — it cannot be sent untenanted." }
+  const ledger = {
+    reasonCode: "HUMAN_REQUESTED" as const,
+    cycle: `review_ask:manual:${requestId}`,
+    subject: { type: "contact" as const, id: request.contact_id as string },
+    detail: { review_request_id: requestId, platform: askable },
+    policyKey: "reputation_profiles",
+  }
+  // Route through the gate (consent/opt-out/DNC/quiet-hours/de-confliction) — no raw send.
+  const dispatch = await import("@/lib/providers/dispatch")
+  const sent = channel === "email"
+    ? await dispatch.dispatchEmail({ brokerageId, to: request.contact.email, subject: ask.subject, html: ask.body, text: ask.body, contactId: request.contact_id, agentId: request.agent_id ?? undefined, channelPurpose: "update", systemSource: "review_request", humanApproved: true, ledger })
+    : await dispatch.dispatchSms({ brokerageId, to: request.contact.phone, message: ask.body, contactId: request.contact_id, agentId: request.agent_id ?? undefined, systemSource: "review_request", humanApproved: true, ledger })
+  if (!sent.success) {
+    console.error("[listing-lifecycle] review request send refused:", sent.error)
+    return { success: false, error: sent.error ?? "The send gate refused this review request." }
   }
 
-  const message = `Hi ${request.contact?.first_name}! Hope you're loving your new home at ${request.transaction?.address}! Your feedback means everything. Would you mind sharing your experience? Takes 60 seconds: ${reviewLinks[platform]}`
-
-  if (request.contact?.phone) {
-    // Route through the gate (consent/opt-out/DNC/quiet-hours/de-confliction) — no raw send.
-    const { dispatchSms } = await import("@/lib/providers/dispatch")
-    const smsResult = await dispatchSms({
-      brokerageId: (request.contact as any).brokerage_id ?? "",
-      to: request.contact.phone,
-      message,
-      contactId: request.contact_id,
-      systemSource: "review_request",
-    })
-    if (!smsResult.success) {
-      console.error("[listing-lifecycle] SMS send failed:", smsResult.error)
-    }
-  }
-
-  const { error: markSentError } = await supabase
+  const { data: marked, error: markSentError } = await supabase
     .from("review_requests")
-    .update({ sent_at: new Date().toISOString(), status: "sent" })
+    .update({ sent_at: new Date().toISOString(), status: "sent", platform: askable })
     .eq("id", requestId)
+    .select("id")
 
-  // If this write is refused the request stays 'scheduled' and the next sweep
-  // sends the same review request again. Silence here is a duplicate-send bug.
-  if (markSentError) {
-    console.error("[sendReviewRequestService] could not mark the request sent:", markSentError.message)
-    return { success: false, error: markSentError.message }
+  // The message is out; if this write is refused or matches nothing the row would read unsent — the ledger cycle above
+  // prevents a second send, and the failure is said, not swallowed.
+  if (markSentError || !marked || marked.length !== 1) {
+    const why = markSentError?.message ?? `the update matched ${marked?.length ?? 0} rows`
+    console.error("[sendReviewRequestService] could not mark the request sent:", why)
+    return { success: false, error: `Sent, but the request could not be marked sent (${why}).` }
   }
 
   return { success: true }

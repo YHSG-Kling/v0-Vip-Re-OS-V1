@@ -157,6 +157,8 @@ interface CDAWorkflowClientProps {
     net_to_agent: number | null
     net_to_brokerage: number | null
     breakdown_json: Record<string, unknown> | null
+    /** The agreement the engine priced this deal with (wave 143): version, as-of date + source, signed record, split applied. */
+    engine_inputs?: Record<string, unknown> | null
     calculated_at: string
   } | null
   complianceChecks: Array<{
@@ -193,6 +195,13 @@ export function CDAWorkflowClient({
 }: CDAWorkflowClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+
+  // WAVE 143 (lane 143C): what the engine froze when it priced this deal - the split it APPLIED (from the agreement in
+  // force on the deal's date, not the agent record's current column) and the referral deducted before the split.
+  const engineInputs = (commissionCalc?.engine_inputs ?? null) as { agreement?: Record<string, unknown> | null; applied?: { agent_split_percent?: number | null } | null } | null
+  const appliedSplit = typeof engineInputs?.applied?.agent_split_percent === "number" ? engineInputs.applied.agent_split_percent : null
+  const agreementApplied = (engineInputs?.agreement ?? null) as { as_of?: unknown; effective_from?: unknown; signed_agreement?: unknown } | null
+  const referralDeduction = Number((commissionCalc?.breakdown_json as { referral_deduction?: unknown } | null)?.referral_deduction ?? 0) || 0
 
   const [distributions, setDistributions] = useState<Array<{
     id: string
@@ -816,8 +825,18 @@ export function CDAWorkflowClient({
                         <p className="font-medium">{transaction.commission_percentage ?? "N/A"}%</p>
                       </div>
                       <div>
-                        <p className="text-muted-foreground">Agent Split</p>
-                        <p className="font-medium">{agent?.commission_split ?? "N/A"}%</p>
+                        <p className="text-muted-foreground">Agent Split{appliedSplit != null ? " (applied to this deal)" : ""}</p>
+                        <p className="font-medium">{appliedSplit ?? agent?.commission_split ?? "N/A"}%</p>
+                        {agreementApplied && (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Agreement in force on {String(agreementApplied.as_of ?? "the deal date")}
+                            {agreementApplied.effective_from ? ` (terms effective ${String(agreementApplied.effective_from)})` : ""}
+                            {agreementApplied.signed_agreement ? " · signed agreement on file" : " · no signed agreement on file for this date"}
+                          </p>
+                        )}
+                        {referralDeduction > 0 && (
+                          <p className="text-xs text-muted-foreground mt-1">Referral fee taken before the split: {formatCurrency(referralDeduction)}</p>
+                        )}
                       </div>
                       <div>
                         <p className="text-muted-foreground">Cap Progress</p>

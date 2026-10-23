@@ -21,6 +21,7 @@ import { inviteTenantMember, seatSubjectForEmail, redispatchInvitation, type Use
 import { tierAllowsRole, roleRefusalReason, seatableUserTypes, LICENSED_SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
 import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
+import { invitationLandingUrl } from "@/lib/platform/site-url"
 import { seatGate, setLicensedProducerExemption } from "@/lib/kernel/seat-usage"
 import { requirePlatformCapability, resolvePlatformRole } from "@/lib/platform/require-capability"
 import { headers } from "next/headers"
@@ -313,7 +314,7 @@ export async function createTenantUserAction(params: {
     lastName:     params.lastName ?? "",
     userType:     params.userType as UserDomainRole,
     callerUserId: auth.userId,
-    redirectTo:   `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
+    redirectTo:   invitationLandingUrl(),
     door:         "platform_console",
   })
   if (!res.success || !res.userId) return { ok: false, error: res.error ?? "Failed to create user" }

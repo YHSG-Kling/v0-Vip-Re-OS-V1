@@ -36,6 +36,10 @@ import { createClient } from "@/lib/supabase/server"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { evaluateRegulatoryCompliance } from "@/lib/compliance-rules/rule-evaluators"
 import { toLibraryScriptType } from "@/app/types/video-generation"
+// Wave 143 (lane 143F): a "55+ / senior living" claim in a marketing video script is verified against the tenant's
+// recorded housing-for-older-persons exemption (42 U.S.C. § 3607(b); 24 CFR 100.300-100.308), never assumed.
+import { assessOlderPersonsClaim, detectOlderPersonsClaims, OLDER_PERSONS_WRITING_DIRECTIVE } from "@/lib/compliance/fair-housing-older-persons"
+import { loadOlderPersonsVerifications } from "@/lib/compliance/fair-housing-older-persons-store"
 
 /** Who is generating, for the compliance actor context. */
 export interface ScriptComplianceActor {
@@ -609,7 +613,8 @@ Fair Housing compliance (Gate 4 — mandatory):
 - NEVER reference or imply race, color, religion, sex, national origin, disability, or familial status.
 - NEVER use neighborhood steering language (e.g., "great schools", "safe area", "quiet neighborhood" as dog-whistles).
 - Describe properties by features, square footage, layout, and price — not by the demographics of residents.
-- Keep all language neutral and inclusive.`
+- Keep all language neutral and inclusive.
+- ${OLDER_PERSONS_WRITING_DIRECTIVE}`
 
 /**
  * The proactive blocks, ready to splice into a system prompt.
@@ -777,6 +782,27 @@ export async function assessScriptCompliance(
   })
   redFlags.push(...phrases.redFlags)
 
+  // THE AGE-QUALIFIED CLAIM (wave 143; also outside the try, same reason). A script that says "55+" / "senior
+  // living" is public housing marketing: a recorded, verified exemption for the community it names passes it; an
+  // exemption whose conditions are unmet or stale is a hard FairHousing flag (a human is put on it); a claim nobody
+  // verified — no record, none named, or the record unreadable — is UNKNOWN ("not checked" never renders as
+  // "checked and fine"), which the caller already routes to review. Warnings and 'adult community' are untouched.
+  const olderUnknown: string[] = []
+  if (detectOlderPersonsClaims(script).length > 0) {
+    let records: Awaited<ReturnType<typeof loadOlderPersonsVerifications>> = "unreadable"
+    try {
+      records = await loadOlderPersonsVerifications(opts?.client ?? (await createClient()), actor.brokerageId)
+    } catch {
+      records = "unreadable"
+    }
+    const older = assessOlderPersonsClaim(script, records)
+    if (older.status === "conditions_unmet") redFlags.push(`FairHousing: ${older.reason} ${older.fix}`)
+    else if (older.status === "unverified" || older.status === "unreadable") olderUnknown.push(`${COMPLIANCE_UNKNOWN_PREFIX} — ${older.reason} ${older.fix}`)
+    for (const w of older.inconsistentWording.filter((c) => !/adult\s+community/i.test(c.phrase))) {
+      redFlags.push(`FairHousing: "${w.phrase}" is inconsistent with housing-for-older-persons intent (24 CFR 100.306) — describe the home, not who may live there.`)
+    }
+  }
+
   let warnings: string[] = [...phrases.warnings]
   let evaluatorFailed = false
   let evaluatorError: string | undefined
@@ -813,6 +839,7 @@ export async function assessScriptCompliance(
     )
   }
   if (phrases.unknownReason) unknownReasons.push(phrases.unknownReason)
+  unknownReasons.push(...olderUnknown)
 
   // ORDER OF PRECEDENCE. A known violation outranks "we do not know" — a dead
   // async gate must never downgrade a protected-class hit to a shrug. And

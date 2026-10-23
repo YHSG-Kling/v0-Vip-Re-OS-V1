@@ -102,6 +102,34 @@ console.log("\n━━━ A · the dispatch (pure) ━━━")
   ok(calls.length === 1 && calls[0].queueEntryId === "q-1", "…it runs on the next turn, for exactly the named row")
   const rej = await capturing(async () => { const r = dispatchInlineEnrichmentDrain(target, async () => { throw new Error("provider down") }); await tick(); return r })
   ok(rej.value.dispatched && rej.errors.some((e) => /inline drain for queue row q-1 failed/.test(e) && /provider down/.test(e)), "a REJECTING drain never throws out of dispatch — it is logged as the cron's row")
+
+  // WAVE 143 (lane 143D) — the DEFAULT drain must survive the response. On a serverless platform work scheduled after the
+  // response is sent can be frozen; Next's `after()` keeps the invocation alive. It throws outside a request scope, so the
+  // scheduler falls back to the bare run (the pre-143D behaviour) — never a lost drain, never a throw into the capture.
+  // The DEFAULT path is driven through dispatchInlineEnrichmentDrain itself (ENRICHMENT_INLINE_DRAIN=on, a recorder for the
+  // orchestrator, and a loader for Next's hook) — scheduleAfterResponse is not a new export.
+  process.env.ENRICHMENT_INLINE_DRAIN = "on"
+  const ran: string[] = []
+  const defaultDrain = async (t: InlineDrainTarget) => { ran.push(t.queueEntryId) }
+  const dt: InlineDrainTarget = { brokerageId: B, queueEntryId: "q-default" }
+  let queued: (() => Promise<unknown>) | null = null
+  const viaAfter = dispatchInlineEnrichmentDrain(dt, undefined, { defaultDrain, loadAfter: async () => (cb) => { queued = cb } })
+  await tick()
+  ok(viaAfter.dispatched && viaAfter.reason === "env_on" && typeof queued === "function" && ran.length === 0, "the DEFAULT drain is handed to after() — it has NOT run inline (the platform runs it after the response)")
+  await (queued as unknown as () => Promise<unknown>)()
+  ok(ran.length === 1 && ran[0] === "q-default", "…and after() running it drains exactly the named row")
+  dispatchInlineEnrichmentDrain(dt, undefined, { defaultDrain, loadAfter: async () => () => { throw new Error("`after` was called outside a request scope") } })
+  await tick()
+  ok(ran.length === 2, "outside a request scope after() throws → the bare run still happens (no lost drain, nothing thrown into the capture)")
+  dispatchInlineEnrichmentDrain(dt, undefined, { defaultDrain, loadAfter: async () => { throw new Error("cannot import next/server") } })
+  await tick()
+  ok(ran.length === 3, "…and a failed import of next/server falls back the same way")
+  dispatchInlineEnrichmentDrain(dt, undefined, { defaultDrain }) // the REAL next/server `after`, called from a script (no request scope)
+  await new Promise((r) => setTimeout(r, 900)) // the first import of next/server takes a few hundred ms
+  ok(ran.length === 4, "POSITIVE CONTROL: the REAL Next `after` throws outside a request scope (next@16) and the fallback still runs the drain")
+  const rejecting = await capturing(async () => { dispatchInlineEnrichmentDrain(dt, undefined, { defaultDrain: async () => { throw new Error("orchestrator down") }, loadAfter: async () => (cb) => { void cb() } }); await tick(); await tick() })
+  ok(rejecting.errors.some((e) => /inline drain for queue row q-default failed/.test(e) && /orchestrator down/.test(e)), "a REJECTING default drain handed to after() is still caught inside the job (logged as the cron's row, never an unhandled rejection)")
+  delete process.env.ENRICHMENT_INLINE_DRAIN
 }
 
 console.log("\n━━━ B · the writers, executed over the fake ━━━")
@@ -183,7 +211,12 @@ console.log("\n━━━ D · source, stripped ━━━")
   ok(/processEnrichmentQueue\(brokerage\.id\)/.test(stripped(CRON)), "the cron route calls the SAME function with no id — the batch backstop")
   const drain = stripped(DRAIN)
   ok(/return env\.NEXT_RUNTIME \? "app_runtime" : null/.test(drain) && /if \(env\.ENRICHMENT_INLINE_DRAIN === "off"\) return null/.test(drain), "the default drain is gated on the app runtime with a kill switch")
-  ok(/void Promise\.resolve\(\)\s*\.then\(\(\) => run\(target\)\)\s*\.catch\(/.test(drain) && /processEnrichmentQueue\(target\.brokerageId, \{ queueEntryId: target\.queueEntryId \}\)/.test(drain), "the default drain is the orchestrator for ONE row, scheduled and never awaited, its rejection caught")
+  // Re-asserted as the RULE (143D moved the shape, not the rule): the drain job is the orchestrator for ONE row, its rejection is
+  // caught inside the job, the writer NEVER awaits it, and the default path is handed to the after-response hook (injected seams
+  // keep the bare next-turn run).
+  ok(/const attempt = \(\): Promise<void> => Promise\.resolve\(\)\s*\.then\(\(\) => run\(target\)\)[\s\S]{0,80}\.catch\(/.test(drain) && /processEnrichmentQueue\(target\.brokerageId, \{ queueEntryId: target\.queueEntryId \}\)/.test(drain), "the default drain is the orchestrator for ONE row, its rejection caught inside the job")
+  ok(/if \(reason === "injected"\) void attempt\(\)\s*else void scheduleAfterResponse\(attempt, seams\.loadAfter\)/.test(drain) && !/await attempt\(|await scheduleAfterResponse\(/.test(drain.replace(/async function scheduleAfterResponse[\s\S]*$/, "")), "never awaited by the writer: the injected seam runs bare, the DEFAULT drain goes through scheduleAfterResponse (void)")
+  ok(/await import\("next\/server"\)/.test(drain) && /after\(job\)/.test(drain) && /void job\(\)/.test(drain), "the after-response hook is imported LAZILY from next/server and falls back to the bare job")
   ok(!/from "@\/lib\/lead-pipeline\/enrichment-orchestrator"/.test(drain) && /await import\("@\/lib\/lead-pipeline\/enrichment-orchestrator"\)/.test(drain), "the orchestrator is imported LAZILY — the dispatch module pulls no provider graph into a queue writer's importers")
 }
 

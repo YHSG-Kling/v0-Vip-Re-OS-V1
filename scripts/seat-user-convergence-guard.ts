@@ -147,14 +147,18 @@ class Query implements PromiseLike<any> {
   }
 }
 
+/** Every auth invite the fake saw — the landing the invitee is sent to is read from here (wave 143G). */
+const INVITES: Array<{ email: string; redirectTo: string | undefined }> = []
+
 function fakeClient(store: Store) {
   return {
     from: (table: string) => new Query(store, table),
     rpc: async () => ({ data: null, error: null }),
     auth: {
       admin: {
-        inviteUserByEmail: async (email: string, opts?: { data?: Row }) => {
+        inviteUserByEmail: async (email: string, opts?: { data?: Row; redirectTo?: string }) => {
           const e = email.toLowerCase()
+          INVITES.push({ email: e, redirectTo: opts?.redirectTo })
           if (store.authUsers.some((u) => u.email === e)) return { data: { user: null }, error: { message: "User already registered" } }
           const id = newId("auth")
           store.authUsers.push({ id, email: e })
@@ -437,6 +441,85 @@ console.log("\n[live backlog shape (lane 140O) — users with no role grant + se
   const exec = heal.slice(heal.indexOf("repair_user_records: async"), heal.indexOf("sync_carrier_registration: async"))
   check("self-healing's repair_user_records executor runs repairIncompleteAccountSetup behind a same-tenant check (every id pinned to i.brokerageId BEFORE the repairer runs; a foreign id is a boundary stop)", exec.indexOf('.eq("brokerage_id", i.brokerageId)') > -1 && exec.indexOf('.eq("brokerage_id", i.brokerageId)') < exec.indexOf("repairIncompleteAccountSetup") && /tenant_boundary/.test(exec))
   check("the readiness contract routes repair_user_records for the owner (adminUser) AND for every incomplete seat user (seats → userIds list) — the live 9 + 4 backlog is cleared by the contract, not by hand", /"repair_user_records",\s*\{\s*userId:\s*owner\.id\s*\}/.test(contract) && /"repair_user_records",\s*\{\s*userIds:/.test(contract) && /userIds/.test(exec))
+}
+
+console.log("\n[ONE invitation landing — every tenant-seat door sends the invitee to /auth/callback, where the invitation is ACCEPTED (wave 143G)]")
+{
+  // The acceptance (user_invitations pending → accepted, brokerage onboarding advanced) happens at ONE place:
+  // app/auth/callback/route.ts. A door that sent the invitee anywhere else left the row `pending` until it expired.
+  const LANDING = "https://app.example.test/auth/callback?next=/dashboard/onboarding"
+  const savedApp = process.env.NEXT_PUBLIC_APP_URL, savedVercel = process.env.VERCEL_URL
+  try {
+    delete process.env.VERCEL_URL
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example.test/"
+    ACTIVE = seed(); INVITES.length = 0
+    const d = await users.inviteTenantMember({ brokerageId: "brk-1", teamId: "team-1", email: "landing1@b1.test", firstName: "La", lastName: "Nding", userType: "agent", callerUserId: "u-owner" })
+    check("tenant-invite door (inviteTenantMember default): the invite lands on /auth/callback?next=/dashboard/onboarding (trailing slash on the origin normalised)", d.success && INVITES.length === 1 && INVITES[0].redirectTo === LANDING, INVITES[0]?.redirectTo)
+    check("  control: an EXPLICIT redirectTo from a door still wins (the seam is not a hard-code)", await (async () => { INVITES.length = 0; await users.inviteTenantMember({ brokerageId: "brk-1", email: "landing2@b1.test", userType: "tc", callerUserId: "u-owner", redirectTo: "https://x.test/custom" }); return INVITES[0]?.redirectTo === "https://x.test/custom" })())
+    // The re-send door (redispatchInvitation) is the same landing.
+    ACTIVE.t("user_invitations").push({ id: "inv-landing", brokerage_id: "brk-1", email: "resend@b1.test", status: "failed", user_type: "agent", team_id: null, first_name: "Re", last_name: "Send" })
+    INVITES.length = 0
+    const rd = await users.redispatchInvitation(fakeClient(ACTIVE) as any, { invitationId: "inv-landing", brokerageId: "brk-1", actorUserId: "u-owner" })
+    check("re-send door (redispatchInvitation default): the SAME landing", rd.ok && INVITES[0]?.redirectTo === LANDING, JSON.stringify({ ok: rd.ok, err: rd.error, to: INVITES[0]?.redirectTo }))
+    // Unset origin: no "undefined/…" link is ever sent — the provider falls back to the project's Site URL.
+    delete process.env.NEXT_PUBLIC_APP_URL
+    ACTIVE = seed(); INVITES.length = 0
+    const u0 = await users.inviteTenantMember({ brokerageId: "brk-1", email: "landing3@b1.test", userType: "agent", callerUserId: "u-owner" })
+    check("no origin known: redirectTo is undefined — never the string \"undefined/…\" or a relative path", u0.success && INVITES.length === 1 && INVITES[0].redirectTo === undefined, String(INVITES[0]?.redirectTo))
+    check("  control: the old spelling WOULD have sent \"undefined/dashboard/onboarding\"", `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding` === "undefined/dashboard/onboarding")
+  } finally {
+    if (savedApp === undefined) delete process.env.NEXT_PUBLIC_APP_URL; else process.env.NEXT_PUBLIC_APP_URL = savedApp
+    if (savedVercel === undefined) delete process.env.VERCEL_URL; else process.env.VERCEL_URL = savedVercel
+  }
+  // SOURCE (stripped): no tenant-seat door spells its own landing from the raw env.
+  const DOORS = ["lib/kernel/users.ts", "lib/kernel/tenant-creation.ts", "app/actions/superadmin/tenant-users.ts", "app/api/recruiting/provision-agent/route.ts", "app/actions/admin/create-subscriber.ts"]
+  const OWN_LANDING = /redirectTo\s*(?::|=|\?\?)[^\n]*NEXT_PUBLIC_APP_URL/
+  const spelled = DOORS.filter((f) => OWN_LANDING.test(stripComments(src(f))))
+  check(`none of the ${DOORS.length} tenant-seat doors builds redirectTo from the raw env (they call invitationLandingUrl())`, spelled.length === 0, spelled.join(", "))
+  check("  control: the finder catches the retired spellings", OWN_LANDING.test("redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding`,") && OWN_LANDING.test("const redirectTo = params.redirectTo ?? `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback`"))
+  const usesOne = DOORS.filter((f) => /invitationLandingUrl\(\)/.test(stripComments(src(f))))
+  check(`every one of the ${DOORS.length} doors resolves its landing through invitationLandingUrl() (${usesOne.length}/${DOORS.length})`, usesOne.length === DOORS.length, DOORS.filter((f) => !usesOne.includes(f)).join(", "))
+  check("the landing is defined ONCE (lib/platform/site-url.ts) and points at the callback that accepts the invitation", /export function invitationLandingUrl[\s\S]{0,200}\/auth\/callback\?next=\/dashboard\/onboarding/.test(stripComments(src("lib/platform/site-url.ts"))) && /acceptUserInvitationOnFirstLogin\(/.test(stripComments(src("app/auth/callback/route.ts"))))
+}
+
+console.log("\n[TEAM LEAD ANCHOR — a team_lead seated on a team that names no lead becomes its lead; a led team keeps its lead (wave 143G)]")
+{
+  // CLAUDE.md §4: "Team lead anchors on teams.team_lead_id." Lead visibility's team scope, unknown-sender routing and the
+  // team leader's revenue-share row all read that column — a team_lead who is only a users.user_type + a grant leads nothing.
+  ACTIVE = seed()
+  ACTIVE.t("teams").push({ id: "team-3", brokerage_id: "brk-2", name: "Three", team_lead_id: null, deleted_at: null })
+  ACTIVE.t("teams").push({ id: "team-4", brokerage_id: "brk-2", name: "Four", team_lead_id: null, deleted_at: null })
+  ACTIVE.t("teams").push({ id: "team-5", brokerage_id: "brk-2", name: "Five", team_lead_id: null, deleted_at: null })
+  const leadOf = (id: string) => ACTIVE.t("teams").find((t) => t.id === id)?.team_lead_id ?? null
+  // The detector, as a pure predicate over the store: a team that names no lead while a team_lead is seated on it.
+  const ledlessTeamsWithALead = (s: Store) => s.t("teams").filter((t) => t.team_lead_id == null && !t.deleted_at && s.t("users").some((u) => u.user_type === "team_lead" && u.team_id === t.id))
+
+  const l1 = await users.inviteTenantMember({ brokerageId: "brk-2", teamId: "team-3", email: "lead1@b2.test", firstName: "Lea", lastName: "One", userType: "team_lead", callerUserId: "u-staff" })
+  check("a team_lead invited onto a team with NO lead becomes that team's lead (teams.team_lead_id = the user)", l1.success && leadOf("team-3") === l1.userId, `${l1.error ?? ""} lead=${leadOf("team-3")}`)
+  const l2 = await users.inviteTenantMember({ brokerageId: "brk-2", teamId: "team-3", email: "lead2@b2.test", firstName: "Lee", lastName: "Two", userType: "team_lead", callerUserId: "u-staff" })
+  check("FILL-ABSENT: a SECOND team_lead on the same team does not displace the lead (replacing a lead is an admin act with money behind it)", l2.success && leadOf("team-3") === l1.userId && ACTIVE.t("users").find((u) => u.id === l2.userId)?.team_id === "team-3")
+  const l1again = await users.inviteTenantMember({ brokerageId: "brk-2", teamId: "team-3", email: "lead1@b2.test", firstName: "Lea", lastName: "One", userType: "team_lead", callerUserId: "u-staff" })
+  check("idempotent: re-inviting the lead changes nothing (still the same lead, one users row)", l1again.success && leadOf("team-3") === l1.userId && count(ACTIVE, "users", (u) => u.email === "lead1@b2.test") === 1)
+  const a4 = await users.inviteTenantMember({ brokerageId: "brk-2", teamId: "team-4", email: "agent4@b2.test", firstName: "Al", lastName: "Four", userType: "agent", callerUserId: "u-staff" })
+  check("CONTROL: an AGENT invited onto a lead-less team does not anchor it (only team_lead does)", a4.success && leadOf("team-4") === null)
+  const promo = await users.assignUserRoleAndEntitlements({ userId: a4.userId!, newRole: "team_lead", brokerageId: "brk-2", teamId: "team-4", agentId: a4.agentId, callerUserId: "u-staff" })
+  check("role change agent → team_lead on a lead-less team anchors it (the second door that seats a team lead)", promo.success && leadOf("team-4") === a4.userId, `${promo.error ?? ""} lead=${leadOf("team-4")}`)
+  const solo = await users.inviteTenantMember({ brokerageId: "brk-1", teamId: "team-1", email: "colead@b1.test", firstName: "Co", lastName: "Lead", userType: "team_lead", callerUserId: "u-owner" })
+  check("a led team keeps its lead (the solo owner still leads team-1 after a co-lead is seated)", solo.success && leadOf("team-1") === "u-owner")
+  check("after every door: no team names no lead while a team_lead is seated on it", ledlessTeamsWithALead(ACTIVE).length === 0, ledlessTeamsWithALead(ACTIVE).map((t) => t.id).join(","))
+  ACTIVE.t("users").push({ id: "u-ghost", email: "ghost@b2.test", user_type: "team_lead", brokerage_id: "brk-2", team_id: "team-5", status: "active", platform_role: null })
+  check("  POSITIVE CONTROL: the detector names a team whose team_lead was seated without the anchor (the pre-143G shape)", ledlessTeamsWithALead(ACTIVE).map((t) => t.id).join(",") === "team-5")
+  ACTIVE.refuse.add("teams:update")
+  const refusedAnchor = await users.inviteTenantMember({ brokerageId: "brk-2", teamId: "team-5", email: "lead5@b2.test", firstName: "Five", lastName: "Lead", userType: "team_lead", callerUserId: "u-staff" })
+  ACTIVE.refuse.delete("teams:update")
+  check("a REFUSED anchor write is a failed seat — reported, never a success (the retry is idempotent)", !refusedAnchor.success && /anchor/i.test(refusedAnchor.error ?? ""), refusedAnchor.error)
+  // The anchor is module-private (its only callers are the two provisioning doors). A role grant naming a team of ANOTHER
+  // tenant (the transfer rail seats members while the team row still belongs to the source) reaches it with the wrong tenant.
+  ACTIVE.t("teams").push({ id: "team-6", brokerage_id: "brk-2", name: "Six", team_lead_id: null, deleted_at: null })
+  const foreignPromo = await users.assignUserRoleAndEntitlements({ userId: a4.userId!, newRole: "team_lead", brokerageId: "brk-1", teamId: "team-6", agentId: a4.agentId, callerUserId: "u-staff" })
+  check("a team that is NOT this tenant's is never anchored (tenant in the predicate): the promotion succeeds, the foreign team stays lead-less", foreignPromo.success && leadOf("team-6") === null)
+  const src = stripComments(readFileSync(join(ROOT, "lib/kernel/users.ts"), "utf8"))
+  check("the anchor is called from BOTH provisioning doors (createOrRepairUserDomainRecords + assignUserRoleAndEntitlements)", (src.match(/anchorTeamLeadIfAbsent\(service,/g) ?? []).length === 2)
 }
 
 console.log("\n[registration]")

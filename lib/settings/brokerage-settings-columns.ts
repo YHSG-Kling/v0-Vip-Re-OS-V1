@@ -35,6 +35,8 @@ import { validateFaceProviderOrder, type FaceRenderProvider } from "@/lib/live-a
 import { appendTenantPolicyVersion, type PolicyActor } from "@/lib/kernel/tenant-policy"
 import { LIFETIME_CONVERSION_POLICY_KEY } from "@/lib/kernel/lifetime-conversion"
 import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
+import { FOLLOWUP_POLICY_KEY, resolveFollowupPolicy } from "@/lib/ai-isa/followup-policy"
+import { ASKABLE_REVIEW_PLATFORMS, REPUTATION_PROFILES_KEY, parseReputationProfiles } from "@/lib/reputation/review-ask-policy"
 
 type ColumnWriteResult<T> = { ok: true; rowId: string; value: T } | { ok: false; error: string }
 
@@ -133,6 +135,61 @@ export async function saveLifetimeConversionPolicy(
   if (typeof policy?.requirePayoutVerified !== "boolean") return { ok: false, error: "requirePayoutVerified must be true or false." }
   const value = { require_payout_verified: policy.requirePayoutVerified }
   const m = await mergeBrokerageSettings(svc, brokerageId, { [LIFETIME_CONVERSION_POLICY_KEY]: value }, { policy: actor })
+  if (!m.ok) return { ok: false, error: m.error }
+  return { ok: true, rowId: m.rowId, value }
+}
+
+/**
+ * settings.followup_policy — the tenant's follow-up policy (wave 143, lane 143E). THE ONE door for it; the reader is
+ * lib/ai-isa/followup-policy.ts loadFollowupPolicy. A jsonb KEY, so the write goes through mergeBrokerageSettings (compare-and-set
+ * by key), which versions it through TENANT_POLICY_SETTINGS_KEYS. The submitted value is VALIDATED, never silently clamped: any
+ * field the reader would have to correct (a send window wider than the legal 8-21, a moment key the touchpoint CHECK refuses, …)
+ * refuses the save and says which. `null` clears the policy (the platform defaults apply again). Only known keys are stored.
+ */
+export async function saveFollowupPolicy(
+  svc: any,
+  brokerageId: string,
+  policy: unknown,
+  actor?: PolicyActor,
+): Promise<ColumnWriteResult<Record<string, unknown> | null>> {
+  if (!brokerageId) return { ok: false, error: "No brokerage to save the follow-up policy for — nothing was written." }
+  let value: Record<string, unknown> | null = null
+  if (policy !== null) {
+    if (!policy || typeof policy !== "object" || Array.isArray(policy)) return { ok: false, error: "The follow-up policy must be an object (or null to reset)." }
+    const KNOWN = ["guidance", "guardrails", "reengagement", "sphere", "nurture", "postClose", "arbiter"] as const
+    value = {}
+    for (const k of KNOWN) if ((policy as Record<string, unknown>)[k] !== undefined) value[k] = (policy as Record<string, unknown>)[k]
+    const resolved = resolveFollowupPolicy(value)
+    if (resolved.adjustments.length > 0) return { ok: false, error: `The follow-up policy was not saved — ${resolved.adjustments.join("; ")}.` }
+  }
+  const m = await mergeBrokerageSettings(svc, brokerageId, { [FOLLOWUP_POLICY_KEY]: value ?? undefined }, { policy: actor })
+  if (!m.ok) return { ok: false, error: m.error }
+  return { ok: true, rowId: m.rowId, value }
+}
+
+/**
+ * settings.reputation_profiles — where a review request points and whether the agent approves each one (wave 143, lane 143E).
+ * Reader: lib/reputation/review-ask-policy.ts parseReputationProfiles. A link the reader would refuse (placeholder text, a host
+ * that is not the platform's, not https) refuses the SAVE, so the form can say why. `null` clears (no request is sent until a
+ * real link exists again).
+ */
+export async function saveReputationProfiles(
+  svc: any,
+  brokerageId: string,
+  profiles: unknown,
+  actor?: PolicyActor,
+): Promise<ColumnWriteResult<Record<string, unknown> | null>> {
+  if (!brokerageId) return { ok: false, error: "No brokerage to save the reputation profiles for — nothing was written." }
+  let value: Record<string, unknown> | null = null
+  if (profiles !== null) {
+    if (!profiles || typeof profiles !== "object" || Array.isArray(profiles)) return { ok: false, error: "The reputation profiles must be an object (or null to clear)." }
+    const KNOWN = [...ASKABLE_REVIEW_PLATFORMS, "agents", "approval", "platform_order"] as const
+    value = {}
+    for (const k of KNOWN) if ((profiles as Record<string, unknown>)[k] !== undefined) value[k] = (profiles as Record<string, unknown>)[k]
+    const parsed = parseReputationProfiles({ [REPUTATION_PROFILES_KEY]: value })
+    if (parsed.rejected.length > 0) return { ok: false, error: `The reputation profiles were not saved — ${parsed.rejected.map((r) => `${r.where}: ${r.reason}`).join("; ")}.` }
+  }
+  const m = await mergeBrokerageSettings(svc, brokerageId, { [REPUTATION_PROFILES_KEY]: value ?? undefined }, { policy: actor })
   if (!m.ok) return { ok: false, error: m.error }
   return { ok: true, rowId: m.rowId, value }
 }

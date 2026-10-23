@@ -184,62 +184,21 @@ export async function sendBirthdayMessage(contactId: string, opts?: TouchpointAc
   return { success: true }
 }
 
-// Send referral request
-export async function sendReferralRequest(contactId: string, opts?: TouchpointActorOpts) {
-  const { supabase, agentId, brokerageId } = await resolveTouchpointActor(opts)
-
-  const { data: contact } = await supabase
-    .from("contacts")
-    .select("first_name, last_name, email, phone")
-    .eq("id", contactId)
-    .single()
-
-  if (!contact) throw new Error("Contact not found")
-
-  const { data: agent } = await supabase.from("agents").select("users(first_name, last_name)").eq("id", agentId).single()
-
-  const agentFullName = [(agent?.users as any)?.first_name, (agent?.users as any)?.last_name].filter(Boolean).join(" ")
-
-  const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
-  const referralCopy = await generateClientMessage({
-    brokerageId, audience: "buyer", recipientFirstName: contact.first_name,
-    purpose: "Gentle referral ask to a happy past client — appreciative and warm, invite them to refer friends or family thinking of buying or selling, with zero pressure.",
-    fallback: {
-      subject: "A quick favor",
-      body: `Hi ${contact.first_name}! I've been thinking about you - hope everything's going great with your home! Quick question: I'm trying to help more families find their perfect home. If you know anyone thinking about buying or selling, I'd love to give them the same experience you had. No pressure at all - just wanted to put it on your radar. ${agentFullName || "Your Agent"}`,
-    },
-  })
-  const message = referralCopy.body
-
-  // INFORMED-AUDIT FIX: previously stamped "sent" with no send behind it.
-  // Dispatch through THE gate first; record "sent" only on a real dispatch.
-  if (!contact.phone) {
-    return { success: false, error: "Contact has no phone number for a referral text" }
-  }
-  const { dispatchSms } = await import("@/lib/providers/dispatch")
-  const result = await dispatchSms({
-    brokerageId: brokerageId!,
-    to: contact.phone,
-    message,
-    systemSource: "lifetime_touchpoints",
-    contactId,
-    metadata: { touchpoint: "referral_request" },
-    ledger: touchLedger(opts, `referral_request:${new Date().toISOString().slice(0, 10)}`),
-  })
-  if (!result.success) {
-    return { success: false, error: result.error ?? "Send blocked by compliance gate" }
-  }
-
-  // THE ONE sent-touch ledger + the ONE LIFETIME_CUSTOMER_TOUCHPOINT_SENT emit (wave 104, lane 104E).
-  const recorded = await recordLifetimeTouchpointSent(supabase, {
-    brokerageId: brokerageId!, contactId, agentId, touchpointType: "referral_request", channel: "sms",
-    engagementData: { message }, source: opts?.client ? "cron" : "ui",
-  })
-  if (!recorded.ok) throw new Error(recorded.error)
-
-  revalidatePath("/lifetime-customers")
-  return { success: true }
-}
+// ── DELETED (wave 143, lane 143E): sendReferralRequest ──────────────────────────────────────
+//
+// DUPLICATE of the referral-ask the follow-up arbiter now owns, and a hard-coded timetable besides. Its ONE caller was
+// the daily lifetime cron's "referral request opportunities (3 days and 30 days after close)" block, which texted every closed
+// client at exactly day 3 and day 30 whatever their intent, history or fatigue — and this function shipped a CANNED fallback body
+// ("Hi X! I've been thinking about you…") when the gateway was down. That block is retired (tombstone in
+// app/api/cron/lifetime-customer-touchpoints/route.ts) and with it this function had no caller anywhere in the tree.
+//
+// SURVIVOR: lib/sphere/followup-moments.ts conductDueFollowUpMoments — the `referral_request` moment of the tenant's versioned
+// followup_policy (lib/ai-isa/followup-policy.ts postClose; opens at policy.afterClosingDays) is reviewed by the arbiter, which
+// decides WHETHER, WHEN and HOW to ask (a brand-voiced message, a video, a task for the agent, or wait). What THIS function had
+// that the survivor needed was carried over first: the SMS-through-THE-gate send (dispatchSms with consent / DNC / quiet hours),
+// the ledger at-most-once cycle (now `followup_moment:<touchpoint id>`), the "sent only on a real dispatch" rule (the row is
+// settled `sent` only after the gate accepted), and the LIFETIME_CUSTOMER_TOUCHPOINT_SENT emit. What it had that the survivor
+// deliberately does NOT carry: the canned fallback — generation failure means "retry tomorrow", never an unreviewed script.
 
 // ── DELETED: getLifetimeCustomerContacts ────────────────────────────────────
 //

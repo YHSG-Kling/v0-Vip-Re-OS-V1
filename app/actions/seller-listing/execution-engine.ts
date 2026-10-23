@@ -558,7 +558,7 @@ export async function initiateListingAgreement(params: {
  *    If provider_pull: store providerRef to listing_agreements.
  * 4. INSERT listing_agreements (commission terms + document refs).
  * 5. If has commission adjustment: INSERT commission_adjustments.
- * 6. Set go_live_date on listings + calculate open house dates.
+ * 6. Record the PLANNED MLS live date (never invent one) + calculate open house dates from it.
  * 7. Call transitionLifecycle() → lifecycle_events + processKernelEvent().
  */
 export async function markAgreementSigned(params: {
@@ -585,6 +585,15 @@ export async function markAgreementSigned(params: {
    * "absent means not recorded" doctrine as seller_transaction_fee.
    */
   effectiveDate?: string
+  /**
+   * The PLANNED MLS live date (yyyy-mm-dd) — the day the agent and seller plan to go live on the MLS (wave 143, lane
+   * 143A). Typed by a person, recorded through lib/listings/mls-live-date.ts as a plan (never verified). Until wave 143
+   * this function wrote TODAY's date into `listings.go_live_date` instead — a placeholder that made every listing in prep
+   * read as already on the market and let the compliance loop take its MLS-date hop on a date nobody chose. Now: the date
+   * given here, else the one already on the listing (intake / timeline), else NONE — the agreement is still approved and
+   * executed, the open-house dates wait, and the loop reports `passed_awaiting_date` until a person sets one.
+   */
+  plannedMlsLiveDate?: string
   commissionTerms?: {
     listingRate?: number
     buyerRate?: number
@@ -903,7 +912,10 @@ export async function markAgreementSigned(params: {
       agreement_type:              "listing",
       seller_signed_at:            new Date().toISOString(),
       agent_signed_at:             new Date().toISOString(),
-      fully_executed_at:           new Date().toISOString(),
+      // NO `fully_executed_at` HERE (wave 143, lane 143A — closes 142K finding 5). The stamp belongs to ONE hop, the
+      // ladder's `fully_executed`, which the listing compliance loop records after compliance approval a few
+      // lines below (lib/listings/listing-compliance-loop.ts). `compliance_passed` stays: this function ran the
+      // document audit and packet scan above, so the mark records a check that actually ran.
       listing_commission_rate:     commissionTerms?.listingRate ?? null,
       buyer_commission_rate:       commissionTerms?.buyerRate ?? null,
       // Entered on the form, or derived as listing + buyer when both sides were
@@ -999,28 +1011,64 @@ export async function markAgreementSigned(params: {
     }
   }
 
-  // ── 6. Set go_live_date + calculate open house dates ──────────────────────
-  const goLiveDate = new Date()
-  const { marketingDate, eventDate } = calculateOpenHouseDates(goLiveDate)
-
-  const { error: listingError } = await supabase
-    .from("listings")
-    .update({
-      go_live_date:              goLiveDate.toISOString().slice(0, 10),
-      open_house_marketing_date: marketingDate.toISOString().slice(0, 10),
-      open_house_event_date:     eventDate.toISOString().slice(0, 10),
-      updated_at:                new Date().toISOString(),
+  // ── 6. The PLANNED MLS live date + open-house dates derived from it ───────
+  // Wave 143, lane 143A: this step used to set `go_live_date = today` — an invented date. A planned date is typed by
+  // a person (this call, intake, or the lifecycle timeline); it is recorded through the ONE writer
+  // (lib/listings/mls-live-date.ts), and when there is none the open-house dates wait rather than being computed
+  // from a day nobody chose.
+  const { recordPlannedMlsLiveDate } = await import("@/lib/listings/mls-live-date")
+  const { createServiceClient: serviceForPlannedDate } = await import("@/lib/supabase/service")
+  let plannedDate: string | null = null
+  if (params.plannedMlsLiveDate && params.plannedMlsLiveDate.trim() !== "") {
+    // The agreement row is already written, so a refused date does not undo it: it is REPORTED, never swallowed.
+    // The listing is still at LISTING_AGREEMENT_INITIATED here (the stage transition is step 7), so the writer does
+    // not re-run the compliance loop itself; the explicit loop run at the end of this function takes the hop.
+    const recorded = await recordPlannedMlsLiveDate(serviceForPlannedDate() as any, {
+      brokerageId, listingId, date: params.plannedMlsLiveDate.trim(), actorUserId: userId, source: "agreement",
     })
-    .eq("id", listingId)
-
-  if (listingError) {
-    return { success: false, error: listingError.message }
+    if (!recorded.ok) return { success: false, error: `The agreement was filed, but the planned MLS live date was refused: ${recorded.reason}` }
+    plannedDate = recorded.planned
+  } else {
+    const { data: existingPlan, error: existingPlanErr } = await supabase
+      .from("listings").select("go_live_date").eq("id", listingId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (existingPlanErr) return { success: false, error: existingPlanErr.message }
+    plannedDate = (existingPlan?.go_live_date as string | null)?.slice(0, 10) ?? null
   }
 
+  // Open-house dates hang off the PLANNED date; without one nothing is scheduled (and nothing is invented).
+  const openHouse = plannedDate ? calculateOpenHouseDates(new Date(`${plannedDate}T12:00:00Z`)) : null
+  const plannedDateWarning = plannedDate
+    ? null
+    : "No planned MLS live date is set. The agreement is filed and the compliance review runs, but the listing waits at LISTING_AGREEMENT_SIGNED and the open-house dates are not scheduled until you set the planned MLS live date on the lifecycle timeline."
+
+  if (openHouse) {
+    const { data: ohDatesWritten, error: listingError } = await supabase
+      .from("listings")
+      .update({
+        open_house_marketing_date: openHouse.marketingDate.toISOString().slice(0, 10),
+        open_house_event_date:     openHouse.eventDate.toISOString().slice(0, 10),
+        updated_at:                new Date().toISOString(),
+      })
+      .eq("id", listingId)
+      .eq("brokerage_id", brokerageId)
+      .select("id")
+
+    if (listingError) {
+      return { success: false, error: listingError.message }
+    }
+    if (!ohDatesWritten || ohDatesWritten.length === 0) {
+      return { success: false, error: "The open-house dates matched no listing in your brokerage" }
+    }
+  }
+
+  // The open-house post and event below run only when there is a planned date to hang them on (`openHouse`).
+  // Not re-indented on purpose: the diff stays reviewable and the bodies are unchanged.
   // Auto-schedule a DRAFT open-house social post — copy is AI-generated (gateway, brand-voiced,
   // Fair-Housing redrafted) grounded in the real address + event date, with a date-stamped floor as the
   // deterministic fallback (no more "stay tuned" placeholder). approval_status stays 'pending' so a human
   // still reviews before it posts.
+  if (openHouse) {
+  const { marketingDate, eventDate } = openHouse
   const { data: ohListing } = await supabase
     .from("listings").select("address, city, state").eq("id", listingId).maybeSingle()
   const ohAddress = [ohListing?.address, ohListing?.city, ohListing?.state].filter(Boolean).join(", ")
@@ -1070,6 +1118,7 @@ export async function markAgreementSigned(params: {
     created_at:            new Date().toISOString(),
   })
   if (ohEventErr) console.error(`[execution-engine] open-house event NOT created for the listing: ${ohEventErr.message}`)
+  }
 
   // ── 7. transitionLifecycle + processKernelEvent ───────────────────────────
   await transitionLifecycle({
@@ -1086,7 +1135,7 @@ export async function markAgreementSigned(params: {
       provider_key:   activeProviderKey,
       upload_mode:    uploadMode,
       has_adjustment: hasAdjustment,
-      go_live_date:   goLiveDate.toISOString().slice(0, 10),
+      planned_mls_live_date: plannedDate,
     },
   })
 
@@ -1115,7 +1164,8 @@ export async function markAgreementSigned(params: {
   // The agreement itself saved. If the ledger entry did not, the caller is told so
   // explicitly rather than being handed an unqualified success — a concession the
   // money engine never sees is money the seller is charged anyway.
-  return { success: true, agreementId: agreement.id, ...(adjustmentWarning ? { warning: adjustmentWarning } : {}) }
+  const warnings = [adjustmentWarning, plannedDateWarning].filter((w): w is string => !!w)
+  return { success: true, agreementId: agreement.id, ...(warnings.length ? { warning: warnings.join(" ") } : {}) }
 }
 
 // ─── OPEN HOUSE DATE CALCULATOR ───────────────────────────────────────────────

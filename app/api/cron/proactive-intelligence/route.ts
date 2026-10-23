@@ -25,6 +25,7 @@ export async function GET(request: Request) {
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()
+  let mlsLiveConfirmed = 0
   let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, mlsReminders = 0, staleVideos = 0, staleRuns = 0, strandedOffers = 0, staleTouchpoints = 0, closingOverdue = 0, reaperEscalated = 0, reaperReaped = 0, referralUpdates = 0, referralAppreciations = 0, errors = 0
 
   const [
@@ -128,6 +129,17 @@ export async function GET(request: Request) {
     //     honest (the marketing card grounds "live" in a real mls_number). Idempotent per listing.
     try { const r = await runMlsNumberReminders(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); mlsReminders += r.reminded } catch { errors++ }
 
+    // (8b) MLS LIVE VERIFICATION (wave 143, lane 143A) — the listings the OS says are live on the MLS that no feed has
+    //      confirmed yet. RentCast / the tenant's IDX are asked (bounded, at most once a day per listing); a `confirmed`
+    //      verdict records the ACTUAL live date (listings.mls_live_date_actual) and DOM starts counting from it; a
+    //      contradicted number or an overdue absence belle the agent. Idempotent.
+    try {
+      const { runMlsLiveVerificationSweep } = await import("@/lib/listings/mls-live-verification")
+      const r = await runMlsLiveVerificationSweep(svc as any, brokerageId, { limit: Math.min(PER_BROKERAGE_CAP, 10) })
+      mlsLiveConfirmed += r.confirmed
+      if (r.errors > 0) errors++
+    } catch { errors++ }
+
     // (9) THE REAPER NET (proactive lane) — one governed sweep of every "nothing falls through"
     //     reaper for this brokerage: stale video workflows (Asset Mgr), stalled automation chains
     //     (Campaign Orchestrator), stranded accepted offers + deals overdue past their close date
@@ -158,5 +170,5 @@ export async function GET(request: Request) {
     } catch { errors++ }
   }
 
-  return NextResponse.json({ ran_at: ranAt, brokerages, marketPulse, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, staleVideos, staleRuns, strandedOffers, staleTouchpoints, closingOverdue, reaperEscalated, reaperReaped, referralUpdates, referralAppreciations, errors })
+  return NextResponse.json({ ran_at: ranAt, brokerages, marketPulse, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, mlsLiveConfirmed, staleVideos, staleRuns, strandedOffers, staleTouchpoints, closingOverdue, reaperEscalated, reaperReaped, referralUpdates, referralAppreciations, errors })
 }

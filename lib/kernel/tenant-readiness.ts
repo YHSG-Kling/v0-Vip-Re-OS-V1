@@ -45,7 +45,7 @@ import type { SnapshotPayload } from "@/lib/platform/config-snapshots"
 import type { A2pSyncResult, CarrierTickDeps } from "@/lib/voice/carrier-registration-loop"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import { ownerNeedsTeamRow, requiresAgentRow } from "@/lib/kernel/tenant-provisioning-spec"
-import { isCanonicalTier, tenantWebsitePath } from "@/lib/kernel/tenant-creation"
+import { isCanonicalTier, tenantLandingPagePath, tenantWebsitePath } from "@/lib/kernel/tenant-creation"
 
 type Svc = any
 
@@ -253,7 +253,10 @@ const CHECKS: Record<ReadinessKey, Check> = {
     if (error) return blocked(`storefront uniqueness unreadable: ${error.message}`, { slug })
     const n = ((same ?? []) as unknown[]).length
     if (n > 1) return blocked(`slug "${slug}" is shared by ${n} live brokerages — resolving it re-homes a storefront (destructive); a human decides`, { slug, holders: n })
-    return pass(`website served at ${tenantWebsitePath(slug)}`, { slug, path: tenantWebsitePath(slug) })
+    // LANDING-PAGE CAPABILITY (wave 143G): landing pages live INSIDE this website (app/site/[slug]/lm/[formSlug],
+    // tenantLandingPagePath) and resolve through the SAME slug — the uniqueness proven above is what keeps that route
+    // unambiguous (a shared slug makes the landing resolver fail closed). No second key: the capability is the website.
+    return pass(`website served at ${tenantWebsitePath(slug)}; landing pages served inside it`, { slug, path: tenantWebsitePath(slug), landingPagePattern: tenantLandingPagePath(slug, "<form-slug>") })
   },
 
   adminUser: async (c) => {

@@ -94,9 +94,10 @@ export const STATUS_AT_LISTING_AGREEMENT_SIGNED: ListingStatus = "listing_signed
 export interface ListingStatusGate {
   /**
    * TRUE only when the listing-agreement compliance gate has PASSED for this listing — i.e. a
-   * `listing_agreements` row exists carrying compliance_passed=true AND esign_status=fully_signed
-   * AND fully_executed_at, which is obligation 1 of
-   * lib/listings/listing-activation-gate.ts::assertListingActivationAllowed.
+   * `listing_agreements` row exists carrying compliance_passed=true AND an esign_status at or past
+   * all-signed on the ladder (wave 143, lane 143A: `fully_executed_at` is the stamp of the ladder's
+   * `fully_executed` hop that lands after compliance approval, not an input to it), which is
+   * obligation 1 of lib/listings/listing-activation-gate.ts::assertListingActivationAllowed.
    *
    * Absent or false means NOT PROVEN, and not-proven refuses (CLAUDE.md §4): the gated stage
    * yields undefined and status is left untouched. "Nobody checked" must never render as

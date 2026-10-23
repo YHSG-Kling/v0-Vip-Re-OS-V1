@@ -213,9 +213,17 @@ async function main() {
   check("offer loop: compliance_pending BEFORE the driver runs; blocked → correction_required (no second bell); created → compliance_approved (evidence) then fully_executed (the bell)",
     ocl.indexOf('await stamp("compliance_pending")') > 0 && ocl.indexOf('await stamp("compliance_pending")') < ocl.indexOf("autoExecuteFullySignedOffer(offerId")
     && /await stamp\("correction_required", \{ notify: false \}\)/.test(ocl) && /if \(created\) \{[\s\S]{0,600}await stamp\("compliance_approved", \{ notify: false \}\)[\s\S]{0,200}await stamp\("fully_executed"/.test(ocl) && /record: \{ table: "offers", id: offerId \}/.test(ocl))
-  check("listing loop: compliance_pending inside the window before the gate; blocked → correction_required; both pass arms → compliance_approved then fully_executed on the NEWEST agreement",
+  // WAVE 143 (lane 143A) — THE RULE, re-asserted, not the waypoint (CLAUDE.md §2). This assertion used to count
+  // `await stamp("fully_executed"` == 2 (one per pass arm) — a shape of the code, true only while approval and execution
+  // were stamped back-to-back at the END of two arms. The rule: compliance_approved is recorded BEFORE any stage hop (the
+  // status map's coming_soon reads the mark it writes), `fully_executed` is spelled ONCE (behind markExecuted) and every
+  // exit of the pass arm — awaiting-date, each refused hop, the advance — goes through it, so no pass can end approved-but-not-executed.
+  check("listing loop: compliance_pending inside the window before the gate; blocked → correction_required; the pass arm records compliance_approved BEFORE the first stage hop, then ends every exit in the single fully_executed spelling, on the NEWEST agreement",
     lcl.indexOf('if (inWindow) await stamp("compliance_pending")') > 0 && lcl.indexOf('if (inWindow) await stamp("compliance_pending")') < lcl.indexOf("assertListingActivationAllowed(supabase")
-    && /if \(inWindow\) await stamp\("correction_required", \{ notify: false \}\)/.test(lcl) && (lcl.match(/await stamp\("fully_executed"/g) ?? []).length === 2 && /record: \{ table: "listing_agreements", listingId \}/.test(lcl))
+    && /if \(inWindow\) await stamp\("correction_required", \{ notify: false \}\)/.test(lcl)
+    && lcl.indexOf('await stamp("compliance_approved"') > 0 && lcl.indexOf('await stamp("compliance_approved"') < lcl.indexOf("await transitionLifecycle(")
+    && (lcl.match(/stamp\("fully_executed"/g) ?? []).length === 1 && /const markExecuted = /.test(lcl) && (lcl.match(/await markExecuted\(/g) ?? []).length >= 2
+    && /record: \{ table: "listing_agreements", listingId \}/.test(lcl))
   const lk = code("app/actions/listings-kernel.ts")
   check("the listing send writes the listing_agreements row the webhooks match (provider_ref = envelope, agreement_type listing, upload_mode provider_pull, the ladder state) or re-points the open one — after the dispatch, as a warning on refusal",
     /\.is\("fully_executed_at", null\)/.test(lk) && /provider_ref:\s*dispatch\.envelopeId \?\? null, esign_status: agreementStatus, upload_mode: "provider_pull"/.test(lk)
@@ -342,6 +350,182 @@ async function main() {
     stale.length === 0 && /transaction: "LEGAL-FORMS PROVIDER"/.test(code("app/dashboard/settings/integrations/integrations-client.tsx")) && /Legal-forms provider/.test(wiz) && /export const LEGAL_FORMS_PROVIDER_LABEL = "Legal-forms provider"/.test(code("lib/integrations/providers/catalog.ts")), stale.join(", "))
   check("the provider capability matrix still claims exactly the owner's head functions per provider (credentials · settings · forms · transaction creation · upload · fill · e-sign · status · sync)",
     /"credentials", "settings", "forms", "transaction_creation", "document_upload", "form_fill", "esign", "status", "sync"/.test(code("lib/integrations/providers/catalog.ts")))
+
+  // ── G · WAVE 143, LANE 143A — LISTING AGREEMENTS: FULLY EXECUTED ONLY AFTER COMPLIANCE APPROVAL; THE MLS LIVE DATE ──
+  console.log("\n[G · 143A: the listing agreement's two legacy columns follow the ladder; the MLS live date is planned XOR verified]")
+  const { hopCompanionColumns } = await import("../lib/esign/packet-states")
+  check("PURE: the companion columns are the stamps of exactly one hop each — compliance_approved → compliance_passed, fully_executed → fully_executed_at; every other hop, and every OFFER hop, stamps nothing",
+    JSON.stringify(hopCompanionColumns("listing_agreements", "compliance_approved", "T")) === JSON.stringify({ compliance_passed: true })
+    && JSON.stringify(hopCompanionColumns("listing_agreements", "fully_executed", "T")) === JSON.stringify({ fully_executed_at: "T" })
+    && ESIGN_PACKET_STATES.filter((s) => s !== "compliance_approved" && s !== "fully_executed").every((s) => Object.keys(hopCompanionColumns("listing_agreements", s, "T")).length === 0)
+    && ESIGN_PACKET_STATES.every((s) => Object.keys(hopCompanionColumns("offers", s, "T")).length === 0))
+  const dbG = memSupabase({
+    users: [{ id: U_AGENT, brokerage_id: BRK, user_type: "agent" }, { id: U_TC, brokerage_id: BRK, user_type: "tc" }],
+    agents: [{ id: AG, user_id: U_AGENT, brokerage_id: BRK }],
+    listing_agreements: [{ id: "d0000000-0000-4000-8000-0000000000g1", brokerage_id: BRK, listing_id: L1, agent_user_id: U_AGENT, seller_contact_id: "contact-2", esign_status: "sent", fully_executed_at: null, compliance_passed: false, created_at: "2026-03-01T00:00:00Z" }],
+    notifications: [],
+  })
+  const LAG = "d0000000-0000-4000-8000-0000000000g1"
+  const agG = () => dbG.tables.listing_agreements.find((a) => a.id === LAG)!
+  await advanceEsignPacketState(dbG, { brokerageId: BRK, record: { table: "listing_agreements", id: LAG }, to: "fully_signed", source: "webhook", provider: "docusign" })
+  const atSigned = { status: agG().esign_status, stamp: agG().fully_executed_at, mark: agG().compliance_passed }
+  await advanceEsignPacketState(dbG, { brokerageId: BRK, record: { table: "listing_agreements", id: LAG }, to: "compliance_pending", source: "system" })
+  await advanceEsignPacketState(dbG, { brokerageId: BRK, record: { table: "listing_agreements", id: LAG }, to: "compliance_approved", source: "system", notify: false })
+  const atApproved = { status: agG().esign_status, stamp: agG().fully_executed_at, mark: agG().compliance_passed }
+  await advanceEsignPacketState(dbG, { brokerageId: BRK, record: { table: "listing_agreements", id: LAG }, to: "fully_executed", source: "system" })
+  const atExecuted = { status: agG().esign_status, stamp: agG().fully_executed_at, mark: agG().compliance_passed }
+  check("LIVE writer: provider all-signed stamps NOTHING (no execution stamp, no compliance mark); compliance_approved writes the mark but NOT the stamp; fully_executed writes the stamp — the order is the rule",
+    atSigned.status === "fully_signed" && !atSigned.stamp && atSigned.mark === false
+    && atApproved.status === "compliance_approved" && !atApproved.stamp && atApproved.mark === true
+    && atExecuted.status === "fully_executed" && typeof atExecuted.stamp === "string" && atExecuted.mark === true, JSON.stringify({ atSigned, atApproved, atExecuted }))
+  const providerFiles = ["lib/forms/esign-execution-loop.ts", "lib/esign-webhooks/finalize-packet.ts", "app/actions/seller-listing/execution-engine.ts"]
+  const writerSrc = code("lib/esign/packet-state-writer.ts")
+  // the writer may spell the stamp ONLY as the companion map's value being applied (`companion.fully_executed_at`, `patch.fully_executed_at`)
+  const stampSpelledOnlyAsCompanion = (src: string) => { const hits = [...src.matchAll(/([\w.]*)\bfully_executed_at/g)]; return hits.length > 0 && hits.every((m) => m[1] === "companion." || m[1] === "patch.") }
+  check("the PROVIDER's completion paths and the manual-upload insert never spell the execution stamp (3 files, stripped source); POSITIVE CONTROL: the finder sees it in the ladder's companion map, and the ONE writer applies that map's value in its (literal-table) update and spells it no other way",
+    providerFiles.every((f) => !/fully_executed_at/.test(code(f))) && /fully_executed_at/.test(code("lib/esign/packet-states.ts"))
+    && /hopCompanionColumns\(input\.record\.table, input\.to,/.test(writerSrc) && /\.from\("listing_agreements"\)\.update\(patch\)/.test(writerSrc) && stampSpelledOnlyAsCompanion(writerSrc)
+    && !stampSpelledOnlyAsCompanion(`${writerSrc}\n svc.from("listing_agreements").update({ fully_executed_at: now })`) /* control: a second writer spelling the stamp literally is caught */)
+  const execEngine = code("app/actions/seller-listing/execution-engine.ts")
+  check("markAgreementSigned does NOT invent a go-live date: no `go_live_date:` assignment survives in the engine (POSITIVE CONTROL: the finder sees one in the planned-date writer's update), and the planned date it records comes from a person",
+    !/go_live_date\s*:/.test(execEngine) && /go_live_date:\s*wanted/.test(code("lib/listings/mls-live-date.ts")) && /plannedMlsLiveDate\??:\s*string/.test(execEngine) && /recordPlannedMlsLiveDate\(/.test(execEngine))
+  check("the provider-completion branches ask the LADDER whether a packet is already processed (isAtOrPastAllSigned), not the stamp",
+    /!isAtOrPastAllSigned\(\(matchedAgreement as any\)\.esign_status\)/.test(code("lib/forms/esign-execution-loop.ts")) && /!isAtOrPastAllSigned\(matchedAgreement\.esign_status\)/.test(code("lib/esign-webhooks/finalize-packet.ts")))
+  const pastAllSigned = ESIGN_PACKET_STATES.filter((s) => isAtOrPastAllSigned(s))
+  const openClause = (code("app/actions/listings-kernel.ts").match(/esign_status\.not\.in\.\(([^)]+)\)/) ?? [])[1] ?? ""
+  check(`the listing send's "open agreement" selection excludes exactly the states past all-signed (${pastAllSigned.length}, DERIVED from the ladder — never a hardcoded count)`,
+    openClause.split(",").sort().join() === [...pastAllSigned].sort().join(), `source: ${openClause}`)
+  check("the loop runs its gate in REVIEW mode inside the window only (complianceReview: inWindow), so the doors still require the recorded mark",
+    /complianceReview:\s*inWindow/.test(lcl) && !/complianceReview/.test(code("lib/kernel/listings.ts")) && !/complianceReview/.test(code("app/actions/seller-listing/execution-engine.ts")))
+  const m796 = existsSync(join(ROOT, "supabase/migrations/m796-listing-mls-live-date-planned-vs-verified.sql")) ? read("supabase/migrations/m796-listing-mls-live-date-planned-vs-verified.sql") : ""
+
+  // ── the MLS live date: planned XOR verified (pure, with positive controls) ──
+  const { resolveMlsLiveDates, computeDaysOnMarketForListing, ymdOf, todayInTimeZone, MLS_LIVE_SOURCES, MLS_LIVE_DATE_BASES } = await import("../lib/listings/compute-dom")
+  const NOW = new Date("2026-10-23T03:30:00Z")
+  const planned = resolveMlsLiveDates({ go_live_date: "2026-10-25", mls_live_timezone: "America/New_York" }, NOW)
+  const verified = resolveMlsLiveDates({ go_live_date: "2026-10-10", mls_live_date_actual: "2026-10-12", go_live_confirmed_at: "2026-10-13T10:00:00Z", go_live_confirmed_source: "rentcast", mls_live_date_basis: "feed_list_date" }, NOW)
+  const dateOnly = resolveMlsLiveDates({ go_live_date: "2026-10-10", mls_live_date_actual: "2026-10-12" }, NOW)
+  const noSource = resolveMlsLiveDates({ go_live_date: "2026-10-10", mls_live_date_actual: "2026-10-12", go_live_confirmed_at: "x", go_live_confirmed_source: "a human" }, NOW)
+  check("a PLANNED date is never presented as verified: basis 'planned', actual null, plannedInFuture true (in the listing's zone)", planned.basis === "planned" && planned.actual === null && planned.verifiedAt === null && planned.plannedInFuture)
+  check("a VERIFIED date needs the feed's whole evidence: date + confirmed_at + a known source → basis 'verified', variance = actual − planned",
+    verified.basis === "verified" && verified.actual === "2026-10-12" && verified.verifiedSource === "rentcast" && verified.varianceDays === 2 && verified.date === "2026-10-12")
+  check("POSITIVE CONTROLS (a date without its evidence is NOT verified): an actual date with no confirmation instant → planned; one confirmed by 'a human' → planned; the DB CHECK admits only the two feeds",
+    dateOnly.basis === "planned" && dateOnly.actual === null && noSource.basis === "planned" && noSource.actual === null
+    && [...MLS_LIVE_SOURCES].join() === "rentcast,idx" && [...MLS_LIVE_DATE_BASES].join() === "feed_list_date,first_observed")
+  check("the SAME instant is a different calendar day in different zones, and the planned-date arrival follows the listing's zone (03:30Z is still Oct 22 in New York and Los Angeles, Oct 23 in UTC)",
+    todayInTimeZone("America/New_York", NOW) === "2026-10-22" && todayInTimeZone("America/Los_Angeles", NOW) === "2026-10-22" && todayInTimeZone(null, NOW) === "2026-10-23" && todayInTimeZone("Not/AZone", NOW) === "2026-10-23"
+    && resolveMlsLiveDates({ go_live_date: "2026-10-23", mls_live_timezone: "America/New_York" }, NOW).plannedInFuture === true && resolveMlsLiveDates({ go_live_date: "2026-10-23" }, NOW).plannedInFuture === false)
+  check("DOM counts calendar days from the verified date when there is one, else from the planned date once it has arrived (0 before), else null — and says which basis",
+    computeDaysOnMarketForListing({ go_live_date: "2026-10-10", mls_live_date_actual: "2026-10-12", go_live_confirmed_at: "x", go_live_confirmed_source: "idx" }, NOW).days === 11
+    && computeDaysOnMarketForListing({ go_live_date: "2026-10-10" }, NOW).basis === "planned" && computeDaysOnMarketForListing({ go_live_date: "2026-10-30" }, NOW).days === 0 && computeDaysOnMarketForListing({}, NOW).days === null
+    && ymdOf("2026-02-31") === null && ymdOf("garbage") === null && ymdOf("2026-10-25T09:00:00Z") === "2026-10-25")
+
+  // ── the two writers, LIVE on the in-memory client ──
+  const { recordPlannedMlsLiveDate, recordVerifiedMlsLive, plannedMlsLiveDateLaunchBlocker } = await import("../lib/listings/mls-live-date")
+  const LST = "e0000000-0000-4000-8000-0000000000g2"
+  const dbM = memSupabase({
+    users: [{ id: U_AGENT, brokerage_id: BRK, user_type: "agent" }],
+    agents: [{ id: AG, user_id: U_AGENT, brokerage_id: BRK }],
+    listings: [{ id: LST, brokerage_id: BRK, agent_id: AG, state: "FL", address: "1 Canary Way", go_live_date: null, lifecycle_stage: "LISTING_AGREEMENT_INITIATED", mls_live_timezone: null, go_live_confirmed_at: null, mls_live_date_actual: null }],
+    global_settings: [{ id: "gs1", brokerage_id: BRK, timezone: "America/Chicago", created_at: "2026-01-01T00:00:00Z" }],
+    notifications: [],
+  })
+  const lst = () => dbM.tables.listings.find((l) => l.id === LST)!
+  ;(globalThis as any).__142B.events.length = 0
+  const p0 = await recordPlannedMlsLiveDate(dbM, { brokerageId: BRK, listingId: LST, date: "2026-11-02", actorUserId: U_AGENT, source: "intake" })
+  check("recordPlannedMlsLiveDate: writes go_live_date and NOTHING verified, resolves the PROPERTY's zone from its state (FL → America/New_York), leaves one evidence row saying verified:false",
+    p0.ok && lst().go_live_date === "2026-11-02" && lst().mls_live_timezone === "America/New_York" && lst().go_live_confirmed_at === null && lst().mls_live_date_actual === null
+    && (globalThis as any).__142B.events.filter((e: any) => e.input.event_type === "listing.mls_live_date.planned" && e.input.payload.verified === false && e.input.payload.planned === "2026-11-02").length === 1, JSON.stringify(p0))
+  const pSame = await recordPlannedMlsLiveDate(dbM, { brokerageId: BRK, listingId: LST, date: "2026-11-02", actorUserId: U_AGENT, source: "timeline" })
+  check("an unchanged planned date is an idempotent no-op (no second evidence row)", pSame.ok && (pSame as any).noop === true && (globalThis as any).__142B.events.filter((e: any) => e.input.event_type === "listing.mls_live_date.planned").length === 1)
+  const pBad = await recordPlannedMlsLiveDate(dbM, { brokerageId: BRK, listingId: LST, date: "2026-02-31", actorUserId: U_AGENT, source: "timeline" })
+  const pForeign = await recordPlannedMlsLiveDate(dbM, { brokerageId: BRK2, listingId: LST, date: "2026-12-01", actorUserId: U_AGENT, source: "timeline" })
+  check("a non-date is refused by name; ANOTHER brokerage's session cannot date this listing (the read is tenant-pinned → 'not found'), and the row is untouched",
+    !pBad.ok && /calendar date/.test((pBad as any).reason) && !pForeign.ok && /not found/.test((pForeign as any).reason) && lst().go_live_date === "2026-11-02")
+  const pClear = await recordPlannedMlsLiveDate(dbM, { brokerageId: BRK, listingId: LST, date: null, actorUserId: U_AGENT, source: "timeline" })
+  check("clearing the plan is allowed and recorded (the date was only ever a plan)", pClear.ok && lst().go_live_date === null)
+  await recordPlannedMlsLiveDate(dbM, { brokerageId: BRK, listingId: LST, date: "2026-11-02", actorUserId: U_AGENT, source: "timeline" })
+  const refusedM = memSupabase({ listings: [{ id: LST, brokerage_id: BRK, state: "FL", go_live_date: null }] }, { refuse: { listings: "permission denied for table listings" } })
+  const pRefused = await recordPlannedMlsLiveDate(refusedM, { brokerageId: BRK, listingId: LST, date: "2026-11-02", actorUserId: null, source: "intake" })
+  check("a REFUSED listings read is a refusal naming the cause, never 'no such listing' (supabase-js resolves refusals)", !pRefused.ok && /permission denied/.test((pRefused as any).reason))
+  const blockerFuture = await plannedMlsLiveDateLaunchBlocker(dbM, LST, new Date("2026-10-23T12:00:00Z"))
+  const blockerArrived = await plannedMlsLiveDateLaunchBlocker(dbM, LST, new Date("2026-11-03T12:00:00Z"))
+  check("the launch door reads it: a planned date that has not arrived (in the listing's zone) blocks launch with the remedy named; once it arrives the block lifts",
+    typeof blockerFuture === "string" && /has not arrived/.test(blockerFuture) && /2026-11-02/.test(blockerFuture) && blockerArrived === null)
+  const v0 = await recordVerifiedMlsLive(dbM, { brokerageId: BRK, listingId: LST, source: "rentcast", feedListDate: "2026-11-04", actorUserId: null, now: new Date("2026-11-05T15:00:00Z") })
+  check("recordVerifiedMlsLive: stamps the actual date from the FEED's own list date with the whole evidence (confirmed_at, source, basis feed_list_date), keeps the plan untouched, reports the variance (+2d), bells the agent once",
+    v0.ok && lst().mls_live_date_actual === "2026-11-04" && lst().mls_live_date_basis === "feed_list_date" && lst().go_live_confirmed_source === "rentcast" && typeof lst().go_live_confirmed_at === "string"
+    && lst().go_live_date === "2026-11-02" && (v0 as any).varianceDays === 2 && dbM.tables.notifications.filter((n) => n.type === "listing.mls_live_confirmed").length === 1, JSON.stringify(v0))
+  const v1 = await recordVerifiedMlsLive(dbM, { brokerageId: BRK, listingId: LST, source: "idx", feedListDate: null, actorUserId: null, now: new Date("2026-11-09T15:00:00Z") })
+  check("IDEMPOTENT: a second confirmation never re-dates a verified listing (the first confirmation is the evidence)", v1.ok && (v1 as any).noop === true && lst().mls_live_date_actual === "2026-11-04" && lst().go_live_confirmed_source === "rentcast")
+  const LST2 = "e0000000-0000-4000-8000-0000000000g3"
+  dbM.tables.listings.push({ id: LST2, brokerage_id: BRK, agent_id: AG, state: "TX", address: "2 Canary Way", go_live_date: "2026-11-01", mls_live_timezone: null, go_live_confirmed_at: null, mls_live_date_actual: null })
+  const vFuture = await recordVerifiedMlsLive(dbM, { brokerageId: BRK, listingId: LST2, source: "idx", feedListDate: "2027-01-01", actorUserId: null, now: new Date("2026-11-05T15:00:00Z") })
+  const l2 = dbM.tables.listings.find((l) => l.id === LST2)!
+  check("a feed 'list date' in the FUTURE of the listing's zone is not evidence: the observation day is used and the basis says first_observed; the zone came from the property's state (TX → America/Chicago)",
+    vFuture.ok && l2.mls_live_date_actual === "2026-11-05" && l2.mls_live_date_basis === "first_observed" && l2.mls_live_timezone === "America/Chicago", JSON.stringify(vFuture))
+  const vBadSource = await recordVerifiedMlsLive(dbM, { brokerageId: BRK, listingId: LST2, source: "human" as any, feedListDate: null, actorUserId: null })
+  const vForeign = await recordVerifiedMlsLive(dbM, { brokerageId: BRK2, listingId: LST, source: "rentcast", feedListDate: null, actorUserId: null })
+  check("NOBODY ELSE CAN VERIFY: a source that is not a feed is refused; another brokerage cannot confirm this listing", !vBadSource.ok && /not a syndication feed/.test((vBadSource as any).reason) && !vForeign.ok)
+  const preM796 = memSupabase({ listings: [{ id: LST, brokerage_id: BRK, state: "FL" }] }, { missingColumns: { listings: ["mls_live_date_actual", "go_live_confirmed_at", "go_live_confirmed_source", "mls_live_date_basis", "mls_live_timezone"] } })
+  const vPre = await recordVerifiedMlsLive(preM796, { brokerageId: BRK, listingId: LST, source: "rentcast", feedListDate: null, actorUserId: null })
+  check("BEFORE m796 is applied the verified writer REFUSES BY NAME (never a silent success): the read of the new columns is refused and says m796", !vPre.ok && /m796/.test((vPre as any).reason))
+
+  // ── verification: the shared core and the autonomous sweep (feeds injected) ──
+  const { verifyAndRecordMlsLive, runMlsLiveVerificationSweep } = await import("../lib/listings/mls-live-verification")
+  const LST3 = "e0000000-0000-4000-8000-0000000000g4", LST4 = "e0000000-0000-4000-8000-0000000000g5", LST5 = "e0000000-0000-4000-8000-0000000000g6", LST6 = "e0000000-0000-4000-8000-0000000000g8"
+  const dbS = memSupabase({
+    agents: [{ id: AG, user_id: U_AGENT, brokerage_id: BRK }],
+    listings: [
+      { id: LST3, brokerage_id: BRK, agent_id: AG, status: "active", mls_number: "24-1001", address: "10 Oak Street", city: "Tampa", state: "FL", zip: "33602", go_live_date: "2026-11-01", go_live_confirmed_at: null, metadata: {}, updated_at: "2026-11-02T00:00:00Z" },
+      { id: LST4, brokerage_id: BRK, agent_id: AG, status: "active", mls_number: "24-2002", address: "20 Pine Avenue", city: "Tampa", state: "FL", zip: "33602", go_live_date: "2026-11-01", go_live_confirmed_at: null, metadata: {}, updated_at: "2026-11-03T00:00:00Z" },
+      { id: LST5, brokerage_id: BRK, agent_id: AG, status: "active", mls_number: "24-3003", address: "30 Elm Road", city: "Tampa", state: "FL", zip: "33602", go_live_date: "2026-11-01", go_live_confirmed_at: null, metadata: { mls_live_check: { checked_at: "2026-11-05T08:00:00Z", verdict: "pending" } }, updated_at: "2026-11-04T00:00:00Z" },
+      { id: LST6, brokerage_id: BRK, agent_id: AG, status: "active", mls_number: "24-4004", address: "40 Cedar Lane", city: "Tampa", state: "FL", zip: "33602", go_live_date: "2026-11-01", go_live_confirmed_at: null, metadata: { mls_live_check: { checked_at: "2026-11-03T08:00:00Z", verdict: "pending" } }, updated_at: "2026-11-04T12:00:00Z" },
+      { id: "e0000000-0000-4000-8000-0000000000g7", brokerage_id: BRK2, agent_id: null, status: "active", mls_number: "99-9", address: "9 Other Way", go_live_confirmed_at: null, metadata: {}, updated_at: "2026-11-01T00:00:00Z" },
+    ],
+    notifications: [],
+  })
+  const feeds = async (l: any) => {
+    if (/^10 oak/i.test(l.address)) return { consulted: ["rentcast" as const], observations: [{ source: "rentcast" as const, mlsNumber: "241001", mlsName: "Stellar MLS", address: "10 Oak St", status: "Active", listedDate: "2026-11-03" }] }
+    if (/^20 pine/i.test(l.address)) return { consulted: ["rentcast" as const], observations: [{ source: "rentcast" as const, mlsNumber: "24-9999", mlsName: "Stellar MLS", address: "20 Pine Ave", status: "Active", listedDate: "2026-11-03" }] }
+    return { consulted: [], observations: [] }
+  }
+  const sweep = await runMlsLiveVerificationSweep(dbS, BRK, { feeds, now: new Date("2026-11-05T12:00:00Z"), limit: 10 })
+  const s3 = dbS.tables.listings.find((l) => l.id === LST3)!, s4 = dbS.tables.listings.find((l) => l.id === LST4)!
+  // snapshots taken NOW: the checks below re-verify LST5 on purpose, so its post-sweep state must be captured first
+  const l5AfterSweep = JSON.parse(JSON.stringify(dbS.tables.listings.find((l) => l.id === LST5)!.metadata)), l6AfterSweep = JSON.parse(JSON.stringify(dbS.tables.listings.find((l) => l.id === LST6)!.metadata))
+  check("the SWEEP, tenant-bounded: a feed match (MLS# formatted differently) CONFIRMS and records the actual date from the feed (Nov 3, 2 days after the Nov 1 plan); a DIFFERENT number is contradicted, recorded nowhere as live, and the agent is belled; a listing checked within 24h is skipped; the other brokerage's listing is never touched",
+    sweep.confirmed === 1 && sweep.contradicted === 1 && sweep.skippedRecent === 1 && sweep.scanned === 3 && sweep.unverifiable === 1 && s3.mls_live_date_actual === "2026-11-03" && s3.go_live_confirmed_source === "rentcast"
+    && s4.go_live_confirmed_at == null && s4.mls_live_date_actual == null && dbS.tables.notifications.some((n) => n.type === "listing.mls_contradicted")
+    && dbS.tables.listings.find((l) => l.brokerage_id === BRK2)!.metadata && !(dbS.tables.listings.find((l) => l.brokerage_id === BRK2)!.metadata as any).mls_live_check, JSON.stringify(sweep))
+  const unver = await verifyAndRecordMlsLive(dbS, { brokerageId: BRK }, LST5, { feeds, now: new Date("2026-11-06T12:00:00Z") })
+  check("NO FEED CONNECTED is `unverifiable` — recorded as the last check, NEVER rendered as 'not on the MLS', and nothing is stamped verified",
+    unver.ok && (unver as any).verification.verdict === "unverifiable" && (unver as any).recorded === null && dbS.tables.listings.find((l) => l.id === LST5)!.go_live_confirmed_at == null
+    && (dbS.tables.listings.find((l) => l.id === LST5)!.metadata as any).mls_live_check.verdict === "unverifiable")
+  check("the sweep spends a metered feed read on a listing at most once per 24h: never checked → checked; last checked 2 days ago → re-checked (its last-check instant moves to the sweep time); last checked 4 hours ago → skipped and left exactly as it was — and the street matcher the action used still matches 'Street' to 'St' (a feed row written '10 Oak St' confirmed '10 Oak Street')",
+    (s3.metadata as any).mls_live_check?.checked_at === "2026-11-05T12:00:00.000Z" && l6AfterSweep.mls_live_check.checked_at === "2026-11-05T12:00:00.000Z" && l6AfterSweep.mls_live_check.verdict === "unverifiable"
+    && l5AfterSweep.mls_live_check.checked_at === "2026-11-05T08:00:00Z" && l5AfterSweep.mls_live_check.verdict === "pending" && s3.mls_live_date_actual === "2026-11-03", JSON.stringify({ l6: l6AfterSweep, l5: l5AfterSweep }))
+
+  // ── the wiring (stripped source; every absence has its positive control) ──
+  const kernel = code("lib/kernel/listings.ts"), act = code("app/actions/listings-kernel.ts"), cron = code("app/api/cron/proactive-intelligence/route.ts"), datesAct = code("app/actions/listing-dates.ts")
+  check("INTAKE: createListingRecord validates then records the planned date through the ONE writer; createListingWithSellerContact accepts and forwards it; the readiness gate and launchListing read the planned date; launch records the launch day as a PLAN only when none exists",
+    /plannedMlsLiveDate\?:\s*string/.test(kernel) && /recordPlannedMlsLiveDate\(createServiceClient\(\) as any/.test(kernel) && /plannedMlsLiveDate:\s*params\.plannedMlsLiveDate/.test(act)
+    && /plannedMlsLiveDateLaunchBlocker\(supabase as any, input\.listingId\)/.test(kernel) && /if \(!\(listing as any\)\?\.go_live_date\)/.test(kernel) && /source: "launch"/.test(kernel))
+  check("VERIFICATION: the session action delegates to the shared core (no inline feed code survives — POSITIVE CONTROL: the core has it); the cron sweep (step 8b) is wired; the action never calls the feeds itself",
+    /verifyAndRecordMlsLive\(/.test(act) && !/searchRentcastSaleListings|IDXBrokerClient/.test(act) && /searchRentcastSaleListings/.test(code("lib/listings/mls-live-verification.ts")) && /runMlsLiveVerificationSweep\(/.test(cron))
+  check("the timeline editor: `field` is allow-listed at RUNTIME (a public endpoint — the TS union is erased), the session's brokerage is the predicate, the rows are COUNTED, the planned date goes through the one writer, and the verified date has NO edit path (read-only card)",
+    /LISTING_DATE_FIELDS/.test(datesAct) && /\.eq\("brokerage_id", caller\.brokerageId\)/.test(datesAct) && /\.select\("id"\)/.test(datesAct) && /recordPlannedMlsLiveDate\(/.test(datesAct) && /requireCaller\(\)/.test(datesAct)
+    && /function ReadOnlyDateCard\(/.test(code("app/components/dashboard/listings/lifecycle/stage-timeline.tsx")) && !/mls_live_date_actual/.test(datesAct))
+  check("the timeline never calls a planned date live: 'MLS Live — planned' beside 'MLS Live — verified' (read-only), the agreement-executed date, and the coming-soon status off the stage machine; a refused save is SAID",
+    /MLS Live — planned/.test(code("app/components/dashboard/listings/lifecycle/stage-timeline.tsx")) && /MLS Live — verified/.test(code("app/components/dashboard/listings/lifecycle/stage-timeline.tsx")) && /Listing agreement executed/.test(code("app/components/dashboard/listings/lifecycle/stage-timeline.tsx")) && /setSaveError\(result\.error/.test(code("app/components/dashboard/listings/lifecycle/stage-timeline.tsx"))
+    && /computeDaysOnMarketForListing\(listing\)/.test(code("app/components/dashboard/listings/lifecycle/stage-timeline.tsx")) && /dom\.basis === "verified"/.test(code("app/components/dashboard/listings/lifecycle/stage-timeline.tsx")))
+  check("the compliance loop reads the planned date through the ONE resolver and records its basis; the recordable-events card collects it at the agreement signature",
+    /resolveMlsLiveDates\(/.test(lcl) && /mls_start_date_basis:\s*"planned"/.test(lcl) && /key: "plannedMlsLiveDate"/.test(code("lib/listing-lifecycle/recordable-events.ts")) && /plannedMlsLiveDate:\s*str\("plannedMlsLiveDate"\)/.test(code("app/actions/seller-listing/record-lifecycle-event.ts")))
+  check("m796 exists, is honestly stamped, adds the four columns and the three CHECKs; its vocabularies EQUAL the code's (derived, never restated) — 'an actual date cannot exist without its evidence' is a table CHECK",
+    /^-- WRITTEN, NOT APPLIED \(wave 143, lane 143A\)/.test(m796)
+    && ["mls_live_date_actual", "mls_live_date_basis", "go_live_confirmed_source", "mls_live_timezone"].every((c) => new RegExp(`ADD COLUMN IF NOT EXISTS ${c}\\b`).test(m796))
+    && [...MLS_LIVE_SOURCES].every((v) => m796.includes(`'${v}'`)) && [...MLS_LIVE_DATE_BASES].every((v) => m796.includes(`'${v}'`))
+    && /listings_mls_live_actual_has_evidence_check/.test(m796) && /go_live_confirmed_at IS NOT NULL AND go_live_confirmed_source IS NOT NULL AND mls_live_date_basis IS NOT NULL/.test(m796))
 
   // ── F · REGISTRATION ─────────────────────────────────────────────────────────────────────────
   console.log("\n[F · registration]")

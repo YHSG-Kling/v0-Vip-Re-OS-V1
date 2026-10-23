@@ -26,6 +26,8 @@ import {
 import { updateReferralStatus, sendReferralThankYou } from "@/app/actions/referrals/referral-actions"
 import type { ReferralStatus } from "@/lib/referrals/referral-status"
 import { ReviewRequestTimingCard, type ReviewRequestTimingInitial } from "./review-request-timing-card"
+import { ReviewLinksCard, type ReviewLinksInitial } from "./review-links-card"
+import { FollowupPolicyCard, type FollowupPolicyInitial } from "./followup-policy-card"
 
 interface Referral {
   id: string
@@ -118,6 +120,9 @@ interface ReferralsOsClientProps {
   initialAction?: "create" | null
   /** Lane 86H — the brokerage's review-request timing; null unless the viewer is a tenant admin. */
   reviewRequestTiming?: ReviewRequestTimingInitial | null
+  reviewLinks?: ReviewLinksInitial | null
+  /** Wave 143 (143E): the follow-up policy editor (tenant admins only — null for anyone else). */
+  followupPolicy?: FollowupPolicyInitial | null
 }
 
 export function ReferralsOsClient({
@@ -139,6 +144,8 @@ export function ReferralsOsClient({
   selectedContactId,
   initialAction,
   reviewRequestTiming,
+  reviewLinks,
+  followupPolicy,
 }: ReferralsOsClientProps) {
   const router = useRouter()
 
@@ -284,6 +291,8 @@ export function ReferralsOsClient({
         {/* Lane 86H — WHEN the automatic review request goes out (brokerage-wide, tenant
             admins only); the panel below is the agent's hands-on request for one closing. */}
         {reviewRequestTiming && <ReviewRequestTimingCard initial={reviewRequestTiming} />}
+        {reviewLinks && <ReviewLinksCard initial={reviewLinks} />}
+        {followupPolicy && <FollowupPolicyCard initial={followupPolicy} />}
         <ReviewRequestPanel
           agentId={agentId}
           recentClosings={recentClosings || []}

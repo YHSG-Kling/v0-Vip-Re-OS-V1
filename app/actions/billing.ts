@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
 import { toPlanTier } from "@/lib/billing/plan-tier"
-import { currentBillingPeriodLabel } from "@/lib/usage/period"
+import { planCardAllowances } from "@/lib/usage/metric-labels"
 
 // TRUE ADMIN GATE, brokerage-wide MONEY (billing): derived from THE finance
 // roster (admin/broker/broker_owner — mirrors public.is_brokerage_finance_admin,
@@ -196,7 +196,26 @@ export async function getSubscriptionTiers() {
     .order("monthly_price_cents", { ascending: true })
 
   if (error) throw error
-  return tiers || []
+
+  // THE PLAN'S ALLOWANCES — plan_limits rows (authenticated-readable; the live catalogue is
+  // 17 metrics × 4 tiers), grouped by tier and folded to the MEASURED ones a plan card may
+  // name (lib/usage/metric-labels.ts:planCardAllowances). The upgrade modal used to look for
+  // `features.ai_calls_monthly` / `storage_gb` / `video_minutes_monthly` — keys the live
+  // features object does not carry — so the plan-comparison cards promised no allowance at
+  // all. A refused read degrades to "no allowances listed" (the tier cards still render), never
+  // to an invented number.
+  const { data: limitRows, error: limitsError } = await supabase
+    .from("plan_limits")
+    .select("plan_tier, metric, limit_value")
+  const byTier = new Map<string, Array<{ metric: string; limit_value: number | string | null }>>()
+  if (!limitsError) {
+    for (const r of limitRows ?? []) {
+      const list = byTier.get(r.plan_tier) ?? []
+      list.push({ metric: r.metric, limit_value: r.limit_value })
+      byTier.set(r.plan_tier, list)
+    }
+  }
+  return (tiers || []).map((t) => ({ ...t, allowances: planCardAllowances(byTier.get(t.tier_name) ?? []) }))
 }
 
 // ─── GET CURRENT SUBSCRIPTION ────────────────────────────────────────────────
@@ -225,32 +244,16 @@ export async function getCurrentSubscription(_brokerageId?: string) {
   return subscription
 }
 
-// ─── GET BILLING USAGE ───────────────────────────────────────────────────────
-export async function getBillingUsage(_brokerageId?: string) {
-  // AUTH GATE — was returning any brokerage's billing usage.
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return null
-  const supabase = await createClient()
-
-  // PERIOD KEY — the same UTC billing month the writer stamps
-  // (lib/kernel/billing.ts recordUsageEvent, via lib/usage/period.ts).
-  // "newest row by recorded_at" is not the same question as "this month's
-  // usage": on the first day of a new month, before any event is recorded, the
-  // unkeyed read hands the Active Agents / AI Calls / Storage / Video bars LAST
-  // month's totals and labels them as current. Now an unstarted month reads as
-  // an unstarted month.
-  const { data: usage, error } = await supabase
-    .from("billing_usage")
-    .select("*")
-    .eq("brokerage_id", ctx.brokerageId)
-    .eq("period_label", currentBillingPeriodLabel())
-    .order("recorded_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  if (error) throw error
-  return usage
-}
+// ─── GET BILLING USAGE — REMOVED (wave 143J, orphan doctrine §1.1) ──────────────
+// `getBillingUsage` DELETED. Its one caller was app/settings/billing/page.tsx, which drew the
+// "Usage This Period" bars from a billing_usage row set against allowances the PAGE invented
+// (`features.ai_calls_monthly || 1000`, `storage_gb || 5`, `video_minutes_monthly || 60` — keys
+// the live tier features object does not carry). SURVIVOR: app/actions/usage-overview.ts
+// `loadUsageOverview`, which joins the plan's real plan_limits rows to usage_counters (+ live
+// stock counts) and which the page now renders. Merged BEFORE deleting: the period-keyed read rule
+// (lib/usage/period.ts — the start identifies the month) is already carried by the survivor
+// (usage-overview.ts reads usage_counters on period_start alone). billing_usage itself stays the
+// invoice/overage projection's table (lib/kernel/billing.ts recordUsageEvent is its writer).
 
 // ─── GET INVOICE HISTORY ─────────────────────────────────────────────────────
 export async function getInvoiceHistory(_brokerageId?: string, year?: number) {

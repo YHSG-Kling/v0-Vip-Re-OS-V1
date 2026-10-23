@@ -6,7 +6,7 @@ import {
 } from "@/app/actions/reputation-kernel"
 import { getLifetimeCustomers, getUpcomingAnniversaries } from "@/app/actions/lifetime-customers"
 import { REFERRAL_STATUSES_CONVERTED } from "@/lib/referrals/referral-status"
-import { getReviewRequestDelaySettingAction } from "@/app/actions/settings/brokerage-column-settings"
+import { getReviewRequestDelaySettingAction, getReputationProfilesAction, getFollowupPolicyAction } from "@/app/actions/settings/brokerage-column-settings"
 import { ReferralsOsClient } from "./referrals-os-client"
 
 export const dynamic = "force-dynamic"
@@ -104,13 +104,17 @@ export default async function ReferralsPage({ searchParams }: Props) {
   // return { success: false, error } rather than throwing. A dropped error here
   // would render as "you have no referrals", which is the one thing an empty
   // referral board must never be able to mean by accident.
-  const [pipelineRes, workspaceRes, clientsRes, anniversaryRes, reviewTimingRes] = await Promise.all([
+  const [pipelineRes, workspaceRes, clientsRes, anniversaryRes, reviewTimingRes, reviewLinksRes, followupPolicyRes] = await Promise.all([
     loadReferralPipelineAction(),
     loadReputationWorkspaceAction(),
     getLifetimeCustomers(),
     getUpcomingAnniversaries(),
     // Lane 86H — the brokerage's review-request timing (tenant admins only; the action gates).
     getReviewRequestDelaySettingAction(),
+    // Wave 143 (143E) — where review requests point (the real links the review-ask engine needs; tenant admins only; the action gates).
+    getReputationProfilesAction(),
+    // Wave 143 (143E) — the tenant's follow-up policy (the numbers the AI follow-up works inside; tenant admins only; the action gates).
+    getFollowupPolicyAction(),
   ])
 
   const loadErrors: string[] = []
@@ -120,6 +124,20 @@ export default async function ReferralsPage({ searchParams }: Props) {
   const reviewRequestTiming = reviewTimingRes.ok ? reviewTimingRes : null
   if (!reviewTimingRes.ok && !("forbidden" in reviewTimingRes && reviewTimingRes.forbidden)) {
     loadErrors.push(`Review request timing: ${reviewTimingRes.error}`)
+  }
+
+  const reviewLinks = reviewLinksRes.ok
+    ? { canEdit: reviewLinksRes.canEdit, links: reviewLinksRes.effective.brokerage, approval: reviewLinksRes.effective.approval, rejected: reviewLinksRes.rejected }
+    : null
+  if (!reviewLinksRes.ok && !("forbidden" in reviewLinksRes && reviewLinksRes.forbidden)) {
+    loadErrors.push(`Review links: ${reviewLinksRes.error}`)
+  }
+
+  const followupPolicy = followupPolicyRes.ok
+    ? { canEdit: followupPolicyRes.canEdit, effective: followupPolicyRes.effective, defaults: followupPolicyRes.defaults, isCustom: followupPolicyRes.stored !== null, adjustments: followupPolicyRes.adjustments }
+    : null
+  if (!followupPolicyRes.ok && !("forbidden" in followupPolicyRes && followupPolicyRes.forbidden)) {
+    loadErrors.push(`Follow-up policy: ${followupPolicyRes.error}`)
   }
 
   const pipeline = pipelineRes.success && "data" in pipelineRes ? pipelineRes.data : undefined
@@ -367,6 +385,8 @@ export default async function ReferralsPage({ searchParams }: Props) {
         selectedContactId={selectedContactId}
         initialAction={action === "create" ? "create" : null}
         reviewRequestTiming={reviewRequestTiming}
+        reviewLinks={reviewLinks}
+        followupPolicy={followupPolicy}
       />
     </div>
   )

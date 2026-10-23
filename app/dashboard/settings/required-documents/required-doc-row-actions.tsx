@@ -4,6 +4,7 @@ import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Loader2, Trash2, Paperclip, X } from "lucide-react"
+import { toast } from "sonner"
 import {
   setRequiredDocBlocking,
   removeRequiredDoc,
@@ -37,21 +38,28 @@ export function RequiredDocRowActions({
   const [picking, setPicking] = useState(false)
   const [pickId, setPickId] = useState<string>(templateFormId ?? "")
 
+  // These three actions RESOLVE a refusal ({ ok:false, error }) — a role refusal, a rule in
+  // another brokerage, a refused update. Their results were dropped, so a blocking↔warning
+  // flip, a removal or a template attach that the server refused looked like it simply did
+  // nothing, with no reason (wave 143J). The refusal is now shown and the row stays as it is.
   function toggle() {
     start(async () => {
-      await setRequiredDocBlocking({ id, blockOnMissing: !blockOnMissing })
+      const r = await setRequiredDocBlocking({ id, blockOnMissing: !blockOnMissing })
+      if (!r.ok) { toast.error(r.error ?? "Could not change whether this document blocks closing."); return }
       router.refresh()
     })
   }
   function remove() {
     start(async () => {
-      await removeRequiredDoc({ id })
+      const r = await removeRequiredDoc({ id })
+      if (!r.ok) { toast.error(r.error ?? "Could not remove this required document."); return }
       router.refresh()
     })
   }
   function saveTemplate(formId: string | null) {
     start(async () => {
-      await setRequiredDocTemplate({ id, formId })
+      const r = await setRequiredDocTemplate({ id, formId })
+      if (!r.ok) { toast.error(r.error ?? "Could not attach the template to this required document."); return }
       setPicking(false)
       router.refresh()
     })

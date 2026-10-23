@@ -67,6 +67,10 @@ export default async function UsagePage() {
 
   const exceededCount = data.metrics.filter((m) => m.status === "exceeded").length
   const warningCount = data.metrics.filter((m) => m.status === "warning").length
+  // A metric nothing measures yet (source "unmeasured") must never read as "comfortable" — the
+  // all-clear below is about the metrics that ARE counted (wave 143J).
+  const measuredCount = data.metrics.filter((m) => m.source !== "unmeasured").length
+  const unmeasuredCount = data.metrics.length - measuredCount
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-5xl">
@@ -111,10 +115,14 @@ export default async function UsagePage() {
           </div>
         </Card>
       )}
-      {exceededCount === 0 && warningCount === 0 && data.metrics.length > 0 && (
+      {exceededCount === 0 && warningCount === 0 && measuredCount > 0 && (
         <Card className="border-emerald-300 bg-emerald-50 p-4 mb-4 flex items-center gap-3">
           <CheckCircle2 className="h-5 w-5 text-emerald-600" />
-          <p className="text-sm text-emerald-800">All limits comfortable for this month.</p>
+          <p className="text-sm text-emerald-800">
+            {unmeasuredCount > 0
+              ? `Every measured limit is comfortable for this month (${unmeasuredCount} not measured yet).`
+              : "All limits comfortable for this month."}
+          </p>
         </Card>
       )}
 
@@ -153,6 +161,21 @@ export default async function UsagePage() {
 }
 
 function MetricCard({ metric }: { metric: MetricSnapshot }) {
+  // Nothing counts this metric yet: say so. A green "0 / 500" would be a measurement nobody took.
+  if (metric.source === "unmeasured") {
+    return (
+      <Card className="p-4">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-sm font-medium">{metric.label}</p>
+          <Badge variant="outline" className="text-xs">Not measured yet</Badge>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {metric.unlimited ? "Unlimited on your plan." : `Your plan includes ${metric.limit.toLocaleString()}.`}{" "}
+          Usage for this item is not tracked yet, so no progress is shown.
+        </p>
+      </Card>
+    )
+  }
   const barColor =
     metric.status === "exceeded" ? "bg-destructive" :
       metric.status === "warning" ? "bg-amber-500" : "bg-emerald-500"

@@ -397,8 +397,9 @@ check("registry: vendor/contact scopes may NOT connect meetings (they join, neve
 check("field-spec: meetings connect is owner-scoped for any owner-capable actor (platform included, no brokerage anchor)",
   isConnectSupported("meetings", "zoom", { canOwn: true, hasAgentId: false, isBrokerageManager: false, hasBrokerage: false }).available === true
   && isConnectSupported("meetings", "zoom", { canOwn: false, hasAgentId: false, isBrokerageManager: false, hasBrokerage: true }).available === false)
-check("role → scope mapping still covers the four connectable levels",
-  connectionScopeForUserType("superadmin").scope === "platform"
+check("role → scope mapping still covers the four connectable levels (platform = the live identity user_type 'admin' + platform_role 'superadmin')",
+  connectionScopeForUserType("admin", "superadmin").scope === "platform"
+  && connectionScopeForUserType("superadmin").scope !== "platform" // legacy user_type alone FAILS CLOSED toward the tenant scopes (CLAUDE.md §4)
   && connectionScopeForUserType("broker").scope === "brokerage"
   && connectionScopeForUserType("team_lead").scope === "team"
   && connectionScopeForUserType("agent").scope === "agent")

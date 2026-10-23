@@ -223,7 +223,13 @@ export default function LinkToVideoGenerator() {
 
   async function handleDeleteVideo(videoId: string) {
     try {
-      await deleteVideo(videoId)
+      // deleteVideo RESOLVES a refusal ({ success:false, error: "Forbidden" | … }); the
+      // dropped result toasted "Video deleted" for a video that was still there (wave 143J).
+      const deleted = await deleteVideo(videoId)
+      if (!deleted?.success) {
+        toast.error(deleted?.error ?? "Failed to delete video")
+        return
+      }
       toast.success("Video deleted")
       loadData()
     } catch (error) {

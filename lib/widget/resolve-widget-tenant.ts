@@ -73,7 +73,7 @@ export async function resolveWidgetTenant(
 
   const { data: brokerage, error } = await supabase
     .from("brokerages")
-    .select("id, name, slug, widget_enabled, deleted_at")
+    .select("id, name, slug, widget_enabled, deleted_at, status")
     .eq("slug", slug)
     .maybeSingle()
 
@@ -85,14 +85,31 @@ export async function resolveWidgetTenant(
     return { ok: false, status: 503, error: "Chat is temporarily unavailable." }
   }
   if (!brokerage || brokerage.deleted_at) return { ok: false, status: 404, error: NOT_AVAILABLE }
-  if (brokerage.widget_enabled === false) {
+
+  // AN ARCHIVED WORKSPACE HAS NO CHAT OF ITS OWN (wave 143G). An independent subscriber adopted by a brokerage is archived
+  // (lib/kernel/brokerage-transfer.ts) — but the chat snippet pasted on the agent's own website still carries the old slug,
+  // so it kept answering and filing every new lead under a tenant nobody reads. The slug now follows the relationship: the
+  // visitor is served by the brokerage that adopted this workspace (lib/tenant-site/successor.ts — proven by a COMPLETED
+  // transfer request, one hop, fail closed), and the leads land where the agent now works. No completed transfer ⇒ 404.
+  let host = brokerage as { id: string; name: string | null; slug: string | null; widget_enabled: boolean | null }
+  if ((brokerage as { status?: string | null }).status === "archived") {
+    const { resolveArchivedSiteSuccessor } = await import("@/lib/tenant-site/successor")
+    const successor = await resolveArchivedSiteSuccessor(supabase, brokerage.id)
+    if (!successor.ok) {
+      return successor.reason === "unreadable"
+        ? { ok: false, status: 503, error: "Chat is temporarily unavailable." }
+        : { ok: false, status: 404, error: NOT_AVAILABLE }
+    }
+    host = { id: successor.successor.id, name: successor.successor.name, slug: successor.successor.slug, widget_enabled: successor.successor.widget_enabled }
+  }
+  if (host.widget_enabled === false) {
     return { ok: false, status: 403, error: "Chat is turned off for this website." }
   }
 
   const resolved: WidgetTenant = {
-    brokerageId: brokerage.id,
-    brokerageSlug: brokerage.slug as string,
-    brokerageName: brokerage.name ?? "",
+    brokerageId: host.id,
+    brokerageSlug: host.slug as string,
+    brokerageName: host.name ?? "",
     agentId: null,
   }
 
@@ -107,7 +124,7 @@ export async function resolveWidgetTenant(
     .from("agents")
     .select("id")
     .eq("id", agentId)
-    .eq("brokerage_id", brokerage.id)
+    .eq("brokerage_id", host.id)
     .eq("is_active", true)
     .maybeSingle()
 

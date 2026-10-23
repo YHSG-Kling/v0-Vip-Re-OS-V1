@@ -12,6 +12,7 @@
 // revokes consent in the interim is silently dropped before any dial.
 
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { DEFAULT_FOLLOWUP_POLICY, loadFollowupPolicy } from "@/lib/ai-isa/followup-policy"
 import { createServiceClient } from "@/lib/supabase/service"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -40,24 +41,38 @@ export function eligibleForIsaCall(c: IsaCallConsent): { allowed: boolean; reaso
   return { allowed: true }
 }
 
-/** Voice-results learn-loop thresholds (transparent, like the propensity weights). */
-export const CALL_COOLDOWN_DAYS = 14     // any recent ISA call → don't re-dial yet
-export const COLD_COOLDOWN_DAYS = 30     // a cold-quality outcome suppresses longer
+/**
+ * Voice-results learn-loop thresholds (transparent, like the propensity weights).
+ *
+ * WAVE 143 (lane 143E; owner: "the follow-up timetable must not depend on code"): the two re-dial GAPS are the TENANT's follow-up policy
+ * (lib/ai-isa/followup-policy.ts guardrails.callCooldownDays / coldCallCooldownDays — versioned through tenant_policy_versions), read by
+ * proposeIsaDialBatch below. The constants here are only the PLATFORM DEFAULTS, derived from that policy's defaults (one number, one
+ * place) so a caller that never loaded a policy (a pure unit test, manager-signals-simulator) keeps the historical behaviour.
+ * COLD_QUALITY_FLOOR is a score threshold, not a timetable, and stays here.
+ */
+export const CALL_COOLDOWN_DAYS = DEFAULT_FOLLOWUP_POLICY.guardrails.callCooldownDays   // any recent ISA call → don't re-dial yet
+export const COLD_COOLDOWN_DAYS = DEFAULT_FOLLOWUP_POLICY.guardrails.coldCallCooldownDays // a cold-quality outcome suppresses longer
 export const COLD_QUALITY_FLOOR = 30     // lead_quality_score below this = cold outcome
+
+/** The re-dial gaps one decision uses — the tenant's policy values, or the platform defaults when none was loaded. */
+export interface CallCooldowns { callDays: number; coldDays: number }
+export const DEFAULT_CALL_COOLDOWNS: CallCooldowns = Object.freeze({ callDays: CALL_COOLDOWN_DAYS, coldDays: COLD_COOLDOWN_DAYS })
 
 /** Pure: should past call outcomes keep this contact OFF the next dial list?
  *  appointment_set → yes (they're with the agent now); cold quality (<floor) within
- *  COLD_COOLDOWN_DAYS → yes; any call within CALL_COOLDOWN_DAYS → yes. */
+ *  the cold gap → yes; any call within the call gap → yes. The look-back is the longer of the two gaps. */
 export function callCooldownActive(
   history: Array<{ appointment_set: boolean | null; lead_quality_score: number | null; created_at: string }>,
   now: number = Date.now(),
+  cooldowns: CallCooldowns = DEFAULT_CALL_COOLDOWNS,
 ): boolean {
+  const outerDays = Math.max(cooldowns.callDays, cooldowns.coldDays)
   for (const h of history) {
     const ageDays = (now - new Date(h.created_at).getTime()) / 86_400_000
-    if (ageDays < 0 || ageDays > COLD_COOLDOWN_DAYS) continue
+    if (ageDays < 0 || ageDays > outerDays) continue
     if (h.appointment_set) return true
-    if (h.lead_quality_score != null && h.lead_quality_score < COLD_QUALITY_FLOOR) return true
-    if (ageDays <= CALL_COOLDOWN_DAYS) return true
+    if (h.lead_quality_score != null && h.lead_quality_score < COLD_QUALITY_FLOOR && ageDays <= cooldowns.coldDays) return true
+    if (ageDays <= cooldowns.callDays) return true
   }
   return false
 }
@@ -111,16 +126,19 @@ export async function proposeIsaDialBatch(
   const byId = new Map((rows ?? []).map((c: any) => [c.id, c as IsaCallConsent & { agent_id: string | null }]))
 
   // VOICE-RESULTS LEARN LOOP — past call outcomes shape who we call next:
-  //   · any ISA call in the last CALL_COOLDOWN_DAYS → skip (don't hammer)
+  //   · any ISA call inside the tenant's call gap (followup_policy guardrails.callCooldownDays) → skip (don't hammer)
   //   · appointment_set on a recent call → skip (they're with the agent now)
   //   · lead_quality_score < COLD_QUALITY_FLOOR on a recent call → skip for the
-  //     longer COLD_COOLDOWN_DAYS (the call told us they're not ready)
+  //     longer cold gap (guardrails.coldCallCooldownDays — the call told us they're not ready)
+  // The tenant's gaps are read ONCE per proposal; a refused policy read keeps the platform defaults (loadFollowupPolicy says so).
+  const { policy: followup } = await loadFollowupPolicy(supabase, params.brokerageId)
+  const cooldowns: CallCooldowns = { callDays: followup.guardrails.callCooldownDays, coldDays: followup.guardrails.coldCallCooldownDays }
   const { data: recentCalls } = await supabase
     .from("ai_isa_calls")
     .select("contact_id, appointment_set, lead_quality_score, created_at")
     .eq("brokerage_id", params.brokerageId)
     .in("contact_id", ids)
-    .gte("created_at", new Date(Date.now() - COLD_COOLDOWN_DAYS * 86_400_000).toISOString())
+    .gte("created_at", new Date(Date.now() - Math.max(cooldowns.callDays, cooldowns.coldDays) * 86_400_000).toISOString())
   const callHistory = new Map<string, Array<{ appointment_set: boolean | null; lead_quality_score: number | null; created_at: string }>>()
   for (const c of (recentCalls ?? []) as any[]) {
     const list = callHistory.get(c.contact_id) ?? []
@@ -134,7 +152,7 @@ export async function proposeIsaDialBatch(
     if (!c) continue
     if (agentId && c.agent_id !== agentId) continue          // agent-scoped: only this agent's contacts
     if (!eligibleForIsaCall(c).allowed) continue
-    if (callCooldownActive(callHistory.get(r.contactId) ?? [])) continue
+    if (callCooldownActive(callHistory.get(r.contactId) ?? [], Date.now(), cooldowns)) continue
     targets.push({ contact_id: r.contactId, name: r.name, phone: String(c.phone), propensity_score: r.result.score })
     if (targets.length >= limit) break
   }

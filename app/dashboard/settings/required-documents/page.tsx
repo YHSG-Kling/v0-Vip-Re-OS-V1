@@ -6,6 +6,7 @@ import { RequiredDocsSettingsClient } from "./required-docs-settings-client"
 import { RequiredDocRowActions } from "./required-doc-row-actions"
 import { getSupportedPresetStates } from "@/lib/compliance/required-doc-presets"
 import { documentClassificationLabel } from "@/lib/compliance/document-classifications"
+import { describeRowScope } from "@/lib/compliance/checklist-dimensions"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = "force-dynamic"
@@ -55,7 +56,10 @@ export default async function RequiredDocsSettingsPage() {
   const [{ data: rules }, { data: libraryForms }] = await Promise.all([
     supabase
       .from("brokerage_required_documents")
-      .select("id, scope_type, scope_id, classification, deal_type, state_code, is_required, block_on_missing, description, template_form_id, created_at")
+      // star select: the m806 dimension columns (required_stage, financing_kind, contract_subtype,
+      // representation, policy_version) are absent until the migration is applied, and a select that
+      // names an absent column is refused whole — which would render as "No rules yet".
+      .select("*")
       .eq("brokerage_id", profile.brokerage_id)
       .order("scope_type", { ascending: false })
       .order("classification", { ascending: true }),
@@ -107,6 +111,9 @@ export default async function RequiredDocsSettingsPage() {
                       <p className="text-sm font-medium">{documentClassificationLabel(r.classification as string | null)}</p>
                       <Badge variant="secondary" className="text-xs">{r.deal_type}</Badge>
                       {r.state_code && <Badge variant="secondary" className="text-xs">{r.state_code}</Badge>}
+                      {(r.required_stage || r.financing_kind || r.contract_subtype || r.representation) && (
+                        <Badge variant="outline" className="text-xs">{describeRowScope({ ...r, deal_type: null, state_code: null })}</Badge>
+                      )}
                       {r.block_on_missing
                         ? <Badge className="bg-red-100 text-red-900 text-xs">blocking</Badge>
                         : <Badge className="bg-amber-100 text-amber-900 text-xs">warning</Badge>}

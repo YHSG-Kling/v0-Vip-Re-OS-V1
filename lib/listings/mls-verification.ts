@@ -77,6 +77,13 @@ export interface MlsFeedObservation {
   address: string
   /** The feed's listing status verbatim, never normalised before mapping. */
   status: string | null
+  /**
+   * The feed's OWN list date (RentCast `listedDate`), when it carries one — the only date a feed can truthfully
+   * give for "when this went live". IDX Broker's featured feed has none (null). Read by
+   * lib/listings/mls-live-date.ts recordVerifiedMlsLive: a `confirmed` verdict stamps the listing's ACTUAL MLS
+   * live date from it, or from the first day we saw the listing live when it is null (wave 143, lane 143A).
+   */
+  listedDate?: string | null
 }
 
 export type MlsVerdict = "confirmed" | "contradicted" | "pending" | "unverifiable"

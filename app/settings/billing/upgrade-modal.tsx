@@ -28,6 +28,7 @@ import { loadStripe } from "@stripe/stripe-js"
 import { startSubscriptionCheckout } from "@/app/actions/billing"
 import { formatSeatLimit, normalizeCatalogSeatLimit } from "@/lib/kernel/tier-role-matrix"
 import { isCustomPricedTier, customPricingDoorPath } from "@/lib/billing/plan-catalog"
+import { allowanceLine, type PlanAllowance } from "@/lib/usage/metric-labels"
 
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!)
 
@@ -163,7 +164,6 @@ export function UpgradeModal({
               const isCurrent = tier.id === currentTierId
               const isDowngrade = index < currentTierIndex
               const isUpgrade = index > currentTierIndex
-              const features = tier.features as Record<string, any> | null
 
               const price = isAnnual 
                 ? tier.annual_price_cents 
@@ -214,25 +214,19 @@ export function UpgradeModal({
                         : `Up to ${formatSeatLimit(tier.max_agents)} seat${normalizeCatalogSeatLimit(tier.max_agents) === 1 ? "" : "s"}`}
                     </p>
 
+                    {/* THE PLAN'S REAL ALLOWANCES (wave 143J) — plan_limits rows folded by
+                        getSubscriptionTiers to the MEASURED ones (lib/usage/metric-labels.ts).
+                        This list used to read features.ai_calls_monthly / storage_gb /
+                        video_minutes_monthly, keys the live tier features object does not
+                        carry, so it rendered nothing; and it never names an allowance that
+                        nothing measures (storage, email, SMS). */}
                     <ul className="space-y-2 text-sm">
-                      {features?.ai_calls_monthly && (
-                        <li className="flex items-center gap-2">
+                      {(((tier as { allowances?: PlanAllowance[] }).allowances) ?? []).map((a) => (
+                        <li key={a.metric} className="flex items-center gap-2">
                           <Check className="h-4 w-4 text-green-500" />
-                          {features.ai_calls_monthly.toLocaleString()} AI calls/mo
+                          {allowanceLine(a)}
                         </li>
-                      )}
-                      {features?.storage_gb && (
-                        <li className="flex items-center gap-2">
-                          <Check className="h-4 w-4 text-green-500" />
-                          {features.storage_gb} GB storage
-                        </li>
-                      )}
-                      {features?.video_minutes_monthly && (
-                        <li className="flex items-center gap-2">
-                          <Check className="h-4 w-4 text-green-500" />
-                          {features.video_minutes_monthly} video min/mo
-                        </li>
-                      )}
+                      ))}
                     </ul>
 
                     {isDowngrade && (

@@ -203,3 +203,73 @@ The wave-141 final report closed with nine owner blockers (fifteen items). `scri
 - **Playwright UI smoke (blocker 11).** `.github/workflows/e2e.yml` job `ui-smoke` runs the public `@smoke` specs (`e2e/ui-smoke.spec.ts`, `e2e/portal-login.spec.ts`) on a desktop and a phone-width project against `UI_SMOKE_BASE_URL` — the workflow input or the repository variable — and prints a STATED skip without one (never a pass). `playwright.config.ts` reads the same variable. Runbook: set the repository variable once (Settings → Variables) and every nightly run smokes production; or dispatch the e2e workflow with a preview URL.
 - **Readiness contract reads.** `lib/kernel/tenant-readiness.ts` blocks `requiredSecurityState` without `SECRETS_ENCRYPTION_KEY`, blocks `providerState` while a required lane (voice_sms / email / payments / ai_llm) is dark at the platform level, and blocks `snapshot` for a tier with no catalogued snapshot — the four BLOCKED rows of the table are the contract refusing to fake them. The CDA setting is `brokerages.offers_cda` / `cda_onboarding_at` / `non_cda_payout_default` with one roster-gated writer (`app/actions/brokerage-cda-setup.ts`); the portal's privacy obligations are wired and its two preference switches are disabled with the truth (`app/components/portal/PortalSettingsPage.tsx`); support / incident operations ride the owned `support-sla` cron and `lib/kernel/immediate-operations.ts`.
 - **Wave-142 gates (section G′).** The ruling's thirteen areas (security/support, listing, offer, FormWizard, preliminary HUD/CD, CDA, commissions/payment, lifetime, intelligence, marketing, video, AI/support/education, commercial/platform) map to the proof keys lanes 142A–G register by contract (`test:support-isolation`, `test:listing-offer-lifecycle`, `test:cda-closing-flow`, `test:immediate-enrichment` + `test:entity-types`, `test:autonomous-marketing`, `test:video-pipeline-truth`, `test:ai-by-your-side`) plus the chained survivors; `hookLanes` names the owning lane; the canary column is lane 142J's. The `RELEASE:` line folds both gate tables — READY needs every wave-141 and wave-142 gate certified and the external build/CI verdict recorded.
+
+## 15. Deployment audit — Vercel and Supabase as shipped (wave 143, lane 143H)
+
+**Method.** Read from the repository (`vercel.json`, `next.config.ts`, `proxy.ts`, the cron registry, the webhook contract, the storage roster) plus four **read-only aggregate queries** against project `hrvaqgvukzxfskkcrwbt` on 2026-10-23 (catalog counts, column metadata, bucket list — no row data, no DDL, no write). **No production configuration was changed or read**: the environment values, the Vercel project settings and the Stripe account are outside what this container can see, so every row below says what the *repository* declares and the activation checklist (`docs/operations/ACTIVATION-CHECKLIST.md`) says how the owner verifies the rest. The deployment-fact table is **derived** — `scripts/operations-docs-guard.ts` regenerates it and fails when it drifts.
+
+### 15.1 Deployment facts (derived)
+
+<!-- GENERATED:hosting-facts:BEGIN -->
+| Fact | Reading (derived) | Source |
+|---|---|---|
+| Framework | Next.js ^16.2.7 (App Router) · React 19.2.4 · build uses webpack (`next build --webpack`) | package.json, vercel.json:2 |
+| Build command | `pnpm install --no-frozen-lockfile && NODE_OPTIONS='--max-old-space-size=10240' next build --webpack` | vercel.json:2 |
+| Lockfile policy | `--no-frozen-lockfile` in BOTH install and build: **a deployment may resolve different dependency versions than CI tested** (finding F-1) | vercel.json:3 |
+| Type-checking at build | `typescript.ignoreBuildErrors: true` — type safety is the CI `type-check` gate, NOT the Vercel build | next.config.ts:29 |
+| Runtime pin | no `engines`, no .nvmrc — the Node version is the Vercel project setting (finding F-2); package manager unpinned (pnpm used by vercel.json, npm lockfile also present) | package.json |
+| Route handlers / pages | 415 `route.ts` handlers · 544 `page.tsx` pages under app/ | app/ |
+| Function overrides | 5 routes with explicit memory/duration: `cron/poll-did-videos` 3008 MB · 300 s; `internal/remotion/render-just-listed` 3008 MB · 300 s; `cron/listing-promo-hybrid-composite` 3008 MB · 300 s; `internal/remotion/render-newsletter-video` 3008 MB · 300 s; `internal/remotion/render-composition` 3008 MB · 300 s | vercel.json:4 |
+| Per-route `maxDuration` | 118 routes declare one: 30s ×1 · 60s ×8 · 120s ×11 · 300s ×95 · 600s ×3. **Above 300 s: app/api/cron/predictive-listing-scoring/route.ts (600s), app/api/cron/wealth-opportunity-scan/route.ts (600s), app/api/cron/weekly-income-digest/route.ts (600s)** — a duration above the plan's default needs Fluid compute / Pro limits (verify in the project; ACTIVATION-CHECKLIST §1) | app/**/route.ts |
+| Platform crons | `/api/cron/dispatch` `* * * * *` — ONE per-minute cron (a per-minute schedule needs a plan that allows it) | vercel.json:31 |
+| Cron registry | 218 registry entries over 211 distinct routes, fanned out by the dispatcher | lib/kernel/cron-dispatch.ts:27 |
+| Cron fan-out timeout | each target fetch aborts after **55 s**, but 117 routes declare `maxDuration` above that: a long-running target is reported as a dispatch FAILURE ("timeout") while it keeps running (log noise, not lost work; finding F-3) | lib/kernel/cron-dispatch.ts:397 |
+| Cron self-call origin | `CRON_DISPATCH_BASE_URL` → `VERCEL_PROJECT_PRODUCTION_URL` → `VERCEL_URL`; Deployment Protection on the chosen host would answer the dispatcher with a Vercel page, not the route (verify `dispatched = due`) | lib/kernel/cron-dispatch.ts:417 |
+| Webhook doors | 33 contracted; 13 with no declared failure visibility | lib/providers/webhook-contract.ts:101 |
+| Background work | Vercel Workflow (`withWorkflow` wraps the Next config; `workflows/` holds 1 file(s)); durable queues live in Postgres and are drained by the cron registry | next.config.ts:169 |
+| Media storage | Supabase Storage, 12 live buckets — public: `agent-media`, `brokerage-assets`, `business-cards`, `listing-media`, `media`, `video-assets`; private: `agent-documents`, `brokerage-forms`, `client-documents`, `documents`, `offer-documents`, `transaction-documents`. No Vercel Blob. Remotion output is hosted via `hostRenderedMedia` | lib/storage/bucket-limits.ts:46 |
+| Tenant routing | `proxy.ts` (edge middleware) classifies public/protected paths, rewrites white-label custom domains and sets per-tenant `frame-ancestors`; baseline tenant site = path `/site/<slug>` (present); no wildcard subdomain (readiness B9b UNSUPPORTED) | proxy.ts, lib/platform/custom-domains.ts |
+| Domains / SSL | Custom domains attach through the Vercel domains API (needs `VERCEL_TOKEN` + `VERCEL_PROJECT_ID`); certificates are issued by Vercel once DNS verifies; the app only records `pending_dns → verifying → active` | lib/platform/custom-domains.ts:437 |
+| Security headers (global) | X-Content-Type-Options, Referrer-Policy on `/(.*)`; widget routes add a `frame-ancestors *` CSP (present); `proxy.ts` sets per-tenant `frame-ancestors` (present). **No site-wide CSP and no explicit HSTS from the app** — HSTS is the Vercel edge default (verify with `curl -sI`) | next.config.ts:31 |
+| Observability | `@vercel/analytics` mounted · `collectError` → `automation_errors` · connector health from `api_response_logs` · root `app/error.tsx` present · app/global-error.tsx ABSENT · instrumentation.ts ABSENT (R-5 stays open) | app/layout.tsx, lib/errors/collect-error.ts:115 |
+| Liveness endpoint | **none** — no unauthenticated health route exists for an external uptime monitor (finding F-4); `/api/admin/health-status` is gated | app/api/ |
+| Database access | PostgREST only (supabase-js over HTTPS; no `DATABASE_URL`, no pooled connection string in code) — no connection-pool exhaustion mode from serverless fan-out | lib/supabase/service.ts:4 |
+| Migrations | 620 files, highest m841; **5** headers claim WRITTEN, NOT APPLIED (m739, m771, m795, m840, m841). Applied by the integrator through the Supabase MCP, never by CI or Vercel | supabase/migrations/ |
+| Live schema cache | 780 relations in `scripts/live-tables.ts` (a cache of the live database; regenerate, never hand-edit) | scripts/live-tables.ts:33 |
+<!-- GENERATED:hosting-facts:END -->
+
+### 15.2 Supabase — live read, 2026-10-23 (no change made)
+
+| Reading | Value | Meaning |
+|---|---|---|
+| Public base tables | 769 | Cached relations in `scripts/live-tables.ts` are 780 = 769 tables + 11 views. |
+| RLS enabled | 769 of 769, **0 without** | Same as the 2026-10-07 reading in §5 (767 → 769: two tables added since). |
+| RLS enabled, no policy | 56 | `anon` and `authenticated` are denied; only the service role reaches them (unchanged). |
+| Policies | 2,027 | |
+| Event triggers | `ensure_rls` (`ddl_command_end`) present | R-1 holds live: a new `public` table gets RLS on creation. It still exists only live (not in a migration file). |
+| Storage buckets | 12 — public: `brokerage-assets`, `listing-media`, `video-assets`, `business-cards`, `agent-media`, `media`; private: `client-documents`, `transaction-documents`, `offer-documents`, `documents`, `brokerage-forms`, `agent-documents` | Agrees with `LIVE_BUCKET_CONFIG` (`lib/storage/bucket-limits.ts:46`). |
+| Migration ledger | 909 rows, newest version `20261005115421` | m782 is stamped applied on 2026-10-19 yet the ledger's newest row is 2026-10-05: a statement applied through `execute_sql` leaves **no ledger row**, so `scripts/migration-ledger-guard.ts` is a *lower bound* for wave-142 work, not proof. |
+| `transaction_documents` / `global_settings` | 0 rows each | The database has never been operated: every "0 rows" is NOT_APPLICABLE, never PASS (wave-142 rule). Both wave-143 migrations (`m840`, `m841`) therefore rewrite nothing today. |
+
+### 15.3 Findings (what the audit found, what was fixed, what is the owner's call)
+
+| # | Finding | Disposition |
+|---|---|---|
+| F-1 | **Builds are not reproducible from the lockfile.** `vercel.json` installs and builds with `--no-frozen-lockfile`; both `pnpm-lock.yaml` and `package-lock.json` exist and CI uses `npm ci`. A Vercel deployment can resolve different dependency versions than the ones CI type-checked and tested. | **Owner decision** (a production build setting): choose one package manager, commit its lockfile as the only one, and switch to `--frozen-lockfile`. Not changed here. |
+| F-2 | **No Node version pin** (`engines`, `.nvmrc`). The runtime is whatever the Vercel project setting says. | **Owner decision**; checklist §1 verifies the project's Node major. |
+| F-3 | **The cron dispatcher reports long jobs as failures.** Each fan-out fetch aborts after 55 s (`lib/kernel/cron-dispatch.ts:397`) while many targets declare `maxDuration` 300 (and three 600). The target keeps running; the dispatcher logs a "timeout" failure every tick. Noise, not lost work — but it buries real dispatch failures. | **Outside lane** (cron-dispatch is no lane's domain in wave 143): treat an `AbortError` as "dispatched, in flight" and keep real non-2xx as failures. Exact change in the lane notes. |
+| F-4 | **No unauthenticated liveness route** for an external uptime monitor or a Vercel check (`/api/admin/health-status` is gated). | **Outside lane** (a new route app/api/health/route.ts plus an entry in the public-route list in `app/constants/auth.ts`); spec in the lane notes. |
+| F-5 | **Response security headers were widget-only.** `next.config.ts` set a CSP on `/widget` and `/api/widget`; `proxy.ts` sets per-tenant `frame-ancestors`; nothing set `nosniff` or a referrer policy site-wide. | **Fixed:** `X-Content-Type-Options: nosniff` and `Referrer-Policy: strict-origin-when-cross-origin` on every path (`next.config.ts`, `/(.*)`). **Deliberately not set:** HSTS (Vercel edge default — verified by command, not assumed; an app-level `includeSubDomains` on a tenant's custom domain would decide someone else's DNS zone) and a site-wide CSP (the dashboard inlines scripts and styles; needs a nonce rollout in report-only first — a release decision). |
+| F-6 | **R-5 is still open** — no root global-error file (app/global-error.tsx), no instrumentation.ts / `onRequestError`: a root-level render failure and a server error outside `collectError` leave no `automation_errors` row. | **Open** (touches the root layout and the instrumentation hook; both are cross-cutting). Spec in the lane notes. |
+| F-7 | **Three routes declare `maxDuration` 600.** A duration above the plan default needs Fluid compute / the plan's higher limit. | Checklist §1 verifies the project accepts it; otherwise the deployment is refused at build. |
+| F-8 | **The per-minute cron needs a plan that allows it.** `vercel.json` schedules `/api/cron/dispatch` every minute. | Checklist §1 verifies the plan; a once-a-day limit would silently turn the autonomy layer off. |
+| F-9 | **Storage object-size ceilings.** `listing-media` is capped at 50 MB by its bucket; `video-assets` has no bucket cap, so the *project-level* upload limit governs rendered videos. | Checklist §1 verifies the project limit against the largest planned render. |
+| F-10 | **Backups.** Point-in-time recovery and backup retention are Supabase plan features the repository cannot see. | Checklist §2 verifies before the first real tenant. |
+
+### 15.4 What "required in production" means now
+
+`docs/operations/ENVIRONMENT-INVENTORY.md` is the complete list (every name, requirement, owner, where to obtain it, how to verify it). The §8 table above stays the short fail-closed list. Four names must be **absent** in Production: `NEXT_PUBLIC_DEMO_MODE`, `NEXT_PUBLIC_DEMO_PASSWORD`, `INBOUND_SKIP_SIG_VERIFY`, `ALLOW_PROD_MAINTENANCE_ROUTES` — each is hard-gated off in code and the guard proves the gate, but an absent name is the stronger posture.
+
+### 15.5 Rollback and recovery additions
+
+Application rollback is unchanged (§9: promote the previous deployment). Migration `m840` (a data rewrite) and `m841` (nullable `global_settings.timezone`) each carry their own rollback statements in the file header; both are written, **not applied**. The owner-held DDL (`m739`, `m771`) and the decision-gated `m795` are consolidated, verbatim, in `docs/operations/OWNER-SQL.md`.

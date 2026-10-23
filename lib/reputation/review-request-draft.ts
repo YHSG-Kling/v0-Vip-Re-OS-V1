@@ -29,9 +29,20 @@ import "server-only"
 import { z } from "zod"
 import { generateObjectRouted } from "@/lib/ai/models"
 import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
+import {
+  parseReputationProfiles,
+  screenReviewAskCopy,
+  REVIEW_ASK_PROMPT_RULES,
+  type AskableReviewPlatform,
+  type ReviewAskViolation,
+} from "@/lib/reputation/review-ask-policy"
 
-export type ReviewPlatform = "google" | "zillow" | "realtor" | "facebook" | "yelp"
+// WAVE 143 (lane 143E) — ONE platform vocabulary (CLAUDE.md §6). This file spelled Realtor.com "realtor" while
+// lib/kernel/reputation.ts REVIEW_PLATFORMS (the agent_reviews.platform CHECK) spells it "realtor_com"; the
+// old spelling is still ACCEPTED at the door (ReputationPanel / review-request-panel send it) and normalised here.
+export type ReviewPlatform = AskableReviewPlatform | "realtor"
 export type ReviewChannel = "email" | "text" | "in_person"
+const normalisePlatform = (p: ReviewPlatform): AskableReviewPlatform => (p === "realtor" ? "realtor_com" : p)
 
 export interface ReviewRequestDraftInput {
   brokerageId: string
@@ -40,6 +51,14 @@ export interface ReviewRequestDraftInput {
   agentId: string
   platform: ReviewPlatform
   channel: ReviewChannel
+  /**
+   * The REAL review link to carry. Omitted → resolved here from the tenant's `reputation_profiles` policy
+   * (the agent's own link, else the brokerage's). NEVER a placeholder: the old PLATFORM_URLS table shipped
+   * `https://g.page/r/YOUR_PLACE_ID/review` to real clients.
+   */
+  reviewUrl?: string
+  /** A queued request row to ADOPT (status 'scheduled' legacy rows) instead of inserting a second one. */
+  existingRequestId?: string
 }
 
 const ReviewRequestSchema = z.object({
@@ -50,17 +69,16 @@ const ReviewRequestSchema = z.object({
   personalizedOpener: z.string(),
   softAsk: z.string(),
   directAsk: z.string(),
-  followUpSequence: z.array(z.object({
-    day: z.number(),
-    channel: z.string(),
-    message: z.string(),
-  })),
+  // TOMBSTONE (wave 143, lane 143E): `followUpSequence` (a model-authored "3-touch follow-up if no response" with
+  // fixed `day` numbers) is gone — nothing ever read it, it was a hard-coded reminder timetable, and a second
+  // and third unprompted ask is exactly the pestering the no-duplicates rule forbids. Whether and when to follow
+  // up on a review ask is the follow-up arbiter's call (lib/ai-isa/followup-arbiter.ts), not a field of the draft.
 })
 export type ReviewRequestDraft = z.infer<typeof ReviewRequestSchema>
 
 export type ReviewRequestDraftResult =
-  | { success: true; data: ReviewRequestDraft; message: string; reviewRequestId: string }
-  | { success: false; error: string }
+  | { success: true; data: ReviewRequestDraft; message: string; reviewRequestId: string; reviewUrl: string; platform: AskableReviewPlatform; violations: ReviewAskViolation[] }
+  | { success: false; error: string; code?: "no_review_link" }
 
 /**
  * ai_assistant_notes.source names the PRODUCER CLASS (ai_assistant |
@@ -68,32 +86,50 @@ export type ReviewRequestDraftResult =
  */
 const AI_NOTE_SOURCE = "ai_assistant"
 
-// Platform-specific review URLs (moved unchanged).
-const PLATFORM_URLS: Record<ReviewPlatform, string> = {
-  google: "https://g.page/r/YOUR_PLACE_ID/review",
-  zillow: "https://www.zillow.com/profile/YOUR_ID/reviews",
-  realtor: "https://www.realtor.com/realestateagents/YOUR_ID/reviews",
-  facebook: "https://facebook.com/YOUR_PAGE/reviews",
-  yelp: "https://www.yelp.com/writeareview/biz/YOUR_BIZ_ID",
+// TOMBSTONE (wave 143, lane 143E): PLATFORM_URLS — five literal template links (`…/YOUR_PLACE_ID/review`,
+// `…/YOUR_ID/reviews`, `…/YOUR_PAGE/reviews`, `…/YOUR_BIZ_ID`) that were written to review_requests.review_url and
+// put into the prompt, so a client could be sent a link that goes nowhere. Survivor: the tenant's
+// `reputation_profiles` policy, parsed by lib/reputation/review-ask-policy.ts parseReputationProfiles (real,
+// platform-hosted links only; no link = refusal below).
+
+/** Injectable model call (the guard drives the core with a fixture; production uses generateObjectRouted). */
+export interface ReviewRequestDraftDeps {
+  generate?: (args: { brokerageId: string; prompt: string }) => Promise<{ object: ReviewRequestDraft }>
 }
 
-export async function draftReviewRequest(svc: any, input: ReviewRequestDraftInput): Promise<ReviewRequestDraftResult> {
-  const { brokerageId, transactionId, agentId, platform, channel } = input
+export async function draftReviewRequest(
+  svc: any,
+  input: ReviewRequestDraftInput & { contactId?: string | null },
+  deps: ReviewRequestDraftDeps = {},
+): Promise<ReviewRequestDraftResult> {
+  const { brokerageId, transactionId, agentId, channel } = input
+  const platform = normalisePlatform(input.platform)
   if (!brokerageId) return { success: false, error: "Review request refused: no brokerageId (the tenant must come from a session or the transaction row)" }
 
-  // transactions has THREE FKs to contacts (contact_id, buyer_contact_id,
-  // seller_contact_id) — the embed names its constraint (PGRST201).
+  // The transaction, tenant-pinned. (The old embed `contacts!transactions_contact_id_fkey` always drafted for
+  // transactions.contact_id — on a two-sided deal that is ONE of the clients, not necessarily the one being
+  // asked; the client is read by id below.)
   const { data: transaction, error: transactionError } = await svc
     .from("transactions")
-    .select(`
-      *,
-      contacts!transactions_contact_id_fkey(first_name, last_name, email, phone)
-    `)
+    .select("id, brokerage_id, contact_id, property_address, deal_type, close_date")
     .eq("id", transactionId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
   if (transactionError) return { success: false, error: `Review request: transaction read refused: ${transactionError.message}` }
   if (!transaction) return { success: false, error: "Transaction not found in this brokerage" }
+
+  const clientContactId = input.contactId ?? transaction.contact_id ?? null
+  let client: { id: string; first_name: string | null; last_name: string | null } | null = null
+  if (clientContactId) {
+    const { data: c, error: clientError } = await svc
+      .from("contacts")
+      .select("id, first_name, last_name")
+      .eq("id", clientContactId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (clientError) return { success: false, error: `Review request: client read refused: ${clientError.message}` }
+    client = c ?? null
+  }
 
   const { data: agent, error: agentError } = await svc
     .from("agents")
@@ -104,51 +140,87 @@ export async function draftReviewRequest(svc: any, input: ReviewRequestDraftInpu
   if (agentError) return { success: false, error: `Review request: agent read refused: ${agentError.message}` }
   if (!agent) return { success: false, error: "Agent record not found in this brokerage" }
 
-  const { object: request } = await generateObjectRouted({
-    feature: "review_request_generation",
-    brokerageId,
-    schema: ReviewRequestSchema,
-    prompt: `Generate a ${channel} review request for ${platform}:
+  // THE LINK — a real, platform-hosted review link from the tenant's policy, or the request is refused BEFORE any
+  // model spend. (Fail closed: "no link configured" must never render as a link that goes nowhere.)
+  let reviewUrl = input.reviewUrl ?? null
+  if (!reviewUrl) {
+    const { data: settingsRow, error: settingsError } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
+    if (settingsError) return { success: false, error: `Review request: the reputation profiles could not be read (${settingsError.message}) — nothing was drafted` }
+    const profiles = parseReputationProfiles((settingsRow as { settings?: unknown } | null)?.settings)
+    reviewUrl = profiles.agents[agentId]?.[platform] ?? profiles.brokerage[platform] ?? null
+  }
+  if (!reviewUrl) {
+    return { success: false, code: "no_review_link", error: `No review link is configured for ${platform}. Add the real ${platform} review link on the Referrals page (Where review requests point) — a request is never sent with a placeholder.` }
+  }
 
-Agent: ${(agent.users as any)?.first_name} ${(agent.users as any)?.last_name}
-Client: ${transaction.contacts?.first_name} ${transaction.contacts?.last_name}
+  const agentName = `${(agent.users as any)?.first_name ?? ""} ${(agent.users as any)?.last_name ?? ""}`.trim()
+  const basePrompt = `Generate a ${channel} review request for ${platform}:
+
+Agent: ${agentName}
+Client: ${client?.first_name ?? ""} ${client?.last_name ?? ""}
 Property: ${transaction.property_address}
 Transaction type: ${transaction.deal_type}
 Close date: ${transaction.close_date}
+The ONE review link to include (use exactly this, nothing else to click): ${reviewUrl}
 
-Guidelines:
-- Be genuine and grateful, not pushy
-- Reference specific positive moments from the transaction
-- Make it easy with a direct link
-- For ${platform}, the review URL is: ${PLATFORM_URLS[platform]}
+Rules (the message is machine-checked against them):
+${REVIEW_ASK_PROMPT_RULES.map((r) => `- ${r}`).join("\n")}
+- Be genuine and grateful, not pushy; reference a real moment from the transaction.
 
 Generate:
 1. ${channel === "email" ? "Email subject and body" : channel === "text" ? "Text message (under 300 chars)" : "In-person script"}
 2. Key points to mention
-3. Both a soft ask and direct ask version
-4. 3-touch follow-up sequence if no response`,
-  })
+3. Both a soft ask and direct ask version`
+
+  const generate = deps.generate ?? (async ({ brokerageId: b, prompt }: { brokerageId: string; prompt: string }) =>
+    generateObjectRouted({ feature: "review_request_generation", brokerageId: b, schema: ReviewRequestSchema, prompt }))
+
+  // Draft, SCREEN, and give the model ONE chance to repair a flagged draft with the reasons stated. A draft that is
+  // still flagged is returned with its violations — the caller stages it for a human, it is never sent.
+  let { object: request } = await generate({ brokerageId, prompt: basePrompt })
+  let violations = screenReviewAskCopy({ subject: request.subject, body: request.message })
+  if (violations.length > 0) {
+    const retry = await generate({
+      brokerageId,
+      prompt: `${basePrompt}\n\nYour previous draft broke these rules — rewrite it so it breaks none: ${violations.map((v) => `${v.code} ("${v.match}")`).join("; ")}.`,
+    })
+    request = retry.object
+    violations = screenReviewAskCopy({ subject: request.subject, body: request.message })
+  }
 
   // ai_assistant_notes.created_by FKs users — the two columns want different id
   // spaces on the same actor, so the users id is RESOLVED, never substituted.
   const agentUserId = await resolveUserIdForAgentRecord(svc, agentId)
 
-  const { data: rrInsert, error: rrError } = await svc
-    .from("review_requests")
-    .insert({
-      agent_id:     agentId,
-      brokerage_id: brokerageId,
-      contact_id:   transaction.contacts?.id ?? transaction.contact_id ?? null,
-      contact_name: `${transaction.contacts?.first_name ?? ""} ${transaction.contacts?.last_name ?? ""}`.trim() || null,
-      platform,
-      review_url:   PLATFORM_URLS[platform] ?? null,
-      status:       "pending",
-      created_at:   new Date().toISOString(),
-    })
-    .select("id")
-    .single()
-  if (rrError || !rrInsert?.id) {
-    return { success: false, error: `Review request could not be saved: ${rrError?.message ?? "no row returned"}` }
+  const row = {
+    agent_id:     agentId,
+    brokerage_id: brokerageId,
+    contact_id:   client?.id ?? clientContactId,
+    contact_name: `${client?.first_name ?? ""} ${client?.last_name ?? ""}`.trim() || null,
+    platform,
+    review_url:   reviewUrl,
+    status:       "pending",
+  }
+  let reviewRequestId: string
+  if (input.existingRequestId) {
+    // ADOPT a queued legacy row (tenant-pinned, COUNTED — an update that matches nothing also resolves).
+    const { data: adopted, error: adoptError } = await svc
+      .from("review_requests")
+      .update(row)
+      .eq("id", input.existingRequestId)
+      .eq("brokerage_id", brokerageId)
+      .select("id")
+    if (adoptError) return { success: false, error: `Review request could not be saved: ${adoptError.message}` }
+    if (!adopted || adopted.length !== 1) return { success: false, error: "Review request could not be saved: the queued request is not in this brokerage" }
+    reviewRequestId = adopted[0].id as string
+  } else {
+    const { data: rrInsert, error: rrError } = await svc
+      .from("review_requests")
+      .insert({ ...row, created_at: new Date().toISOString() })
+      .select("id")
+      .single()
+    if (rrError || !rrInsert?.id) return { success: false, error: `Review request could not be saved: ${rrError?.message ?? "no row returned"}` }
+    reviewRequestId = rrInsert.id as string
   }
 
   // No users id ⇒ no valid created_by, and the note is skipped rather than
@@ -158,7 +230,7 @@ Generate:
       brokerage_id: brokerageId,
       created_by:   agentUserId,
       role:         "agent",
-      note_text:    JSON.stringify(request),
+      note_text:    JSON.stringify({ ...request, screen: violations }),
       note_type:    "review_request_draft",
       source:       AI_NOTE_SOURCE,
       created_at:   new Date().toISOString(),
@@ -168,7 +240,7 @@ Generate:
 
   const messageText = request.message
     ?? (channel === "text" ? request.callScript : null)
-    ?? `Hi ${transaction.contacts?.first_name ?? "there"}, ${request.personalizedOpener ?? ""} ${request.softAsk ?? ""}`.trim()
+    ?? `Hi ${client?.first_name ?? "there"}, ${request.personalizedOpener ?? ""} ${request.softAsk ?? ""}`.trim()
 
-  return { success: true, data: request, message: messageText, reviewRequestId: rrInsert.id as string }
+  return { success: true, data: request, message: messageText, reviewRequestId, reviewUrl, platform, violations }
 }

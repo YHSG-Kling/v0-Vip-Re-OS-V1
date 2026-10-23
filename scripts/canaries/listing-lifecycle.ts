@@ -110,10 +110,12 @@ export async function run() {
   // (lib/esign/packet-states.ts:164 refuses only from BELOW all-signed); the compliance ordering is held by the ONE writer of
   // fully_executed (the loop, after compliance_approved) — a second writer could skip compliance without the ladder refusing.
   console.log(`    finding (lane 142B, ladder hardening): canAdvancePacketState("fully_signed", "fully_executed").ok = ${canAdvancePacketState("fully_signed", "fully_executed").ok} — the compliance order is the loop's rule, not the ladder's (packet-states.ts:164)`)
-  // §6 FINDING (published beside the rule, not asserted either way): the legacy column fully_executed_at is stamped at the
-  // PROVIDER's completion (lib/forms/esign-execution-loop.ts:499) while the ladder's fully_executed lands only after
-  // compliance — two spellings of "fully executed" on one row; the activation gate reads the column (listing-activation-gate.ts:355).
-  console.log(`    finding (§6, lane 142B / integrator): listing_agreements.fully_executed_at = ${agreement()?.fully_executed_at ? "STAMPED at provider completion (esign-execution-loop.ts:499)" : "null"} while esign_status = ${agreement()?.esign_status} — the column and the ladder spell 'fully executed' differently; the gate reads the column`)
+  // WAVE 143 (lane 143A) — 142K FINDING 5 CLOSED, and ASSERTED (it used to be a console.log): the legacy column
+  // fully_executed_at is no longer stamped at the PROVIDER's completion; it is the companion of the ladder's fully_executed
+  // hop (lib/esign/packet-states.ts hopCompanionColumns) — ONE meaning of "fully executed" on the row. The provider's
+  // completion stamps only the two signature instants (the signature evidence the compliance review reads).
+  c.step("142K FINDING 5 CLOSED — ONE vocabulary: at the provider's completion listing_agreements.fully_executed_at is NULL (not stamped), the two signature instants (agent + seller) ARE the signature evidence, and the compliance mark is not yet written — 'fully executed' will appear on the row only with the ladder's fully_executed hop",
+    agreement()?.fully_executed_at == null && !!agreement()?.agent_signed_at && !!agreement()?.seller_signed_at && agreement()?.compliance_passed !== true && isAtOrPastAllSigned(agreement()?.esign_status), JSON.stringify({ esign: agreement()?.esign_status, stamp: agreement()?.fully_executed_at ?? null, agent: !!agreement()?.agent_signed_at, seller: !!agreement()?.seller_signed_at }))
 
   // ── 4 · compliance catches the missing document, tells the three roles, dedupes ──
   const gate = () => (listing()?.metadata?.compliance_gate ?? {}) as Record<string, unknown>
@@ -131,21 +133,30 @@ export async function run() {
   const up = (svc.tables.documents ?? []).find((d) => d.id === UPLOAD)
   if (up) up.signature_completeness = full
   const stillUnreviewed = await runListingComplianceLoop(svc as never, { brokerageId: B, listingId: L, trigger: "document_uploaded" })
-  c.step("correction round 2: every signature and initial present, but the agreement's COMPLIANCE REVIEW has not passed → the gate still refuses (compliance_good), naming the review — paperwork alone never executes a listing", stillUnreviewed.outcome === "blocked" && /compliance review has not passed|compliance/i.test(stillUnreviewed.reason ?? "") && listing()?.lifecycle_stage === "LISTING_AGREEMENT_SIGNED", (stillUnreviewed.reason ?? "").slice(0, 200))
-  // Compliance approves the agreement (the human review's mark), with no MLS start date yet.
-  const ag = agreement(); if (ag) ag.compliance_passed = true
-  const awaiting = await runListingComplianceLoop(svc as never, { brokerageId: B, listingId: L, trigger: "document_uploaded" })
-  // THE RULE (owner: "only after compliance approval: FULLY EXECUTED"; lane 142B's ladder): an agreement the loop itself
-  // moved to compliance_pending / correction_required is AT OR PAST all-signed — the gate must admit it once compliance
-  // passed, and the loop then stamps compliance_approved → fully_executed.
-  // INTEGRATOR FINDING (RED at 28774bdc2, never relaxed): lib/listings/listing-activation-gate.ts:331,:353 pin the literal
-  // LISTING_AGREEMENT_EXECUTED_STATUS = "fully_signed" (lib/transactions/coordination-status.ts:179) — so the agreement the
-  // loop stamped compliance_pending is refused forever ("its e-sign status is compliance_pending rather than fully_signed").
-  // The gate must ask isAtOrPastAllSigned (lib/esign/packet-states.ts:141). Lane 142B's file; not fixed here.
-  c.step("compliance APPROVED → the gate PASSES (the gate admits an esign_status at or past all-signed on the ladder — isAtOrPastAllSigned; compliance_pending / correction_required are PAST fully_signed, never 'not complete'); with no MLS start date the loop records passed_awaiting_date and invents no date — INTEGRATOR FINDING when red: listing-activation-gate.ts:353 pins the literal 'fully_signed' against a packet the loop itself moved past it", awaiting.outcome === "passed_awaiting_date" && gate().state === "passed_awaiting_date" && listing()?.lifecycle_stage === "LISTING_AGREEMENT_SIGNED" && isAtOrPastAllSigned(agreement()?.esign_status), `${awaiting.outcome}: ${(awaiting.reason ?? "").slice(0, 200)}`)
-  const lrow = listing(); if (lrow) lrow.go_live_date = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10)
-  const advanced = await runListingComplianceLoop(svc as never, { brokerageId: B, listingId: L, trigger: "document_uploaded" })
-  c.step("with the MLS start date set the pass arm walks the stage machine one allowed hop at a time (LISTING_AGREEMENT_SIGNED → MLS_DATE_CONFIRMED → COMING_SOON_PREP), the gated status reads coming_soon only because the verdict was an explicit pass, and the packet reads FULLY EXECUTED only now — compliance_approved RECORDED (evidence, no bell), fully_executed ANNOUNCED (one bell for the one moment) — the owner's ordering end to end", advanced.outcome === "advanced" && listing()?.lifecycle_stage === "COMING_SOON_PREP" && listing()?.status === "coming_soon" && (gate().advanced as string[] ?? []).join() === "MLS_DATE_CONFIRMED,COMING_SOON_PREP" && agreement()?.esign_status === "fully_executed" && hopEvidence("compliance_approved").length === 1 && hopEvidence("fully_executed").length === 1 && bells().some((n) => n.brokerage_id === B && n.type === "esign.packet.fully_executed") && !bells().some((n) => n.type === "esign.packet.compliance_approved"), JSON.stringify({ outcome: advanced.outcome, stage: listing()?.lifecycle_stage, status: listing()?.status, esign: agreement()?.esign_status, reason: (advanced.reason ?? "").slice(0, 120) }).slice(0, 300))
+  // THE RULE (owner: "only after compliance approval: FULLY EXECUTED"; lane 142B's ladder; wave 143 lane 143A closes 142K finding 5):
+  // the compliance loop IS the review. Round 2 has every signature and initial and the provider's all-signed evidence, so the
+  // review PASSES here with no human flag: it writes the compliance mark with compliance_approved, then the execution stamp with
+  // fully_executed - and, because no planned MLS live date has been typed, it takes NO stage hop and invents no date
+  // (passed_awaiting_date). Before wave 143 this step expected the gate to refuse until a person hand-set compliance_passed -
+  // a mark nothing in the provider path ever wrote, so every provider-signed agreement was stuck blocked forever.
+  c.step("correction round 2: every signature and initial present → the compliance REVIEW PASSES (the loop is the review): compliance_approved writes the mark, fully_executed writes the execution stamp, the listing stays at LISTING_AGREEMENT_SIGNED with outcome passed_awaiting_date and NO go-live date invented",
+    stillUnreviewed.outcome === "passed_awaiting_date" && gate().state === "passed_awaiting_date" && listing()?.lifecycle_stage === "LISTING_AGREEMENT_SIGNED" && listing()?.go_live_date == null
+    && agreement()?.esign_status === "fully_executed" && agreement()?.compliance_passed === true && typeof agreement()?.fully_executed_at === "string"
+    && trail().indexOf("compliance_approved") > trail().indexOf("compliance_pending") && trail().indexOf("fully_executed") > trail().indexOf("compliance_approved"),
+    JSON.stringify({ outcome: stillUnreviewed.outcome, trail: trail(), stamp: agreement()?.fully_executed_at ?? null, mark: agreement()?.compliance_passed }).slice(0, 320))
+  const awaiting = stillUnreviewed
+  c.step("the MLS date waits on a PERSON: no stage hop was taken without a planned date, the listing is not coming_soon, the open-house dates were not invented, and the review's evidence is on the listing (metadata.compliance_gate)",
+    awaiting.outcome === "passed_awaiting_date" && listing()?.status !== "coming_soon" && listing()?.open_house_event_date == null && hopEvidence("compliance_approved").length === 1 && hopEvidence("fully_executed").length === 1, `${awaiting.outcome}: ${(awaiting.reason ?? "").slice(0, 200)}`)
+  // The planned MLS live date is typed (the lifecycle timeline's save → the ONE planned-date writer): the writer re-runs the loop, which
+  // takes the hop that waited on it. The date is a PLAN: no verified column is touched.
+  const { recordPlannedMlsLiveDate } = await import("../../lib/listings/mls-live-date")
+  const plannedOn = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10)
+  const plannedRes = await recordPlannedMlsLiveDate(svc as never, { brokerageId: B, listingId: L, date: plannedOn, actorUserId: AG_U, source: "timeline" })
+  const advanced = { outcome: plannedRes.ok ? (plannedRes as { loop: string | null }).loop : "refused", reason: plannedRes.ok ? null : plannedRes.reason }
+  c.step("with the planned MLS live date typed, the writer re-runs the loop and the pass arm walks the stage machine one allowed hop at a time (LISTING_AGREEMENT_SIGNED → MLS_DATE_CONFIRMED → COMING_SOON_PREP), the gated status reads coming_soon only because the verdict was an explicit pass, the date is recorded as a PLAN (nothing verified), and the packet was already FULLY EXECUTED at approval - compliance_approved RECORDED (evidence, no bell), fully_executed ANNOUNCED (one bell for the one moment)",
+    advanced.outcome === "advanced" && listing()?.lifecycle_stage === "COMING_SOON_PREP" && listing()?.status === "coming_soon" && (gate().advanced as string[] ?? []).join() === "MLS_DATE_CONFIRMED,COMING_SOON_PREP" && listing()?.go_live_date === plannedOn && listing()?.go_live_confirmed_at == null && listing()?.mls_live_date_actual == null
+    && agreement()?.esign_status === "fully_executed" && hopEvidence("compliance_approved").length === 1 && hopEvidence("fully_executed").length === 1 && bells().some((n) => n.brokerage_id === B && n.type === "esign.packet.fully_executed") && !bells().some((n) => n.type === "esign.packet.compliance_approved"),
+    JSON.stringify({ outcome: advanced.outcome, stage: listing()?.lifecycle_stage, status: listing()?.status, esign: agreement()?.esign_status, reason: (advanced.reason ?? "").slice(0, 120) }).slice(0, 300))
   const past = await runListingComplianceLoop(svc as never, { brokerageId: B, listingId: L, trigger: "document_uploaded" })
   c.step("POSITIVE CONTROL (never regresses): a listing past the window is left exactly where it is (outside_window), nothing rewritten, and the packet stays fully_executed (a terminal success is never moved back)", past.outcome === "outside_window" && listing()?.lifecycle_stage === "COMING_SOON_PREP" && agreement()?.esign_status === "fully_executed", past.reason ?? "")
   const hops = bells().filter((n) => n.brokerage_id === B).map((n) => String(n.type))

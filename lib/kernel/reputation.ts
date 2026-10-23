@@ -385,6 +385,17 @@ export async function createReviewRequest(
     return { success: false, error: "contactName is required." }
   }
 
+  // WAVE 143 (143E): a review link that is stored is a link a client will be sent. A placeholder, a non-https URL or a host that
+  // is not the platform's is refused here, exactly as the reputation_profiles reader refuses it (lib/reputation/review-ask-policy.ts
+  // validateReviewLink — one rule). `internal` reviews have no outside link to validate.
+  if (input.reviewUrl) {
+    const { validateReviewLink, ASKABLE_REVIEW_PLATFORMS } = await import("@/lib/reputation/review-ask-policy")
+    if ((ASKABLE_REVIEW_PLATFORMS as readonly string[]).includes(input.platform)) {
+      const link = validateReviewLink(input.platform as (typeof ASKABLE_REVIEW_PLATFORMS)[number], input.reviewUrl)
+      if (!link.ok) return { success: false, error: `The ${input.platform} review link is not usable (${link.reason}).` }
+    }
+  }
+
   try {
     const supabase = createServiceClient()
 

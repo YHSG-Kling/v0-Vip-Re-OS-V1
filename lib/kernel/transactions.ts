@@ -461,6 +461,16 @@ export async function createTransactionFromCompliantAcceptedOffer(
 
     // Write compliance log entry confirming bridge succeeded
     const supabase = createServiceClient()
+
+    // FREEZE THE EXECUTED TERMS (wave 143, lane 143A — contract precedence). The offers rows stay editable by agents; a
+    // dispute, and closing compliance's "does the settlement match the contract", need what was SIGNED. Every executed version
+    // of the offer's chain (the original and any executed counter) is written to the immutable record
+    // (lib/offers/governing-terms.ts snapshotExecutedTerms → contract_term_versions); precedence is read with
+    // governingContractTerms. The transaction already exists, so a refusal here is LOGGED, never a reason to undo the promotion.
+    {
+      const { freezeExecutedTermsAfterPromotion } = await import("@/lib/offers/governing-terms")
+      await freezeExecutedTermsAfterPromotion({ brokerageId, offerId, transactionId: result.transactionId, client: supabase as any })
+    }
     await sentinelWrite(supabase, supabase.from("transaction_compliance_log").insert({
       brokerage_id:   brokerageId,
       transaction_id: result.transactionId,
@@ -1449,27 +1459,14 @@ export async function closeTransactionCommand(params: {
       }
     } catch {}
 
-    // Schedule review request post-close (J8.1). review_requests is contact-keyed
-    // (no transaction_id/send_after columns); link via the deal's contact.
-    try {
-      const reviewContactId = txBefore?.buyer_contact_id ?? txBefore?.contact_id ?? null
-      if (reviewContactId) {
-        await sentinelWrite(supabase, supabase.from("review_requests").insert({
-          brokerage_id: params.brokerageId,
-          // AGENTS id since m366. This was params.agentId (users-class), which
-          // was correct while the column FK'd users and became an FK violation
-          // the moment it did not — and the write is double-swallowed by the
-          // .then(null, null) below and the surrounding catch, so the post-close
-          // review request simply stopped being scheduled, silently.
-          agent_id:     agentRecordId,
-          contact_id:   reviewContactId,
-          status:       "scheduled",
-          created_at:   nowIso,
-        }), { table: "review_requests", flow: "post_close_review_request", brokerageId: params.brokerageId, reason: "post-close review request; never blocks the close" })
-      }
-    } catch {
-      // Non-critical — close success is not dependent on review scheduling
-    }
+    // 6. TOMBSTONE (wave 143, lane 143E): "Schedule review request post-close (J8.1)" — an inline INSERT of a `scheduled`
+    //    review_requests row for the BUYER only (never the seller, no platform, no link). It was one of five writers of
+    //    that table on the close path, and because the review-request-on-close cron skipped any contact that already had
+    //    a row, this one made the cron skip the client: the autonomous "a review is always asked at closing" ask never
+    //    went out. SURVIVOR: lib/reputation/review-ask.ts askForReviewAtClose, which the review-request-on-close cron
+    //    runs for every verified closing (status closed | funded) once the tenant's review_request_delay_days has
+    //    elapsed — it asks the agent's client(s) (seller side → seller, buyer side → buyer, dual → both), once, on one
+    //    platform with a real link, screened for incentive / gating, through dispatchEmail / dispatchSms.
 
     return { success: true }
   } catch (e: any) {

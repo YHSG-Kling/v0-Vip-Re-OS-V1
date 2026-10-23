@@ -89,6 +89,7 @@ interface ProjectRow {
   audience_type: string | null
   usage_intent: string | null
   contact_id: string | null
+  learning_module_id?: string | null
   approval_status: string | null
   status: string | null
   compliance_status: string | null
@@ -97,7 +98,7 @@ interface ProjectRow {
   video_metadata: Record<string, unknown> | null
 }
 
-const PROJECT_COLUMNS = "id, brokerage_id, agent_id, listing_id, marketing_campaign_id, title, video_type, audience_type, usage_intent, contact_id, approval_status, status, compliance_status, video_url, script_content, video_metadata"
+const PROJECT_COLUMNS = "id, brokerage_id, agent_id, listing_id, marketing_campaign_id, title, video_type, audience_type, usage_intent, contact_id, learning_module_id, approval_status, status, compliance_status, video_url, script_content, video_metadata"
 
 /**
  * Stage the YouTube publish for ONE approved video. Idempotent per video. Never throws.
@@ -267,4 +268,145 @@ export async function recordYouTubePublishOnAsset(svc: any, post: PublishedYouTu
   } catch (e) {
     return none((e as Error).message)
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// WAVE 143 (lane 143F) — closes the two 142K open items on this rail.
+//
+//   1. PRIVACY IS EXPLICIT, AND DECIDED AT SEND TIME. publishToYouTube no longer defaults to "public"
+//      (lib/social/publisher.ts PublishParams.privacyStatus is required). The queue above classifies when it
+//      STAGES a post; the cron sends later, and a human can also draft a YouTube post of any file. So the
+//      send re-asks the SAME classification about the file it is about to upload: a public-marketing video →
+//      "public"; a file that is one of OUR video projects but is NOT public marketing (a thank-you to a client,
+//      an unapproved cut, the MLS cut, an in-house video) → "private" — never broadcast; a file that is no video
+//      project of ours (a human composed that YouTube post) → "public", the human approved it; a refused read →
+//      no answer (the cron holds the post — fail closed, never a guess).
+//   2. THE CONNECT BACKFILL. queueYouTubeAutoPublish refuses with "no active YouTube account is connected" and
+//      nothing ever retried: every video approved BEFORE the tenant connected its channel stayed off YouTube
+//      for good. backfillYouTubeAutoPublish re-asks that question for the tenant's approved public-marketing
+//      videos that were never queued; sweepYouTubeBackfill is the bounded cron-side net over tenants that have
+//      an active channel (the publish-social-posts cron runs it — cron is the backup, the approval and the
+//      render-landed doors are the primary). Idempotent: the queue is idempotent on the brief key, and a video
+//      already queued or published is skipped by its video_metadata.youtube stamp before the queue is asked.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+export type YouTubePrivacyBasis = "classified_public_marketing" | "held_private_not_public_marketing" | "human_post_unclassified_file"
+
+export type YouTubePrivacyResolution =
+  | { ok: true; privacyStatus: "public" | "private"; basis: YouTubePrivacyBasis; detail: string }
+  | { ok: false; reason: string }
+
+/**
+ * The upload's privacyStatus for ONE post about to be sent. Tenant-pinned (the post's own brokerage_id); never throws.
+ * @proofSeam scripts/video-pipeline-truth-guard.ts drives every branch on an in-memory client.
+ */
+export async function resolveYouTubePrivacy(
+  svc: any,
+  post: { brokerage_id: string | null; media_urls?: string[] | null; post_brief?: string | null },
+): Promise<YouTubePrivacyResolution> {
+  try {
+    if (!post.brokerage_id) return { ok: false, reason: "post has no tenant — the file cannot be classified" }
+    const videoUrl = Array.isArray(post.media_urls) && post.media_urls.length > 0 ? post.media_urls[0] : null
+    let row: ProjectRow | null = null
+    const projectId = videoProjectIdFromBrief(post.post_brief)
+    if (projectId) {
+      const { data, error } = await svc.from("ai_video_projects").select(PROJECT_COLUMNS).eq("id", projectId).eq("brokerage_id", post.brokerage_id).maybeSingle()
+      if (error) return { ok: false, reason: `video project read refused: ${error.message}` }
+      row = (data as ProjectRow | null) ?? null
+    }
+    if (!row && videoUrl) {
+      const { data, error } = await svc.from("ai_video_projects").select(PROJECT_COLUMNS).eq("brokerage_id", post.brokerage_id).eq("video_url", videoUrl).limit(1).maybeSingle()
+      if (error) return { ok: false, reason: `video project read refused: ${error.message}` }
+      row = (data as ProjectRow | null) ?? null
+    }
+    if (!row) return { ok: true, privacyStatus: "public", basis: "human_post_unclassified_file", detail: "the file is not one of this tenant's video projects — a human composed and approved this YouTube post" }
+    const verdict = classifyPublicVideo(row)
+    if (verdict.public) return { ok: true, privacyStatus: "public", basis: "classified_public_marketing", detail: `video project ${row.id} (${row.video_type}) is approved public marketing` }
+    return { ok: true, privacyStatus: "private", basis: "held_private_not_public_marketing", detail: `video project ${row.id} is not public marketing (${verdict.reason}) — uploaded PRIVATE, never broadcast` }
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message }
+  }
+}
+
+export interface YouTubeBackfillOutcome {
+  /** Public-marketing videos looked at (after the already-stamped ones were set aside). */
+  examined: number
+  queued: number
+  alreadyQueued: number
+  skipped: Array<{ id: string; reason: string }>
+  /** Set when the tenant has no active YouTube account (nothing to do) or a read was refused (the reason). */
+  note?: string
+}
+
+/**
+ * Queue the tenant's approved public-marketing videos that were finished before its YouTube channel was
+ * connected. Newest first, bounded (`limit`, default 10), tenant-pinned. Never throws.
+ * Callers: app/actions/youtube-backfill.ts queueApprovedVideosToYouTubeAction (the "Send approved videos to YouTube" button on the videos library,
+ * tenant admin, session tenant) and sweepYouTubeBackfill below (the publish-social-posts cron). scripts/video-pipeline-truth-guard.ts drives one
+ * tenant's backfill (before / after connect, idempotent, policy off, unreadable, bounded). The OAuth connect callback is the immediate hook (outside
+ * this lane's files — see the lane notes); until it calls this, the button and the cron are the doors.
+ */
+export async function backfillYouTubeAutoPublish(svc: any, brokerageId: string, opts: { limit?: number } = {}): Promise<YouTubeBackfillOutcome> {
+  const out: YouTubeBackfillOutcome = { examined: 0, queued: 0, alreadyQueued: 0, skipped: [] }
+  try {
+    if (!brokerageId) return { ...out, note: "no tenant" }
+    const { data: accts, error: acctErr } = await svc.from("social_media_accounts").select("id").eq("brokerage_id", brokerageId).eq("platform", "youtube").eq("is_active", true).limit(1)
+    if (acctErr) return { ...out, note: `YouTube account read refused: ${acctErr.message}` }
+    if (!accts || accts.length === 0) return { ...out, note: "no active YouTube account — nothing to backfill" }
+
+    const policy = await readVideoAutoPublishPolicy(svc, brokerageId)
+    if (!policy.readable) return { ...out, note: `tenant policy ${VIDEO_AUTO_PUBLISH_POLICY_KEY} unreadable — refusing to publish on a guess: ${policy.reason}` }
+    if (!policy.youtube) return { ...out, note: `tenant policy ${VIDEO_AUTO_PUBLISH_POLICY_KEY}.youtube is off` }
+
+    const { PUBLIC_MARKETING_VIDEO_TYPES } = await import("./public-video")
+    const { data, error } = await svc.from("ai_video_projects")
+      .select("id, video_metadata, video_type, contact_id, learning_module_id, approval_status, status, compliance_status, video_url, audience_type, usage_intent")
+      .eq("brokerage_id", brokerageId)
+      .in("video_type", [...PUBLIC_MARKETING_VIDEO_TYPES])
+      .is("contact_id", null)
+      .in("approval_status", ["approved", "published"])
+      .not("video_url", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(100)
+    if (error) return { ...out, note: `video projects read refused: ${error.message}` }
+
+    const limit = Math.max(1, Math.min(opts.limit ?? 10, 25))
+    const candidates = ((data ?? []) as Array<ProjectRow>)
+      // Already queued or already on the channel → the stamp says so; never ask the queue again each tick.
+      .filter((r) => { const yt = (r.video_metadata?.youtube ?? null) as Record<string, unknown> | null; return !(yt && (yt.queued_social_post_id || yt.video_id)) })
+      .filter((r) => classifyPublicVideo(r).public)
+      .slice(0, limit)
+    out.examined = candidates.length
+    for (const c of candidates) {
+      const r = await queueYouTubeAutoPublish(svc, c.id)
+      if (r.queued) { if (r.alreadyQueued) out.alreadyQueued++; else out.queued++ }
+      else out.skipped.push({ id: c.id, reason: r.reason })
+    }
+    return out
+  } catch (e) {
+    return { ...out, note: (e as Error).message }
+  }
+}
+
+/**
+ * The cron-side net: every tenant with an ACTIVE YouTube account gets its backfill (bounded: `maxTenants` per tick,
+ * `perTenant` videos each). Returns what it did so the cron can print it; never throws.
+ */
+export async function sweepYouTubeBackfill(svc: any, opts: { maxTenants?: number; perTenant?: number } = {}): Promise<{ tenants: number; queued: number; notes: string[] }> {
+  const res = { tenants: 0, queued: 0, notes: [] as string[] }
+  try {
+    const { data, error } = await svc.from("social_media_accounts").select("brokerage_id").eq("platform", "youtube").eq("is_active", true).not("brokerage_id", "is", null).limit(200)
+    if (error) { res.notes.push(`YouTube accounts read refused: ${error.message}`); return res }
+    const ids = [...new Set(((data ?? []) as Array<{ brokerage_id: string | null }>).map((r) => r.brokerage_id).filter((x): x is string => !!x))].slice(0, Math.max(1, opts.maxTenants ?? 25))
+    for (const id of ids) {
+      const r = await backfillYouTubeAutoPublish(svc, id, { limit: opts.perTenant ?? 5 })
+      res.tenants++
+      res.queued += r.queued
+      if (r.note && !/nothing to backfill/.test(r.note)) res.notes.push(`${id}: ${r.note}`)
+      for (const s of r.skipped) res.notes.push(`${id}/${s.id}: ${s.reason}`)
+    }
+  } catch (e) {
+    res.notes.push((e as Error).message)
+  }
+  return res
 }

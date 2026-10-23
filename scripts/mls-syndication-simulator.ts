@@ -206,8 +206,18 @@ console.log("\n[source — the feeds carry the MLS number at all]")
     /mlsNumber:\s+str\(r\.mlsID/.test(idx))
   check("…and kept SEPARATE from externalId — feed-local id vs industry identity",
     /externalId: String\(r\.listingID/.test(idx))
-  check("the action treats a FAILED feed call as not-consulted, never as 'not found'",
-    /if \(rc\.success\) \{/.test(src("app/actions/listings-kernel.ts")))
+  // THE RULE (not where it lives): a FAILED feed call is not-consulted, never 'not found'. Wave 143 lane 143A moved the
+  // consult out of the action into ONE survivor — lib/listings/mls-live-verification.ts consultMlsFeeds — which the
+  // action, the sweep and the checklist all call; the assertion follows the rule to the survivor and also proves the
+  // action did not keep a second copy.
+  const consultedOnlyOnSuccess = (code: string) => /if \(rc\.success\) \{\s*out\.consulted\.push\("rentcast"\)/.test(code)
+  check("the feed consult treats a FAILED feed call as not-consulted, never as 'not found' (consultMlsFeeds, lib/listings/mls-live-verification.ts)",
+    consultedOnlyOnSuccess(src("lib/listings/mls-live-verification.ts")))
+  check("…and the action holds no second consult — verifyMlsSyndicationAction delegates to the survivor",
+    /verifyAndRecordMlsLive\(/.test(src("app/actions/listings-kernel.ts")) && !/consulted\.push/.test(src("app/actions/listings-kernel.ts")))
+  check("POSITIVE CONTROL: the finder rejects a consult that marks a feed reached BEFORE checking the call succeeded",
+    !consultedOnlyOnSuccess(`out.consulted.push("rentcast"); if (rc.success) { for (const l of rc.listings) {} }`)
+    && consultedOnlyOnSuccess(`if (rc.success) {\n      out.consulted.push("rentcast")\n    }`))
 }
 
 console.log("\n──────────────────────────────────────────────────")

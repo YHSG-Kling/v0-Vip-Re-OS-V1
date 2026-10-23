@@ -35,6 +35,10 @@ import { createLeadMagnet, defaultFieldsForType, type LeadMagnetField, type Crea
 // model with the specific findings (phrase → compliant fix), rechecked, capped at PUBLIC_COPY_MAX_REWRITES,
 // then ESCALATED to the human reviewer (the draft lands on the safe baseline with the trail kept on it).
 import { rewritePublicCopyUntilCompliant, renderFindingsForRewrite, type CopyFinding } from "@/lib/kernel/marketing/public-copy-rewrite"
+// Wave 143 (lane 143F): a "55+ / senior living" claim in the concept is verified against the tenant's recorded
+// older-persons exemption (a held claim is rewritten around with the reason, then a human decides).
+import { OLDER_PERSONS_WRITING_DIRECTIVE } from "@/lib/compliance/fair-housing-older-persons"
+import { loadOlderPersonsVerifications } from "@/lib/compliance/fair-housing-older-persons-store"
 
 /** The AI_TASK_ROUTING key (lib/ai/models.ts) — scripts/ai-routing-coverage-guard.ts requires the literal at the call site.
  *  @proofSeam the proof asserts the routing row + the recorded authoring feature against it. */
@@ -207,6 +211,7 @@ const routedDraftGenerator: DraftGenerator = async (req) => {
     const system = withScriptStandards(
       `You draft a real-estate LEAD MAGNET (a landing page that offers something useful in exchange for contact details)${req.brand ? ` for ${req.brand}` : ""}. ` +
       "FAIR HOUSING, non-negotiable: never reference or imply race, religion, national origin, family status, disability, sex, or use steering language ('safe neighborhood', 'perfect for families', 'great for retirees', 'exclusive community'). " +
+      OLDER_PERSONS_WRITING_DIRECTIVE + " " +
       "Use ONLY the facts in the concept — invent no prices, dates, statistics, names or guarantees. Write like a sharp human, never like a template.",
     )
     // THE REWRITE (wave 142): the findings reach the writer as the comments it must resolve — the exact
@@ -315,11 +320,15 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
   // the fallback replaces the copy (re-scanning the baseline would erase the finding).
   let latest = composed
   const ctx = { area: input.area, brand: input.brand }
+  const olderPersons = generated
+    ? await loadOlderPersonsVerifications((deps.client as never) ?? (await import("@/lib/supabase/service")).createServiceClient(), input.brokerageId)
+    : undefined
   const loop = generated
     ? await rewritePublicCopyUntilCompliant({
         text: draftPublicText(composed.spec),
         surface: "lead_magnet",
         brokerageName: input.brand ?? null,
+        olderPersons,
         rewrite: async (_text, findings, attempt) => {
           const regenerated = await generator({ brokerageId: input.brokerageId, userId: input.createdBy, magnetType, concept, area: input.area ?? null, brand: input.brand ?? null, audience: input.audience ?? null, violations: findings, attempt }).catch(() => null)
           if (!regenerated) return null

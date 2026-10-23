@@ -137,6 +137,9 @@ export async function recordLifecycleEventAction(input: {
         // ("not recorded"), never a fabricated name or date.
         documentName: str("documentName"),
         effectiveDate: str("effectiveDate"),
+        // The PLANNED MLS live date (wave 143, lane 143A) — a person's plan, recorded as one. Blank passes undefined:
+        // the recorder then keeps the date already on the listing, and invents none.
+        plannedMlsLiveDate: str("plannedMlsLiveDate"),
         commissionTerms: {
           listingRate: num("listingRate"),
           buyerRate: num("buyerRate"),

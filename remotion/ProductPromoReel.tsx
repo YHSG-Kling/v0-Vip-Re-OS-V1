@@ -33,7 +33,18 @@ import type { CaptionCue } from "../lib/video/caption-plan"
 // → remotion-markup/google-fonts.md) blocks rendering until Inter is ready,
 // so `fontFamily` below is the REAL Google Font, not a name the renderer
 // silently falls through past.
-const { fontFamily: loadedInterFamily } = loadFont("normal", { weights: ["400", "700", "800"], subsets: ["latin"] })
+//
+// WAVE 143 (lane 143F) — THE FONT LOAD IS LAZY NOW. The real render probe (scripts/remotion-real-render-probe.ts) found the
+// recurring failure behind "we keep running into Remotion errors": this call used to run at MODULE scope, and remotion/Root.tsx
+// imports this file, so the Inter fetch from fonts.gstatic.com ran in the bundle of EVERY composition — one unreachable font
+// host (a locked-down egress, a proxy, a CDN blip) failed `NetworkError: A network error occurred.` on all ~38 compositions,
+// including the ones that never use Inter (a lead-magnet card, a postcard, a CMA reel). It is now requested the first time THIS
+// composition renders, so only the product promo depends on the font host (render-failure-census bucket `font_load`).
+let interFamily: string | null = null
+function loadedInter(): string {
+  if (interFamily === null) interFamily = loadFont("normal", { weights: ["400", "700", "800"], subsets: ["latin"] }).fontFamily
+  return interFamily
+}
 
 export interface ProductPromoReelProps {
   hook: string
@@ -168,7 +179,7 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
   // primary declaration.
   const base: React.CSSProperties = {
     backgroundColor: primary, color: "white",
-    fontFamily: `${loadedInterFamily}, system-ui, -apple-system, sans-serif`, padding: pad, justifyContent: "center",
+    fontFamily: `${loadedInter()}, system-ui, -apple-system, sans-serif`, padding: pad, justifyContent: "center",
   }
   const beats = (proofs ?? []).slice(0, 3)
   const grid = Math.round(width / 14)

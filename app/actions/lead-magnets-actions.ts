@@ -427,6 +427,102 @@ export async function reviseBookChapterAction(magnetId: string, chapter: number,
   }
 }
 
+// ── THE KDP PACKAGE (wave 143, lane 143F) — lib/lead-magnets/book-publishing-produce.ts ──
+// KDP has no publishing API: the platform builds + evidences the package; a person uploads it in their own KDP account.
+
+type KdpSummary = {
+  title: string; subtitle: string | null; builtAt: string; words: number; coverArt: "image_rail" | "typographic_only"
+  keywords: string[]; categorySuggestions: string[]; descriptionHtml: string
+  aiDisclosure: { text: string; images: string; explanation: string }
+  attestations: Array<{ id: string; text: string }>
+  paperback: { estimatedPages: number; insideMarginIn: number | null; blockers: string[] }
+  warnings: string[]; approval: { by: string; at: string } | null
+}
+
+function kdpSummaryOf(r: import("@/lib/lead-magnets/book-publishing-produce").KdpPackageRecord): KdpSummary {
+  return {
+    title: r.metadata.title, subtitle: r.metadata.subtitle, builtAt: r.built_at, words: r.words, coverArt: r.cover_art,
+    keywords: r.metadata.keywords, categorySuggestions: r.metadata.categorySuggestions, descriptionHtml: r.metadata.descriptionHtml,
+    aiDisclosure: { text: r.rights.aiDisclosure.text, images: r.rights.aiDisclosure.images, explanation: r.rights.aiDisclosure.explanation },
+    attestations: r.rights.attestations.map((a) => ({ id: a.id, text: a.text })),
+    paperback: { estimatedPages: r.paperback.estimatedPages, insideMarginIn: r.paperback.insideMarginIn, blockers: r.paperback.blockers },
+    warnings: r.warnings, approval: r.approval ? { by: r.approval.by, at: r.approval.at } : null,
+  }
+}
+
+/** The recorded KDP package of a book (tenant-pinned), or null when none was built. */
+export async function getKdpPackageAction(magnetId: string) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
+    const supabase = createServiceClient()
+    const { data, error } = await supabase.from("lead_capture_forms").select("settings").eq("id", magnetId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (error) return { success: false as const, error: error.message }
+    if (!data) return { success: false as const, error: "Magnet not found" }
+    const { kdpPackageOf } = await import("@/lib/lead-magnets/book-publishing-produce")
+    const pkg = kdpPackageOf((data as { settings?: Record<string, unknown> | null }).settings ?? null)
+    return { success: true as const, kdp: pkg ? kdpSummaryOf(pkg) : null }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to load the KDP package" }
+  }
+}
+
+/** Build (or rebuild) the KDP package of a FINISHED book. Names every blocker it refuses on. */
+export async function buildKdpPackageAction(magnetId: string) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId || !ctx.userId) return { success: false as const, error: "Not authenticated" }
+    const supabase = createServiceClient()
+    const { data } = await supabase.from("lead_capture_forms").select("slug").eq("id", magnetId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const origin = process.env.NEXT_PUBLIC_APP_URL || (await requestOrigin())
+    const slug = (data as { slug?: string | null } | null)?.slug
+    const { buildKdpPackage } = await import("@/lib/lead-magnets/book-publishing-produce")
+    const r = await buildKdpPackage({ brokerageId: ctx.brokerageId, magnetId, actorUserId: ctx.userId, landingUrl: origin && slug ? `${origin}/lm/${slug}` : null })
+    if (!r.ok) {
+      const b = r.blockers
+      return {
+        success: false as const, error: r.error,
+        blockers: b ? [
+          ...(b.claims ?? []).map((c) => `${c.where}: "${c.phrase}" — ${c.rule}`),
+          ...(b.fairHousing ?? []).map((f) => `fair housing: ${f}`),
+          ...(b.metadata ?? []).map((m) => `${m.field}: ${m.problem}`),
+          ...(b.cover ?? []).map((c) => `cover: ${c}`),
+        ] : [],
+      }
+    }
+    return { success: true as const, kdp: kdpSummaryOf(r.record) }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to build the KDP package" }
+  }
+}
+
+/** The human's approval of the package: every attestation, by id. The session user is recorded as the approver. */
+export async function approveKdpPackageAction(magnetId: string, attested: string[]) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId || !ctx.userId) return { success: false as const, error: "Not authenticated" }
+    if (!Array.isArray(attested)) return { success: false as const, error: "Attestations required" }
+    const { approveKdpPackage } = await import("@/lib/lead-magnets/book-publishing-produce")
+    const r = await approveKdpPackage({ brokerageId: ctx.brokerageId, magnetId, actorUserId: ctx.userId, attested: attested.filter((x) => typeof x === "string") })
+    return r.ok ? { success: true as const, kdp: kdpSummaryOf(r.record) } : { success: false as const, error: r.error }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to approve the KDP package" }
+  }
+}
+
+/** Fresh signed links for the EPUB and cover (the bucket is private). */
+export async function getKdpDownloadsAction(magnetId: string) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
+    const { kdpPackageDownloads } = await import("@/lib/lead-magnets/book-publishing-produce")
+    const r = await kdpPackageDownloads({ brokerageId: ctx.brokerageId, magnetId })
+    return r.ok ? { success: true as const, epubUrl: r.epubUrl, coverUrl: r.coverUrl } : { success: false as const, error: r.error }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to link the KDP files" }
+  }
+}
+
 /** The review surface's view of a project — never the whole manuscript on every poll (an ESCALATED chapter carries its body, so the human can rewrite it). Not exported ("use server"). */
 function bookSummaryOf(p: import("@/lib/lead-magnets/book-creator").BookProject | null) {
   if (!p) return null

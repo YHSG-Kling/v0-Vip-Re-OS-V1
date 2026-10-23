@@ -17,7 +17,7 @@
  * Run: npx tsx scripts/writerless-read-sweep.ts  (npm run test:writerless-reads)
  * Tighten: GUARD_WRITE_BASELINE=1 npx tsx scripts/writerless-read-sweep.ts
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs"
 import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { blankComments } from "./strip-comments"
 import { join } from "node:path"
@@ -105,6 +105,21 @@ const DB_FUNCTION_WRITERS: Record<string, string> = {
   agent_points_log: "public.award_agent_points() (m484), called via lib/gamification/award-points.ts",
 }
 
+/** Tables whose writer is a DATABASE TRIGGER — CLAUDE.md §3: "a column written only by a migration backfill, an .rpc(), or a
+ *  DB trigger reads as writerless without being writerless". Each entry names the trigger; the sweep re-reads the migrations
+ *  and the exemption holds ONLY while a `CREATE TRIGGER <name>` is actually there (wave 143, lane 143C: the agreement history
+ *  is written by the trigger on agent_commission_profiles / teams, never by app code — an app writer would let a caller
+ *  rewrite history), so it cannot outlive the writer it names. */
+const DB_TRIGGER_WRITERS: Record<string, string> = {
+  agent_commission_profile_versions: "record_agent_commission_profile_version (AFTER INSERT OR UPDATE on agent_commission_profiles, m812)",
+  team_commission_profiles: "record_team_commission_profile_version (AFTER INSERT OR UPDATE on teams, m812)",
+}
+function triggerWriterProved(entry: string): boolean {
+  const name = entry.split(" ")[0]
+  const dir = join(process.cwd(), "supabase/migrations")
+  return readdirSync(dir).some((f) => f.endsWith(".sql") && new RegExp(`CREATE TRIGGER\\s+${name}\\b`, "i").test(readFileSync(join(dir, f), "utf8")))
+}
+
 // TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, acc)` that stood here
 // was one of 82 copies of the same readdirSync walker. Survivor:
 // scripts/runtime-roots.ts:61 (`walkTs`), imported above.
@@ -163,7 +178,7 @@ function main() {
   }
 
   const offenders = [...readers.keys()]
-    .filter((t) => !writers.has(t) && !SEEDED_REFERENCE.has(t) && !DB_VIEWS.has(t) && !(t in VARIABLE_TABLE_WRITERS) && !(t in DB_FUNCTION_WRITERS))
+    .filter((t) => !writers.has(t) && !SEEDED_REFERENCE.has(t) && !DB_VIEWS.has(t) && !(t in VARIABLE_TABLE_WRITERS) && !(t in DB_FUNCTION_WRITERS) && !(t in DB_TRIGGER_WRITERS && triggerWriterProved(DB_TRIGGER_WRITERS[t])))
     .sort()
 
   if (process.env.GUARD_WRITE_BASELINE === "1") {
@@ -187,6 +202,11 @@ function main() {
   if (fresh.length > 0) {
     console.log(` ✗ ${fresh.length} NEW writer-less read(s): ${fresh.join(", ")}`)
     console.log("   Give each a verdict: build the writer, repoint the read, or delete the dead surface.")
+    process.exit(1)
+  }
+  // POSITIVE CONTROL for the trigger exemption: a trigger name no migration creates is NOT proved — the finder still rejects.
+  if (triggerWriterProved("no_such_trigger_zz9 (control)")) {
+    console.log(" ✗ the trigger-writer finder accepted a trigger that does not exist — the exemption proves nothing")
     process.exit(1)
   }
   console.log(" ✅ no NEW writer-less reads")

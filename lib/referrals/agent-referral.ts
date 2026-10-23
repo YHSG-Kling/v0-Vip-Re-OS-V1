@@ -7,14 +7,20 @@
 // The agent directory (grouped by location) feeds the map so an agent can find the right person to refer.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { referralFeeCents, agreedReferralPct } from "@/lib/commission/referral-payout"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-/** PURE: the referral fee owed to the referring agent = the deal commission × the agreed fee %. */
+/**
+ * PURE: the referral fee owed to the referring agent = the deal commission × the agreed fee %, in dollars.
+ * TOMBSTONE (wave 143, lane 143C): the arithmetic moved onto its survivor, lib/commission/referral-payout.ts:57
+ * referralFeeCents (the rule the waterfall's step 03b applies); this keeps the dollar-in / dollar-out contract and the
+ * [0,100] clamp the display callers rely on, and the old referral-closer booking that used it is gone.
+ */
 export function computeReferralFee(dealCommission: number | null, feePct: number | null): number {
   const gross = Math.max(0, Number(dealCommission ?? 0))
   const pct = Math.min(100, Math.max(0, Number(feePct ?? 0)))
-  return Math.round(gross * (pct / 100) * 100) / 100
+  return referralFeeCents(Math.round(gross * 100), pct) / 100
 }
 
 export interface AgentDirectoryEntry {
@@ -32,7 +38,10 @@ export interface OutboundReferral {
   receivingAgentName: string | null
   status: string
   feePct: number | null
+  /** The fee actually booked to this agent for the deal the referral closed on (live referral distributions; voided rows excluded). */
   earnedFee: number | null
+  /** What the agreed percent would pay on the referral's own recorded value (open referrals only; null when no figure is recorded - never fabricated). */
+  expectedFee: number | null
 }
 
 /**
@@ -72,8 +81,10 @@ export interface CreateAgentReferralInput {
  *  assumes one. The fee is booked when the deal closes. */
 export async function createAgentReferral(svc: Svc, input: CreateAgentReferralInput): Promise<{ ok: boolean; referralId?: string; error?: string }> {
   if (input.referringAgentId === input.receivingAgentId) return { ok: false, error: "An agent can't refer to themselves." }
-  const feePct = input.feePct
-  if (!(feePct > 0) || feePct > 100) return { ok: false, error: "Enter the agreed referral fee (1-100%)." }
+  // ONE rule for "an agreed fee percent" (wave 143, lane 143C): the same predicate the waterfall's step 03b pays on -
+  // a referral created here can never be one the engine would skip for having no valid percent.
+  const feePct = agreedReferralPct(input.feePct)
+  if (feePct === null) return { ok: false, error: "Enter the agreed referral fee (1-100%)." }
   // One open referral per (contact, referring→receiving) — don't double-book the same hand-off.
   const { data: existing } = await svc.from("referrals").select("id")
     .eq("brokerage_id", input.brokerageId).eq("referred_contact_id", input.contactId)

@@ -93,6 +93,14 @@ export interface CreateListingInput {
   bathrooms?: number
   sqft?: number
   propertyType?: string
+  /**
+   * The PLANNED MLS live date (yyyy-mm-dd) typed at intake (wave 143, lane 143A). Written to `listings.go_live_date`
+   * through lib/listings/mls-live-date.ts recordPlannedMlsLiveDate — a plan, never verified. Optional: an intake
+   * that does not know it yet leaves it null and the compliance loop waits (`passed_awaiting_date`).
+   */
+  plannedMlsLiveDate?: string
+  /** users.id of the person creating the listing — evidence only. */
+  actorUserId?: string
 }
 
 export interface SellerContactInput {
@@ -167,7 +175,7 @@ export interface ListingFormPrefill {
  */
 export async function createListingRecord(
   input: CreateListingInput
-): Promise<KernelResult<{ listing: Record<string, unknown> }>> {
+): Promise<KernelResult<{ listing: Record<string, unknown>; warning?: string }>> {
   if (!isValidUUID(input.agentId))          return { success: false, error: "Invalid agent ID" }
   if (!isValidUUID(input.sellerContactId))  return { success: false, error: "Invalid seller contact ID" }
   if (!isValidUUID(input.brokerageId))      return { success: false, error: "Invalid brokerage ID" }
@@ -193,6 +201,13 @@ export async function createListingRecord(
     bathrooms: input.bathrooms,
   })
   if (!propertyFacts.valid) return { success: false, error: propertyFacts.errors.join("; ") }
+
+  // THE PLANNED MLS LIVE DATE (wave 143, lane 143A): a calendar day or nothing — refused by name, not by a Postgres
+  // date-parse error that supabase-js would resolve as a bare message.
+  if (input.plannedMlsLiveDate !== undefined && input.plannedMlsLiveDate !== "") {
+    const { ymdOf } = await import("@/lib/listings/compute-dom")
+    if (!ymdOf(input.plannedMlsLiveDate)) return { success: false, error: `Planned MLS live date "${input.plannedMlsLiveDate}" is not a calendar date (expected yyyy-mm-dd)` }
+  }
 
   // PROPERTY TYPE (wave 93, lane 93D — found live). The default here was
   // "residential", which listings_property_type_check has never admitted
@@ -250,6 +265,24 @@ export async function createListingRecord(
 
     if (error) return { success: false, error: error.message }
 
+    // THE PLANNED MLS LIVE DATE + its zone + its evidence row, through the ONE writer (wave 143, lane 143A). A
+    // separate statement from the insert on purpose: the listing must exist even if the date write is refused, and
+    // the refusal is REPORTED on the result, never swallowed.
+    let plannedDateWarning: string | undefined
+    if (input.plannedMlsLiveDate) {
+      const { recordPlannedMlsLiveDate } = await import("@/lib/listings/mls-live-date")
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const planned = await recordPlannedMlsLiveDate(createServiceClient() as any, {
+        brokerageId: input.brokerageId, listingId: listing.id as string, date: input.plannedMlsLiveDate,
+        actorUserId: input.actorUserId ?? null, source: "intake",
+        listing: { state: input.state.trim(), go_live_date: null, lifecycle_stage: "LISTING_AGREEMENT_INITIATED", agent_id: input.agentId },
+      })
+      if (!planned.ok) {
+        plannedDateWarning = `The listing was created but its planned MLS live date was not saved: ${planned.reason}`
+        console.error(`[createListingRecord] ${plannedDateWarning}`)
+      }
+    }
+
     // Emit lifecycle event. `.then(() => {})` swallowed the outcome — a
     // refused insert and a written row looked identical, and the listing's
     // history silently began empty. Non-fatal (the listing exists either way)
@@ -298,7 +331,7 @@ export async function createListingRecord(
       skipInsert:      true,
     }).catch(() => {})
 
-    return { success: true, listing }
+    return { success: true, listing, ...(plannedDateWarning ? { warning: plannedDateWarning } : {}) }
   } catch (err) {
     const msg = err instanceof Error ? err.message : "createListingRecord failed"
     return { success: false, error: msg }
@@ -610,6 +643,12 @@ export async function validateListingLaunchReadiness(input: {
     const photoCount = mediaCountResult.count ?? 0
     if (photoCount < 5) blockers.push(`Photos: need at least 5 (${photoCount} uploaded)`)
 
+    // THE PLANNED MLS LIVE DATE (wave 143, lane 143A): a listing whose planned go-live date has not arrived is
+    // coming soon, not active. A verified live date (a feed already shows it live) lifts the block.
+    const { plannedMlsLiveDateLaunchBlocker } = await import("@/lib/listings/mls-live-date")
+    const plannedBlock = await plannedMlsLiveDateLaunchBlocker(supabase as any, input.listingId)
+    if (plannedBlock) blockers.push(plannedBlock)
+
     return { success: true, ready: blockers.length === 0, blockers }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "validateListingLaunchReadiness failed" }
@@ -714,6 +753,29 @@ export async function launchListing(input: {
       .single()
 
     if (error) return { success: false, error: error.message }
+
+    // THE LAUNCH DAY IS THE PLANNED LIVE DATE WHEN NO ONE SET ONE (wave 143, lane 143A). `listing_date` above is
+    // the day the agent pressed Launch (kept for its legacy readers); the MLS live date lives in `go_live_date`, and
+    // a launched listing with none would read "no MLS live date" everywhere. It is recorded as a PLAN — a launch is
+    // an agent's assertion, not a feed's word — and the verification sweep (lib/listings/mls-live-verification.ts)
+    // is what upgrades it to a verified date. An existing planned date is never touched here.
+    if (!(listing as any)?.go_live_date) {
+      try {
+        const { recordPlannedMlsLiveDate, resolveListingTimeZone } = await import("@/lib/listings/mls-live-date")
+        const { todayInTimeZone } = await import("@/lib/listings/compute-dom")
+        const { createServiceClient } = await import("@/lib/supabase/service")
+        const svc = createServiceClient() as any
+        const zone = await resolveListingTimeZone(svc, { brokerageId: input.brokerageId, state: (listing as any)?.state ?? null })
+        const planned = await recordPlannedMlsLiveDate(svc, {
+          brokerageId: input.brokerageId, listingId: input.listingId, date: todayInTimeZone(zone.timezone),
+          actorUserId: input.actorUserId, source: "launch",
+          listing: { state: (listing as any)?.state ?? null, go_live_date: null, lifecycle_stage: "MLS_ACTIVE", agent_id: (listing as any)?.agent_id ?? null },
+        })
+        if (!planned.ok) console.error(`[launchListing] launch-day planned MLS live date not recorded: ${planned.reason}`)
+      } catch (err) {
+        console.error("[launchListing] launch-day planned MLS live date threw (non-fatal):", (err as Error)?.message ?? err)
+      }
+    }
 
     // Emit lifecycle event — brokerage_id is NOT NULL (pass 5): the launch
     // event never landed without it. The updated listing row carries it.

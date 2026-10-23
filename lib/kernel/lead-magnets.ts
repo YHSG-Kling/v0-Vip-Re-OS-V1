@@ -560,7 +560,12 @@ export async function publishLeadMagnet(
       lc.headline, lc.subhead, lc.cta, ...(Array.isArray(lc.bullets) ? lc.bullets : []), ...faq.flatMap((f) => [f?.question, f?.answer]),
     ].filter((s): s is string => typeof s === "string" && s.trim().length > 0).join("\n")
     const { scanPublicCopy } = await import("@/lib/kernel/marketing/public-copy-rewrite")
-    const scan = await scanPublicCopy(publicText, "lead_magnet")
+    // Wave 143 (lane 143F): a "55+ / senior living" claim passes ONLY against the tenant's recorded, verified
+    // housing-for-older-persons exemption for the community the page names (42 U.S.C. § 3607(b)); an unreadable
+    // record holds the claim — the human's publish never approves an unverified exemption.
+    const { loadOlderPersonsVerifications } = await import("@/lib/compliance/fair-housing-older-persons-store")
+    const olderPersons = await loadOlderPersonsVerifications(supabase as never, input.brokerageId)
+    const scan = await scanPublicCopy(publicText, "lead_magnet", { olderPersons })
     if (!scan.ok) {
       return { success: false, error: `Fair-housing review: the page copy still says ${scan.findings.map((f) => `"${f.phrase}"`).join(", ")} — rewrite it (${scan.findings.map((f) => f.fix).join("; ")}) before publishing.` }
     }

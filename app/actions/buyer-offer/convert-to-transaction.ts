@@ -134,8 +134,14 @@ export async function convertOfferToTransaction(
       }
     });
 
-    return { 
-      success: result.success, 
+    // FREEZE THE EXECUTED TERMS (wave 143, lane 143A — contract precedence). Logged, never fatal.
+    if (result.success && result.transactionId) {
+      const { freezeExecutedTermsAfterPromotion } = await import("@/lib/offers/governing-terms");
+      await freezeExecutedTermsAfterPromotion({ brokerageId, offerId, transactionId: result.transactionId });
+    }
+
+    return {
+      success: result.success,
       transaction_id: result.transactionId,
       error: result.success ? undefined : "Failed to create transaction via offer-bridge"
     };

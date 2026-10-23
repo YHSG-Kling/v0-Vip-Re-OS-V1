@@ -48,7 +48,9 @@
  *      request host is NOT one of the platform's own hosts (env-derived) we
  *      look up tenant_custom_domains (status='active', 60s in-memory TTL
  *      cache per Node instance) and rewrite "/" (and bare /site) to
- *      /site/[slug]. App/auth surfaces on a vanity host bounce to the
+ *      /site/[slug], and "/lm/<form>" (landing pages live INSIDE the tenant
+ *      website, wave 143G) to /site/[slug]/lm/<form> — the route that proves
+ *      the form is this tenant's. App/auth surfaces on a vanity host bounce to the
  *      canonical origin; a vanity host can never serve ANOTHER tenant's
  *      /site. SAFETY RULE: every custom-domain branch only RETURNS when it
  *      acts — unknown hosts and unmatched paths fall through to the
@@ -95,6 +97,14 @@ export default async function proxy(request: NextRequest) {
       }
       if (pathname === "/" || pathname === "/site" || pathname === "/site/") {
         return NextResponse.rewrite(new URL(`/site/${slug}`, request.url))
+      }
+      // LANDING PAGES INSIDE THE TENANT WEBSITE (wave 143G): this domain's /lm/<formSlug> is served by the tenant-site
+      // route (app/site/[slug]/lm/[formSlug]), which proves the form belongs to THIS domain's tenant. The bare
+      // /lm/[slug] reads a form by slug alone — passed through, it would serve ANOTHER tenant's landing page under this
+      // tenant's domain. The tenant is the host's mapped `slug`, never a value from the path.
+      const landing = /^\/lm\/([^/]+)\/?$/.exec(pathname)
+      if (landing) {
+        return NextResponse.rewrite(new URL(`/site/${slug}/lm/${landing[1]}${request.nextUrl.search}`, request.url))
       }
       if (pathname.startsWith("/site/")) {
         const requested = pathname.slice("/site/".length).split("/")[0]

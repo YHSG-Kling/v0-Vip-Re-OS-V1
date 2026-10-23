@@ -603,7 +603,7 @@ async function main() {
   }
   console.log(`    a11y ICON_BUTTON_NO_LABEL: ${a11y.length} (ratchet; the first 8)`)
   for (const h of a11y.slice(0, 8)) console.log(`      ${h.file}:${h.line}  ${h.detail}`)
-  console.log("    BLIND SPOTS: prop-passed handlers judged at the leaf; clickable-parent recognition is window-bounded (400 chars); JSX text unmasked; a handler that calls a real action and then lies about its result is test:ui-delivery's domain, not this one; STATE_ONLY reads handler NAMES (an unnamed inline arrow that saves nothing is not seen); CHANGE_STATE_UNREAD cannot see a read through a ref or a closure in another file.")
+  console.log("    BLIND SPOTS: prop-passed handlers judged at the leaf; clickable-parent recognition is window-bounded (400 chars); JSX text unmasked; a handler that calls a real action and then lies about its result is test:discarded-outcome's job (scripts/discarded-outcome-guard.ts — the ONE census of a dropped action result; wave 143J widened it), not this one; STATE_ONLY reads handler NAMES (an unnamed inline arrow that saves nothing is not seen); CHANGE_STATE_UNREAD cannot see a read through a ref or a closure in another file.")
   check("A1 the census population is real (≥ 1,000 modules, ≥ 3,000 buttons)", APP_TSX.length >= 1000 && buttons >= 3000, `${APP_TSX.length} / ${buttons}`)
   check("A2 ZERO dead surfaces on every product journey (P0/P1) — wave 141's critical paths and wave 142's journeys alike", critical.length === 0, critical.map((h) => `${h.kind} ${h.file}:${h.line}`).join(", "))
 

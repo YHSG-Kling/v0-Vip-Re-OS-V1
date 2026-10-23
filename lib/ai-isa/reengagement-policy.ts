@@ -13,41 +13,50 @@
 // lib/ai-isa/stale-contact-detector.ts) and (b) exhaustively unit-testable with no DB,
 // no network, no mocks. The runners keep doing the I/O; this module decides.
 //
-// Pure module — no imports, no I/O, no server-only. Behavior is preserved EXACTLY from
-// the prior inline logic; the simulator (scripts/isa-reengagement-simulator.ts) locks it.
+// Pure module — no I/O, no server-only; its only import is the equally pure follow-up policy. Behavior is preserved EXACTLY
+// from the prior inline logic; the simulator (scripts/isa-reengagement-simulator.ts) locks it.
+//
+// WAVE 143 (lane 143E; owner: "the follow-up timetable must not depend on code"): the cadence NUMBERS below (14 / 60 / 21 day
+// staleness, the Mon/Wed/Fri phase 1, the 14-day window, the 30- and 90-day spacing, the 9 / 13 attempt ceilings) were literals
+// here. They are now the PLATFORM DEFAULTS of the tenant's versioned follow-up policy (lib/ai-isa/followup-policy.ts
+// `reengagement`): same values (so every existing proof still holds), and a runner that loaded the tenant's policy passes it as
+// `CadenceInput.policy`. This function stays the deterministic ENVELOPE — it says when a send is DUE on the tenant's cadence.
+// Whether to send NOW anyway (rising intent) or hold (engaged elsewhere) is the arbiter's call inside that envelope
+// (lib/ai-isa/followup-arbiter.ts arbitrateCadence); the fatigue floor and every stop condition stay deterministic.
+import { DEFAULT_FOLLOWUP_POLICY, type FollowupPolicy } from "./followup-policy"
 
 const DAY_MS = 86_400_000
+const RE = DEFAULT_FOLLOWUP_POLICY.reengagement
 
 // ── Defaults (overridable per brokerage via ai_isa_settings) ──────────────────
-export const DEFAULT_STALE_DAYS = 14
+export const DEFAULT_STALE_DAYS = RE.staleDays
 // Lifetime / past clients are a LONG-HORIZON relationship — their primary nurture is the newsletter
 // baseline + the situational equity/anniversary/life-event triggers, so the generic re-engagement should
 // be a light QUARTERLY-ish touch, not the bi-weekly active-contact cadence. So a lifetime customer is
 // only "stale" after this many quiet days (the detector passes is_lifetime; default applies otherwise).
-export const LIFETIME_STALE_DAYS = 60
-export const DEFAULT_GHOSTED_DAYS = 21
+export const LIFETIME_STALE_DAYS = RE.lifetimeStaleDays
+export const DEFAULT_GHOSTED_DAYS = RE.ghostedDays
 export const DEFAULT_MAX_BATCH = 50
 /** Active-cadence ceiling: after this many touches the ISA stops the AGGRESSIVE follow-up
  *  (Phase 1/2 ≈ 3 months) and DOWNSHIFTS to a long-horizon quarterly nurture — it does NOT
  *  give up. Real-estate leads routinely take 6–18 months to transact; abandoning a viable,
  *  consented lead at 3 months throws away the agent's gold mine. The transition escalates
  *  ONCE to a human (FYI: consider a personal call) — the automated nurture keeps going. */
-export const DEFAULT_MAX_GHOST_ATTEMPTS = 9
+export const DEFAULT_MAX_GHOST_ATTEMPTS = RE.maxGhostAttempts
 /** Long-horizon ceiling: after a year+ of quarterly seasonal touches with no reply, the
  *  ISA HANDS the long-tail to the Sphere of Influence manager (the lifetime-nurture owner)
  *  and rests its own automated loop — the relationship is preserved, not dropped. */
-export const DEFAULT_MAX_HORIZON_ATTEMPTS = 13
+export const DEFAULT_MAX_HORIZON_ATTEMPTS = RE.maxHorizonAttempts
 
-/** Phase-1 (fresh ghost) send days: Mon/Wed/Fri only — aggressive while the lead is
- *  still warm. getDay(): 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat. */
-const PHASE1_SEND_DAYS = [1, 3, 5] as const
+// Phase-1 (fresh ghost) send days default to Mon/Wed/Fri only — aggressive while the lead is still warm
+// (followup_policy.reengagement.phase1SendWeekdays; getDay(): 0=Sun 1=Mon … 6=Sat).
 /** The window (days from first outreach) that counts as Phase 1. */
-export const PHASE1_WINDOW_DAYS = 14
+export const PHASE1_WINDOW_DAYS = RE.phase1WindowDays
 /** Phase-2 (long-haul) minimum spacing between sends, in days. */
-export const PHASE2_SPACING_DAYS = 30
+export const PHASE2_SPACING_DAYS = RE.phase2SpacingDays
 /** Phase-3 (long-horizon seasonal nurture) spacing — a light quarterly value-touch that
  *  keeps the agent top-of-mind for the months/years a real-estate decision can take. */
-export const PHASE3_SPACING_DAYS = 90
+export const PHASE3_SPACING_DAYS = RE.phase3SpacingDays
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. GHOST-LEAD STOP CONDITIONS — when the ISA must go (or stay) dormant
@@ -213,6 +222,8 @@ export interface CadenceInput {
    *  Phase-2/Phase-3 spacing thresholds so the WHEN fits the human. Omitted ⇒ multiplier 1.0
    *  ⇒ the canonical spacing, unchanged. Phase-1 (warm Mon/Wed/Fri) is never tuned. */
   profile?: CadenceProfile | null
+  /** Wave 143: the TENANT's re-engagement envelope (followup_policy.reengagement). Omitted ⇒ the platform defaults above. */
+  policy?: Partial<FollowupPolicy["reengagement"]> | null
 }
 
 export interface CadenceDecision {
@@ -253,13 +264,14 @@ export function shouldSendGhostOutreach(input: CadenceInput): CadenceDecision {
 
   // Persona/age/urgency tuning — scales ONLY the long-haul spacing thresholds. Omitted ⇒ 1.0.
   const mult = input.profile?.spacingMultiplier ?? 1
-  const phase2Spacing = Math.max(1, Math.round(PHASE2_SPACING_DAYS * mult))
-  const phase3Spacing = Math.max(1, Math.round(PHASE3_SPACING_DAYS * mult))
+  const P = { ...RE, ...(input.policy ?? {}) }
+  const phase2Spacing = Math.max(1, Math.round(P.phase2SpacingDays * mult))
+  const phase3Spacing = Math.max(1, Math.round(P.phase3SpacingDays * mult))
 
   // PHASE 3 — long-horizon seasonal nurture. Once the aggressive cadence ceiling is hit the
   // loop spaces touches a QUARTER apart (a light value-touch), so the agent stays top-of-mind
   // for the months/years a real-estate decision can take instead of going silent.
-  const inSeasonal = (input.attempts ?? 0) >= DEFAULT_MAX_GHOST_ATTEMPTS
+  const inSeasonal = (input.attempts ?? 0) >= P.maxGhostAttempts
   if (inSeasonal) {
     const lastMs = toMs(input.lastSentAt)
     if (lastMs === null) {
@@ -270,9 +282,9 @@ export function shouldSendGhostOutreach(input: CadenceInput): CadenceDecision {
     return { shouldSend: due, phase: 3, daysSinceStart, reason: due ? "phase3_due" : "phase3_too_soon" }
   }
 
-  const inPhase1 = daysSinceStart <= PHASE1_WINDOW_DAYS
+  const inPhase1 = daysSinceStart <= P.phase1WindowDays
   if (inPhase1) {
-    const isSendDay = (PHASE1_SEND_DAYS as readonly number[]).includes(input.now.getDay())
+    const isSendDay = (P.phase1SendWeekdays as readonly number[]).includes(input.now.getDay())
     return {
       shouldSend: isSendDay,
       phase: 1,

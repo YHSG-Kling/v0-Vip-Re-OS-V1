@@ -1,5 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import { sendAnniversaryMessage, sendBirthdayMessage, sendReferralRequest } from "@/app/actions/lifetime-customer-touchpoints"
+import { sendAnniversaryMessage, sendBirthdayMessage } from "@/app/actions/lifetime-customer-touchpoints"
 import { evaluateDeconflict } from "@/lib/kernel/deconflict"
 import {
   createCronRunContextAction,
@@ -44,6 +44,8 @@ export async function GET(request: Request) {
     // every call as a touch delivered — a blocked anniversary read as an anniversary sent. Counted
     // honestly now, and named per touch in `errors`.
     blocked: 0,
+    // WAVE 143 (143E): the post-close moments the arbiter reviewed this run (lib/sphere/followup-moments.ts).
+    moments: {} as Record<string, number>,
     errors: [] as string[],
   }
 
@@ -211,39 +213,35 @@ export async function GET(request: Request) {
 
     await noteProgress("birthdays-complete")
 
-    // Check for referral request opportunities (3 days and 30 days after close)
-    const threeDaysAgo = new Date(today)
-    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3)
-    const thirtyDaysAgo = new Date(today)
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
+    // TOMBSTONE (wave 143, lane 143E): "Check for referral request opportunities (3 days and 30 days after close)" — a
+    // hard-coded timetable that texted every closed client a referral ask at EXACTLY day 3 and day 30, whatever their
+    // intent, history or fatigue (and disagreed with the 18-month referral row the close writes, which nothing delivered).
+    // SURVIVOR: lib/sphere/followup-moments.ts conductDueFollowUpMoments — the `referral_request` moment of the tenant's
+    // versioned followup_policy (lib/ai-isa/followup-policy.ts postClose) opens on the policy's date; the arbiter decides
+    // WHETHER, WHEN and HOW to ask (message, video, a task for the agent, or wait) under the same consent / fatigue / DNC
+    // gates. `sendReferralRequest` (app/actions/lifetime-customer-touchpoints.ts) was DELETED with this block — it had no
+    // other caller and shipped a canned fallback body (tombstone there). The owner may restore the old cadence by setting
+    // followup_policy.postClose[referral_request].afterClosingDays (the policy admits one referral moment per tenant).
 
-    // `funded` joins `closed` here too (wave 89, lane 89C) — the same ladder defect the anniversary
-    // read fixed above: a funded deal is past its close, and its client was never asked for a referral.
-    const { data: recentCloses, error: recentClosesError } = await supabase
-      .from("transactions")
-      .select("id, contact_id, agent_id, brokerage_id, actual_close_date:close_date")
-      .in("status", ["closed", "funded"])
-      .in("close_date", [threeDaysAgo.toISOString().split("T")[0], thirtyDaysAgo.toISOString().split("T")[0]])
-
-    if (recentClosesError) {
-      results.errors.push(`Referral-window read: ${recentClosesError.message}`)
+    // THE POST-CLOSE MOMENTS (wave 143, lane 143E) — the delivery half that did not exist: due lifetime_customer_touchpoints
+    // rows are reviewed by the arbiter and delivered / delegated / routed to the agent / deferred; anniversary rows the
+    // block above already sent are reconciled so the reaper never reports them as slipped.
+    let momentsActedOn = 0
+    try {
+      const { conductDueFollowUpMomentsAllTenants } = await import("@/lib/sphere/followup-moments")
+      const moments = await conductDueFollowUpMomentsAllTenants(supabase as never)
+      const { errors: _momentErrors, ...momentCounts } = moments.totals
+      void _momentErrors
+      momentsActedOn = moments.totals.sent + moments.totals.delegated + moments.totals.routedToAgent
+      results.moments = { tenants: moments.tenants, ...momentCounts }
+      for (const e of moments.totals.errors) results.errors.push(`Moments: ${e}`)
+    } catch (error: any) {
+      results.errors.push(`Moments error: ${error.message}`)
     }
 
-    for (const txn of recentCloses || []) {
-      if (!(await lifetimeTouchAllowed((txn as any).brokerage_id ?? null, txn.contact_id, "sphere_referral_request", "sms"))) {
-        results.deferred++
-        continue
-      }
-      try {
-        countSend("referralRequests", await sendReferralRequest(txn.contact_id, { agentId: txn.agent_id, client: supabase }), txn.contact_id)
-      } catch (error: any) {
-        results.errors.push(`Referral request error: ${error.message}`)
-      }
-    }
+    await noteProgress("moments-complete")
 
-    await noteProgress("referral-requests-complete")
-
-    const totalProcessed = results.anniversaries + results.birthdays + results.referralRequests
+    const totalProcessed = results.anniversaries + results.birthdays + results.referralRequests + momentsActedOn
 
     await recordCronSuccessAction({
       context_id: contextId,

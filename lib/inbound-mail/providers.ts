@@ -25,6 +25,7 @@
  *   instruction" the route handler executes via lib/inbound-mail/oauth-fetchers.
  */
 
+import { inboundMetaFrom } from "./message-meta"
 import { createHmac, timingSafeEqual, createVerify } from "crypto"
 
 export type InboundEmailProvider = "postmark" | "sendgrid" | "mailgun" | "resend" | "gmail" | "outlook"
@@ -51,6 +52,16 @@ export interface ParsedInboundEmail {
   subject:     string
   bodyText?:   string
   attachments: InboundAttachment[]
+  /**
+   * WAVE 143 (lane 143A) — what the message can prove about itself (./message-meta.ts), read off the headers the
+   * receiving provider attached. All optional: absent means "the provider did not say", never a guess. `messageId` is
+   * the idempotency key of the outside-offer loop, `inReplyTo` / `references` its thread match, `senderAuth` its
+   * sender verification ("unknown" is NOT "pass").
+   */
+  messageId?:  string | null
+  inReplyTo?:  string | null
+  references?: string[]
+  senderAuth?: "pass" | "fail" | "unknown"
 }
 
 /**
@@ -132,6 +143,8 @@ function parsePostmark(rawBody: string): ParsedInboundEmail | null {
         mime:       (a.ContentType ?? "application/octet-stream").toString(),
         contentB64: (a.Content ?? "").toString(),
       })),
+      // Postmark hands the raw headers as [{Name, Value}] — Message-ID, In-Reply-To, References, Received-SPF.
+      ...inboundMetaFrom(body.Headers, fromEmail),
     }
   } catch { return null }
 }
@@ -173,6 +186,8 @@ function parseSendgrid(rawBody: string): ParsedInboundEmail | null {
         mime:       (a.type ?? "application/octet-stream").toString(),
         contentB64: (a.content ?? "").toString(),
       })),
+      // SendGrid carries the raw header block as `headers` plus the verdict words `dkim` ("{@host : pass}") and `SPF`.
+      ...inboundMetaFrom(body.headers, body.from?.email ? body.from.email.toString().toLowerCase().trim() : splitAddressHeader(body.from).email, { dkim: body.dkim, spf: body.SPF }),
     }
   } catch { return null }
 }
@@ -224,6 +239,9 @@ function parseMailgun(rawBody: string): ParsedInboundEmail | null {
         mime:       (a["content-type"] ?? a.type ?? "application/octet-stream").toString(),
         contentB64: (a.content ?? "").toString(),
       })),
+      // Mailgun: `message-headers` is [[name, value], …] (inbound route) or `message.headers` an object (event payload);
+      // its own SPF / DKIM verdicts ride X-Mailgun-Spf / X-Mailgun-Dkim-Check-Result.
+      ...inboundMetaFrom(body?.["message-headers"] ?? msg?.headers, splitAddressHeader(msg?.headers?.from ?? body?.sender ?? "").email),
     }
   } catch { return null }
 }

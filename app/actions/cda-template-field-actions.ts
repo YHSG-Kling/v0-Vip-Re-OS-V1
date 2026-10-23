@@ -29,12 +29,12 @@ async function buildContext(
   cda: { transaction_id: string; brokerage_id: string; gross_commission: number | null; agent_net: number | null; brokerage_net: number | null; field_values?: Record<string, unknown> | null },
 ) {
   const [{ data: dists }, { data: txn }] = await Promise.all([
-    supabase.from("commission_distributions").select("distribution_type, calculated_amount").eq("transaction_id", cda.transaction_id),
+    supabase.from("commission_distributions").select("distribution_type, calculated_amount, status").eq("transaction_id", cda.transaction_id).eq("brokerage_id", cda.brokerage_id),
     supabase.from("transactions").select("property_address, close_date, estimated_close_date, purchase_price, agent_id").eq("id", cda.transaction_id).maybeSingle(),
   ])
   const waterfall = cdaWaterfallContext({
     gross_commission: cda.gross_commission, agent_net: cda.agent_net, brokerage_net: cda.brokerage_net,
-    distributions: (dists ?? []) as Array<{ distribution_type?: string | null; calculated_amount?: number | null }>,
+    distributions: (dists ?? []) as Array<{ distribution_type?: string | null; calculated_amount?: number | null; status?: string | null }>,
   })
   const transaction: Record<string, string | number | null> = {
     property_address: (txn as { property_address?: string | null } | null)?.property_address ?? null,

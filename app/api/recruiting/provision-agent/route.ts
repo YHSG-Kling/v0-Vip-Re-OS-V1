@@ -13,6 +13,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
 import { seatGate } from "@/lib/kernel/seat-usage"
 import { inviteTenantMember } from "@/lib/kernel/users"
+import { invitationLandingUrl } from "@/lib/platform/site-url"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 import { bestEffort } from "@/lib/db/best-effort"
 
@@ -161,7 +162,7 @@ export async function POST(req: Request) {
       lastName: recruit.last_name ?? "",
       userType: "agent",
       callerUserId: user.id,
-      redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding`,
+      redirectTo: invitationLandingUrl(),
       // Wave 141B (owner 2026-10-14: the registered recruiting_manager owns recruiting-door events) — the
       // survivor routes this door's post-condition outcomes to the Recruiting Manager.
       door: "recruiting",

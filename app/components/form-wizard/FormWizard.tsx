@@ -105,11 +105,14 @@ function openProviderPopup(url: string) {
   else window.open(url, "_blank", "noopener")
 }
 
+/** Where a "My Forms" entry lives. `platform` = a licensed packet the PLATFORM holds for every subscriber (platform Media, m807). */
+type LibraryScope = "brokerage" | "team" | "agent" | "platform"
+
 interface FormRef {
   source: "my_forms" | "legal_forms_provider"
   formRef: string
   name: string
-  scope?: "brokerage" | "team" | "agent"
+  scope?: LibraryScope
   /** When source === "legal_forms_provider", the provider id of the source. */
   providerName?: LegalFormsProvider
   /** When source === "legal_forms_provider", optional issuer / category for display. */
@@ -242,7 +245,7 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
   const [draftChecked, setDraftChecked] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [myForms, setMyForms] = useState<{ name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }[]>([])
+  const [myForms, setMyForms] = useState<{ name: string; url: string; scope: LibraryScope; path: string }[]>([])
   const [formsLoaded, setFormsLoaded] = useState(false)
   const [providerInfo, setProviderInfo] = useState<ProviderWindow | null | "loading">("loading")
   // How the e-sign step runs (lane 88C): "google_drive_handoff" (the default — popup),
@@ -522,6 +525,20 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
         }
       })
     )
+    // PLATFORM MEDIA (m807, wave 143): the licensed fillable packets the platform holds for every subscriber,
+    // for THIS deal's state and purpose. Read through a session-gated route (the catalogue is platform content,
+    // not storage the tenant may list); each entry carries the `platform/{id}/…` path the same fill action
+    // takes, admitted by form-path-scope only while the packet is approved and in licence. A refusal is shown
+    // as the absence of the platform group, never as an error that blocks the tenant's own forms.
+    try {
+      const qs = new URLSearchParams({ purpose: purpose })
+      if (state.propertyState) qs.set("state", state.propertyState)
+      const res = await fetch(`/api/form-wizard/platform-packets?${qs.toString()}`)
+      if (res.ok) {
+        const body = await res.json() as { packets?: Array<{ name: string; url: string; path: string }> }
+        for (const p of body.packets ?? []) collected.push({ name: p.name, url: p.url, scope: "platform", path: p.path })
+      }
+    } catch { /* the platform group is an addition; the tenant's own library already loaded */ }
     setMyForms(collected)
 
     // Load provider info via API. The route reads the tenant from the SESSION (lane 88C) —
@@ -548,7 +565,7 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
       setProviderInfo(null)
       setEsignSetupError(e instanceof Error ? e.message : "Could not load your provider settings.")
     }
-  }, [brokerageId, teamId, agentUserId, formsLoaded])
+  }, [brokerageId, teamId, agentUserId, formsLoaded, purpose, state.propertyState])
 
   const goToStep = useCallback(async (next: number) => {
     setError(null)
@@ -1129,6 +1146,39 @@ function StepTerms({ mode, state, update }: { mode: "offer" | "listing"; state: 
   const questions = intakeQuestionsFor(mode, answers)
   const missing = missingRequiredIntake(mode, answers)
   const setAnswer = (key: string, v: IntakeAnswers[string]) => update("terms", { ...answers, [key]: v })
+
+  // THE COACH LISTENS (wave 143, lib/forms/intake-from-notes.ts): the agent describes the deal in their own words
+  // and the coach SUGGESTS answers — each with the quote it rests on — for the agent to confirm. Nothing is applied
+  // until the agent says so, and a suggestion survives the server's verifier only if the agent's words back it.
+  const [notes, setNotes] = useState("")
+  const [listening, setListening] = useState(false)
+  const [suggestion, setSuggestion] = useState<{ proposals: Array<{ key: string; label: string; value: string | number | boolean; display: string; evidence: string }>; dropped: Array<{ key: string; reason: string }>; notes: string[] } | null>(null)
+  const [suggestError, setSuggestError] = useState<string | null>(null)
+  const [accepted, setAccepted] = useState<Record<string, boolean>>({})
+  const isAnswered = (key: string) => { const v = answers[key]; return v !== undefined && v !== null && v !== "" }
+  async function listen() {
+    setListening(true); setSuggestError(null); setSuggestion(null)
+    try {
+      const res = await fetch("/api/form-wizard/intake-notes", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ purpose: mode, notes, answered: Object.keys(answers).filter(isAnswered) }),
+      })
+      const body = await res.json().catch(() => ({})) as { error?: string; proposals?: NonNullable<typeof suggestion>["proposals"]; dropped?: NonNullable<typeof suggestion>["dropped"]; notes?: string[] }
+      if (!res.ok) { setSuggestError(body.error ?? "The coach could not read your notes right now."); return }
+      const next = { proposals: body.proposals ?? [], dropped: body.dropped ?? [], notes: body.notes ?? [] }
+      setSuggestion(next)
+      setAccepted(Object.fromEntries(next.proposals.map(p => [p.key, !isAnswered(p.key)])))
+    } catch (e) {
+      setSuggestError(e instanceof Error ? e.message : "The coach could not read your notes right now.")
+    } finally { setListening(false) }
+  }
+  function applySuggestions() {
+    if (!suggestion) return
+    const next = { ...answers }
+    for (const p of suggestion.proposals) if (accepted[p.key]) next[p.key] = p.value
+    update("terms", next)
+    setSuggestion(null); setNotes("")
+  }
   return (
     <div className="space-y-4">
       <h3 className="font-semibold">{mode === "offer" ? "Offer terms" : "Listing terms"}</h3>
@@ -1136,6 +1186,39 @@ function StepTerms({ mode, state, update }: { mode: "offer" | "listing"; state: 
         Answer what you know; the coach explains each one. Your answers are the terms the forms carry —
         the coach never writes a price, a date or a legal term for you.
       </p>
+      <div className="rounded-lg border p-3 space-y-2">
+        <Label className="text-sm flex items-center gap-1.5"><Sparkles className="h-3.5 w-3.5" /> Or tell the coach about the deal in your own words</Label>
+        <textarea
+          className="w-full rounded border px-2 py-1.5 text-sm" rows={3} maxLength={1500} value={notes} onChange={e => setNotes(e.target.value)}
+          placeholder={mode === "offer" ? "e.g. Cash offer at $400,000, $5,000 earnest money, ten day inspection, closing December 1, 2026" : "e.g. Exclusive right to sell, listing runs 2026-11-01 to 2027-05-01"}
+        />
+        <div className="flex items-center gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={listening || notes.trim().length < 8} onClick={listen}>
+            {listening ? <Loader2 className="h-3 w-3 mr-2 animate-spin" /> : <Sparkles className="h-3 w-3 mr-2" />}Suggest answers
+          </Button>
+          <span className="text-xs text-muted-foreground">The coach only transcribes what you wrote, with the words it relied on. You confirm each one.</span>
+        </div>
+        {suggestError && <p className="text-xs text-red-600">{suggestError}</p>}
+        {suggestion && (
+          <div className="space-y-2">
+            {suggestion.proposals.length === 0 && <p className="text-xs text-muted-foreground">Nothing in your notes answered a question on this form. {suggestion.notes.join(" ")}</p>}
+            {suggestion.proposals.map(p => (
+              <label key={p.key} className="flex items-start gap-2 text-xs">
+                <input type="checkbox" className="mt-0.5" checked={!!accepted[p.key]} onChange={e => setAccepted({ ...accepted, [p.key]: e.target.checked })} />
+                <span>
+                  <span className="font-medium">{p.label}</span> → <span className="font-medium">{p.display}</span>
+                  {isAnswered(p.key) && <span className="text-amber-700"> (replaces your current answer)</span>}
+                  <span className="block text-muted-foreground">from your words: “{p.evidence}”</span>
+                </span>
+              </label>
+            ))}
+            {suggestion.dropped.length > 0 && <p className="text-[11px] text-muted-foreground">Not used (your notes did not back them): {suggestion.dropped.map(d => `${d.key} — ${d.reason}`).join("; ")}</p>}
+            {suggestion.proposals.length > 0 && (
+              <Button type="button" size="sm" onClick={applySuggestions} disabled={!Object.values(accepted).some(Boolean)}>Use the checked answers</Button>
+            )}
+          </div>
+        )}
+      </div>
       <div className="space-y-3">
         {questions.map(q => (
           <div key={q.key} className="rounded-lg border p-3 space-y-1.5">
@@ -1294,9 +1377,9 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
   mode: "offer" | "listing"
   state: WizardState
   update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void
-  myForms: { name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }[]
+  myForms: { name: string; url: string; scope: LibraryScope; path: string }[]
   agentUserId: string
-  onUploaded: (f: { name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }) => void
+  onUploaded: (f: { name: string; url: string; scope: LibraryScope; path: string }) => void
   providerInfo: ProviderWindow | null | "loading"
   providerForms: ProviderFormItem[] | null
   providerFormsLoading: boolean
@@ -1371,8 +1454,8 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
     }
   }
 
-  const scopeIcon = (scope: "brokerage" | "team" | "agent") =>
-    scope === "brokerage" ? <Building2 className="h-3 w-3" /> : scope === "team" ? <Users className="h-3 w-3" /> : <User className="h-3 w-3" />
+  const scopeIcon = (scope: LibraryScope) =>
+    scope === "platform" ? <ShieldCheck className="h-3 w-3" /> : scope === "brokerage" ? <Building2 className="h-3 w-3" /> : scope === "team" ? <Users className="h-3 w-3" /> : <User className="h-3 w-3" />
 
   // THE RECOMMENDATION (wave 142): the state's verified package joined to what is ACTUALLY available
   // (library + legal-forms provider), filtered by the Terms answers. Pure; nothing invented.
@@ -1607,7 +1690,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
 // them so "pull the listing-agreement package" is one click, and anything the library is
 // missing is NAMED instead of silently absent.
 
-type LibraryForm = { name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }
+type LibraryForm = { name: string; url: string; scope: LibraryScope; path: string }
 
 function StatePackagePanel({ mode, stateCode, myForms, selected, onSelect }: {
   mode: "offer" | "listing"

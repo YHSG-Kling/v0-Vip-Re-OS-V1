@@ -9,6 +9,7 @@ import { requireAuth } from '@/lib/kernel/api-auth'
 import { KernelEvent } from '@/lib/kernel/events'
 import { emitKernelEvent } from '@/lib/kernel/emit'
 import { searchKB } from '@/lib/intelligence/kb-search'
+import { TENANT_ADMIN_USER_TYPES } from '@/lib/auth/resolve-user-role'
 
 export async function POST(request: Request) {
   // Auth guard — brokerageId and agentId always from session, never from body
@@ -156,7 +157,9 @@ ${kbContext || 'No specific documentation found for this query.'}${memoryContext
               .from('users')
               .select('id')
               .eq('brokerage_id', brokerageId)
-              .in('user_type', ['admin', 'broker'])
+              // THE ROSTER, not a retyped pair (CLAUDE.md §4; wave 143G): ['admin','broker'] missed broker_owner,
+              // broker_admin and compliance_officer — an escalation to the brokerage's admins reached none of them.
+              .in('user_type', [...TENANT_ADMIN_USER_TYPES])
             for (const adm of admins ?? []) {
               await sentinelWrite(service, service.from('notifications').insert({
                 user_id: adm.id,

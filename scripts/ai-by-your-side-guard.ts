@@ -10,6 +10,10 @@
  *     ROUTED model lane (a literal feature that is an AI_TASK_ROUTING row) or the ledgered tool-call route; the live
  *     avatar fails closed to text chat on a dark provider and is metered; no tenant-facing surface says
  *     "platform-covered" (positive control on a specimen)
+ *  A2. THE DOOR MATRIX (wave 143G) — eight audiences (platform staff, tenant staff/teams, partners, buyers/sellers,
+ *     lifetime customers, website visitors, setup, voice), each with its door, its real backend and WHAT MAKES IT ACT
+ *     (governed seat/persona tools bounded by the resolved authority rung, or a recorded human escalation); the setup
+ *     assistant's escalation reaches the tenant-admin ROSTER, not a retyped pair (positive control)
  *  B. THE TRIAGE REGISTRY — every category has a REGISTERED owner (never the reporter), a valid bus route and a
  *     SIGNAL_HANDLERS inbox; the catalogue mirrors the module's consumer list and the feed kind; the routed lane is a
  *     routing row; MAINTENANCE_DOMAINS + package.json membership (not position)
@@ -136,6 +140,34 @@ console.log("\n━━━ A · every audience reaches a real, routed, evidenced a
   const leaks = tenantFacing.filter((f) => /platform[- ]?covered/i.test(code(f).replace(/platform\[- \]\?covered|platform\[- \]\?covered/g, "")))
   ok(leaks.length === 0, `no tenant-facing assistant / support surface says "platform-covered" (${tenantFacing.length} files)`, leaks.join(", "))
   ok(/platform[- ]?covered/i.test("This is platform-covered"), "POSITIVE CONTROL: the finder sees the forbidden phrase")
+}
+
+console.log("\n━━━ A2 · the DOOR MATRIX — audience → door → real backend → what makes it ACT (wave 143G) ━━━")
+{
+  // Owner (wave 143): "audit authorized AI assistance (chat/voice/avatar) for platform staff, tenant admins, agents/teams,
+  // buyers/sellers, lifetime customers, vendors — real manager/tool-backed actions, not detached generic answers; name the
+  // door per audience and its proof." Each row below is a door that EXISTS and is wired to a backend that acts through
+  // governed tools (the seat/persona tool mounts at the resolved authority) or through a recorded human escalation.
+  const INTERNAL = "app/api/internal/ai-chat/route.ts", PORTAL = "app/api/portal/ai-chat/route.ts", WIDGET = "app/api/widget/message/route.ts"
+  const DOORS: Array<{ audience: string; door: string; backend: string; acts: RegExp; why: string }> = [
+    { audience: "platform staff", door: "InternalAIAssistant (platform context)", backend: INTERNAL, acts: /buildUserTypeSeatTools\(/, why: "seat tools" },
+    { audience: "tenant admins / brokers / team leads / agents / TCs", door: "InternalAIAssistant (seat tools by user_type)", backend: INTERNAL, acts: /buildUserTypeSeatTools\(/, why: "seat tools" },
+    { audience: "vendors / lenders / title partners", door: "InternalAIAssistant mounted on the partner portals", backend: INTERNAL, acts: /buildUserTypeSeatTools\([^)]*vendorId/, why: "vendor seat tools (own placements, invoices, documents)" },
+    { audience: "buyers / sellers", door: "PortalAIAssistant", backend: PORTAL, acts: /selectToolsForPersona\(/, why: "persona tools at the resolved authority" },
+    { audience: "lifetime customers", door: "PortalAIAssistant (portalView 'lifetime')", backend: PORTAL, acts: /BUYER_LIFETIME[\s\S]{0,40}lifetime/, why: "the lifetime persona view" },
+    { audience: "website visitors / prospects", door: "SiteChatLauncher → /widget/<slug>", backend: WIDGET, acts: /selectToolsForPersona\(/, why: "persona tools at the resolved authority" },
+    { audience: "tenant admins (setup)", door: "AISetupAssistant", backend: "app/api/onboarding/assistant/route.ts", acts: /SETUP_ASSISTANT_ESCALATED/, why: "a recorded human escalation (no tool — it answers from the KB and hands off)" },
+    { audience: "every voice seat", door: "voice assistant overlay", backend: "app/api/agent-assistant/tool-call/route.ts", acts: /agent_assistant_tool_calls/, why: "every tool call executed and recorded" },
+  ]
+  for (const d of DOORS) ok(existsSync(join(ROOT, d.backend)) && d.acts.test(code(d.backend)), `${d.audience} → ${d.door} → ${d.backend} acts through: ${d.why}`)
+  ok(DOORS.length >= 8 && new Set(DOORS.map((d) => d.audience)).size === DOORS.length, `the matrix names ${DOORS.length} audiences, each once`)
+  ok(!DOORS[3].acts.test("const reply = await generateText({ model, prompt })"), "POSITIVE CONTROL: a detached model call (no governed tool mount) does not satisfy the door rule")
+  for (const [aud, backend] of [["buyers / sellers", PORTAL], ["website visitors", WIDGET]] as const) ok(/resolveAgentAuthorityLevel\(/.test(code(backend)), `${aud}: the tool mount is bounded by the resolved authority rung (LAW 4), not a hard-coded level`)
+  ok(/SiteChatLauncher/.test(code("app/site/[slug]/page.tsx")), "the tenant website mounts the visitor door (SiteChatLauncher)")
+  const setup = code("app/api/onboarding/assistant/route.ts")
+  const RETYPED_PAIR = /\.in\(\s*['"]user_type['"],\s*\[\s*['"]admin['"],\s*['"]broker['"]\s*\]\)/
+  ok(!RETYPED_PAIR.test(setup) && /\.in\(\s*['"]user_type['"],\s*\[\.\.\.TENANT_ADMIN_USER_TYPES\]\)/.test(setup), "the setup assistant's escalation reaches the tenant-admin ROSTER (broker_owner / broker_admin / compliance_officer included), not a retyped ['admin','broker'] pair")
+  ok(RETYPED_PAIR.test(`.in('user_type', ['admin', 'broker'])`), "POSITIVE CONTROL: the retyped-pair finder sees the retired spelling")
 }
 
 console.log("\n━━━ B · the triage registry ━━━")
@@ -368,6 +400,26 @@ console.log("\n━━━ E · education intelligence on the existing survivors �
   ok(gatherCalls.length === 3 && gatherCalls.every((c) => new Date(c.until).getTime() - new Date(c.since).getTime() === 30 * 86_400_000), "the gatherer was asked for exact 30-day windows (A after; B before + after)")
   const m2 = await measureEducationRepeats(svcM as never, { brokerageId: B }, { now, gather })
   ok(m2.measured === 0 && m2.skipped === 2 && events(svcM, EDUCATION_REPEAT_EVENT).length === 2, "a second run measures nothing again (the evidence row is the dedupe)")
+
+  // THE NEXT FORMAT (wave 143G): a written answer that did not reduce the repeats earns a VIDEO option on the finding.
+  ok(finding[0].payload?.next_format === "video" && /video channel/.test(finding[0].message) && /Re-author, re-deliver or retire\?/.test(finding[0].message), "the finding for a not-decreased question/support lesson names the next format (a video walkthrough) and the executable route (its video channel) — beside the original three choices", JSON.stringify(finding[0].payload))
+  const svcV = client({
+    learning_modules: [
+      { id: "vA", brokerage_id: B, is_ai_generated: true, status: "published", published_at: pub40, gap_tags: ["support:forms_esign"], channels: ["article"] },
+      { id: "vB", brokerage_id: B, is_ai_generated: true, status: "published", published_at: pub40, gap_tags: ["support:cda"], channels: ["article", "video"] },
+      { id: "vC", brokerage_id: B, is_ai_generated: true, status: "published", published_at: pub40, gap_tags: ["compliance:fair_housing"], channels: ["article"] },
+    ],
+  })
+  const gatherV = async (_s: unknown, _b: string, _u: Date, o: { window: { since: Date; until: Date } }) => {
+    const afterPub = o.window.since.toISOString() === pub40
+    return ["support:forms_esign", "support:cda", "compliance:fair_housing"].map((topicKey) => ({ topicKey, weakCount: afterPub ? 9 : 3 }))
+  }
+  const mv = await measureEducationRepeats(svcV as never, { brokerageId: B }, { now, gather: gatherV })
+  const sigV = open(svcV, EDUCATION_REPEAT_SIGNAL_TYPE)
+  const byId = (id: string) => sigV.find((x) => x.entity_id === id)
+  ok(mv.findings === 3 && byId("vA")?.payload?.next_format === "video" && /video channel/.test(byId("vA")?.message ?? ""), "a support lesson published on the ARTICLE channel only that did not reduce repeats → next format video", JSON.stringify(mv))
+  ok(byId("vB")?.payload?.next_format === null && !/video channel/.test(byId("vB")?.message ?? ""), "CONTROL: a lesson already on the video channel is not told to try video again (the format already tried)")
+  ok(byId("vC")?.payload?.next_format === null && !/video channel/.test(byId("vC")?.message ?? ""), "CONTROL: a compliance lesson is not offered a video (compliance renders its own required format — the option is for how-to / question recurrence only)")
 
   // the host
   const edu = code("app/api/cron/education-delivery/route.ts"), rec = code("app/api/cron/recruit-outreach/route.ts")

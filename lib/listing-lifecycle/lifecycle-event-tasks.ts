@@ -165,11 +165,17 @@ export function closingApproachingTasks(svc: any, brokerageId: string, payload: 
 }
 
 /**
- * transaction.closed — DISPATCHED. Queues one review ask per platform for the
- * contact (review_requests is contact-keyed, one row per platform; status is
- * CHECK-constrained). The contact must be in the event's tenant, and the row is
- * STAMPED with it — sendReviewRequest refuses a request whose brokerage_id does
- * not match the caller's, so an unstamped row could never be sent.
+ * transaction.closed — DISPATCHED. Validates that the closed deal's client belongs to the event's tenant and hands the
+ * review ask to its ONE engine.
+ *
+ * TOMBSTONE (wave 143, lane 143E): this handler inserted THREE `scheduled` review_requests rows per closing — google,
+ * zillow AND facebook — for one client, i.e. an ask on every platform at once, with no link and no idea whether the
+ * client had already been asked; and the review-request-on-close cron skipped any contact that already had a row, so the
+ * rows it queued were the reason the autonomous ask never went out. SURVIVOR: lib/reputation/review-ask.ts
+ * askForReviewAtClose — it asks the agent's client(s) ONCE, on the ONE platform with a real link in the tenant's
+ * reputation_profiles policy, after the tenant's review_request_delay_days, and adopts a queued `scheduled` row if
+ * one exists. The unique behaviour merged onto it: the contact must be in the event's tenant (kept here as the gate
+ * that the event is well-formed; the engine pins the tenant on every read as well).
  */
 export async function scheduleReviewRequests(
   svc: any,
@@ -183,23 +189,9 @@ export async function scheduleReviewRequests(
     .from("contacts").select("id").eq("id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
   if (cErr) return { success: false, error: `Contact read refused: ${cErr.message}` }
   if (!contact) return { success: false, error: `Contact ${contactId} is not in brokerage ${brokerageId}` }
-
-  const platforms = ["google", "zillow", "facebook"]
-  const failures: string[] = []
-  let inserted = 0
-  for (const platform of platforms) {
-    const { data, error } = await svc
-      .from("review_requests")
-      .insert({ brokerage_id: brokerageId, contact_id: contactId, platform, status: "scheduled" })
-      .select("id")
-      .maybeSingle()
-    if (error || !data) failures.push(`${platform}: ${error?.message ?? "no row returned"}`)
-    else inserted += 1
-  }
-  if (failures.length > 0) {
-    return { success: false, inserted, error: `${failures.length} of ${platforms.length} review requests were refused — ${failures.join("; ")}` }
-  }
-  return { success: true, inserted }
+  // Nothing is queued here: the verified closing IS the trigger, and askForReviewAtClose runs from the
+  // review-request-on-close sweep when the tenant's delay has elapsed.
+  return { success: true, inserted: 0 }
 }
 
 /**

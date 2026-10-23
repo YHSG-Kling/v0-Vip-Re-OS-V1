@@ -228,7 +228,8 @@ export async function engageContact(
       // ── 4c. NEXT BEST EXPERIENCE (wave 106, lane 106B) — the SAME NBA one rung up: now that
       //    the ISA MAY touch this person, WHAT serves them next? PERSON + OPPORTUNITY + BEHAVIOR +
       //    MEMORY + TRANSACTION STATE + EDUCATION STATE + FATIGUE + POLICY → one ranked experience
-      //    (lib/ai-isa/lead-action-plan.ts planNextBestExperience, deterministic — no model spend).
+      //    (lib/ai-isa/lead-action-plan.ts planNextBestExperience — the deterministic candidate set and hard
+      //    verdicts; wave 143: the AI arbiter chooses among the PERMITTED candidates, see below).
       //    `communication` is this path's own job and continues below (the sequence / this touch
       //    stays the delivery). Any other experience is ledgered (withActionLedger, detail.experience
       //    → roi-ledger byExperience), audited (NEXT_BEST_EXPERIENCE_CHOSEN) and HANDED to its
@@ -236,7 +237,11 @@ export async function engageContact(
       //    reported, never pretended) — and this touch does NOT go out on top of it. A human-
       //    initiated run is the human's call: the plan is recorded, the touch proceeds. ──
       {
-        const { loadNextBestExperienceInputs, planNextBestExperience, recordAndExecuteExperience } = await import('@/lib/ai-isa/lead-action-plan')
+        const { loadNextBestExperienceInputs, planNextBestExperience } = await import('@/lib/ai-isa/lead-action-plan')
+        // WAVE 143 (143E): the planner above names what is POSSIBLE (its hard verdicts stay deterministic); the arbiter
+        // (lib/ai-isa/followup-arbiter.ts) picks what is BEST among the permitted options and, for a wait, for how long.
+        // arbitrateAndRecordExperience records the pick (rationale, evidence, policy ref) on the same ledger row as before.
+        const { arbitrateAndRecordExperience } = await import('@/lib/ai-isa/followup-arbiter')
         const inputs = await loadNextBestExperienceInputs(supabase, {
           brokerageId, contact: contact as Parameters<typeof loadNextBestExperienceInputs>[1]['contact'], humanInitiated, now: nbaNow,
           preloaded: { nba: nbaCtx.context },
@@ -245,9 +250,22 @@ export async function engageContact(
           console.warn(`[engageContact] next-best-experience inputs unreadable for ${contactId} — not touching: ${inputs.error}`)
           return { success: false, reason: 'stop:experience_unreadable' }
         }
-        const plan = planNextBestExperience(inputs.input)
-        const rec = await recordAndExecuteExperience(supabase, { brokerageId, contactId, plan, now: nbaNow, missionId: missionId ?? null, systemSource: 'engage_contact' })
+        const planned = planNextBestExperience(inputs.input)
+        const { plan, decision, recorded: rec } = await arbitrateAndRecordExperience(supabase, {
+          brokerageId, contactId, input: inputs.input, plan: planned, now: nbaNow, humanInitiated, missionId: missionId ?? null, systemSource: 'engage_contact',
+        })
         for (const w of rec.warnings) console.warn(`[engageContact] experience ${plan.chosen.kind}: ${w}`)
+        // "Route to the agent" must produce something a person SEES: when the arbiter judged this needs a human (a decision the
+        // planner did not already force), the agent gets a task — the ledger row alone is a record, not a bell.
+        if (plan.chosen.kind === 'agent_intervention' && decision?.source === 'ai' && contact.agent_id) {
+          const { routeToAgent } = await import('@/lib/ai-isa/followup-arbiter')
+          const tasked = await routeToAgent(supabase, {
+            brokerageId, contactId, agentId: contact.agent_id as string, now: nbaNow,
+            title: `Follow up personally with ${contact.first_name ?? 'this contact'}`,
+            description: `The AI follow-up judged this needs your personal touch. Why: ${decision.rationale}`,
+          })
+          if (!tasked) console.warn(`[engageContact] agent task for the arbiter's intervention was not written for ${contactId}`)
+        }
         if (plan.chosen.kind !== 'communication' && !humanInitiated) {
           return { success: false, reason: `experience:${plan.chosen.kind}:${rec.execution.mode}` }
         }

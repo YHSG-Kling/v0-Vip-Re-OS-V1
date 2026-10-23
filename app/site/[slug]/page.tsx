@@ -18,7 +18,7 @@
  * Server-rendered with Organization/RealEstateAgent JSON-LD; indexed by the
  * sitemap + llms.txt so search AND AI search can read the whole storefront.
  */
-import { notFound } from "next/navigation"
+import { notFound, permanentRedirect } from "next/navigation"
 import Link from "next/link"
 import { createServiceClient } from "@/lib/supabase/service"
 import { siteUrl } from "@/lib/platform/site-url"
@@ -26,6 +26,8 @@ import { serializeJsonLd } from "@/lib/geo/video-landing"
 import { SiteChatLauncher } from "@/app/components/public-site/SiteChatLauncher"
 import { LandingVideo } from "@/app/components/public-site/LandingVideo"
 import { pickSiteHeroVideo } from "@/lib/video/public-video"
+import { tenantLandingPagePath, tenantWebsitePath } from "@/lib/kernel/tenant-creation"
+import { resolveArchivedSiteSuccessor } from "@/lib/tenant-site/successor"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 300
@@ -35,9 +37,17 @@ interface PageProps { params: Promise<{ slug: string }> }
 async function loadSite(slug: string) {
   const svc = createServiceClient()
   const { data: b } = await svc.from("brokerages")
-    .select("id, name, slug, logo_url, primary_color, about_text, bio_text, phone, email, website, license_number, license_state, city, state, recruiting_pitch, widget_enabled")
+    .select("id, name, slug, logo_url, primary_color, about_text, bio_text, phone, email, website, license_number, license_state, city, state, recruiting_pitch, widget_enabled, status")
     .eq("slug", slug).is("deleted_at", null).maybeSingle()
   if (!b) return null
+  // AN ARCHIVED WORKSPACE HAS NO STOREFRONT OF ITS OWN (wave 143G): an independent subscriber adopted by a brokerage is
+  // archived (lib/kernel/brokerage-transfer.ts) and its website content moved — the old URL forwards to the adopting
+  // brokerage's site (lib/tenant-site/successor.ts); with no completed transfer it is a 404. Never a hollow page whose
+  // chat and forms file new leads under a tenant nobody reads.
+  if ((b as { status?: string | null }).status === "archived") {
+    const successor = await resolveArchivedSiteSuccessor(svc, (b as { id: string }).id)
+    return { archived: true as const, successorSlug: successor.ok ? successor.successor.slug : null }
+  }
   const { data: identity } = await svc.from("ai_identity_profiles")
     .select("assistant_name").eq("scope_id", b.id).eq("scope_type", "brokerage").maybeSingle()
   const todayIso = new Date().toISOString().slice(0, 10)
@@ -82,7 +92,7 @@ async function loadSite(slug: string) {
 export async function generateMetadata({ params }: PageProps) {
   const { slug } = await params
   const data = await loadSite(slug)
-  if (!data) return { title: "Real Estate" }
+  if (!data || "archived" in data) return { title: "Real Estate", robots: { index: false, follow: false } }
   const desc = (data.b.about_text ?? data.b.bio_text ?? `${data.b.name} — real estate.`).slice(0, 160)
   return {
     title: data.b.name,
@@ -97,6 +107,10 @@ export default async function TenantSitePage({ params }: PageProps) {
   const { slug } = await params
   const data = await loadSite(slug)
   if (!data) notFound()
+  if ("archived" in data) {
+    if (data.successorSlug) permanentRedirect(tenantWebsitePath(data.successorSlug))
+    notFound()
+  }
   const { b, assistantName, listings, agents, posts, magnets, openHouses, valuationMagnet, livePublicId, heroVideo } = data as any
   const primary = /^#[0-9a-fA-F]{6}$/.test(b.primary_color ?? "") ? (b.primary_color as string) : "#0F172A"
   const base = siteUrl()
@@ -219,7 +233,7 @@ export default async function TenantSitePage({ params }: PageProps) {
                 <h2 className="text-2xl font-bold">What's your home worth?</h2>
                 <p className="mt-2 text-muted-foreground">A real answer for your exact address — not a generic estimate.</p>
                 <a
-                  href={valuationMagnet ? `/lm/${valuationMagnet.slug}` : (magnets[0] ? `/lm/${magnets[0].slug}` : "#contact")}
+                  href={valuationMagnet ? tenantLandingPagePath(b.slug, valuationMagnet.slug) : (magnets[0] ? tenantLandingPagePath(b.slug, magnets[0].slug) : "#contact")}
                   className="mt-4 inline-flex rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground"
                 >
                   Get my home evaluation
@@ -231,7 +245,7 @@ export default async function TenantSitePage({ params }: PageProps) {
                   <ul className="mt-3 space-y-2">
                     {magnets.map((m: any) => (
                       <li key={m.slug}>
-                        <a href={`/lm/${m.slug}`} className="text-sm text-primary hover:underline">{m.name} →</a>
+                        <a href={tenantLandingPagePath(b.slug, m.slug)} className="text-sm text-primary hover:underline">{m.name} →</a>
                       </li>
                     ))}
                   </ul>

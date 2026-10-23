@@ -299,6 +299,13 @@ export async function POST(request: NextRequest) {
           fromEmail:   email.fromEmail ?? null,
           mailbox,
           attachments: email.attachments.map((a) => ({ fileName: a.fileName, mime: a.mime, contentB64: a.contentB64 ?? null })),
+          // WAVE 143 (lane 143A): the reply's identity and its sender's authentication ride along — the outside-offer loop
+          // matches by reference/thread, claims the message once (idempotent) and refuses to trust a failed sender.
+          bodyText:   email.bodyText ?? null,
+          messageId:  email.messageId ?? null,
+          inReplyTo:  email.inReplyTo ?? null,
+          references: email.references ?? null,
+          senderAuth: email.senderAuth ?? "unknown",
         }, supabase)
         if (replied.handled) {
           results.push({ email_from: email.fromEmail, uploads: replied.documentIds?.length ?? 0 })
@@ -321,6 +328,35 @@ export async function POST(request: NextRequest) {
         }
       } catch (e) {
         console.error("[inbound-mail] offer/deal-doc intake failed (non-fatal):", e)
+      }
+    }
+
+    // THE OUTSIDE LISTING AGENT'S REPLY WITH NO PDF (wave 143, lane 143A). The block above is PDF-gated (an inbound OFFER
+    // always carries a contract), but a seller's response is often just words — "the seller accepts", "we countered, see
+    // below", "the seller has accepted another offer" — and a reply that never reached the loop was a decision nobody was
+    // told about. The same router, the same idempotency and sender checks; it only handles a message that matches an offer
+    // we sent out, so an unrelated email falls through to the lanes below untouched.
+    if (brokerageId && email.fromEmail && !email.attachments.some((a) => a.mime === "application/pdf")) {
+      try {
+        const { tryRouteOutboundOfferReply } = await import("@/lib/inbound-mail/offer-intake")
+        const replied = await tryRouteOutboundOfferReply({
+          brokerageId,
+          subject:     email.subject ?? null,
+          fromEmail:   email.fromEmail ?? null,
+          mailbox,
+          attachments: [],
+          bodyText:    email.bodyText ?? null,
+          messageId:   email.messageId ?? null,
+          inReplyTo:   email.inReplyTo ?? null,
+          references:  email.references ?? null,
+          senderAuth:  email.senderAuth ?? "unknown",
+        }, supabase)
+        if (replied.handled) {
+          results.push({ email_from: email.fromEmail, uploads: 0 })
+          continue
+        }
+      } catch (e) {
+        console.error("[inbound-mail] outside-offer reply routing failed (non-fatal):", e)
       }
     }
 

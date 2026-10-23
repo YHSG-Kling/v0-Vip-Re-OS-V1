@@ -165,14 +165,48 @@ export default async function CDAPage({ params }: PageProps) {
       }
     : null
 
-  // Fetch commission calculations if any
-  const { data: commissionCalc } = await supabase
-    .from("commission_calculations")
-    .select("*")
-    .eq("transaction_id", id)
-    .order("calculated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  // Fetch the engine's frozen calculation (breakdown + the agreement it priced with) AND the posted ledger row.
+  //
+  // WAVE 143 (lane 143C): the client reads gross_commission / net_to_agent / net_to_brokerage off `commissionCalc`,
+  // but commission_calculations carries `total_commission` and never had those columns — so the fallback beside the
+  // CDA's own figures was permanently blank, and nothing in the engine wrote the row at all. The figures now come from
+  // the POSTED agent_commissions row (the ledger the CDA is checked against); the breakdown and the agreement applied
+  // (version, date, signed record) come from the snapshot stage 11 freezes. Both reads are tenant-pinned and both
+  // errors are read — a refused read is shown as unavailable, never as "no calculation".
+  const [calcRes, ledgerRes] = await Promise.all([
+    supabase
+      .from("commission_calculations")
+      .select("id, total_commission, breakdown_json, engine_inputs, calculated_at")
+      .eq("transaction_id", id)
+      .eq("brokerage_id", brokerageId)
+      .order("calculated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("agent_commissions")
+      .select("id, gross_commission, net_to_agent, net_to_brokerage, created_at")
+      .eq("transaction_id", id)
+      .eq("brokerage_id", brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ])
+  if (calcRes.error) console.error("[cda-page] commission calculation read refused:", calcRes.error.message)
+  if (ledgerRes.error) console.error("[cda-page] posted commission read refused:", ledgerRes.error.message)
+  const calcRow = calcRes.error ? null : (calcRes.data as { id: string; total_commission: number | string | null; breakdown_json: Record<string, unknown> | null; engine_inputs: Record<string, unknown> | null; calculated_at: string } | null)
+  const ledgerRow = ledgerRes.error ? null : (ledgerRes.data as { id: string; gross_commission: number | string | null; net_to_agent: number | string | null; net_to_brokerage: number | string | null; created_at: string } | null)
+  const numOrNull = (v: unknown): number | null => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Number(v))
+  const commissionCalc = calcRow || ledgerRow
+    ? {
+        id: (calcRow?.id ?? ledgerRow?.id) as string,
+        gross_commission: numOrNull(ledgerRow?.gross_commission) ?? numOrNull(calcRow?.total_commission),
+        net_to_agent: numOrNull(ledgerRow?.net_to_agent),
+        net_to_brokerage: numOrNull(ledgerRow?.net_to_brokerage),
+        breakdown_json: calcRow?.breakdown_json ?? null,
+        engine_inputs: calcRow?.engine_inputs ?? null,
+        calculated_at: (calcRow?.calculated_at ?? ledgerRow?.created_at) as string,
+      }
+    : null
 
   // Fetch compliance checks for this transaction
   const { data: complianceChecks } = await supabase

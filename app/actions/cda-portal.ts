@@ -1473,12 +1473,45 @@ export async function sendCdaToTitleAction(input: {
 
   let disbursementHtml = ""
   if (figuresKnown) {
+    // WAVE 143 (lane 143C): "CDA payouts include referrals." The authorization names EVERY payee the deal funds - the
+    // referral fee(s) and the team share ride the live commission_distributions (voided rows excluded, corrections
+    // netted). The tenant gate above (cda.brokerage_id === the session's brokerage) has run, so the service read is
+    // pinned to it; a REFUSED read stops the send - an authorization that silently omits a payee is not sent.
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { cdaPayeesFromDistributions } = await import("@/lib/transactions/cda-payees")
+    const svc = createServiceClient()
+    const { data: payeeRows, error: payeeErr } = await svc
+      .from("commission_distributions")
+      .select("distribution_type, calculated_amount, status, agent_id")
+      .eq("transaction_id", cda.transaction_id)
+      .eq("brokerage_id", cda.brokerage_id)
+      .in("distribution_type", ["referral", "team_member"])
+    if (payeeErr) return { success: false as const, error: `cda_payees_read_refused:${payeeErr.message}` }
+    const payeeAgentIds = Array.from(new Set(((payeeRows ?? []) as Array<{ agent_id?: string | null }>).map((r) => r.agent_id).filter((x): x is string => !!x)))
+    const nameByAgentId = new Map<string, string>()
+    if (payeeAgentIds.length > 0) {
+      const { data: payeeAgents, error: payeeAgentsErr } = await svc
+        .from("agents")
+        .select("id, users(first_name, last_name)")
+        .eq("brokerage_id", cda.brokerage_id)
+        .in("id", payeeAgentIds)
+      if (payeeAgentsErr) return { success: false as const, error: `cda_payees_read_refused:${payeeAgentsErr.message}` }
+      for (const a of (payeeAgents ?? []) as any[]) {
+        const u = Array.isArray(a.users) ? a.users[0] : a.users
+        const name = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim()
+        if (name) nameByAgentId.set(a.id, name)
+      }
+    }
+    const payees = cdaPayeesFromDistributions((payeeRows ?? []) as Array<{ distribution_type?: string | null; calculated_amount?: number | string | null; status?: string | null; agent_id?: string | null }>, nameByAgentId)
+
     const { composeCdaDisbursementLines } = await import("@/lib/transactions/deal-vendor-notify")
     const lines = composeCdaDisbursementLines({
       grossCommission: grossCommission as number,
       agentNet:        agentNet as number,
       brokerageNet:    brokerageNet as number,
       tcNet:           null,
+      referralPayouts: payees.referralPayouts,
+      teamShare:       payees.teamShare,
     })
     disbursementHtml =
       `<p>Our brokerage's compliance review of this commission disbursement is complete and APPROVED. `

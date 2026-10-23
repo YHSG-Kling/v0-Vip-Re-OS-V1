@@ -172,6 +172,25 @@ export function canAdvancePacketState(from: string | null | undefined, to: Esign
   return { ok: true, noop: false }
 }
 
+/**
+ * WHAT EACH HOP STAMPS, IN THE SAME UPDATE AS THE STATE (wave 143, lane 143A — closes 142K finding 5). PURE.
+ *
+ * The listing agreement carries two legacy columns that say what the ladder now says. They were written by whoever
+ * got there first (the provider's completion stamped `fully_executed_at`; the manual-upload door stamped both), which
+ * is how one row came to read "fully executed" before compliance had approved anything. They are now the companion of
+ * exactly one hop each, written by the ONE writer (packet-state-writer.ts, which merges this into its update) and by
+ * nothing else:
+ *   · `compliance_approved` → `compliance_passed = true`   (the compliance decision is on the row)
+ *   · `fully_executed`      → `fully_executed_at = <now>`  (the execution stamp — only after compliance approval)
+ * An offer's compliance mark (`compliance_passed_at`) is owned by the transaction-creation gate, so it has none here.
+ */
+export function hopCompanionColumns(table: "offers" | "listing_agreements", to: EsignPacketState, nowIso: string): Record<string, unknown> {
+  if (table !== "listing_agreements") return {}
+  if (to === "compliance_approved") return { compliance_passed: true }
+  if (to === "fully_executed") return { fully_executed_at: nowIso }
+  return {}
+}
+
 /** PURE: the owner's hop notice per state — what the agent's bell says. No legal terms, no amounts. */
 export const PACKET_HOP_NOTICE: Readonly<Record<EsignPacketState, { title: string; body: string }>> = Object.freeze({
   pending:             { title: "Packet staged — not yet sent", body: "The packet is staged for your send. Open the e-sign window to send it to the signers." },

@@ -5,7 +5,7 @@ import { isBrokerageFinanceAdminGrantRole } from '@/lib/auth/resolve-user-role'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { DollarSign, ArrowLeft, Clock, CheckCircle2, AlertCircle, Landmark } from 'lucide-react'
+import { DollarSign, ArrowLeft, Clock, CheckCircle2, AlertCircle, Landmark, FileSignature } from 'lucide-react'
 import Link from 'next/link'
 import { PayoutButton } from '@/app/components/features/financial/PayoutButton'
 import { ApproveCommissionButton } from '@/app/components/features/financial/ApproveCommissionButton'
@@ -149,7 +149,13 @@ export default async function CommissionsPage() {
             <p className="text-muted-foreground">{commissionsData.length} commission records • {pendingCount} pending • {paidCount} paid</p>
           </div>
         </div>
-        <ExportCSVButton agentId={agentId} type="commissions" />
+        <div className="flex items-center gap-2">
+          {/* Wave 143 (143C): the agreements each deal was priced on, with their change history and signed record. */}
+          {isBrokerAdmin && (
+            <Link href="/dashboard/financials/agreements"><Button variant="outline" size="sm"><FileSignature className="w-4 h-4 mr-1" />Agreements</Button></Link>
+          )}
+          <ExportCSVButton agentId={agentId} type="commissions" />
+        </div>
       </div>
 
       {/* A refused read is NOT an empty ledger — say so rather than render
@@ -283,7 +289,10 @@ export default async function CommissionsPage() {
                               disburse. The approval step was missing here, and the kernel
                               refuses pending → paid outright, so "Mark as Paid" was rendered
                               on exactly the rows it could never pay. */}
-                          {c.status === 'pending' && !c.deposit_received_at && c.transaction_id && (
+                          {/* Wave 143 (143C): an APPROVED row also needs the deposit recorded before it can be paid
+                              (payoutFundsGate) — a no-CDA close auto-approves at close, so approved-without-deposit is
+                              a normal state and must offer the door that satisfies the gate. */}
+                          {(c.status === 'pending' || c.status === 'approved') && !c.deposit_received_at && c.transaction_id && (
                             <DepositReceivedButton transactionId={c.transaction_id} />
                           )}
                           {c.status === 'pending' && c.deposit_received_at && (

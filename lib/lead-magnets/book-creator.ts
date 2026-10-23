@@ -31,6 +31,10 @@ import { createLeadMagnet, type CreateLeadMagnetInput } from "@/lib/kernel/lead-
 import { bookPdfSpec, type BookPdfData, type ClientPdfBrand, type ClientPdfSpec } from "@/lib/documents/client-pdf"
 import { rewritePublicCopyUntilCompliant, scanPublicCopy, renderFindingsForRewrite, type CopyFinding } from "@/lib/kernel/marketing/public-copy-rewrite"
 import type { ContentTopic } from "@/lib/marketing/content-topics"
+// Wave 143 (lane 143F): a "55+ / senior living" claim in a chapter is verified against the tenant's recorded
+// housing-for-older-persons exemption (42 U.S.C. § 3607(b)); a held claim is rewritten around, then a human decides.
+import { OLDER_PERSONS_WRITING_DIRECTIVE } from "@/lib/compliance/fair-housing-older-persons"
+import { loadOlderPersonsVerifications } from "@/lib/compliance/fair-housing-older-persons-store"
 
 // ── The project record (lead_capture_forms.settings.book) ─────────────────────────────────────────
 
@@ -255,6 +259,7 @@ function manuscriptSystem(p: BookProject): string {
   return (
     `You are ghost-writing an ORIGINAL ${p.audience === "buyer" ? "home-buyer's" : "home-seller's"} book for a real-estate ${p.brand ? `brand, ${p.brand}` : "agent"}${p.area ? ` serving ${p.area}` : ""}. ` +
     "HARD RULES: (1) FAIR HOUSING — never reference or imply race, religion, national origin, family status, disability, sex, or use steering language ('safe neighborhood', 'perfect for families', 'great for retirees', 'exclusive community', 'good schools'); describe the home, the process and the service, never who should want it. " +
+    OLDER_PERSONS_WRITING_DIRECTIVE + " " +
     "(2) STATE NO FIGURES: no prices, rates, percentages, statistics, dates, deadlines or statute numbers — speak in process and principles; a figure you were not given is a fabrication. " +
     "(3) No legal, tax or lending advice; no guarantees or market predictions. (4) Plain, warm, specific prose in the agent's voice — a knowledgeable coach, never a template. (5) Original writing only: never reproduce another author's or a competitor's wording."
   )
@@ -393,7 +398,7 @@ interface AdvanceBookOutput {
 }
 
 /** Read the project off the magnet row — tenant-pinned; a magnet without a book is not a book project. */
-async function loadProject(svc: Svc, brokerageId: string, magnetId: string): Promise<{ ok: true; row: { id: string; name: string; agent_id: string | null; settings: Record<string, unknown>; landing_content: Record<string, unknown> | null }; project: BookProject } | { ok: false; error: string }> {
+export async function loadProject(svc: Svc, brokerageId: string, magnetId: string): Promise<{ ok: true; row: { id: string; name: string; agent_id: string | null; settings: Record<string, unknown>; landing_content: Record<string, unknown> | null }; project: BookProject } | { ok: false; error: string }> {
   const { data, error } = await svc.from("lead_capture_forms").select("id, name, agent_id, settings, landing_content").eq("id", magnetId).eq("brokerage_id", brokerageId).maybeSingle()
   if (error) return { ok: false, error: `Book project unreadable: ${error.message}` }
   if (!data) return { ok: false, error: "Book project not found in this brokerage" }
@@ -503,6 +508,7 @@ export async function advanceBookProject(input: AdvanceBookInput, deps: BookDeps
       }
       case "edit": {
         let edited = 0
+        const olderPersons = await loadOlderPersonsVerifications(svc as never, input.brokerageId)
         for (let i = 0; i < p.chapters.length && edited < perAdvance; i++) {
           if (p.chapters[i].edited) continue
           const factFindings = (p.fact_check?.findings ?? []).filter((f) => f.chapter === i + 1)
@@ -515,7 +521,7 @@ export async function advanceBookProject(input: AdvanceBookInput, deps: BookDeps
           }
           // THE FAIR-HOUSING REWRITE LOOP — the book is PUBLIC housing marketing; cap + escalate per chapter.
           const loop = await rewritePublicCopyUntilCompliant({
-            text: body, surface: "book", brokerageName: p.brand,
+            text: body, surface: "book", brokerageName: p.brand, olderPersons,
             rewrite: async (text, fh) => {
               const snapshot: BookProject = { ...p, chapters: p.chapters.map((c, j) => (j === i ? { ...c, body: text } : c)) }
               const r = await book({ system: manuscriptSystem(p), prompt: editPrompt(snapshot, i, [], fh), maxTokens: 1400 }, writer)
@@ -619,7 +625,7 @@ export async function reviseBookChapter(input: ReviseBookChapterInput, deps: Boo
   const i = input.chapter - 1
   if (!Number.isInteger(input.chapter) || i < 0 || i >= p.chapters.length) return { success: false, stage: p.stage, error: `Chapter ${input.chapter} does not exist (the book has ${p.chapters.length}).`, project: p }
   if (wordCount(text) < BOOK_MIN_CHAPTER_WORDS) return { success: false, stage: p.stage, error: `A chapter needs ${BOOK_MIN_CHAPTER_WORDS}+ words (${wordCount(text)} given).`, project: p }
-  const scan = await scanPublicCopy(text, "book", { brokerageName: p.brand })
+  const scan = await scanPublicCopy(text, "book", { brokerageName: p.brand, olderPersons: await loadOlderPersonsVerifications(svc as never, input.brokerageId) })
   if (!scan.ok) return { success: false, stage: p.stage, error: `Fair-housing review: the revision still says ${scan.findings.map((f) => `"${f.phrase}"`).join(", ")} — ${scan.findings.map((f) => f.fix).join("; ")}.`, project: p }
 
   const now = (deps.now ?? new Date()).toISOString()

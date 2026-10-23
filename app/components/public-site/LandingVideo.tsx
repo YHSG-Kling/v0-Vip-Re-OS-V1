@@ -32,9 +32,11 @@ interface LandingVideoProps {
   fallbackHref?: string | null
   className?: string
   autoPlay?: boolean
+  /** Fired when the visitor presses play (wave 143: the reel page's view counter rides this — the slot stays the ONE player). */
+  onPlay?: () => void
 }
 
-export function LandingVideo({ src, poster, title, fallbackHref, className, autoPlay }: LandingVideoProps) {
+export function LandingVideo({ src, poster, title, fallbackHref, className, autoPlay, onPlay }: LandingVideoProps) {
   const [failed, setFailed] = useState(false)
   const playable = typeof src === "string" && src.trim().length > 0 && !failed
 
@@ -74,6 +76,7 @@ export function LandingVideo({ src, poster, title, fallbackHref, className, auto
       src={src as string}
       aria-label={title}
       onError={() => setFailed(true)}
+      onPlay={onPlay}
       className={className}
       data-landing-video="true"
     />

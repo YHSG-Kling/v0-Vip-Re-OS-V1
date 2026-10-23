@@ -339,8 +339,16 @@ console.log("\n── 7. OUTCOME ATTRIBUTION LEARNS WHICH EXPERIENCE CONVERTS �
 console.log("\n── 8. WIRED — stripped source (a tombstone is not a call site) ──")
 {
   const engage = blankStrings(src("app/actions/ai-isa/engage-contact.ts"))
-  check("engage-contact loads the inputs, plans, records + executes AFTER its NBA verdict", /loadNextBestExperienceInputs\(supabase/.test(engage) && /planNextBestExperience\(inputs\.input\)/.test(engage) && /recordAndExecuteExperience\(supabase/.test(engage)
+  // WAVE 143 (143E) — the RULE, not the waypoint: engage-contact records + executes the planner's experience through the ONE
+  // recording path. That path is now arbitrateAndRecordExperience (lib/ai-isa/followup-arbiter.ts), which must itself end in
+  // recordAndExecuteExperience — so the ledger row, the audit event and the delegation are written exactly as before, with the
+  // arbiter's pick in between. Either spelling in engage-contact is accepted; the wrapper's hand-off is asserted below.
+  const arbiterSrc = src("lib/ai-isa/followup-arbiter.ts")
+  check("engage-contact loads the inputs, plans, records + executes AFTER its NBA verdict", /loadNextBestExperienceInputs\(supabase/.test(engage) && /planNextBestExperience\(inputs\.input\)/.test(engage)
+    && (/recordAndExecuteExperience\(supabase/.test(engage) || (/arbitrateAndRecordExperience\(supabase/.test(engage) && /recordAndExecuteExperience\(\s*svc,/.test(arbiterSrc)))
     && engage.indexOf("planNextContactTouch(") < engage.indexOf("planNextBestExperience("))
+  check("(control) a recording path that neither names recordAndExecuteExperience nor the arbiter wrapper would fail the rule",
+    !(/recordAndExecuteExperience\(supabase/.test("const x = 1") || /arbitrateAndRecordExperience\(supabase/.test("const x = 1")))
   check("engage-contact does not send on top of a non-communication experience (autonomous run)", /plan\.chosen\.kind !== .communication. && !humanInitiated/.test(src("app/actions/ai-isa/engage-contact.ts")))
   const ae = src("lib/campaign-sequences/auto-enroll.ts")
   check("auto-enroll consults journeyVerdictForEnrollment BEFORE the sequence_enrollments insert", /journeyVerdictForEnrollment\(c, a\)/.test(ae) && ae.indexOf("journeyVerdictForEnrollment") < ae.indexOf('from("sequence_enrollments").insert'))

@@ -59,10 +59,16 @@ export async function generateLeadMagnetCopyAction(input: { magnetType: string; 
   const pageText = (l: LandingCopy, f: Array<{ question: string; answer: string }>) => [l.headline, l.subhead, l.cta, ...l.bullets, ...f.flatMap((x) => [x.question, x.answer])].join("\n")
   let latestLanding = landing
   let latestFaq = faq
+  // Wave 143 (lane 143F): a "55+ / senior living" claim on the page is verified against the session tenant's recorded
+  // older-persons exemption (42 U.S.C. § 3607(b)) — a held claim is rewritten around with the reason, then a human decides.
+  const { loadOlderPersonsVerifications } = await import("@/lib/compliance/fair-housing-older-persons-store")
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const olderPersons = await loadOlderPersonsVerifications(createServiceClient(), brokerageId)
   const loop = await rewritePublicCopyUntilCompliant({
     text: pageText(landing, faq),
     surface: "landing_page",
     brokerageName: input.brand ?? null,
+    olderPersons,
     rewrite: async (_text, findings) => {
       const { generateTextRouted } = await import("@/lib/ai/models")
       const { text } = await generateTextRouted({

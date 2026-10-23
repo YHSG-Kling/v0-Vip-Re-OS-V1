@@ -79,6 +79,13 @@ import { putAndSign, removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import type { ExtractedOfferData } from "@/lib/offers/offer-extractor"
 import {
+  OUTSIDE_LOOP_KEY, offerIdFromText, verifyOutsideSender, messageKeyFor, deterministicReplySignals, reconcileReplyClassification,
+  pickOutsideTarget, loadOutsideChain, claimInboundMessage, patchMessage, mergeLoopState,
+  type OutsideReplyClass, type OutsideRecommendedAction,
+} from "@/lib/offers/outside-offer-loop"
+import { readOutsideReply } from "@/lib/offers/outside-reply-reader"
+import { normalizeMessageId } from "./message-meta"
+import {
   parseOutsideAgentFromEmail, parseBuyerNameFromEmail, buyerNamesAsOne, overlayOutsideAgentFields,
   outsideAgentFillPatch, upsertOutsideAgentRecord, linkOutsideAgentToBuyer,
   OUTSIDE_AGENT_ID_KEY, OUTSIDE_AGENT_BUYER_LINK_ROLE, OUTSIDE_AGENT_SOURCE_INBOUND_EMAIL, OUTSIDE_BUYER_INTAKE_SOURCE,
@@ -701,9 +708,37 @@ export interface OutboundReplyResult {
   documentIds?: string[]
   /** Several watched offers share this counterparty — nothing was routed. */
   ambiguous?: boolean
+  /** The same message was delivered before (the webhook was redelivered): nothing was re-filed, nobody was re-told. */
+  duplicate?: boolean
+  /** The provider reported an authentication failure for the sender: nothing was filed; the agent was told. */
+  quarantined?: boolean
+  /** The ledger row (outside_offer_messages) this reply is. */
+  messageId?: string
+  /** What the reply was read as — a RECOMMENDATION; no offer state changed. */
+  classification?: OutsideReplyClass
+  recommendedAction?: OutsideRecommendedAction
   errors?: string[]
 }
 
+/** The ledger-backed reply reader the loop calls; injected by the proof so no model is reached. */
+export type OutsideReplyReader = typeof readOutsideReply
+
+/**
+ * THE BUYER-SIDE LOOP'S INBOUND HALF (wave 143, lane 143A — extends the wave-12 R2 survivor above; the rules are
+ * lib/offers/outside-offer-loop.ts's header). A reply in OUR agent's mailbox to an offer we sent to an OUTSIDE listing agent:
+ *
+ *   MATCH      by the `[ref:offer:<id>]` token our outbound subject carries, else the thread (In-Reply-To/References against
+ *              our outbound ledger), else the recorded counterparty's address (the original R2 key, unchanged) — scoped to the
+ *              mailbox agent's own deals, and ambiguity is REFUSED and the agent is told, never guessed;
+ *   VERIFY     the sender against the recorded counterparty and the provider's authentication verdict (verifyOutsideSender);
+ *              a failed authentication QUARANTINES — nothing is filed;
+ *   CLAIM      one ledger row per message (unique key) — a redelivered webhook is a `duplicate`, not a second filing/notice;
+ *   FILE       every PDF through the universal uploader (classifier + signature reading), linked to the chain's head offer;
+ *   READ       the AI reads the reply (class, terms, attachments) and the deterministic floor can only LOWER that reading;
+ *   TELL       the responsible agent, with the recommended next action and any trust caveat.
+ * Nothing here accepts, signs, records a counter, or creates a transaction: the agent's confirmation does that
+ * (app/actions/buyer-offer/outside-offer-loop.ts confirmOutsideReply), through the existing survivors.
+ */
 export async function tryRouteOutboundOfferReply(
   input: {
     brokerageId: string
@@ -712,105 +747,158 @@ export async function tryRouteOutboundOfferReply(
     /** WHOSE inbox this arrived in. Scopes the match to that agent's own deals. */
     mailbox?: InboundMailbox | null
     attachments: InboundOfferAttachment[]
+    bodyText?: string | null
+    messageId?: string | null
+    inReplyTo?: string | null
+    references?: string[] | null
+    senderAuth?: "pass" | "fail" | "unknown" | null
   },
   client?: Svc,
+  deps: { read?: OutsideReplyReader; now?: () => Date } = {},
 ): Promise<OutboundReplyResult> {
   const svc = client ?? createServiceClient()
   const sender = (input.fromEmail ?? "").trim().toLowerCase()
   if (!sender) return { handled: false }
+  const errors: string[] = []
+  const now = (deps.now ?? (() => new Date()))()
+  const receivedAt = now.toISOString()
 
   const mailboxUserId = input.mailbox?.userId ?? null
   const mailboxAgentId = mailboxUserId
     ? await resolveAgentIdInBrokerage(svc as unknown as SupabaseClient, mailboxUserId, input.brokerageId)
     : null
 
-  let q = svc
-    .from("offers")
-    .select("id, contact_id, listing_id, property_address, agent_id, metadata")
-    .eq("brokerage_id", input.brokerageId)
-    .filter(`metadata->>${OUTSIDE_LISTING_AGENT_EMAIL_KEY}`, "eq", sender)
-  if (mailboxAgentId) q = q.eq("agent_id", mailboxAgentId)
-
-  const { data, error } = await q.order("created_at", { ascending: false }).limit(3)
-  if (error) {
-    console.error(`[offer-intake] the outbound-watch lookup was REFUSED (${error.message}) — failing closed`)
-    return { handled: false, errors: [`outbound watch lookup refused: ${error.message}`] }
+  // ── MATCH ────────────────────────────────────────────────────────────────────────────────────
+  // (a) the reference token — the offer id our outbound subject carries and a reply echoes.
+  let byToken: string | null = null
+  const tokenOfferId = offerIdFromText(input.subject) ?? offerIdFromText(input.bodyText)
+  if (tokenOfferId) {
+    const t = await loadOutsideChain(svc as unknown as SupabaseClient, input.brokerageId, tokenOfferId)
+    if (t.ok) {
+      const mineOk = !mailboxAgentId || t.chain.root.agent_id === mailboxAgentId
+      if (!t.chain.root.listing_id && mineOk) byToken = t.chain.root.id
+    } else if (!/no such offer/.test(t.reason)) {
+      console.error(`[offer-intake] the reply's reference token could not be resolved (${t.reason}) — failing closed`)
+      return { handled: false, errors: [t.reason] }
+    }
   }
-
-  const watched = (data ?? []) as Array<{
-    id: string; contact_id: string | null; listing_id: string | null
-    property_address: string | null; agent_id: string | null
-    metadata: Record<string, unknown> | null
-  }>
-  if (watched.length === 0) return { handled: false }
-  if (watched.length > 1) {
-    // The same listing agent is the counterparty on more than one of our live
-    // offers. Guessing which deal a reply belongs to is the mis-link class this
-    // lane refuses everywhere else, so it is refused here too.
-    console.warn(
-      `[offer-intake] ${watched.length} offers are watching ${sender} as the outside listing agent `
-    + `(${watched.map(o => o.property_address ?? o.id).join("; ")}) — nothing was routed; the reply falls through to the generic lane.`,
-    )
+  // (b) the thread — In-Reply-To / References against the Message-ID our outbound email recorded.
+  let byThread: string | null = null
+  const refs = [input.inReplyTo, ...(input.references ?? [])].map((r) => normalizeMessageId(r)).filter((r): r is string => !!r)
+  if (!byToken && refs.length > 0) {
+    const { data, error } = await svc.from("outside_offer_messages").select("offer_id").eq("brokerage_id", input.brokerageId).eq("direction", "outbound").in("message_key", refs.map((r) => `mid:${r}`)).limit(2)
+    if (error) {
+      console.error(`[offer-intake] the thread lookup was REFUSED (${error.message}) — failing closed`)
+      return { handled: false, errors: [`thread lookup refused: ${error.message}`] }
+    }
+    const ids = [...new Set(((data ?? []) as Array<{ offer_id: string }>).map((r) => r.offer_id))]
+    if (ids.length === 1) byThread = ids[0]
+  }
+  // (c) the recorded counterparty's address — the original R2 key.
+  let bySender: string[] = []
+  if (!byToken && !byThread) {
+    let q = svc.from("offers").select("id, agent_id").eq("brokerage_id", input.brokerageId).is("parent_offer_id", null).filter(`metadata->>${OUTSIDE_LISTING_AGENT_EMAIL_KEY}`, "eq", sender)
+    if (mailboxAgentId) q = q.eq("agent_id", mailboxAgentId)
+    const { data, error } = await q.order("created_at", { ascending: false }).limit(3)
+    if (error) {
+      console.error(`[offer-intake] the outbound-watch lookup was REFUSED (${error.message}) — failing closed`)
+      return { handled: false, errors: [`outbound watch lookup refused: ${error.message}`] }
+    }
+    bySender = ((data ?? []) as Array<{ id: string }>).map((r) => r.id)
+  }
+  const target = pickOutsideTarget({ byToken, byThread, bySender })
+  if (target.kind === "none") return { handled: false }
+  if (target.kind === "ambiguous") {
+    // The same listing agent is the counterparty on more than one of our live offers and the reply carries no reference.
+    // Guessing which deal it belongs to is the mis-link class this lane refuses everywhere else — but the agent is TOLD now
+    // (it used to fall through to the generic lane in silence).
+    console.warn(`[offer-intake] ${target.rootIds.length} offers are watching ${sender} as the outside listing agent — nothing was routed`)
+    const who = await resolveListingAgentUser(svc, mailboxAgentId)
+    if (who) await bellOffer(svc, { userId: who, brokerageId: input.brokerageId, offerId: target.rootIds[0], title: "📬 A listing agent replied — which offer is it for?", body: `${sender} replied${input.subject ? ` ("${input.subject}")` : ""}, and they are the listing agent on ${target.rootIds.length} of your offers. Open the email and link it to the right offer (reply threads that keep the [ref:offer:…] reference route automatically).` })
     return { handled: false, ambiguous: true }
   }
 
-  const offer = watched[0]
-  const errors: string[] = []
-  const receivedAt = new Date().toISOString()
-  const pdfs = input.attachments.filter(a => a.mime === "application/pdf" && a.contentB64)
+  const loaded = await loadOutsideChain(svc as unknown as SupabaseClient, input.brokerageId, target.rootId)
+  if (!loaded.ok) {
+    console.error(`[offer-intake] the matched offer's chain could not be read (${loaded.reason}) — failing closed`)
+    return { handled: false, errors: [loaded.reason] }
+  }
+  const { root, head } = loaded.chain
+  const rootMeta = (root.metadata ?? {}) as Record<string, any>
+  const loopMeta = (rootMeta[OUTSIDE_LOOP_KEY] ?? {}) as { counterparty?: { aliases?: string[] } }
 
+  // ── VERIFY ───────────────────────────────────────────────────────────────────────────────────
+  const verdict = verifyOutsideSender({
+    recordedEmail: (rootMeta[OUTSIDE_LISTING_AGENT_EMAIL_KEY] as string | undefined) ?? null,
+    aliases: loopMeta.counterparty?.aliases ?? [], fromEmail: sender, senderAuth: input.senderAuth ?? "unknown",
+  })
+
+  // ── CLAIM (idempotency) ──────────────────────────────────────────────────────────────────────
+  const claim = await claimInboundMessage(svc as unknown as SupabaseClient, {
+    brokerageId: input.brokerageId, rootOfferId: root.id, headOfferId: head.id,
+    messageKey: messageKeyFor({ messageId: input.messageId, fromEmail: sender, subject: input.subject, bodyText: input.bodyText ?? null, attachments: input.attachments }),
+    fromEmail: sender, subject: input.subject, senderAuth: input.senderAuth ?? "unknown",
+    status: verdict.quarantine ? "quarantined" : "awaiting_agent", receivedAt,
+    reading: { sender_verdict: verdict, how_matched: target.how },
+  })
+  if (!claim.ok) {
+    console.error(`[offer-intake] the reply could not be claimed (${claim.reason}) — failing closed`)
+    return { handled: false, offerId: root.id, errors: [claim.reason] }
+  }
+  if ("duplicate" in claim) return { handled: true, duplicate: true, offerId: root.id }
+  const agentUserId = await resolveListingAgentUser(svc, root.agent_id ?? null)
+
+  if (verdict.quarantine) {
+    if (agentUserId) await bellOffer(svc, { userId: agentUserId, brokerageId: input.brokerageId, offerId: root.id, title: "⚠️ A reply on your offer failed sender authentication", body: `An email from ${sender}${input.subject ? ` ("${input.subject}")` : ""} reached this offer but ${verdict.reason}. Nothing was filed and nothing was read. If you expect it, open it in your mailbox and upload any documents yourself.` })
+    return { handled: true, quarantined: true, offerId: root.id, messageId: claim.id }
+  }
+
+  // ── FILE ─────────────────────────────────────────────────────────────────────────────────────
+  const pdfs = input.attachments.filter((a) => a.mime === "application/pdf" && a.contentB64)
   const filed = pdfs.length > 0
     ? await fileInboundPdfs(svc, {
-        brokerageId: input.brokerageId,
-        listingId:   offer.listing_id,
-        offerId:     offer.id,
-        contactId:   offer.contact_id,
-        pdfs,
+        brokerageId: input.brokerageId, listingId: root.listing_id ?? null, offerId: head.id, contactId: root.contact_id ?? null, pdfs,
         provenance: {
-          intake_source: "inbound_email",
-          from_email:    sender,
-          subject:       input.subject,
-          received_at:   receivedAt,
-          match_key:     "outbound_counterparty_reply",
-          [MAILBOX_USER_ID_KEY]: mailboxUserId,
-          [MAILBOX_ADDRESS_KEY]: input.mailbox?.address ?? null,
+          intake_source: "inbound_email", from_email: sender, subject: input.subject, received_at: receivedAt,
+          match_key: "outbound_counterparty_reply", outside_message_id: claim.id, outside_message_how: target.how,
+          [MAILBOX_USER_ID_KEY]: mailboxUserId, [MAILBOX_ADDRESS_KEY]: input.mailbox?.address ?? null,
         },
       })
     : { documentIds: [] as string[], errors: [] as string[] }
   errors.push(...filed.errors)
 
-  // MERGED, never assigned: a wholesale metadata write here would destroy the
-  // very key that made this routing possible, plus anything else on the offer.
-  const stampPayload = {
-    metadata: {
-      ...(offer.metadata ?? {}),
-      [COUNTERPARTY_REPLY_AT_KEY]: receivedAt,
-      counterparty_last_reply_subject: input.subject,
-      counterparty_reply_document_ids: filed.documentIds,
-    },
-    updated_at: receivedAt,
-  }
-  const { error: stampErr } = await svc
-    .from("offers")
-    .update(stampPayload)
-    .eq("id", offer.id)
-    .eq("brokerage_id", input.brokerageId)
-  if (stampErr) errors.push(`could not stamp the reply on the offer: ${stampErr.message}`)
+  // ── READ (a recommendation; the floor can only lower it) ──────────────────────────────────────
+  const read = deps.read ?? readOutsideReply
+  const out = await read({ brokerageId: input.brokerageId, subject: input.subject, bodyText: input.bodyText ?? null, fromEmail: sender, pdfs: pdfs.map((p) => ({ fileName: p.fileName, contentB64: p.contentB64 as string })) })
+  if (out.error) errors.push(`reply reading: ${out.error}`)
+  const signals = deterministicReplySignals(input.subject, input.bodyText)
+  const rec = reconcileReplyClassification({ signals, reading: out.reading, pdfCount: pdfs.length })
 
+  const patched = await patchMessage(svc as unknown as SupabaseClient, input.brokerageId, claim.id, {
+    document_ids: filed.documentIds, classification: rec.classification, confidence: out.reading?.confidence ?? null, recommended_action: rec.recommendedAction,
+    reading: { sender_verdict: verdict, how_matched: target.how, signals, downgrades: rec.downgrades, model: out.reading, pdfs_read: out.pdfsRead, bodyless: !(input.bodyText ?? "").trim() },
+  })
+  if (!patched.ok) errors.push(patched.reason)
+
+  // The loop's pointers, plus the legacy stamp the older readers key on — MERGED into the root's metadata, never assigned over it.
+  const merged = await mergeLoopState(svc as unknown as SupabaseClient, input.brokerageId, root.id,
+    { last_inbound_message_id: claim.id, last_inbound_at: receivedAt, head_offer_id: head.id },
+    { [COUNTERPARTY_REPLY_AT_KEY]: receivedAt, counterparty_last_reply_subject: input.subject, counterparty_reply_document_ids: filed.documentIds })
+  if (!merged.ok) errors.push(merged.reason)
+
+  // ── TELL ─────────────────────────────────────────────────────────────────────────────────────
   try {
-    const agentUserId = await resolveListingAgentUser(svc, offer.agent_id ?? null)
     if (agentUserId) {
-      const { error: notifyErr } = await svc.from("notifications").insert({
-        user_id: agentUserId, brokerage_id: input.brokerageId, type: "offer_intake_review",
-        title: "📬 The listing agent replied on your buyer's offer",
-        body: `${sender} — the listing agent on ${offer.property_address ?? "the property"} — replied`
-            + (input.subject ? ` ("${input.subject}")` : "")
-            + (filed.documentIds.length > 0
-               ? `, and ${filed.documentIds.length} attachment${filed.documentIds.length === 1 ? " is" : "s are"} filed to this offer's deal file and being read.`
-               : " with no attachment. Open the email — a counter or acceptance may be in the body."),
-        entity_type: "offer", entity_id: offer.id, priority: "high", is_read: false,
+      const trust = verdict.trusted ? "" : ` Caution: ${verdict.reason}.`
+      const read1 = out.reading?.summary ? ` AI reading: ${out.reading.summary}` : ""
+      await bellOffer(svc, {
+        userId: agentUserId, brokerageId: input.brokerageId, offerId: root.id,
+        title: `📬 The listing agent replied on your buyer's offer — looks like ${rec.classification === "ambiguous" ? "an unclear response" : rec.classification}`,
+        body: `${sender} — the listing agent on ${root.property_address ?? "the property"} — replied`
+          + (input.subject ? ` ("${input.subject}")` : "")
+          + (filed.documentIds.length > 0 ? `, and ${filed.documentIds.length} attachment${filed.documentIds.length === 1 ? " is" : "s are"} filed to this offer's deal file.` : " with no attachment.")
+          + `${read1} Recommended next step: ${rec.recommendedAction.replace(/_/g, " ")}${rec.downgrades.length ? ` (${rec.downgrades[0]})` : ""}. Nothing has been accepted, signed or recorded — open the offer and confirm what the reply means.${trust}`,
       })
-      if (notifyErr) errors.push(`reply notification not written: ${notifyErr.message}`)
     } else {
       errors.push("no user could be resolved for the offer's agent, so nobody was told the counterparty replied")
     }
@@ -818,8 +906,25 @@ export async function tryRouteOutboundOfferReply(
     errors.push(`reply notification failed: ${String((e as Error)?.message ?? e)}`)
   }
 
-  if (errors.length > 0) console.error(`[offer-intake] offer ${offer.id} counterparty reply:`, errors.join(" | "))
-  return { handled: true, offerId: offer.id, documentIds: filed.documentIds, errors }
+  if (errors.length > 0) console.error(`[offer-intake] offer ${root.id} counterparty reply:`, errors.join(" | "))
+  return { handled: true, offerId: root.id, documentIds: filed.documentIds, messageId: claim.id, classification: rec.classification, recommendedAction: rec.recommendedAction, errors }
+}
+
+/**
+ * One bell on an offer for the responsible agent. The live idx_notification_dedupe admits ONE unread (user, entity, type)
+ * notice, so a second reply on the same offer REFRESHES the unread notice's text instead of being refused (counted — a
+ * no-match update resolves too, §3).
+ */
+async function bellOffer(svc: Svc, p: { userId: string; brokerageId: string; offerId: string; title: string; body: string }): Promise<void> {
+  const { error } = await svc.from("notifications").insert({ user_id: p.userId, brokerage_id: p.brokerageId, type: "offer_intake_review", title: p.title, body: p.body, entity_type: "offer", entity_id: p.offerId, priority: "high", is_read: false })
+  if (!error) return
+  if (error.code === "23505") {
+    const { data, error: uErr } = await svc.from("notifications").update({ title: p.title, body: p.body, priority: "high" })
+      .eq("user_id", p.userId).eq("brokerage_id", p.brokerageId).eq("entity_id", p.offerId).eq("type", "offer_intake_review").eq("is_read", false).select("id")
+    if (uErr || !data || data.length === 0) console.error(`[offer-intake] offer ${p.offerId} notice refused (dedupe) and not refreshed: ${uErr?.message ?? "no unread notice matched"}`)
+    return
+  }
+  console.error(`[offer-intake] offer ${p.offerId} notice refused: ${error.message}`)
 }
 
 /**

@@ -14,7 +14,13 @@
  *   teams/{teamId}/…            the team library
  *   agents/{userId}/…           the agent's own library + uploads/
  *   filled/{userId | offerId}/… filled copies written by prefillStorageFormAction
+ *   platform/{packetId}/{file}.pdf   a licensed packet the PLATFORM holds for every subscriber (wave 143,
+ *                               lane 143B — lib/forms/platform-form-packets.ts). In scope ONLY while the
+ *                               registry row is approved and in licence: that proof needs the database, so it
+ *                               comes back as `needsPacketCheck` and FAILS CLOSED like the offer check.
  */
+
+import { parsePlatformPacketPath, usablePlatformPaths } from "./platform-form-packets"
 
 // File-local (opposite-missing cat 3, lane 89E): no other file names this type.
 type FormPathOwner =
@@ -22,12 +28,14 @@ type FormPathOwner =
   | { kind: "team"; id: string }
   | { kind: "agent"; id: string }
   | { kind: "filled"; id: string }
+  | { kind: "platform"; id: string }
 
 const PREFIX_KIND: Record<string, FormPathOwner["kind"]> = {
   brokerage: "brokerage",
   teams: "team",
   agents: "agent",
   filled: "filled",
+  platform: "platform",
 }
 
 /** PURE: parse the owner segment of a form path. null = malformed / traversal / unknown root.
@@ -48,7 +56,7 @@ export interface FormPathActor { brokerageId: string; teamId: string | null; use
  * any OTHER filled id must be proven to be one of the actor's brokerage's offers — that
  * proof needs the database, so it comes back as `needsOfferCheck`.
  */
-function formPathVerdict(path: string, actor: FormPathActor): "allowed" | "refused" | "needsOfferCheck" {
+function formPathVerdict(path: string, actor: FormPathActor): "allowed" | "refused" | "needsOfferCheck" | "needsPacketCheck" {
   const owner = formPathOwner(path)
   if (!owner) return "refused"
   switch (owner.kind) {
@@ -56,6 +64,8 @@ function formPathVerdict(path: string, actor: FormPathActor): "allowed" | "refus
     case "team":      return actor.teamId && owner.id === actor.teamId ? "allowed" : "refused"
     case "agent":     return owner.id === actor.userId ? "allowed" : "refused"
     case "filled":    return owner.id === actor.userId ? "allowed" : "needsOfferCheck"
+    // A platform path must be EXACTLY `platform/{packetId}/{one file}.pdf` — anything deeper is refused outright.
+    case "platform":  return parsePlatformPacketPath(path) ? "needsPacketCheck" : "refused"
   }
 }
 
@@ -76,13 +86,20 @@ export async function checkFormPathsInScope(
 ): Promise<{ ok: boolean; refused: string[]; error?: string }> {
   const refused: string[] = []
   const offerChecks = new Map<string, string[]>()
+  const packetPaths: string[] = []
   for (const p of paths) {
     const v = formPathVerdict(p, actor)
     if (v === "refused") refused.push(p)
+    else if (v === "needsPacketCheck") packetPaths.push(p)
     else if (v === "needsOfferCheck") {
       const id = formPathOwner(p)!.id
       offerChecks.set(id, [...(offerChecks.get(id) ?? []), p])
     }
+  }
+  if (packetPaths.length > 0) {
+    const packets = await usablePlatformPaths(svc as Parameters<typeof usablePlatformPaths>[0], packetPaths)
+    if (!packets.ok) return { ok: false, refused: [...refused, ...packetPaths], error: packets.error }
+    for (const p of packetPaths) if (!packets.usable.has(p)) refused.push(p)
   }
   if (offerChecks.size > 0) {
     const ids = [...offerChecks.keys()]

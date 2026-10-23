@@ -24,6 +24,12 @@
 
 import { detectFairHousingViolations, type FairHousingPattern } from "@/lib/compliance-rules/fair-housing-patterns"
 import { realEstateComplianceGate } from "./real-estate-compliance-gate"
+// Wave 143 (lane 143F): the "55+ / senior living" CLAIM is verified against the tenant's recorded
+// housing-for-older-persons exemption, never assumed (42 U.S.C. § 3607(b); 24 CFR 100.300-100.308).
+import {
+  assessOlderPersonsClaim, OLDER_PERSONS_AUTHORITY,
+  type OlderPersonsAssessment, type OlderPersonsVerification,
+} from "@/lib/compliance/fair-housing-older-persons"
 
 /** Where a piece of copy will be seen. Public housing marketing is moderated; private records are not. */
 export type CopySurface =
@@ -53,7 +59,12 @@ export interface CopyScan {
   findings: CopyFinding[]
   /** Warnings pass through (CLAUDE.md §5) — kept for the reviewer, never a refusal. */
   warnings: string[]
+  /** Wave 143: the age-qualified-housing claim's verdict (absent on a non-public surface). The reviewer reads it. */
+  olderPersons?: OlderPersonsAssessment
 }
+
+/** What a caller knows about the tenant's recorded older-persons exemptions: the records, "unreadable", or nothing checked. */
+export type OlderPersonsRecords = readonly OlderPersonsVerification[] | "unreadable" | undefined
 
 /** The gate's own content-type vocabulary, mapped from the surface (one vocabulary each side). */
 function gateContentType(surface: CopySurface): "social_post" | "ad" | "listing_remarks" | "newsletter" | "blog" {
@@ -75,7 +86,7 @@ function findingOf(p: FairHousingPattern): CopyFinding {
  * pattern or a gate BLOCKER makes the scan not-ok; medium/low pattern hits and the gate's warnings are
  * reported and pass through. A non-public surface is never scanned here (returns ok with a note).
  */
-export async function scanPublicCopy(text: string, surface: CopySurface, opts: { brokerageName?: string | null } = {}): Promise<CopyScan> {
+export async function scanPublicCopy(text: string, surface: CopySurface, opts: { brokerageName?: string | null; olderPersons?: OlderPersonsRecords; now?: Date } = {}): Promise<CopyScan> {
   if (!isPublicMarketingSurface(surface)) return { ok: true, findings: [], warnings: [`${surface} is not public housing marketing — fair-housing ad moderation does not apply`] }
   const content = text ?? ""
   const patternHits = detectFairHousingViolations(content).map(findingOf)
@@ -85,9 +96,23 @@ export async function scanPublicCopy(text: string, surface: CopySurface, opts: {
     // findings above; its other blockers (protected-class descriptors, guarantees, solicitation) are new.
     .filter((b) => !/^Fair Housing: avoid "/.test(b))
     .map((b) => ({ phrase: b, fix: "Rewrite so the sentence describes the home or the service, never who should want it, and promises no outcome.", reference: "lib/kernel/marketing/real-estate-compliance-gate.ts", severity: "blocker" as const }))
-  const findings = [...patternHits, ...blockers]
+  // THE AGE-QUALIFIED CLAIM (wave 143). "55+" / "senior living" / "age-restricted" is lawful only for a community that
+  // meets the exemption's conditions AND is recorded as verified. No record, an unreadable read, or an unmet / stale
+  // condition HOLDS the claim as a finding the AI rewrites around (then a human decides) — never auto-approved. The
+  // 100.306 wordings ("adult living") are inconsistent with 55+ intent whatever the verdict ("adult community" is
+  // already in the pattern list above — not repeated).
+  const older = assessOlderPersonsClaim(content, opts.olderPersons, opts.now)
+  const olderFindings: CopyFinding[] = []
+  const reference = `${OLDER_PERSONS_AUTHORITY.statute}; ${OLDER_PERSONS_AUTHORITY.regulation}`
+  if (older.status === "unverified" || older.status === "unreadable" || older.status === "conditions_unmet") {
+    olderFindings.push({ phrase: older.claims.map((c) => c.phrase).join(" / "), fix: `${older.reason} ${older.fix}`.trim(), reference, severity: "high" })
+  }
+  for (const w of older.inconsistentWording.filter((c) => !/adult\s+community/i.test(c.phrase))) {
+    olderFindings.push({ phrase: w.phrase, fix: "Say \"55+ community\" only for a community with a verified exemption; otherwise describe the home, not who may live there.", reference: "24 CFR 100.306", severity: "high" })
+  }
+  const findings = [...patternHits, ...blockers, ...olderFindings]
   const ok = !findings.some((f) => f.severity === "high" || f.severity === "blocker")
-  return { ok, findings, warnings: gate.warnings }
+  return { ok, findings, warnings: gate.warnings, olderPersons: older }
 }
 
 /** The rewriter seam: given the text and the specific findings, return the rewritten text (or null = could not). */
@@ -129,10 +154,12 @@ export async function rewritePublicCopyUntilCompliant(args: {
   rewrite: CopyRewriter
   maxRewrites?: number
   brokerageName?: string | null
+  /** Wave 143: the tenant's recorded older-persons exemptions (loadOlderPersonsVerifications) — absent = nobody checked, so a 55+ claim is held. */
+  olderPersons?: OlderPersonsRecords
   gate?: (text: string) => Promise<CopyScan>
 }): Promise<RewriteLoopResult> {
   const max = Math.max(0, Math.min(args.maxRewrites ?? PUBLIC_COPY_MAX_REWRITES, 5))
-  const gate = args.gate ?? ((t: string) => scanPublicCopy(t, args.surface, { brokerageName: args.brokerageName }))
+  const gate = args.gate ?? ((t: string) => scanPublicCopy(t, args.surface, { brokerageName: args.brokerageName, olderPersons: args.olderPersons }))
   let text = args.text
   const trail: RewriteLoopResult["trail"] = []
   let scan = await gate(text)

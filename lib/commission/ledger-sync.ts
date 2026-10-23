@@ -108,6 +108,32 @@ export function deriveCommissionPaymentState(row: CommissionPaymentStateInput): 
   return { state: "expected", held, basis: held ? "disputed before any evidence" : "no evidence yet" }
 }
 
+// ─── THE FUNDS-RECEIVED GATE (wave 143, lane 143C) ───────────────────────────────────────────────
+// Owner (2026-10-23), the no-CDA flow: "title pays the brokerage; waterfall applied; RECEIPT VERIFIED; disbursement
+// authorized; agent/team paid by check or direct deposit". At HEAD nothing checked the middle step: a no-CDA close
+// auto-approves the commission (finalizeCommissionAtClose) and initiateCommissionPayout / markCommissionPaid then paid
+// the agent whether or not the brokerage had received a dollar (deposit_received_at is stamped by
+// recordCommissionDepositReceived — a state the UI badge showed but no payout step required). The gate is FAIL
+// CLOSED: no recorded receipt → refuse by name. An ADVANCE (paying before the funds land — a brokerage's own choice,
+// not the platform's) is allowed only when a finance admin states why, and the reason is recorded as evidence.
+export const PAYOUT_ADVANCE_REASON_MIN = 5
+
+export function payoutFundsGate(
+  row: { deposit_received_at?: string | null },
+  advanceReason?: string | null,
+): { ok: true; advance: boolean; reason: string | null } | { ok: false; error: string } {
+  if (row.deposit_received_at) return { ok: true, advance: false, reason: null }
+  const reason = (advanceReason ?? "").trim()
+  if (reason.length >= PAYOUT_ADVANCE_REASON_MIN) return { ok: true, advance: true, reason }
+  return {
+    ok: false,
+    error:
+      "funds_not_received: the commission payment from the title company has not been recorded as received. " +
+      "Record the deposit first (the transaction's Deposit received action), or — to pay ahead of the funds — state the reason " +
+      `(at least ${PAYOUT_ADVANCE_REASON_MIN} characters) and it is kept on the record.`,
+  }
+}
+
 /** The tenant-facing label of each derived state (one spelling for every surface). */
 export const COMMISSION_PAYMENT_STATE_LABELS: Record<CommissionPaymentState, string> = {
   expected: "Expected",

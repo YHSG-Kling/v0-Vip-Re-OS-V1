@@ -95,6 +95,7 @@
 import type { AIISASettings, DeadEndOutcome, DeadEndEvidence } from "./settings-types"
 import { DEFAULT_AISA_SETTINGS, ALWAYS_TERMINAL_DEAD_ENDS, canonicalDeadEnd, deadEndsFromLeadSources } from "./settings-types"
 import { pickLeadOutreachChannel } from "./lead-channel-policy"
+import { DEFAULT_FOLLOWUP_POLICY, loadFollowupPolicy, type FollowupPolicy } from "./followup-policy"
 import { permittedLeadChannels, decideNextChannel } from "./next-best-touch"
 import type { GenerationalCohort } from "@/lib/kernel/education"
 import type { DecayedIntent } from "@/lib/lead-intelligence/behavioral-summary"
@@ -388,14 +389,13 @@ export interface ReasonNotToAct {
   until?: Date | null
 }
 
-/** Fatigue scope: no new ISA touch within this many hours of ANY touch (agent, ISA,
- *  campaign) — the ISA's own interval governs only its own sends. */
-export const NBA_FATIGUE_HOURS = 48
-/** Local-hour window a staged touch may be released in (same 8am-9pm window the
- *  TCPA call gate uses — lib/communication/call-compliance.ts checkQuietHours). */
-export const NBA_QUIET_HOURS = Object.freeze({ startHour: 8, endHour: 21 })
-/** An agent touch inside this many days means a human is actively handling it. */
-export const NBA_AGENT_ACTIVE_DAYS = 7
+// TOMBSTONE (wave 143, lane 143E; owner: "the follow-up timetable must not depend on code"): NBA_FATIGUE_HOURS (48), NBA_QUIET_HOURS
+// ({8, 21}) and NBA_AGENT_ACTIVE_DAYS (7) were literals here. They are the PLATFORM DEFAULTS of the tenant's versioned follow-up policy now —
+// lib/ai-isa/followup-policy.ts DEFAULT_FOLLOWUP_POLICY.guardrails (minHoursBetweenTouches 48, quietHours 8-21, agentActiveDays 7), the ONE
+// place a follow-up number lives (brokerage_settings.settings.followup_policy). Same values, so an unconfigured tenant behaves exactly as
+// before; a tenant that sets the policy has its guardrails carried on the context (NextBestActionContext.guardrails, loaded by
+// loadContactNbaContext) and reasonsNotToAct reads THOSE. The send window can only be narrowed inside 8am-9pm (47 CFR 64.1200(c)(1) — the
+// window lib/communication/call-compliance.ts checkQuietHours holds). The three exports had no importer once the planner read the context.
 
 export interface NextBestActionContext {
   /** The decayed intent (lib/lead-intelligence/behavioral-summary.ts scoreDecayedIntent). */
@@ -412,7 +412,7 @@ export interface NextBestActionContext {
   outreachPaused?: boolean
   /** An appointment already on the calendar — no touch until it has happened. */
   appointmentAt?: Date | null
-  /** The last touch by a human agent — inside NBA_AGENT_ACTIVE_DAYS they own it. */
+  /** The last touch by a human agent — inside guardrails.agentActiveDays they own it. */
   lastAgentTouchAt?: Date | null
   /** The last touch from ANY sender (fatigue scope). */
   lastAnyTouchAt?: Date | null
@@ -432,6 +432,8 @@ export interface NextBestActionContext {
    *  household — spouse / household member / co-buyer / co-owner contact ids). Evidence the decision
    *  read, never a blocker; a represented_by edge to an OUTSIDE agent lands in deadEnds instead. */
   householdContactIds?: readonly string[]
+  /** Wave 143 (143E): the tenant's follow-up guardrails (lib/ai-isa/followup-policy.ts). Absent → the platform defaults. */
+  guardrails?: FollowupPolicy["guardrails"]
 }
 
 export interface NbaEvidence { kind: string; detail: string }
@@ -484,6 +486,7 @@ export function reasonsNotToAct(ctx: NextBestActionContext | undefined, now: Dat
   const out: ReasonNotToAct[] = []
   if (!ctx) return out
   const H = 3_600_000
+  const g = ctx.guardrails ?? DEFAULT_FOLLOWUP_POLICY.guardrails
   if (ctx.duplicateOf) out.push({ code: "duplicate", blocking: true, detail: `duplicate of ${ctx.duplicateOf} — act on the survivor` })
   if (ctx.outreachPaused) out.push({ code: "outreach_paused", blocking: true, detail: "a human paused the AI on this person" })
   // NEGATIVE INTELLIGENCE (wave 98, 98C): every recorded dead end, once per canonical outcome (newest
@@ -517,14 +520,14 @@ export function reasonsNotToAct(ctx: NextBestActionContext | undefined, now: Dat
   if (ctx.appointmentAt && ctx.appointmentAt.getTime() > now.getTime()) {
     out.push({ code: "appointment_scheduled", blocking: true, detail: `appointment on the calendar ${ctx.appointmentAt.toISOString()}` })
   }
-  if (ctx.lastAgentTouchAt && now.getTime() - ctx.lastAgentTouchAt.getTime() < NBA_AGENT_ACTIVE_DAYS * 24 * H) {
-    out.push({ code: "agent_handling", blocking: true, detail: `an agent touched this person ${ctx.lastAgentTouchAt.toISOString()} (inside ${NBA_AGENT_ACTIVE_DAYS}d)` })
+  if (ctx.lastAgentTouchAt && now.getTime() - ctx.lastAgentTouchAt.getTime() < g.agentActiveDays * 24 * H) {
+    out.push({ code: "agent_handling", blocking: true, detail: `an agent touched this person ${ctx.lastAgentTouchAt.toISOString()} (inside ${g.agentActiveDays}d)` })
   }
-  if (ctx.lastAnyTouchAt && now.getTime() - ctx.lastAnyTouchAt.getTime() < NBA_FATIGUE_HOURS * H) {
-    out.push({ code: "recently_contacted", blocking: true, detail: `touched ${ctx.lastAnyTouchAt.toISOString()} — inside the ${NBA_FATIGUE_HOURS}h fatigue window` })
+  if (ctx.lastAnyTouchAt && now.getTime() - ctx.lastAnyTouchAt.getTime() < g.minHoursBetweenTouches * H) {
+    out.push({ code: "recently_contacted", blocking: true, detail: `touched ${ctx.lastAnyTouchAt.toISOString()} — inside the ${g.minHoursBetweenTouches}h fatigue window` })
   }
-  if (typeof ctx.recipientLocalHour === "number" && (ctx.recipientLocalHour < NBA_QUIET_HOURS.startHour || ctx.recipientLocalHour >= NBA_QUIET_HOURS.endHour)) {
-    out.push({ code: "quiet_hours", blocking: true, detail: `recipient local hour ${ctx.recipientLocalHour} is outside ${NBA_QUIET_HOURS.startHour}:00-${NBA_QUIET_HOURS.endHour}:00` })
+  if (typeof ctx.recipientLocalHour === "number" && (ctx.recipientLocalHour < g.quietHours.startHour || ctx.recipientLocalHour >= g.quietHours.endHour)) {
+    out.push({ code: "quiet_hours", blocking: true, detail: `recipient local hour ${ctx.recipientLocalHour} is outside ${g.quietHours.startHour}:00-${g.quietHours.endHour}:00` })
   }
   if (ctx.dncOrNoConsent) {
     out.push({ code: "channel_restricted_no_consent", blocking: false, detail: "DNC or no TCPA consent — email and direct mail only, never SMS/phone/voicedrop" })
@@ -624,7 +627,7 @@ function decideNextAction(ctx: NextBestActionContext | undefined, now: Date, cor
     const code = CODE_FOR_BLOCKING[blocking.code] ?? "blocked_lifecycle"
     const dueAt = code === "appointment_scheduled" ? (ctx?.appointmentAt ?? null)
       : code === "postponed" ? (blocking.until ?? null)
-      : code === "recently_contacted" && ctx?.lastAnyTouchAt ? new Date(ctx.lastAnyTouchAt.getTime() + NBA_FATIGUE_HOURS * 3_600_000)
+      : code === "recently_contacted" && ctx?.lastAnyTouchAt ? new Date(ctx.lastAnyTouchAt.getTime() + (ctx.guardrails ?? DEFAULT_FOLLOWUP_POLICY.guardrails).minHoursBetweenTouches * 3_600_000)
       : null
     return finish({ code, step: null, channel: null, reason: blocking.detail, dueAt })
   }
@@ -1207,6 +1210,8 @@ export interface DecisionInputSnapshot {
     deadEnds: Array<{ outcome: DeadEndOutcome; at: string | null; source: string; until?: string | null }>
     suppressOnOutcomes: string[] | null
     memoryFactCount: number
+    /** Wave 143: the tenant's guardrails the decision ran under (absent on a pre-143 snapshot = the platform defaults). */
+    guardrails?: FollowupPolicy["guardrails"]
   }
 }
 
@@ -1234,6 +1239,7 @@ function contextSnapshot(ctx: NextBestActionContext | undefined): DecisionInputS
     deadEnds: (ctx.deadEnds ?? []).slice(0, 20).map((d) => ({ outcome: d.outcome, at: iso(d.at), source: d.source, ...(d.until !== undefined ? { until: iso(d.until) } : {}) })),
     suppressOnOutcomes: ctx.suppressOnOutcomes ? [...ctx.suppressOnOutcomes] : null,
     memoryFactCount: (ctx.memoryFacts ?? []).length,
+    ...(ctx.guardrails ? { guardrails: ctx.guardrails } : {}),
   }
 }
 
@@ -1284,6 +1290,7 @@ function contextFromSnapshot(c: DecisionInputSnapshot["context"]): NextBestActio
     recipientLocalHour: c.recipientLocalHour,
     deadEnds: (c.deadEnds ?? []).map((d) => ({ outcome: d.outcome, at: dateOf(d.at), source: d.source, ...(d.until !== undefined ? { until: dateOf(d.until) } : {}) })),
     suppressOnOutcomes: c.suppressOnOutcomes ?? undefined,
+    ...(c.guardrails ? { guardrails: c.guardrails } : {}),
   }
 }
 
@@ -1500,6 +1507,10 @@ export async function loadContactNbaContext(
     ? DEFAULT_AISA_SETTINGS.suppress_on_outcomes
     : (resolution.settings.suppress_on_outcomes ?? DEFAULT_AISA_SETTINGS.suppress_on_outcomes)
 
+  // Wave 143 (143E): the tenant's follow-up guardrails ride the context so the fatigue floor / agent-handling window /
+  // send window are THE TENANT'S (legal floor intact). A refused read keeps the platform defaults — same limits as before.
+  const followup = await loadFollowupPolicy(supabase, brokerageId)
+
   const { buildBehavioralIntentSummary } = await import("@/lib/lead-intelligence/behavioral-summary")
   const { loadContactMemoryForPrompt, currentMemoryFacts } = await import("@/lib/kernel/conversation-memory")
   const [summary, memory] = await Promise.all([
@@ -1525,6 +1536,7 @@ export async function loadContactNbaContext(
       suppressOnOutcomes,
       memoryFacts: memory ? currentMemoryFacts(memory.spine, now) : [],
       householdContactIds,
+      guardrails: followup.policy.guardrails,
     },
   }
 }
@@ -1828,9 +1840,14 @@ export async function advanceLeadActionPlans(input: {
 //                   as lib/kernel/deconflict reads it) + the NBA's 48h fatigue window
 //   POLICY ........ resolveLeadSettingsResolution (contact_allowed_channels, auto-send) +
 //                   the compliance hard flag the caller already evaluated
-// The planner is PURE and DETERMINISTIC — no model call, so no AI spend ("use expensive
-// reasoning only when expected value justifies it"; choosing WHICH experience is a rule,
-// not a reasoning task). SEQUENCES STAY THE DELIVERY SURVIVOR: the planner chooses, the
+// The planner is PURE and DETERMINISTIC — no model call inside it ("use expensive
+// reasoning only when expected value justifies it"). WAVE 143 (143E; owner: "managers check
+// intent and determine the proper follow-up … AI always listening"): it is now the CANDIDATE
+// SET and the HARD VERDICTS — `locked` marks a choice fixed by a compliance flag, a blocking
+// NBA verdict or high fatigue — and lib/ai-isa/followup-arbiter.ts has the model pick the best
+// of the PERMITTED candidates (and a bounded wait) with its rationale on the ledger row; an
+// invalid / unavailable / over-budget answer keeps THIS planner's verdict. The planner's scores
+// stay what they were: a ranking the arbiter is shown, not a schedule. SEQUENCES STAY THE DELIVERY SURVIVOR: the planner chooses, the
 // enroller / engageContact / the delegated manager delivers. FAIL CLOSED: an unreadable
 // consent-bearing slice (the NBA context, the transaction) refuses the plan; an unreadable
 // evidence slice (fatigue, education, behavior) is published as a blind spot beside it.
@@ -1917,6 +1934,9 @@ export interface RankedExperience {
 export const LIFETIME_EXPERIENCE_OWNER: ManagerKey = "sphere_of_influence"
 
 export interface NextBestExperiencePlan {
+  /** Wave 143 (143E): set when a HARD verdict (compliance flag, blocking NBA verdict, high / critical fatigue) fixed the
+   *  choice — the follow-up arbiter (lib/ai-isa/followup-arbiter.ts) is never asked to second-guess it. */
+  locked?: { kind: ExperienceKind; reason: string } | null
   chosen: RankedExperience
   ranked: RankedExperience[]
   /** The WHETHER verdict the WHAT was built on. */
@@ -2044,7 +2064,12 @@ export function planNextBestExperience(input: NextBestExperienceInput): NextBest
     : (nba.action === "wait" || nba.action === "do_nothing" || (input.fatigue.riskLevel && FATIGUE_WAIT_LEVELS.has(input.fatigue.riskLevel))) ? "wait"
     : null
   const chosen = (forced ? ranked.find((r) => r.kind === forced) : null) ?? ranked[0]
-  return { chosen, ranked, nba, contributed: [...contributed], blindSpots: [...(input.blindSpots ?? [])], evidence: nba.evidence }
+  const lockedReason = input.policy.complianceHardFlag ? "a hard fair-housing / compliance flag — a human decides"
+    : (nba.action === "wait" || nba.action === "do_nothing") ? `NBA ${nba.reasonCode}: ${nba.reason}`
+    : (input.fatigue.riskLevel && FATIGUE_WAIT_LEVELS.has(input.fatigue.riskLevel)) ? `fatigue risk ${input.fatigue.riskLevel}`
+    : null
+  const locked = forced && lockedReason ? { kind: forced, reason: lockedReason } : null
+  return { locked, chosen, ranked, nba, contributed: [...contributed], blindSpots: [...(input.blindSpots ?? [])], evidence: nba.evidence }
 }
 
 /**
@@ -2237,7 +2262,7 @@ export interface RecordedExperience {
  */
 export async function recordAndExecuteExperience(
   svc: any,
-  args: { brokerageId: string; contactId: string; plan: NextBestExperiencePlan; now: Date; missionId?: string | null; systemSource?: string },
+  args: { brokerageId: string; contactId: string; plan: NextBestExperiencePlan; now: Date; missionId?: string | null; systemSource?: string; arbitration?: Record<string, unknown> | null },
   deps: ExperienceRecordDeps = {},
 ): Promise<RecordedExperience> {
   const { brokerageId, contactId, plan, now } = args
@@ -2282,8 +2307,9 @@ export async function recordAndExecuteExperience(
       reasonDetail: chosen.reasons.join("; ").slice(0, 500),
       cycle: `nbe:${chosen.kind}:${day}`,
       systemSource: args.systemSource ?? "next_best_experience",
-      policyKey: "ai_isa_settings",
+      policyKey: args.arbitration ? "followup_policy" : "ai_isa_settings",
       detail: {
+        ...(args.arbitration ? { arbitration: args.arbitration } : {}),
         experience: chosen.kind, score: chosen.score, manager: exec.manager, capability: exec.capability,
         ranked: plan.ranked.map((r) => ({ kind: r.kind, score: r.score })),
         contributed: plan.contributed, blind_spots: plan.blindSpots, nba_reason_code: plan.nba.reasonCode,

@@ -259,9 +259,19 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
     /actor_user_id: agentUserId/.test(rev))
 
   const stage = code(read("lib/transactions/stage-progression.ts"))
-  ok("stage-progression passes the AGENTS id to the review-request drafter — it\n    passed params.userId, so the action threw and the post-close review draft\n    was never generated for any closing",
-    /(?:aiGenerateReviewRequest|draftReviewRequest)\([^)]*agentId: agentRecordId/.test(stage) &&
-    !/(?:aiGenerateReviewRequest|draftReviewRequest)\([^)]*agentId: params\.userId/.test(stage))
+  // WAVE 143 (143E) — the RULE, not the waypoint. The rule is "a users id is never handed to the review-request drafter as an agents id".
+  // The closed-stage hook USED to draft (and was pinned to passing agentRecordId); it no longer drafts at all — the ONE review-ask
+  // engine (lib/reputation/review-ask.ts askForReviewAtClose, run by the review-request-on-close cron) reads the agents id off the
+  // transaction row. So the rule now holds if the hook either passes the agents id OR does not call a drafter; it fails if it
+  // passes params.userId. The engine's own agents-id handoff is asserted beside it.
+  const hookDrafts = /(?:aiGenerateReviewRequest|draftReviewRequest)\(/.test(stage)
+  const askEngine = code(read("lib/reputation/review-ask.ts"))
+  ok("stage-progression never passes the USERS id to the review-request drafter (it passed params.userId, so the post-close\n    review draft was never generated for any closing) — it either passes the agents id or drafts nothing, and the engine\n    that now asks reads the agents id off the transaction row",
+    !/(?:aiGenerateReviewRequest|draftReviewRequest)\([^)]*agentId: params\.userId/.test(stage) &&
+    (!hookDrafts || /(?:aiGenerateReviewRequest|draftReviewRequest)\([^)]*agentId: agentRecordId/.test(stage)) &&
+    /const agentId = tx\.agent_id as string/.test(askEngine) && /agentId, contactId,/.test(askEngine))
+  ok("(control) a hook that DID pass the users id to the drafter would fail the rule",
+    /(?:aiGenerateReviewRequest|draftReviewRequest)\([^)]*agentId: params\.userId/.test("await draftReviewRequest(supabase, { agentId: params.userId })"))
 
   const mail = code(read("app/actions/ai-marketing-automation.ts"))
   // ASSERT THE CONSTRUCT, NOT THE SPELLING. This used to require the select

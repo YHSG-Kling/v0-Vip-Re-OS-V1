@@ -45,8 +45,8 @@ export async function run() {
 
   // ── 3 · DISCREPANCY IDENTIFICATION, never fabrication (pure) ──
   const { resolveCdaTemplateFields, cdaWaterfallContext } = await import("../../lib/transactions/cda-template-fields")
-  const waterfall = cdaWaterfallContext({ gross_commission: 24_000, agent_net: 16_800, brokerage_net: 7_200, distributions: [{ distribution_type: "fee", calculated_amount: 350 }, { distribution_type: "team", calculated_amount: 1_000 }] })
-  c.step("the WATERFALL CONTEXT is deterministic arithmetic (gross 24,000 / agent 16,800 → 70% split; fees + team split summed by type) — the baseline every statement line is checked against; no model anywhere in it", waterfall.agent_split_percent === 70 && waterfall.fees === 350 && waterfall.team_split === 1_000 && waterfall.gross_commission === 24_000, JSON.stringify(waterfall))
+  const waterfall = cdaWaterfallContext({ gross_commission: 24_000, agent_net: 16_800, brokerage_net: 7_200, distributions: [{ distribution_type: "fee", calculated_amount: 350 }, { distribution_type: "team_member", calculated_amount: 1_000 }, { distribution_type: "referral", calculated_amount: 600 }, { distribution_type: "referral", calculated_amount: 40, status: "voided" }] })
+  c.step("the WATERFALL CONTEXT is deterministic arithmetic (gross 24,000 / agent 16,800 → 70% split; fees + team split + the REFERRAL payout summed by the LIVE distribution_type — fee / team_member / referral — a voided row carries no money) — the baseline every statement line is checked against; no model anywhere in it", waterfall.agent_split_percent === 70 && waterfall.fees === 350 && waterfall.team_split === 1_000 && waterfall.referral === 600 && waterfall.gross_commission === 24_000, JSON.stringify(waterfall))
   const defs = [
     { field_key: "sales_price", label: "Sales price", source: "transaction" as const, source_key: "sales_price", field_type: "currency" as const, required: true, pdf_field: "SalesPrice" },
     { field_key: "gross_commission", label: "Gross commission", source: "waterfall" as const, source_key: "gross_commission", field_type: "currency" as const, required: true, pdf_field: "GrossCommission" },

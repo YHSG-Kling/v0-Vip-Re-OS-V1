@@ -65,6 +65,18 @@ export function resolvePreScanChoice(subjectType: unknown, legacyTarget?: unknow
   return null
 }
 
+/**
+ * PURE — WAVE 143 (lane 143D) BROKERAGE AFFILIATION: is a card the scanning agent chose as "agent" actually a COLLEAGUE?
+ * True when the card's email / phone already belongs to a `users` row of THIS tenant (the caller's lookup is tenant-scoped)
+ * in an INTERNAL seat — agent, broker/broker_admin/broker_owner, team_lead, admin, compliance_officer, isa, tc, support… A
+ * recruits row is a prospect from OUTSIDE the brokerage, so a teammate is not filed as one. A matched portal CONTACT or
+ * VENDOR seat does not count (a client or a vendor may also be a fellow agent at another firm), and an unmatched / typeless
+ * user row proves nothing. Only the "agent" class is affected — never a contact, vendor or sphere card.
+ */
+export function isExistingTenantMember(subjectType: CardSubjectType, subjectUserId: string | null | undefined, subjectUserType: string | null | undefined): boolean {
+  return subjectType === "agent" && !!subjectUserId && !!subjectUserType && subjectUserType !== "contact" && subjectUserType !== "vendor"
+}
+
 export interface CardSubjectClassification {
   subjectType: CardSubjectType
   /** vendors.category CHECK value — set only when subjectType === "vendor". */

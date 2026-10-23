@@ -105,6 +105,11 @@ export interface CdaDisbursementFigures {
   agentNet: number
   brokerageNet: number
   tcNet?: number | null
+  /** Referral payouts the deal funds (commission_distributions 'referral', live rows) - wave 143, lane 143C: a
+   *  disbursement authorization that omits a payee is an authorization title cannot honour completely. */
+  referralPayouts?: Array<{ payee: string; amount: number }> | null
+  /** The team lead's / team members' share (commission_distributions 'team_member', live rows). */
+  teamShare?: number | null
 }
 
 /** PURE: format one CDA money figure. Kept beside the lines so a caller cannot
@@ -134,6 +139,10 @@ export function composeCdaDisbursementLines(f: CdaDisbursementFigures): string[]
     `Brokerage net: ${formatCdaMoney(f.brokerageNet)}`,
   ]
   if (f.tcNet && f.tcNet > 0) lines.push(`Transaction coordinator: ${formatCdaMoney(f.tcNet)}`)
+  if (f.teamShare && f.teamShare > 0) lines.push(`Team share: ${formatCdaMoney(f.teamShare)}`)
+  for (const r of f.referralPayouts ?? []) {
+    if (r.amount > 0) lines.push(`Referral fee payable to ${r.payee}: ${formatCdaMoney(r.amount)}`)
+  }
   return lines
 }
 

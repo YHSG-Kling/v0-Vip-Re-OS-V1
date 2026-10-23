@@ -553,18 +553,28 @@ export async function finalizeLegacyEsignArtifacts(
 
   const { data: matchedAgreement } = await supabase
     .from("listing_agreements")
-    .select("id, listing_id, esign_status")
+    .select("id, listing_id, esign_status, agent_signed_at, seller_signed_at")
     .eq("provider_ref", envelopeId)
     .maybeSingle()
   if (matchedAgreement) {
     // The stamp only when the ladder is still below all-signed (wave 142): a redelivery or an
     // agreement already in compliance keeps its state; the stage transition below stays stage-gated.
     if (!isAtOrPastAllSigned(matchedAgreement.esign_status)) {
+      // PROVIDER COMPLETION = ALL SIGNED, NEVER FULLY EXECUTED (wave 143, lane 143A — closes 142K finding 5). The
+      // provider's word is the SIGNATURE EVIDENCE: it says every party signed, so the two signature instants are
+      // stamped where they were not already (the compliance review's gate reads them,
+      // lib/listings/listing-activation-gate.ts complianceReview). `fully_executed_at` is NOT written here: it is the
+      // stamp of the ladder's `fully_executed` hop, which lands only after compliance approval
+      // (lib/listings/listing-compliance-loop.ts) — one meaning of "fully executed" on the row.
       const { error: agreementExecutedErr } = await supabase
         .from("listing_agreements")
-        .update({ esign_status: "fully_signed", fully_executed_at: now })
+        .update({
+          esign_status: "fully_signed",
+          agent_signed_at: matchedAgreement.agent_signed_at ?? now,
+          seller_signed_at: matchedAgreement.seller_signed_at ?? now,
+        })
         .eq("id", matchedAgreement.id)
-      if (agreementExecutedErr) console.error(`[finalize-packet] listing agreement NOT marked fully executed: ${agreementExecutedErr.message}`)
+      if (agreementExecutedErr) console.error(`[finalize-packet] listing agreement NOT marked all-signed: ${agreementExecutedErr.message}`)
     }
     // Listing agreement signed → "coming soon" (pre-listing), NOT live-on-MLS.
     // Run through the KERNEL (service client — webhooks have no session) so the

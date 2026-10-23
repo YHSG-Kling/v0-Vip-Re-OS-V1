@@ -5,6 +5,9 @@ import { processKernelEvent } from '@/lib/kernel'
 import { logISAOutreach } from '@/lib/ai-isa/isa-outreach-logger'
 import { initiateAIISAContactEngagement } from '@/app/actions/ai-isa/initiate-contact-engagement'
 import { ghostReengagementStopReason, ghostReengagementPhase, shouldSendGhostOutreach, cadenceProfileFor } from '@/lib/ai-isa/reengagement-policy'
+import { loadFollowupPolicy } from '@/lib/ai-isa/followup-policy'
+import { resolvePolicyRef } from '@/lib/kernel/tenant-policy'
+import { arbitrateCadence, countArbiterWaits, recordArbitration } from '@/lib/ai-isa/followup-arbiter'
 import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
 import { adaptiveReengagementHook, cohortFromEnrichment } from '@/lib/ai-isa/adaptive-reengagement'
 import { conversionVerdictForRow, excludeConvertedLeads } from '@/lib/contact-promotion/conversion-finality'
@@ -59,6 +62,12 @@ export async function runGhostReengagement(
   const today = new Date()
 
   const ghostIds = await detectGhostLeads(brokerageId, thresholdDays)
+
+  // WAVE 143 (143E): the TENANT's follow-up policy (cadence envelope + arbiter settings), read once per sweep, and the
+  // sweep's decision budget (policy.arbiter.maxDecisionsPerRun model verdicts; the rest keep the deterministic cadence).
+  const followup = await loadFollowupPolicy(supabase, brokerageId)
+  const followupPolicyRef = await resolvePolicyRef(supabase, brokerageId, 'followup_policy')
+  const arbiterBudget = { remaining: followup.policy.arbiter.maxDecisionsPerRun }
 
   let sent = 0
   let paused = 0
@@ -266,6 +275,7 @@ export async function runGhostReengagement(
         now: today,
         attempts, // ≥ ceiling → Phase 3 quarterly seasonal nurture (long-horizon)
         profile: cadenceProfile,
+        policy: followup.policy.reengagement, // the TENANT's envelope (wave 143) — the platform defaults when never set
       })
       const inPhase1 = cadence.phase === 1
       const daysSinceStart = cadence.daysSinceStart
@@ -273,6 +283,44 @@ export async function runGhostReengagement(
       if (!cadence.shouldSend) {
         skipped++
         continue
+      }
+
+      // ── THE ARBITER (wave 143, lane 143E) — "managers check intent and determine the proper follow-up". The cadence
+      //    above is the ENVELOPE: it says a send is DUE on this tenant's schedule. For a due send the arbiter chooses
+      //    send-now or a bounded wait from the evidence (temperature, score, timeline, attempts, what they asked for) — it
+      //    can never pull a send forward (these leads consented to nothing), never go inside the fatigue floor, and stops
+      //    deferring after policy.arbiter.maxDeferDays. Its rationale is a ledger row; a model outage / refusal / spent
+      //    budget leaves the deterministic send exactly as it was. ──
+      {
+        const nowMs = today.getTime()
+        const hoursSince = (iso: string | null | undefined) => (iso ? Math.max(0, Math.round((nowMs - new Date(iso).getTime()) / 3_600_000)) : null)
+        const deferred = await countArbiterWaits(supabase, { brokerageId, subject: { type: 'lead', id: leadId }, now: today, policy: followup.policy })
+        const arb = await arbitrateCadence({
+          brokerageId,
+          policy: followup.policy,
+          cadence: { shouldSend: cadence.shouldSend, phase: cadence.phase, daysSinceStart: cadence.daysSinceStart, reason: cadence.reason },
+          facts: {
+            leadTemperature: (lead.lead_temperature as string | null) ?? null,
+            leadScore: typeof lead.lead_score === 'number' ? lead.lead_score : null,
+            timeline: (lead.timeline as string | null) ?? null,
+            attempts,
+            hoursSinceLastOutreach: hoursSince(lastLog?.sent_at),
+            hoursSinceLastActivity: hoursSince(lead.last_activity_at as string | null),
+            // An unreadable ledger offers no wait at all (the deterministic send stands).
+            daysDeferred: deferred ?? followup.policy.arbiter.maxDeferDays,
+            source: (lead.source as string | null) ?? null,
+            preferences: [],
+          },
+          budget: arbiterBudget,
+        })
+        if (arb.decision) {
+          const rec = await recordArbitration(supabase, { brokerageId, subject: { type: 'lead', id: leadId }, decision: arb.decision, now: today, policyRef: followupPolicyRef, systemSource: 'ghost_reengagement' })
+          if (!rec.recorded && rec.error) console.warn(`[ghost-reengagement] arbitration not ledgered for lead ${leadId}: ${rec.error}`)
+        }
+        if (!arb.sendNow) {
+          skipped++
+          continue
+        }
       }
 
       // ── SEND ──────────────────────────────────────────────────────────────

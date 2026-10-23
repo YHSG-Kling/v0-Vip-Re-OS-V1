@@ -46,6 +46,40 @@ export async function run() {
   c.step("FOLLOW-UP STARTS: the post-close schedule lands for each party — 5 touchpoints × 2 contacts (3-day video, 30-day sms, 6-month email, anniversary video, 18-month referral ask), every row scheduled, attributed to the closing agent (agents.id) and to this transaction", tp.length === 10 && types.join() === "home_anniversary,post_close_30_day,post_close_3_day,post_close_6_month,referral_request" && tp.every((t) => t.status === "scheduled" && t.agent_id === AG && t.brokerage_id === B) && new Set(tp.map((t) => t.contact_id)).size === 2, `${tp.length} rows: ${types.join(",")}`)
   c.step("THE LISTING READS SOLD (status mirror on close) and the deal's commission state was recalculated or honestly skipped (no throw)", (svc.tables.listings ?? []).find((l) => l.id === L)?.status === "sold", String((svc.tables.listings ?? []).find((l) => l.id === L)?.status))
 
+  // ── THE REVIEW ASK AT THE VERIFIED CLOSING (wave 143, lane 143E — the review step of this canary) ──
+  // Owner: "A review is always asked at closing." The close used to queue its own `scheduled` review_requests row for the buyer, which
+  // made the autonomous review cron SKIP that client (its dedupe was "any row for this contact") — so the ask never went out. The ONE
+  // engine (lib/reputation/review-ask.ts askForReviewAtClose, run by the review-request-on-close cron) asks once, after the tenant's delay,
+  // on one platform with a real link, through the governed send. Models + sends are recorder seams here (in-memory canary).
+  {
+    const engine = await import("../../lib/reputation/review-ask")
+    const draftMod = await import("../../lib/reputation/review-request-draft")
+    const { REVIEW_REQUEST_DEFAULT_DELAY_DAYS } = await import("../../lib/reputation/review-request-delay")
+    const GOOGLE = "https://g.page/r/CanaryPlace123/review"
+    ;(svc.tables.brokerage_settings ??= []).push({ id: uuid(), brokerage_id: B, review_request_delay_days: null, settings: { reputation_profiles: { google: { url: GOOGLE } } }, created_at: nowIso() })
+    const queuedByClose = (svc.tables.review_requests ?? []).filter((r) => r.brokerage_id === B).length
+    const sentReviews: Array<Record<string, any>> = []
+    const reviewDeps: import("../../lib/reputation/review-ask").ReviewAskDeps = {
+      draft: (s, input) => draftMod.draftReviewRequest(s as never, input as never, { generate: async () => ({ object: { subject: "How was your move?", message: `It was a pleasure helping you. If you have a moment, an honest review of your experience would mean a lot: ${GOOGLE}`, keyPoints: [], personalizedOpener: "Hi", softAsk: "If you have a moment", directAsk: "An honest review" } }) }) as never,
+      dispatchEmail: async (p: Record<string, any>) => { sentReviews.push(p); return { success: true } },
+      dispatchSms: async () => ({ success: false, error: "canary: no sms" }),
+      emit: async () => ({}), notifyAgent: async () => {}, notifyBrokerageAdmins: async () => 0,
+    }
+    const dayOfClose = await engine.askForReviewAtClose(svc as never, { brokerageId: B, transactionId: TX }, { ...reviewDeps, now: () => new Date() })
+    const sentOnTheDay = sentReviews.length
+    const afterDelay = () => new Date(Date.now() + (REVIEW_REQUEST_DEFAULT_DELAY_DAYS + 1) * 86_400_000)
+    const asked = await engine.askForReviewAtClose(svc as never, { brokerageId: B, transactionId: TX }, { ...reviewDeps, now: afterDelay })
+    const again = await engine.askForReviewAtClose(svc as never, { brokerageId: B, transactionId: TX }, { ...reviewDeps, now: afterDelay })
+    const foreign = await engine.askForReviewAtClose(svc as never, { brokerageId: B2, transactionId: TX }, { ...reviewDeps, now: afterDelay })
+    const reviewRows = (svc.tables.review_requests ?? []).filter((r) => r.brokerage_id === B)
+    c.step("REVIEW ASK — the CLOSE queues NO review_requests row of its own (the old inline `scheduled` row made the autonomous ask skip the client), and the day it closes the tenant's delay says `not_due`: nothing drafted, nothing sent",
+      queuedByClose === 0 && (dayOfClose.results[0] as { reason?: string }).reason === "not_due" && sentOnTheDay === 0, `queued by close: ${queuedByClose}; day-of-close: ${JSON.stringify(dayOfClose.results.map((r) => (r as { reason?: string }).reason ?? r.status))}`)
+    c.step("REVIEW ASK — once the delay has elapsed the verified closing's CLIENT (the buyer — a buyer-side deal; not the other side) is asked ONCE: the governed email, the REAL link in the body, the at-most-once ledger cycle for (transaction, client), one platform, the row marked sent",
+      asked.results.length === 1 && asked.results[0].status === "sent" && sentReviews.length === 1 && sentReviews[0].ledger.cycle === `review_ask:${TX}:${BUYER}` && String(sentReviews[0].text).includes(GOOGLE) && reviewRows.length === 1 && reviewRows[0].status === "sent" && reviewRows[0].platform === "google" && reviewRows[0].contact_id === BUYER, JSON.stringify(asked.results.map((r) => r.status)))
+    c.step("REVIEW ASK — NO DUPLICATES: asking again (the cron re-run, any other caller) asks nobody; and another tenant cannot ask on this tenant's closing",
+      again.results.every((r) => r.status === "skipped" && (r as { reason?: string }).reason === "already_asked") && sentReviews.length === 1 && (foreign.results[0] as { reason?: string }).reason === "transaction_not_found" && (svc.tables.review_requests ?? []).filter((r) => r.brokerage_id === B).length === 1)
+  }
+
   // ── wrong tenant: nothing converts ──
   let wrong: { success: boolean; error?: string } = { success: false }
   try { wrong = await closeTransactionCommand({ transactionId: TX2, brokerageId: B2, agentId: AG_U }) } catch (e) { wrong = { success: false, error: `THREW: ${(e as Error).message}` } }

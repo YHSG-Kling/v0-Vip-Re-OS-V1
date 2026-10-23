@@ -12,6 +12,12 @@ import {
   DOCUMENT_CLASSIFICATION_LABEL,
   SELLER_SIDE_CLASSIFICATIONS,
 } from "@/lib/compliance/document-classifications"
+import {
+  CHECKLIST_STAGES, CHECKLIST_STAGE_LABEL,
+  CONTRACT_SUBTYPES, CONTRACT_SUBTYPE_LABEL,
+  FINANCING_KINDS, FINANCING_KIND_LABEL,
+  REPRESENTATIONS, REPRESENTATION_LABEL,
+} from "@/lib/compliance/checklist-dimensions"
 
 // THE PICKER READS THE ONE VOCABULARY. This was a hand-kept THIRD copy of the
 // classification list — it had already drifted, missing listing_agreement,
@@ -52,6 +58,11 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
   const [addScope, setAddScope] = useState<"brokerage" | "team" | "agent">("brokerage")
   const [addBlocking, setAddBlocking] = useState<boolean>(true)
   const [addDesc, setAddDesc] = useState<string>("")
+  // The checklist dimensions (m806). Empty = "any" — a rule that sets none behaves exactly as before.
+  const [addStage, setAddStage] = useState<string>("")
+  const [addFinancing, setAddFinancing] = useState<string>("")
+  const [addSubtype, setAddSubtype] = useState<string>("")
+  const [addRepresentation, setAddRepresentation] = useState<string>("")
   const [addResult, setAddResult] = useState<string | null>(null)
 
   // Scope choices depend on the user's role.
@@ -108,6 +119,10 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
         stateCode: addState || null,
         blockOnMissing: addBlocking,
         description: addDesc || null,
+        requiredStage: addStage || null,
+        financingKind: addFinancing || null,
+        contractSubtype: addSubtype || null,
+        representation: addRepresentation || null,
       })
       if (r.ok) {
         setAddResult(r.duplicate ? "That rule already exists at this scope." : "Added.")
@@ -158,6 +173,34 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
             <select className="w-full border rounded px-2 py-1.5 text-sm" value={addState} onChange={e => setAddState(e.target.value)}>
               <option value="">Any state (US baseline)</option>
               {supportedStates.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">Due by (optional)</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={addStage} onChange={e => setAddStage(e.target.value)}>
+              <option value="">Any stage</option>
+              {CHECKLIST_STAGES.map(s => <option key={s} value={s}>{CHECKLIST_STAGE_LABEL[s]}</option>)}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">Cash or financed (optional)</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={addFinancing} onChange={e => setAddFinancing(e.target.value)}>
+              <option value="">Either</option>
+              {FINANCING_KINDS.map(k => <option key={k} value={k}>{FINANCING_KIND_LABEL[k]}</option>)}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">Contract type (optional)</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={addSubtype} onChange={e => setAddSubtype(e.target.value)}>
+              <option value="">Any contract type</option>
+              {CONTRACT_SUBTYPES.map(k => <option key={k} value={k}>{CONTRACT_SUBTYPE_LABEL[k]}</option>)}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="block text-xs font-medium mb-1">Representation (optional)</span>
+            <select className="w-full border rounded px-2 py-1.5 text-sm" value={addRepresentation} onChange={e => setAddRepresentation(e.target.value)}>
+              <option value="">Any</option>
+              {REPRESENTATIONS.map(k => <option key={k} value={k}>{REPRESENTATION_LABEL[k]}</option>)}
             </select>
           </label>
           <label className="text-sm md:col-span-2">

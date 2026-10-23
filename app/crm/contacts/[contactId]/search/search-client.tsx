@@ -322,7 +322,11 @@ export function SearchClient({
       resolvedListingId = brokerageListing?.id ?? null
     }
 
-    await bestEffort(supabase.from("saved_properties").insert({
+    // The saved_properties row IS the saved property. This used to be wrapped in bestEffort(…, "analytics/cache/annotation
+    // row: its loss does not change what the caller reports") — false: a refused insert (RLS, a CHECK, a duplicate) left the
+    // agent looking at a "Property saved" toast and a filled heart for a property nobody saved (wave 143J). The refusal is
+    // read and the optimistic UI waits for it; only the behaviour-signal rows below are genuinely best-effort.
+    const { error: saveError } = await supabase.from("saved_properties").insert({
       contact_id:        buyerId,
       brokerage_id:      brokerageId,
       user_id:           user.id,
@@ -340,7 +344,12 @@ export function SearchClient({
       state:             property.state ?? null,
       property_type:     property.property_type ?? null,
       primary_photo_url: property.primary_photo_url ?? null,
-    }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
+    })
+    if (saveError) {
+      console.error("[search] saved_properties insert refused:", saveError.message)
+      toast({ title: "Could not save this property", description: "Nothing was saved. Please try again.", variant: "destructive" })
+      return
+    }
     await bestEffort(supabase.from("buyer_behavior_log").insert({
       brokerage_id:     brokerageId,
       contact_id:       buyerId,

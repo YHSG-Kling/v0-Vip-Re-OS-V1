@@ -45,6 +45,14 @@ export {
 export type { DocumentClassification } from "./document-classifications"
 
 import type { DocumentClassification } from "./document-classifications"
+import {
+  financingKindFor,
+  rowApplicability,
+  rowSpecificity,
+  type ChecklistContext,
+  type ChecklistDimensionColumn,
+  type ChecklistStage,
+} from "./checklist-dimensions"
 
 export interface ResolvedRequiredDoc {
   classification:    DocumentClassification
@@ -53,9 +61,21 @@ export interface ResolvedRequiredDoc {
   description?:      string | null
   /** brokerage_form_library id of the blank template attached to the winning rule. */
   template_form_id?: string | null
+  /** The winning rule's id, so a notice / ledger row can cite WHICH rule applied. */
+  rule_id?:          string | null
+  /** The winning rule's stage (m806) — null = due at any stage. */
+  required_stage?:   string | null
+  /** The winning rule's policy_version (m806; bumped on every edit of the rule). */
+  policy_version?:   number | null
+  /**
+   * Dimensions the rule names that the caller did not state (see checklist-dimensions.ts). A
+   * non-empty list means the requirement APPLIES AS A WARNING: it was not possible to confirm the
+   * deal falls in the rule's scope, and "could not tell" must not read as "not required".
+   */
+  unresolved?:       ChecklistDimensionColumn[]
 }
 
-export interface ResolveContext {
+export interface ResolveContext extends ChecklistContext {
   brokerageId:   string
   agentUserId?:  string | null   // users.id of the deal's agent
   teamId?:       string | null
@@ -83,8 +103,19 @@ export interface ResolveContext {
  * the listing gate already does.
  */
 export type ResolveRequiredDocsOutcome =
-  | { ok: true;  docs: ResolvedRequiredDoc[] }
+  | { ok: true;  docs: ResolvedRequiredDoc[]; policy_version: number | null; checklist_fingerprint: string | null }
   | { ok: false; docs: [];                   error: string }
+
+/** The highest policy_version among the winning rules, and a stable fingerprint of exactly which rules applied. */
+function checklistEvidence(docs: ResolvedRequiredDoc[]): { policy_version: number | null; checklist_fingerprint: string | null } {
+  if (docs.length === 0) return { policy_version: null, checklist_fingerprint: null }
+  const versions = docs.map(d => d.policy_version).filter((v): v is number => typeof v === "number")
+  const fingerprint = docs
+    .map(d => `${d.rule_id ?? d.classification}@${d.policy_version ?? 1}${d.block_on_missing ? "!" : "?"}`)
+    .sort()
+    .join("|")
+  return { policy_version: versions.length ? Math.max(...versions) : null, checklist_fingerprint: fingerprint }
+}
 
 export async function resolveRequiredDocuments(
   supabase: SupabaseClient,
@@ -96,10 +127,16 @@ export async function resolveRequiredDocuments(
     return { ok: false, docs: [], error: "no brokerage on the deal — the required-document checklist cannot be resolved" }
   }
 
-  // Pull all rows for the brokerage matching deal_type (+ optional state)
-  let q = supabase
+  // Pull all rows for the brokerage matching deal_type (+ optional state).
+  //
+  // `select("*")`, not a column list: the m806 dimensions (required_stage, financing_kind,
+  // contract_subtype, representation, policy_version) are WRITTEN, NOT APPLIED until the integrator
+  // applies them, and a select that NAMES an absent column is refused whole (42703) — which this
+  // resolver would then report as ok:false and EVERY gate would refuse. A star select returns the
+  // columns that exist; the absent ones read as undefined = "any" (the wildcard every pre-m806 row is).
+  const q = supabase
     .from("brokerage_required_documents")
-    .select("classification, scope_type, scope_id, block_on_missing, description, deal_type, state_code, template_form_id")
+    .select("*")
     .eq("brokerage_id", ctx.brokerageId)
     .eq("is_required",  true)
     .or(`deal_type.eq.${ctx.dealType},deal_type.eq.dual`)
@@ -109,38 +146,55 @@ export async function resolveRequiredDocuments(
   if (error) {
     return { ok: false, docs: [], error: `required-document checklist could not be read: ${error.message}` }
   }
-  if (!rows || rows.length === 0) return { ok: true, docs: [] }
+  if (!rows || rows.length === 0) return { ok: true, docs: [], policy_version: null, checklist_fingerprint: null }
 
-  // Filter to rows applicable to this actor's scopes
-  const applicable = rows.filter((r: any) => {
-    if (r.state_code && ctx.stateCode && r.state_code !== ctx.stateCode) return false
-    if (r.scope_type === "brokerage") return r.scope_id === ctx.brokerageId
-    if (r.scope_type === "team")      return !!ctx.teamId      && r.scope_id === ctx.teamId
-    if (r.scope_type === "agent")     return !!ctx.agentUserId && r.scope_id === ctx.agentUserId
-    return false
-  })
+  // Filter to rows applicable to this actor's scopes AND to the question being asked (state,
+  // stage, financing, contract subtype, representation — lib/compliance/checklist-dimensions.ts).
+  const applicable: Array<{ row: any; unresolved: ChecklistDimensionColumn[] }> = []
+  for (const r of rows as any[]) {
+    if (r.state_code && ctx.stateCode && r.state_code !== ctx.stateCode) continue
+    const inScope =
+      r.scope_type === "brokerage" ? r.scope_id === ctx.brokerageId
+      : r.scope_type === "team"    ? !!ctx.teamId      && r.scope_id === ctx.teamId
+      : r.scope_type === "agent"   ? !!ctx.agentUserId && r.scope_id === ctx.agentUserId
+      : false
+    if (!inScope) continue
+    const fit = rowApplicability(r, ctx)
+    if (!fit.applies) continue
+    applicable.push({ row: r, unresolved: fit.unresolved })
+  }
 
-  // Per classification, pick the most-specific scope. Order weight:
-  //   agent (2) > team (1) > brokerage (0)
+  // Per classification, ONE winner: the most specific SCOPE first (agent > team > brokerage), then
+  // the rule that pins down the most dimensions (a state / stage / financing-specific rule beats a
+  // generic one at the same scope — before this, two rows at one scope were order-dependent), then
+  // the strictest (blocking beats warning). Deterministic by construction.
   const SCOPE_RANK: Record<string, number> = { agent: 2, team: 1, brokerage: 0 }
-  const byClass = new Map<string, any>()
-  for (const r of applicable) {
-    const existing = byClass.get(r.classification)
-    if (!existing || SCOPE_RANK[r.scope_type] > SCOPE_RANK[existing.scope_type]) {
-      byClass.set(r.classification, r)
-    }
+  const beats = (a: { row: any }, b: { row: any }): boolean => {
+    const sa = SCOPE_RANK[a.row.scope_type] ?? -1, sb = SCOPE_RANK[b.row.scope_type] ?? -1
+    if (sa !== sb) return sa > sb
+    const pa = rowSpecificity(a.row), pb = rowSpecificity(b.row)
+    if (pa !== pb) return pa > pb
+    return !!a.row.block_on_missing && !b.row.block_on_missing
+  }
+  const byClass = new Map<string, { row: any; unresolved: ChecklistDimensionColumn[] }>()
+  for (const cand of applicable) {
+    const existing = byClass.get(cand.row.classification)
+    if (!existing || beats(cand, existing)) byClass.set(cand.row.classification, cand)
   }
 
-  return {
-    ok: true,
-    docs: Array.from(byClass.values()).map(r => ({
-      classification:   r.classification as DocumentClassification,
-      scope:            r.scope_type as ResolvedRequiredDoc["scope"],
-      block_on_missing: !!r.block_on_missing,
-      description:      r.description ?? null,
-      template_form_id: r.template_form_id ?? null,
-    })),
-  }
+  const docs: ResolvedRequiredDoc[] = Array.from(byClass.values()).map(({ row: r, unresolved }) => ({
+    classification:   r.classification as DocumentClassification,
+    scope:            r.scope_type as ResolvedRequiredDoc["scope"],
+    // A rule that could not be confirmed to cover this deal cannot BLOCK it — it warns, and says why.
+    block_on_missing: !!r.block_on_missing && unresolved.length === 0,
+    description:      r.description ?? null,
+    template_form_id: r.template_form_id ?? null,
+    rule_id:          (r.id as string | undefined) ?? null,
+    required_stage:   (r.required_stage as string | null | undefined) ?? null,
+    policy_version:   typeof r.policy_version === "number" ? r.policy_version : null,
+    unresolved,
+  }))
+  return { ok: true, docs, ...checklistEvidence(docs) }
 }
 
 // ─── The deal file, loaded ONCE ─────────────────────────────────────────────
@@ -184,6 +238,13 @@ export async function loadDealFileDocuments(
     brokerageId: string
     offerId?:    string | null
     listingId?:  string | null
+    /**
+     * `documents.transaction_id` — what the title portal and the closing uploads write. The deal
+     * file used to be assembled from the offer / listing / contact anchors only, so a closing
+     * document filed straight onto the TRANSACTION was invisible to the checklist that was
+     * supposed to count it (wave 143, closing stage).
+     */
+    transactionId?: string | null
     contactIds?: Array<string | null | undefined>
   },
 ): Promise<DealFileOutcome> {
@@ -211,6 +272,17 @@ export async function loadDealFileDocuments(
       .filter("metadata->>linked_offer_id", "eq", params.offerId)
       .not("classification", "is", null)
     if (error) return { ok: false, rows: [], error: `deal file (offer link) could not be read: ${error.message}` }
+    absorb(data)
+  }
+
+  if (params.transactionId) {
+    const { data, error } = await supabase
+      .from("documents")
+      .select(COLUMNS)
+      .eq("brokerage_id", params.brokerageId)
+      .eq("transaction_id", params.transactionId)
+      .not("classification", "is", null)
+    if (error) return { ok: false, rows: [], error: `deal file (transaction link) could not be read: ${error.message}` }
     absorb(data)
   }
 
@@ -272,6 +344,15 @@ export interface AuditResult {
   unavailable_reason:    string | null
   /** The rows of the deal file the audit actually saw (empty when unavailable). */
   deal_file:             DealFileDocument[]
+  /**
+   * WHICH LIST WAS APPLIED (wave 143). The highest `policy_version` among the winning rules and a
+   * fingerprint of exactly which rules (id@version, blocking or warning) answered — so a notice,
+   * a compliance-log row or a ledger entry can say "checked against checklist X", and an edit to
+   * the list changes the fingerprint. Absent on a pre-m806 database (rules carry no version) —
+   * `policy_version` is then null and the fingerprint is rule-ids only.
+   */
+  policy_version?:        number | null
+  checklist_fingerprint?: string | null
 }
 
 /** The shape returned when the audit could not run — never a pass. */
@@ -284,6 +365,40 @@ function unavailableAudit(reason: string): AuditResult {
     required_breakdown: [],
     unavailable_reason: reason,
     deal_file:          [],
+    policy_version:        null,
+    checklist_fingerprint: null,
+  }
+}
+
+/** Everything the three audits share once the checklist and the deal file are in hand. */
+function auditAgainst(required: Extract<ResolveRequiredDocsOutcome, { ok: true }>, file: DealFileDocument[]): AuditResult {
+  const evidence = { policy_version: required.policy_version, checklist_fingerprint: required.checklist_fingerprint }
+  if (required.docs.length === 0) {
+    return {
+      required_total: 0, present: [], missing_blocking: [], missing_warning: [],
+      required_breakdown: [], unavailable_reason: null, deal_file: file, ...evidence,
+    }
+  }
+  // Anything classified into one of the required categories counts as "present" for that category.
+  const presentSet = new Set<DocumentClassification>()
+  for (const d of file) if (d.classification) presentSet.add(d.classification)
+
+  const missing_blocking: DocumentClassification[] = []
+  const missing_warning:  DocumentClassification[] = []
+  for (const r of required.docs) {
+    if (presentSet.has(r.classification)) continue
+    if (r.block_on_missing) missing_blocking.push(r.classification)
+    else                     missing_warning.push(r.classification)
+  }
+  return {
+    required_total:     required.docs.length,
+    present:            Array.from(presentSet),
+    missing_blocking,
+    missing_warning,
+    required_breakdown: required.docs,
+    unavailable_reason: null,
+    deal_file:          file,
+    ...evidence,
   }
 }
 
@@ -309,14 +424,40 @@ export async function auditOfferDocuments(
     teamId?:       string | null
     dealType:      "buyer" | "seller" | "dual"
     stateCode?:    string | null
+    /** The question's STAGE. Defaults to 'offer' — what this audit has always been asked at. */
+    stage?:        ChecklistStage | null
+    /**
+     * The deal's financing kind. When the caller does not state it, the audit reads it off THE OFFER
+     * ITSELF (offers.financing_type) so a brokerage's cash-only or financed-only rule is honoured
+     * at every existing door without that door changing. A refused read leaves it unknown, and a
+     * rule that needed it then applies as a warning — never silently as "not required".
+     */
+    financing?:    ChecklistContext["financing"]
+    contractSubtype?: ChecklistContext["contractSubtype"]
+    representation?:  ChecklistContext["representation"]
   },
 ): Promise<AuditResult> {
+  let financing = params.financing ?? null
+  if (financing === null && params.financing === undefined) {
+    const { data: offerRow, error: offerErr } = await supabase
+      .from("offers")
+      .select("financing_type")
+      .eq("id", params.offerId)
+      .eq("brokerage_id", params.brokerageId)
+      .maybeSingle()
+    if (!offerErr) financing = financingKindFor((offerRow as { financing_type?: unknown } | null)?.financing_type)
+  }
+
   const required = await resolveRequiredDocuments(supabase, {
     brokerageId:  params.brokerageId,
     agentUserId:  params.agentUserId,
     teamId:       params.teamId,
     dealType:     params.dealType,
     stateCode:    params.stateCode,
+    stage:        params.stage ?? "offer",
+    financing,
+    contractSubtype: params.contractSubtype ?? null,
+    representation:  params.representation ?? null,
   })
   if (!required.ok) return unavailableAudit(required.error)
 
@@ -330,43 +471,7 @@ export async function auditOfferDocuments(
   })
   if (!file.ok) return unavailableAudit(file.error)
 
-  if (required.docs.length === 0) {
-    return {
-      required_total:     0,
-      present:            [],
-      missing_blocking:   [],
-      missing_warning:    [],
-      required_breakdown: [],
-      unavailable_reason: null,
-      deal_file:          file.rows,
-    }
-  }
-
-  // Anything classified into one of the required categories counts as
-  // "present" for that category.
-  const presentSet = new Set<DocumentClassification>()
-  for (const d of file.rows) {
-    if (d.classification) presentSet.add(d.classification)
-  }
-
-  const missing_blocking: DocumentClassification[] = []
-  const missing_warning:  DocumentClassification[] = []
-  for (const r of required.docs) {
-    if (!presentSet.has(r.classification)) {
-      if (r.block_on_missing) missing_blocking.push(r.classification)
-      else                     missing_warning.push(r.classification)
-    }
-  }
-
-  return {
-    required_total:     required.docs.length,
-    present:            Array.from(presentSet),
-    missing_blocking,
-    missing_warning,
-    required_breakdown: required.docs,
-    unavailable_reason: null,
-    deal_file:          file.rows,
-  }
+  return auditAgainst(required, file.rows)
 }
 
 /**
@@ -385,6 +490,10 @@ export async function auditListingDocuments(
     teamId?:         string | null
     stateCode?:      string | null
     listingId?:      string | null
+    /** The question's STAGE. Defaults to 'listing' — what this audit has always been asked at. */
+    stage?:          ChecklistStage | null
+    contractSubtype?: ChecklistContext["contractSubtype"]
+    representation?:  ChecklistContext["representation"]
   },
 ): Promise<AuditResult> {
   const required = await resolveRequiredDocuments(supabase, {
@@ -393,6 +502,9 @@ export async function auditListingDocuments(
     teamId:      params.teamId,
     dealType:    "seller",
     stateCode:   params.stateCode,
+    stage:       params.stage ?? "listing",
+    contractSubtype: params.contractSubtype ?? null,
+    representation:  params.representation ?? null,
   })
   if (!required.ok) return unavailableAudit(required.error)
 
@@ -408,34 +520,59 @@ export async function auditListingDocuments(
   })
   if (!file.ok) return unavailableAudit(file.error)
 
-  if (required.docs.length === 0) {
-    return {
-      required_total: 0, present: [], missing_blocking: [], missing_warning: [],
-      required_breakdown: [], unavailable_reason: null, deal_file: file.rows,
-    }
-  }
+  return auditAgainst(required, file.rows)
+}
 
-  const presentSet = new Set<DocumentClassification>()
-  for (const d of file.rows) {
-    if (d.classification) presentSet.add(d.classification)
-  }
+/**
+ * Audit the deal file of a TRANSACTION — the contract and CLOSING stages of the brokerage's
+ * checklist (wave 143: "the brokerage gives the complete list of required documents for each
+ * contract type, for compliance including closing").
+ *
+ * The listing and offer audits above answer "may this go live / go to compliance"; this one
+ * answers "is the closing file complete". It reads the deal file from EVERY anchor the deal
+ * has — the transaction (title-portal and closing uploads), the offer, the listing and the
+ * contacts — through the same loader, and the checklist at the stage the caller names
+ * (default 'closing', which also applies every rule due earlier).
+ */
+export async function auditTransactionDocuments(
+  supabase: SupabaseClient,
+  params: {
+    transactionId:   string
+    brokerageId:     string
+    offerId?:        string | null
+    listingId?:      string | null
+    contactIds?:     Array<string | null | undefined>
+    agentUserId?:    string | null
+    teamId?:         string | null
+    dealType:        "buyer" | "seller" | "dual"
+    stateCode?:      string | null
+    stage?:          ChecklistStage | null
+    financing?:      ChecklistContext["financing"]
+    contractSubtype?: ChecklistContext["contractSubtype"]
+    representation?:  ChecklistContext["representation"]
+  },
+): Promise<AuditResult> {
+  const required = await resolveRequiredDocuments(supabase, {
+    brokerageId:  params.brokerageId,
+    agentUserId:  params.agentUserId,
+    teamId:       params.teamId,
+    dealType:     params.dealType,
+    stateCode:    params.stateCode,
+    stage:        params.stage ?? "closing",
+    financing:    params.financing ?? null,
+    contractSubtype: params.contractSubtype ?? null,
+    representation:  params.representation ?? null,
+  })
+  if (!required.ok) return unavailableAudit(required.error)
 
-  const missing_blocking: DocumentClassification[] = []
-  const missing_warning:  DocumentClassification[] = []
-  for (const r of required.docs) {
-    if (!presentSet.has(r.classification)) {
-      if (r.block_on_missing) missing_blocking.push(r.classification)
-      else                     missing_warning.push(r.classification)
-    }
-  }
+  const file = await loadDealFileDocuments(supabase, {
+    brokerageId:   params.brokerageId,
+    transactionId: params.transactionId,
+    offerId:       params.offerId,
+    listingId:     params.listingId,
+    contactIds:    params.contactIds,
+  })
+  if (!file.ok) return unavailableAudit(file.error)
 
-  return {
-    required_total:     required.docs.length,
-    present:            Array.from(presentSet),
-    missing_blocking,
-    missing_warning,
-    required_breakdown: required.docs,
-    unavailable_reason: null,
-    deal_file:          file.rows,
-  }
+  return auditAgainst(required, file.rows)
 }

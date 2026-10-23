@@ -43,7 +43,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
-import { syncAgentLedgerToStamp } from "@/lib/commission/ledger-sync"
+import { syncAgentLedgerToStamp, payoutFundsGate } from "@/lib/commission/ledger-sync"
 import { resolveUserOffice, pickUserOffice } from "./resolve-user-office"
 import { resolveLedTeamId } from "./resolve-user-team"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
@@ -360,6 +360,8 @@ export interface MarkCommissionPaidInput {
   brokerageId:  string
   paidAt?:      string
   method?:      string
+  /** Pay AHEAD of the recorded funds (wave 143): the reason a finance admin states; kept as evidence. See payoutFundsGate. */
+  advanceReason?: string | null
 }
 
 export interface CreateExpenseRecordInput {
@@ -1065,6 +1067,15 @@ export async function markCommissionPaid(
 
     const paidAt = paidAtInput ?? new Date().toISOString()
 
+    // THE FUNDS-RECEIVED GATE (wave 143, lane 143C): a payout already INITIATED passed this gate when it was
+    // initiated; a one-step record (initiation and record coincide) must pass it here. Fail closed, by name.
+    let advance: string | null = null
+    if (!(commission as { payment_initiated_at?: string | null }).payment_initiated_at) {
+      const gate = payoutFundsGate(commission as { deposit_received_at?: string | null }, input.advanceReason)
+      if (!gate.ok) return { success: false, error: gate.error }
+      advance = gate.advance ? gate.reason : null
+    }
+
     // Update status. THIS IS THE PAYOUT RECORD. A refused write here previously
     // returned success, and the splits ledger and the seven-year deal stamp were
     // then mirrored to 'paid' against a row still reading 'pending'.
@@ -1083,6 +1094,8 @@ export async function markCommissionPaid(
     if (payError) {
       return { success: false, error: `Could not mark the commission paid: ${payError.message}` }
     }
+
+    if (advance) await recordPayoutAdvance(supabase, { commission: commission as Record<string, unknown>, brokerageId, userId: ctx.userId, reason: advance })
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
     await sentinelWrite(supabase, supabase.from("commission_splits").update({ status: "paid", paid_at: paidAt, updated_at: paidAt }).eq("commission_id", commissionId), { table: "commission_splits", flow: "commission_splits_mirror_paid", brokerageId: brokerageId, reason: "mirror of agent_commissions (already paid, the source of truth); the tracking-drift reaper heals a single-sided miss — ledgered so the miss is visible" })
@@ -1108,31 +1121,16 @@ export async function markCommissionPaid(
         auditOnly: true,
       }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_paid_echo", brokerageId: brokerageId, reason: "lifecycle echo after the payout record landed" })
 
-    // Update agent cap tracking (cap_paid_to_date)
-    const { data: agentEarnings } = await supabase
-      .from("agent_commissions")
-      .select("agent_id, agent_commission")
-      .eq("id", commissionId)
-      .maybeSingle()
-
-    if (agentEarnings) {
-      const { data: capRecord } = await supabase
-        .from("agent_cap_tracking")
-        .select("cap_paid_to_date")
-        .eq("agent_id", agentEarnings.agent_id)
-        .eq("brokerage_id", brokerageId)
-        .maybeSingle()
-
-      if (capRecord) {
-        await sentinelWrite(supabase, supabase
-          .from("agent_cap_tracking")
-          .update({
-            cap_paid_to_date: (capRecord.cap_paid_to_date ?? 0) + (agentEarnings.agent_commission ?? 0),
-          })
-          .eq("agent_id", agentEarnings.agent_id)
-          .eq("brokerage_id", brokerageId), { table: "agent_cap_tracking", flow: "cap_paid_to_date_on_payout", brokerageId: brokerageId, reason: "cap progress after a landed payout must not unwind the payout; a refusal is ledgered for the repair digest and recalculateCommissionState re-derives cap state" })
-      }
-    }
+    // TOMBSTONE (wave 143, lane 143C) — the payout-time write to agent_cap_tracking.cap_paid_to_date is GONE. It was a
+    // SECOND writer of a ledger the calculation already advanced, and a wrong one on three counts: (1) the cap ledger
+    // counts what the BROKERAGE collected from the agent (stage 07's amountTowardsCap), and this added the AGENT's
+    // commission (agent_commissions.agent_commission, the generated gross x split) — a different quantity; (2) stage 11
+    // had ALREADY advanced the ledger at calculation, so every payout counted the deal twice; (3) the update filtered
+    // on agent + brokerage only — not on the anniversary window — so it moved EVERY window the agent has ever had.
+    // Net effect: a cap reached early, the brokerage collecting less than its agreement, caused by recording a payment.
+    // SURVIVOR: lib/commission/waterfall/11-validate-persist.ts:473 (the `Update cap tracking` block, one row by id, window
+    // = the deal's, amountTowardsCap). Nothing is merged onto it: the payout-time write held no behaviour the
+    // calculation-time write lacks.
 
     // THE ONE LOCK AT DISBURSEMENT — the earnings record is now paid; lock the LEDGER (commissions +
     // commission_distributions) for the same transaction in the same step, so the two trackings
@@ -1195,6 +1193,26 @@ async function readAgentCommissionRow(supabase: ReturnType<typeof createServiceC
   return { row: data as Record<string, unknown>, error: null }
 }
 
+/** Evidence that a payout went ahead of the recorded funds: WHO stated WHY (an activity on the deal, never silent). */
+async function recordPayoutAdvance(
+  supabase: ReturnType<typeof createServiceClient>,
+  args: { commission: Record<string, unknown>; brokerageId: string; userId: string; reason: string },
+): Promise<void> {
+  await sentinelWrite(supabase, supabase.from("activities").insert({
+    brokerage_id: args.brokerageId,
+    transaction_id: (args.commission.transaction_id as string | null) ?? null,
+    agent_id: (args.commission.agent_id as string | null) ?? null,
+    entity_type: "agent_commission",
+    activity_type: "commission_payout_advance",
+    title: "Payout released ahead of the recorded funds",
+    description: `A finance admin released this payout before the title company's payment was recorded as received. Reason: ${args.reason}`,
+    status: "completed",
+    completed_at: new Date().toISOString(),
+    priority: "high",
+    notes: JSON.stringify({ commission_id: args.commission.id ?? null, advanced_by: args.userId, reason: args.reason }),
+  }), { table: "activities", flow: "commission_payout_advance_activity", brokerageId: args.brokerageId, reason: "evidence trail of an advance; the payout record itself already landed" })
+}
+
 export interface InitiateCommissionPayoutInput {
   ctx:          FinancialActorContext
   commissionId: string
@@ -1204,6 +1222,8 @@ export interface InitiateCommissionPayoutInput {
   /** Check number / ACH batch reference, when known. */
   reference?:   string | null
   initiatedAt?: string
+  /** Initiate AHEAD of the recorded funds (wave 143): the reason a finance admin states; kept as evidence. See payoutFundsGate. */
+  advanceReason?: string | null
 }
 
 /**
@@ -1227,6 +1247,9 @@ export async function initiateCommissionPayout(
       return { success: true, data: { commissionId, initiatedAt: String(row.payment_initiated_at ?? row.paid_at ?? ""), alreadyInitiated: true } }
     }
     if (row.status !== "approved") return { success: false, error: `A payout is initiated only on an APPROVED commission (status: ${String(row.status)})` }
+    // THE FUNDS-RECEIVED GATE (wave 143, lane 143C): the brokerage pays the agent from funds it has RECEIVED, or states why not.
+    const gate = payoutFundsGate(row as { deposit_received_at?: string | null }, input.advanceReason)
+    if (!gate.ok) return { success: false, error: gate.error }
     const initiatedAt = input.initiatedAt ?? new Date().toISOString()
     const { data: stamped, error: stampErr } = await supabase
       .from("agent_commissions")
@@ -1236,6 +1259,7 @@ export async function initiateCommissionPayout(
       .select("id")
     if (stampErr) return { success: false, error: m787Refusal(stampErr.message) ?? `Could not record the payout initiation: ${stampErr.message}` }
     if (!stamped || stamped.length === 0) return { success: false, error: "Commission not found" }
+    if (gate.advance && gate.reason) await recordPayoutAdvance(supabase, { commission: row, brokerageId, userId: ctx.userId, reason: gate.reason })
     await sentinelWrite(supabase, supabase.from("activities").insert({
       brokerage_id: brokerageId,
       transaction_id: (row.transaction_id as string | null) ?? null,

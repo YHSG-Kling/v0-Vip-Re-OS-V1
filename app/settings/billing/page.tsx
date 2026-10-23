@@ -4,9 +4,13 @@ import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import {
   getSubscriptionTiers,
   getCurrentSubscription,
-  getBillingUsage,
   getInvoiceHistory,
 } from "@/app/actions/billing"
+// TOMBSTONE (wave 143J): getBillingUsage stood in this import. The usage card now renders
+// loadUsageOverview (plan_limits joined to usage_counters + live stock counts) — the survivor
+// that already serves /dashboard/settings/usage — instead of billing_usage rows set against
+// limits this page invented (see the note on the removed `|| 1000 / 5 / 60` fallbacks below).
+import { loadUsageOverview } from "@/app/actions/usage-overview"
 // TOMBSTONE (§1.3): sixteen dead imports stood here — Card/CardContent/
 // CardHeader/CardTitle/CardDescription, Badge, Button, Progress, the seven
 // lucide icons (CreditCard, FileText, AlertTriangle, Users, Cpu, HardDrive,
@@ -57,10 +61,10 @@ export default async function BillingSettingsPage() {
   const brokerageId = profile.brokerage_id
 
   // Parallel data fetching
-  const [tiers, subscription, usage, invoices] = await Promise.all([
+  const [tiers, subscription, overview, invoices] = await Promise.all([
     getSubscriptionTiers(),
     getCurrentSubscription(brokerageId),
-    getBillingUsage(brokerageId),
+    loadUsageOverview(),
     getInvoiceHistory(brokerageId),
   ])
 
@@ -76,12 +80,12 @@ export default async function BillingSettingsPage() {
   // `null` and was shown UNLIMITED seats beside the words "No Plan". Absence of
   // an entitlement must not render as the largest entitlement sold (§4).
   const hasTier = Boolean(currentTier)
-  const features = currentTier?.features as Record<string, number> | null
-
-  // Usage limits from tier features
-  const aiCallsLimit = features?.ai_calls_monthly || 1000
-  const storageLimit = features?.storage_gb || 5
-  const videoMinutesLimit = features?.video_minutes_monthly || 60
+  // Wave 143J: `features?.ai_calls_monthly || 1000`, `features?.storage_gb || 5` and
+  // `features?.video_minutes_monthly || 60` stood here. subscription_tiers.features carries
+  // none of those keys (live: eight boolean flags), so every tenant was shown an invented
+  // allowance. The plan's real allowances are plan_limits rows; the overview joins them.
+  const usageOverview = overview.ok && overview.data ? { metrics: overview.data.metrics } : null
+  const usageError = overview.ok ? null : (overview.error ?? "Usage is unavailable right now.")
 
   return (
     <div className="container mx-auto p-6 space-y-8">
@@ -102,12 +106,10 @@ export default async function BillingSettingsPage() {
 
       {/* Usage Section */}
       <UsageSection
-        usage={usage}
+        overview={usageOverview}
+        error={usageError}
         hasTier={hasTier}
         maxAgents={maxAgents}
-        aiCallsLimit={aiCallsLimit}
-        storageLimitGb={storageLimit}
-        videoMinutesLimit={videoMinutesLimit}
       />
 
       {/* Invoice History */}

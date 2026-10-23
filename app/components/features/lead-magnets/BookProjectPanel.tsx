@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
 import { BookOpen, Download, Loader2, Pause, Play } from "lucide-react"
+import { KdpPublishingPanel } from "./KdpPublishingPanel"
 
 type BookSummary = NonNullable<Awaited<ReturnType<typeof getBookProjectAction>> extends { book?: infer B } ? B : never>
 
@@ -167,6 +168,7 @@ export function BookProjectPanel({ magnetId, onStage }: Props) {
         <p className="text-xs text-destructive">Chapter{book.needsHumanReview.length === 1 ? "" : "s"} {book.needsHumanReview.join(", ")} need{book.needsHumanReview.length === 1 ? "s" : ""} your fair-housing rewrite — the AI reached its two-rewrite cap.</p>
       )}
       {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
+      {done && book.needsHumanReview.length === 0 && <KdpPublishingPanel magnetId={magnetId} />}
       {book.log.length > 0 && (
         <details className="text-xs text-muted-foreground">
           <summary className="cursor-pointer">What the writer did</summary>

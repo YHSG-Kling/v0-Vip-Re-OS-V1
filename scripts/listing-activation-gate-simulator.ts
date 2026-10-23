@@ -307,10 +307,47 @@ const CASES: Case[] = [
     db: () => cleanDb({ tables: { ...cleanDb().tables, listing_agreements: [goodAgreement({ esign_status: "partially_signed" })] } }),
     expect: ["compliance_good"],
   },
+  // WAVE 143 (lane 143A, closes 142K finding 5) — THE RULE, re-asserted (CLAUDE.md §2: never pin a waypoint). This case
+  // used to say "an agreement with no fully_executed_at refuses". That was true while the PROVIDER's completion stamped
+  // fully_executed_at, so the stamp could be read back as proof. The stamp is now the companion of exactly one ladder hop
+  // (fully_executed, after compliance approval — lib/esign/packet-states.ts hopCompanionColumns), so it cannot be an
+  // INPUT to the decision that approves compliance. The rule that survives: a status and its stamp agree.
   {
-    id: "agreement-never-executed-refuses",
-    what: "an agreement with no fully_executed_at refuses compliance_good — a stamp without its execution is a half-stamped gate",
+    id: "agreement-reads-executed-without-its-stamp-refuses",
+    what: "an agreement that READS fully_executed but carries no fully_executed_at refuses compliance_good — a status without its execution stamp is a half-stamped gate",
+    db: () => cleanDb({ tables: { ...cleanDb().tables, listing_agreements: [goodAgreement({ esign_status: "fully_executed", fully_executed_at: null })] } }),
+    expect: ["compliance_good"],
+  },
+  {
+    id: "agreement-compliance-passed-awaiting-stamp-admitted",
+    what: "an all-signed agreement whose compliance review PASSED but whose fully_executed hop has not stamped yet is ADMITTED — the stamp follows approval, it does not precede it (a gate that demanded it would refuse every provider-signed agreement forever)",
     db: () => cleanDb({ tables: { ...cleanDb().tables, listing_agreements: [goodAgreement({ fully_executed_at: null })] } }),
+    expect: null,
+  },
+  {
+    id: "agreement-fully-executed-with-stamp-admitted",
+    what: "POSITIVE CONTROL: an agreement at fully_executed WITH its stamp and compliance_passed is ADMITTED (the half-stamped refusal above is not a brick wall)",
+    db: () => cleanDb({ tables: { ...cleanDb().tables, listing_agreements: [goodAgreement({ esign_status: "fully_executed" })] } }),
+    expect: null,
+  },
+  {
+    id: "review-mode-provider-signed-no-mark-admitted",
+    what: "REVIEW MODE (the compliance loop's own run): an agreement the provider reported all-signed, with both signature instants on the row and NO compliance_passed yet, is admitted — this run IS the review that writes the mark",
+    db: () => cleanDb({ tables: { ...cleanDb().tables, listing_agreements: [goodAgreement({ compliance_passed: false, fully_executed_at: null, agent_signed_at: "2026-09-01T00:00:00Z", seller_signed_at: "2026-09-01T00:00:00Z" })] } }),
+    over: { complianceReview: true },
+    expect: null,
+  },
+  {
+    id: "review-mode-missing-seller-evidence-refuses",
+    what: "REVIEW MODE without the seller's signature evidence refuses compliance_good, naming it — the provider's all-signed is not taken on faith when a party's instant is missing",
+    db: () => cleanDb({ tables: { ...cleanDb().tables, listing_agreements: [goodAgreement({ compliance_passed: false, fully_executed_at: null, agent_signed_at: "2026-09-01T00:00:00Z", seller_signed_at: null })] } }),
+    over: { complianceReview: true },
+    expect: ["compliance_good"],
+  },
+  {
+    id: "door-mode-ignores-review-evidence",
+    what: "POSITIVE CONTROL: the same unmarked, fully-evidenced agreement is REFUSED at a DOOR (no complianceReview) — only the compliance loop may skip the recorded mark, and activateMLS / launchListing never do",
+    db: () => cleanDb({ tables: { ...cleanDb().tables, listing_agreements: [goodAgreement({ compliance_passed: false, fully_executed_at: null, agent_signed_at: "2026-09-01T00:00:00Z", seller_signed_at: "2026-09-01T00:00:00Z" })] } }),
     expect: ["compliance_good"],
   },
   {

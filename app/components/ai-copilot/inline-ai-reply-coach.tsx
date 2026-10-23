@@ -96,11 +96,18 @@ export function InlineAiReplyCoach({
 
   const handleAcceptDraft = async (draft: Draft) => {
     try {
-      await acceptDraft({
+      // acceptDraft RESOLVES a refusal ({ success:false, error }) — it does not throw. The
+      // result was dropped, so a draft the server refused (another brokerage's, already
+      // decided, not found) was handed to the composer and toasted "accepted" (wave 143J).
+      const accepted = await acceptDraft({
         draftId: draft.id,
         agentUserId: agentId,
         finalBody: draft.content,
       } as any)
+      if (!accepted?.success) {
+        toast.error(accepted?.error ?? "Failed to accept draft")
+        return
+      }
       onAcceptDraft(draft.content)
       toast.success("Draft accepted!")
     } catch (error) {
@@ -111,11 +118,15 @@ export function InlineAiReplyCoach({
 
   const handleRejectDraft = async (draftId: string) => {
     try {
-      await rejectDraft({
+      const rejected = await rejectDraft({
         draftId,
         agentUserId: agentId,
         reason: "not_helpful",
       } as any)
+      if (!rejected?.success) {
+        toast.error(rejected?.error ?? "Failed to reject draft")
+        return
+      }
       setDrafts((prev) => prev.filter((d) => d.id !== draftId))
       toast.success("Draft rejected")
     } catch (error) {

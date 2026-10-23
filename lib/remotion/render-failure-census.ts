@@ -38,6 +38,7 @@ type RenderFailureBucket =
   | "content_contract"
   | "claim_refused"
   | "asset_load_timeout"
+  | "browser_network"
   | "media_decode"
   | "host_refused"
   | "function_timeout"
@@ -91,6 +92,13 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "A delayRender() handle — an <Img> still loading (SafeImg), the ProductPromoReel's Google font via loadFont(), a <Video>/<Audio> element's metadata — was not cleared within the renderer's timeoutInMilliseconds (the installed default, 30 000 ms; the render route sets none), so Remotion aborted the WHOLE render: a slow or blocked asset host, a bucket that answers late, or the sandbox proxy refusing the fetch.",
     evidence: "node_modules/remotion@4.0.521 dist/cjs/delay-render.js:42 (the exact message: 'was called but not cleared after ${timeout}ms. See https://remotion.dev/docs/timeout for help.'); remotion/components/SafeImg.tsx:29-32 (delayRenderRetries={1}, the 30 s default named); remotion/ProductPromoReel.tsx:36 loadFont; app/api/internal/remotion/render-composition/route.ts:290 (no timeoutInMilliseconds override). The official page is linked from the message itself — WebFetch of remotion.dev was refused in this sandbox (DNS), so the installed package is the citation.",
     fix: "SafeImg gives up after ONE retry (cancelRender) so a dead photo fails loud instead of hanging 30 s per frame; a slow host is transient for the queue's one bounded retry; raise timeoutInMilliseconds on renderMedia only for a composition PROVEN to load remote media, never globally (it multiplies the 300 s route cap exposure).",
+  },
+  {
+    bucket: "browser_network",
+    pattern: /NetworkError: A network error occurred|net::ERR_(CERT|NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|CONNECTION_(RESET|REFUSED|TIMED_OUT)|PROXY)|fonts\.gstatic\.com|fonts\.googleapis\.com|@remotion\/google-fonts/i,
+    rootCause: "A fetch made INSIDE the headless page failed — and one such fetch fails the whole render. MEASURED 2026-10-23 with a real render (scripts/remotion-real-render-probe.ts): remotion/ProductPromoReel.tsx called @remotion/google-fonts loadFont('Inter') at MODULE scope, remotion/Root.tsx imports it, so the bundle of EVERY composition requested https://fonts.gstatic.com/…woff2 and, with that host unreachable or untrusted (a locked-down egress, an interception proxy: net::ERR_CERT_AUTHORITY_INVALID), all renders — a lead-magnet card, a postcard, a CMA reel — died with the bare `NetworkError: A network error occurred.`; 0 of 3 rendered. Any remote photo, font or provider URL fails the same way.",
+    evidence: "scripts/remotion-real-render-probe.ts (before: 0 of 3 compositions rendered, every one NetworkError on fonts.gstatic.com; after the lazy font load: 3 of 3, two playable MP4s that decode clean + one PNG); remotion/ProductPromoReel.tsx (loadedInter — the font is now requested only when THAT composition renders); the stored message is the bare NetworkError, so the page's console line (the URL) is the only place the host is named",
+    fix: "Fonts and every other page-time fetch must be LOCAL or confined to the composition that needs it (done for Inter; a composition that adds loadFont/staticFile of a remote URL at module scope reintroduces it). The queue's bounded retry covers a transient blip; a sustained one means the egress cannot reach the host — host the font in the bundle (public/ + staticFile) rather than the CDN. Never mask it with a fallback: a render without its font is a different render.",
   },
   {
     bucket: "media_decode",
@@ -246,6 +254,7 @@ select
     when error_message ~* 'content_props_missing|missing required content|composition_not_registered' then 'content_contract'
     when error_message ~* 'claim_refused' then 'claim_refused'
     when error_message ~* 'delayRender\\(\\) was called but not cleared|not cleared after [0-9]+ ?ms|remotion\\.dev/docs/timeout' then 'asset_load_timeout'
+    when error_message ~* 'NetworkError: A network error occurred|net::ERR_(CERT|NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|CONNECTION|PROXY)|fonts\\.gstatic\\.com|fonts\\.googleapis\\.com|google-fonts' then 'browser_network'
     when error_message ~* 'Error loading image with src|Could not (extract|get) (a )?frame|Failed to (load|decode)|MEDIA_ERR|NotSupportedError|OffthreadVideo|cancelRender' then 'media_decode'
     when error_message ~* 'Can''t resolve|Cannot find module|Module not found|webpack' then 'bundle_resolve'
     when error_message ~* 'chromium|browserExecutable|Failed to launch|ERR_TUNNEL|Target closed|Protocol error' then 'chromium_launch'

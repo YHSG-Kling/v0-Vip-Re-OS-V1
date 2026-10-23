@@ -196,7 +196,12 @@ export function BuyerMatchPanel({
     if (!showingDate) return
     setShowingLoading(true)
     try {
-      await requestShowing(
+      // requestShowing (the legacy positional wrapper over the canonical action) hands a
+      // refusal back as { error } — it does not throw. The result was dropped, so the form
+      // closed and cleared as if the showing were booked when the request had been refused
+      // (the buyer-agreement gate, an unreadable contact, a refused insert) and the agent
+      // never saw why (wave 143J).
+      const requested = await requestShowing(
         contactId,
         match.listing_id,
         match.address || "Property",
@@ -204,11 +209,17 @@ export function BuyerMatchPanel({
         [{ date: showingDate.split("T")[0] ?? showingDate, time: showingDate.split("T")[1] ?? "10:00" }],
         showingNotes
       )
+      if (requested?.error) {
+        toast.error(requested.error)
+        return
+      }
+      toast.success("Showing request created")
       setShowingForm(null)
       setShowingDate("")
       setShowingNotes("")
     } catch (err) {
       console.error("Schedule showing failed:", err)
+      toast.error("Could not schedule the showing.")
     } finally {
       setShowingLoading(false)
     }

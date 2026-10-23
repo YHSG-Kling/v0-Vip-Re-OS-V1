@@ -40,6 +40,9 @@ export interface CommissionCalculationResult {
    *  distribution set — see CompanyObligationRecord. Optional so existing
    *  callers are unaffected; absent means none arose. */
   company_obligations?: CompanyObligationRecord[]
+  /** Gross-level concessions (listing-agreement credits / surcharges) that moved the gross before the split. They are
+   *  INPUTS that change the gross, not payouts — never distributions (wave 143, lane 143C). */
+  gross_adjustments?: DistributionRecord[]
   error?: string
 }
 
@@ -153,6 +156,31 @@ export interface WaterfallContext {
   // the effective windows were judged on, graph corroboration findings — which
   // stage 11 writes onto the action ledger beside each residual ledger entry.
   residualEvaluation?: import('./revenue-share-model').ResidualEvaluation
+
+  // The agreement the deal was priced with (stage 01, wave 143 lane 143C): the agent's terms in force on the
+  // transaction's period — never today's profile — with the version, the date that decided and the signed
+  // agreement of record. OPTIONAL like the fields above; stage 11 stores it as commission_calculations.engine_inputs.
+  agreement?: import('./agreement-terms').AgentTermsResolution
+
+  // The TEAM terms the team-lead override was priced with (stage 08, wave 143 lane 143C): which version, the date it was
+  // judged on, and the agent's signed team agreement of record. OPTIONAL - set only when a team override applied.
+  teamAgreement?: {
+    teamId: string
+    source: 'version' | 'live_team'
+    effectiveFrom: string | null
+    asOf: string
+    signedAgreement: { id: string; fullyExecutedAt: string; documentUrl: string | null } | null
+  }
+
+  // Agent-to-agent referral payout (stage 09b, wave 143 lane 143C). OPTIONAL — only stage 09b sets them.
+  // The fee is a CONSERVED distribution (deducted from the producing agent's running net, funded by the agent),
+  // not a side row booked after the fact.
+  referralDistributions?: DistributionRecord[]
+  /** Cents the referral deduction takes off the top of the adjusted gross BEFORE the brokerage/agent split (stage 04 splits the remainder). */
+  referralDeductionCents?: number
+  /** referrals.id + the referring agent behind referralDistributions[0] — stage 11 links the referral to the deal. */
+  referralLink?: { referralId: string; referringAgentId: string; alreadyLinked: boolean } | null
+  referralFindings?: string[]
 
   // Distribution collections
   grossAdjustments: DistributionRecord[]

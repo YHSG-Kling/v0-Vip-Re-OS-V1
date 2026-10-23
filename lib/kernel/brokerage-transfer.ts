@@ -111,6 +111,15 @@ export const TRANSFER_DATA_FAMILIES: readonly { table: string; what: string }[] 
   { table: "ai_video_projects", what: "video projects" },
   { table: "video_assets", what: "rendered videos" },
   { table: "blog_posts", what: "the website's blog" },
+  // THE WEBSITE'S LANDING PAGES (wave 143G; owner: "landing pages live inside the tenant website"; wave 141 owner list:
+  // "provenance of … websites … preserved"). The page keeps its slug, so every printed QR / sent link / live ad still
+  // resolves — but its brokerage_id decides which tenant a visitor's submission is filed under. Left behind, a
+  // transferred agent's landing page would keep capturing leads into the ARCHIVED source tenant, where nobody reads
+  // them. The two tables that FK to the page (form_id -> lead_capture_forms) move WITH it: a submission left in the
+  // source would reference a form that lives in another tenant.
+  { table: "lead_capture_forms", what: "the website's landing pages / lead magnets (slug, copy and URL unchanged)" },
+  { table: "form_submissions", what: "the capture history of those landing pages (form_id stays in ONE tenant)" },
+  { table: "ai_search_landing_citation_observations", what: "AI-search citation history of those landing pages (form_id stays in ONE tenant)" },
   { table: "farm_territories", what: "farm territories served" },
   { table: "relationship_edges", what: "the knowledge graph edges" },
 ]

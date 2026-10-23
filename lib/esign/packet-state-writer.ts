@@ -28,6 +28,7 @@ import { recordLifecycleEvent } from "@/lib/events/lifecycle-event-core"
 import { notifyEsignPacketHop } from "@/lib/notifications/notify-helpers"
 import {
   canAdvancePacketState,
+  hopCompanionColumns,
   isTerminalFailureState,
   PACKET_HOP_NOTICE,
   type EsignPacketState,
@@ -157,12 +158,29 @@ export async function advanceEsignPacketState(svc: AnySupabase, input: AdvancePa
   if (verdict.noop) return { ok: true, noop: true, recordId: row.id, from: row.esign_status, to: input.to, notified: 0 }
 
   // THE WRITE — tenant on the predicate, rows counted (an update matching nothing resolves, §3).
-  const { data: updated, error: updateErr } = await svc
-    .from(input.record.table)
-    .update({ esign_status: input.to, ...(input.also ?? {}) })
-    .eq("id", row.id)
-    .eq("brokerage_id", input.brokerageId)
-    .select("id")
+  // Two LITERAL statements, not one `.from(input.record.table)`: the companion stamp (hopCompanionColumns, lib/esign/packet-states.ts)
+  // is then a statically visible write of listing_agreements.compliance_passed / .fully_executed_at — the opposite-missing census
+  // reads literal `.from("<table>")` chains only, and a stamp it cannot see reads as "written by NOBODY" (wave 143 lane 143A: the
+  // provider paths' literal writes were removed on purpose, so this is now the column's ONLY writer). `also` (extra columns,
+  // offers today) is merged AFTER the literal, outside the object the census parses, so it does not blind it to the table.
+  const companion = hopCompanionColumns(input.record.table, input.to, new Date().toISOString())
+  let updated: Array<{ id: string }> | null
+  let updateErr: { message: string } | null
+  if (input.record.table === "listing_agreements") {
+    const patch: Record<string, unknown> = { esign_status: input.to }
+    if (companion.compliance_passed === true) patch.compliance_passed = true
+    if (typeof companion.fully_executed_at === "string") patch.fully_executed_at = companion.fully_executed_at
+    Object.assign(patch, input.also ?? {})
+    const r = await svc.from("listing_agreements").update(patch).eq("id", row.id).eq("brokerage_id", input.brokerageId).select("id")
+    updated = (r.data as Array<{ id: string }> | null) ?? null
+    updateErr = r.error
+  } else {
+    const patch: Record<string, unknown> = { esign_status: input.to }
+    Object.assign(patch, input.also ?? {})
+    const r = await svc.from("offers").update(patch).eq("id", row.id).eq("brokerage_id", input.brokerageId).select("id")
+    updated = (r.data as Array<{ id: string }> | null) ?? null
+    updateErr = r.error
+  }
   if (updateErr) return { ok: false, reason: `${input.record.table} esign_status write refused: ${updateErr.message}` }
   if (!updated || updated.length === 0) return { ok: false, reason: `${input.record.table} esign_status write matched no row (wrong tenant?)` }
 

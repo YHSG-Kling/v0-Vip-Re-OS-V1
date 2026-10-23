@@ -206,10 +206,19 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
     priceSource: 'https://docs.tavily.com/documentation/api-credits — basic 1 credit, advanced 2; $0.008 / credit pay-as-you-go (plan rates $0.005–$0.0075)',
     notes: 'Web search + synthesized answer (research mode, intent fallback)',
   },
+  // Wave 143 (143I) — re-sourced against the primary price page, read 2026-10-23: apify.com/pricing
+  // "Actor runs" table — compute unit (1 CU = 1 GB RAM x 1 hour) is $0.20 on Free AND Starter, $0.16 on
+  // Scale ($199/mo), $0.13 on Business ($999/mo); proxy / storage / transfer are billed separately. The
+  // previous unsourced $0.25 matched NO published plan rate. We book the entry-plan list rate (the highest
+  // published, so a plan upgrade only ever makes the booked figure an over-estimate); the invoice reconciles.
+  // docs/commercial/PROVIDER-COST-REPORT.md §3.3 / §9 D2. NOT booked here: lib/external/apify-client.ts books a flat
+  // `cost: 0.50` per actor run through meterVendorSpend (its own constant, unchanged — out of this lane).
   'apify': {
     vendorName: 'Apify',
     unitType: 'credits',
-    costPerUnit: 0.25, // $0.25 per compute unit
+    costPerUnit: 0.20, // $0.20 per compute unit — Free/Starter list rate (was 0.25: matched no published plan)
+    priceState: 'variable',
+    priceSource: 'https://apify.com/pricing (read 2026-10-23) — compute unit $0.20 Free/Starter, $0.16 Scale, $0.13 Business; residential proxy $8/GB Free/Starter -> $7/GB Business',
     notes: 'Social media scraping actors',
   },
   'batchdata': {

@@ -257,11 +257,21 @@ check("the decision and the audit row say WHY (fatigueRisk / fatigueSteps; metad
 check("the learned cadence still tightens by the same one-touch step (fatigue's step mirrors it)", /Math\.max\(1, base\.maxTouches - 1\)/.test(stripped("lib/kernel/deconflict/cadence-policy.ts")) && JSON.stringify(lc.tightenPolicyStep({ maxTouches: 3, windowDays: 14 })) === JSON.stringify({ maxTouches: 2, windowDays: 14 }))
 const cron = stripped("app/api/cron/lifetime-customer-touchpoints/route.ts")
 check("the lifetime cron tempers through the SAME engine (evaluateDeconflict on the contact) — no second rule", /evaluateDeconflict\(\{ brokerageId, contactId, channel, systemSource \}\)/.test(cron) && !/buyer_fatigue_scores/.test(cron))
-check("...and evaluates the channel the touch actually rides (birthday / referral ask = sms; anniversary = email)",
-  /"sphere_birthday", "sms"\)/.test(cron) && /"sphere_referral_request", "sms"\)/.test(cron) && /channel: "email" \| "sms" = "email"/.test(cron))
-check("...counts a gate-refused send as BLOCKED, never as a touch delivered (all three senders)", /blocked: 0,/.test(cron) && (cron.match(/countSend\("/g) ?? []).length === 3 && /results\.blocked\+\+/.test(cron))
+// WAVE 143 (143E) — RULES, not waypoints. The cron's fixed day-3 / day-30 referral-SMS block was retired (owner: "the follow-up timetable must not
+// depend on code"; tombstone in the cron, survivor lib/sphere/followup-moments.ts). The rules below hold for the senders the cron STILL owns
+// (anniversary = email, birthday = sms — calendar facts) and the referral ask now rides the moments conductor, which is fatigue-tempered by the
+// same planner slice + the dispatch gate's de-confliction. What no longer exists is asserted ABSENT, with its positive control.
+check("...and evaluates the channel the touch actually rides (birthday = sms; anniversary = email)",
+  /"sphere_birthday", "sms"\)/.test(cron) && /channel: "email" \| "sms" = "email"/.test(cron))
+check("...counts a gate-refused send as BLOCKED, never as a touch delivered (every sender the cron still owns)", /blocked: 0,/.test(cron) && (cron.match(/countSend\("/g) ?? []).length === 2 && /results\.blocked\+\+/.test(cron))
 check("POSITIVE CONTROL: the old shape (call, then unconditional ++) is what the finder rejects", !/countSend\(/.test(`await sendBirthdayMessage(contact.id, opts)\n results.birthdays++`))
-check("...the referral window reads funded deals too (the ladder is closed → funded; the anniversary read already did)", /\.in\("status", \["closed", "funded"\]\)\s*\.in\("close_date"/.test(cron))
+const PRETIMED_REFERRAL = /\.in\("close_date",\s*\[/
+check("...the fixed day-3 / day-30 referral window is GONE from the cron (a hard-coded timetable) — the referral ask is the policy's `referral_request` moment",
+  !PRETIMED_REFERRAL.test(cron) && !/sendReferralRequest\(/.test(cron))
+check("POSITIVE CONTROL: the finder still recognises the retired fixed-window shape", PRETIMED_REFERRAL.test(`.in("status", ["closed", "funded"]).in("close_date", [threeDaysAgo, thirtyDaysAgo])`))
+const moments = stripped("lib/sphere/followup-moments.ts")
+check("...and the moment that replaced it is fatigue-tempered: it plans through planNextBestExperience (the fatigue slice → wait) and sends only through the gated dispatchers",
+  /arbitrateAndRecordExperience\(svc,/.test(moments) && /planFn\(loaded\.input\)/.test(moments) && /dispatchEmail\(p as never\)/.test(moments) && /dispatchSms\(p as never\)/.test(moments))
 
 // ── I ─────────────────────────────────────────────────────────────────────────
 console.log("\n[I · registration + cross-cooperation]")
@@ -275,7 +285,7 @@ check("MAINTENANCE_DOMAINS owns it (recruiting_manager) with co-owners as STRUCT
   !!entry && entry.manager === "recruiting_manager" && Array.isArray(entry.coOwners) && entry.coOwners.length >= 2 && entry.coOwners.every((c: string) => canRefer("recruiting_manager", c)), JSON.stringify(entry?.coOwners))
 check("the entry's prose names the never-agent-facing rule and the support nudge", !!entry && /NEVER AGENT-FACING/.test(entry.what) && /SUPPORT NUDGE/.test(entry.what))
 
-console.log(`\n  denominators: ${rs.AGENT_FATIGUE_SIGNAL_KEYS.length} fatigue signals · ${SUPPORT_KEYS.length} support plays · 7 keyed reads in gatherFatigueSignals (${refusedCalls} error-read sites) · 4 channels × 3 risk words on the cap · 3 lifetime senders`)
+console.log(`\n  denominators: ${rs.AGENT_FATIGUE_SIGNAL_KEYS.length} fatigue signals · ${SUPPORT_KEYS.length} support plays · 7 keyed reads in gatherFatigueSignals (${refusedCalls} error-read sites) · 4 channels × 3 risk words on the cap · 2 cron-owned lifetime senders + the moments conductor`)
 console.log("  blind spots: the radar's reads are proven by source shape and the pure terms, not executed against a DB (live had 0 agent_retention_scores / buyer_fatigue_scores / lifetime_customer_touchpoints rows on 2026-09-29); m674 applied live 2026-09-29 (before it, the radar's upsert was refused whole — PGRST204 — and sentinelWrite ledgered it); reply pairing sees client_portal_messages + messages only (an email reply that lands only in a mailbox is not seen); 'rescheduled' on calendar_events is written by seller-showings, so a buyer-side reschedule that never marks the event reads as kept; the activity trend is assistant sessions, not logins (no login ledger exists — users has no last_sign_in column); the pipeline-drop baseline needs a raw_signals row ≥30 days old, so it is null for the first month after m674; the support nudge reaches the broker roster and the team lead — an agent with no team and a solo shop get no nudge (their own id is removed), which is the owner's rule; weights are read per brokerage per sweep, so a change lands on the next run, not mid-run")
 console.log("\n" + "─".repeat(50))
 console.log(` RESULT: ${passed} passed, ${failed} failed`)

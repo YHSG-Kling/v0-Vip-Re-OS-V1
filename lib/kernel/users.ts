@@ -57,6 +57,7 @@ import { readRoleGrants, selectAgentId } from "@/lib/auth/role-grants"
 // platform_role, no live row carries user_type='superadmin', and the survivor also
 // refuses the ai_isa_system service account (lib/platform/platform-staff-roster.ts).
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { invitationLandingUrl } from "@/lib/platform/site-url"
 // Wave 141B — type only (the reporter itself is a lazy import inside reportOp, so this module's graph is unchanged).
 import type { OperationOutcomeInput, OperationOutcomeResult } from "./immediate-operations"
 // Runtime-safe both ways: seat-usage imports only TYPES from this module
@@ -181,6 +182,41 @@ const TC_ROLES = new Set<UserDomainRole>(["tc"])
 // The tier→required-rows predicates (requiresAgentRow / requiresOnboardingRow)
 // live in a plain, server-safe module so the SAME logic drives this provisioner,
 // the login-time repair, and the simulator's pure layer — no drift.
+
+/**
+ * THE TEAM LEAD ANCHOR (wave 143, lane 143G). CLAUDE.md §4: "Team lead anchors on `teams.team_lead_id`." Only two
+ * places ever wrote that column — the team-tier owner's own team (provisionTenantOwner) and the admin "create team"
+ * action — so a user seated as `team_lead` on an existing team (the tenant invite, the staff console, the recruiting
+ * door, a role change agent → team_lead) was a team_lead in `users.user_type` and `user_role_assignments` only: the
+ * team still named nobody as its lead. Everything that resolves "who leads this team" reads the column — lead
+ * visibility's team scope, unknown-sender routing to the lead, the team leader's revenue-share row — so the new lead
+ * saw an empty board, received no routed leads, and earned no leader share.
+ *
+ * FILL-ABSENT: a team that already has a lead keeps it. Replacing a team's lead is a deliberate admin act with money
+ * behind it (the leader share), never a side effect of seating another team_lead. The update carries the tenant
+ * (`brokerage_id`) and the not-deleted guard IN the predicate, and is COUNTED (`.select("id")` — a delete/update that
+ * matches nothing also resolves with error:null, CLAUDE.md §3). A team that is not this tenant's matches nothing and is
+ * reported as skipped, never anchored (and never an error: the brokerage-transfer rail seats members while the team row
+ * still belongs to the source tenant). Idempotent: seating the same lead again changes nothing.
+ */
+async function anchorTeamLeadIfAbsent(
+  service: ReturnType<typeof createServiceClient>,
+  p: { userId: string; brokerageId: string; teamId: string },
+): Promise<{ ok: boolean; anchored: boolean; keptLeadId: string | null; skipped?: "team_not_in_tenant"; error?: string }> {
+  const { data: set, error } = await service
+    .from("teams")
+    .update({ team_lead_id: p.userId, updated_at: new Date().toISOString() })
+    .eq("id", p.teamId).eq("brokerage_id", p.brokerageId).is("team_lead_id", null).is("deleted_at", null)
+    .select("id")
+  if (error) return { ok: false, anchored: false, keptLeadId: null, error: `team lead anchor refused: ${error.message}` }
+  if ((set ?? []).length > 0) return { ok: true, anchored: true, keptLeadId: p.userId }
+  const { data: team, error: readErr } = await service
+    .from("teams").select("id, team_lead_id")
+    .eq("id", p.teamId).eq("brokerage_id", p.brokerageId).is("deleted_at", null).maybeSingle()
+  if (readErr) return { ok: false, anchored: false, keptLeadId: null, error: `team lead anchor could not be verified: ${readErr.message}` }
+  if (!team) return { ok: true, anchored: false, keptLeadId: null, skipped: "team_not_in_tenant" }
+  return { ok: true, anchored: false, keptLeadId: (team as { team_lead_id: string | null }).team_lead_id ?? null }
+}
 
 // ─── createOrRepairUserDomainRecords ─────────────────────────────────────────
 
@@ -434,6 +470,15 @@ export async function createOrRepairUserDomainRecords(
       if (!existingRoleErr && !existingRole) created.push("user_role_assignments")
     }
 
+    // ── 5b. THE TEAM LEAD ANCHOR (wave 143G) — a team_lead seated on a team that names no lead becomes its lead.
+    if (brokerageId && teamId && userType === "team_lead") {
+      const anchor = await anchorTeamLeadIfAbsent(service, { userId, brokerageId, teamId })
+      if (!anchor.ok) {
+        return { success: false, agentId, coordinatorId, domainRecordsCreated: created, error: anchor.error ?? "team lead anchor refused" }
+      }
+      if (anchor.anchored) created.push("teams.team_lead_id")
+    }
+
     // ── 6. Emit lifecycle event ───────────────────────────────────────────
     await emitUserProvisionedEvent({
       userId,
@@ -614,6 +659,11 @@ export async function assignUserRoleAndEntitlements(
         )
       if (grantErr) {
         return { success: false, error: `users.user_type is now ${params.newRole}, but the role grant was refused: ${grantErr.message}` }
+      }
+      // THE TEAM LEAD ANCHOR (wave 143G): promoting a member to team_lead on a team that names no lead makes them its lead.
+      if (params.newRole === "team_lead" && params.teamId) {
+        const anchor = await anchorTeamLeadIfAbsent(service, { userId: params.userId, brokerageId: params.brokerageId, teamId: params.teamId })
+        if (!anchor.ok) return { success: false, error: `users.user_type is now team_lead, but the team's lead anchor was refused: ${anchor.error}` }
       }
     }
 
@@ -932,7 +982,7 @@ export async function redispatchInvitation(
   if (!row) return { ok: false, dispatched: false, status: null, error: "Invitation not found" }
   if (row.status === "accepted") return { ok: false, dispatched: false, status: null, error: "Already accepted" }
   const email = row.email.trim().toLowerCase()
-  const redirectTo = p.redirectTo ?? `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`
+  const redirectTo = p.redirectTo ?? invitationLandingUrl()
 
   // DISPATCH — attempted now, result READ (supabase-js resolves a refusal; a throw is read the same way).
   let dispatched = false, alreadyRegistered = false, dispatchError: string | null = null
@@ -1026,7 +1076,7 @@ export async function inviteTenantMember(params: TenantMemberParams): Promise<Te
   const teamId = params.teamId ?? null
   const firstName = params.firstName ?? ""
   const lastName = params.lastName ?? ""
-  const redirectTo = params.redirectTo ?? `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding`
+  const redirectTo = params.redirectTo ?? invitationLandingUrl()
 
   const { authUserId: linked, orphanToMerge } = await resolveEmailHolder(service, email)
   let authUserId = linked
@@ -1239,8 +1289,9 @@ export interface TenantOwnerParams {
   brokerageId: string
   brokerageName: string
   tier: CanonicalTier
-  /** Post-invite landing (e.g. /auth/callback?next=/dashboard/onboarding). */
-  redirectTo: string
+  /** Post-invite landing (e.g. /auth/callback?next=/dashboard/onboarding). Undefined when no public origin is known
+   *  (bare dev) — the auth provider then uses the project's configured Site URL (invitationLandingUrl, wave 143G). */
+  redirectTo?: string
   /** The staff/superadmin who triggered provisioning; null for self-serve signup. */
   callerUserId?: string | null
 }

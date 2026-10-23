@@ -297,7 +297,12 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     category:  "ai",
     baseUrl:   "https://api.d-id.com",
     auth:      "basic",
-    envKey:    "D_ID_API_KEY",
+    // Wave 143 (lane 143H) — ONE SPELLING (CLAUDE.md §6): this said "D_ID_API_KEY", a name NOTHING reads.
+    // Every client, the probe (PLATFORM_PROVIDER_KEYS.did), the tenancy matrix, the launch checklist and
+    // .env.example spell it DID_API_KEY, so the adapter declaration (lib/kernel/provider-adapters.ts, derived
+    // from this envKey) and the provider-posture env map named a credential variable an operator would
+    // never set. Enforced by scripts/operations-docs-guard.ts (a registry envKey must be read or documented).
+    envKey:    "DID_API_KEY",
     docsUrl:   "https://docs.d-id.com/",
     githubUrl: "https://github.com/de-id",
     // Typed agents SDK — adopt when we ship the live-avatar conversational surface (browser);
