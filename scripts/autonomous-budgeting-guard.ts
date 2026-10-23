@@ -50,14 +50,28 @@ const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0
 
 /** The SQL function, modelled: with `lock` the read-sum-insert runs under a per (tenant, envelope) mutex — the
  *  pg_advisory_xact_lock m731 takes; without it (the CONTROL) concurrent calls interleave between read and insert. */
-function attachRpc(mem: MemClient, opts: { lock: boolean; absent?: boolean } = { lock: true }) {
+function attachRpc(mem: MemClient, opts: { lock: boolean; absent?: boolean; gather?: number } = { lock: true }) {
   const chains = new Map<string, Promise<unknown>>()
   let n = 0
+  // THE WINDOW A LOCK CLOSES. With the lock the chain serializes the bodies, so a 1 ms timer is the window.
+  // Without the lock (the positive control) the window is a BARRIER: every one of `opts.gather` concurrent draws
+  // reads the period total, THEN all of them write — the race the control exists to show, made deterministic.
+  // Before wave 143 the un-locked window was the same 1 ms timer, and under a loaded event loop the ten calls
+  // reached the body more than 1 ms apart, so the control serialized, read $90 and FAILED as a flake (a positive
+  // control that depends on wall-clock interleaving is not a control). A 100 ms fallback releases a smaller batch.
+  const waiting: Array<() => void> = []
+  const window = () => opts.lock || !opts.gather
+    ? new Promise<void>((res) => setTimeout(res, 1))
+    : new Promise<void>((res) => {
+        waiting.push(res)
+        if (waiting.length >= opts.gather!) waiting.splice(0).forEach((r) => r())
+        else setTimeout(() => { const i = waiting.indexOf(res); if (i >= 0) { waiting.splice(i, 1); res() } }, 100)
+      })
   const body = async (a: Record<string, any>) => {
     const rows = mem.tables.autonomy_budget_consumptions
     const live = rows.filter((r) => r.brokerage_id === a.p_brokerage_id && r.envelope === a.p_envelope && r.period_key === a.p_period_key && r.status === "consumed")
     const period = live.reduce((s, r) => s + Number(r.amount), 0)
-    await new Promise((res) => setTimeout(res, 1)) // the window a lock closes
+    await window()
     if (a.p_period_cap != null && period + a.p_amount > a.p_period_cap) return { ok: false, reason: "period cap", period_consumed: period }
     const scope = live.filter((r) => r.scope_key === a.p_scope_key).reduce((s, r) => s + Number(r.amount), 0)
     if (a.p_scope_cap != null && scope + a.p_amount > a.p_scope_cap) return { ok: false, reason: "scope cap", scope_consumed: scope }
@@ -116,7 +130,7 @@ async function main() {
     const allowed = ten.filter((v) => v.allowed).length
     const consumed = mem.tables.autonomy_budget_consumptions.reduce((s, r) => s + Number(r.amount), 0)
     check("A1 ATOMIC: 10 concurrent $30 draws on a $100 envelope → exactly 3 allowed, $90 consumed, 7 refused", allowed === 3 && consumed === 90, JSON.stringify({ allowed, consumed }))
-    const ctl = attachRpc(seed({}, OPEN), { lock: false })
+    const ctl = attachRpc(seed({}, OPEN), { lock: false, gather: 10 })
     const ctlRuns = await Promise.all(Array.from({ length: 10 }, () => consumeAutonomyEnvelope(ctl, { brokerageId: B, envelope: "recruiting_prospect_data", amount: 30, reasonCode: "MISSION_LIFECYCLE", reasonDetail: "x", subject: { type: "mission", id: uuid(7) }, now: NOW })))
     const ctlSum = ctl.tables.autonomy_budget_consumptions.reduce((s, r) => s + Number(r.amount), 0)
     check("A2 POSITIVE CONTROL: the same draws WITHOUT the lock over-consume (the lock is what keeps it atomic)", ctlRuns.filter((v) => v.allowed).length > 3 && ctlSum > 100, JSON.stringify({ ctlSum }))
