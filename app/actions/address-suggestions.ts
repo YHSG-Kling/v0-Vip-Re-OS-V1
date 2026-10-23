@@ -17,7 +17,9 @@
 // Tenant: the SESSION (requireCaller). No brokerageId parameter — none is accepted.
 // Fail closed: no session → no suggestions, no egress.
 
-import { requireCallerWithAgent } from "@/lib/auth/require-caller"
+// Aliased AS requireCaller — the repo convention for the agent-resolving gate (lib/auth/require-caller.ts:183):
+// every call site keeps reading `await requireCaller()`, which is also what test:provider-adapter pins.
+import { requireCallerWithAgent as requireCaller } from "@/lib/auth/require-caller"
 import { suggestAddressesDetailed, type AddressSuggestion } from "@/lib/external/nominatim-geocode"
 import { trackVendorUsageService } from "@/lib/vendor-governance/track-vendor-usage"
 
@@ -31,9 +33,9 @@ export type AddressSuggestionsResult =
  * provider was unreachable / skipped for health, or the caller has no session.
  */
 export async function suggestAddresses(query: string): Promise<AddressSuggestionsResult> {
-  // requireCallerWithAgent: vendor_usage_tracking.agent_id is an FK to agents.id, and agents.id and
+  // The agent-resolving gate: vendor_usage_tracking.agent_id is an FK to agents.id, and agents.id and
   // users.id are DISJOINT (CLAUDE.md §3) — booking the users.id here was refused (23503) on every call.
-  const caller = await requireCallerWithAgent()
+  const caller = await requireCaller()
   if (!caller.ok) return { ok: false, suggestions: [], outcome: "refused", error: caller.error }
 
   const probe = await suggestAddressesDetailed(String(query ?? ""), { brokerageId: caller.brokerageId })
