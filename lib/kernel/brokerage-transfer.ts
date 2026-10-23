@@ -93,6 +93,8 @@ export const TRANSFER_DATA_FAMILIES: readonly { table: string; what: string }[] 
   { table: "listings", what: "listings" },
   { table: "listing_media", what: "listing photos / media" },
   { table: "offers", what: "offers on those listings / for those buyers" },
+  { table: "contract_term_versions", what: "the executed-terms record of those offers (wave 143, m797 — a child of offers / transactions; follows its parent)" },
+  { table: "outside_offer_messages", what: "the outside-agent email loop on those offers (wave 143, m798 — a child of offers; follows its parent)" },
   { table: "showings", what: "showings" },
   { table: "tasks", what: "open work" },
   { table: "calendar_events", what: "appointments" },

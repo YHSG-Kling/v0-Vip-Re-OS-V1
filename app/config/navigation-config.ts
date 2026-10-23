@@ -1,7 +1,7 @@
 'use strict'
 
-import { UserRole } from '@/app/types/roles'
-import { NavigationConfig, NavItem } from '@/app/types/navigation'
+import type { UserRole } from '@/app/types/roles'
+import type { NavigationConfig, NavItem } from '@/app/types/navigation'
 
 // ─── CROSS-ROLE SURFACE GROUPS ───────────────────────────────────────────────
 //

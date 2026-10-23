@@ -493,7 +493,7 @@ export async function runListingInventoryRadar(
   const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
   // THE GATE: default = the canonical processRawRecord; the simulator injects an equivalent.
   const promote = opts.promote ?? (async (rawLeadId: string, bId: string) => {
-    const { processRawRecord } = await import("@/lib/lead-pipeline")
+    const { processRawRecord } = await import("@/lib/lead-pipeline/pipeline-processor")
     const r = await processRawRecord(rawLeadId, bId)
     return { action: r.action, leadId: r.leadId }
   })

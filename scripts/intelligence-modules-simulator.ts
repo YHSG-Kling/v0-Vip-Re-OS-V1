@@ -39,7 +39,9 @@ ok(!empty.verified,                                                 "email Tier 
 // sandbox — wave 139: the resolver answers ENOTFOUND for google.com itself), the LIVE check DID NOT RUN; that
 // is published loudly and is neither a pass nor a fail (the schema-cache-drift "no credentials" convention).
 // CI runners resolve DNS, so the check stays enforced there. The negative .invalid / syntax checks still run.
-const dnsReachable = await import("node:dns").then((d) => d.promises.resolveMx("google.com").then(() => true, (e: { code?: string }) => !["ENOTFOUND", "ECONNREFUSED", "ETIMEOUT", "EAI_AGAIN"].includes(String(e?.code))))
+// Wave 143: the proxied sandbox's stub resolver answers ENODATA for google.com's MX (it serves A records only) —
+// google.com HAS MX, so ENODATA on it can only be a resolver that does not serve MX, i.e. unreachable for this check.
+const dnsReachable = await import("node:dns").then((d) => d.promises.resolveMx("google.com").then(() => true, (e: { code?: string }) => !["ENOTFOUND", "ENODATA", "ECONNREFUSED", "ETIMEOUT", "EAI_AGAIN"].includes(String(e?.code))))
 const mxOk   = await checkEmailMx("alice@google.com")  // google.com has MX
 if (dnsReachable) ok(mxOk.verified && mxOk.tier === 2 && mxOk.hasMx === true, "email Tier 2: google.com has MX")
 else console.log(" ⚠ email Tier 2 positive control DID NOT RUN — no DNS resolver reachable in this environment (enforced where DNS resolves, e.g. CI)")

@@ -35,11 +35,11 @@ import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
 //        one real caller consumes (app/portal/[contactId]/layout.tsx:258).
 //    The wired pair is the survivor; the declared-but-unconsumed pair is the
 //    duplicate. Nothing was lost, and no capability disappeared with the import.
-import {
+import type {
   PortalViewOutput,
   PortalModulesOutput,
-  type PortalViewInput,
-  type PortalModulesInput,
+  PortalViewInput,
+  PortalModulesInput,
 } from "./portal-contracts"
 
 // ─── PORTAL VIEW TYPES ────────────────────────────────────────────────────────

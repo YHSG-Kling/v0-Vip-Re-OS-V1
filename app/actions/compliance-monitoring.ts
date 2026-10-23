@@ -1,23 +1,7 @@
 "use server"
 
-import {
-  analyzeFairHousingRiskService,
-  checkComplianceStatusService,
-  resolveComplianceAlertService,
-  resolveCompRiskFlagService,
-  trackCertificationExpirationService,
-  monitorTRIDComplianceService,
-  exportAuditTrailService,
-  scanContentComplianceService,
-  submitContentForApprovalService,
-  reviewContentApprovalService,
-  getApprovedContentLibraryService,
-  getPendingApprovalsService,
-  getComplianceViolationsService,
-  generateComplianceReportService,
-  createTRIDTimelineService,
-  updateTRIDMilestoneService,
-} from "@/lib/application"
+// Imported from the defining modules, not the barrel (wave 143): the barrel re-exports siblings this action never calls, and every app entry that reaches this action compiled them — test:proxy-graph-budget counts the server graph.
+import { analyzeFairHousingRiskService, checkComplianceStatusService, resolveComplianceAlertService, resolveCompRiskFlagService, trackCertificationExpirationService, monitorTRIDComplianceService, exportAuditTrailService, scanContentComplianceService, submitContentForApprovalService, reviewContentApprovalService, getApprovedContentLibraryService, getPendingApprovalsService, getComplianceViolationsService, generateComplianceReportService, createTRIDTimelineService, updateTRIDMilestoneService } from "@/lib/application/compliance-monitoring"
 import {
   FAIR_HOUSING_INTERACTION_TYPES,
   type FairHousingInteractionType,

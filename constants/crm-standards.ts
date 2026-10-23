@@ -1,3 +1,4 @@
+import type { Persona } from "@/lib/kernel/types"
 // Standard CRM field values - THE source of truth for all CRM data
 // These values are used across the entire application for workflows, automations, and data normalization
 
@@ -79,7 +80,7 @@ export const STANDARD_CONTACT_PERSONAS = [
   "fsbo",
   "investor",
   "other",
-] as const satisfies readonly import("@/lib/kernel/types").Persona[]
+] as const satisfies readonly Persona[]
 
 export type StandardContactPersona = (typeof STANDARD_CONTACT_PERSONAS)[number]
 

@@ -15,21 +15,10 @@
 import { isValidUUID } from '@/lib/validations'
 import { handleError } from '@/lib/errors'
 import { createServiceClient } from '@/lib/supabase/service'
-import {
-  getBuyerJourneyStatus,
-  enforceFinancialGate,
-  getBuyerFriendlyMessage,
-  logBuyerExecutionEvent,
-  handleBuyerVoiceRequest,
-  lenderConfirmFinancialVerification,
-  agentAssistSearchConfiguration,
-  adminOverrideFinancialGate,
-  resolveFinancialGateOverrideAuthority,
-  agentAdvanceBuyerStage,
-  getMultiPartyUpdateHistory,
-  type BuyerExecutionContext,
-  type VoiceAssistantRequest,
-} from '@/lib/buyer-execution'
+// Imported from the defining modules, not the barrel (wave 143): the barrel re-exports siblings this action never calls, and every app entry that reaches this action compiled them — test:proxy-graph-budget counts the server graph.
+import { getBuyerJourneyStatus, enforceFinancialGate, getBuyerFriendlyMessage, logBuyerExecutionEvent, type BuyerExecutionContext } from '@/lib/buyer-execution/buyer-execution-engine'
+import { handleBuyerVoiceRequest, type VoiceAssistantRequest } from '@/lib/buyer-execution/voice-assistant-integration'
+import { lenderConfirmFinancialVerification, agentAssistSearchConfiguration, adminOverrideFinancialGate, resolveFinancialGateOverrideAuthority, agentAdvanceBuyerStage, getMultiPartyUpdateHistory } from '@/lib/buyer-execution/multi-party-updates'
 // The canonical "may this caller act on this contact?" gate. It admits the
 // contact THEMSELVES (linked user id or matching email) as well as same-brokerage
 // staff, which is exactly the audience this file's `source: 'buyer_portal'` path

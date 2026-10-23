@@ -1,4 +1,8 @@
 import type { TeamCapStatus } from './team-lead-split'
+// Type-only (erased by the compiler): an inline `import('./x').T` reads as a VALUE edge to the module-graph
+// walker (test:proxy-graph-budget), so these are declared as `import type` where the walker can see it.
+import type { ResidualEvaluation } from './revenue-share-model'
+import type { AgentTermsResolution } from './agreement-terms'
 
 export const CURRENT_ENGINE_VERSION = 1
 
@@ -155,12 +159,12 @@ export interface WaterfallContext {
   // above. The deterministic rule evaluation's evidence — rule keys, the close date
   // the effective windows were judged on, graph corroboration findings — which
   // stage 11 writes onto the action ledger beside each residual ledger entry.
-  residualEvaluation?: import('./revenue-share-model').ResidualEvaluation
+  residualEvaluation?: ResidualEvaluation
 
   // The agreement the deal was priced with (stage 01, wave 143 lane 143C): the agent's terms in force on the
   // transaction's period — never today's profile — with the version, the date that decided and the signed
   // agreement of record. OPTIONAL like the fields above; stage 11 stores it as commission_calculations.engine_inputs.
-  agreement?: import('./agreement-terms').AgentTermsResolution
+  agreement?: AgentTermsResolution
 
   // The TEAM terms the team-lead override was priced with (stage 08, wave 143 lane 143C): which version, the date it was
   // judged on, and the agent's signed team agreement of record. OPTIONAL - set only when a team override applied.

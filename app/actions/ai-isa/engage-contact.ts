@@ -22,12 +22,10 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { collectError } from '@/lib/errors/collect-error'
-import {
-  generatePersonalizedEmail,
-  embedVideoInEmail,
-  shouldTriggerDirectMail,
-  triggerDirectMailCampaign,
-} from '@/lib/ai-isa'
+// Imported from the defining modules, not the barrel (wave 143): the barrel re-exports siblings this action never calls, and every app entry that reaches this action compiled them — test:proxy-graph-budget counts the server graph.
+import { generatePersonalizedEmail } from '@/lib/ai-isa/email-generator'
+import { embedVideoInEmail } from '@/lib/ai-isa/video-generator'
+import { shouldTriggerDirectMail, triggerDirectMailCampaign } from '@/lib/ai-isa/direct-mail-trigger'
 import {
   logISAOutreach,
   checkMaxTouches,

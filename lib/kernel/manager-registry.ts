@@ -1919,6 +1919,8 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   buyer_move_cases:             "deal_coordinator",
   // Buyer side: the buyer WRITES offers (pre-acceptance) and goes on tours.
   offers:                       "shopping_agent",
+  outside_offer_messages:       "shopping_agent", // wave 143 (m798): the outside-agent email loop on an offer — accept / counter / decline evidence
+  contract_term_versions:       "deal_coordinator", // wave 143 (m797): the executed-terms record a counter supersedes; closing compliance reads it
   // m619 (wave 51): the buyer's portal "submit an offer" INTENT — not an offer,
   // no price/terms/forms; the buyer-side manager notifies the buyer's own agent
   // (MAINTENANCE_DOMAINS.buyer_offer_submit_intent).
@@ -2118,6 +2120,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   plan_limits: "data_steward",
   ai_overage_invoices: "finance_manager",
   platform_contract_templates: "data_steward",
+  platform_form_packets: "data_steward", // wave 143 (m807): licensed fillable form packets uploaded by platform staff
   tenant_contract_signatures: "deal_coordinator",
   plan_tasks: "data_steward",
   platform_credentials: "data_steward",
@@ -2457,6 +2460,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   agent_commission_profiles: "finance_manager",
   // m812 (wave 143, lane 143C): the append-only history of agent_commission_profiles — the agreement in force on a deal's date.
   agent_commission_profile_versions: "finance_manager",
+  team_commission_profiles: "finance_manager", // the team's standing terms (m812 adds cap / fees / overrides / recorded_at)
   agent_commissions: "finance_manager",
   agent_credentials: "recruiting_manager",
   agent_credit_budgets: "recruiting_manager",

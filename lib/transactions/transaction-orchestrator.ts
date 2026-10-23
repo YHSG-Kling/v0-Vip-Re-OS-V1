@@ -1,5 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import { TransactionStage } from "./transaction-stages"
+import type { TransactionStage } from "./transaction-stages"
 import { advanceStage, canAdvanceStage, type StageProgressionResult } from "./stage-progression"
 import { canTransitionStage } from "./role-guard"
 

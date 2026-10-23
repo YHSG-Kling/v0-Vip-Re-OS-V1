@@ -522,7 +522,7 @@ async function main() {
   check("the compliance loop reads the planned date through the ONE resolver and records its basis; the recordable-events card collects it at the agreement signature",
     /resolveMlsLiveDates\(/.test(lcl) && /mls_start_date_basis:\s*"planned"/.test(lcl) && /key: "plannedMlsLiveDate"/.test(code("lib/listing-lifecycle/recordable-events.ts")) && /plannedMlsLiveDate:\s*str\("plannedMlsLiveDate"\)/.test(code("app/actions/seller-listing/record-lifecycle-event.ts")))
   check("m796 exists, is honestly stamped, adds the four columns and the three CHECKs; its vocabularies EQUAL the code's (derived, never restated) — 'an actual date cannot exist without its evidence' is a table CHECK",
-    /^-- WRITTEN, NOT APPLIED \(wave 143, lane 143A\)/.test(m796)
+    /^-- (WRITTEN, NOT APPLIED \(wave 143, lane 143A\)|── APPLIED LIVE )/.test(m796)
     && ["mls_live_date_actual", "mls_live_date_basis", "go_live_confirmed_source", "mls_live_timezone"].every((c) => new RegExp(`ADD COLUMN IF NOT EXISTS ${c}\\b`).test(m796))
     && [...MLS_LIVE_SOURCES].every((v) => m796.includes(`'${v}'`)) && [...MLS_LIVE_DATE_BASES].every((v) => m796.includes(`'${v}'`))
     && /listings_mls_live_actual_has_evidence_check/.test(m796) && /go_live_confirmed_at IS NOT NULL AND go_live_confirmed_source IS NOT NULL AND mls_live_date_basis IS NOT NULL/.test(m796))

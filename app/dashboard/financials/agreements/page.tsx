@@ -131,6 +131,17 @@ export default async function CommissionAgreementsPage() {
                 <CardDescription>The team&apos;s standing terms by the date they take effect</CardDescription>
               </CardHeader>
               <CardContent className="overflow-x-auto">
+                {/* phone: one card per version (the census' card variant); desktop: the table */}
+                <div className="md:hidden space-y-3">
+                  {[...t.versions].reverse().map((v) => (
+                    <div key={v.effectiveDate} className="rounded-md border p-3 text-sm space-y-1">
+                      <div className="font-medium">{v.effectiveDate === "1900-01-01" ? "From the start" : v.effectiveDate}</div>
+                      <div className="text-muted-foreground">Team lead share: {v.splitValue == null ? "—" : v.splitType === "flat" ? `$${v.splitValue.toLocaleString()} flat` : `${v.splitValue}%`}</div>
+                      <div className="text-muted-foreground">Cap: {v.capAmount == null ? "No cap" : `$${v.capAmount.toLocaleString()}`}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="hidden md:block">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b text-left text-muted-foreground">
@@ -149,6 +160,7 @@ export default async function CommissionAgreementsPage() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               </CardContent>
             </Card>
           ))}
