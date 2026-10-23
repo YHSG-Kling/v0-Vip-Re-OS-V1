@@ -80,7 +80,7 @@ export interface PlatformPacketRow {
   approved_at: string | null
 }
 
-const PACKET_COLUMNS = "id, name, state, packet_type, form_code, description, storage_path, file_name, field_count, status, version, license_note, license_expires_at, approved_by, approved_at"
+const PACKET_COLUMNS = "id, name, state, packet_type, form_code, description, storage_path, file_name, file_size_bytes, field_count, status, version, license_note, license_expires_at, approved_by, approved_at"
 
 // ── PURE ─────────────────────────────────────────────────────────────────────
 

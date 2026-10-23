@@ -42,7 +42,7 @@ import {
   sendSMS as messagingSendSMS,
 } from "@/lib/providers/messaging"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
-import { normalizeVendorCost, DIRECT_MAIL_PIECE_COST_USD } from "@/lib/vendor-governance/cost-normalizer"
+import { VENDOR_PRICING, normalizeVendorCost, DIRECT_MAIL_PIECE_COST_USD } from "@/lib/vendor-governance/cost-normalizer"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { convertSpeech } from "@/lib/providers/elevenlabs/client"
 import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
@@ -157,7 +157,8 @@ interface DispatchActorContext {
 // Wired HERE, at the egress chokepoint, so no caller changes: each exported dispatcher's body
 // runs inside withActionLedger. Costs are the same per-unit figures the vendor-usage meter books.
 const EMAIL_SEND_COST_USD = 0.001
-const SMS_SEND_COST_USD = 0.0075 // Twilio SMS ~$0.0075/segment
+// THE ONE SMS price (wave 143 integration, lane 143I finding O1): cost-normalizer's twilio_sms row — never a second literal.
+const SMS_SEND_COST_USD = VENDOR_PRICING['twilio_sms'].costPerUnit
 // TOMBSTONE (wave 138, lane 138A): the per-piece Lob table moved to its survivor
 // lib/vendor-governance/cost-normalizer.ts DIRECT_MAIL_PIECE_COST_USD (the ONE Lob price; imported above).
 

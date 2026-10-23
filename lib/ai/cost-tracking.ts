@@ -101,9 +101,9 @@ export function getModelPricing(): Record<AIModel, {
 
     // perplexity/sonar
     "perplexity-sonar": {
-      input: 1.00,   // $1 per 1M input tokens
-      output: 1.00,  // $1 per 1M output tokens
-      lastUpdated: "2026-09-12",
+      input: 0.25,   // $0.25 per 1M input tokens (+ $2.50 per 1,000 searches, booked by the search meter — not a token rate)
+      output: 2.50,  // $2.50 per 1M output tokens
+      lastUpdated: "2026-10-23",
       source: "https://vercel.com/ai-gateway/models/sonar (provider rate: docs.perplexity.ai/docs/pricing)"
     },
     // perplexity/sonar-pro

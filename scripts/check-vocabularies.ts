@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 457 tables, 828 columns.
+ * MEASURED AT GENERATION: 461 tables, 847 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-19
+ * generated: 2026-10-23
  * source: public.live_check_constraints_json()
- * body-sha256: 9dd2dbdb7ecc2bcdb544b5d5cdc5fd6ca8eba0cdfe6400fe36b09fac909d285b
+ * body-sha256: 251514bc1bb9f4c860152635d3f9fd6de73035abe796d782799d7029e3ee6333
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -343,7 +343,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   brokerage_required_documents: {
     classification: ["addendum", "agency_disclosure", "appraisal_report", "closing_disclosure", "commission_agreement", "counter_offer", "disclosure", "earnest_money_receipt", "hoa_documents", "id_document", "inspection_report", "insurance_binder", "lender_letter", "listing_agreement", "other", "pre_approval_letter", "preliminary_closing_statement", "proof_of_funds", "seller_broker_agreement", "signed_contract", "title_report", "wire_instructions"],
+    contract_subtype: ["lease_option", "new_construction", "probate_estate", "reo_bank_owned", "short_sale", "standard"],
     deal_type: ["buyer", "dual", "seller"],
+    financing_kind: ["cash", "financed"],
+    representation: ["designated_agency", "dual_agency", "single_agency", "transaction_brokerage"],
+    required_stage: ["closing", "contract", "listing", "offer"],
     scope_type: ["agent", "brokerage", "multi_location", "platform", "team"],
   },
   brokerage_transfer_requests: {
@@ -606,6 +610,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   contract_signatures: {
     contract_type: ["acceptance", "addendum", "amendment", "buyer_representation_agreement", "commission_agreement", "contract", "counter_offer", "disclosure", "escrow_instructions", "independent_contractor", "listing_agreement", "nar_code_of_ethics", "policy_acknowledgment", "purchase_agreement", "team_agreement"],
     esign_status: ["agent_signed", "declined", "fully_signed", "pending", "sent", "viewed", "voided"],
+  },
+  contract_term_versions: {
+    source: ["addendum", "amendment", "counter", "offer"],
+    status: ["executed", "proposed", "void"],
   },
   conversation_audit_flags: {
     review_status: ["dismissed", "escalated", "pending", "reviewed"],
@@ -929,8 +937,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     priority: ["high", "low", "medium"],
   },
   listings: {
+    go_live_confirmed_source: ["idx", "rentcast"],
     legal_description_source: ["agent", "listing", "public_record", "rentcast"],
     lifecycle_stage: ["AGENT_CONSULTATION", "APPOINTMENT_SET", "APPRAISAL", "CLOSED", "CLOSING_PREP", "CMA_GENERATION", "COMING_SOON_ACTIVE", "COMING_SOON_PREP", "FINANCING", "INSPECTION", "LEAD", "LEAD_ASSIGNED", "LIFETIME_CUSTOMER", "LISTING_AGREEMENT_INITIATED", "LISTING_AGREEMENT_SIGNED", "LISTING_CANCELLED", "LISTING_EXPIRED", "LISTING_PRESENTATION_CREATED", "MEDIA_APPROVED", "MEDIA_CAPTURE", "MLS_ACTIVE", "MLS_DATE_CONFIRMED", "MLS_READY", "NEGOTIATION", "OFFERS_RECEIVED", "OPEN_HOUSE_EVENT", "OPEN_HOUSE_MARKETING", "PRESENTATION_DRIP_PREP", "PRESENTATION_VIDEO_GENERATED", "REPAIRS_IN_PROGRESS", "SELLER_DECISION", "SELLER_DECLINED", "SHOWINGS_ACTIVE", "UNDER_CONTRACT"],
+    mls_live_date_basis: ["feed_list_date", "first_observed"],
     property_type: ["commercial", "condo", "land", "multi_family", "other", "single_family", "townhouse"],
     status: ["active", "cancelled", "coming_soon", "draft", "expired", "listing_signed", "off_market", "pending", "sold", "withdrawn"],
   },
@@ -1125,6 +1135,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     offer_type: ["backup", "counter", "multiple_counter", "standard"],
     seller_response_type: ["accepted", "countered", "rejected"],
   },
+  older_persons_housing_verifications: {
+    basis: ["55_plus", "62_plus", "federal_state_program"],
+    status: ["conditions_unmet", "verified"],
+  },
   onboarding_steps: {
     category: ["certification", "compliance", "practice", "system_setup", "training"],
   },
@@ -1158,6 +1172,15 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   outcome_reconciliations: {
     channel: ["direct_mail", "email", "in_app", "sms", "social", "voice_drop"],
     verdict: ["confirmed", "contradicted", "pending", "unverifiable"],
+  },
+  outside_offer_messages: {
+    classification: ["acceptance", "acknowledgement", "ambiguous", "counter", "decline", "other"],
+    direction: ["inbound", "outbound"],
+    kind: ["counter_back", "offer_packet", "seller_reply"],
+    recipient_verification: ["agent_confirmed", "mls_published"],
+    recommended_action: ["file_only", "record_acceptance", "record_counter", "record_decline", "request_clarification", "request_signed_document", "review_manually"],
+    sender_auth: ["fail", "pass", "unknown"],
+    status: ["awaiting_agent", "confirmed", "dismissed", "quarantined", "send_failed", "sent"],
   },
   pattern_adoptions: {
     status: ["applied", "failed", "reverted"],
@@ -1204,6 +1227,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     platform: ["authentisign", "bandwidth", "brokermint", "buffer", "did", "docusign", "dotloop", "facebook", "followupboss", "formsimplicity", "gmail", "gohighlevel", "google_calendar", "google_flow", "hubspot", "idxbroker", "instagram", "linkedin", "listhub", "lob", "lofty", "mailgun", "mls", "mls_direct", "opcity", "openai_ads", "outlook", "pexels", "plaid", "platform_quickbooks", "platform_social_facebook", "platform_social_instagram", "platform_social_linkedin", "platform_social_tiktok", "platform_social_x", "platform_social_youtube", "platform_zoom", "plivo", "postmark", "quickbooks", "realtor_com", "resend", "sendgrid", "showingtime", "sinch", "skyslope", "stripe", "telnyx", "twilio", "twilio_a2p", "twilio_byo", "twilio_subaccount", "vibe", "zillow", "zoom"],
     scope: ["agent", "brokerage", "platform", "team"],
     test_status: ["fail", "pass", "pending"],
+  },
+  platform_form_packets: {
+    packet_type: ["custom", "disclosure", "listing", "offer", "transaction"],
+    status: ["approved", "draft", "retired"],
   },
   platform_impersonation_sessions: {
     mode: ["full", "read_only"],

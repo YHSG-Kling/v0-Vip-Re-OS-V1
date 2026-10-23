@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 143, lane 143H) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-24 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 143, lane 143H; statement by statement where the MCP held a batch ──
 --
 -- m840 — ONE doc_type spelling for the title company's PRELIMINARY closing statement (CLAUDE.md §6).
 --        Owner-approvable DATA migration. It is one UPDATE and it renames no column and no table.

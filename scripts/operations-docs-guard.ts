@@ -675,7 +675,9 @@ const ownerSqlDoc = "docs/operations/OWNER-SQL.md"
   const m840 = mig(840), m841 = mig(841)
   for (const [label, f] of [["m840", m840], ["m841", m841]] as const) {
     const sql = f ? rd(`supabase/migrations/${f}`) : ""
-    check(`${label}: present, line 1 is the wave-143 stamp, claimOf reads it as not_applied`, !!f && sql.split("\n")[0].startsWith("-- WRITTEN, NOT APPLIED (wave 143, lane 143H)") && claimOf(sql) === "not_applied")
+    // RULE, not a waypoint (CLAUDE.md §2): the file states its status on line 1 — the lane stamp until applied, APPLIED LIVE after
+    // (the integrator applied both on 2026-10-24: m840 touched 0 rows, m841 is a nullability change).
+    check(`${label}: present and states its status on line 1 (lane stamp or APPLIED LIVE; claimOf agrees)`, !!f && /^-- (WRITTEN, NOT APPLIED \(wave 143, lane 143H\)|── APPLIED LIVE )/.test(sql.split("\n")[0]) && ["applied", "not_applied"].includes(claimOf(sql)))
     check(`${label}: only guarded UPDATE / ALTER COLUMN / COMMENT statements (no DROP INDEX / DROP COLUMN / DELETE / INSERT)`, !!f && migrationViolations(sql).length === 0, f ? migrationViolations(sql).join("; ") : "absent")
   }
   const s840 = m840 ? rd(`supabase/migrations/${m840}`) : ""

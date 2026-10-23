@@ -501,6 +501,7 @@ export async function assertTransactionCreationAllowed(
   if (params.offerId) {
     audit = await auditOfferDocuments(supabase, {
       offerId:     params.offerId,
+      stage:       "contract", // wave 143 (lane 143B): the executed-contract checklist, not the offer-stage one
       brokerageId: params.brokerageId,
       contactId:   (params.contactIds ?? []).find(Boolean) ?? null,
       agentUserId: params.agentUserId ?? null,

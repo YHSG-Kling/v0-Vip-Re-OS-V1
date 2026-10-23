@@ -187,7 +187,7 @@ function CardConfirmForm({ target, onDone, onCancel }: { target: ConfirmTarget; 
       }
       if (res.mode === "routed") {
         const r = res.result
-        onDone({ contactId: r.contactId, entity: r.entity, message: `Confirmed — ${ENTITY_LABEL[r.entity.kind].toLowerCase()}${r.entity.kind === "none" ? ` (${r.cardSubjectType.replace(/_/g, " ")})` : ""}.` })
+        onDone({ contactId: r.contactId, entity: r.entity, message: `Confirmed — ${ENTITY_LABEL[r.entity.kind].toLowerCase()}${r.entity.kind === "none" ? ((r as { existingUserId?: string | null }).existingUserId ? " (already on your team)" : ` (${r.cardSubjectType.replace(/_/g, " ")})`) : ""}.` })
       } else {
         const applied = res.applied.length ? `updated ${res.applied.map((f) => FIELD_LABEL[f].toLowerCase()).join(", ")}` : "nothing needed updating"
         const kept = res.kept.length ? `; kept ${res.kept.map((k) => `${FIELD_LABEL[k.field].toLowerCase()} (${k.reason.replace(/_/g, " ")})`).join(", ")}` : ""

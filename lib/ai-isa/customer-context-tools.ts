@@ -115,7 +115,7 @@ function buildGetMyContextTool(ctx: CustomerContextToolsContext) {
         if (error || !contact) return { success: false, error: error?.message ?? "Contact not found" }
         const { data: activities } = await svc
           .from("activities")
-          .select("activity_type, title, status, scheduled_at, completed_at")
+          .select("activity_type, title, status, scheduled_at, completed_at, metadata")
           .eq("contact_id", ctx.contactId)
           .order("created_at", { ascending: false })
           .limit(5)
@@ -128,7 +128,10 @@ function buildGetMyContextTool(ctx: CustomerContextToolsContext) {
           buyerStage: contact.buyer_stage,
           status: contact.status,
           lastContactedAt: contact.last_contacted_at,
-          recentActivity: activities ?? [],
+          recentActivity: (activities ?? []).map((a: Record<string, unknown>) => ({ activity_type: a.activity_type, title: a.title, status: a.status, scheduled_at: a.scheduled_at, completed_at: a.completed_at })),
+          // Wave 143 (lane 143F): the lead-magnet assets already DELIVERED to this person (magnet id, hosted PDF,
+          // document-library row, kind) — the delivery runner writes them on the activity; the AI ISA may refer to them.
+          deliveredAssets: (activities ?? []).filter((a: Record<string, unknown>) => a.activity_type === "lead_magnet_delivered").map((a: Record<string, unknown>) => (a.metadata as Record<string, unknown> | null) ?? {}),
         }
       }
       if (ctx.leadId) {

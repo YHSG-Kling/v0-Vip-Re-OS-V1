@@ -58,6 +58,9 @@ export interface TermsVersion {
   documentId: string | null
   executedAt: string | null
   terms: Record<string, unknown>
+  /** Who recorded the version and the transaction it anchors to (null on a derived, offer-chain version). */
+  recordedBy?: string | null
+  transactionId?: string | null
   /** True for a version computed from an `offers` row rather than read from the immutable record. */
   derived: boolean
 }

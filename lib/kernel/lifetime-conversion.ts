@@ -68,7 +68,8 @@ export async function readLifetimeConversionPolicy(svc: Svc, brokerageId: string
   return { ...policy, source: data ? "brokerage_settings.settings.lifetime_conversion" : "no brokerage_settings row — default (convert at close)" }
 }
 
-/** The post-close touchpoint schedule (moved from closeTransactionCommand; one spelling). */
+/** The PLATFORM DEFAULT post-close moments — the fallback when the tenant's follow-up policy cannot be read
+ * (lib/ai-isa/followup-policy.ts owns the vocabulary; wave 143E). Never the schedule by itself. */
 const POST_CLOSE_TOUCHPOINTS = [
   { type: "post_close_3_day",   daysAfter: 3,       channel: "video" },
   { type: "post_close_30_day",  daysAfter: 30,      channel: "sms" },
@@ -135,9 +136,22 @@ export async function promoteDealContactsToLifetime(
     result.skippedExistingTouchpoints = true
     return result
   }
+  // Wave 143 (lane 143E, merged here): the moments come from the tenant's VERSIONED follow-up policy — not a literal
+  // schedule. The arbiter decides what each moment becomes when it opens. A refused/unloadable policy keeps the
+  // platform defaults above (same numbers), said in result.errors, never a silent change.
+  let moments: ReadonlyArray<{ type: string; daysAfter: number; channel: string }> = POST_CLOSE_TOUCHPOINTS
+  try {
+    const { loadFollowupPolicy } = await import("@/lib/ai-isa/followup-policy")
+    const { policy, source } = await loadFollowupPolicy(svc as any, args.brokerageId)
+    if (Array.isArray(policy.postClose) && policy.postClose.length > 0) {
+      moments = policy.postClose.map((m) => ({ type: m.key, daysAfter: m.afterClosingDays, channel: m.defaultChannel }))
+    } else result.errors.push(`follow-up policy carries no post-close moments (${source}) — platform defaults scheduled`)
+  } catch (e) {
+    result.errors.push(`follow-up policy unreadable (${e instanceof Error ? e.message : String(e)}) — platform defaults scheduled`)
+  }
   const closeDate = new Date(args.closeDate)
   const rows = contactIds.flatMap((contactId) =>
-    POST_CLOSE_TOUCHPOINTS.map((s) => {
+    moments.map((s) => {
       const d = new Date(closeDate)
       d.setDate(d.getDate() + s.daysAfter)
       return {
@@ -154,6 +168,7 @@ export async function promoteDealContactsToLifetime(
   )
   // sentinelWrite READS the refusal and ledgers the loss (a lost touchpoint is a missed nudge, never the
   // conversion it follows); it returns true only when the insert landed — every row in one statement.
+  if (rows.length === 0) return result
   const landed = await sentinelWrite(svc, svc.from("lifetime_customer_touchpoints").insert(rows), {
     table: "lifetime_customer_touchpoints",
     flow: "lifetime_customer_touchpoints_write",

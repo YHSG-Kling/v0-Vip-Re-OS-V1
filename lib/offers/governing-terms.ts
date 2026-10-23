@@ -103,12 +103,13 @@ export async function governingContractTerms(
     if (rootList.length) filters.push(`root_offer_id.in.(${rootList.join(",")})`)
     if (transactionId) filters.push(`transaction_id.eq.${transactionId}`)
     if (filters.length) {
-      const { data, error } = await svc.from("contract_term_versions").select("version_no, source, status, offer_id, document_id, executed_at, terms").eq("brokerage_id", brokerageId).or(filters.join(","))
+      const { data, error } = await svc.from("contract_term_versions").select("version_no, source, status, offer_id, document_id, executed_at, terms, recorded_by, transaction_id").eq("brokerage_id", brokerageId).or(filters.join(","))
       if (error) return { ok: false, reason: `contract_term_versions read refused: ${error.message}` }
       recorded = ((data ?? []) as Array<Record<string, any>>).map((r) => ({
         versionNo: Number(r.version_no), source: r.source as TermVersionSource, status: r.status as TermVersionStatus,
         offerId: (r.offer_id as string | null) ?? null, documentId: (r.document_id as string | null) ?? null,
         executedAt: (r.executed_at as string | null) ?? null, terms: (r.terms ?? {}) as Record<string, unknown>, derived: false,
+        recordedBy: (r.recorded_by as string | null) ?? null, transactionId: (r.transaction_id as string | null) ?? null,
       }))
     }
   }

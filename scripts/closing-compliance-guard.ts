@@ -24,7 +24,7 @@
  *   E. A STRIPPED-SOURCE CENSUS (scripts/strip-comments.ts): nothing in the closing files writes to a
  *      signed-term table; every query is tenant-pinned; no fair-housing logic leaks into closing
  *      (owner: fair-housing checks belong to public marketing copy only); the scanner and the pre-CDA gate
- *      are wired to the runner; the migration is labelled WRITTEN, NOT APPLIED.
+ *      are wired to the runner; the migration states its status on line 1 (applied live at wave-143 integration).
  *
  * BLIND SPOTS (published beside the number, not hidden in it): the runner runs against an in-memory
  * database — RLS and the live column set are NOT modelled (the live columns were read through the Supabase
@@ -138,7 +138,7 @@ async function main() {
     return m ? [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]) : null
   }
   const sameSet = (a: readonly string[] | null, b: readonly string[]) => !!a && a.length === b.length && b.every((x) => a.includes(x))
-  check("m806 first line is the WRITTEN, NOT APPLIED label for this lane", sql.split("\n")[0].startsWith("-- WRITTEN, NOT APPLIED (wave 143, lane 143B)"))
+  check("m806 states its status on line 1 (the lane stamp until applied; APPLIED LIVE once the integrator applied it)", /^-- (WRITTEN, NOT APPLIED \(wave 143, lane 143B\)|── APPLIED LIVE )/.test(sql.split("\n")[0]))
   check("required_stage CHECK = CHECKLIST_STAGES", sameSet(checkSet("required_stage"), CHECKLIST_STAGES))
   check("financing_kind CHECK = FINANCING_KINDS", sameSet(checkSet("financing_kind"), FINANCING_KINDS))
   check("contract_subtype CHECK = CONTRACT_SUBTYPES", sameSet(checkSet("contract_subtype"), CONTRACT_SUBTYPES))
@@ -473,7 +473,7 @@ async function main() {
   const libraryTypes = (() => { const m = /brokerage_form_library:\s*\{\s*packet_type:\s*\[([^\]]*)\]/.exec(vocabSrc); return m ? [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]) : null })()
   const sql7 = read("supabase/migrations/m807-platform-form-packets.sql"), sql7Code = sql7.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
   const checkIn = (col: string) => { const m = new RegExp(`${col} IN \\(([^)]*)\\)`).exec(sql7Code); return m ? [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]) : null }
-  check("m807 is labelled WRITTEN, NOT APPLIED for this lane", sql7.split("\n")[0].startsWith("-- WRITTEN, NOT APPLIED (wave 143, lane 143B)"))
+  check("m807 states its status on line 1 (the lane stamp until applied; APPLIED LIVE once the integrator applied it)", /^-- (WRITTEN, NOT APPLIED \(wave 143, lane 143B\)|── APPLIED LIVE )/.test(sql7.split("\n")[0]))
   check("PLATFORM_PACKET_TYPES = brokerage_form_library.packet_type (ONE vocabulary for the kind of packet) = the m807 CHECK", sameSet(libraryTypes, packets.PLATFORM_PACKET_TYPES) && sameSet(checkIn("packet_type"), packets.PLATFORM_PACKET_TYPES))
   check("PLATFORM_PACKET_STATUSES = the m807 CHECK", sameSet(checkIn("status"), packets.PLATFORM_PACKET_STATUSES))
   check("the database refuses an approved row with no approver, no licence basis or no fillable field (m807 CHECK)", /platform_form_packets_approved_needs_evidence/.test(sql7Code) && /approved_by IS NOT NULL/.test(sql7Code) && /length\(btrim\(license_note\)\) >= 20/.test(sql7Code) && /field_count > 0/.test(sql7Code))

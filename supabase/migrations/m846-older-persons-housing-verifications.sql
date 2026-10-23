@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 143, lane 143F) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-24 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 143, lane 143F; statement by statement where the MCP held a batch ──
 --
 -- m846 — older_persons_housing_verifications (wave 143, lane 143F: the HOUSING-FOR-OLDER-PERSONS exemption).
 -- Writer: lib/compliance/fair-housing-older-persons-store.ts saveOlderPersonsVerification, reached ONLY through the

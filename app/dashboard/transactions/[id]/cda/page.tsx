@@ -176,7 +176,7 @@ export default async function CDAPage({ params }: PageProps) {
   const [calcRes, ledgerRes] = await Promise.all([
     supabase
       .from("commission_calculations")
-      .select("id, total_commission, breakdown_json, engine_inputs, calculated_at")
+      .select("id, total_commission, breakdown_json, engine_inputs, calculated_at, calculation_version, agent_id")
       .eq("transaction_id", id)
       .eq("brokerage_id", brokerageId)
       .order("calculated_at", { ascending: false })

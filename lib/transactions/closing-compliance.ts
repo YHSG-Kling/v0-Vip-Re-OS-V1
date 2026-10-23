@@ -65,6 +65,7 @@ import {
   type TermMap,
   type TermsInstrument,
   type ClosingTermKey,
+  type InstrumentKind,
 } from "./closing-compliance-core"
 
 type Svc = SupabaseClient<any, any, any>
@@ -306,6 +307,52 @@ async function loadListingSideInstrument(svc: Svc, tx: TransactionRow): Promise<
 }
 
 /** DEFAULT READER — superimposes the offer chain, the executed documents and the listing-side commission. */
+/** lane A's term key → this file's closing term (+ unit). Both spellings of a usd amount are admitted; the first hit wins. */
+const RECORD_KEY_MAP: ReadonlyArray<readonly [string, ClosingTermKey, "usd" | "pct" | "date" | "party"]> = [
+  ["offer_price", "purchase_price", "usd"], ["purchase_price", "purchase_price", "usd"],
+  ["earnest_money", "earnest_money", "usd"], ["closing_date", "closing_date", "date"],
+  ["closing_cost_contribution", "seller_credit", "usd"], ["seller_credit", "seller_credit", "usd"],
+  ["title_policy_payer", "owner_title_policy_payer", "party"],
+  ["buyer_agent_commission_flat", "commission_buyer_side", "usd"], ["buyer_agent_commission_pct", "commission_buyer_side", "pct"],
+]
+/** The authoritative versioned record (lib/offers/governing-terms.ts) as ONE executed instrument; null when nothing governs
+ *  or the record is unreadable (said on the console — the instruments alone then decide, never a silent "no terms"). */
+async function recordedTermsInstrument(svc: Svc, tx: TransactionRow): Promise<TermsInstrument | null> {
+  try {
+    const { governingContractTerms } = await import("@/lib/offers/governing-terms")
+    const r = await governingContractTerms(svc as any, String(tx.brokerage_id ?? ""), { transactionId: tx.id })
+    if (!r.ok || !r.governing.governingVersion) return null
+    const terms: TermMap = {}
+    let executedAt: string | null = null
+    const recordTerms = r.governing.terms as Record<string, { value: unknown; versionNo: number; source: string; executedAt: string | null } | undefined>
+    for (const [from, to, unit] of RECORD_KEY_MAP) {
+      if (terms[to]) continue
+      const g = recordTerms[from]
+      if (!g || g.value == null) continue
+      const source = `contract_term_versions v${g.versionNo} (${g.source})`
+      if (g.executedAt && (!executedAt || g.executedAt > executedAt)) executedAt = g.executedAt
+      if (unit === "usd" || unit === "pct") {
+        const n = typeof g.value === "number" ? g.value : parseUsd(g.value as string)
+        if (n === null || !Number.isFinite(n)) continue
+        terms[to] = { unit, value: n, confidence: "record", source, executedAt: g.executedAt } as TermFact
+      } else if (unit === "date") {
+        const d = parseDateOnly(g.value as string); if (!d) continue
+        terms[to] = { unit: "date", value: d, confidence: "record", source, executedAt: g.executedAt }
+      } else {
+        const p = parseParty(g.value as string); if (!p) continue
+        terms[to] = { unit: "party", value: p, confidence: "record", source, executedAt: g.executedAt }
+      }
+    }
+    if (Object.keys(terms).length === 0) return null
+    const gv = r.governing.governingVersion
+    const kind: InstrumentKind = gv.source === "offer" ? "original_offer" : gv.source === "counter" ? "counter" : "addendum"
+    return { id: `record:${gv.source}:v${gv.versionNo}`, kind, label: `authoritative terms record (${gv.source} v${gv.versionNo})`, executed: true, executedAt, terms }
+  } catch (e) {
+    console.warn("[closing-compliance] authoritative terms record unreadable — the instruments alone decide:", e instanceof Error ? e.message : String(e))
+    return null
+  }
+}
+
 const readGoverningTermsFromRecords: GoverningTermsReader = async (svc, tx) => {
   const offers = await loadOfferInstruments(svc, tx)
   if (!offers.ok) return offers
@@ -316,6 +363,12 @@ const readGoverningTermsFromRecords: GoverningTermsReader = async (svc, tx) => {
 
   const instruments: TermsInstrument[] = [...offers.instruments, ...docs.instruments]
   if (listing.instrument) instruments.push(listing.instrument)
+  // Wave 143 integration (one canonical path, CLAUDE.md law 2): lane A's VERSIONED record — contract_term_versions
+  // plus the offer chain (lib/offers/governing-terms.ts governingContractTerms) — is the authoritative terms record;
+  // an executed counter / addendum recorded there supersedes what the instruments above say. It rides in as ONE
+  // executed instrument so the superimposition rule below stays the only precedence rule.
+  const recorded = await recordedTermsInstrument(svc, tx)
+  if (recorded) instruments.push(recorded)
   // No offer on the transaction (a hand-built one): the transaction's own recorded terms, labelled as such.
   if (offers.instruments.length === 0) {
     const t = tx

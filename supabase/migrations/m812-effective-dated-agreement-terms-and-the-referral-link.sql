@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 143, lane 143C) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-24 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 143, lane 143C; statement by statement where the MCP held a batch ──
 --
 -- m812 — EFFECTIVE-DATED AGREEMENT TERMS + THE REFERRAL LINK (wave 143, lane 143C).
 --

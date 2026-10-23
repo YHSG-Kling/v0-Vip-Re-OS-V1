@@ -45,7 +45,7 @@ export const CLOSING_TERM_KEYS = [
 ] as const
 export type ClosingTermKey = (typeof CLOSING_TERM_KEYS)[number]
 
-export const CLOSING_TERM_LABEL: Record<ClosingTermKey, string> = {
+const CLOSING_TERM_LABEL: Record<ClosingTermKey, string> = {
   purchase_price:           "Purchase price",
   earnest_money:            "Earnest money / deposit",
   closing_date:             "Closing date",
@@ -71,7 +71,6 @@ const CONFIDENCE_RANK: Record<Confidence, number> = { record: 4, verified: 4, hi
 const isDecisive = (c: Confidence): boolean => CONFIDENCE_RANK[c] >= CONFIDENCE_RANK.medium
 
 export type Party = "buyer" | "seller" | "split"
-export const PARTIES: readonly Party[] = ["buyer", "seller", "split"]
 
 /** Instruments that can state contract terms (see KIND_ORDER for how they rank). */
 export type InstrumentKind = "original_offer" | "counter" | "addendum" | "listing_agreement" | "executed_contract"
@@ -239,9 +238,9 @@ export function parseParty(v: unknown): Party | null {
 // ── The comparison ───────────────────────────────────────────────────────────
 
 /** Rounding slack for a dollar figure DERIVED from a percentage (a title company rounds to the dollar). */
-export const DERIVED_USD_TOLERANCE = 1.0
+const DERIVED_USD_TOLERANCE = 1.0
 /** A stated dollar figure must agree to the cent (half a cent for floating point). */
-export const STATED_USD_TOLERANCE = 0.005
+const STATED_USD_TOLERANCE = 0.005
 
 /** `conflict` = the executed paper disagrees with itself and does not say which instrument governs. */
 export type Verdict = "match" | "mismatch" | "unverifiable" | "conflict"

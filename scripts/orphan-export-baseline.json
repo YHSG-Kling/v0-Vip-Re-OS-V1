@@ -47,7 +47,7 @@
     "lib/agents/coverage-mode.ts": 1,
     "lib/agents/education-delivery-producer.ts": 4,
     "lib/agents/recruit-outreach-producer.ts": 1,
-    "lib/agents/referral-closer.ts": 2,
+    "lib/agents/referral-closer.ts": 1,
     "lib/agents/seller-update-reel-producer.ts": 4,
     "lib/ai/ai-error.ts": 2,
     "lib/ai/content-features.ts": 1,
@@ -168,7 +168,7 @@
     "lib/external/socrata-client.ts": 2,
     "lib/external/socrata-market-registry.ts": 2,
     "lib/external/tavily-client.ts": 1,
-    "lib/external/versium-client.ts": 4,
+    "lib/external/versium-client.ts": 3,
     "lib/external/zenrows-client.ts": 1,
     "lib/external/zyte-client.ts": 2,
     "lib/fatigue/after-hours.ts": 1,
@@ -282,7 +282,7 @@
     "lib/kernel/listing-inventory-radar.ts": 3,
     "lib/kernel/listing-propensity.ts": 2,
     "lib/kernel/listings-batchdata-feed.ts": 1,
-    "lib/kernel/lookalike-audience.ts": 2,
+    "lib/kernel/lookalike-audience.ts": 1,
     "lib/kernel/manager-delegation.ts": 3,
     "lib/kernel/manager-dissent.ts": 2,
     "lib/kernel/manager-registry.ts": 1,
@@ -360,7 +360,7 @@
     "lib/lead-intelligence/behavioral-summary.ts": 4,
     "lib/lead-intelligence/visitor-email-capture.ts": 1,
     "lib/lead-magnets/ai-draft.ts": 2,
-    "lib/lead-magnets/book-creator.ts": 4,
+    "lib/lead-magnets/book-creator.ts": 3,
     "lib/lead-magnets/embed-snippet.ts": 1,
     "lib/lead-magnets/suggestions.ts": 2,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
@@ -511,7 +511,6 @@
     "lib/showings/showingtime-ingest.ts": 1,
     "lib/social/publisher.ts": 1,
     "lib/social/token-refresh.ts": 1,
-    "lib/sphere/lifetime-touchpoint-ledger.ts": 1,
     "lib/sphere/next-best-actions.ts": 1,
     "lib/storage/file-limits.ts": 3,
     "lib/storage/signed-upload-url.ts": 4,
@@ -577,7 +576,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 11480,
+  "census": 11680,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -700,7 +699,7 @@
     "app/actions/autonomy-halt.ts": 1,
     "app/actions/avatar-video.ts": 2,
     "app/actions/avatar-voice-catalog.ts": 3,
-    "app/actions/billing.ts": 14,
+    "app/actions/billing.ts": 13,
     "app/actions/blog-cadence-policy.ts": 2,
     "app/actions/blog.ts": 13,
     "app/actions/brand-template-registry.ts": 12,
@@ -726,8 +725,10 @@
     "app/actions/buyer-offer/esign-anchor-plan.ts": 1,
     "app/actions/buyer-offer/flag-compliance.ts": 1,
     "app/actions/buyer-offer/handle-multi-offer.ts": 3,
+    "app/actions/buyer-offer/outside-offer-loop.ts": 5,
     "app/actions/buyer-offer/prefill-offer.ts": 2,
     "app/actions/buyer-offer/prefill-storage-form.ts": 1,
+    "app/actions/buyer-offer/record-contract-addendum.ts": 1,
     "app/actions/buyer-offer/record-seller-response.ts": 1,
     "app/actions/buyer-offer/record-seller-signed-counter.ts": 1,
     "app/actions/buyer-offer/respond-to-counter.ts": 1,
@@ -763,6 +764,7 @@
     "app/actions/collaborative-search.ts": 16,
     "app/actions/coming-soon-content.ts": 1,
     "app/actions/command-center.ts": 3,
+    "app/actions/commission-agreement-history.ts": 1,
     "app/actions/communications.ts": 10,
     "app/actions/compliance/dashboard.ts": 2,
     "app/actions/compliance/document-access-audit.ts": 1,
@@ -836,6 +838,7 @@
     "app/actions/error-handler.ts": 7,
     "app/actions/exception-center.ts": 5,
     "app/actions/external-services.ts": 2,
+    "app/actions/fair-housing-older-persons.ts": 3,
     "app/actions/fb-audience-templates.ts": 1,
     "app/actions/financial-kernel.ts": 25,
     "app/actions/financials.ts": 7,
@@ -871,7 +874,7 @@
     "app/actions/lead-intelligence.ts": 17,
     "app/actions/lead-lifecycle.ts": 2,
     "app/actions/lead-magnet-capture.ts": 1,
-    "app/actions/lead-magnets-actions.ts": 16,
+    "app/actions/lead-magnets-actions.ts": 20,
     "app/actions/lead-management.ts": 4,
     "app/actions/lead-promotion/promote-lead.ts": 1,
     "app/actions/lead-quick-actions.ts": 3,
@@ -884,7 +887,7 @@
     "app/actions/lender-portal-actions.ts": 6,
     "app/actions/lender-status-request.ts": 1,
     "app/actions/lifecycle-promo-policy.ts": 4,
-    "app/actions/lifetime-customer-touchpoints.ts": 5,
+    "app/actions/lifetime-customer-touchpoints.ts": 4,
     "app/actions/lifetime-customers.ts": 14,
     "app/actions/lifetime-npv.ts": 3,
     "app/actions/link-to-video.ts": 9,
@@ -1025,7 +1028,7 @@
     "app/actions/sequence-step-ai.ts": 2,
     "app/actions/services-config.ts": 10,
     "app/actions/settings/brokerage-affiliation.ts": 2,
-    "app/actions/settings/brokerage-column-settings.ts": 6,
+    "app/actions/settings/brokerage-column-settings.ts": 10,
     "app/actions/settings/brokerage-identity.ts": 2,
     "app/actions/settings/business-registration.ts": 2,
     "app/actions/settings/create-commission-structure.ts": 1,
@@ -1089,6 +1092,7 @@
     "app/actions/superadmin/platform-brand.ts": 6,
     "app/actions/superadmin/platform-content.ts": 5,
     "app/actions/superadmin/platform-controls.ts": 8,
+    "app/actions/superadmin/platform-form-packets.ts": 3,
     "app/actions/superadmin/platform-growth.ts": 8,
     "app/actions/superadmin/platform-overview.ts": 3,
     "app/actions/superadmin/platform-providers.ts": 2,
@@ -1138,6 +1142,7 @@
     "app/actions/transaction-transparency.ts": 3,
     "app/actions/transactions/closing-cost-actual.ts": 1,
     "app/actions/transactions.ts": 61,
+    "app/actions/tv-spot.ts": 2,
     "app/actions/twin-scenario.ts": 2,
     "app/actions/twin-studio-upload.ts": 3,
     "app/actions/twin-studio.ts": 11,
@@ -1197,6 +1202,7 @@
     "app/actions/workflow-orchestrator.ts": 7,
     "app/actions/workflow-reports.ts": 1,
     "app/actions/workflows.ts": 10,
+    "app/actions/youtube-backfill.ts": 1,
     "app/api/accounting/sync/route.ts": 1,
     "app/api/admin/audit-events/route.ts": 1,
     "app/api/admin/billing/batchdata-wallet/route.ts": 1,
@@ -1478,6 +1484,8 @@
     "app/api/external-portal/actions/complete/route.ts": 1,
     "app/api/external-portal/documents/download/route.ts": 1,
     "app/api/fatigue/cron/route.ts": 1,
+    "app/api/form-wizard/intake-notes/route.ts": 1,
+    "app/api/form-wizard/platform-packets/route.ts": 1,
     "app/api/form-wizard/resolve-provider/route.ts": 1,
     "app/api/forms/provider-library/route.ts": 1,
     "app/api/forms/submit/route.ts": 1,
@@ -1640,6 +1648,7 @@
     "app/components/command-palette-items.ts": 3,
     "app/components/command-palette.tsx": 1,
     "app/components/compliance/FairHousingScanner.tsx": 1,
+    "app/components/compliance/OlderPersonsExemptionPanel.tsx": 1,
     "app/components/compliance/transaction-compliance-tab.tsx": 1,
     "app/components/contact/AddressingCard.tsx": 1,
     "app/components/contact/ContactFatigueGuard.tsx": 1,
@@ -1710,6 +1719,7 @@
     "app/components/features/financial/ExportCSVButton.tsx": 1,
     "app/components/features/financial/PayoutButton.tsx": 1,
     "app/components/features/lead-magnets/BookProjectPanel.tsx": 1,
+    "app/components/features/lead-magnets/KdpPublishingPanel.tsx": 1,
     "app/components/features/lead-magnets/MagnetBuilder.tsx": 1,
     "app/components/features/lead-magnets/MagnetDraftReview.tsx": 1,
     "app/components/features/lead-magnets/MagnetLibrary.tsx": 1,
@@ -2369,6 +2379,7 @@
     "app/dashboard/meetings/[eventId]/meeting-embed.tsx": 1,
     "app/dashboard/meetings/[eventId]/transcript-panel.tsx": 2,
     "app/dashboard/motivation/motivation-client.tsx": 1,
+    "app/dashboard/offers/outside-offer-threads.tsx": 1,
     "app/dashboard/onboarding/OnboardingDashboardClient.tsx": 1,
     "app/dashboard/onboarding/OnboardingQuizClient.tsx": 1,
     "app/dashboard/onboarding/admin/agents/[id]/certify-agent-card.tsx": 1,
@@ -2506,6 +2517,7 @@
     "app/dashboard/superadmin/demo-room/demo-room-client.tsx": 1,
     "app/dashboard/superadmin/demo-room/demo-stills-card.tsx": 1,
     "app/dashboard/superadmin/env-providers/providers-client.tsx": 1,
+    "app/dashboard/superadmin/form-packets/platform-packets-client.tsx": 1,
     "app/dashboard/superadmin/growth/brand-topics-card.tsx": 1,
     "app/dashboard/superadmin/growth/company-channels-card.tsx": 1,
     "app/dashboard/superadmin/growth/image-library-card.tsx": 1,
@@ -2719,10 +2731,12 @@
     "app/recruiting/[brokerageSlug]/actions.ts": 1,
     "app/recruiting/[brokerageSlug]/page.tsx": 1,
     "app/recruiting/[brokerageSlug]/recruiting-client.tsx": 1,
+    "app/referrals/followup-policy-card.tsx": 1,
     "app/referrals/pipeline/appreciation-panel.tsx": 1,
     "app/referrals/pipeline/draft-thank-you-button.tsx": 1,
     "app/referrals/pipeline/pipeline-os-client.tsx": 1,
     "app/referrals/referrals-os-client.tsx": 1,
+    "app/referrals/review-links-card.tsx": 1,
     "app/referrals/review-request-timing-card.tsx": 1,
     "app/seed/seed-page-client.tsx": 1,
     "app/settings/accounting/error-log-table.tsx": 1,
@@ -2758,6 +2772,7 @@
     "app/settings/users/brokerage-adoption-card.tsx": 1,
     "app/settings/users/sso-connection-card.tsx": 1,
     "app/settings/users/users-management-client.tsx": 1,
+    "app/site/[slug]/lm/[formSlug]/page.tsx": 1,
     "app/site/[slug]/page.tsx": 1,
     "app/team/[slug]/page.tsx": 1,
     "app/title/components/os/title-command-strip.tsx": 1,
@@ -2939,6 +2954,8 @@
     "lib/ai-isa/direct-mail-trigger.ts": 2,
     "lib/ai-isa/email-generator.ts": 2,
     "lib/ai-isa/first-touch-copy.ts": 1,
+    "lib/ai-isa/followup-arbiter.ts": 5,
+    "lib/ai-isa/followup-policy.ts": 4,
     "lib/ai-isa/generate-handoff-brief.ts": 1,
     "lib/ai-isa/ghost-escalation.ts": 1,
     "lib/ai-isa/ghost-reengagement.ts": 2,
@@ -2961,7 +2978,7 @@
     "lib/ai-isa/personalize-outreach.ts": 4,
     "lib/ai-isa/portal-link.ts": 3,
     "lib/ai-isa/post-call-outcome.ts": 3,
-    "lib/ai-isa/property-lookup-rail.ts": 16,
+    "lib/ai-isa/property-lookup-rail.ts": 17,
     "lib/ai-isa/property-lookup-tools.ts": 3,
     "lib/ai-isa/qualification-core.ts": 6,
     "lib/ai-isa/qualification-evaluator.ts": 2,
@@ -3149,21 +3166,24 @@
     "lib/cma/seller-upgrades.ts": 1,
     "lib/cma/state-adjustment-rates.ts": 3,
     "lib/commission/adjustment-vocabulary.ts": 4,
+    "lib/commission/agreement-terms.ts": 6,
     "lib/commission/agreement-total-rate.ts": 1,
     "lib/commission/cap-resolver.ts": 7,
     "lib/commission/cda-discrepancy.ts": 6,
     "lib/commission/distribution-correction.ts": 9,
     "lib/commission/engine.ts": 1,
     "lib/commission/finalization.ts": 2,
-    "lib/commission/ledger-sync.ts": 8,
+    "lib/commission/ledger-sync.ts": 9,
     "lib/commission/payment-tracker.ts": 4,
     "lib/commission/reconcile-tracking.ts": 8,
+    "lib/commission/referral-payout.ts": 3,
     "lib/commission/revenue-share-model.ts": 6,
     "lib/commission/team-lead-split.ts": 5,
     "lib/commission/utils.ts": 4,
     "lib/commission/waterfall/01-resolve-rate.ts": 1,
     "lib/commission/waterfall/02-calculate-gross.ts": 1,
     "lib/commission/waterfall/03-apply-gross-adjustments.ts": 1,
+    "lib/commission/waterfall/03b-referral-deduction.ts": 1,
     "lib/commission/waterfall/04-split-agent-brokerage.ts": 1,
     "lib/commission/waterfall/05-apply-agent-adjustments.ts": 1,
     "lib/commission/waterfall/06-apply-brokerage-adjustments.ts": 1,
@@ -3190,6 +3210,7 @@
     "lib/competitive-intel/promote-to-topic-bank.ts": 1,
     "lib/compliance/agent-readiness-gate.ts": 1,
     "lib/compliance/ai-disclosure-ledger.ts": 1,
+    "lib/compliance/checklist-dimensions.ts": 8,
     "lib/compliance/client-text-guard.ts": 4,
     "lib/compliance/compliance-flag-policy.ts": 2,
     "lib/compliance/compliance-flag-reaper.ts": 1,
@@ -3197,6 +3218,8 @@
     "lib/compliance/content-safety-checks.ts": 1,
     "lib/compliance/disclosure-check-runner.ts": 1,
     "lib/compliance/document-classifications.ts": 2,
+    "lib/compliance/fair-housing-older-persons-store.ts": 3,
+    "lib/compliance/fair-housing-older-persons.ts": 5,
     "lib/compliance/federal-holidays.ts": 2,
     "lib/compliance/license-readiness.ts": 2,
     "lib/compliance/manager-eval-harness.ts": 1,
@@ -3207,7 +3230,7 @@
     "lib/compliance/phrase-vocabulary.ts": 2,
     "lib/compliance/raise-offer-flag.ts": 4,
     "lib/compliance/required-doc-presets.ts": 2,
-    "lib/compliance/required-documents.ts": 4,
+    "lib/compliance/required-documents.ts": 5,
     "lib/compliance/signature-completeness.ts": 1,
     "lib/compliance/trid-disclosure-clock-runner.ts": 1,
     "lib/compliance/trid-disclosure-clock.ts": 5,
@@ -3247,7 +3270,7 @@
     "lib/contact-types.ts": 5,
     "lib/contact-validation.ts": 3,
     "lib/contacts/buyer-stage.ts": 1,
-    "lib/contacts/card-classifier.ts": 10,
+    "lib/contacts/card-classifier.ts": 11,
     "lib/contacts/contact-brief.ts": 1,
     "lib/contacts/ownership-model.ts": 1,
     "lib/contacts/persona-builder.ts": 1,
@@ -3264,6 +3287,7 @@
     "lib/content-guardian/index.ts": 2,
     "lib/content-intel/apify-scraper.ts": 1,
     "lib/content-intel/exa-scraper.ts": 1,
+    "lib/content-intel/market-leadership.ts": 3,
     "lib/content-intel/newsapi-ai.ts": 2,
     "lib/content-intel/performance-aggregator.ts": 2,
     "lib/content-intel/reddit-scraper.ts": 1,
@@ -3370,6 +3394,7 @@
     "lib/enrichment/inline-drain.ts": 2,
     "lib/enrichment/lead-enrichment-core.ts": 3,
     "lib/enrichment/lead-freshness.ts": 2,
+    "lib/enrichment/online-presence-store.ts": 2,
     "lib/enrichment/reverse-skip-trace.ts": 2,
     "lib/enrichment/web-mention-search.ts": 3,
     "lib/entitlements/ai-subscription-tier.ts": 2,
@@ -3387,7 +3412,7 @@
     "lib/esign/google-esign-completion.ts": 2,
     "lib/esign/google-esign-handoff.ts": 2,
     "lib/esign/packet-state-writer.ts": 2,
-    "lib/esign/packet-states.ts": 7,
+    "lib/esign/packet-states.ts": 8,
     "lib/esign-webhooks/download-signed-package.ts": 1,
     "lib/esign-webhooks/finalize-packet.ts": 2,
     "lib/events/dispatcher-registry.ts": 2,
@@ -3423,7 +3448,7 @@
     "lib/external/socrata-client.ts": 4,
     "lib/external/socrata-market-registry.ts": 7,
     "lib/external/tavily-client.ts": 2,
-    "lib/external/versium-client.ts": 11,
+    "lib/external/versium-client.ts": 15,
     "lib/external/vision-property.ts": 1,
     "lib/external/zenrows-client.ts": 5,
     "lib/external/zenrows-normalizer.ts": 1,
@@ -3471,9 +3496,11 @@
     "lib/forms/esign-execution-loop.ts": 3,
     "lib/forms/form-path-scope.ts": 1,
     "lib/forms/form-wizard-sequence.ts": 7,
+    "lib/forms/intake-from-notes.ts": 1,
     "lib/forms/legal-description.ts": 4,
     "lib/forms/party-prefill.ts": 1,
     "lib/forms/pdf-form-fill.ts": 3,
+    "lib/forms/platform-form-packets.ts": 6,
     "lib/forms/prefill-property-into-pdf.ts": 1,
     "lib/forms/state-package-match.ts": 1,
     "lib/gamification/award-points.ts": 4,
@@ -3498,6 +3525,7 @@
     "lib/identity/resolve-contact-owner.ts": 1,
     "lib/inbound-mail/deal-doc-intake.ts": 1,
     "lib/inbound-mail/deal-doc-router.ts": 2,
+    "lib/inbound-mail/message-meta.ts": 2,
     "lib/inbound-mail/oauth-fetchers.ts": 2,
     "lib/inbound-mail/offer-detect.ts": 6,
     "lib/inbound-mail/offer-intake.ts": 4,
@@ -3771,6 +3799,7 @@
     "lib/kernel/listings.ts": 7,
     "lib/kernel/local-lifestyle.ts": 1,
     "lib/kernel/lookalike-audience.ts": 3,
+    "lib/kernel/lookalike-research.ts": 4,
     "lib/kernel/manager-activity.ts": 1,
     "lib/kernel/manager-delegation.ts": 17,
     "lib/kernel/manager-dissent.ts": 6,
@@ -3877,7 +3906,7 @@
     "lib/kernel/tenancy-principal.ts": 1,
     "lib/kernel/tenant-config-reads.ts": 3,
     "lib/kernel/tenant-creation-rollback.ts": 1,
-    "lib/kernel/tenant-creation.ts": 10,
+    "lib/kernel/tenant-creation.ts": 11,
     "lib/kernel/tenant-guard.ts": 1,
     "lib/kernel/tenant-operating-baseline.ts": 3,
     "lib/kernel/tenant-policy.ts": 17,
@@ -3946,10 +3975,15 @@
     "lib/lead-intent/lead-opt-out.ts": 2,
     "lib/lead-magnets/ai-draft.ts": 5,
     "lib/lead-magnets/attribution.ts": 6,
-    "lib/lead-magnets/book-creator.ts": 10,
+    "lib/lead-magnets/book-cover.ts": 2,
+    "lib/lead-magnets/book-creator.ts": 11,
+    "lib/lead-magnets/book-publishing-produce.ts": 4,
+    "lib/lead-magnets/book-publishing.ts": 8,
     "lib/lead-magnets/embed-snippet.ts": 2,
     "lib/lead-magnets/form-contact-types.ts": 1,
+    "lib/lead-magnets/kdp-print-math.ts": 3,
     "lib/lead-magnets/suggestions.ts": 3,
+    "lib/lead-magnets/zip-writer.ts": 1,
     "lib/lead-pipeline/acquisition-coverage.ts": 2,
     "lib/lead-pipeline/ai-intent-classifier.ts": 7,
     "lib/lead-pipeline/canonical-lead-eligibility.ts": 4,
@@ -4049,7 +4083,7 @@
     "lib/listing-presentation/section-render.ts": 1,
     "lib/listings/attribution.ts": 2,
     "lib/listings/back-on-market.ts": 1,
-    "lib/listings/compute-dom.ts": 2,
+    "lib/listings/compute-dom.ts": 7,
     "lib/listings/expiry-decision.ts": 2,
     "lib/listings/listing-activation-gate.ts": 2,
     "lib/listings/listing-compliance-loop.ts": 1,
@@ -4063,6 +4097,8 @@
     "lib/listings/market-pulse-runner.ts": 1,
     "lib/listings/market-pulse.ts": 3,
     "lib/listings/marketing-channels.ts": 1,
+    "lib/listings/mls-live-date.ts": 5,
+    "lib/listings/mls-live-verification.ts": 2,
     "lib/listings/mls-number-reminder.ts": 1,
     "lib/listings/mls-reminder-policy.ts": 1,
     "lib/listings/mls-rule-check.ts": 1,
@@ -4160,6 +4196,8 @@
     "lib/offers/buyer-closing-costs.ts": 2,
     "lib/offers/closing-cost-accuracy.ts": 9,
     "lib/offers/commission-disclosure.ts": 3,
+    "lib/offers/governing-terms-rule.ts": 5,
+    "lib/offers/governing-terms.ts": 3,
     "lib/offers/multi-offer-rules.ts": 2,
     "lib/offers/net-sheet-calc.ts": 12,
     "lib/offers/offer-analyzer.ts": 1,
@@ -4170,6 +4208,8 @@
     "lib/offers/offer-strength.ts": 2,
     "lib/offers/offer-target.ts": 5,
     "lib/offers/outside-agent-record.ts": 13,
+    "lib/offers/outside-offer-loop.ts": 18,
+    "lib/offers/outside-reply-reader.ts": 1,
     "lib/offers/public-record-preload.ts": 1,
     "lib/offers/regional-closing-costs.ts": 8,
     "lib/offers/seller-closing-costs.ts": 4,
@@ -4242,7 +4282,7 @@
     "lib/platform/save-offer.ts": 2,
     "lib/platform/self-audit-rollup.ts": 2,
     "lib/platform/service-catalogue-scope.ts": 2,
-    "lib/platform/site-url.ts": 1,
+    "lib/platform/site-url.ts": 2,
     "lib/platform/staff-action-gate.ts": 2,
     "lib/platform/status-notice.ts": 7,
     "lib/platform/subscriber-door.ts": 6,
@@ -4259,6 +4299,9 @@
     "lib/platform/trial-funnel.ts": 4,
     "lib/platform-sync.ts": 3,
     "lib/podcast/auto-producer.ts": 2,
+    "lib/podcast/episode-audio-measure.ts": 3,
+    "lib/podcast/episode-audio-spec.ts": 4,
+    "lib/podcast/episode-audio.ts": 1,
     "lib/podcast/orchestrate-podcast-preset-publish.ts": 1,
     "lib/podcast/transistor-client.ts": 1,
     "lib/portal/client-action-dispatch.ts": 1,
@@ -4401,6 +4444,8 @@
     "lib/repurpose/shared.ts": 1,
     "lib/repurpose/transcribe-core.ts": 1,
     "lib/repurpose/transcribe.ts": 1,
+    "lib/reputation/review-ask-policy.ts": 7,
+    "lib/reputation/review-ask.ts": 1,
     "lib/reputation/review-landed.ts": 1,
     "lib/reputation/review-request-delay.ts": 2,
     "lib/reputation/review-request-draft.ts": 1,
@@ -4435,7 +4480,7 @@
     "lib/services/lead-management.service.ts": 6,
     "lib/services/social-publishing.service.ts": 5,
     "lib/services/transaction-management.service.ts": 4,
-    "lib/settings/brokerage-settings-columns.ts": 3,
+    "lib/settings/brokerage-settings-columns.ts": 5,
     "lib/settings/brokerage-settings-merge.ts": 1,
     "lib/showings/dispatchers.ts": 3,
     "lib/showings/showing-brief.ts": 3,
@@ -4450,12 +4495,14 @@
     "lib/social/orchestrate-social-preset-publish.ts": 1,
     "lib/social/publisher.ts": 2,
     "lib/social/token-refresh.ts": 2,
+    "lib/sphere/followup-moments.ts": 1,
     "lib/sphere/lifetime-touchpoint-ledger.ts": 2,
     "lib/sphere/lifetime-touchpoint-reaper-policy.ts": 1,
     "lib/sphere/lifetime-touchpoint-reaper.ts": 1,
     "lib/sphere/next-best-actions.ts": 2,
     "lib/sphere-resonance/run-resonance-scan.ts": 1,
     "lib/sphere-resonance/touchpoint-draft.ts": 1,
+    "lib/state-forms/closing-participants.ts": 2,
     "lib/state-forms/field-defs.ts": 2,
     "lib/state-forms/registry.ts": 2,
     "lib/storage/browser-upload.ts": 1,
@@ -4482,6 +4529,8 @@
     "lib/tasks/task-presentation.ts": 3,
     "lib/teams/membership.ts": 4,
     "lib/teams/team-scope.ts": 1,
+    "lib/tenant-site/landing-page.ts": 1,
+    "lib/tenant-site/successor.ts": 1,
     "lib/territory/metrics-aggregator.ts": 3,
     "lib/testimonials/testimonial-policy.ts": 1,
     "lib/them-first/empathy-library.ts": 4,
@@ -4496,9 +4545,12 @@
     "lib/transactions/cda-delivery-reaper.ts": 2,
     "lib/transactions/cda-esign.ts": 2,
     "lib/transactions/cda-field-classifier.ts": 3,
+    "lib/transactions/cda-payees.ts": 1,
     "lib/transactions/cda-pdf-fill.ts": 1,
     "lib/transactions/cda-signing-policy.ts": 3,
     "lib/transactions/cda-template-fields.ts": 2,
+    "lib/transactions/closing-compliance-core.ts": 6,
+    "lib/transactions/closing-compliance.ts": 1,
     "lib/transactions/closing-orchestration.ts": 3,
     "lib/transactions/closing-overdue-policy.ts": 2,
     "lib/transactions/closing-overdue-reaper.ts": 1,
@@ -4540,6 +4592,7 @@
     "lib/transactions/walkthrough-outcome.ts": 2,
     "lib/usage/check-cap.ts": 1,
     "lib/usage/log-media-usage.ts": 1,
+    "lib/usage/metric-labels.ts": 2,
     "lib/usage/period.ts": 2,
     "lib/usage.ts": 2,
     "lib/utils.ts": 1,
@@ -4630,6 +4683,10 @@
     "lib/video/stitch-graph.ts": 4,
     "lib/video/topic-video-runner.ts": 1,
     "lib/video/topic-video.ts": 20,
+    "lib/video/tv-spot-master.ts": 1,
+    "lib/video/tv-spot-measure.ts": 3,
+    "lib/video/tv-spot-produce.ts": 2,
+    "lib/video/tv-spot.ts": 5,
     "lib/video/verbal-disclosure.ts": 1,
     "lib/video/video-director.ts": 14,
     "lib/video/video-event-reactions.ts": 4,
@@ -4644,7 +4701,7 @@
     "lib/video/video-status.ts": 2,
     "lib/video/video-thumbnail-embed.ts": 1,
     "lib/video/viral-script-share.ts": 1,
-    "lib/video/youtube-publish.ts": 5,
+    "lib/video/youtube-publish.ts": 8,
     "lib/voice/a2p-registration.ts": 21,
     "lib/voice/broker-commands.ts": 3,
     "lib/voice/call-analysis.ts": 4,
@@ -5564,7 +5621,6 @@
       "acceptCancellationSaveOfferAction",
       "getSubscriptionTiers",
       "getCurrentSubscription",
-      "getBillingUsage",
       "getInvoiceHistory",
       "startSubscriptionCheckout",
       "cancelSubscription",
@@ -5757,12 +5813,22 @@
       "checkDuplicateOffer",
       "getBuyerActiveOffers"
     ],
+    "app/actions/buyer-offer/outside-offer-loop.ts": [
+      "sendOutsideOffer",
+      "createOutsideCounterBack",
+      "confirmOutsideReply",
+      "respondToOutsideCounter",
+      "listOutsideOffers"
+    ],
     "app/actions/buyer-offer/prefill-offer.ts": [
       "fillPropertyDataWithAI",
       "resolveOfferPropertyPrefillAction"
     ],
     "app/actions/buyer-offer/prefill-storage-form.ts": [
       "prefillStorageFormAction"
+    ],
+    "app/actions/buyer-offer/record-contract-addendum.ts": [
+      "recordContractAddendum"
     ],
     "app/actions/buyer-offer/record-seller-response.ts": [
       "recordSellerResponse"
@@ -5987,6 +6053,9 @@
       "approveAgentAction",
       "rejectAgentAction",
       "runTeamCommand"
+    ],
+    "app/actions/commission-agreement-history.ts": [
+      "listCommissionAgreementHistoryAction"
     ],
     "app/actions/communications.ts": [
       "sendSMS",
@@ -6434,6 +6503,11 @@
       "generateAvatarVideo",
       "getAvatarVideoStatus"
     ],
+    "app/actions/fair-housing-older-persons.ts": [
+      "listOlderPersonsVerificationsAction",
+      "recordOlderPersonsVerificationAction",
+      "removeOlderPersonsVerificationAction"
+    ],
     "app/actions/fb-audience-templates.ts": [
       "listAudienceTemplates"
     ],
@@ -6680,6 +6754,10 @@
       "advanceBookProjectAction",
       "getBookProjectAction",
       "reviseBookChapterAction",
+      "getKdpPackageAction",
+      "buildKdpPackageAction",
+      "approveKdpPackageAction",
+      "getKdpDownloadsAction",
       "updateMagnetSettingsAction",
       "getMagnetPerformanceAction",
       "generateQRCodeAction",
@@ -6773,7 +6851,6 @@
     "app/actions/lifetime-customer-touchpoints.ts": [
       "sendAnniversaryMessage",
       "sendBirthdayMessage",
-      "sendReferralRequest",
       "getTouchpointCalendar",
       "calculateEngagementScore"
     ],
@@ -7755,7 +7832,11 @@
       "getLiveFaceProviderSettingAction",
       "saveLiveFaceProviderOrderAction",
       "getLifetimeConversionPolicyAction",
-      "saveLifetimeConversionPolicyAction"
+      "saveLifetimeConversionPolicyAction",
+      "getFollowupPolicyAction",
+      "saveFollowupPolicyAction",
+      "getReputationProfilesAction",
+      "saveReputationProfilesAction"
     ],
     "app/actions/settings/brokerage-identity.ts": [
       "getBrokerageIdentity",
@@ -8106,6 +8187,11 @@
       "dismissProposedStatusNoticeAction",
       "getHealingConsoleAction",
       "setHealingCeilingsAction"
+    ],
+    "app/actions/superadmin/platform-form-packets.ts": [
+      "uploadPlatformPacketAction",
+      "approvePlatformPacketAction",
+      "retirePlatformPacketAction"
     ],
     "app/actions/superadmin/platform-growth.ts": [
       "capturePlatformProspectAction",
@@ -8483,6 +8569,10 @@
       "getClientTasks",
       "autoProgressMilestone"
     ],
+    "app/actions/tv-spot.ts": [
+      "makeTvSpotAction",
+      "getTvSpotAction"
+    ],
     "app/actions/twin-scenario.ts": [
       "simulateTwinScenario",
       "promoteTwinScenarioToMission"
@@ -8843,6 +8933,9 @@
       "retryFailedWorkflow",
       "logUserActivity",
       "executeWorkflow"
+    ],
+    "app/actions/youtube-backfill.ts": [
+      "queueApprovedVideosToYouTubeAction"
     ],
     "app/api/accounting/sync/route.ts": [
       "POST"
@@ -9711,6 +9804,12 @@
     "app/api/fatigue/cron/route.ts": [
       "GET"
     ],
+    "app/api/form-wizard/intake-notes/route.ts": [
+      "POST"
+    ],
+    "app/api/form-wizard/platform-packets/route.ts": [
+      "GET"
+    ],
     "app/api/form-wizard/resolve-provider/route.ts": [
       "GET"
     ],
@@ -10213,6 +10312,9 @@
     "app/components/compliance/FairHousingScanner.tsx": [
       "FairHousingScanner"
     ],
+    "app/components/compliance/OlderPersonsExemptionPanel.tsx": [
+      "OlderPersonsExemptionPanel"
+    ],
     "app/components/compliance/transaction-compliance-tab.tsx": [
       "TransactionComplianceTab"
     ],
@@ -10422,6 +10524,9 @@
     ],
     "app/components/features/lead-magnets/BookProjectPanel.tsx": [
       "BookProjectPanel"
+    ],
+    "app/components/features/lead-magnets/KdpPublishingPanel.tsx": [
+      "KdpPublishingPanel"
     ],
     "app/components/features/lead-magnets/MagnetBuilder.tsx": [
       "MagnetBuilder"
@@ -12438,6 +12543,9 @@
     "app/dashboard/motivation/motivation-client.tsx": [
       "MotivationClient"
     ],
+    "app/dashboard/offers/outside-offer-threads.tsx": [
+      "OutsideOfferThreads"
+    ],
     "app/dashboard/onboarding/OnboardingDashboardClient.tsx": [
       "OnboardingDashboardClient"
     ],
@@ -12875,6 +12983,9 @@
     ],
     "app/dashboard/superadmin/env-providers/providers-client.tsx": [
       "ProvidersClient"
+    ],
+    "app/dashboard/superadmin/form-packets/platform-packets-client.tsx": [
+      "PlatformPacketsClient"
     ],
     "app/dashboard/superadmin/growth/brand-topics-card.tsx": [
       "BrandTopicsCard"
@@ -13531,6 +13642,9 @@
     "app/recruiting/[brokerageSlug]/recruiting-client.tsx": [
       "RecruitingLandingClient"
     ],
+    "app/referrals/followup-policy-card.tsx": [
+      "FollowupPolicyCard"
+    ],
     "app/referrals/pipeline/appreciation-panel.tsx": [
       "ReferralAppreciationPanel"
     ],
@@ -13542,6 +13656,9 @@
     ],
     "app/referrals/referrals-os-client.tsx": [
       "ReferralsOsClient"
+    ],
+    "app/referrals/review-links-card.tsx": [
+      "ReviewLinksCard"
     ],
     "app/referrals/review-request-timing-card.tsx": [
       "ReviewRequestTimingCard"
@@ -13647,6 +13764,9 @@
     ],
     "app/settings/users/users-management-client.tsx": [
       "UsersManagementClient"
+    ],
+    "app/site/[slug]/lm/[formSlug]/page.tsx": [
+      "generateMetadata"
     ],
     "app/site/[slug]/page.tsx": [
       "generateMetadata"
@@ -14446,6 +14566,19 @@
     "lib/ai-isa/first-touch-copy.ts": [
       "buildFirstTouchEmail"
     ],
+    "lib/ai-isa/followup-arbiter.ts": [
+      "arbitrateCadence",
+      "countArbiterWaits",
+      "recordArbitration",
+      "routeToAgent",
+      "arbitrateAndRecordExperience"
+    ],
+    "lib/ai-isa/followup-policy.ts": [
+      "resolveFollowupPolicy",
+      "platformFollowupPolicy",
+      "loadFollowupPolicy",
+      "momentForTouchpointType"
+    ],
     "lib/ai-isa/generate-handoff-brief.ts": [
       "generateAndStoreHandoffBrief"
     ],
@@ -14602,6 +14735,7 @@
       "runVersiumContactLeg",
       "runVersiumBusinessIdentityLeg",
       "runVersiumOnlinePresenceLeg",
+      "runVersiumAudienceEstimateLeg",
       "isBatchDataRungAllowed",
       "redactFactsForAudience",
       "toPublicPropertyFacts",
@@ -15786,6 +15920,14 @@
       "isCommissionAdjustmentReason",
       "commissionAdjustmentReasonLabel"
     ],
+    "lib/commission/agreement-terms.ts": [
+      "agreementAsOf",
+      "diffTerms",
+      "memberInEffectOn",
+      "isHistoryUnavailable",
+      "loadAgentAgreementAsOf",
+      "loadTeamTermsAsOf"
+    ],
     "lib/commission/agreement-total-rate.ts": [
       "resolveTotalCommissionRate"
     ],
@@ -15826,6 +15968,7 @@
     ],
     "lib/commission/ledger-sync.ts": [
       "deriveCommissionPaymentState",
+      "payoutFundsGate",
       "isCommissionLedgerStatus",
       "toStampDate",
       "toLedgerInstant",
@@ -15849,6 +15992,11 @@
       "compareProjection",
       "detectSummaryAmountDrift",
       "reconcileSummariesAgainstLedger"
+    ],
+    "lib/commission/referral-payout.ts": [
+      "agreedReferralPct",
+      "referralFeeCents",
+      "pickReferralForDeal"
     ],
     "lib/commission/revenue-share-model.ts": [
       "parseRevenueShareModel",
@@ -15879,6 +16027,9 @@
     ],
     "lib/commission/waterfall/03-apply-gross-adjustments.ts": [
       "applyGrossAdjustments"
+    ],
+    "lib/commission/waterfall/03b-referral-deduction.ts": [
+      "applyReferralDeduction"
     ],
     "lib/commission/waterfall/04-split-agent-brokerage.ts": [
       "splitAgentBrokerage"
@@ -15973,6 +16124,16 @@
     "lib/compliance/ai-disclosure-ledger.ts": [
       "generateAiDisclosureLedger"
     ],
+    "lib/compliance/checklist-dimensions.ts": [
+      "financingKindFor",
+      "rowApplicability",
+      "rowSpecificity",
+      "describeRowScope",
+      "asChecklistStage",
+      "asFinancingKind",
+      "asContractSubtype",
+      "asRepresentation"
+    ],
     "lib/compliance/client-text-guard.ts": [
       "hasFairHousingViolation",
       "sanitizeProperNoun",
@@ -15999,6 +16160,18 @@
     "lib/compliance/document-classifications.ts": [
       "classificationCarriesSignatures",
       "documentClassificationLabel"
+    ],
+    "lib/compliance/fair-housing-older-persons-store.ts": [
+      "loadOlderPersonsVerifications",
+      "saveOlderPersonsVerification",
+      "removeOlderPersonsVerification"
+    ],
+    "lib/compliance/fair-housing-older-persons.ts": [
+      "evaluateOlderPersonsRecord",
+      "detectOlderPersonsClaims",
+      "communityKey",
+      "assessOlderPersonsClaim",
+      "validateOlderPersonsInput"
     ],
     "lib/compliance/federal-holidays.ts": [
       "federalHolidaysForYear",
@@ -16048,7 +16221,8 @@
       "resolveRequiredDocuments",
       "loadDealFileDocuments",
       "auditOfferDocuments",
-      "auditListingDocuments"
+      "auditListingDocuments",
+      "auditTransactionDocuments"
     ],
     "lib/compliance/signature-completeness.ts": [
       "evaluateExecution"
@@ -16272,6 +16446,7 @@
     ],
     "lib/contacts/card-classifier.ts": [
       "resolvePreScanChoice",
+      "isExistingTenantMember",
       "classifyCardSubject",
       "normalizeCardValue",
       "parseCardExtraction",
@@ -16348,6 +16523,11 @@
     ],
     "lib/content-intel/exa-scraper.ts": [
       "exaSearch"
+    ],
+    "lib/content-intel/market-leadership.ts": [
+      "rankLeadershipOpportunities",
+      "renderLeadershipBriefForKickoff",
+      "loadMarketLeadershipSignals"
     ],
     "lib/content-intel/newsapi-ai.ts": [
       "resolveNewsApiAiKey",
@@ -16854,6 +17034,10 @@
       "leadHasEnrichmentEvidence",
       "leadEnrichmentIsFresh"
     ],
+    "lib/enrichment/online-presence-store.ts": [
+      "realEstateIndicatorsFromProfile",
+      "persistRealEstateIndicators"
+    ],
     "lib/enrichment/reverse-skip-trace.ts": [
       "selectReversePerson",
       "reverseSkipTracePerson"
@@ -16937,7 +17121,8 @@
       "esignPacketRank",
       "isTerminalFailureState",
       "isAtOrPastAllSigned",
-      "canAdvancePacketState"
+      "canAdvancePacketState",
+      "hopCompanionColumns"
     ],
     "lib/esign-webhooks/download-signed-package.ts": [
       "downloadSignedPackage"
@@ -17185,6 +17370,7 @@
     ],
     "lib/external/versium-client.ts": [
       "isVersiumConfigured",
+      "versiumCreditsUsd",
       "versiumQueryFor",
       "versiumStatusProblem",
       "parseVersiumFinancialResponse",
@@ -17193,8 +17379,11 @@
       "appendVersiumDemographics",
       "appendVersiumPropertyFacts",
       "versiumB2B2CQueryFor",
+      "versiumB2B2CWorstCaseCredits",
       "appendVersiumB2B2C",
-      "appendVersiumRealEstateIndicators"
+      "appendVersiumRealEstateIndicators",
+      "versiumProductsByStatus",
+      "estimateVersiumAudience"
     ],
     "lib/external/vision-property.ts": [
       "scorePropertyImage"
@@ -17427,6 +17616,9 @@
       "offerFormSourceFor",
       "recommendForms"
     ],
+    "lib/forms/intake-from-notes.ts": [
+      "suggestIntakeAnswers"
+    ],
     "lib/forms/legal-description.ts": [
       "legalDescriptionRequirement",
       "typedLegalDescription",
@@ -17440,6 +17632,14 @@
       "listPdfFields",
       "readPdfTextFields",
       "fillPdfForm"
+    ],
+    "lib/forms/platform-form-packets.ts": [
+      "parsePlatformPacketPath",
+      "listPlatformPacketsForTenant",
+      "usablePlatformPaths",
+      "registerPlatformPacket",
+      "approvePlatformPacket",
+      "retirePlatformPacket"
     ],
     "lib/forms/prefill-property-into-pdf.ts": [
       "prefillPropertyIntoPdf"
@@ -17557,6 +17757,10 @@
     "lib/inbound-mail/deal-doc-router.ts": [
       "classifyDealDoc",
       "routeForDocType"
+    ],
+    "lib/inbound-mail/message-meta.ts": [
+      "normalizeMessageId",
+      "inboundMetaFrom"
     ],
     "lib/inbound-mail/oauth-fetchers.ts": [
       "fetchGmailMessagesSinceHistory",
@@ -19074,9 +19278,15 @@
       "composeLocalLifestyle"
     ],
     "lib/kernel/lookalike-audience.ts": [
-      "researchLookalikeDenominators",
       "composeLookalike",
+      "runLookalikeResearch",
       "runLookalikeAudience"
+    ],
+    "lib/kernel/lookalike-research.ts": [
+      "lookalikeSeedProfile",
+      "researchLookalikeDenominators",
+      "composeResearchBriefs",
+      "composeAcquisitionInputs"
     ],
     "lib/kernel/manager-activity.ts": [
       "loadManagerActivity"
@@ -19858,6 +20068,7 @@
       "isCanonicalTier",
       "buildTenantSlug",
       "tenantWebsitePath",
+      "tenantLandingPagePath",
       "provisioningComplete",
       "provisioningStepsPending",
       "resolveUniqueTenantSlug",
@@ -20319,6 +20530,10 @@
       "touchpointChannelFor",
       "sourceChannelFor"
     ],
+    "lib/lead-magnets/book-cover.ts": [
+      "coverArtPrompt",
+      "composeBookCover"
+    ],
     "lib/lead-magnets/book-creator.ts": [
       "nextBookStage",
       "wordCount",
@@ -20327,9 +20542,26 @@
       "composeBookPdfData",
       "workingTitle",
       "startBookProject",
+      "loadProject",
       "advanceBookProject",
       "reviseBookChapter",
       "sweepStalledBookProjects"
+    ],
+    "lib/lead-magnets/book-publishing-produce.ts": [
+      "buildKdpPackage",
+      "kdpPackageOf",
+      "approveKdpPackage",
+      "kdpPackageDownloads"
+    ],
+    "lib/lead-magnets/book-publishing.ts": [
+      "kdpPaperbackPlan",
+      "scanBookClaims",
+      "wordsIn",
+      "composeKdpMetadata",
+      "validateKdpMetadata",
+      "composeRightsRecord",
+      "buildEpub",
+      "validateEbookCover"
     ],
     "lib/lead-magnets/embed-snippet.ts": [
       "leadMagnetEmbedEndpoint",
@@ -20338,10 +20570,18 @@
     "lib/lead-magnets/form-contact-types.ts": [
       "declarableContactType"
     ],
+    "lib/lead-magnets/kdp-print-math.ts": [
+      "kdpInsideMarginInches",
+      "kdpTrimAllowed",
+      "estimateTrimPages"
+    ],
     "lib/lead-magnets/suggestions.ts": [
       "seasonFor",
       "suggestLeadMagnetIdeas",
       "runLeadMagnetSuggestions"
+    ],
+    "lib/lead-magnets/zip-writer.ts": [
+      "zipEntries"
     ],
     "lib/lead-pipeline/acquisition-coverage.ts": [
       "recordAcquisitionIntents",
@@ -20879,7 +21119,12 @@
     ],
     "lib/listings/compute-dom.ts": [
       "computeDaysOnMarket",
-      "computeDaysOnMarketOrZero"
+      "computeDaysOnMarketOrZero",
+      "ymdOf",
+      "todayInTimeZone",
+      "calendarDaysBetween",
+      "resolveMlsLiveDates",
+      "computeDaysOnMarketForListing"
     ],
     "lib/listings/expiry-decision.ts": [
       "composeExpiryDecision",
@@ -20931,6 +21176,17 @@
     ],
     "lib/listings/marketing-channels.ts": [
       "buildListingMarketingChannels"
+    ],
+    "lib/listings/mls-live-date.ts": [
+      "resolveListingTimeZone",
+      "bellListingAgent",
+      "recordPlannedMlsLiveDate",
+      "recordVerifiedMlsLive",
+      "plannedMlsLiveDateLaunchBlocker"
+    ],
+    "lib/listings/mls-live-verification.ts": [
+      "verifyAndRecordMlsLive",
+      "runMlsLiveVerificationSweep"
     ],
     "lib/listings/mls-number-reminder.ts": [
       "runMlsNumberReminders"
@@ -21430,6 +21686,18 @@
       "resolveDisclosureMethod",
       "isEsignDispatchMethod"
     ],
+    "lib/offers/governing-terms-rule.ts": [
+      "canonicalTerms",
+      "resolveGoverningTerms",
+      "versionsFromOfferChain",
+      "mergeVersions",
+      "signaturesPresent"
+    ],
+    "lib/offers/governing-terms.ts": [
+      "governingContractTerms",
+      "recordContractTermsVersion",
+      "freezeExecutedTermsAfterPromotion"
+    ],
     "lib/offers/multi-offer-rules.ts": [
       "evaluateOfferLimit",
       "limitProximity"
@@ -21489,6 +21757,29 @@
       "readOutsideRepresentation",
       "resolveOutsideAgentForDeal",
       "copyCooperatingAgentOnDealMoment"
+    ],
+    "lib/offers/outside-offer-loop.ts": [
+      "offerIdFromText",
+      "normalizeEmail",
+      "isEmailShape",
+      "parseSignedStorageUrl",
+      "messageKeyFor",
+      "verifyOutsideSender",
+      "ownWords",
+      "deterministicReplySignals",
+      "parseReplyReading",
+      "reconcileReplyClassification",
+      "pickOutsideTarget",
+      "decideOutsideSend",
+      "buildOutsideEmail",
+      "loadOutsideChain",
+      "claimInboundMessage",
+      "patchMessage",
+      "mergeLoopState",
+      "verifyRecipientAgainstMls"
+    ],
+    "lib/offers/outside-reply-reader.ts": [
+      "readOutsideReply"
     ],
     "lib/offers/public-record-preload.ts": [
       "preloadPublicRecordCosts"
@@ -21939,7 +22230,8 @@
       "rollupServiceStatuses"
     ],
     "lib/platform/site-url.ts": [
-      "siteUrl"
+      "siteUrl",
+      "invitationLandingUrl"
     ],
     "lib/platform/staff-action-gate.ts": [
       "gateStaffAction",
@@ -22052,6 +22344,20 @@
     "lib/podcast/auto-producer.ts": [
       "runAutoPodcast",
       "currentIsoWeek"
+    ],
+    "lib/podcast/episode-audio-measure.ts": [
+      "ffmpegAvailable",
+      "runFfmpeg",
+      "measurePodcastAudio"
+    ],
+    "lib/podcast/episode-audio-spec.ts": [
+      "probeMp3",
+      "evaluatePodcastAudio",
+      "parseAudioInfo",
+      "podcastTrimGainDb"
+    ],
+    "lib/podcast/episode-audio.ts": [
+      "assemblePodcastEpisode"
     ],
     "lib/podcast/orchestrate-podcast-preset-publish.ts": [
       "orchestratePodcastPresetPublish"
@@ -22755,6 +23061,18 @@
     "lib/repurpose/transcribe.ts": [
       "transcribeFromUrl"
     ],
+    "lib/reputation/review-ask-policy.ts": [
+      "validateReviewLink",
+      "parseReputationProfiles",
+      "chooseReviewTarget",
+      "screenReviewAskCopy",
+      "composeManualReviewAsk",
+      "chooseReviewChannel",
+      "reviewAskDueAt"
+    ],
+    "lib/reputation/review-ask.ts": [
+      "askForReviewAtClose"
+    ],
     "lib/reputation/review-landed.ts": [
       "onReviewLanded"
     ],
@@ -22938,7 +23256,9 @@
     "lib/settings/brokerage-settings-columns.ts": [
       "saveReviewRequestDelayDays",
       "saveLiveFaceProviderOrder",
-      "saveLifetimeConversionPolicy"
+      "saveLifetimeConversionPolicy",
+      "saveFollowupPolicy",
+      "saveReputationProfiles"
     ],
     "lib/settings/brokerage-settings-merge.ts": [
       "mergeBrokerageSettings"
@@ -22993,6 +23313,9 @@
       "planTokenAction",
       "runSocialTokenSweep"
     ],
+    "lib/sphere/followup-moments.ts": [
+      "conductDueFollowUpMomentsAllTenants"
+    ],
     "lib/sphere/lifetime-touchpoint-ledger.ts": [
       "lifetimeTouchpointEventMetadata",
       "recordLifetimeTouchpointSent"
@@ -23012,6 +23335,10 @@
     ],
     "lib/sphere-resonance/touchpoint-draft.ts": [
       "draftSphereTouchpoint"
+    ],
+    "lib/state-forms/closing-participants.ts": [
+      "assessClosingParticipants",
+      "closingPolicyAgeDays"
     ],
     "lib/state-forms/field-defs.ts": [
       "resolveSuggestedDefault",
@@ -23129,6 +23456,12 @@
     "lib/teams/team-scope.ts": [
       "leadsAgentsTeam"
     ],
+    "lib/tenant-site/landing-page.ts": [
+      "resolveTenantLandingForm"
+    ],
+    "lib/tenant-site/successor.ts": [
+      "resolveArchivedSiteSuccessor"
+    ],
     "lib/territory/metrics-aggregator.ts": [
       "aggregateMetrics",
       "seedTerritoriesFromServiceArea",
@@ -23203,6 +23536,9 @@
       "suggestCdaFieldBindings",
       "aiClassifyCdaFields"
     ],
+    "lib/transactions/cda-payees.ts": [
+      "cdaPayeesFromDistributions"
+    ],
     "lib/transactions/cda-pdf-fill.ts": [
       "buildCdaFillValues"
     ],
@@ -23214,6 +23550,17 @@
     "lib/transactions/cda-template-fields.ts": [
       "resolveCdaTemplateFields",
       "cdaWaterfallContext"
+    ],
+    "lib/transactions/closing-compliance-core.ts": [
+      "superimposeGoverningTerms",
+      "parseUsd",
+      "parseDateOnly",
+      "parseParty",
+      "compareClosingTerms",
+      "findingToLogRow"
+    ],
+    "lib/transactions/closing-compliance.ts": [
+      "runClosingCompliance"
     ],
     "lib/transactions/closing-orchestration.ts": [
       "closingActionManager",
@@ -23383,6 +23730,10 @@
     ],
     "lib/usage/log-media-usage.ts": [
       "logMediaUsage"
+    ],
+    "lib/usage/metric-labels.ts": [
+      "planCardAllowances",
+      "allowanceLine"
     ],
     "lib/usage/period.ts": [
       "currentUsagePeriod",
@@ -23978,6 +24329,25 @@
       "topicScriptPrompt",
       "scoreTopicVideoPersona"
     ],
+    "lib/video/tv-spot-master.ts": [
+      "masterForTv"
+    ],
+    "lib/video/tv-spot-measure.ts": [
+      "ffmpegAvailable",
+      "runFfmpeg",
+      "measureTvSpotFile"
+    ],
+    "lib/video/tv-spot-produce.ts": [
+      "tvSpotOf",
+      "produceTvSpotMaster"
+    ],
+    "lib/video/tv-spot.ts": [
+      "evaluateTvSpot",
+      "captionCuesToSrt",
+      "captionCuesToWebVtt",
+      "parseFfmpegInfo",
+      "tvTrimGainDb"
+    ],
     "lib/video/verbal-disclosure.ts": [
       "applyBrokerageVerbalDisclosure"
     ],
@@ -24061,7 +24431,10 @@
       "videoProjectIdFromBrief",
       "youtubePostTypeFor",
       "queueYouTubeAutoPublish",
-      "recordYouTubePublishOnAsset"
+      "recordYouTubePublishOnAsset",
+      "resolveYouTubePrivacy",
+      "backfillYouTubeAutoPublish",
+      "sweepYouTubeBackfill"
     ],
     "lib/voice/a2p-registration.ts": [
       "validateA2pProfile",

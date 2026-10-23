@@ -271,8 +271,11 @@ function wiringLayer() {
   check("lifetime touches: ONE sent-row writer + ONE LIFETIME_CUSTOMER_TOUCHPOINT_SENT emit (lib/sphere/lifetime-touchpoint-ledger.ts), metadata.agent_id for the reactor's acting-agent resolution",
     (ledger.match(/from\("lifetime_customer_touchpoints"\)/g) ?? []).length === 1 && /KernelEvent\.LIFETIME_CUSTOMER_TOUCHPOINT_SENT/.test(ledger) && /agent_id: p\.agentId/.test(ledger) && /if \(error\) return \{ ok: false/.test(ledger))
   const touchActions = ["app/actions/lifetime-customer-touchpoints.ts", "app/actions/lifetime-customers.ts"]
-  check("the five former sent-row inserters (three senders + the manual log + the market update) call recordLifetimeTouchpointSent and insert no sent row themselves (stripped source)",
-    touchActions.every((f) => !/from\("lifetime_customer_touchpoints"\)\s*\.insert/.test(src(f))) && (src("app/actions/lifetime-customer-touchpoints.ts").match(/recordLifetimeTouchpointSent\(/g) ?? []).length === 3 && (src("app/actions/lifetime-customers.ts").match(/recordLifetimeTouchpointSent\(/g) ?? []).length === 2)
+  // RULE, not a count (wave 143E retired the day-3/day-30 referral sender onto the review engine): EVERY exported sender in
+  // the touchpoints action file records through recordLifetimeTouchpointSent, none inserts a sent row itself.
+  const senderCount = (src("app/actions/lifetime-customer-touchpoints.ts").match(/^export async function send\w+\(/gm) ?? []).length
+  check(`the former sent-row inserters (${senderCount} exported senders + the manual log + the market update) call recordLifetimeTouchpointSent and insert no sent row themselves (stripped source)`,
+    touchActions.every((f) => !/from\("lifetime_customer_touchpoints"\)\s*\.insert/.test(src(f))) && senderCount >= 2 && (src("app/actions/lifetime-customer-touchpoints.ts").match(/recordLifetimeTouchpointSent\(/g) ?? []).length === senderCount && (src("app/actions/lifetime-customers.ts").match(/recordLifetimeTouchpointSent\(/g) ?? []).length === 2)
   // Wave 142 (lane 142C): the scheduled-row writer moved from the close command onto the ONE lifetime writer (promoteDealContactsToLifetime).
   check("POSITIVE CONTROL: the scheduled-row writer (lib/kernel/lifetime-conversion.ts promoteDealContactsToLifetime, status 'scheduled' on conversion — not a send) still inserts and is NOT routed through the sent ledger", /from\("lifetime_customer_touchpoints"\)\.insert\(rows\)/.test(src("lib/kernel/lifetime-conversion.ts")) && !/from\("lifetime_customer_touchpoints"\)\.insert\(/.test(src("lib/kernel/transactions.ts")))
   const sellerSrc = src("lib/application/listing-lifecycle.ts")

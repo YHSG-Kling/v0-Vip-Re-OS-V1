@@ -70,8 +70,10 @@ export async function deliverMagnet(
         journeyType: "buyer", persona: "other", messageType: "email", content,
       }, { client: svc })
       return { allowed: r.allowed, violations: r.violations }
-    } catch {
-      return { allowed: true, violations: [] } // gate unreachable → the deterministic copy is already FH-safe
+    } catch (e) {
+      // FAIL CLOSED (CLAUDE.md §4): a gate that cannot run refuses — a delivery is held and the reason is said, never
+      // "checked and fine". The deterministic copy being FH-safe is an argument, not a check that ran.
+      return { allowed: false, violations: [`compliance gate unreachable — delivery held: ${e instanceof Error ? e.message : String(e)}`] }
     }
   }
 

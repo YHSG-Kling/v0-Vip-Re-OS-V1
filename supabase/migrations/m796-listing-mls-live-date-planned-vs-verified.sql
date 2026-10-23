@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 143, lane 143A) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-24 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 143, lane 143A; statement by statement where the MCP held a batch ──
 --
 -- m796 — THE MLS LIVE DATE: PLANNED vs VERIFIED, ON THE CANONICAL LISTING ROW (wave 143, lane 143A).
 --

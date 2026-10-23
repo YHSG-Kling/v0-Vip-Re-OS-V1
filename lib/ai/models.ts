@@ -81,6 +81,9 @@ const MODEL_CONFIG: Record<AIModel, { provider: string; modelId: string }> = {
   "gemini-pro": { provider: "google", modelId: "gemini-2.5-pro" },
   "gemini-flash": { provider: "google", modelId: "gemini-2.5-flash" },
   "perplexity-sonar": { provider: "perplexity", modelId: "sonar" },
+  // NOT SERVED (wave 143, lane 143I): perplexity/sonar-pro is absent from the Gateway catalog (ai-gateway.vercel.sh/v1/models,
+  // 484 ids, read 2026-10-23); the three research lanes that named it now route to perplexity-sonar. The alias stays
+  // registered so the routing guards can name it; nothing routes to it.
   "perplexity-sonar-pro": { provider: "perplexity", modelId: "sonar-pro" },
 }
 
@@ -212,9 +215,9 @@ export const AI_TASK_ROUTING: Record<string, {
   buyer_prediction:                { model: "claude-sonnet", fallback: "gpt-4o", reason: "Predicts a buyer's likely offer price band / type / timeline from behaviour signals (lib/behavior-learning/prediction-engine.ts). DISTINCT from behavioral_pattern_detect (claude-haiku), which only classifies a signal." },
 
   // ── RESEARCH + LIVE DATA (needs internet) ─────────────────────────────────
-  market_insight_generation: { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Live market data + neighborhood stats — requires web search" },
-  neighborhood_research:     { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Current school ratings, walkability, local stats" },
-  competitive_monitoring:    { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Live competitor listings + market positioning" },
+  market_insight_generation: { model: "perplexity-sonar", fallback: "claude-sonnet", reason: "Live market data + neighborhood stats — requires web search" },
+  neighborhood_research:     { model: "perplexity-sonar", fallback: "claude-sonnet", reason: "Current school ratings, walkability, local stats" },
+  competitive_monitoring:    { model: "perplexity-sonar", fallback: "claude-sonnet", reason: "Live competitor listings + market positioning" },
   pricing_research:          { model: "perplexity-sonar",     fallback: "claude-sonnet", reason: "Current comp sales data — live MLS/web context" },
   home_value_estimate:       { model: "perplexity-sonar",     fallback: "claude-sonnet", reason: "Live AVM + recent sales context" },
   lead_enrichment_research:  { model: "perplexity-sonar",     fallback: "claude-sonnet", reason: "Web-research gap-fill for lead contact/identity when skip-trace is thin" },

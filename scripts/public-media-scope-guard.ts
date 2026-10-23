@@ -196,7 +196,7 @@ async function main() {
   check("the form's fields are whitelisted — id / status / verified_by / verified_at are the server's (not copied from the argument)", !/input\.(status|verified_by|verified_at|id)\b/.test(action))
   check("the panel is MOUNTED on /compliance/settings (where a compliance officer lands)", /<OlderPersonsExemptionPanel \/>/.test(code("app/compliance/settings/page.tsx")) && existsSync(join(ROOT, "app/components/compliance/OlderPersonsExemptionPanel.tsx")))
   const mig = raw("supabase/migrations/m846-older-persons-housing-verifications.sql")
-  check("the migration is stamped WRITTEN, NOT APPLIED on line 1 (files are not the database)", /^-- WRITTEN, NOT APPLIED \(wave 143, lane 143F\)/.test(mig))
+  check("the migration states its status on line 1 (files are not the database: the lane stamp until applied, APPLIED LIVE after)", /^-- (WRITTEN, NOT APPLIED \(wave 143, lane 143F\)|── APPLIED LIVE )/.test(mig))
   const storeSrc = code("lib/compliance/fair-housing-older-persons-store.ts")
   const cols = (/const COLUMNS = "([^"]+)"/.exec(storeSrc)?.[1] ?? "").split(",").map((s) => s.trim()).filter(Boolean)
   const migBody = mig.split("\n").filter((l) => !/^\s*--/.test(l)).join("\n")
@@ -204,7 +204,7 @@ async function main() {
   const migBasis = /basis IN \(([^)]*)\)/.exec(migBody)?.[1]?.split(",").map((s) => s.trim().replace(/'/g, "")) ?? []
   check("the migration's basis CHECK equals OLDER_PERSONS_BASES (one vocabulary; derived, not copied)", migBasis.length === OLDER_PERSONS_BASES.length && OLDER_PERSONS_BASES.every((b) => migBasis.includes(b)))
   check("the migration's RLS: tenant read policy on current_user_brokerage_id(), no write policy for authenticated", /FOR SELECT TO authenticated[\s\S]{0,120}current_user_brokerage_id\(\)/.test(migBody) && /REVOKE INSERT, UPDATE, DELETE/.test(migBody) && !/FOR (INSERT|UPDATE|DELETE|ALL)/.test(migBody))
-  check("the table is not (yet) in the live schema cache — the integrator regenerates after applying (so it is not hand-added here)", !(OLDER_PERSONS_TABLE in (CHECK_VOCABULARIES as Record<string, unknown>)))
+  check("the table is in the live schema cache (m846 applied at integration; the cache is regenerated from live, never hand-added)", OLDER_PERSONS_TABLE in (CHECK_VOCABULARIES as Record<string, unknown>))
 
   // ═══════════════════════════ E · THE NEGATIVE SCOPE ═══════════════════════════
   section("E · fair-housing checks NEVER run on CDA / commission / agreements / ledgers / closing reconciliation")

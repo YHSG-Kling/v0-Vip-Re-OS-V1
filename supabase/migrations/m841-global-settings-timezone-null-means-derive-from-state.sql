@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 143, lane 143H) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-24 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 143, lane 143H; statement by statement where the MCP held a batch ──
 --
 -- m841 — the tenant's timezone can say "not chosen" (CLAUDE.md §1: extend the survivor, build no second column).
 --

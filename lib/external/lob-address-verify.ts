@@ -48,9 +48,11 @@ export interface LobVerificationResult {
 export async function verifyAddressViaLob(address: LobAddressInput): Promise<{ data: LobVerificationResult | null; cost: number }> {
   const key = process.env.LOB_API_KEY
   if (!key) return { data: null, cost: 0 }
-  // Lob US verifications are billed at ~$0.0025/req in production; ~free in test mode.
+  // Lob US verifications are plan-priced (help.lob.com AV pricing + lob.com/pricing, read 2026-10-23): $0.05 Developer,
+  // $0.025 Startup, $0.012 Business, $0.009 Growth per request; ~free in test mode. Booked at the DEVELOPER rate until
+  // the owner's plan is known (wave 143, lane 143I finding O2 — the old $0.0025 under-booked 3.6×–20×).
   const isTest = key.startsWith("test_")
-  const cost = isTest ? 0 : 0.0025
+  const cost = isTest ? 0 : 0.05
 
   // Official SDK adapter (wave 71A) — see lib/providers/lob/client.ts. The
   // already-installed `lob@^6.6.3` SDK (used by lib/providers/dispatch.ts for

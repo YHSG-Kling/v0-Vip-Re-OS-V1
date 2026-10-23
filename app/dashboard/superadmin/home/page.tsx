@@ -120,6 +120,8 @@ const GROUPS: ToolGroup[] = [
         desc: "The one QR management registry: every tracked code the OS minted (video outros, listing pages, landing pages, direct mail, business cards, studio assets), who owns it — the platform or a tenant — and its scans." },
       { label: "Suppression list", href: "/dashboard/superadmin/suppression", cap: "sentinel",
         desc: "Platform-wide outbound suppression — addresses that must never be contacted." },
+      { label: "Form packets — licensed fillable forms", href: "/dashboard/superadmin/form-packets", cap: "staff",
+        desc: "The platform's licensed fillable form packets (wave 143B): registry, licence, approval — the Media source every FormWizard offers beside the tenant library and the legal-forms provider." },
       { label: "Vendors — every tenant", href: "/dashboard/superadmin/vendors", cap: "sentinel",
         desc: "Cross-tenant vendor network — status, portal linkage, premium placements, and the invoice ledger." },
     ],

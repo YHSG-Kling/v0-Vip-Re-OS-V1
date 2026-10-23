@@ -289,8 +289,8 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
   'twilio_sms': {
     vendorName: 'Twilio SMS',
     unitType: 'api_calls',
-    costPerUnit: 0.0075, // $0.0075 per outbound segment
-    notes: 'Per SMS segment — keep in lockstep with the figure metered in lib/providers/dispatch.ts',
+    costPerUnit: 0.0128, // $0.0083 base + ~$0.0045 mean carrier fee per outbound segment
+    notes: 'Per SMS segment — twilio.com/en-us/sms/pricing/us (read 2026-10-23, "current as of October 2026"): $0.0083 + carrier fee $0.0035–$0.005 (variable). THE ONE price: lib/providers/dispatch.ts reads this row.',
   },
   'elevenlabs': {
     vendorName: 'ElevenLabs',

@@ -21,6 +21,7 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { VERSIUM_CREDIT_WEIGHTS, versiumCreditsUsd } from "@/lib/external/versium-client"
 
 export interface DealInvestigationParams {
   contactId: string
@@ -159,7 +160,7 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
   // Versium full-demographic match, within what is left of this run's cap, budget-gated and booked by the
   // leg; protected characteristics never leave the adapter. A refusal leaves the source null and says why.
   try {
-    if (contact.brokerage_id && result.cost + 0.05 <= cap) {
+    if (contact.brokerage_id && result.cost + versiumCreditsUsd(VERSIUM_CREDIT_WEIGHTS.full_demographic) <= cap) {
       const { runVersiumOnlinePresenceLeg } = await import("@/lib/ai-isa/property-lookup-rail")
       const op = await runVersiumOnlinePresenceLeg({
         brokerageId: contact.brokerage_id,

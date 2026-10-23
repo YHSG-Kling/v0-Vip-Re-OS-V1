@@ -268,6 +268,10 @@ export interface TeamTermsResolution {
   effectiveFrom: Ymd | null
   /** The agent's signed team_agreement of record on the deal's date (contract_signatures; cited, never copied). */
   signedAgreement?: { id: string; fullyExecutedAt: string; documentUrl: string | null } | null
+  /** m812 trigger-written on the governing version row: the team's fee schedule, per-member overrides, and when it was recorded. */
+  teamFees?: Record<string, unknown> | null
+  memberOverrides?: Record<string, unknown> | null
+  recordedAt?: string | null
 }
 
 function numOrNull(v: unknown): number | null {
@@ -396,7 +400,7 @@ export async function loadTeamTermsAsOf(
 ): Promise<TeamTermsResolution | null> {
   const [versionsRes, signedRes] = await Promise.all([
     svc.from("team_commission_profiles")
-      .select("effective_date, team_split_type, team_split_value, cap_amount, is_active, created_at")
+      .select("effective_date, team_split_type, team_split_value, cap_amount, is_active, created_at, team_fees_json, member_overrides_json, recorded_at")
       .eq("team_id", args.teamId)
       .eq("brokerage_id", args.brokerageId),
     svc.from("contract_signatures")
@@ -415,5 +419,16 @@ export async function loadTeamTermsAsOf(
   if (!terms) return null
   // A refused read of the signed record is evidence lost, not money lost: the terms still price the deal.
   const signed = signedRes.error ? null : signedAgreementAsOf((signedRes.data ?? []) as Array<{ id: string; esign_status?: string | null; fully_signed_at?: string | null; document_url?: string | null; field_values?: unknown }>, args.asOf)
-  return { ...terms, signedAgreement: signed ? { id: signed.id, fullyExecutedAt: signed.fullyExecutedAt, documentUrl: signed.documentUrl } : null }
+  // The version row that governs (m812 trigger-written): its team fees / member overrides / recorded_at ride on the
+  // resolution so the waterfall and the agreements page read what the trigger wrote (wave 143 integration).
+  const governingRow = (unavailable ? [] : ((versionsRes.data ?? []) as Array<Record<string, unknown>>))
+    .filter((r) => typeof r.effective_date === "string" && (r.effective_date as string) <= args.asOf)
+    .sort((x, y) => String(y.effective_date).localeCompare(String(x.effective_date)))[0] ?? null
+  return {
+    ...terms,
+    signedAgreement: signed ? { id: signed.id, fullyExecutedAt: signed.fullyExecutedAt, documentUrl: signed.documentUrl } : null,
+    teamFees: (governingRow?.team_fees_json as Record<string, unknown> | null | undefined) ?? null,
+    memberOverrides: (governingRow?.member_overrides_json as Record<string, unknown> | null | undefined) ?? null,
+    recordedAt: (governingRow?.recorded_at as string | null | undefined) ?? null,
+  }
 }

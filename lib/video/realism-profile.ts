@@ -1637,7 +1637,7 @@ const DID_OFFLINE_SECONDS_PER_CREDIT = 15
 const DID_STREAMING_SECONDS_PER_CREDIT = 30
 const DID_USD_PER_VIDEO_SECOND =
   Math.round((DID_SCALE_MONTHLY_PLAN_USD / (DID_SCALE_MONTHLY_CREDITS * DID_OFFLINE_SECONDS_PER_CREDIT)) * 10000) / 10000
-const ELEVENLABS_USD_PER_1K_CHARS = 0.1
+const ELEVENLABS_USD_PER_1K_CHARS = 0.08 // elevenlabs.io/pricing/api raw text 2026-10-23: v3 / Multilingual v2 / v4 = $0.08 per 1K chars (Flash/Turbo $0.04)
 
 /**
  * Estimated USD for one avatar render of `script`: ElevenLabs characters +
@@ -1664,12 +1664,11 @@ export function estimateAvatarRenderCostUsd(script: string): number {
  * lib/vendor-governance/cost-normalizer.ts VENDOR_PRICING.elevenlabs $0.30/1K (the slideshow
  * voiceover's video_render_log.cost_usd). All four now price through here.
  *
- * WHY $0.10 AND NOT v4's $0.08 (wave 91 lane 91E: Eleven v4 lists $0.08/1K, Flash/Turbo
- * $0.04). The platform does not synthesise on v4: the model ids in the tree are eleven_v3,
- * eleven_multilingual_v2, eleven_flash_v2_5, eleven_turbo_v2_5 and the legacy v1/v2 — and
- * v3 / multilingual_v2 are the $0.10 row (the research note above, elevenlabs.io/pricing/api).
- * Booking v4's price for v3 characters would UNDER-book; §5 prefers the over-book until the
- * synthesis moves to v4, and then this one constant is the only number to change.
+ * WHY $0.08 (wave 143, lane 143I finding O3 — the earlier $0.10 came from a wave-91 reading): the API price page
+ * (elevenlabs.io/pricing/api, raw text read 2026-10-23) lists v3, Multilingual v2 AND v4 at $0.08 per 1K characters and
+ * Flash / Turbo at $0.04. The tree synthesises on eleven_v3 / eleven_multilingual_v2 (the $0.08 row) with
+ * eleven_flash_v2_5 / eleven_turbo_v2_5 as the cheaper fallbacks, so $0.08 over-books the fallbacks and books the
+ * primary exactly; this one constant is the only number to change when the page moves.
  * No floor: ElevenLabs bills characters, not calls (contrast D-ID's one-credit floor).
  */
 export function elevenLabsUsdForChars(chars: number): number {

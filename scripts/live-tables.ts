@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 780 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 785 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -18,9 +18,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-14
+ * generated: 2026-10-23
  * source: public.live_schema_json()
- * body-sha256: 6f20bd188bfcc0850c33f0ae14b3f6b69dcbdcb5bd66bf09737af06ef2468e08
+ * body-sha256: ef6d7c2ec6d6efc341fe2b83cfca42dea420d357eda496b2c0e1d5c3ccd6616b
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -54,6 +54,7 @@ export const LIVE_TABLES: readonly string[] = [
   "agent_certifications",
   "agent_chat_preferences",
   "agent_client_messages",
+  "agent_commission_profile_versions",
   "agent_commission_profiles",
   "agent_commissions",
   "agent_coordination_log",
@@ -276,6 +277,7 @@ export const LIVE_TABLES: readonly string[] = [
   "content_topic_uses",
   "contract_reviews",
   "contract_signatures",
+  "contract_term_versions",
   "conversation_audit_flags",
   "conversation_insights",
   "conversation_intelligence",
@@ -510,6 +512,7 @@ export const LIVE_TABLES: readonly string[] = [
   "offer_intents",
   "offer_strategy_templates",
   "offers",
+  "older_persons_housing_verifications",
   "onboarding_ai_chats",
   "onboarding_quizzes",
   "onboarding_steps",
@@ -525,6 +528,7 @@ export const LIVE_TABLES: readonly string[] = [
   "outcome_reconciliations",
   "outside_agent_contact_links",
   "outside_agents",
+  "outside_offer_messages",
   "pattern_adoptions",
   "pattern_detections",
   "pattern_predictions",
@@ -543,6 +547,7 @@ export const LIVE_TABLES: readonly string[] = [
   "platform_coupons",
   "platform_credentials",
   "platform_dunning_events",
+  "platform_form_packets",
   "platform_impersonation_sessions",
   "platform_lead_distributions",
   "platform_nps_responses",

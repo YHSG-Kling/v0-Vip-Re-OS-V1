@@ -1054,7 +1054,7 @@
     "test:operations-docs": "tsx --conditions=react-server scripts/operations-docs-guard.ts",
     "test:feature-certification": "tsx scripts/feature-certification-guard.ts",
     "test:agreement-waterfall": "tsx scripts/agreement-waterfall-guard.ts",
-    "test:closing-compliance": "tsx scripts/closing-compliance-guard.ts",
+    "test:closing-compliance": "tsx --conditions=react-server scripts/closing-compliance-guard.ts",
     "test:versium-capability-matrix": "tsx scripts/versium-capability-matrix-guard.ts",
     "test:intent-driven-followup": "tsx --conditions=react-server scripts/intent-driven-followup-guard.ts",
     "test:outside-offer-loop": "tsx scripts/outside-offer-loop-guard.ts",

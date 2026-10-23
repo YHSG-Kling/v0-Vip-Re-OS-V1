@@ -2037,12 +2037,28 @@ export async function requestPreliminaryCdCorrectionAction(input: {
     .eq("id", cda.transaction_id)
     .maybeSingle()
   const t = txn as { purchase_price?: number | null; closing_cost_contribution?: number | null; property_address?: string | null; agent_id?: string | null; coordinator_id?: string | null } | null
+  // Wave 143 (lane 143C → lane 143A seam): the EXPECTED price / credits come from the authoritative terms record —
+  // an executed counter supersedes the original (lib/offers/governing-terms.ts); the transaction row is the fallback.
+  let govPrice: number | null = null
+  let govCredits: number | null = null
+  try {
+    const { governingContractTerms } = await import("@/lib/offers/governing-terms")
+    const g = await governingContractTerms(supabase as any, String((cda as { brokerage_id?: string | null }).brokerage_id ?? ""), { transactionId: cda.transaction_id })
+    if (g.ok) {
+      const v = g.governing.values as Record<string, unknown>
+      const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? x : typeof x === "string" && x.trim() !== "" && Number.isFinite(Number(x)) ? Number(x) : null)
+      govPrice = num(v.offer_price ?? v.purchase_price)
+      govCredits = num(v.closing_cost_contribution ?? v.seller_credit)
+    }
+  } catch (e) {
+    console.warn("[cda-portal] authoritative terms record unreadable — transaction row used:", e instanceof Error ? e.message : String(e))
+  }
   const expected: StatementFigures = {
-    sales_price: t?.purchase_price ?? null,
+    sales_price: govPrice ?? t?.purchase_price ?? null,
     gross_commission: cda.gross_commission == null ? null : Number(cda.gross_commission),
     agent_net: cda.agent_net == null ? null : Number(cda.agent_net),
     brokerage_net: cda.brokerage_net == null ? null : Number(cda.brokerage_net),
-    seller_credits: t?.closing_cost_contribution ?? null,
+    seller_credits: govCredits ?? t?.closing_cost_contribution ?? null,
   }
   const identified = input.statementFigures ? comparePreliminaryStatementFigures(input.statementFigures, expected) : { discrepancies: [] as PreliminaryDiscrepancy[], compared: [], unverifiable: [] }
   const documented: PreliminaryDiscrepancy[] = (input.items ?? [])

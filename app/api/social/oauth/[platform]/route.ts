@@ -323,6 +323,21 @@ export async function GET(
     }
 
     console.log(`[Social OAuth] Successfully connected ${platform} for user ${stateData.userId}`)
+    // Wave 143 (lane 143F): a freshly authorized YouTube channel backfills the approved public non-personal videos
+    // that were waiting on it — best-effort, bounded, never failing the connect.
+    if (platform === "youtube") {
+      try {
+        const { data: me } = await supabase.from("users").select("brokerage_id").eq("id", stateData.userId).maybeSingle()
+        const brokerageId = (me as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+        if (brokerageId) {
+          const { backfillYouTubeAutoPublish } = await import("@/lib/video/youtube-publish")
+          const b = await backfillYouTubeAutoPublish(supabase, brokerageId, { limit: 5 })
+          console.log(`[Social OAuth] YouTube backfill on connect: ${JSON.stringify(b).slice(0, 240)}`)
+        }
+      } catch (e) {
+        console.warn("[Social OAuth] YouTube backfill skipped (connect unaffected):", e instanceof Error ? e.message : String(e))
+      }
+    }
     return redirectWithResult(baseUrl, true, platform)
   }
 
