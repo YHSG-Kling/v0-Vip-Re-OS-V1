@@ -23,6 +23,7 @@
 // Pure decision core (testable); replay reuses lib/esign-webhooks/finalize-packet
 // verbatim (proven idempotent — the same functions the live webhook calls).
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 type Svc = SupabaseClient<any, any, any>
@@ -46,7 +47,8 @@ export function decideIngressAction(input: { matched: boolean; attempts: number 
  * dispatch chain stamps: signature packets (both), offers, listing agreements,
  * voice-cockpit documents, and BBAs. One true = the webhook had somewhere to land.
  */
-export async function envelopeHasAnyArtifact(svc: Svc, envelopeId: string): Promise<boolean> {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+async function envelopeHasAnyArtifact(svc: Svc, envelopeId: string): Promise<boolean> {
   if (!envelopeId) return false
   const probes = await Promise.all([
     svc.from("signature_requests").select("id", { count: "exact", head: true }).eq("provider_envelope_id", envelopeId),
@@ -72,13 +74,14 @@ export async function parkIngressEvent(svc: Svc, input: {
 }): Promise<{ parked: boolean }> {
   try {
     if (!input.externalRef) return { parked: false }
-    await svc.from("ingress_dead_letters").upsert({
+    const { error: parkErr } = await svc.from("ingress_dead_letters").upsert({
       provider: input.provider,
       event_kind: input.eventKind,
       external_ref: input.externalRef,
       payload: input.payload,
       status: "pending",
     }, { onConflict: "provider,event_kind,external_ref", ignoreDuplicates: true })
+    if (parkErr) console.error(`[ingress-continuity] dead letter NOT parked — the event may be lost: ${parkErr.message}`)
     return { parked: true }
   } catch {
     return { parked: false }
@@ -372,14 +375,15 @@ export async function runIngressReconciliation(svc: Svc, now: Date = new Date())
     if (decision === "replay") {
       const ok = attempt.result === "replayed"
       if (ok) {
-        await svc.from("ingress_dead_letters")
+        const { error: reconciledErr } = await svc.from("ingress_dead_letters")
           .update({ status: "reconciled", reconciled_at: nowIso, attempts: (letter.attempts ?? 0) + 1, last_attempt_at: nowIso })
           .eq("id", letter.id).eq("status", "pending")
+        if (reconciledErr) console.error(`[ingress-continuity] replayed letter NOT marked reconciled (may replay again): ${reconciledErr.message}`)
         out.replayed++
       } else {
-        await svc.from("ingress_dead_letters")
+        await sentinelWrite(svc, svc.from("ingress_dead_letters")
           .update({ attempts: (letter.attempts ?? 0) + 1, last_attempt_at: nowIso })
-          .eq("id", letter.id)
+          .eq("id", letter.id), { table: "ingress_dead_letters", flow: "ingress_dead_letters_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         out.waiting++
       }
       await recordSelfHeal(svc, {
@@ -388,9 +392,9 @@ export async function runIngressReconciliation(svc: Svc, now: Date = new Date())
         detail: { flow: attempt.flow, provider: letter.provider, attempts: (letter.attempts ?? 0) + 1 },
       })
     } else if (decision === "abandon") {
-      await svc.from("ingress_dead_letters")
+      await sentinelWrite(svc, svc.from("ingress_dead_letters")
         .update({ status: "abandoned", attempts: (letter.attempts ?? 0) + 1, last_attempt_at: nowIso })
-        .eq("id", letter.id)
+        .eq("id", letter.id), { table: "ingress_dead_letters", flow: "ingress_dead_letters_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       out.abandoned++
       abandonedRefs.push(`${letter.provider}:${letter.external_ref}`)
       await recordSelfHeal(svc, {
@@ -399,9 +403,9 @@ export async function runIngressReconciliation(svc: Svc, now: Date = new Date())
         detail: { flow: attempt.flow, provider: letter.provider, reason: `still unmatched after ${INGRESS_MAX_ATTEMPTS} reconciliation attempts — a human must trace where this event should have landed` },
       })
     } else {
-      await svc.from("ingress_dead_letters")
+      await sentinelWrite(svc, svc.from("ingress_dead_letters")
         .update({ attempts: (letter.attempts ?? 0) + 1, last_attempt_at: nowIso })
-        .eq("id", letter.id)
+        .eq("id", letter.id), { table: "ingress_dead_letters", flow: "ingress_dead_letters_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       out.waiting++
     }
   }

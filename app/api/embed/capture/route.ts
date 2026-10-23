@@ -19,7 +19,9 @@
 import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { captureContact } from "@/lib/contact-pipeline/contact-capture"
+import { checkPublicRateLimit } from "@/lib/security/public-rate-limit"
+import { captureContact, resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const runtime = "nodejs"
 
@@ -34,6 +36,13 @@ interface Body {
 }
 
 export async function POST(request: NextRequest) {
+  // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1): unauthenticated
+  // contact capture from a third-party page. Idiom: app/api/track/visitor/route.ts.
+  const rateIp = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || "unknown"
+  const rateVerdict = checkPublicRateLimit("embed-capture", rateIp, { limit: 20, windowMs: 10 * 60_000 })
+  if (!rateVerdict.allowed) {
+    return NextResponse.json({ error: "Too many submissions from this connection — try again shortly." }, { status: 429, headers: { "Retry-After": String(rateVerdict.retryAfterSeconds) } })
+  }
   const body = await request.json().catch(() => null) as Body | null
   if (!body?.publicId || !body?.sessionId) {
     return NextResponse.json({ error: "publicId + sessionId required" }, { status: 400 })
@@ -81,10 +90,10 @@ export async function POST(request: NextRequest) {
         resolvedAgentId = pool[0]
       }
       // Advance the cursor so the next capture gets a different agent.
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("embed_widgets")
         .update({ last_routed_agent_id: resolvedAgentId })
-        .eq("id", widget.id)
+        .eq("id", widget.id), { table: "embed_widgets", flow: "embed_widgets_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
   }
 
@@ -107,6 +116,8 @@ export async function POST(request: NextRequest) {
       preferred_channel: body.email ? "email" : "sms",
       tcpa_consent: true,
       tcpa_consent_date: new Date().toISOString(),
+      // TIER 3 OF resolveContactLanguage — THE ONE resolver (§6).
+      language: resolveCapturedLanguage(null, request.headers.get("accept-language")),
     })
   } catch (e: any) {
     return NextResponse.json({ error: e.message ?? "Capture failed" }, { status: 500 })
@@ -116,15 +127,25 @@ export async function POST(request: NextRequest) {
   // contacts.embed_widget_id ties the contact back to the originating embed
   // so the broker can see "leads from this embed". embed_sessions.contact_id
   // links the conversation history.
-  await supabase
-    .from("contacts")
-    .update({ embed_widget_id: widget.id })
-    .eq("id", result.contactId)
+  await sentinelWrite(
+    supabase,
+    supabase
+      .from("contacts")
+      .update({ embed_widget_id: widget.id })
+      .eq("id", result.contactId),
+    {
+      table: "contacts",
+      flow: "embed_capture_attribution_stamp",
+      brokerageId: widget.brokerage_id,
+      reason:
+        "attribution stamp tying the contact back to the embed it came from; the contact itself (and its consent columns) was already created and error-checked above, so a lost stamp costs a 'leads from this embed' rollup, not the lead",
+    },
+  )
 
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("embed_sessions")
     .update({ contact_id: result.contactId })
-    .eq("id", body.sessionId)
+    .eq("id", body.sessionId), { table: "embed_sessions", flow: "embed_sessions_write", reason: "session→contact link; the contact is already captured" })
 
   return NextResponse.json({ contactId: result.contactId })
 }

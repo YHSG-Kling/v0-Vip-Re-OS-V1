@@ -17,7 +17,13 @@ export const SNAPSHOT_VOICE_FIELDS = ["tone", "formality_level", "key_brand_mess
 // Applying these makes a freshly provisioned tenant's day-one site come up fully branded.
 export const SNAPSHOT_SITE_FIELDS = ["about_text", "bio_text", "primary_color", "recruiting_pitch", "recruiting_value_props", "offers_cda", "widget_enabled", "farm_mail_enabled"] as const
 
-/** Fields that must NEVER appear in a snapshot (defence-in-depth for the test + reviewers). */
+/** Fields that must NEVER appear in a snapshot (defence-in-depth for the test + reviewers).
+ *  `zapier_api_key` stays listed after m678 DROPS the column (lane 89E), and `airtable_api_key`
+ *  stays listed after m771 DROPS it (lane 141D, owner: "Airtable is RETIRED"): the list guards
+ *  the PAYLOAD, not the schema — a historical snapshot payload that still carries either name is
+ *  refused by payloadLeaksSecret below instead of being applied onto a dropped column (PGRST204
+ *  would refuse the whole global_settings row), and a re-added column of that name must still
+ *  never travel. These two strings are the ONLY Airtable/Zapier spellings left in runtime code. */
 export const SNAPSHOT_FORBIDDEN_FIELDS = ["smtp_password", "smtp_username", "smtp_host", "smtp_port", "ghl_api_key", "zapier_api_key", "airtable_api_key", "from_email", "from_name", "created_by_user_id"] as const
 /** brokerages identity/billing fields the site layer must NEVER carry or touch on apply. */
 export const SNAPSHOT_SITE_FORBIDDEN_FIELDS = ["id", "name", "slug", "email", "phone", "status", "plan_tier", "subscription_tier", "onboarding_status", "twilio_subaccount_sid", "billing_metadata", "trial_ends_at", "logo_url"] as const
@@ -53,6 +59,50 @@ export function payloadLeaksSecret(payload: SnapshotPayload): boolean {
 
 type Svc = ReturnType<typeof createServiceClient>
 
+/** HOW a payload lands on a tenant (wave 140D; wave 140N made this THE ONE fill-absent
+ *  implementation — lib/kernel/tenant-readiness.ts fillAbsentDefaults / applyAbsentSnapshotDefaults
+ *  were merged onto this writer and deleted, their tombstone names this file).
+ *  `replace`     — the staff "apply this snapshot" door's AUDITED OVERWRITE (app/actions/superadmin/
+ *                  config-snapshots.ts, `overwrite: true`) and first provisioning onto an empty tenant:
+ *                  every carried key is written; the keys the tenant already HELD come back in
+ *                  `overwritten` so the audit row can name them (LAW 5).
+ *  `fill_absent` — provisioning + readiness repair (lib/kernel/tenant-operating-baseline.ts) and the
+ *                  staff door's DEFAULT: a key the tenant already holds is NEVER touched, only absent
+ *                  (null / missing) keys are filled; the voice layer is skipped WHOLE when the tenant
+ *                  has an ACTIVE brokerage voice; an existing feature override is never re-applied —
+ *                  so a retry or a repair cannot overwrite a customization. The untouched keys come
+ *                  back in `preserved`, the written ones in `filled`. */
+export type SnapshotApplyMode = "replace" | "fill_absent"
+export interface SnapshotApplyOptions { mode?: SnapshotApplyMode }
+
+export interface SnapshotApplyResult {
+  /** Sections that landed (`table`, or `table(filled k1,k2)` for a fill-absent write). */
+  applied: string[]
+  /** Sections refused — each write is READ; a refused section never reads as applied. */
+  refused: string[]
+  /** `<table>.<key>` the tenant held and a fill-absent apply left exactly as held. */
+  preserved: string[]
+  /** `<table>.<key>` written where the tenant held nothing (either mode). */
+  filled: string[]
+  /** `<table>.<key>` the tenant HELD and a replace-mode apply overwrote (always empty in fill-absent mode). */
+  overwritten: string[]
+}
+
+/** PURE: the keys of `layer` the live row does NOT already hold. A live null / undefined is
+ *  absent; any value the tenant holds — including "", 0 or false — is theirs and is kept. A
+ *  payload key carrying null / undefined is never a fill (nothing to write).
+ *  @proofSeam scripts/tenant-baseline-guard.ts asserts the rule directly (fill-absent never
+ *  overwrites a customization). */
+export function absentKeys(existing: Record<string, unknown> | null | undefined, layer: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(layer)) {
+    if (v === undefined || v === null) continue
+    const cur = existing ? existing[k] : undefined
+    if (cur === null || cur === undefined) out[k] = v
+  }
+  return out
+}
+
 /** Build a snapshot payload from a source tenant — allow-listed brand/voice + feature overrides. */
 export async function buildSnapshotPayload(sourceBrokerageId: string, client?: Svc): Promise<SnapshotPayload> {
   const svc = client ?? createServiceClient()
@@ -74,51 +124,160 @@ export async function buildSnapshotPayload(sourceBrokerageId: string, client?: S
   }
 }
 
-/** Apply a snapshot payload to a target tenant (service client; caller gates + audits). */
+/** Apply a snapshot payload to a target tenant (service client; caller gates + audits).
+ *  `opts.mode` (default `replace`) — see SnapshotApplyMode. Every layer is READ before it is
+ *  written, in both modes, and a refused read FAILS CLOSED for that layer: fill-absent could
+ *  otherwise replace a customization, replace could not evidence what it overwrote.
+ *  `appliedByUserId` lands on feature_access_overrides.created_by (FK users): a caller with
+ *  no acting user passes a payload without `features` (lib/kernel/tenant-operating-baseline.ts
+ *  resolves the AI-ISA system actor / first admin, else skips the layer, named). */
 export async function applySnapshotPayload(
   payload: SnapshotPayload,
   targetBrokerageId: string,
   appliedByUserId: string,
   client?: Svc,
-): Promise<{ applied: string[] }> {
+  opts: SnapshotApplyOptions = {},
+): Promise<SnapshotApplyResult> {
   const svc = client ?? createServiceClient()
+  const fillAbsent = opts.mode === "fill_absent"
   const applied: string[] = []
+  // `applied` used to list every section whether or not its write landed — a
+  // refused section read as applied to the operator. Each write is now READ and a
+  // refusal is reported here instead of in `applied`.
+  const refused: string[] = []
+  const preserved: string[] = []
+  const filled: string[] = []
+  const overwritten: string[] = []
   const now = new Date().toISOString()
+  /** Book each written key as filled (tenant held nothing) or overwritten (tenant held a value). */
+  const book = (table: string, keys: readonly string[], absent: Record<string, unknown>) => {
+    for (const k of keys) (k in absent ? filled : overwritten).push(`${table}.${k}`)
+  }
 
-  if (payload.global && Object.keys(payload.global).length) {
-    await svc.from("global_settings").upsert({ brokerage_id: targetBrokerageId, ...payload.global, updated_at: now }, { onConflict: "brokerage_id" })
-    applied.push("global_settings")
+  /** ONE-ROW-PER-BROKERAGE layers (global_settings, brokerage_brand_settings). Re-sanitized on
+   *  apply (allow-list) so a tampered payload never writes a column the capture would not carry. */
+  /** The write chains, one per table, spelled with the table LITERAL (the column census attributes a
+   *  dynamic-key write to the table only when it can see the table name; `.from(table)` hid both). */
+  const upsertKeyed = (table: "global_settings" | "brokerage_brand_settings", row: Record<string, unknown>) =>
+    table === "global_settings"
+      ? svc.from("global_settings").upsert(row, { onConflict: "brokerage_id" })
+      : svc.from("brokerage_brand_settings").upsert(row, { onConflict: "brokerage_id" })
+  const updateKeyed = (table: "global_settings" | "brokerage_brand_settings", patch: Record<string, unknown>) =>
+    table === "global_settings"
+      ? svc.from("global_settings").update(patch).eq("brokerage_id", targetBrokerageId).select("brokerage_id")
+      : svc.from("brokerage_brand_settings").update(patch).eq("brokerage_id", targetBrokerageId).select("brokerage_id")
+  const applyKeyedLayer = async (table: "global_settings" | "brokerage_brand_settings", rawLayer: Record<string, unknown>, allow: readonly string[]) => {
+    const layer = pickFields(rawLayer, allow)
+    const cols = Object.keys(layer)
+    if (!cols.length) return
+    const { data: existing, error: readErr } = await svc.from(table).select(cols.join(", ")).eq("brokerage_id", targetBrokerageId).maybeSingle()
+    if (readErr) { refused.push(`${table} (read): ${readErr.message}`); return }
+    const live = (existing ?? null) as Record<string, unknown> | null
+    const absent = absentKeys(live, layer)
+    if (!fillAbsent) {
+      const replaceRow: Record<string, unknown> = { brokerage_id: targetBrokerageId, ...layer, updated_at: now }
+      const { error } = await upsertKeyed(table, replaceRow)
+      if (error) { refused.push(`${table}: ${error.message}`); return }
+      applied.push(table)
+      book(table, cols, absent)
+      return
+    }
+    for (const k of cols) if (!(k in absent)) preserved.push(`${table}.${k}`)
+    if (!Object.keys(absent).length) return
+    if (!live) {
+      const fillRow: Record<string, unknown> = { brokerage_id: targetBrokerageId, ...absent, updated_at: now }
+      const { error } = await upsertKeyed(table, fillRow)
+      if (error) { refused.push(`${table}: ${error.message}`); return }
+    } else {
+      const fillPatch: Record<string, unknown> = { ...absent, updated_at: now }
+      const { data: rows, error } = await updateKeyed(table, fillPatch)
+      if (error) { refused.push(`${table}: ${error.message}`); return }
+      if ((rows ?? []).length === 0) { refused.push(`${table}: fill matched no row for ${targetBrokerageId}`); return }
+    }
+    applied.push(`${table}(filled ${Object.keys(absent).join(",")})`)
+    book(table, Object.keys(absent), absent)
   }
-  if (payload.brand && Object.keys(payload.brand).length) {
-    await svc.from("brokerage_brand_settings").upsert({ brokerage_id: targetBrokerageId, ...payload.brand, updated_at: now }, { onConflict: "brokerage_id" })
-    applied.push("brokerage_brand_settings")
-  }
+
+  if (payload.global && Object.keys(payload.global).length) await applyKeyedLayer("global_settings", payload.global, SNAPSHOT_GLOBAL_FIELDS)
+  if (payload.brand && Object.keys(payload.brand).length) await applyKeyedLayer("brokerage_brand_settings", payload.brand, SNAPSHOT_BRAND_FIELDS)
   if (payload.voice && Object.keys(payload.voice).length) {
-    // brand_voice_profile has no single-column unique on brokerage_id (agent/team scoped too),
-    // so replace the brokerage-level row explicitly.
-    await svc.from("brand_voice_profile").delete().eq("brokerage_id", targetBrokerageId).is("agent_id", null).is("team_id", null)
-    await svc.from("brand_voice_profile").insert({ brokerage_id: targetBrokerageId, ...payload.voice, is_active: true, created_at: now, updated_at: now })
-    applied.push("brand_voice_profile")
+    // brand_voice_profile has no single-column unique on brokerage_id (agent/team scoped too). The
+    // ACTIVE brokerage-level row is the tenant's voice (what every reader and the readiness contract
+    // use). fill-absent: an active voice exists → the layer is skipped WHOLE, nothing written (merged
+    // from lane 140K's fillAbsentDefaults); none → one active row is inserted. replace: the brokerage-
+    // level rows are cleared and the layer inserted; a refused clear skips the insert (two rows).
+    const voice = pickFields(payload.voice as Record<string, any>, SNAPSHOT_VOICE_FIELDS)
+    const voiceCols = Object.keys(voice)
+    if (voiceCols.length) {
+      const { data: liveVoice, error: voiceReadErr } = await svc.from("brand_voice_profile").select(["id", ...voiceCols].join(", ")).eq("brokerage_id", targetBrokerageId).is("agent_id", null).is("team_id", null).eq("is_active", true).limit(1).maybeSingle()
+      if (voiceReadErr) refused.push(`brand_voice_profile (read): ${voiceReadErr.message}`)
+      else if (fillAbsent && liveVoice) {
+        for (const k of voiceCols) preserved.push(`brand_voice_profile.${k}`)
+      } else {
+        const { error: voiceClearErr } = fillAbsent
+          ? { error: null }
+          : await svc.from("brand_voice_profile").delete().eq("brokerage_id", targetBrokerageId).is("agent_id", null).is("team_id", null)
+        if (voiceClearErr) refused.push(`brand_voice_profile (clear): ${voiceClearErr.message}`)
+        else {
+          const { error: voiceErr } = await svc.from("brand_voice_profile").insert({ brokerage_id: targetBrokerageId, ...voice, is_active: true, created_at: now, updated_at: now })
+          if (voiceErr) refused.push(`brand_voice_profile: ${voiceErr.message}`)
+          else {
+            applied.push("brand_voice_profile")
+            book("brand_voice_profile", voiceCols, absentKeys((liveVoice ?? null) as Record<string, unknown> | null, voice))
+          }
+        }
+      }
+    }
   }
   if (payload.site && Object.keys(payload.site).length) {
     // Defence-in-depth: re-sanitize on apply so a tampered payload can NEVER touch
     // identity/billing fields (name, slug, email, status, tier, ids) — only allow-listed
     // site-shaping fields are ever written to the brokerages row.
-    const site = pickFields(payload.site as Record<string, any>, SNAPSHOT_SITE_FIELDS)
-    if (Object.keys(site).length) {
-      await svc.from("brokerages").update({ ...site, updated_at: now }).eq("id", targetBrokerageId)
-      applied.push("brokerage_site")
+    let site = pickFields(payload.site as Record<string, any>, SNAPSHOT_SITE_FIELDS)
+    const siteCols = Object.keys(site)
+    if (siteCols.length) {
+      const { data: liveSite, error: siteReadErr } = await svc.from("brokerages").select(siteCols.join(", ")).eq("id", targetBrokerageId).maybeSingle()
+      if (siteReadErr) refused.push(`brokerage_site (read): ${siteReadErr.message}`)
+      else {
+        const absent = absentKeys((liveSite ?? null) as Record<string, unknown> | null, site)
+        if (fillAbsent) {
+          for (const k of siteCols) if (!(k in absent)) preserved.push(`brokerages.${k}`)
+          site = absent
+        }
+        if (Object.keys(site).length) {
+          const { data: siteRows, error: siteErr } = await svc.from("brokerages").update({ ...site, updated_at: now }).eq("id", targetBrokerageId).select("id")
+          if (siteErr) refused.push(`brokerage_site: ${siteErr.message}`)
+          else if ((siteRows ?? []).length === 0) refused.push(`brokerage_site: no brokerage ${targetBrokerageId}`)
+          else {
+            applied.push(fillAbsent ? `brokerage_site(filled ${Object.keys(site).join(",")})` : "brokerage_site")
+            book("brokerages", Object.keys(site), absent)
+          }
+        }
+      }
     }
   }
   if (payload.features?.length) {
+    let featuresApplied = 0
     for (const f of payload.features) {
-      await svc.from("feature_access_overrides").delete().eq("brokerage_id", targetBrokerageId).eq("feature_key", f.feature_key).is("user_id", null).is("team_id", null)
-      await svc.from("feature_access_overrides").insert({
+      const { data: liveOverride, error: ovReadErr } = await svc.from("feature_access_overrides").select("id").eq("brokerage_id", targetBrokerageId).eq("feature_key", f.feature_key).is("user_id", null).is("team_id", null).limit(1).maybeSingle()
+      if (ovReadErr) { refused.push(`feature_override ${f.feature_key} (read): ${ovReadErr.message}`); continue }
+      // An override the tenant already holds for this feature (granted, disabled, or
+      // their own trial) is theirs — fill-absent never clears it.
+      if (fillAbsent && liveOverride) { preserved.push(`feature_access_overrides.${f.feature_key}`); continue }
+      if (!fillAbsent) {
+        const { error: clearErr } = await svc.from("feature_access_overrides").delete().eq("brokerage_id", targetBrokerageId).eq("feature_key", f.feature_key).is("user_id", null).is("team_id", null)
+        if (clearErr) { refused.push(`feature_override ${f.feature_key} (clear): ${clearErr.message}`); continue }
+      }
+      const { error: insErr } = await svc.from("feature_access_overrides").insert({
         brokerage_id: targetBrokerageId, feature_key: f.feature_key, override_type: f.override_type,
         trial_ends_at: f.override_type === "grant_trial" ? f.trial_ends_at : null, created_by: appliedByUserId,
       })
+      if (insErr) { refused.push(`feature_override ${f.feature_key}: ${insErr.message}`); continue }
+      featuresApplied++
+      ;(liveOverride ? overwritten : filled).push(`feature_access_overrides.${f.feature_key}`)
     }
-    applied.push(`feature_overrides(${payload.features.length})`)
+    if (featuresApplied > 0) applied.push(`feature_overrides(${featuresApplied}/${payload.features.length})`)
   }
-  return { applied }
+  if (refused.length > 0) console.error(`[config-snapshots] apply to ${targetBrokerageId}: ${refused.length} section(s) refused — ${refused.join(" | ")}`)
+  return { applied, refused, preserved, filled, overwritten }
 }

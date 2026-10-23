@@ -10,6 +10,7 @@ import { runCompleteOfferWorkflow } from "@/app/actions/ai-offer-creation"
 import { fillPropertyDataWithAI } from "@/app/actions/buyer-offer/prefill-offer"
 import { Loader2, Sparkles, Check, Bot } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
+import { bestEffort } from "@/lib/db/best-effort"
 import { getOfferContext } from "@/lib/contacts/ownership-model"
 
 interface OfferFormWizardProps {
@@ -35,6 +36,11 @@ interface OfferFormWizardProps {
   // In-app form selections collected in the forms step
   inAppSelectedFormIds?:   string[]
   inAppFormFieldValues?:   Record<string, unknown>
+  /** offer_intents.id (m619) — set when this wizard opened via "Start Offer"
+   *  from the agent's Buyer offer requests queue. Carried on the created
+   *  offer's form payload so createOffer can bridge offer_intents.offer_id +
+   *  status='converted'. */
+  offerIntentId?:  string
   onBack:          () => void
   onSuccess:       (offerId?: string) => void
 }
@@ -142,6 +148,7 @@ export function OfferFormWizard({
   listingId, propertyAddressAiFilled,
   contingencies, buyerMaxBudget, buyerRiskTolerance,
   inAppSelectedFormIds, inAppFormFieldValues,
+  offerIntentId,
   onBack, onSuccess,
 }: OfferFormWizardProps) {
   const [step, setStep]           = useState<Step>("Price")
@@ -259,7 +266,10 @@ export function OfferFormWizard({
       if (listingRow.agent_id) {
         const ctx = getOfferContext(listingId, listingRow.agent_id, agentUserId)
         const agencyLabel = ctx.isCrossSide && ctx.isSameAgent ? " (dual agency)" : " via another agent"
-        await supabase.from("activities").insert({
+        // DECLARED best-effort (lane 87E): the offer already exists and this is its
+        // echo to the listing side; a refusal is logged with its reason instead of
+        // vanishing into `.then(() => {}).catch(() => {})`.
+        await bestEffort(supabase.from("activities").insert({
           agent_id:      listingRow.agent_id,
           brokerage_id:  brokerageId,
           activity_type: "offer_received_on_listing",
@@ -268,11 +278,11 @@ export function OfferFormWizard({
           status:        "pending",
           priority:      "high",
           notes:         baseNotes,
-        }).then(() => {}).catch(() => {})
+        }), "listing-side offer echo — the offer row is already written")
       }
 
       if (listingRow.seller_contact_id) {
-        await supabase.from("activities").insert({
+        await bestEffort(supabase.from("activities").insert({
           contact_id:    listingRow.seller_contact_id,
           brokerage_id:  brokerageId,
           activity_type: "portal_offer_notification",
@@ -285,7 +295,7 @@ export function OfferFormWizard({
             listing_id:    listingId,
             notify_portal: true,
           }),
-        }).then(() => {}).catch(() => {})
+        }), "seller portal offer notice — the offer row is already written")
       }
     } catch {
       // Non-fatal — offer is already created; notification failure must not block the user.
@@ -303,6 +313,8 @@ export function OfferFormWizard({
               in_app_form_field_values: inAppFormFieldValues ?? {},
             }
           : {}),
+        // THE BRIDGE (m619) — createOffer converts this intent on success.
+        ...(offerIntentId ? { offer_intent_id: offerIntentId } : {}),
       }
       const result = await createOffer(contactId, brokerageId, agentUserId, formWithInAppData)
       if (result.success && result.offerId) {

@@ -2,12 +2,23 @@ import { createClient } from '@/lib/supabase/server'
 import { getAgentContext } from '@/lib/identity'
 import { toCanonicalRoleOrDefault } from '@/lib/security'
 import { redirect } from 'next/navigation'
+import { isAdminOrBroker } from '@/lib/auth/resolve-user-role'
+import { RoleGateNotice } from '@/app/components/shared/role-gate-notice'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { ArrowLeft, CheckCircle2, Clock, AlertTriangle, Calendar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
+// THE BOARD'S MISSING HALF — this page listed every open task and offered no way
+// to act on one. See the component's header for why these three controls and not
+// more, and which writer each one uses.
+import { TaskRowActions } from './task-row-actions'
+// HOISTED (§6, lane G3 2026-09-03): the overdue rule and the priority colour
+// lived inline here (:42-59) and were needed verbatim by the agent-facing list
+// at app/dashboard/tasks/page.tsx. One module now holds both — see its header
+// for why "overdue" compares calendar days rather than timestamps.
+import { isTaskOverdue, getPriorityColor } from '@/lib/tasks/task-presentation'
 
 export const dynamic = 'force-dynamic'
 
@@ -22,8 +33,13 @@ export default async function AdminTasksPage() {
 
   // toCanonicalRoleOrDefault normalises legacy DB strings (TC→tc etc.)
   const userRole = toCanonicalRoleOrDefault(ctx.userType, 'agent')
-  const allowedRoles = ['admin', 'broker', 'superadmin']
-  if (!allowedRoles.includes(userRole)) redirect('/dashboard')
+  // Lane 90A: the ONE roster instead of `['admin','broker','superadmin']` — a
+  // two-line ladder P1b's adjacency regex had been blind to (now widened). It
+  // bounced broker_owner / broker_admin / team_lead / compliance_officer, and
+  // 'superadmin' is dead as a users.user_type (0 live rows, §4).
+  if (!isAdminOrBroker({ user_type: userRole })) {
+    return <RoleGateNotice surface="Admin tasks" audience="your broker, brokerage admins, team leads and the compliance officer" />
+  }
 
   const supabase = await createClient()
 
@@ -36,24 +52,10 @@ export default async function AdminTasksPage() {
     .order('due_date', { ascending: true })
     .limit(50)
 
-  const overdueTasks = tasks?.filter(
-    (t) => t.due_date && new Date(t.due_date) < new Date() && t.status !== 'completed'
-  ) || []
-  const pendingTasks = tasks?.filter(
-    (t) => t.status === 'pending' && (!t.due_date || new Date(t.due_date) >= new Date())
-  ) || []
+  const now = new Date()
+  const overdueTasks = tasks?.filter((t) => isTaskOverdue(t, now)) || []
+  const pendingTasks = tasks?.filter((t) => t.status === 'pending' && !isTaskOverdue(t, now)) || []
   const inProgressTasks = tasks?.filter((t) => t.status === 'in_progress') || []
-
-  const getPriorityColor = (priority: string | null) => {
-    switch (priority) {
-      case 'high':
-        return 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
-      case 'medium':
-        return 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400'
-      default:
-        return 'bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-400'
-    }
-  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -107,7 +109,10 @@ export default async function AdminTasksPage() {
                         Overdue by {formatDistanceToNow(new Date(task.due_date!))}
                       </div>
                     </div>
-                    <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                    <div className="flex items-center gap-3">
+                      <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                      <TaskRowActions taskId={task.id} status={task.status} />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -144,7 +149,10 @@ export default async function AdminTasksPage() {
                         </div>
                       )}
                     </div>
-                    <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                    <div className="flex items-center gap-3">
+                      <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                      <TaskRowActions taskId={task.id} status={task.status} />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -181,7 +189,10 @@ export default async function AdminTasksPage() {
                         </div>
                       )}
                     </div>
-                    <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                    <div className="flex items-center gap-3">
+                      <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                      <TaskRowActions taskId={task.id} status={task.status} />
+                    </div>
                   </div>
                 ))}
               </div>

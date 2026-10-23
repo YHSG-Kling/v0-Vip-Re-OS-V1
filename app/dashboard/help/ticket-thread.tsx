@@ -65,6 +65,9 @@ export function TicketThread({ ticketId }: { ticketId: string }) {
       </button>
       {open && (
         <div className="mt-2 space-y-2">
+          {thread?.triage?.answerDelivered && (
+            <p className="text-[11px] text-indigo-700">The AI pointed you to matching help articles (see your notifications); a person will follow up on this ticket.</p>
+          )}
           {thread === null ? (
             <p className="text-xs text-muted-foreground">Loading…</p>
           ) : thread.messages.length === 0 ? (

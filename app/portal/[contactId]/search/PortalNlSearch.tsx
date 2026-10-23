@@ -10,8 +10,10 @@
 import { useState, useTransition } from "react"
 import { Search, Loader2 } from "lucide-react"
 import { portalNaturalSearchAction, type PortalSearchResult } from "@/app/actions/portal-nl-search"
+import { usdOrDash } from "@/lib/format/money"
 
-const usd = (n: number | null) => (n == null ? "—" : `$${Math.round(n).toLocaleString("en-US")}`)
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usdOrDash
+const usd = usdOrDash
 
 export function PortalNlSearch({ contactId }: { contactId: string }) {
   const [query, setQuery] = useState("")

@@ -1,5 +1,6 @@
-import { getAgentContext } from '@/lib/identity/get-agent-context'
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { redirect } from 'next/navigation'
+import { RoleGateNotice } from '@/app/components/shared/role-gate-notice'
 import { createClient } from '@/lib/supabase/server'
 import { AdminDashboardClient } from './admin-dashboard-client'
 import { ProvisioningHealthPanel } from './components/provisioning-health-panel'
@@ -9,6 +10,7 @@ import { RevenueProtectionRollupWidget } from './components/revenue-protection-r
 import { BrokerageIntelligenceWidget } from './components/brokerage-intelligence-widget'
 import WorkflowReportsWidget from './components/workflow-reports-widget'
 import { getBrokerageAgentLicenseStatuses } from '@/app/actions/admin/license-tracking'
+import { requirePlatformCapability } from '@/lib/platform/require-capability'
 
 // Force dynamic rendering to prevent build-time prerendering errors
 export const dynamic = 'force-dynamic'
@@ -28,7 +30,12 @@ export type OperationalSnapshot = {
 }
 
 export default async function AdminPage() {
-  const context = await getAgentContext()
+  // Self-healing identity: an agent who reached this page without a brokerage/agents row is
+  // PROVISIONED in place rather than bounced to onboarding (the "bounce" class in the live
+  // walkthrough). The redirect below now only fires for an account that genuinely cannot
+  // self-provision — a pending brokerage invite, or a staff user whose brokerage comes from
+  // their org. Idempotent: a no-op for an already-anchored user.
+  const context = await ensureAgentContextInPlace()
 
   // Verify user is authenticated
   if (!context?.isAuthenticated) {
@@ -38,7 +45,7 @@ export default async function AdminPage() {
   // Verify user has admin/broker/superadmin role
   const allowedRoles = ['admin', 'superadmin', 'broker', 'broker_admin']
   if (!allowedRoles.includes(context.userType)) {
-    redirect('/dashboard')
+    return <RoleGateNotice surface="The admin dashboard" audience="your broker and brokerage admins" />
   }
 
   // For admins without a specific brokerage, query the first available brokerage
@@ -80,7 +87,10 @@ export default async function AdminPage() {
       .from('listings')
       .select('id', { count: 'exact', head: true })
       .eq('brokerage_id', brokerageId)
-      .in('lifecycle_stage', ['launch_ready', 'prep', 'intake']),
+      // The pre-MLS pipeline, in the vocabulary the column actually admits. This
+      // read ['launch_ready','prep','intake'] — none of the three exist, so the
+      // card read 0 / 'Nothing queued' no matter how many listings were queued.
+      .in('lifecycle_stage', ['LISTING_AGREEMENT_SIGNED', 'MLS_DATE_CONFIRMED', 'COMING_SOON_PREP', 'MEDIA_CAPTURE', 'MEDIA_APPROVED', 'MLS_READY']),
     supabase
       .from('transactions')
       .select('id', { count: 'exact', head: true })
@@ -115,11 +125,17 @@ export default async function AdminPage() {
 
   const { agents: licenseAgents } = await getBrokerageAgentLicenseStatuses(brokerageId)
 
+  // Domain Coherence is PLATFORM governance data (no brokerage_id, spans every
+  // tenant). Resolve the same capability its page and server actions enforce so
+  // a tenant admin is never shown a door that will be shut in their face.
+  const coherenceGate = await requirePlatformCapability("sentinel")
+
   return (
     <>
       <AdminDashboardClient
         brokerageId={brokerageId}
         operationalSnapshot={operationalSnapshot}
+        canReadDomainCoherence={coherenceGate.ok}
       />
       <div className="px-6 pb-6 space-y-6">
         <RevenueProtectionRollupWidget brokerageId={brokerageId} />

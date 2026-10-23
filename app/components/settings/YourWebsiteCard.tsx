@@ -11,30 +11,31 @@ import {
   type CustomDomainsPanel,
   type CustomDomainView,
 } from "@/app/actions/custom-domains"
+import { StatusChip } from "@/app/components/shared/StatusChip"
 
 // "Your live website" — surfaces the zero-hosting public sites the OS already
 // serves (brokerage /site, team /team, agent /p) right where the tenant edits
 // the brand that feeds them. No hosting, no domains — the platform serves it.
-// Round 24: + white-label CUSTOM DOMAINS (brokerage tier) — point
-// www.theirbrokerage.com at the /site storefront, with live status, the exact
-// DNS records to set, and a check-now poll. Lower tiers get an honest
-// tier-gated state, never a broken form.
+// Round 24: + white-label CUSTOM DOMAINS — point www.theirbrokerage.com at the
+// /site storefront, with live status, the exact DNS records to set, and a
+// check-now poll. Wave 141G: the tenant picks THEIR DNS provider (GoDaddy /
+// Cloudflare / Namecheap / Squarespace Domains / other) and gets that console's
+// steps, cautions and record names; every connect and check carries an
+// IMMEDIATE DNS probe verdict; errors are tenant-safe sentences (never a
+// provider name, env key or raw API message); the platform never sells,
+// registers or hosts a domain — the tenant connects one they own, and the
+// platform URL stays live whether or not they ever do.
 
 const STATUS_CHIP: Record<string, { label: string; cls: string }> = {
   pending_dns: { label: "Pending DNS", cls: "bg-amber-50 text-amber-700 border-amber-200" },
   verifying:   { label: "Verifying",   cls: "bg-blue-50 text-blue-700 border-blue-200" },
   active:      { label: "Live",        cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  error:       { label: "Error",       cls: "bg-red-50 text-red-700 border-red-200" },
+  error:       { label: "Needs attention", cls: "bg-red-50 text-red-700 border-red-200" },
 }
 
-function StatusChip({ status }: { status: string }) {
-  const chip = STATUS_CHIP[status] ?? { label: status, cls: "bg-gray-50 text-gray-600 border-gray-200" }
-  return (
-    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${chip.cls}`}>
-      {chip.label}
-    </span>
-  )
-}
+// `StatusChip` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to app/components/shared/StatusChip.tsx (imported above).
+// This file's own STATUS_CHIP map stays local — only the component moved.
 
 export function YourWebsiteCard() {
   const [links, setLinks] = useState<PublicSiteLinks | null>(null)
@@ -43,6 +44,9 @@ export function YourWebsiteCard() {
   const [domainInput, setDomainInput] = useState("")
   const [busy, setBusy] = useState<string | null>(null) // "add" | domain id
   const [domainError, setDomainError] = useState<string | null>(null)
+  // The DNS provider the tenant uses, per domain row — a presentation choice (the
+  // values are identical everywhere); the options come from the row's own guides.
+  const [providerByDomain, setProviderByDomain] = useState<Record<string, string>>({})
 
   useEffect(() => {
     getMyPublicSiteLinks().then((r) => { if (r.ok) setLinks(r.links) }).catch(() => {})
@@ -132,96 +136,155 @@ export function YourWebsiteCard() {
         ))}
       </ul>
 
-      {/* ── Custom domain (white-label, brokerage tier) ─────────────────── */}
+      {/* ── Custom domain (optional — a domain the tenant owns) ────────────── */}
       {showCustomDomains && (
         <div className="border-t pt-3 space-y-3">
-          <h3 className="text-xs font-semibold text-gray-900 uppercase tracking-wide">Custom domain</h3>
+          <h3 className="text-xs font-semibold text-gray-900 uppercase tracking-wide">Use your own domain (optional)</h3>
 
           {!panel.tierAllowed ? (
             <p className="text-xs text-gray-600">
-              Connecting your own domain (www.yourbrokerage.com) is available on the Brokerage and
-              Multi-Location plans. Your site stays live on the platform URL above on every plan.
+              Connecting your own domain (www.yourbrokerage.com) isn&apos;t available on {panel.tierLabel} plan.
+              Your site stays live on the platform URL above on every plan.
             </p>
           ) : (
             <>
               <p className="text-xs text-gray-600">
-                Point your own domain at your brokerage website. Add both the apex (yourbrokerage.com)
-                and www if you want both to work — up to {panel.cap} domains.
+                Your website is already live at the platform address above. If you own a domain
+                (bought at GoDaddy, Cloudflare, Namecheap, Squarespace Domains or any DNS provider),
+                point it here — add the apex (yourbrokerage.com) and www if you want both to work,
+                up to {panel.cap} domains. We don&apos;t sell or register domains; the domain stays
+                yours.
               </p>
 
-              {!panel.vercelConfigured && panel.unconfiguredNote && (
+              {!panel.routingAvailable && panel.routingNote && (
                 <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
-                  {panel.unconfiguredNote}
+                  {panel.routingNote}
                 </p>
               )}
 
-              {panel.domains.map((d) => (
-                <div key={d.id} className="rounded border border-gray-200 p-2.5 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-gray-900 truncate">{d.domain}</span>
-                    <StatusChip status={d.status} />
-                    {panel.canManage && (
-                      <span className="ml-auto flex items-center gap-2">
-                        <button
-                          onClick={() => onCheck(d.id)}
-                          disabled={busy !== null}
-                          className="inline-flex items-center gap-1 text-[11px] text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
-                        >
-                          <RefreshCw className={`h-3 w-3 ${busy === d.id ? "animate-spin" : ""}`} />
-                          Check now
-                        </button>
-                        <button
-                          onClick={() => onRemove(d.id)}
-                          disabled={busy !== null}
-                          className="text-gray-400 hover:text-red-600 disabled:opacity-50"
-                          aria-label={`Remove ${d.domain}`}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </span>
+              {panel.domains.map((d) => {
+                const providerKey = providerByDomain[d.id] ?? d.providerGuides[0]?.provider ?? "other"
+                const guide = d.providerGuides.find((g) => g.provider === providerKey) ?? d.providerGuides[0] ?? null
+                const records = [
+                  ...(guide ? guide.records : d.dnsRecords),
+                  ...d.challenges.map((c) => ({ type: c.type.toUpperCase(), name: c.domain, value: c.value })),
+                ]
+                return (
+                  <div key={d.id} className="rounded border border-gray-200 p-2.5 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-gray-900 truncate">{d.domain}</span>
+                      <StatusChip status={d.status} map={STATUS_CHIP} />
+                      {panel.canManage && (
+                        <span className="ml-auto flex items-center gap-2">
+                          <button
+                            onClick={() => onCheck(d.id)}
+                            disabled={busy !== null}
+                            className="inline-flex items-center gap-1 text-[11px] text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                          >
+                            <RefreshCw className={`h-3 w-3 ${busy === d.id ? "animate-spin" : ""}`} />
+                            Check now
+                          </button>
+                          <button
+                            onClick={() => onRemove(d.id)}
+                            disabled={busy !== null}
+                            className="text-gray-400 hover:text-red-600 disabled:opacity-50"
+                            aria-label={`Remove ${d.domain}`}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </span>
+                      )}
+                    </div>
+
+                    {/* The one tenant-safe sentence for this row's state. */}
+                    {d.status !== "active" && (
+                      <p className={`text-[11px] ${d.status === "error" ? "text-red-700" : "text-gray-600"}`}>{d.tenantMessage}</p>
+                    )}
+
+                    {/* IMMEDIATE DNS feedback from the last connect / check. */}
+                    {d.dns && d.status !== "active" && (
+                      <p className={`text-[11px] ${d.dns.matches ? "text-emerald-700" : d.dns.checked ? "text-amber-700" : "text-gray-500"}`}>
+                        {d.dns.matches ? "DNS record found — " : d.dns.checked ? "DNS not ready — " : "DNS not checked — "}
+                        {d.dns.reason}
+                      </p>
+                    )}
+
+                    {d.addedBy && (
+                      <p className="text-[11px] text-gray-500" title={d.addedBy}>
+                        Added by team member {d.addedBy.slice(0, 8)}
+                        {d.createdAt ? ` · ${new Date(d.createdAt).toLocaleDateString()}` : ""}
+                      </p>
+                    )}
+
+                    {d.status !== "active" && (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          <label htmlFor={`dns-provider-${d.id}`} className="text-[11px] text-gray-600">Where is your domain&apos;s DNS?</label>
+                          <select
+                            id={`dns-provider-${d.id}`}
+                            value={providerKey}
+                            onChange={(e) => setProviderByDomain((m) => ({ ...m, [d.id]: e.target.value }))}
+                            className="rounded border border-gray-300 px-1.5 py-1 text-[11px] text-gray-900"
+                          >
+                            {d.providerGuides.map((g) => (
+                              <option key={g.provider} value={g.provider}>{g.label}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {guide && (
+                          <>
+                            <p className="text-[11px] text-gray-600">{guide.consolePath}</p>
+                            <ol className="list-decimal pl-4 space-y-0.5 text-[11px] text-gray-700">
+                              {guide.steps.map((s, i) => <li key={i}>{s}</li>)}
+                            </ol>
+                          </>
+                        )}
+
+                        <div className="overflow-x-auto"><table className="w-full text-[11px] text-left">
+                          <thead>
+                            <tr className="text-gray-400">
+                              <th className="font-medium pr-2">Type</th>
+                              <th className="font-medium pr-2">Name / Host</th>
+                              <th className="font-medium">Value</th>
+                            </tr>
+                          </thead>
+                          <tbody className="font-mono text-gray-800">
+                            {records.map((r, i) => (
+                              <tr key={i}>
+                                <td className="pr-2 py-0.5">{r.type}</td>
+                                <td className="pr-2 py-0.5 break-all">{r.name}</td>
+                                <td className="py-0.5 break-all">
+                                  {r.value}{" "}
+                                  <button onClick={() => copy(r.value)} className="text-gray-400 hover:text-gray-700 align-middle" aria-label={`Copy ${r.type} value`}>
+                                    {copied === r.value ? <Check className="h-3 w-3 inline text-emerald-600" /> : <Copy className="h-3 w-3 inline" />}
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table></div>
+
+                        {guide && guide.cautions.length > 0 && (
+                          <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-amber-800">
+                            {guide.cautions.map((c, i) => <li key={i}>{c}</li>)}
+                          </ul>
+                        )}
+                        <p className="text-[11px] text-gray-500">
+                          Save the record, then click Check now. DNS changes usually show within minutes; the
+                          secure certificate is issued automatically once the domain verifies.
+                        </p>
+                      </div>
+                    )}
+
+                    {d.status === "active" && (
+                      <p className="text-[11px] text-emerald-700">
+                        {d.tenantMessage}{d.verifiedAt ? ` Verified ${new Date(d.verifiedAt).toLocaleDateString()}.` : ""}
+                      </p>
                     )}
                   </div>
-
-                  {d.status === "error" && d.errorDetail && (
-                    <p className="text-[11px] text-red-700">{d.errorDetail}</p>
-                  )}
-
-                  {d.status !== "active" && (
-                    <div className="space-y-1">
-                      <p className="text-[11px] text-gray-600">Set these DNS records at your domain provider:</p>
-                      <table className="w-full text-[11px] text-left">
-                        <thead>
-                          <tr className="text-gray-400">
-                            <th className="font-medium pr-2">Type</th>
-                            <th className="font-medium pr-2">Name</th>
-                            <th className="font-medium">Value</th>
-                          </tr>
-                        </thead>
-                        <tbody className="font-mono text-gray-800">
-                          {[...d.dnsRecords, ...d.challenges.map((c) => ({ type: c.type.toUpperCase(), name: c.domain, value: c.value }))].map((r, i) => (
-                            <tr key={i}>
-                              <td className="pr-2 py-0.5">{r.type}</td>
-                              <td className="pr-2 py-0.5 break-all">{r.name}</td>
-                              <td className="py-0.5 break-all">
-                                {r.value}{" "}
-                                <button onClick={() => copy(r.value)} className="text-gray-400 hover:text-gray-700 align-middle" aria-label={`Copy ${r.type} value`}>
-                                  {copied === r.value ? <Check className="h-3 w-3 inline text-emerald-600" /> : <Copy className="h-3 w-3 inline" />}
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  {d.status === "active" && (
-                    <p className="text-[11px] text-emerald-700">
-                      Live — this domain serves your brokerage website{d.verifiedAt ? ` (verified ${new Date(d.verifiedAt).toLocaleDateString()})` : ""}.
-                    </p>
-                  )}
-                </div>
-              ))}
+                )
+              })}
 
               {panel.canManage && panel.domains.length < panel.cap && (
                 <div className="flex items-center gap-2">
@@ -238,9 +301,13 @@ export function YourWebsiteCard() {
                     className="inline-flex items-center gap-1 rounded bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
                   >
                     <Plus className="h-3.5 w-3.5" />
-                    {busy === "add" ? "Adding…" : "Add domain"}
+                    {busy === "add" ? "Connecting…" : "Connect domain"}
                   </button>
                 </div>
+              )}
+
+              {panel.canManage && panel.domains.length === 0 && (
+                <p className="text-[11px] text-gray-500">No custom domain connected yet — your website is live on the platform address either way.</p>
               )}
 
               {!panel.canManage && (

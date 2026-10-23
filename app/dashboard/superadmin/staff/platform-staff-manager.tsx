@@ -131,7 +131,7 @@ export function PlatformStaffManager({ initialStaff, initialProfiles, currentUse
 
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-sm">Staff ({staff.length})</CardTitle></CardHeader>
-        <CardContent className="p-0">
+        <CardContent className="p-0 overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="border-b bg-muted/10 text-left text-xs text-muted-foreground">
               <th className="px-4 py-2">Name</th><th className="px-4 py-2">Email</th><th className="px-4 py-2">Role</th><th className="px-4 py-2">Status</th><th className="px-4 py-2 text-right">Actions</th>

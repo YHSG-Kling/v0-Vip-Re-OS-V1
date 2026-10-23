@@ -9,7 +9,7 @@
  *
  * PURE:   inBoxGeography (zip>city, out-of-box → null gate) + scoreOffMarketFit (location + distress +
  *         equity, honest on missing equity) + rankOffMarketMatches (geo-gated, deduped) + boxHasGeography.
- * SOURCE: runner gates to contact_type='investor' + reads the canonical buy-box; owned by shopping_agent;
+ * SOURCE: runner gates to contact_persona='investor' (owner ruling — the persona axis) + reads the canonical buy-box; owned by shopping_agent;
  *         table in the snapshot; action returns honest reasons.
  * LIVE (creds-gated): seed an investor contact + buy-box + an in-box motivated-seller lead → match →
  *         assert the off-market deal lands ranked → idempotent per contact → non-investor is refused →
@@ -89,7 +89,15 @@ function pureLayer() {
 function sourceLayer() {
   console.log("\n[wiring — investor-gated, reuses the canonical box, owned by shopping_agent]")
   const runner = src("lib/buyer-search/investor-offmarket-runner.ts")
-  check("runner gates to contact_type='investor' (regular buyers use the MLS path)", /contact_type !== "investor"[\s\S]*?not_investor/.test(runner))
+  // Repointed 2026-08-31 — owner ruling: "investor is a persona and not a contact
+  // type". The gate keys on contact_persona (m589). Re-pinned the same day: the
+  // transitional "tolerant contact_type read for pre-m590 rows" arm was a §2
+  // waypoint — m593 APPLIED backfilled every contact_type='investor' row
+  // (0 lived) and the CHECK now refuses the value, so a legacy row is
+  // IMPOSSIBLE and the runner dropped the arm. Assert the rule both ways:
+  // persona is the gate, and no contact_type read of the retired value remains.
+  check("runner gates to contact_persona='investor' (regular buyers use the MLS path)", /contact_persona === "investor"[\s\S]*?not_investor/.test(runner))
+  check("…and no retired contact_type='investor' read remains (m593: the value is impossible)", !/contact_type === "investor"/.test(runner))
   check("reads the buy-box via the canonical loadBuyerCriteria (no parallel reader)", /loadBuyerCriteria\(svc, params\.contactId\)/.test(runner))
   check("LINEAGE: matches ACTIVE motivated-seller leads (not-yet-promoted)", /from\("leads"\)[\s\S]*?not\("motivation_type", "is", null\)[\s\S]*?not\("is_active", "is", false\)/.test(runner))
   check("LINEAGE: ALSO matches motivated-seller CONTACTS (the promoted single source of truth)", /from\("contacts"\)[\s\S]*?not\("motivation_type", "is", null\)/.test(runner))
@@ -104,6 +112,22 @@ function sourceLayer() {
   check("the cron route drives the brokerage-wide refresh", /refreshInvestorOffMarketMatches/.test(src("app/api/cron/investor-offmarket-refresh/route.ts")))
   const act = src("app/actions/investor-deals.ts")
   check("action returns an honest reason when the contact isn't an investor", /not_investor:[\s\S]*?investor buyers/.test(act))
+
+  console.log("\n[wave 68 — buy-box maps to Property Search FILTERS, not the Buy Box API / BatchRank]")
+  check("the runner passes the box's price range into fetchIncrementalPropertySearch", /minPrice: params\.box\.minPrice[\s\S]*?maxPrice: params\.box\.maxPrice/.test(runner))
+  const client = src("lib/external/batchdata-client.ts")
+  check("fetchIncrementalPropertySearch accepts minPrice/maxPrice/minEquityPercent/propertyTypeDetail filters", /minPrice\?:\s*number \| null/.test(client) && /minEquityPercent\?:\s*number \| null/.test(client) && /propertyTypeDetail\?:\s*string \| null/.test(client))
+  check("...and maps them onto valuation.estimatedValue / equityPercent / general.propertyTypeDetail (the documented filter shape)", /valuation\.estimatedValue/.test(client) && /\.equityPercent = \{ min:/.test(client) && /general\.propertyTypeDetail/.test(client))
+  check("existing callers keep working — the new params are all optional (additive, never a breaking change)", /minPrice\?:/.test(client) && /take\?:\s*number/.test(client))
+
+  console.log("\n[wave 68 — BatchRank is an OPTIONAL, fail-closed ranking seam, never the candidate source]")
+  const batchrank = src("lib/external/batchdata-batchrank.ts")
+  check("rankCandidatesWithBatchRank is exported", /export async function rankCandidatesWithBatchRank/.test(batchrank))
+  check("fails closed (unranked, unchanged) when BATCHDATA_BATCHRANK_ENABLED is not \"true\" — read\n    directly (not via a computed process.env[key]) so scripts/env-var-parity.ts sees the read (wave 69C carry c)",
+    /process\.env\.BATCHDATA_BATCHRANK_ENABLED !== "true"/.test(batchrank))
+  check("...and again when no dedicated token is provisioned", /resolveBatchDataToken\("batchrank"\)/.test(batchrank))
+  check("the runner calls it and stores the verdict on EVERY upsert row (batchrank_score/batchrank_band), never a spread that hides the columns", /batchrank_score: rank\?\.batchrankScore \?\? null, batchrank_band: rank\?\.batchrankBand \?\? null/.test(runner))
+  check(".env.example documents both BatchRank vars as custom-priced / opt-in", /BATCHDATA_BATCHRANK_ENABLED=false/.test(src(".env.example")) && /BATCHDATA_BATCHRANK_TOKEN=/.test(src(".env.example")))
 }
 
 async function liveLayer() {
@@ -117,7 +141,7 @@ async function liveLayer() {
   const brokerageId = (brk as any).id
   const cleanup: Array<{ table: string; id: string }> = []
   try {
-    const { data: contact } = await svc.from("contacts").insert({ brokerage_id: brokerageId, first_name: "Ivy", last_name: "Investor", contact_type: "investor" }).select("id").single()
+    const { data: contact } = await svc.from("contacts").insert({ brokerage_id: brokerageId, first_name: "Ivy", last_name: "Investor", contact_type: "buyer", contact_persona: "investor" }).select("id").single()
     const contactId = (contact as any).id
     cleanup.push({ table: "contacts", id: contactId })
     const { data: pref } = await svc.from("property_preferences").insert({ brokerage_id: brokerageId, contact_id: contactId, inferred_cities: ["Testville"], inferred_zip_codes: ["09999"], inferred_max_price: 400000 }).select("id").single()

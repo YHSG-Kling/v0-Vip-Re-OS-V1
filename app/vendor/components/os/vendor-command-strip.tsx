@@ -36,7 +36,7 @@ export function VendorCommandStrip({ vendorId }: VendorCommandStripProps) {
         .from("vendor_bookings")
         .select("id")
         .eq("vendor_id", vendorId)
-        .eq("status", "pending")
+        .eq("status", "booked")  // a booking awaiting the vendor is "booked", not "pending"
 
       if (pendingJobs && pendingJobs.length > 0) {
         priorityActions.push({
@@ -56,7 +56,7 @@ export function VendorCommandStrip({ vendorId }: VendorCommandStripProps) {
         .from("vendor_bookings")
         .select("id")
         .eq("vendor_id", vendorId)
-        .eq("status", "scheduled")
+        .eq("status", "confirmed")  // a confirmed booking is "confirmed", not "scheduled"
         .gte("scheduled_date", today)
         .lt("scheduled_date", today + "T23:59:59")
 
@@ -77,7 +77,7 @@ export function VendorCommandStrip({ vendorId }: VendorCommandStripProps) {
         .from("vendor_bookings")
         .select("id")
         .eq("vendor_id", vendorId)
-        .in("status", ["active", "in_progress"])
+        .in("status", ["booked", "confirmed"])  // neither "active" nor "in_progress" exists
 
       if (activeJobs && activeJobs.length > 0) {
         priorityActions.push({

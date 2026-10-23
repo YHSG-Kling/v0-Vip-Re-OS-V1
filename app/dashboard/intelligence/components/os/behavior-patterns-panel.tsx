@@ -6,14 +6,14 @@ import { Button } from "@/components/ui/button"
 import Link from "next/link"
 import {
   TrendingUp,
-  AlertTriangle,
   Eye,
   ArrowRight,
   Target,
   Clock,
   CheckCircle2,
+  X,
 } from "lucide-react"
-import { acknowledgePattern } from "@/app/actions/pattern-actions"
+import { acknowledgePattern, dismissPattern } from "@/app/actions/pattern-actions"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
@@ -34,12 +34,20 @@ interface Pattern {
 
 interface BehaviorPatternsPanelProps {
   patterns: Pattern[]
-  onPatternAction?: (patternId: string, action: string) => void
+  // TOMBSTONE (orphan doctrine §1.2, hidden-wire census category c, 2026-09-10
+  // wave 50): `onPatternAction?: (patternId, action) => void` declared here,
+  // destructured, and never called anywhere in this component OR by its one
+  // caller (app/dashboard/intelligence/intelligence-os-client.tsx) — dead on
+  // both ends. It read as a generic dispatcher for more than the one action
+  // (Acknowledge) this panel already wired directly via acknowledgePattern.
+  // The missing second action was real: pattern-actions.ts exports
+  // dismissPattern and nothing anywhere called IT either. BUILT below as its
+  // own handler (handleDismiss), same self-contained shape as
+  // handleAcknowledge, rather than reviving the untyped string-action prop.
 }
 
 export function BehaviorPatternsPanel({
   patterns,
-  onPatternAction,
 }: BehaviorPatternsPanelProps) {
   const router = useRouter()
   const activePatterns = patterns.filter(p => p.status === "active")
@@ -52,6 +60,20 @@ export function BehaviorPatternsPanel({
       router.refresh()
     } catch (error) {
       toast.error("Failed to acknowledge pattern")
+    }
+  }
+
+  const handleDismiss = async (patternId: string) => {
+    try {
+      const result = await dismissPattern(patternId)
+      if (result.success) {
+        toast.success("Pattern dismissed")
+        router.refresh()
+      } else {
+        toast.error(result.error ?? "Failed to dismiss pattern")
+      }
+    } catch {
+      toast.error("Failed to dismiss pattern")
     }
   }
 
@@ -141,6 +163,15 @@ export function BehaviorPatternsPanel({
                   >
                     <Eye className="h-3 w-3 mr-1" />
                     Acknowledge
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => handleDismiss(pattern.id)}
+                  >
+                    <X className="h-3 w-3 mr-1" />
+                    Dismiss
                   </Button>
                   <Link href={getEntityLink(pattern.entityType, pattern.entityId)}>
                     <Button variant="ghost" size="sm" className="h-7 text-xs">

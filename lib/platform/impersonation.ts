@@ -148,9 +148,12 @@ export async function startImpersonation(params: {
   const expiresAt = new Date(Date.now() + IMPERSONATION_TTL_MINUTES * 60_000).toISOString()
 
   // End any dangling active session so the partial-unique index never blocks re-entry.
-  await svc.from("platform_impersonation_sessions")
+  // A refused close leaves the old session ACTIVE (a grant that outlives its
+  // replacement) and the insert below then trips the partial-unique index.
+  const { error: closeDanglingErr } = await svc.from("platform_impersonation_sessions")
     .update({ ended_at: new Date().toISOString() })
     .eq("actor_user_id", params.actorUserId).is("ended_at", null)
+  if (closeDanglingErr) return { ok: false, error: `Could not end the previous impersonation session: ${closeDanglingErr.message}` }
 
   const { data, error } = await svc.from("platform_impersonation_sessions").insert({
     actor_user_id:       params.actorUserId,
@@ -171,10 +174,15 @@ export async function startImpersonation(params: {
 /** End the caller's active session(s). Idempotent. */
 export async function endImpersonation(actorUserId: string, client?: Svc): Promise<{ ok: boolean; endedSessionId: string | null }> {
   const svc = client ?? createServiceClient()
-  const { data } = await svc.from("platform_impersonation_sessions")
+  const { data, error } = await svc.from("platform_impersonation_sessions")
     .update({ ended_at: new Date().toISOString() })
     .eq("actor_user_id", actorUserId).is("ended_at", null)
     .select("id")
+  // "Ended" over a refusal would leave a support grant live while the UI says off.
+  if (error) {
+    console.error(`[impersonation] end refused for ${actorUserId}: ${error.message}`)
+    return { ok: false, endedSessionId: null }
+  }
   const ended = (data as any[]) ?? []
   return { ok: true, endedSessionId: ended[0]?.id ?? null }
 }

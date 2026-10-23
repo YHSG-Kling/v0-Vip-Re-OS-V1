@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { Mail, Phone, User, TrendingUp, Circle, ShieldAlert, CalendarPlus, ListPlus, Inbox, Settings2, PhoneOff } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { createClient } from "@/lib/supabase/client"
@@ -90,6 +91,7 @@ function activityIcon(type: string) {
 type DetailTab = "activity" | "inbox" | "channels"
 
 export default function ContactDetailPane({ contact, sentimentSummary, agentId }: ContactDetailPaneProps) {
+  const router = useRouter()
   const [activities, setActivities]   = useState<ISAActivity[]>([])
   const [actLoading, setActLoading]   = useState(false)
   const [actionMsg, setActionMsg]     = useState<string | null>(null)
@@ -117,7 +119,7 @@ export default function ContactDetailPane({ contact, sentimentSummary, agentId }
 
   if (!contact) {
     return (
-      <div className="w-64 border-l border-border bg-background flex items-center justify-center text-sm text-muted-foreground p-4 text-center">
+      <div className="w-full lg:w-64 border-l border-border bg-background flex items-center justify-center text-sm text-muted-foreground p-4 text-center">
         Select a conversation to see contact details
       </div>
     )
@@ -141,7 +143,7 @@ export default function ContactDetailPane({ contact, sentimentSummary, agentId }
   }
 
   return (
-    <div className="w-64 border-l border-border bg-background overflow-y-auto shrink-0">
+    <div className="w-full lg:w-64 border-l border-border bg-background overflow-y-auto shrink-0">
       <div className="p-4 space-y-4">
 
         {/* Authority block banner */}
@@ -357,6 +359,7 @@ export default function ContactDetailPane({ contact, sentimentSummary, agentId }
               initialPreferredChannel={contact.preferred_channel}
               initialSocialHandles={contact.social_handles}
               initialCallStopFlag={contact.call_stop_flag ?? false}
+              onSaved={() => router.refresh()}
             />
           </>
         )}

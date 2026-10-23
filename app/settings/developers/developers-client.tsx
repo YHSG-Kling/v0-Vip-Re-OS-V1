@@ -8,17 +8,20 @@
 //      honest "available on Brokerage tier" state)
 // Secrets and tokens are displayed exactly once, at mint.
 
-import React, { useState, useTransition } from "react"
+import { useState, useTransition } from "react"
 import {
   createWebhookSubscription,
   updateWebhookSubscription,
   deleteWebhookSubscription,
   sendWebhookTestPing,
+  rotateWebhookSecret,
   listWebhookDeliveries,
   mintTenantApiToken,
   revokeTenantApiToken,
+  rotateTenantApiToken,
   type WebhookSubscriptionView,
   type WebhookDeliveryView,
+  type InboundWorkflowEventView,
   type DeveloperTokenState,
   type DevelopersDocsData,
 } from "@/app/actions/tenant-webhooks"
@@ -27,6 +30,11 @@ interface Props {
   initialSubscriptions: WebhookSubscriptionView[]
   initialDeliveries: WebhookDeliveryView[]
   deliveriesError: string | null
+  // READER (orphan doctrine §1.2) for workflow_webhook_events — the inbound
+  // trigger log app/api/workflow/trigger/route.ts writes and no surface ever
+  // showed. The inbound half of this same developer rail.
+  initialInboundEvents: InboundWorkflowEventView[]
+  inboundEventsError: string | null
   tokenState: DeveloperTokenState | null
   tokenStateError: string | null
   docs: DevelopersDocsData
@@ -63,7 +71,7 @@ export function DevelopersClient(props: Props) {
   const [newDescription, setNewDescription] = useState("")
   const [newEvents, setNewEvents] = useState<string[]>([])
   const [createError, setCreateError] = useState<string | null>(null)
-  const [freshSecret, setFreshSecret] = useState<{ id: string; secret: string } | null>(null)
+  const [freshSecret, setFreshSecret] = useState<{ id: string; secret: string; previousValidUntil?: string } | null>(null)
 
   // Test-ping results (per subscription, honest response)
   const [pingResults, setPingResults] = useState<Record<string, string>>({})
@@ -106,7 +114,21 @@ export function DevelopersClient(props: Props) {
   const handleToggleActive = (sub: WebhookSubscriptionView) => {
     startTransition(async () => {
       const res = await updateWebhookSubscription({ id: sub.id, active: !sub.active })
-      if (res.ok) setSubscriptions((prev) => prev.map((s) => (s.id === sub.id ? { ...s, active: !sub.active } : s)))
+      if (res.ok) setSubscriptions((prev) => prev.map((s) => (s.id === sub.id
+        ? { ...s, active: !sub.active, disabledReason: sub.active ? "paused by tenant admin" : null }
+        : s)))
+    })
+  }
+
+  // Rotate (wave 137B): the new secret is shown once; the old one overlaps until previousValidUntil.
+  const handleRotate = (sub: WebhookSubscriptionView) => {
+    startTransition(async () => {
+      const res = await rotateWebhookSecret(sub.id)
+      if (!res.ok) { setPingResults((prev) => ({ ...prev, [sub.id]: `rotate refused: ${res.error}` })); return }
+      setFreshSecret({ id: sub.id, secret: res.secret, previousValidUntil: res.previousValidUntil })
+      setSubscriptions((prev) => prev.map((s) => (s.id === sub.id
+        ? { ...s, secretMasked: `whsec_…${res.secret.slice(-4)}`, previousSecretExpiresAt: res.previousValidUntil }
+        : s)))
     })
   }
 
@@ -147,7 +169,23 @@ export function DevelopersClient(props: Props) {
   const handleRevoke = (id: string) => {
     startTransition(async () => {
       const res = await revokeTenantApiToken(id)
-      if (res.ok) setTokens((prev) => prev.map((t) => (t.id === id ? { ...t, isActive: false } : t)))
+      if (!res.ok) { setTokenError(res.error); return }
+      setTokens((prev) => prev.map((t) => (t.id === id ? { ...t, isActive: false } : t)))
+    })
+  }
+
+  // Wave 137A: rotate = successor minted with the same name/scopes/expiry, predecessor revoked.
+  const handleRotateToken = (id: string) => {
+    setTokenError(null)
+    startTransition(async () => {
+      const res = await rotateTenantApiToken(id)
+      if (!res.ok) { setTokenError(res.error); return }
+      setFreshToken({ id: res.id, token: res.token })
+      setTokens((prev) => {
+        const old = prev.find((t) => t.id === id)
+        const rest = prev.map((t) => (t.id === id ? { ...t, isActive: false } : t))
+        return old ? [{ ...old, id: res.id, isActive: true, createdAt: new Date().toISOString(), lastUsedAt: null }, ...rest] : rest
+      })
     })
   }
 
@@ -167,6 +205,10 @@ export function DevelopersClient(props: Props) {
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Webhook endpoints</h2>
             <p className="text-sm text-gray-500">POST notifications to your systems when events happen in the OS</p>
+            <p className="text-xs text-gray-500 mt-1">
+              Zapier: create a Zap with the <strong>Webhooks by Zapier → Catch Hook</strong> trigger and add its URL here.
+              Zapier connects outbound only — Zaps cannot send data into the OS.
+            </p>
           </div>
           <button
             onClick={() => setShowCreate((v) => !v)}
@@ -183,6 +225,12 @@ export function DevelopersClient(props: Props) {
             <p className="text-xs text-amber-800 mt-2">
               Use it to verify the <code>X-Webhook-Signature</code> header (scheme in the docs block below).
             </p>
+            {freshSecret.previousValidUntil && (
+              <p className="text-xs text-amber-800 mt-1">
+                Rotated: until {fmt(freshSecret.previousValidUntil)} every delivery carries a <code>v1=</code> for BOTH
+                secrets, and the old secret still authorises inbound triggers — swap your receiver before then.
+              </p>
+            )}
             <button onClick={() => setFreshSecret(null)} className="mt-2 text-xs text-amber-900 underline">I&apos;ve stored it</button>
           </div>
         )}
@@ -253,6 +301,13 @@ export function DevelopersClient(props: Props) {
                     {" · "}last success {fmt(sub.lastSuccessAt)}
                     {sub.failureCount > 0 && <span className="text-red-600"> · {sub.failureCount} dead delivery{sub.failureCount === 1 ? "" : "ies"}</span>}
                   </p>
+                  {!sub.active && sub.disabledReason && (
+                    <p className="text-xs mt-1 text-red-700">Switched off{sub.disabledAt ? ` ${fmt(sub.disabledAt)}` : ""} — {sub.disabledReason}</p>
+                  )}
+                  {sub.secretRotatedAt && <p className="text-xs mt-1 text-gray-500">Secret last rotated {fmt(sub.secretRotatedAt)}</p>}
+                  {sub.previousSecretExpiresAt && new Date(sub.previousSecretExpiresAt).getTime() > Date.now() && (
+                    <p className="text-xs mt-1 text-amber-700">Previous secret still valid until {fmt(sub.previousSecretExpiresAt)} (rotation overlap)</p>
+                  )}
                   {pingResults[sub.id] && (
                     <p className="text-xs mt-1 font-mono text-gray-700">test ping → {pingResults[sub.id]}</p>
                   )}
@@ -263,6 +318,7 @@ export function DevelopersClient(props: Props) {
                   <button onClick={() => handleToggleActive(sub)} disabled={isPending} className="text-xs text-gray-700 hover:underline disabled:opacity-50">
                     {sub.active ? "Pause" : "Resume"}
                   </button>
+                  <button onClick={() => handleRotate(sub)} disabled={isPending} className="text-xs text-gray-700 hover:underline disabled:opacity-50">Rotate secret</button>
                   <button onClick={() => handleDelete(sub.id)} disabled={isPending} className="text-xs text-red-600 hover:underline disabled:opacity-50">Delete</button>
                 </div>
               </div>
@@ -318,6 +374,53 @@ export function DevelopersClient(props: Props) {
         )}
       </section>
 
+      {/* ── Inbound events (workflow_webhook_events reader, orphan doctrine §1.2) ── */}
+      <section className="bg-white border border-gray-200 rounded-lg">
+        <div className="px-6 py-4 border-b border-gray-200">
+          <h2 className="text-lg font-semibold text-gray-900">Inbound events</h2>
+          <p className="text-sm text-gray-500">
+            The last 50 trigger POSTs your automation secret received (GHL, IDX, QR scans,
+            email provider webhooks) — the audit half of the workflow trigger endpoint
+          </p>
+        </div>
+        {props.inboundEventsError && <p className="px-6 py-3 text-sm text-red-600">{props.inboundEventsError}</p>}
+        {props.initialInboundEvents.length === 0 ? (
+          <p className="px-6 py-8 text-sm text-gray-500 text-center">
+            No inbound events yet. They appear here the moment an external system POSTs to your
+            workflow trigger endpoint.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
+                  <th className="px-6 py-2 font-medium">Event</th>
+                  <th className="px-3 py-2 font-medium">Source</th>
+                  <th className="px-3 py-2 font-medium">Contact</th>
+                  <th className="px-3 py-2 font-medium">Received</th>
+                  <th className="px-3 py-2 font-medium">Payload</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {props.initialInboundEvents.map((e) => (
+                  <tr key={e.id} className="align-top">
+                    <td className="px-6 py-2 font-mono text-xs text-gray-900">{e.eventType}</td>
+                    <td className="px-3 py-2 text-gray-700">{e.source}</td>
+                    <td className="px-3 py-2 text-gray-500 text-xs font-mono">
+                      {e.contactId ? `${e.contactId.slice(0, 8)}…` : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-gray-500 text-xs">{fmt(e.receivedAt)}</td>
+                    <td className="px-3 py-2 text-gray-500 text-xs max-w-xs truncate font-mono" title={JSON.stringify(e.payload)}>
+                      {JSON.stringify(e.payload)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
       {/* ── API tokens ────────────────────────────────────────────────────── */}
       <section className="bg-white border border-gray-200 rounded-lg">
         <div className="px-6 py-4 border-b border-gray-200">
@@ -347,6 +450,7 @@ export function DevelopersClient(props: Props) {
                 <p className="text-sm font-medium text-amber-900">API token — shown once, store it now</p>
                 <code className="block mt-2 text-sm bg-white border border-amber-200 rounded px-3 py-2 break-all">{freshToken.token}</code>
                 <p className="text-xs text-amber-800 mt-2">Send it as <code>Authorization: Bearer &lt;token&gt;</code>. Only its hash is stored.</p>
+                <p className="text-xs text-amber-800 mt-1">Domain API v1: <code>GET /api/v1/&#123;contact | opportunity | property | listing | transaction | mission | action | event | capability&#125;</code> (<code>?id=</code> / <code>?limit=</code>), <code>POST /api/v1/capability</code> to request a capability. Each needs its scope; calls are rate-limited per token and audit-logged.</p>
                 <button onClick={() => setFreshToken(null)} className="mt-2 text-xs text-amber-900 underline">I&apos;ve stored it</button>
               </div>
             )}
@@ -355,7 +459,7 @@ export function DevelopersClient(props: Props) {
               <div className="flex gap-3">
                 <input
                   value={tokenName} onChange={(e) => setTokenName(e.target.value)}
-                  placeholder="Token name (e.g. Zapier bridge)"
+                  placeholder="Token name (e.g. Reporting export)"
                   className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm"
                 />
                 <button
@@ -398,6 +502,9 @@ export function DevelopersClient(props: Props) {
                       {t.isActive ? "active" : "revoked"}
                     </span>
                     {t.isActive && (
+                      <button onClick={() => handleRotateToken(t.id)} disabled={isPending} className="text-xs text-blue-600 hover:underline disabled:opacity-50">Rotate</button>
+                    )}
+                    {t.isActive && (
                       <button onClick={() => handleRevoke(t.id)} disabled={isPending} className="text-xs text-red-600 hover:underline disabled:opacity-50">Revoke</button>
                     )}
                   </div>
@@ -419,17 +526,49 @@ export function DevelopersClient(props: Props) {
             <h3 className="font-medium text-gray-900">Signature</h3>
             <p className="mt-1">
               Every POST carries <code>X-Webhook-Signature</code>, <code>X-Webhook-Event</code>, and{" "}
-              <code>X-Webhook-Delivery</code> headers. The signature is Stripe-style:
+              <code>X-Webhook-Delivery</code> headers, plus <code>X-Webhook-Idempotency-Key</code> — the same value on
+              every retry of one event, so dedupe on it. The signature is Stripe-style; during a secret rotation it
+              carries one <code>v1=</code> per live secret, so accept the request if ANY of them matches:
             </p>
             <pre className="mt-2 bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs overflow-x-auto">{props.docs.signatureHeaderExample}</pre>
             <p className="mt-2 text-xs text-gray-500">Verify (Node.js):</p>
-            <pre className="mt-1 bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs overflow-x-auto">{`const [tPart, vPart] = header.split(",")
+            <pre className="mt-1 bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs overflow-x-auto">{`const [tPart, ...vParts] = header.split(",")
 const t = tPart.slice(2)                      // "t=<unix-seconds>"
-const sig = vPart.slice(3)                    // "v1=<hex>"
-const expected = crypto.createHmac("sha256", secret)
-  .update(\`\${t}.\${rawBody}\`).digest("hex")
-const valid = crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(sig, "hex"))
-  && Math.abs(Date.now() / 1000 - Number(t)) < 300`}</pre>
+const expected = Buffer.from(crypto.createHmac("sha256", secret)
+  .update(\`\${t}.\${rawBody}\`).digest("hex"), "hex")
+const valid = vParts.some((v) => {            // "v1=<hex>" (two during a rotation)
+  const sig = Buffer.from(v.slice(3), "hex")
+  return sig.length === expected.length && crypto.timingSafeEqual(expected, sig)
+}) && Math.abs(Date.now() / 1000 - Number(t)) < 300`}</pre>
+
+            {/* A real, known-good triple to test that code against, generated by
+                the same signer that signs live deliveries and checked with our
+                own verifier before it is shown. */}
+            {props.docs.signatureTestVector && (
+              <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50/60 p-3">
+                <p className="text-xs font-medium text-gray-900">Test vector</p>
+                {props.docs.signatureTestVector.error ? (
+                  <p className="mt-1 text-xs text-red-600">{props.docs.signatureTestVector.error}</p>
+                ) : (
+                  <>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Run your verifier against this before you go live. The body must be signed{" "}
+                      <strong>byte for byte</strong> as sent — re-serializing the JSON changes the HMAC.
+                      This vector&apos;s timestamp is fixed so it is reproducible, so check the HMAC only;
+                      keep the ±300s tolerance on real traffic.
+                    </p>
+                    <pre className="mt-2 bg-white border border-gray-200 rounded p-3 text-xs overflow-x-auto">{`secret:   ${props.docs.signatureTestVector.secret}
+rawBody:  ${props.docs.signatureTestVector.rawBody}
+header:   ${props.docs.signatureTestVector.header}
+→ expected result: valid`}</pre>
+                    <p className="mt-2 text-xs text-gray-500">
+                      That secret is for this example only — it signs no real delivery. Yours is the one
+                      shown once when you add or rotate an endpoint.
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
           </div>
           <div>
             <h3 className="font-medium text-gray-900">Retries</h3>

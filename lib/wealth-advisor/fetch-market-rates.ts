@@ -26,7 +26,8 @@ export interface FetchedMarketRate {
  * observation as a percent (e.g. 6.66), plus its date. Returns null when no
  * usable row exists (FRED uses "." for missing values). Pure — no I/O.
  */
-export function parseFredLatestPercent(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function parseFredLatestPercent(
   csv: string,
 ): { percent: number; date: string } | null {
   const lines = csv.trim().split(/\r?\n/)

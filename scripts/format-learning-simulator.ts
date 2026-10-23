@@ -218,7 +218,7 @@ async function main() {
     const stage = async (comp: string, mood: string, qrId: string, videoUrl: string) => {
       const { data } = await svc.from("ai_video_projects").insert({
         brokerage_id: brokerageId, agent_id: agentUserId,
-        title: `${TAG} ${comp}`, script_content: "x", status: "remotion_pending",
+        title: `${TAG} ${comp}`, script_content: "x", status: "queued",
         video_type: KIND, format: "9:16", audience_type: "customer_facing",
         is_ai_generated: true, approval_status: "pending_review",
         video_url: videoUrl,

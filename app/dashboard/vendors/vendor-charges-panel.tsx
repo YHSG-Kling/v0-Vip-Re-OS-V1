@@ -55,7 +55,8 @@ export interface VendorChargeInvoice {
   attributed_scope?: string | null
 }
 
-const MANAGER_ROLES = ["admin", "broker", "broker_admin", "broker_owner", "superadmin", "team_lead"]
+// 'superadmin' removed (task #211): dead as users.user_type — 0 live rows store it.
+const MANAGER_ROLES = ["admin", "broker", "broker_admin", "broker_owner", "team_lead"]
 const PAYMENT_METHODS = ["check", "ach", "stripe", "cash_app", "manual"]
 
 export function VendorChargesPanel({

@@ -1,0 +1,296 @@
+-- m544 — A COLUMN NAMED agent_id POINTED AT THE ONE ID SPACE IT COULD NEVER HOLD
+--
+-- Owner rulings this lane answers:
+--   1. "resolve identity for credit accounts agent id"
+--   2. "brokerage id determines the tenant unique and platform only has no
+--       brokerageid"
+--
+-- Every count below was measured live against hrvaqgvukzxfskkcrwbt on 2026-08-23.
+--
+-- ═════════════════════════════════════════════════════════════════════════════
+-- PART 1 — THE ONLY DDL IN THIS MIGRATION: credit_accounts.agent_id
+-- ═════════════════════════════════════════════════════════════════════════════
+--
+-- THE DEFECT. `credit_accounts.agent_id` FOREIGN KEYs **auth.users(id)**:
+--
+--   credit_accounts_agent_id_fkey   agent_id  → auth.users(id)     ON DELETE SET NULL
+--   credit_accounts_brokerage_id_fkey brokerage_id → brokerages(id) ON DELETE CASCADE
+--   credit_accounts_contact_id_fkey contact_id → contacts(id)      ON DELETE CASCADE
+--
+-- Its ONE writer — createCreditAccount, app/actions/credit-copilot.ts:842-859 —
+-- writes `agent_id: targetContact.agent_id`, and `contacts.agent_id` FOREIGN KEYs
+-- **public.agents(id)** (contacts_agent_id_fkey). The writer's own comment at
+-- app/actions/credit-copilot.ts:831-832 states the intent deliberately:
+--
+--     "contacts.agent_id is an agents.id, so it is carried through, never
+--      substituted with the users.id."
+--
+-- So the WRITER is right and the FOREIGN KEY is wrong. CLAUDE.md §3 records that
+-- `agents.id` and `users.id` are DISJOINT (23503); this column asserted a THIRD
+-- space, auth.users, and the column NAME asserted the one space it is not.
+--
+-- ── PROOF OF DISJOINTNESS (live, not inferred) ──────────────────────────────
+--
+--   agents_total                  5
+--   agents.id  ∈ auth.users.id    0     ← disjoint
+--   agents.id  ∈ public.users.id  0     ← disjoint
+--   agents.user_id ∈ auth.users   5     ← the correct crossing (§3)
+--   agents.user_id ∈ public.users 5
+--
+-- ── POSITIVE CONTROL (CLAUDE.md §2) ─────────────────────────────────────────
+--
+-- The insert was executed live inside a trapped block against the real writer's
+-- payload shape, using a real contact that carries a real agents.id:
+--
+--   contact  = 50000000-0000-0000-0000-000000000002
+--   agent    = c0000000-0000-0000-0000-000000000005
+--   agent ∈ public.agents = 1
+--   agent ∈ auth.users    = 0
+--
+--   RESULT: REFUSED sqlstate=23503
+--     "insert or update on table \"credit_accounts\" violates foreign key
+--      constraint \"credit_accounts_agent_id_fkey\""
+--
+-- This is the saveNetSheet shape named in scripts/agent-id-class-guard.ts:18-21:
+-- every insert FK-rejected, so the table holds ZERO rows and the credit-account
+-- create path had never once worked. `credit_accounts` is empty (0 rows), which
+-- is the consequence, not a coincidence — so this migration needs no backfill and
+-- can convert no live value wrongly.
+--
+-- ── WHY REPOINT AND NOT RENAME ──────────────────────────────────────────────
+--
+-- The repo does have a users-id convention for an agent-ish concept —
+-- `agent_user_id` (activities.agent_user_id, 31 tables in
+-- USERS_FK_AGENTISH_COLUMNS). Renaming to `agent_user_id` would be the WRONG
+-- direction here: that spelling means "this column holds a users.id", and the
+-- only writer holds an agents.id and says so. m366 re-pointed 20 straggler
+-- columns from users(id) to agents(id) precisely so that "the plain spelling
+-- `agent_id` now means agents(id) everywhere" (scripts/agent-id-class-guard.ts:6-7).
+-- `credit_accounts.agent_id` is the last column that never got that treatment,
+-- because it pointed OUT of `public` and the sweep could not see it. Repointing
+-- makes the name, the foreign key and the writer agree on agents(id) — with no
+-- application change required.
+--
+-- ── WHY THE GUARD COULD NOT SEE THIS, AND WHY IT CAN AFTER THIS MIGRATION ───
+--
+-- scripts/agent-id-class-guard.ts reads scripts/agent-fk-columns.ts, which is
+-- GENERATED from public.live_foreign_keys_json(). That function ends:
+--
+--     where  c.contype = 'f'
+--       and  sn.nspname = 'public'
+--       and  tn.nspname = 'public'      ← cross-schema FKs are EXCLUDED
+--
+-- So `credit_accounts.agent_id → auth.users` was invisible to the generator, and
+-- `credit_accounts` therefore appears in NEITHER `AGENT_FK_COLUMNS` NOR
+-- `USERS_FK_AGENTISH_COLUMNS`. The guard reported a clean bill of health over a
+-- column it structurally could not read — CLAUDE.md §2's exact failure mode.
+--
+-- After this migration the FK target is public.agents, so the column enters
+-- AGENT_FK_COLUMNS on the next `npm run schema:regen:agent-fk` and the guard SEES
+-- it. The cache is regenerated, never hand-edited (§3).
+--
+-- BLIND SPOT, PUBLISHED BESIDE THE NUMBER: 19 public columns FK auth.users and
+-- remain invisible to the identity-class guard for the same reason. This
+-- migration fixes the ONE whose name asserts the wrong class AND whose writer
+-- disagreed with it. The other 18 are named for the class they hold
+-- (`user_id`, `agent_user_id`, `author_user_id`, `accepted_by`, …); two —
+-- credit_partner_referrals.referring_agent_id and lead_magnets.agent_user_id —
+-- are UNRESOLVED here: no live writer was read for either in this lane, and
+-- CLAUDE.md §1 says to write "unresolved" rather than guess.
+--
+-- ON DELETE stays SET NULL, matching contacts.agent_id (also SET NULL onto
+-- agents). An agent leaving must not delete the brokerage's credit account: the
+-- row keeps `brokerage_id`, so a NULL agent DEMOTES it rather than stranding it —
+-- the same test Part 2 applies below.
+
+BEGIN;
+
+ALTER TABLE public.credit_accounts
+  DROP CONSTRAINT IF EXISTS credit_accounts_agent_id_fkey;
+
+ALTER TABLE public.credit_accounts
+  ADD CONSTRAINT credit_accounts_agent_id_fkey
+  FOREIGN KEY (agent_id) REFERENCES public.agents(id) ON DELETE SET NULL;
+
+COMMENT ON COLUMN public.credit_accounts.agent_id IS
+  'agents.id (NOT users.id, NOT auth.users.id). Written by createCreditAccount '
+  '(app/actions/credit-copilot.ts) from contacts.agent_id, which is an agents.id. '
+  'm544 repointed this FK from auth.users(id), where every insert was refused 23503.';
+
+COMMIT;
+
+-- ═════════════════════════════════════════════════════════════════════════════
+-- PART 2 — THE 49 CONTACT-KEYED SET NULL ANCHORS: RESOLVED, NO DDL
+-- ═════════════════════════════════════════════════════════════════════════════
+--
+-- This was left "unresolved" last wave. It is resolved here as NO CHANGE, and
+-- the reasoning is per-bucket and measured, not a deferral.
+--
+-- ── THE BUCKET, AND WHY IT IS 49 AND NOT m537's 41 ──────────────────────────
+--
+--   confdeltype='n' AND confrelid = public.contacts, ALL child column names
+--     → 49 rows exactly.
+--
+--   child column = 'contact_id'        41   ← m537's bucket, already adjudicated
+--   child column = something else       8   ← STRUCTURALLY EXCLUDED from m537
+--   ────────────────────────────────────
+--                                      49
+--
+-- m535 named 88 lifecycle-parent SET NULL FKs; m537 answered them. But m537's
+-- bucket was defined by COLUMN NAME (`contact_id`, `lead_id`, `listing_id`,
+-- `transaction_id`, `property_id`). Eight contact-keyed anchors do not use the
+-- name `contact_id` and so were never in the 88 — not judged and left, but never
+-- enumerated. This is a §6 vocabulary defect surfacing as a measurement gap: the
+-- bucket counted spellings, not edges. The eight:
+--
+--   agent_assistant_sessions.context_contact_id
+--   blog_post_share_clicks.viewer_contact_id
+--   blog_post_views.viewer_contact_id
+--   collaborative_search_properties.added_by_contact_id
+--   collaborative_searches.created_by_contact_id
+--   data_subject_requests.subject_contact_id
+--   document_folders.related_contact_id
+--   referrals.referrer_contact_id
+--
+-- ── THE TEST (m537's, applied unchanged) ────────────────────────────────────
+--
+--   WHEN THIS PARENT GOES NULL, IS THERE STILL A READ PATH THAT REACHES THE ROW?
+--
+-- SET NULL is the orphan-maker only when the parent is the row's ONLY
+-- reachability. If the child carries its own `brokerage_id`, a NULL contact
+-- DEMOTES the row rather than stranding it.
+--
+-- ── STRUCTURAL HALF, MEASURED (pg_attribute, not assumed) ───────────────────
+--
+--   of the 49 children, carry their own brokerage_id   47
+--   do NOT carry brokerage_id                           2
+--
+--   and of those 47, the brokerage_id is itself FK'd to brokerages in ALL 47:
+--     ON DELETE CASCADE   38
+--     ON DELETE NO ACTION  6
+--     ON DELETE RESTRICT   3
+--
+-- So 47 of 49 keep a real, enforced tenant anchor after the contact goes NULL.
+-- VERDICT: LEAVE AS SET NULL. Reason: demoted, not stranded.
+--
+-- The 2 without brokerage_id, each with its own reason:
+--
+--   collaborative_search_properties.added_by_contact_id — LEAVE AS SET NULL.
+--     This column is ATTRIBUTION, not reachability. The row reaches its tenant
+--     through collaborative_search_id → collaborative_searches (ON DELETE
+--     CASCADE), and collaborative_searches.brokerage_id → brokerages (CASCADE).
+--     The table also carries `added_by_email`, a denormalised attribution
+--     fallback, so a NULL contact loses no audit trail. Converting this one to
+--     RESTRICT would block contact deletion to protect a field that is already
+--     mirrored.
+--
+--   demo_persona_contacts.contact_id — UNRESOLVED HERE, and deliberately so.
+--     This is the one table m537 also singled out as carrying no brokerage_id.
+--     It is owned by another lane in this wave; this lane did not touch it and
+--     will not guess on its behalf (§1).
+--
+-- ── CODE HALF: WOULD CONVERTING TO RESTRICT BREAK ANYTHING? YES ─────────────
+--
+-- Measured with the repo's ONE correct comment stripper (blankComments,
+-- scripts/strip-comments.ts, per §2), over 5,299 files in app/ lib/ services/
+-- scripts/. Positive controls all passed: a real `.from("contacts").delete()` IS
+-- detected; a `.select()` chain is NOT flagged; a commented-out delete is NOT
+-- flagged.
+--
+--   contacts HARD-DELETE sites: 54
+--   by top-level dir: { "scripts": 54 }
+--   in app/ lib/ services/:      0
+--
+-- There is NO production hard delete of `contacts`. All 54 are simulator and
+-- harness TEARDOWN — they create a contact, drive a flow that writes children,
+-- then delete the contact. Under RESTRICT every one of those teardowns would be
+-- REFUSED, and most swallow the refusal (`.then(() => {}, () => {})`, `catch {}`,
+-- or never destructure `error`) — CLAUDE.md §3's first trap. Teardown would fail
+-- silently, leave residue, and the residue assertions those same scripts make
+-- (`const { count } = ...`) would then start failing for the wrong reason.
+--
+-- Converting also has a product cost: `contacts` is the GDPR erasure target, and
+-- `data_subject_requests.subject_contact_id` is itself one of these 49. RESTRICT
+-- would make a subject-erasure request unsatisfiable without a hand-written
+-- 49-table pre-delete cascade.
+--
+-- VERDICT FOR ALL 49: LEAVE AS SET NULL. No DDL. This is a resolution, not a
+-- deferral — the conversion the last wave contemplated would have been the
+-- defect, not the fix.
+--
+-- ── ONE FINDING THAT IS NOT A SET NULL PROBLEM, RECORDED SO IT IS NOT LOST ──
+--
+-- `ai_insights` holds 64 rows with contact_id NULL, agent_id NULL AND
+-- brokerage_id NULL — already unreachable, today, with no delete involved. SET
+-- NULL did not produce them (their contact_id was never set) and RESTRICT would
+-- not have prevented them. The live writers DO populate brokerage_id
+-- (app/actions/ai-predictions.ts:1035-1036 and 11 further insert sites), so this
+-- is pre-writer residue, not a writerless column. Named here, not fixed here:
+-- deleting rows to move a number is forbidden (§1) and this lane has no ruling
+-- on whether that residue is seed data someone still wants.
+
+-- ═════════════════════════════════════════════════════════════════════════════
+-- PART 3 — THE PLATFORM/TENANT DISCRIMINATOR: WHERE CODE AGREES, AND WHERE IT
+--          CANNOT. NO DDL — one item needs an owner decision.
+-- ═════════════════════════════════════════════════════════════════════════════
+--
+-- Owner ruling: brokerage_id present = tenant row; brokerage_id NULL = platform.
+--
+-- ── WHERE THE CODE ALREADY AGREES ───────────────────────────────────────────
+--
+--   app/dashboard/superadmin/continuity/page.tsx:44 folds the fleet ledger with
+--     `const key = r.brokerage_id ?? "platform"` — the ruling, verbatim, in code.
+--   lib/kernel/compliance-ledger.ts:171 documents "Brokerage-scoped unless null
+--     (superadmin)", and self-heal / write-sentinel ledgers use the same shape.
+--   app/api/cron/tenant-safety-scan/route.ts flags `rows_missing_brokerage_id`
+--     ONLY over a curated SENSITIVE_TABLES list (transactions, listings, offers,
+--     contacts, …) — all tenant-only tables, where a NULL genuinely IS a defect.
+--     This does NOT contradict the ruling.
+--
+-- ── WHERE THE RULING CANNOT BE EXPRESSED (structural, measured) ─────────────
+--
+--   public columns named brokerage_id   673
+--     nullable (platform row possible)  340
+--     NOT NULL (platform row IMPOSSIBLE) 333
+--
+-- On 333 tables a platform row cannot be represented at all. The ruling is a
+-- statement about the 340. Recorded as a bound on the ruling's reach, not as a
+-- proposal to loosen 333 NOT NULL constraints — m533 added 68 of those anchors
+-- on purpose.
+--
+-- ── THE CONTRADICTION THAT NEEDS AN OWNER DECISION ──────────────────────────
+--
+-- On `public.users` the ruling and the live data disagree. Measured:
+--
+--   users rows with brokerage_id IS NULL                       0   (of 23)
+--   the platform's only superadmin
+--     (user_type='admin', platform_role='superadmin')  HAS a brokerage_id
+--
+-- So on `users`, "no brokerage_id" does NOT identify platform staff — nobody has
+-- no brokerage_id, and the one platform account has one. The discriminator there
+-- is `platform_role`, exactly as CLAUDE.md §4 states. Applying the owner's rule
+-- literally to `users` would classify the superadmin as a tenant row and leave
+-- the platform with no rows at all, breaking every platform gate. This lane did
+-- NOT change identity semantics on `users` — that is an owner call:
+--   Is the ruling scoped to DATA tables (where the code already implements it),
+--   with `platform_role` remaining the discriminator for IDENTITY?
+--
+-- ── A LATENT FAIL-OPEN THAT THE ABOVE KEEPS CLOSED TODAY ────────────────────
+--
+-- app/dashboard/admin/compliance-ledger/page.tsx:45
+--     const brokerageId = isSuperadmin ? null : (userData?.brokerage_id ?? null)
+--
+-- and lib/kernel/compliance-ledger.ts:186
+--     if (brokerageId) q = q.eq("brokerage_id", brokerageId)
+--
+-- If a NON-superadmin broker/admin ever has a NULL brokerage_id, the tenant
+-- predicate DISAPPEARS and that user reads the cross-tenant Fair Housing and
+-- consent audit trail of every brokerage — "nobody checked" rendering as
+-- "checked and fine" (§4). `users.brokerage_id` is nullable (is_nullable=YES), so
+-- the shape is structurally reachable; it is not exploitable TODAY only because
+-- 0 of 23 users rows have a NULL brokerage_id. Not fixed in this migration
+-- because the correct fix depends on the owner decision immediately above: if a
+-- NULL brokerage_id on `users` is to MEAN platform, then this code is correct as
+-- written and `users.brokerage_id` should stay nullable; if `platform_role` is
+-- the discriminator, this line must fail closed on a null instead. Reported, not
+-- guessed (§1).

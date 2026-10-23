@@ -6,8 +6,12 @@
  * (lib/ads/fb-audience-templates.ts) and its server-action accessors
  * (app/actions/fb-audience-templates.ts):
  *   • listAudienceTemplates() returns the full static catalog with valid shape
- *   • resolveAudienceTemplate(id) finds a known template and maps it to
- *     create-audience params; returns null for an unknown id
+ *   • findAudienceTemplate(id) finds a known template (the pure lookup the
+ *     Ads dashboard's "Use template" path maps into createAudience params —
+ *     ads-dashboard-client.tsx handleUseTemplate); returns undefined for an
+ *     unknown id. (The server action resolveAudienceTemplate that wrapped it
+ *     was deleted 2026-09-03 onto that client mapping — lane L6 tombstone in
+ *     app/actions/fb-audience-templates.ts.)
  *   • every template carries a valid category and a non-empty consent basis
  *     (consent is legally required before any audience can be created)
  */
@@ -16,10 +20,7 @@ import {
   findAudienceTemplate,
   type AudienceTemplate,
 } from "../lib/ads/fb-audience-templates"
-import {
-  listAudienceTemplates,
-  resolveAudienceTemplate,
-} from "../app/actions/fb-audience-templates"
+import { listAudienceTemplates } from "../app/actions/fb-audience-templates"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -28,8 +29,18 @@ function check(name: string, cond: boolean) {
   else { failed++; failures.push(name); console.log(`  ✗ ${name}`) }
 }
 
+// "exclusion" WAS A MEMBER. It is gone with the union member it mirrored —
+// SURVIVOR: `templateAudienceUse(t)` (lib/ads/fb-audience-templates.ts), derived
+// from the source rule. The category was a second spelling of exclusion intent
+// and it had already drifted: `exclude_lifetime_customers` claimed the category
+// while its rule type said inclusion. A stale member here would keep passing
+// forever, since this list only ever ADMITS.
 const VALID_CATEGORIES: AudienceTemplate["category"][] = [
-  "remarketing", "lookalike", "exclusion", "geo", "lifecycle",
+  "remarketing", "lookalike", "geo", "lifecycle",
+  // The owner's persona basis ("audience should be segmented on persona"). The
+  // catalog now DERIVES one template per ads-eligible persona; without this member
+  // every one of them would fail the valid-category check above.
+  "persona",
 ]
 
 async function main() {
@@ -51,38 +62,43 @@ async function main() {
   check("every template has an estimatedSizeLabel",
     templates.every((t) => t.estimatedSizeLabel.trim().length > 0))
 
-  console.log("\n[resolveAudienceTemplate — find by id]")
+  console.log("\n[findAudienceTemplate — find by id (the lookup the Use-template path maps into createAudience)]")
   const knownId = "qualified_leads_remarketing"
   const knownTpl = findAudienceTemplate(knownId)
   check("catalog contains the known seed id", knownTpl !== undefined)
+  check("the found template carries every field the client mapping sends to createAudience",
+    !!knownTpl && typeof knownTpl.name === "string" && knownTpl.name.trim().length > 0
+    && typeof knownTpl.audienceType === "string"
+    && typeof knownTpl.sourceRule?.type === "string"
+    && typeof knownTpl.consentBasis === "string" && knownTpl.consentBasis.trim().length > 0)
+  check("the found template is the catalog's own object (identity, not a copy that could drift)",
+    !!knownTpl && templates.includes(knownTpl))
 
-  const resolved = await resolveAudienceTemplate(knownId)
-  check("resolves a known id to non-null params", resolved !== null)
-  check("resolved audienceName matches the template name",
-    resolved?.audienceName === knownTpl?.name)
-  check("resolved audienceType matches the template",
-    resolved?.audienceType === knownTpl?.audienceType)
-  check("resolved sourceRule is the template's sourceRule (type preserved)",
-    resolved?.sourceRule.type === knownTpl?.sourceRule.type)
-  check("resolved consentBasis matches the template",
-    resolved?.consentBasis === knownTpl?.consentBasis)
-
-  console.log("\n[resolveAudienceTemplate — unknown id]")
-  const missing = await resolveAudienceTemplate("does_not_exist_xyz")
-  check("returns null for an unknown id", missing === null)
+  console.log("\n[findAudienceTemplate — unknown id]")
   check("findAudienceTemplate returns undefined for an unknown id",
     findAudienceTemplate("does_not_exist_xyz") === undefined)
 
-  console.log("\n[resolve round-trips every template id]")
-  let allResolve = true
-  for (const t of templates) {
-    const r = await resolveAudienceTemplate(t.id)
-    if (!r || r.sourceRule.type !== t.sourceRule.type || r.audienceType !== t.audienceType) {
-      allResolve = false
-      break
-    }
+  console.log("\n[lookup round-trips every template id]")
+  const allResolve = templates.every((t) => {
+    const r = findAudienceTemplate(t.id)
+    return !!r && r.sourceRule.type === t.sourceRule.type && r.audienceType === t.audienceType
+  })
+  check("every catalog id is found with a matching sourceRule + type", allResolve)
+
+  console.log("\n[wiring — the Ads dashboard maps a template into createAudience itself (the survivor)]")
+  {
+    const { readFileSync } = await import("node:fs")
+    const client = readFileSync("app/dashboard/campaigns/ads/ads-dashboard-client.tsx", "utf8")
+    const action = readFileSync("app/actions/fb-audience-templates.ts", "utf8")
+    check("handleUseTemplate carries sourceRule + audienceType + name + consentBasis off the template",
+      /handleUseTemplate\s*=\s*\(template: AudienceTemplate\)/.test(client)
+      && /sourceRule:\s*template\.sourceRule/.test(client)
+      && /audienceType:\s*template\.audienceType/.test(client)
+      && /audienceName:\s*template\.name/.test(client)
+      && /consentBasis:\s*template\.consentBasis/.test(client))
+    check("the deleted server-action duplicate did not come back",
+      !/export\s+async\s+function\s+resolveAudienceTemplate\b/.test(action))
   }
-  check("every catalog id resolves with a matching sourceRule + type", allResolve)
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)

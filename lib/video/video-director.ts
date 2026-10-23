@@ -30,9 +30,14 @@
  *           of the way.
  *
  * Reused (NOT rebuilt) — referenced by ID-string + capability, never hard-deps:
- *   · the 24 registered Remotion compositions (remotion/Root.tsx) — by ID string,
+ *   · every registered Remotion composition (remotion/Root.tsx) — by ID string,
  *     read through lib/remotion/registry getComposition so the registry row is the
- *     source of truth for supports_bookends / requires_did_avatar / requires_voiceover.
+ *     source of truth for supports_bookends / requires_did_avatar. (The count is
+ *     deliberately not written here; a number in prose goes stale on the next
+ *     registration, and scripts/remotion-setup-guard.ts derives it. NOT
+ *     requires_voiceover: that column is a mirror of the content contract's
+ *     VOICEOVER_CONSUMING_COMPOSITIONS and the Director consulted it for nothing
+ *     — see the tombstone at commissionVideo step 2.)
  *   · lib/video/composite-attribution concatIntroOutro (intro+main+outro stitch).
  *   · lib/video/video-qr mintVideoQr + qrDestinationForKind (tracked outro QR).
  *   · lib/kernel/video createVideoProject contract (the ai_video_projects shape).
@@ -55,6 +60,20 @@ import type { VideoQrKind } from "@/lib/video/video-qr"
 // value here — selectVideoFormatLearned uses recommendFormatAdjustment directly,
 // and selectVideoFormat itself never touches it (backward-compat preserved).
 import { recommendFormatAdjustment, type ScoredFormats } from "@/lib/video/format-learning"
+import { finishForVideo } from "@/lib/video/finish-spec"
+import { COMPOSITION_DURATION_RULES, compositionPurposes, type VideoPurpose } from "@/lib/video/duration-model"
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
+// Wave 81C — THE CUT DIMENSION (lib/video/render-cut.ts): one plan, two
+// renders. `mlsClean` stays the flag the compositions read; `cut` derives it.
+import {
+  CUT_USAGE_INTENT, assertMlsCutClean, compositionHasMlsCut, cutDiscriminator, cutsForComposition, finishForCut, mlsCutProps,
+  type RenderCut,
+} from "@/lib/video/render-cut"
+// Wave 81C — ANY TYPE OF VIDEO: a described video planned by archetype rule.
+import { planCustomVideo, type CustomVideoBrief, type CustomVideoPlan } from "@/lib/video/custom-video-archetypes"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+// Wave 92 (lane 92E) — WHEN B-ROLL IS BENEFICIAL: the ONE rule (pure; the Remotion-safe module).
+import { assetsFromProps, brollBenefit, type BodyVisualAssets, type BrollBenefit } from "@/lib/video/body-visual-model"
 
 // ============================================================================
 // SITUATION + FORMAT CONTRACTS (pure)
@@ -81,6 +100,18 @@ export type SituationKind =
   // Asset Manager (video director). Avatar-led + persona-matched; CTA is "book a consult"
   // (book_meeting QR), NOT a listing. Never broadcast — it distributes 1:1 over email only.
   | "lead_intro"
+  // The ANIMATED concept explainer — the same teaching job as "explainer", but the
+  // concept is DRAWN rather than narrated by an avatar: an equity curve, a rate-buydown
+  // payment comparison, a closing timeline, animated from lib/charts/explainer-diagram.ts.
+  // Distinct kind rather than a flag on "explainer" because the treatment differs at every
+  // layer (no avatar, charts on, no b-roll) — the same reason lead_intro is its own kind.
+  | "concept_animation"
+  // Wave 81C — ANY TYPE OF VIDEO (owner: "not just the ones we listed"). A
+  // DESCRIBED video: situation.facts.customPlan carries the CustomVideoPlan
+  // that lib/video/custom-video-archetypes.ts derived by rule (archetype →
+  // base purpose → band + body-visual rule → registered composition). The
+  // selector reads the plan; a custom situation with no plan FAILS LOUDLY.
+  | "custom"
 
 export type CompositionTierLite =
   | "solo_agent" | "team" | "brokerage" | "multi_location" | "platform"
@@ -88,7 +119,8 @@ export type CompositionTierLite =
 export type TargetChannel =
   | "tiktok" | "instagram" | "youtube" | "facebook" | "email" | "portal"
 
-export type VideoAspect = "square" | "vertical" | "horizontal"
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+type VideoAspect = "square" | "vertical" | "horizontal"
 
 export interface VideoSituation {
   kind: SituationKind
@@ -131,7 +163,7 @@ function aspectForChannel(channel: TargetChannel): VideoAspect {
   }
 }
 
-/** Vertical-first social channels favor the SQUARE/vertical reel + B-roll. */
+/** Vertical-first social channels favor the SQUARE/vertical reel. */
 function isVerticalSocial(channel: TargetChannel): boolean {
   return channel === "tiktok" || channel === "instagram"
 }
@@ -139,20 +171,22 @@ function isVerticalSocial(channel: TargetChannel): boolean {
 /**
  * selectVideoFormat — PURE creative-director logic. No I/O, no DB.
  *
- * The mapping (each documented):
+ * The mapping (each documented). B-ROLL is not part of this table (wave 92):
+ * every format's `needsBroll` is THE rule — brollBenefit over the situation's
+ * known inventory (directorBrollDecision below).
  *
  *   new_listing
- *     · tiktok / instagram → JustListedReelSquare WITH Remotion B-roll. The
- *       square 1:1 cut is the organic-feed default for Meta/IG/TikTok; B-roll
- *       lifestyle clips under the listing facts is what stops the scroll.
+ *     · tiktok / instagram → JustListedReelSquare. The square 1:1 cut is the
+ *       organic-feed default for Meta/IG/TikTok; stock cutaways only fill the
+ *       beats a photo-scarce listing cannot (the house is the star).
  *     · youtube / facebook → JustListedReelHorizontal — the 16:9 cut sized for
- *       YouTube + FB in-stream / CTV; no B-roll (long-form reads the photos).
+ *       YouTube + FB in-stream / CTV.
  *     · email / portal → JustListedReelSquare (embeds inline without letterbox).
  *   price_drop  → JustListedReelSquare (same listing chrome, neutral pricing copy
  *                 carried by the script; horizontal on youtube/facebook).
  *   just_sold   → JustSoldReelSquare — social-proof companion, square feed cut.
  *   open_house  → OpenHouseAnnounceReel — event headline (date/time/address).
- *   coming_soon → ComingSoonReel — pre-MLS teaser, heaviest B-roll user.
+ *   coming_soon → ComingSoonReel — pre-MLS teaser (footage when the gallery is thin).
  *   market_update → MarketUpdateReel — CHART stat-cards + avatar narration.
  *   cma         → CMAReel — the chart flagship (price trend + comps + DOM + donut).
  *   explainer   → AgentExplainerReel — AVATAR-led educational reel.
@@ -163,6 +197,63 @@ function isVerticalSocial(channel: TargetChannel): boolean {
  *   neighborhood→ NeighborhoodSpotlightReel — lifestyle B-roll spotlight.
  */
 export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
+  const format = formatForSituation(situation)
+  // WAVE 92 (lane 92E) — needsBroll is no longer a hand table beside the format. It was
+  // (vertical social ⇒ the square listing reel, every coming-soon, every neighbourhood, a
+  // custom plan's verdict) and it disagreed with both halves it should have agreed with:
+  // JustListedReelSquare had no b-roll layer to render what was picked, and a listing with
+  // ample photos got stock footage its purpose's verdict refuses. It is now THE rule
+  // (brollBenefit, lib/video/body-visual-model.ts) over what the situation already says
+  // (facts.photoCount / facts.imageUrls — unknown reads as none on hand), refined at
+  // commission time against the staged content (directorBrollDecision in commissionVideo).
+  const decision = directorBrollDecision({
+    compositionId: format.compositionId,
+    purpose: videoPurposeForSituation(situation.kind, format.compositionId, customPlanOf(situation)?.purpose ?? null),
+    facts: situation.facts ?? null,
+    avatarClip: format.needsAvatar,
+    charts: format.needsCharts,
+  })
+  return { ...format, needsBroll: decision.beneficial && decision.renders }
+}
+
+/**
+ * WAVE 92 (lane 92E) — THE DIRECTOR'S B-ROLL PICK IS THE RULE. PURE.
+ *
+ * The Director sources STOCK footage (lib/video/broll-picker.ts pickBrollClips), so it
+ * asks brollBenefit with brollSource "stock" over the inventory it knows: the staged
+ * content props when they exist (assetsFromProps — the same reader the plan uses), else
+ * the situation's facts (a photo count or the photo URLs; stat cards when the format
+ * draws charts). It picks only when the rule says the format BENEFITS and the
+ * composition RENDERS the layer — both, so a pick can never again be a write with no
+ * reader. The MLS cut never takes stock footage (brollBenefit's first clause).
+ */
+export function directorBrollDecision(args: {
+  compositionId: string
+  purpose?: VideoPurpose | null
+  props?: Record<string, unknown> | null
+  facts?: Record<string, unknown> | null
+  avatarClip: boolean
+  charts?: boolean
+  cut?: RenderCut | null
+}): BrollBenefit {
+  let assets: Partial<BodyVisualAssets>
+  if (args.props) {
+    assets = { ...assetsFromProps(args.props, { avatarClip: args.avatarClip, compositionId: args.compositionId }), brollSource: "stock" }
+  } else {
+    const f = args.facts ?? {}
+    const listLen = (k: string) => (Array.isArray(f[k]) ? (f[k] as unknown[]).length : 0)
+    const counted = typeof f.photoCount === "number" && Number.isFinite(f.photoCount) ? Math.max(0, Math.floor(f.photoCount)) : null
+    assets = {
+      avatarClip: args.avatarClip,
+      brollSource: "stock",
+      propertyPhotos: counted ?? Math.max(listLen("imageUrls"), listLen("photos"), listLen("photoUrls")),
+      statCards: args.charts ? 1 : 0,
+    }
+  }
+  return brollBenefit({ compositionId: args.compositionId, purpose: args.purpose ?? null, assets, cut: args.cut ?? null })
+}
+
+function formatForSituation(situation: VideoSituation): Omit<SelectedFormat, "needsBroll"> {
   const { kind, targetChannel } = situation
   const vertical = isVerticalSocial(targetChannel)
   const wantsHorizontal = targetChannel === "youtube" || targetChannel === "facebook"
@@ -174,19 +265,18 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "new_listing":
     case "price_drop": {
       if (wantsHorizontal) {
-        // YouTube / FB in-stream / CTV → 16:9, no B-roll (long-form reads photos).
+        // YouTube / FB in-stream / CTV → 16:9 (b-roll only where brollBenefit says the photos run out).
         return {
           compositionId: "JustListedReelHorizontal",
-          needsAvatar: false, needsBroll: false, needsCharts: false, needsSlides: false,
+          needsAvatar: false, needsCharts: false, needsSlides: false,
           aspect: "horizontal",
           targetChannels: ["youtube", "facebook"],
         }
       }
-      // TikTok / IG / email / portal → the square reel; vertical social adds B-roll.
+      // TikTok / IG / email / portal → the square reel (b-roll: brollBenefit, in selectVideoFormat).
       return {
         compositionId: "JustListedReelSquare",
         needsAvatar: false,
-        needsBroll: vertical, // B-roll is what stops the scroll on TikTok/IG
         needsCharts: false, needsSlides: false,
         aspect: vertical ? aspectForChannel(targetChannel) : "square",
         targetChannels: vertical ? socialFeed : [targetChannel],
@@ -196,7 +286,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "just_sold":
       return {
         compositionId: "JustSoldReelSquare",
-        needsAvatar: false, needsBroll: false, needsCharts: false, needsSlides: false,
+        needsAvatar: false, needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
       }
@@ -204,7 +294,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "open_house":
       return {
         compositionId: "OpenHouseAnnounceReel",
-        needsAvatar: false, needsBroll: false, needsCharts: false, needsSlides: false,
+        needsAvatar: false, needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
       }
@@ -213,7 +303,6 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       return {
         compositionId: "ComingSoonReel",
         needsAvatar: false,
-        needsBroll: true, // coming-soon teaser is the heaviest B-roll user
         needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
@@ -223,7 +312,6 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       return {
         compositionId: "MarketUpdateReel",
         needsAvatar: true,   // avatar narrates the stat cards
-        needsBroll: false,
         needsCharts: true,   // three big chart stat-cards
         needsSlides: false,
         aspect: "square",
@@ -233,7 +321,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "cma":
       return {
         compositionId: "CMAReel",
-        needsAvatar: false, needsBroll: false,
+        needsAvatar: false,
         needsCharts: true,   // price trend + comps + DOM + affordability donut
         needsSlides: false,
         aspect: "square",
@@ -244,7 +332,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       return {
         compositionId: "AgentExplainerReel",
         needsAvatar: true,   // avatar-led educational reel
-        needsBroll: false, needsCharts: false, needsSlides: false,
+        needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
       }
@@ -256,7 +344,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       return {
         compositionId: "AgentExplainerReel",
         needsAvatar: true,   // the agent's avatar introduces themselves to the lead
-        needsBroll: false, needsCharts: false, needsSlides: false,
+        needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: ["email"],
       }
@@ -264,7 +352,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "presentation":
       return {
         compositionId: "ListingSectionReel",
-        needsAvatar: false, needsBroll: false, needsCharts: false,
+        needsAvatar: false, needsCharts: false,
         needsSlides: true,   // narrated slide section, 1920×1080
         aspect: "horizontal",
         targetChannels: ["email", "portal"],
@@ -273,9 +361,17 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "anniversary":
       // EquityReportReel is registered by the sibling agent — referenced by ID
       // string only so the Director never hard-deps the composition module.
+      // needsAvatar:true is a PREFERENCE, not a requirement — the composition's
+      // own AvatarPIP is OPTIONAL (m218: requires_did_avatar=false) and renders
+      // an honest reel with a photo/monogram fallback when there is none.
+      // commissionVideo's resolveAvatarRequirement checks the agent's twin
+      // readiness (the SAME resolveAgentPresenterMedia check MarketUpdateReel's
+      // mandatory avatar lane uses) before actually requesting a D-ID clip —
+      // ready twin → avatar-presented equity reel; no twin → the same reel
+      // without one. See resolveAvatarRequirement's header for the full ruling.
       return {
         compositionId: "EquityReportReel",
-        needsAvatar: false, needsBroll: false,
+        needsAvatar: true,
         needsCharts: true,   // equity vs purchase price report
         needsSlides: false,
         aspect: "square",
@@ -285,7 +381,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "testimonial":
       return {
         compositionId: "TestimonialReel",
-        needsAvatar: false, needsBroll: false, needsCharts: false, needsSlides: false,
+        needsAvatar: false, needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
       }
@@ -294,7 +390,6 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       return {
         compositionId: "NeighborhoodSpotlightReel",
         needsAvatar: false,
-        needsBroll: true,    // lifestyle clips under the data highlights
         needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
@@ -304,11 +399,42 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       return {
         compositionId: "PhotoWalkthroughReel",
         needsAvatar: false,  // the photos ARE the video (finish-spec)
-        needsBroll: false, needsCharts: false, needsSlides: false,
+        needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
       }
+
+    case "concept_animation":
+      return {
+        compositionId: "ExplainerAnimReel",
+        needsAvatar: false,  // the animation IS the visual (finish-spec: CHART_REEL, broll none)
+        needsCharts: true, needsSlides: false,
+        aspect: "square",
+        targetChannels: socialFeed,
+      }
+
+    case "custom": {
+      // Wave 81C — the format comes from the PLAN the archetype rule derived
+      // (lib/video/custom-video-archetypes.ts planCustomVideo), never from a
+      // hand table here. No plan → no format: fail loudly rather than pick.
+      const customPlan = customPlanOf(situation)
+      if (!customPlan) throw new Error("custom situation has no facts.customPlan — customPlan it first with planCustomVideo (lib/video/custom-video-archetypes.ts)")
+      return {
+        compositionId: customPlan.compositionId,
+        needsAvatar: customPlan.host === "avatar",
+        needsCharts: customPlan.rule.required.includes("chart"),
+        needsSlides: false,
+        aspect: aspectForChannel(targetChannel),
+        targetChannels: [targetChannel],
+      }
+    }
   }
+}
+
+/** The CustomVideoPlan a custom situation carries (facts.customPlan), or null. */
+function customPlanOf(situation: VideoSituation): CustomVideoPlan | null {
+  const p = situation.facts?.customPlan
+  return p && typeof p === "object" && typeof (p as CustomVideoPlan).compositionId === "string" ? (p as CustomVideoPlan) : null
 }
 
 // ============================================================================
@@ -331,7 +457,8 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
  * returns — PLUS the learning provenance so commissionVideo can stamp
  * video_metadata.format_source + the WHY for auditability.
  */
-export interface LearnedFormat {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface LearnedFormat {
   format: SelectedFormat
   /** "default" = expert rule kept; "learned" = a real, gated per-brokerage win. */
   formatSource: "default" | "learned"
@@ -379,7 +506,8 @@ export function selectVideoFormatLearned(
 /** The intro the build assembles: brand + agent photo + a hook line. The hook
  *  COPY is generated at runtime (generatePersonaCopy + fallback); the spec only
  *  declares the slots. */
-export interface IntroSpec {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface IntroSpec {
   /** Brand band shows the brokerage trade name + colors. */
   brand: true
   /** Agent photo card (agents.avatar_image_url at build time). */
@@ -390,7 +518,8 @@ export interface IntroSpec {
 
 /** The outro the build assembles: brand + agent contact + a tracked QR whose
  *  destination is keyed by the video kind (qrDestinationForKind). */
-export interface OutroSpec {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface OutroSpec {
   brand: true
   /** Agent contact line (name + phone) shown on the outro card. */
   agentContact: true
@@ -418,7 +547,8 @@ export function sentimentForSituation(kind: SituationKind): "happy" | "neutral" 
 
 export type MusicMood = "none" | "energetic" | "sophisticated" | "calm" | "upbeat"
 
-export interface AssemblySpec {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface AssemblySpec {
   intro: IntroSpec
   outro: OutroSpec
   /** The background-music mood for this situation (the coordinator honors it). */
@@ -444,7 +574,9 @@ export function musicMoodForSituation(kind: SituationKind): MusicMood {
     case "market_update":
     case "anniversary":
     case "explainer":
+    case "concept_animation":  // teaching cut — music must never fight the narration
     case "lead_intro":    return "calm"
+    case "custom":        return "calm" // a described video: the bed must never fight whatever it says
     case "cma":
     case "presentation":  return "none"
   }
@@ -468,7 +600,10 @@ export function qrKindForSituation(kind: SituationKind): VideoQrKind {
     case "coming_soon":   return "coming_soon"
     case "market_update": return "market_update"
     case "cma":           return "cma"
-    case "explainer":     return "explainer"
+    case "explainer":
+    // Same teaching destination as the avatar-led explainer — NOT the listing page
+    // the default falls back to.
+    case "concept_animation": return "explainer"
     case "testimonial":   return "testimonial"
     case "neighborhood":  return "neighborhood"
     case "photo_walkthrough":
@@ -480,13 +615,14 @@ export function qrKindForSituation(kind: SituationKind): VideoQrKind {
 
 /** PURE: the outro-QR caption per situation — a short, on-brand scan prompt that matches where the
  *  QR lands (the agent can re-point the target_url in the UI; the caption stays a generic invite). */
-export function qrCaptionForSituation(kind: SituationKind): string {
+function qrCaptionForSituation(kind: SituationKind): string {
   switch (kind) {
     case "just_sold":      return "Scan to list with me"
     case "open_house":     return "Scan to RSVP"
     case "market_update":  return "Scan for the full market report"
     case "cma":            return "Scan for your home value"
     case "explainer":      return "Scan to book a consult"
+    case "concept_animation": return "Scan to book a consult"
     case "lead_intro":     return "Scan to book a consult"
     case "presentation":   return "Scan for the full tour"
     case "anniversary":    return "Scan for your equity report"
@@ -505,7 +641,9 @@ export function qrCaptionForSituation(kind: SituationKind): string {
 export function defaultHookForSituation(kind: SituationKind): string {
   switch (kind) {
     case "new_listing":   return "Just Listed"
-    case "price_drop":    return "Pricing Update"
+    // PUBLIC (§6) — this is the reel's cover hook, so it speaks the owner's
+    // public word; the `price_drop` SituationKind itself is unchanged.
+    case "price_drop":    return priceImprovementLabel("badge")
     case "just_sold":     return "Just Sold"
     case "open_house":    return "Open House This Weekend"
     case "coming_soon":   return "Coming Soon"
@@ -513,11 +651,13 @@ export function defaultHookForSituation(kind: SituationKind): string {
     case "photo_walkthrough": return "Step Inside"
     case "cma":           return "What Your Home Is Worth"
     case "explainer":     return "What You Should Know"
+    case "concept_animation": return "Let Me Show You"
     case "presentation":  return "Your Listing Strategy"
     case "anniversary":   return "A Year In Your Home"
     case "testimonial":   return "What Clients Say"
     case "neighborhood":  return "Inside The Neighborhood"
     case "lead_intro":    return "A Quick Hello"
+    case "custom":        return "A Word From Your Agent"
   }
 }
 
@@ -535,6 +675,11 @@ export function defaultHookForSituation(kind: SituationKind): string {
  *   urgency      — the window is closing ("Before it's gone").
  *   value        — the concrete payoff up front ("What your home is worth").
  */
+// EXPORTED (wave 58) — was module-private (lane Q, 2026-09-07) until
+// lib/video/format-learning.ts recommendPreferredAngleForKind needed to hand a
+// crowned cross-entity winner back into CommissionExperimentOpts.preferredAngle
+// (app/actions/listing-video.ts) — the FIRST real external consumer. See that
+// function's header for why this loop needed closing.
 export type HookAngle = "curiosity" | "social_proof" | "urgency" | "value"
 
 /** The fixed angle ORDER the A/B draws from — curiosity first (the strongest
@@ -543,7 +688,8 @@ export type HookAngle = "curiosity" | "social_proof" | "urgency" | "value"
 export const HOOK_ANGLE_ORDER: HookAngle[] = ["curiosity", "social_proof", "urgency", "value"]
 
 /** One drafted hook variant — the angle + its (deterministic-fallback) copy. */
-export interface HookVariant {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface HookVariant {
   /** 0-based position in the experiment (variant_index stamped on the row). */
   index: number
   angle: HookAngle
@@ -664,8 +810,30 @@ export function assemblySpec(
 type AnyClient = ReturnType<typeof createServiceClient>
 
 /** Map a Director SituationKind → the ai_video_projects.video_type CHECK enum. */
-function videoTypeForSituation(kind: SituationKind): string {
+/**
+ * THE PURPOSE A SITUATION STAGES (wave 80C — 79C's open item). A composition
+ * registered with `alsoServes` (lib/video/duration-model.ts) plans as its
+ * DEFAULT purpose unless the producer stages `videoPurpose`; the Director
+ * never did, so a lead_intro on AgentExplainerReel planned (word window AND
+ * body visual) as an `explainer` instead of a `lead_reel`. PURE: the purpose
+ * to stage when the situation's purpose differs from the composition's
+ * default and the composition is registered to serve it; null otherwise (the
+ * default stands, nothing is staged).
+ */
+export function videoPurposeForSituation(kind: SituationKind, compositionId: string, customPurpose?: VideoPurpose | null): VideoPurpose | null {
+  // Wave 81C — a custom situation's purpose is the archetype's base purpose
+  // (facts.customPlan.purpose), staged only when the composition alsoServes it.
+  const wanted: VideoPurpose | null = kind === "lead_intro" ? "lead_reel" : kind === "custom" ? (customPurpose ?? null) : null
+  if (!wanted) return null
+  const served = compositionPurposes(compositionId)
+  const spec = COMPOSITION_DURATION_RULES[compositionId]
+  return spec && spec.purpose !== wanted && served.includes(wanted) ? wanted : null
+}
+
+function videoTypeForSituation(kind: SituationKind, situation?: VideoSituation): string {
   switch (kind) {
+    // Wave 81C — the archetype names the storable CHECK value (no new literal).
+    case "custom":        return (situation && customPlanOf(situation)?.videoType) ?? "social_reel"
     case "new_listing":   return "just_listed"
     case "price_drop":    return "listing_promo"
     case "just_sold":     return "just_sold"
@@ -675,9 +843,17 @@ function videoTypeForSituation(kind: SituationKind): string {
     case "photo_walkthrough": return "listing_promo"
     case "cma":           return "pre_appointment"
     case "explainer":     return "education"
+    // Reuses the SAME video_type CHECK value as the avatar-led explainer — this maps
+    // to a DB enum, so a new literal here would be rejected by the constraint.
+    case "concept_animation": return "education"
     case "lead_intro":    return "education"
     case "presentation":  return "presentation_chapter"
-    case "anniversary":   return "memory_video"
+    // m565 — NOT 'memory_video'. That word names a different product (a
+    // seller-dictated family history for a 20-year-plus homeowner —
+    // lib/video/memory-video-gate.ts). The anniversary/equity moment got its own
+    // CHECK value, spelled the way agent_intro_videos.trigger and
+    // contacts.home_anniversary already spell it (§6, one vocabulary).
+    case "anniversary":   return "home_anniversary"
     case "testimonial":   return "testimonial"
     case "neighborhood":  return "social_reel"
   }
@@ -692,9 +868,67 @@ function formatForAspect(aspect: VideoAspect): string {
   }
 }
 
+/**
+ * resolveAvatarRequirement — ONE resolver (§6) shared by commissionVideo and
+ * commissionVideoExperiment for whether THIS commission should actually
+ * request a D-ID avatar clip.
+ *
+ * TWO REGIMES, because remotion_compositions.requires_did_avatar encodes two
+ * different things depending on the composition:
+ *
+ *   MANDATORY (registry row found, requires_did_avatar=true — MarketUpdateReel,
+ *   AgentExplainerReel, the presentation slides, TeammateExplainerReel): the
+ *   avatar IS the format. Always request one; readiness is checked at RENDER
+ *   time by app/api/cron/director-reel-render (resolveAgentPresenterMedia +
+ *   the graceful `awaiting_presenter_setup` park) — unchanged by this
+ *   resolver, which just returns true and lets that existing gate do its job.
+ *
+ *   OPTIONAL (requires_did_avatar=false, e.g. EquityReportReel — m218: "the
+ *   avatar PIP is OPTIONAL"): the composition renders a complete, honest video
+ *   with NO avatar (remotion/EquityReportReel.tsx's avatarVideoUrl null path
+ *   falls back to the agent's photo, then a monogram) — so parking the whole
+ *   reel on presenter setup would be WRONG here; an anniversary equity update
+ *   is a real deliverable with or without a talking head. When the SITUATION
+ *   nonetheless PREFERS one (selectVideoFormat's `anniversary` case sets
+ *   needsAvatar:true for exactly this), this resolver checks READINESS NOW —
+ *   reusing the SAME resolveAgentPresenterMedia readiness check
+ *   director-reel-render already runs for the mandatory lanes — and only
+ *   requests the avatar clip when the agent's twin is actually ready. No twin
+ *   → no request; the composition's own no-avatar fallback is what "falls
+ *   back to presenter:none" means for an optional-avatar composition (there is
+ *   no per-commission finish-spec to flip; finish-spec's EquityReportReel entry
+ *   is `circle_pip` because the capability genuinely exists, not because every
+ *   commission uses it).
+ *
+ * D-ID CONSENT is untouched by this resolver: whichever path ends up
+ * requesting the avatar (director-reel-render → lib/did generateVideo) already
+ * enforces the 428 consent gate exactly as it does for every mandatory-avatar
+ * situation — nothing here weakens or duplicates it.
+ */
+async function resolveAvatarRequirement(
+  format: SelectedFormat,
+  registryRequiresAvatar: boolean,
+  agentUserId: string,
+  brokerageId: string,
+): Promise<boolean> {
+  if (registryRequiresAvatar) return true
+  if (!format.needsAvatar) return false
+  try {
+    const { resolveAgentPresenterMedia } = await import("@/lib/video/presenter-media")
+    const presenter = await resolveAgentPresenterMedia({ agentUserId, brokerageId })
+    return presenter.canRender
+  } catch {
+    // A readiness-check failure is not a reason to fabricate an avatar
+    // request the render step would just park anyway — fall back to no-avatar,
+    // which this composition already renders honestly.
+    return false
+  }
+}
+
 export interface CommissionOpts {
   brokerageId: string
-  /** users.id of the agent (ai_video_projects.agent_id FK → users.id). */
+  /** users.id of the agent. Resolved to the agents.id that
+   *  ai_video_projects.agent_id wants before anything is staged. */
   agentUserId: string
   /** Listing this video promotes — drives QR listing_detail + idempotency entity. */
   listingId?: string | null
@@ -728,8 +962,18 @@ export interface CommissionOpts {
    *  moment — a home anniversary). Fair-Housing-safe, no fabrication; appended to
    *  the situation facts. Omitted → situation facts only (unchanged behavior). */
   extraFacts?: string[]
-  /** MLS-clean cut → the outro carries NO agent QR (mirrors QrOutroBadge). */
+  /** MLS-clean cut → the outro carries NO agent QR (mirrors QrOutroBadge).
+   *  Wave 81C: DERIVED from `cut` when that is given; kept for the callers
+   *  that already pass it (§6 — `mlsClean` is the render flag, `cut` the intent). */
   mlsClean?: boolean
+  /**
+   * Wave 81C — THE CUT (lib/video/render-cut.ts). "ads" (default) is the
+   * posting / ads render with full branding; "mls" is the MLS render of the
+   * SAME plan with every branded element stripped, the fair-housing scan
+   * required, usage_intent 'mls', its own idempotency row. Refused on a
+   * composition with no MLS cut (compositionHasMlsCut).
+   */
+  cut?: RenderCut
   /**
    * SELF-IMPROVING seam — now ON BY DEFAULT so every Director commission consults the
    * brokerage's REAL video outcomes (qr_scan_events + social engagement). It stays
@@ -740,15 +984,44 @@ export interface CommissionOpts {
    * map (tests). The chosen source + WHY are stamped onto video_metadata for audit.
    */
   formatLearning?: boolean | ScoredFormats
+  /**
+   * Wave 86 (lane 86B) — the commission was made by an AUTONOMOUS path (the topic
+   * runner, a manager signal, a cron play) rather than a person. Recorded on the
+   * video meter's usage_events row; the tier meter never blocks it (only a tier
+   * that explicitly excludes video is refused — lib/video/video-metering.ts).
+   */
+  autonomous?: boolean
+  /**
+   * Wave 87 (lane 87D) — the FULL narration a human already approved
+   * (lib/video/render-from-approval.ts). It becomes the row's script_content,
+   * which is what director-reel-render hands D-ID to SPEAK (and what the
+   * voiceover path synthesizes). Omitted → the gated hook line, as before (the
+   * situational reels speak their hook).
+   */
+  spokenScript?: string | null
+  /** Wave 87 — the meter's feature label (default video_director / video_director_autonomous). */
+  meterFeature?: string | null
+  /** Wave 87 — advisory compliance findings persisted on the staged row
+   *  (compliance_violations), the way the topic runner records them. Warnings
+   *  pass through (§5); they never block. */
+  complianceWarnings?: string[] | null
+  /** Wave 87 — provenance merged UNDER the Director's own video_metadata keys
+   *  (never over director_key / composition_id / render_cut). */
+  extraMetadata?: Record<string, unknown> | null
 }
 
-export interface CommissionResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface CommissionResult {
   ok: boolean
   status: "staged" | "already_staged" | "blocked" | "failed"
   videoProjectId?: string
   compositionId?: string
   reason?: string
   violations?: string[]
+  /** Wave 84A — what the plan wanted, what the buckets had, what was created,
+   *  what degraded and why (lib/video/plan-asset-readiness.ts). Also stamped on
+   *  the row at video_metadata.asset_readiness. */
+  assetReadiness?: import("@/lib/video/plan-asset-readiness").AssetReadinessStamp
 }
 
 /**
@@ -770,6 +1043,45 @@ export async function commissionVideo(
 
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc: AnyClient = client ?? createServiceClient()
+
+  // 0. Identity before spend. ai_video_projects.agent_id is a NOT NULL FK to
+  //    agents(id). The CLIENT-AGNOSTIC resolver, not agent-identity-resolver:
+  //    this module is deliberately not server-only (the simulator imports the
+  //    pure selectors), so it must resolve through whatever client it was handed
+  //    — including the injected test client. Refuse before minting QRs or
+  //    burning gateway tokens on a hook nobody can own.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const directorAgentId = await resolveAgentIdInBrokerage(svc, opts.agentUserId, opts.brokerageId)
+  if (!directorAgentId) {
+    return { ok: false, status: "failed", reason: "no agent profile for this user in this brokerage" }
+  }
+
+  // THE VIDEO GATE IS A METER (wave 86, owner answer 4 — lib/video/video-metering.ts):
+  // refused ONLY when the tier explicitly excludes video (allowance 0), before any
+  // spend; everything else — overage included, autonomous included — is served and
+  // counted when the row lands (below).
+  const { gateVideoCreation, meterVideoCreation } = await import("@/lib/video/video-metering")
+  const videoMeter = await gateVideoCreation({ brokerageId: opts.brokerageId, plannedSeconds: null })
+  if (!videoMeter.allowed) {
+    return { ok: false, status: "blocked", reason: videoMeter.reason, violations: ["video_excluded_by_tier"] }
+  }
+
+  // BRAND VOICE (§1/§6, wave 60E — survivor lib/ai-isa/brand-voice-prompt.ts:73
+  // loadBrandVoicePrompt). The hook line drafted below ran with NO brand-voice
+  // input at all — generatePersonaCopy's persona carried a tone only when a
+  // caller happened to pass opts.persona.tone — and the row always wrote
+  // brand_voice_context: {}, a column with a writer but no real value. Loaded
+  // once here, best-effort: a cascade outage never blocks a commission, the
+  // hook simply falls back to the untuned tone it always used.
+  const { loadBrandVoicePrompt, brandVoiceContextForVideo } = await import("@/lib/ai-isa/brand-voice-prompt")
+  const brandVoice = await loadBrandVoicePrompt({
+    brokerageId: opts.brokerageId,
+    agentId: directorAgentId,
+    managerKey: "asset_manager",
+  }).catch(() => null)
+  const brandVoiceContext = brandVoice
+    ? brandVoiceContextForVideo(brandVoice)
+    : { tone: null, formalityLevel: null, prohibitedWords: [], preferredWords: [], tagline: null, assistantName: "Your AI Assistant", source: "loadBrandVoicePrompt" as const }
 
   // 1. Resolve the format + assembly structure (pure).
   //    Learning is ON BY DEFAULT: we consult the SELF-IMPROVING layer, which still
@@ -804,30 +1116,78 @@ export async function commissionVideo(
     formatWhy = "Expert default (learning disabled for this commission)."
   }
   const spec = assemblySpec(situation, format)
+  // THE FINISH SPEC, CONSULTED (wired 2026-09-03). lib/video/finish-spec.ts is
+  // the owner's one definition of which category gets which stitching; until
+  // now it was asserted against the registry in CI and read by nothing at
+  // runtime, so the QR was minted for compositions the spec says carry none
+  // (TeammateExplainerReel bakes its own; internal report shows skip it) and a
+  // music mood was staged for narrated slide decks the spec keeps silent.
+  // Wave 81C — THE CUT. The finish is refined by the cut (the MLS cut drops
+  // the brand bookends, the tracked QR and the branded share card; keeps the
+  // licensed music bed, the captions and the b-roll). A composition with no
+  // MLS cut refuses one BEFORE any spend — registry-derived, never a list.
+  const cut: RenderCut = opts.cut ?? "ads"
+  if (cut === "mls" && !compositionHasMlsCut(format.compositionId)) {
+    return {
+      ok: false, status: "blocked", compositionId: format.compositionId,
+      reason: `${format.compositionId} has no MLS cut — only presenter-less property compositions (lib/video/render-cut.ts compositionHasMlsCut) render one`,
+      violations: ["mls_cut_unavailable"],
+    }
+  }
+  const mlsClean = cut === "mls" || (opts.mlsClean ?? false)
+  const finish = finishForCut(finishForVideo(format.compositionId), cut)
 
   // 2. Read the composition's capabilities from the registry (source of truth).
   //    When the row is absent (e.g. EquityReportReel mid-registration by the
-  //    sibling agent) we fall back to the format's own flags so the Director
+  //    sibling agent) we fall back to the FINISH SPEC's bookend decision, so
   //    never hard-deps any single composition existing yet.
-  let supportsBookends = true
-  let requiresAvatar = format.needsAvatar
-  let requiresVoiceover = format.needsAvatar || format.needsCharts
+  //
+  // TOMBSTONE (§1.3, 2026-09-03): `requiresVoiceover` DELETED from both this
+  // function and commissionVideoExperiment. It was seeded from
+  // `format.needsAvatar || format.needsCharts`, overwritten from the row's
+  // `requires_voiceover`, and then read by NOTHING — no local, no
+  // video_metadata key, no provider_metadata key (the experiment twin had to
+  // write `void requiresVoiceover` to keep tsc quiet, which is the shape of a
+  // value nobody wants). It was also a read with NO CODE WRITER: the whole tree
+  // writes `remotion_compositions.requires_voiceover` only from migration SQL
+  // (m168's hand-seeded guess, corrected by m601), so this was the Director
+  // consulting a hand-seeded mirror and discarding the answer.
+  //
+  // THE SURVIVOR, which supplies the same fact and is what every live decision
+  // already uses: lib/remotion/content-contract.ts `consumesVoiceover` (does
+  // this composition render <Audio src={voiceoverUrl}>?) and `stagesVoiceover`
+  // (…and do THESE props carry one?). Read by lib/remotion/render-coordinator.ts
+  // and lib/agents/asset-manager-actions.ts to stamp `used_voiceover`; the
+  // column is that set's live mirror (m601), never its source. Nothing was
+  // ported: the deleted variable held no value the survivor lacks.
+  //
+  // If the Director ever needs to know, the call is
+  // `consumesVoiceover(format.compositionId)` — pure, no registry round-trip.
+  let supportsBookends = finish.bookends
+  let registryRequiresAvatar = format.needsAvatar
   try {
     const { getComposition } = await import("@/lib/remotion/registry")
     const comp = await getComposition(format.compositionId)
     if (comp) {
       supportsBookends = comp.supports_bookends
-      requiresAvatar = comp.requires_did_avatar
-      requiresVoiceover = comp.requires_voiceover
+      registryRequiresAvatar = comp.requires_did_avatar
     }
   } catch { /* registry read is best-effort — the format flags are the fallback */ }
+  // resolveAvatarRequirement (§6, one resolver shared with commissionVideoExperiment):
+  // MANDATORY compositions (registry requires_did_avatar=true) always request
+  // one — render-time readiness is director-reel-render's job, unchanged.
+  // OPTIONAL compositions the SITUATION nonetheless prefers (EquityReportReel
+  // via anniversary's needsAvatar:true) only request one when the agent's twin
+  // is actually ready right now — reusing the same readiness check.
+  const requiresAvatar = await resolveAvatarRequirement(format, registryRequiresAvatar, opts.agentUserId, opts.brokerageId)
 
   // 3. Idempotency key — one commission per (entity, situation kind). The entity
   //    is the listing (most kinds), then the contact (anniversary), then the
   //    campaign, then the brokerage. Stamped into video_metadata.director_key so a
   //    re-run for the same situation reuses the staged row instead of duplicating.
   const entity = opts.listingId ?? opts.contactId ?? opts.leadId ?? opts.campaignId ?? opts.brokerageId
-  const directorKey = `director:${situation.kind}:${entity}${opts.idempotencyDiscriminator ? `:${opts.idempotencyDiscriminator}` : ""}`
+  // The MLS cut is its OWN row (cut:mls) beside the ads cut of the same plan.
+  const directorKey = `director:${situation.kind}:${entity}${opts.idempotencyDiscriminator ? `:${opts.idempotencyDiscriminator}` : ""}${cut === "mls" ? `:${cutDiscriminator(cut)}` : ""}`
 
   const { data: existing } = await svc
     .from("ai_video_projects")
@@ -845,9 +1205,11 @@ export async function commissionVideo(
   }
 
   // 4. Mint the OUTRO QR (idempotent per entity×kind; null = render without QR).
-  //    Skipped on MLS-clean cuts (a tracked agent QR is branding).
+  //    Skipped on MLS-clean cuts (a tracked agent QR is branding) and on
+  //    compositions whose finish spec carries no QR — minting one there filed a
+  //    qr_codes row the reel never rendered.
   let qr: import("@/lib/video/video-qr").MintedVideoQr | null = null
-  if (!opts.mlsClean) {
+  if (!mlsClean && finish.qr) {
     try {
       const { mintVideoQr } = await import("@/lib/video/video-qr")
       qr = await mintVideoQr({
@@ -870,12 +1232,24 @@ export async function commissionVideo(
   let hookLine = fallbackHook
   let complianceStatus: "passed" | "failed" = "passed"
   let violations: string[] = []
+  // Declared OUTSIDE the try: the same bounded fact set is stamped onto
+  // video_metadata.facts below so the eval harness can ground-check the reel.
+  const facts = [...factStrings(situation, fallbackHook), ...(opts.extraFacts ?? [])]
   try {
     const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
     const { runWithComplianceRedraft } = await import("@/lib/kernel/compliance-redraft")
     const { evaluateOutbound } = await import("@/lib/kernel/compliance")
-
-    const facts = [...factStrings(situation, fallbackHook), ...(opts.extraFacts ?? [])]
+    // REALISM (lane 76D): the hook line IS the spoken narration on every
+    // avatar-led Director format (script_content: hookLine), so it gets the
+    // SAME AI-tell scan every other spoken script gets, folded into the SAME
+    // one-redraft gate (§6). Every deterministic fallback hook in
+    // VIDEO_FINISH_SPEC was probed tell-free before this was wired, so the
+    // fallback path can never be refused by it.
+    const { scanForAiTells } = await import("@/lib/video/realism-profile")
+    // Wave 91 (lane 91E): the persona is the SITUATION's audience (director-
+    // content.ts audienceFor — the survivor the explainer author already reads),
+    // never the placeholder "audience"; the hook rule rides as directives.
+    const { audienceFor, directorHookDirectives } = await import("@/lib/video/director-content")
 
     const result = await runWithComplianceRedraft({
       draft: async ({ violations: priorViolations }) => {
@@ -884,8 +1258,12 @@ export async function commissionVideo(
             goal: `a ${situation.kind.replace(/_/g, " ")} video hook headline${priorViolations.length ? ` (rewrite to clear: ${priorViolations.join("; ")})` : ""}`,
             facts,
             channel: situation.targetChannel,
-            persona: opts.persona ?? { audience: "audience" },
+            // Cascade tone is the default; an explicit opts.persona.tone still wins.
+            persona: opts.persona
+              ? { ...opts.persona, tone: opts.persona.tone ?? brandVoice?.tone ?? undefined }
+              : { audience: audienceFor(situation.kind), tone: brandVoice?.tone ?? undefined },
             words: 8,
+            directives: directorHookDirectives(),
           },
           { body: fallbackHook },
           { generator: opts.copyGenerator },
@@ -899,8 +1277,9 @@ export async function commissionVideo(
           persona: "other",
           messageType: "social",
           content: s,
-        })
-        return { allowed: r.allowed, violations: r.violations }
+        }, { client: svc }) // 86C: sessionless — the tenant's brand voice + audit row on the service client
+        const tells = scanForAiTells(s)
+        return { allowed: r.allowed && tells.length === 0, violations: [...r.violations, ...tells] }
       },
     })
     if (result.ok) {
@@ -924,18 +1303,16 @@ export async function commissionVideo(
     }
   }
 
-  // 5b. SOURCE the B-roll when the chosen format wants it. The Director already
-  //     FLAGS needsBroll; here we fill it — pickBrollClips walks the EXISTING
-  //     agent → team → brokerage video_assets cascade (same walk as the render
-  //     coordinator's bookend/music pick) and returns the ordered clips the
-  //     composition's B-roll layer composites under the narration. Best-effort:
-  //     an empty scope (no uploaded b_roll) returns [] and the composition
-  //     renders WITHOUT B-roll exactly like today — a picker failure NEVER
-  //     blocks staging.
+  // 5b. TOMBSTONE (wave 92, lane 92E): the b-roll pick that stood here ran on
+  //     `format.needsBroll` BEFORE the content was resolved — so it could not know
+  //     how many photos the listing had, which is the one fact the listing verdict
+  //     turns on. It MOVED to 6e″ below (after resolveDirectorContentProps), where
+  //     directorBrollDecision asks THE rule (brollBenefit) over the staged content.
+  //     The pick itself — pickBrollClips over the agents.id cascade — is unchanged.
   let brollClips: import("@/lib/video/broll-picker").PickedBrollClip[] = []
   let brollSourcedCount = 0
   let brollSourcedScope: string | null = null
-  if (format.needsBroll) {
+  const pickStockBroll = async (): Promise<void> => {
     try {
       const { pickBrollClips } = await import("@/lib/video/broll-picker")
       const picked = await pickBrollClips(
@@ -943,8 +1320,13 @@ export async function commissionVideo(
           brokerageId: opts.brokerageId,
           // The Director renders for the agent's personal brand — agent scope
           // inherits team + brokerage b_roll via the cascade.
+          // Wave 84A — agents.id, NOT users.id: video_assets scopes an agent
+          // row by agents.id (lib/identity/policy-scope.ts agentScopeId) and
+          // the picker resolves the team via agents.id, so the users.id this
+          // passed before matched neither tier (CLAUDE.md §3: agents.id and
+          // users.id are disjoint) — only brokerage-scoped b-roll was ever found.
           scopeType:   "agent",
-          scopeId:     opts.agentUserId,
+          scopeId:     directorAgentId,
         },
         svc,
       )
@@ -969,7 +1351,7 @@ export async function commissionVideo(
     qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
     qrDestinationType: qr?.destinationType ?? null,
     qrSlug: qr?.slug ?? null,
-    mlsClean: opts.mlsClean ?? false,
+    mlsClean,
   }
 
   // The effective music mood: the learned override when the gate fired, else the
@@ -978,6 +1360,9 @@ export async function commissionVideo(
 
   const videoMetadata = {
     director_key: directorKey,
+    // Wave 81C — which cut this row IS (lib/video/render-cut.ts); the ads and
+    // MLS rows of one plan share director_key up to the cut discriminator.
+    render_cut: cut,
     // The situation that produced this reel — stamped so the autonomous repurpose loop can
     // replay it for platform-short VARIANTS (same kind/tier/entity, a different target channel).
     situation: { kind: situation.kind, tier: situation.tier, target_channel: situation.targetChannel },
@@ -990,16 +1375,23 @@ export async function commissionVideo(
     composition_id: format.compositionId,
     supports_bookends: supportsBookends,
     needs_avatar: requiresAvatar,
-    needs_broll: format.needsBroll,
     needs_charts: format.needsCharts,
     needs_slides: format.needsSlides,
     aspect: format.aspect,
     target_channels: format.targetChannels,
     intro: introProps,
     outro: outroProps,
-    music_mood: effectiveMood,
+    // null when the finish spec keeps this composition silent (narrated slide
+    // decks, the teammate explainer) — the coordinator then mixes no bed.
+    music_mood: finish.music ? effectiveMood : null,
     qr_code_id: qr?.qrCodeId ?? null,
     requested_via: "asset_manager",
+    // THE BOUNDED FACT SET (stamped 2026-09-03) — the ONLY facts the hook was
+    // allowed to assert. lib/agents/manager-outbound-eval.ts
+    // evalBrokerageDirectorReels reads it so the Director eval harness can
+    // ground-check a staged reel's numbers/addresses instead of judging
+    // superlatives alone.
+    facts,
     // Lead-addressed intro reel: stamp the lead + audience so the completion publisher
     // (lib/kernel/video-coordination) routes the finished reel 1:1 to the Campaign
     // Orchestrator (campaign_orchestrator:lead_outreach_ready) instead of a SOCIAL
@@ -1009,19 +1401,213 @@ export async function commissionVideo(
     // so the format choice is auditable on the row itself.
     format_source: formatSource,
     format_why: formatWhy,
-    // B-roll the Director sourced from the scope cascade (empty when none
-    // uploaded — the composition then renders without B-roll, like today).
-    broll_clips:         brollClips,
-    broll_sourced_count: brollSourcedCount,
-    broll_sourced_scope: brollSourcedScope,
+    // B-roll the Director sourced from the scope cascade — stamped at the insert
+    // (wave 92: the pick now runs after the content is known, 6e″ below).
   }
 
-  const providerMetadata = {
+  // 6b. THE CONTENT. Everything above this line is CHROME — the bookends, the
+  //     tracked QR, the music mood, the b-roll. None of it is what the video
+  //     SAYS. The staged props used to stop there, and Remotion merges input
+  //     props over each composition's Studio defaults, so the unsupplied half
+  //     did not render blank: the equity reel reported $600,000 against
+  //     $500,000 paid, the listing reel advertised 123 Main Street at $625,000,
+  //     the testimonial published a five-star review from a client who does not
+  //     exist. The callers were already handing over real facts (equity-trigger
+  //     passes a RentCast valuation and the closed transaction's basis price;
+  //     video-plays passes a real agent_reviews row) — the Director read them
+  //     only for the hook's fact list and dropped them here.
+  const { resolveDirectorContentProps } = await import("@/lib/video/director-content")
+  const contentProps = await resolveDirectorContentProps(svc, situation, format.compositionId, {
+    brokerageId: opts.brokerageId,
+    agentUserId: opts.agentUserId,
+    listingId: opts.listingId ?? null,
+    contactId: opts.contactId ?? null,
+    hookLine,
+  })
+
+  // 6c. REFUSE rather than fabricate. A commission whose composition still has
+  //     unsupplied content props would render the Studio sample data as this
+  //     client's facts. Blocked here rather than at render time so the manager
+  //     sees WHICH facts could not be established, and no queue row, no render
+  //     spend and no delivery is created. render-composition enforces the same
+  //     contract as the backstop for every producer that does not come through
+  //     the Director.
+  const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+  const missing = missingContentProps(format.compositionId, contentProps)
+  if (missing.length > 0) {
+    return {
+      ok: false, status: "blocked",
+      compositionId: format.compositionId,
+      reason: describeMissingContent(format.compositionId, missing),
+      violations: missing.map((m) => `content_prop_missing:${m}`),
+    }
+  }
+
+  // 6d. THE COMPANION SHARE CARD (§1.2 — the other half of the thumbnail
+  //     contract). Every composition the Director commissions declares a
+  //     thumbnail_composition_id, so render-composition renders a VideoCoverThumb
+  //     still beside the video and that PNG becomes thumbnail_url — the og:image
+  //     and the player poster on /v/[slug]. The Director staged no
+  //     thumbnail_props, so the card was completed from the composition's Studio
+  //     fixture: a fabricated address and price as the share image of a real
+  //     client's video. The backstop now SKIPS such a card instead of publishing
+  //     it, which is correct and leaves the reel with no share image at all —
+  //     so the facts are staged HERE, where they already exist. Nothing is
+  //     authored: the two lines are re-read from contentProps (resolved from
+  //     live rows above) and the seoHint is cut verbatim from the gated hook.
+  //     A refusal is a LOG, never a block: a video with no share image is a
+  //     degraded preview; a video that cannot be made is a missing deliverable,
+  //     and these are not the same failure.
+  //
+  //     ONE SPELLING of the audience rule (§6) — the row's audience_type below
+  //     reads this same const instead of restating the condition.
+  const audienceType: "customer_facing" | "in_house" =
+    situation.kind === "cma" || situation.kind === "presentation" ? "in_house" : "customer_facing"
+  const { directorShareCard } = await import("@/lib/video/director-content")
+  const share = directorShareCard(format.compositionId, contentProps, { hookLine, audienceType })
+  if (share.skipReason) {
+    console.warn(`[video-director] no companion share card for ${format.compositionId} — ${share.skipReason}`)
+  }
+
+  // 6e. THE BODY VISUAL (wave 79C — owner: "nowhere do we discuss what to use
+  //     in the body if not a full avatar"). What is ON SCREEN per script
+  //     segment is a registry rule, not a composition's private habit:
+  //     lib/video/body-visual-model.ts cuts the narration into the purpose's
+  //     arc, tiles the duration-model body by spoken words, and picks each
+  //     segment's treatment (full avatar / PiP / b-roll / photos / screenshots
+  //     / kinetic text / chart / brand card) from what the purpose allows, the
+  //     composition can render, the host permits and the assets on hand. The
+  //     plan rides input_props.bodyVisualPlan; the composition re-fits it to
+  //     the duration it renders at. A composition with no rule FAILS LOUDLY —
+  //     blocked like a missing content prop, never rendered unplanned.
+  // 6d. TOMBSTONE (§1.3, wave 83C — owner verbatim: "zestimate is marketing
+  //     campaigns strictly"). The 80D step that staged the tenant's approved
+  //     `use:product_video` stills into ANY screenshot-treatment video is
+  //     deleted: every tenant still is a Zillow/Zestimate page and a Zestimate
+  //     may appear only inside its own marketing campaign. That campaign's
+  //     video still gets its approved still — app/actions/creative-playbooks.ts
+  //     installCreativePlaybook → createPlaybookVideo({ screenshotUrls }) — so
+  //     nothing campaign-bound is lost; the director stages no tenant still.
+  //     WAVE 80C — PLAN BEFORE SEND. The plan is cut under the tenant's LIVE
+  //     learned rule overrides (lib/video/body-visual-rule-ledger.ts), the
+  //     situation's own purpose is staged when the composition alsoServes it
+  //     (videoPurposeForSituation — a lead_intro is a lead_reel, not an
+  //     explainer), and the ONE dispatch gate (gateVisualPlanForDispatch)
+  //     runs BEFORE the row that the render cron and the D-ID poller act on
+  //     is written: a segment with no asset behind it, b-roll on a no-b-roll
+  //     format, or a treatment the purpose disallows BLOCKS the commission.
+  // The plan is staged and gated INSIDE readyVisualPlanForDispatch (6e′ below)
+  // through the same stageBodyVisualPlan / gateVisualPlanForDispatch survivors.
+  const { bodyVisualStamp } = await import("@/lib/video/body-visual-model")
+  const { loadBodyVisualRuleOverrides } = await import("@/lib/video/body-visual-rule-ledger")
+  const visualOverrides = await loadBodyVisualRuleOverrides(opts.brokerageId, svc)
+  const stagedPurpose = videoPurposeForSituation(situation.kind, format.compositionId, customPlanOf(situation)?.purpose ?? null)
+  const narrationForVisual = (["narrationScript", "narration", "captionScript"] as const)
+    .map((k) => (contentProps as Record<string, unknown>)[k])
+    .find((v): v is string => typeof v === "string" && v.trim().length > 0) ?? hookLine
+  // Wave 81C — THE MLS CUT REQUIRES THE FAIR-HOUSING SCAN TO PASS. The ads cut
+  // already rides the compliance-first author + evaluateOutbound on the hook;
+  // the MLS cut is syndicated listing content (NAR 7.9), so the narration it
+  // speaks and captions is scanned here and a RED FLAG blocks the row — the
+  // same detector the studio's post-check uses (lib/video/script-compliance.ts),
+  // never a second spelling.
+  if (cut === "mls") {
+    const { detectFairHousingRedFlags } = await import("@/lib/video/script-compliance")
+    const redFlags = detectFairHousingRedFlags(narrationForVisual, "seller")
+    if (redFlags.length > 0) {
+      return {
+        ok: false, status: "blocked", compositionId: format.compositionId,
+        reason: `the MLS cut's narration failed the fair-housing scan: ${redFlags.join("; ")}`,
+        violations: ["mls_cut_fair_housing", ...redFlags],
+      }
+    }
+  }
+  // 6e″. B-ROLL WHEN BENEFICIAL (wave 92, lane 92E — owner: "we should be using
+  //      broll when appropriate or benefinical"). The pick is THE rule over the
+  //      content now staged (directorBrollDecision → brollBenefit): footage only
+  //      where it fills a narration gap the composition can actually render, never
+  //      stock on the MLS cut. The Director's b-roll comes from the stock library
+  //      (pickBrollClips) — the verdict-aware planner is told it is not the home's
+  //      own media.
+  const brollDecision = directorBrollDecision({
+    compositionId: format.compositionId, purpose: stagedPurpose, props: contentProps as Record<string, unknown>,
+    avatarClip: requiresAvatar, cut,
+  })
+  const brollWanted = brollDecision.beneficial && brollDecision.renders
+  if (brollWanted) await pickStockBroll()
+  const visualProps: Record<string, unknown> = {
+    ...contentProps,
+    ...(stagedPurpose ? { videoPurpose: stagedPurpose } : {}),
+    ...(brollWanted ? { brollClips, brollSource: "stock" } : {}),
+  }
+  // 6e′. WAVE 84A — READ THE PLAN, CHECK THE BUCKETS, CREATE WHAT IS MISSING
+  //      (owner verbatim: "autonomous videos need to read the plan and create
+  //      whatever assets that are needed, first check the buckets to see if
+  //      assets are there."). lib/video/plan-asset-readiness.ts cuts the plan
+  //      the PURPOSE wants, reads each segment's asset need, reuses what the
+  //      tenant's buckets already hold (listing_media, the marketing_assets
+  //      library, video_assets stock/b-roll/music, the OS stills — and, for a
+  //      CAMPAIGN video only, the tenant's approved Zestimate still admitted by
+  //      the ONE screenshot use rule — lane 84B, screenshotUseAllowed(
+  //      "zillow_zestimate", "campaign_video")), creates only what is honest to
+  //      create (booked on ai_tool_usage, captured into the library), re-stages
+  //      from the real props, records every segment that had to fall to
+  //      another treatment and WHY, and runs the SAME dispatch gate. This is
+  //      also the restored 80D still staging, narrowed to campaign videos
+  //      (83C's tombstone above stands for every other video).
+  const { readyVisualPlanForDispatch } = await import("@/lib/video/plan-asset-readiness")
+  const readiness = await readyVisualPlanForDispatch({
+    svc,
+    compositionId: format.compositionId,
+    props: visualProps,
+    avatarClip: requiresAvatar,
+    script: narrationForVisual,
+    overrides: visualOverrides,
+    ctx: {
+      brokerageId: opts.brokerageId, agentId: directorAgentId, agentUserId: opts.agentUserId,
+      listingId: opts.listingId ?? null, campaignId: opts.campaignId ?? null, cut,
+      address: stillAddressOf(contentProps),
+      subject: (typeof situation.facts?.goal === "string" ? situation.facts.goal : null) ?? hookLine,
+      musicMood: finish.music ? effectiveMood : null,
+    },
+  })
+  if (!readiness.ok) {
+    return {
+      ok: false, status: "blocked",
+      compositionId: format.compositionId,
+      reason: readiness.reason,
+      violations: readiness.violations,
+      assetReadiness: readiness.stamp,
+    }
+  }
+  const visual = { ok: true as const, plan: readiness.plan }
+  // Everything the readiness pass reused or created rides the staged props
+  // under the key the composition reads (imageUrls / screenshotUrls / brollClips).
+  const readyPatch = readiness.propsPatch
+  const stagedBroll = Array.isArray(readyPatch.brollClips) ? (readyPatch.brollClips as typeof brollClips) : brollClips
+
+  // The ads cut's props — the ONE plan. The MLS cut is DERIVED from these
+  // below (mlsCutProps), never staged from a second resolver.
+  const providerMetadataAds = {
     composition_id: format.compositionId,
     // music_mood rides input_props so buildRenderIntent threads it to the
     // coordinator's mood-matched music pick. brollClips rides input_props so the
     // render path feeds the composition's brollClips prop the real clips.
     input_props: {
+      ...contentProps,
+      // Wave 84A — the assets the readiness pass reused / created (6e′).
+      ...readyPatch,
+      // The per-segment screen plan (6e) — segments, treatments, b-roll /
+      // photo / screenshot windows, caption window, music duck, avatar share.
+      bodyVisualPlan: visual.plan,
+      // Wave 80C — the purpose this reel is planned under (alsoServes), so
+      // Root.tsx's calculateMetadata and the composition read the same rule.
+      ...(stagedPurpose ? { videoPurpose: stagedPurpose } : {}),
+      // Rides under the ONE key render-decision.ts resolveThumbnailProps reads,
+      // which is also where lib/geo/video-landing.ts seoHintFromRenderProps
+      // reads the hint back for the landing page's og:description. Absent when
+      // the card was refused — an absent key is what makes the backstop skip.
+      ...(share.card ? { thumbnail_props: share.card } : {}),
       intro: introProps,
       outro: outroProps,
       // FLAT outro-QR props — the compositions read qrCodeDataUrl/qrCaption/mlsClean at the TOP level
@@ -1029,40 +1615,77 @@ export async function commissionVideo(
       // render on a Director-commissioned reel (the nested outro alone never reached the badge).
       qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
       qrCaption: qrCaptionForSituation(situation.kind),
-      mlsClean: opts.mlsClean ?? false,
-      music_mood: effectiveMood,
-      ...(format.needsBroll ? { brollClips } : {}),
+      mlsClean,
+      renderCut: cut,
+      music_mood: finish.music ? effectiveMood : null,
+      ...(brollWanted || stagedBroll.length > 0 ? { brollClips: stagedBroll, brollSource: readyPatch.brollSource ?? "stock" } : {}),
     },
+  }
+  // Wave 81C — THE MLS CUT: the same props with every branded element
+  // stripped (lib/video/render-cut.ts MLS_CUT_STRIP), then PROVEN clean before
+  // the row exists. A branded element that survives the strip is a bug in the
+  // strip list, and it blocks — it never reaches the MLS field.
+  let providerMetadata: Record<string, unknown> = providerMetadataAds
+  if (cut === "mls") {
+    const derived = mlsCutProps(providerMetadataAds.input_props as Record<string, unknown>)
+    const clean = assertMlsCutClean(derived.props)
+    if (!clean.ok) {
+      return {
+        ok: false, status: "blocked", compositionId: format.compositionId,
+        reason: clean.reason,
+        violations: ["mls_cut_branded", ...clean.found],
+      }
+    }
+    providerMetadata = { ...providerMetadataAds, input_props: derived.props, render_cut: cut, mls_stripped: derived.stripped }
   }
 
   // 7. STAGE the row — mirrors createVideoProject's shape, compliance-gated,
   //    NEVER auto-publishes (approval_status stays 'pending_review'; status
-  //    'remotion_pending' so the existing composition-render cron drains it).
+  //    'queued' so the existing composition-render cron drains it).
   const now = new Date().toISOString()
   const { data: inserted, error } = await svc
     .from("ai_video_projects")
     .insert({
       brokerage_id: opts.brokerageId,
-      agent_id: opts.agentUserId,
+      agent_id: directorAgentId,
       listing_id: opts.listingId ?? null,
       contact_id: opts.contactId ?? null,
       title: opts.title ?? `${hookLine} — ${format.compositionId}`,
-      script_content: hookLine,
-      status: "remotion_pending",
-      video_type: videoTypeForSituation(situation.kind),
+      // The spoken text: an approved full narration when one was handed in
+      // (wave 87), else the gated hook — what director-reel-render speaks.
+      script_content: opts.spokenScript?.trim() || hookLine,
+      status: "queued",
+      video_type: videoTypeForSituation(situation.kind, situation),
       format: formatForAspect(format.aspect),
-      audience_type: situation.kind === "cma" || situation.kind === "presentation"
-        ? "in_house" : "customer_facing",
+      audience_type: audienceType,
+      // Wave 81C — the cut names the intent (scripts/check-vocabularies.ts:
+      // mls | public_marketing); verbal-disclosure.ts and brand-compliance.ts
+      // read this column to leave the MLS cut unattributed and to expect it so.
+      usage_intent: CUT_USAGE_INTENT[cut],
       is_ai_generated: true,
       approval_status: "pending_review", // gated — a human approves before send
       compliance_status: "passed",       // hook pre-cleared the gate above
-      compliance_violations: [],
+      // Advisory findings a caller post-checked (wave 87) — recorded, never a block.
+      compliance_violations: opts.complianceWarnings?.length ? opts.complianceWarnings : [],
       compliance_evaluated_at: now,
-      brand_voice_context: {},
+      // The cascade's compact context the hook was actually drafted with (§1,
+      // wave 60E) — the render-queue reviewer reads it (see the tombstone at
+      // lib/ai-isa/brand-voice-prompt.ts:73).
+      brand_voice_context: brandVoiceContext,
       intro_video_url: null,             // assembled by the render coordinator's bookend pass
       outro_video_url: null,
-      b_roll_urls: format.needsBroll ? brollClips.map((c) => c.url) : null,
-      video_metadata: videoMetadata,
+      b_roll_urls: brollWanted || stagedBroll.length > 0 ? stagedBroll.map((c) => c.url) : null,
+      // Wave 80C — the audit stamp the learning loop reads back (format-learning.ts).
+      // Wave 84A — asset_readiness: wanted vs final treatments, the provenance
+      // of every asset (reused | created | missing, source, cost), degradations.
+      video_metadata: {
+        ...(opts.extraMetadata ?? {}), ...videoMetadata, supports_bookends: finish.bookends && supportsBookends, body_visual: bodyVisualStamp(visual.plan), asset_readiness: readiness.stamp,
+        // Wave 92 (lane 92E) — the b-roll decision and its reason (brollBenefit), the clips the
+        // stock cascade returned (empty when none uploaded — the composition renders without
+        // footage), and the windows the final plan actually put them in.
+        needs_broll: brollWanted, broll_why: brollDecision.why, broll_planned_windows: visual.plan.brollWindows.length,
+        broll_clips: brollClips, broll_sourced_count: brollSourcedCount, broll_sourced_scope: brollSourcedScope,
+      },
       provider_metadata: providerMetadata,
       created_at: now,
       updated_at: now,
@@ -1074,11 +1697,34 @@ export async function commissionVideo(
     return { ok: false, status: "failed", reason: error?.message ?? "insert failed" }
   }
 
+  // COUNT the creation (usage_events + the tier allowance + the billing meter) at
+  // the plan's own length. The MLS cut is a DERIVED cut of the same plan (one
+  // creation, two deliverables), so only the ads cut spends the allowance.
+  if (cut !== "mls") {
+    await meterVideoCreation({
+      brokerageId: opts.brokerageId, agentId: directorAgentId, userId: opts.autonomous ? null : opts.agentUserId,
+      plannedSeconds: visual.plan.durationInFrames / Math.max(1, visual.plan.fps),
+      feature: opts.meterFeature || (opts.autonomous ? "video_director_autonomous" : "video_director"),
+      projectId: (inserted as { id: string }).id, autonomous: opts.autonomous === true, decision: videoMeter,
+    })
+  }
+
   return {
     ok: true, status: "staged",
     videoProjectId: (inserted as { id: string }).id,
     compositionId: format.compositionId,
+    assetReadiness: readiness.stamp,
   }
+}
+
+/** Wave 84A — the property a campaign video's Zestimate still must show, spelled
+ *  the way the still door records it ("street, City, ST" — the playbook install's
+ *  resolvePlayAddress join); null when the reel is not about a property. */
+function stillAddressOf(props: Record<string, unknown>): string | null {
+  const street = typeof props.address === "string" ? props.address.trim() : ""
+  if (!street) return null
+  const cityState = typeof props.cityState === "string" ? props.cityState.trim() : ""
+  return cityState ? `${street}, ${cityState}` : street
 }
 
 /** The ONLY facts the hook copy may use — drawn from the situation, no fabrication. */
@@ -1106,7 +1752,15 @@ function factStrings(situation: VideoSituation, fallbackHook: string): string[] 
  */
 async function draftAndGateHook(
   situation: VideoSituation,
-  opts: { brokerageId: string; agentUserId: string; copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator },
+  opts: {
+    brokerageId: string
+    agentUserId: string
+    copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator
+    /** Cascade-resolved tone (§1/§6, wave 60E) — the A/B hook variants used to
+     *  draft with NO tone at all (persona was hardcoded { audience: "audience" }
+     *  below). Optional so a caller that hasn't loaded the cascade is unchanged. */
+    brandVoiceTone?: string | null
+  },
   fallbackHook: string,
   goalSuffix = "",
 ): Promise<{ ok: true; hook: string } | { ok: false; violations: string[] }> {
@@ -1114,6 +1768,7 @@ async function draftAndGateHook(
     const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
     const { runWithComplianceRedraft } = await import("@/lib/kernel/compliance-redraft")
     const { evaluateOutbound } = await import("@/lib/kernel/compliance")
+    const { audienceFor, directorHookDirectives } = await import("@/lib/video/director-content")
 
     const facts = factStrings(situation, fallbackHook)
     const result = await runWithComplianceRedraft({
@@ -1123,8 +1778,10 @@ async function draftAndGateHook(
             goal: `a ${situation.kind.replace(/_/g, " ")} video hook headline${goalSuffix}${priorViolations.length ? ` (rewrite to clear: ${priorViolations.join("; ")})` : ""}`,
             facts,
             channel: situation.targetChannel,
-            persona: { audience: "audience" },
+            // Wave 91 (lane 91E): the situation's audience + the hook rule, as in commissionVideo.
+            persona: { audience: audienceFor(situation.kind), tone: opts.brandVoiceTone ?? undefined },
             words: 8,
+            directives: directorHookDirectives(),
           },
           { body: fallbackHook },
           { generator: opts.copyGenerator },
@@ -1138,7 +1795,7 @@ async function draftAndGateHook(
           persona: "other",
           messageType: "social",
           content: s,
-        })
+        }, { client: (await import("@/lib/supabase/service")).createServiceClient() }) // 86C: sessionless — tenant is the commission's own
         return { allowed: r.allowed, violations: r.violations }
       },
     })
@@ -1150,7 +1807,8 @@ async function draftAndGateHook(
   }
 }
 
-export interface CommissionExperimentOpts extends CommissionOpts {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface CommissionExperimentOpts extends CommissionOpts {
   /**
    * OPTIONAL learned-angle seam. When supplied, the winning angle (from a prior
    * crowned hook experiment via recommendHookWinner) is moved to variant 0 so
@@ -1162,7 +1820,8 @@ export interface CommissionExperimentOpts extends CommissionOpts {
   preferredAngleWhy?: string | null
 }
 
-export interface CommissionExperimentResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface CommissionExperimentResult {
   ok: boolean
   status: "staged" | "already_staged" | "blocked" | "failed"
   experimentId?: string
@@ -1203,9 +1862,45 @@ export async function commissionVideoExperiment(
   if (!opts.brokerageId || !opts.agentUserId) {
     return { ok: false, status: "failed", reason: "brokerageId + agentUserId required" }
   }
+  // Wave 81C — a hook A/B is a POSTING experiment; the MLS cut has no hook
+  // (the opening is the address) so it is never a variant. Refuse, never ignore.
+  if (opts.cut === "mls") {
+    return { ok: false, status: "blocked", reason: "the MLS cut is not an A/B variant — commission it through commissionListingCuts (ads + mls of one plan)" }
+  }
 
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc: AnyClient = client ?? createServiceClient()
+
+  // Same identity gate as commissionVideo, and for the same reason — but here it
+  // guards N variant rows, so resolving once up front is what keeps a half-staged
+  // experiment from happening.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const directorAgentId = await resolveAgentIdInBrokerage(svc, opts.agentUserId, opts.brokerageId)
+  if (!directorAgentId) {
+    return { ok: false, status: "failed", reason: "no agent profile for this user in this brokerage" }
+  }
+
+  // THE VIDEO GATE IS A METER (wave 86, owner answer 4 — lib/video/video-metering.ts):
+  // refused ONLY when the tier explicitly excludes video (allowance 0), before any
+  // spend; everything else — overage included, autonomous included — is served and
+  // counted when the row lands (below).
+  const { gateVideoCreation, meterVideoCreation } = await import("@/lib/video/video-metering")
+  const videoMeter = await gateVideoCreation({ brokerageId: opts.brokerageId, plannedSeconds: null })
+  if (!videoMeter.allowed) {
+    return { ok: false, status: "blocked", reason: videoMeter.reason, violations: ["video_excluded_by_tier"] }
+  }
+
+  // BRAND VOICE — same cascade + reason as commissionVideo above (§1/§6, wave
+  // 60E, survivor lib/ai-isa/brand-voice-prompt.ts:73 loadBrandVoicePrompt).
+  const { loadBrandVoicePrompt, brandVoiceContextForVideo } = await import("@/lib/ai-isa/brand-voice-prompt")
+  const brandVoice = await loadBrandVoicePrompt({
+    brokerageId: opts.brokerageId,
+    agentId: directorAgentId,
+    managerKey: "asset_manager",
+  }).catch(() => null)
+  const brandVoiceContext = brandVoice
+    ? brandVoiceContextForVideo(brandVoice)
+    : { tone: null, formalityLevel: null, prohibitedWords: [], preferredWords: [], tagline: null, assistantName: "Your AI Assistant", source: "loadBrandVoicePrompt" as const }
 
   const variantCount = Math.max(2, Math.min(HOOK_ANGLE_ORDER.length, Math.floor(cfg.variants ?? 3) || 3))
 
@@ -1213,21 +1908,27 @@ export async function commissionVideoExperiment(
   //    about the HOOK, not the format; the format stays the deterministic choice).
   const format = selectVideoFormat(situation)
   const spec = assemblySpec(situation, format)
+  const finish = finishForVideo(format.compositionId) // same rule as commissionVideo
 
-  // 2. Read composition capabilities (registry is source of truth; format flags fallback).
-  let supportsBookends = true
-  let requiresAvatar = format.needsAvatar
-  let requiresVoiceover = format.needsAvatar || format.needsCharts
+  // 2. Read composition capabilities (registry is source of truth; finish-spec fallback).
+  // TOMBSTONE (2026-09-03): `requiresVoiceover` deleted here too — same read,
+  // same reason. See commissionVideo's tombstone above; the survivor is
+  // lib/remotion/content-contract.ts consumesVoiceover / stagesVoiceover.
+  // This site is the one that PROVED it dead: the value's only remaining use
+  // was the `void requiresVoiceover` on the line after the try, written to
+  // silence the unused-variable error rather than to do anything.
+  let supportsBookends = finish.bookends
+  let registryRequiresAvatar = format.needsAvatar
   try {
     const { getComposition } = await import("@/lib/remotion/registry")
     const comp = await getComposition(format.compositionId)
     if (comp) {
       supportsBookends = comp.supports_bookends
-      requiresAvatar = comp.requires_did_avatar
-      requiresVoiceover = comp.requires_voiceover
+      registryRequiresAvatar = comp.requires_did_avatar
     }
   } catch { /* registry read best-effort */ }
-  void requiresVoiceover
+  // resolveAvatarRequirement — the SAME resolver commissionVideo uses (§6).
+  const requiresAvatar = await resolveAvatarRequirement(format, registryRequiresAvatar, opts.agentUserId, opts.brokerageId)
 
   // 3. Idempotency — one experiment per (entity, situation kind). Deterministic
   //    experiment_id so a re-run reuses the staged experiment instead of duplicating.
@@ -1289,17 +1990,31 @@ export async function commissionVideoExperiment(
   const now = new Date().toISOString()
   const staged: NonNullable<CommissionExperimentResult["variants"]> = []
   const insertedIds: string[] = []
+  // All-or-nothing rollback of staged experiment rows — one declared write (lane 88F):
+  // the four rollbacks used to drop each delete's refusal inside a try/catch-noop.
+  const rollbackStaged = async () => {
+    for (const id of insertedIds) {
+      try {
+        await sentinelWrite(svc, svc.from("ai_video_projects").delete().eq("id", id), { table: "ai_video_projects", flow: "director_experiment_rollback", reason: "rollback of staged experiment rows; a surviving row is ledgered for the repair digest" })
+      } catch { /* the sentinel already ledgered it */ }
+    }
+  }
 
   for (const v of variantDefs) {
     const gated = await draftAndGateHook(
       situation,
-      { brokerageId: opts.brokerageId, agentUserId: opts.agentUserId, copyGenerator: opts.copyGenerator },
+      {
+        brokerageId: opts.brokerageId,
+        agentUserId: opts.agentUserId,
+        copyGenerator: opts.copyGenerator,
+        brandVoiceTone: brandVoice?.tone,
+      },
       v.hook,
       ` with a ${v.angle.replace(/_/g, " ")} angle`,
     )
     if (!gated.ok) {
       // Roll back any rows already staged for this experiment so it's all-or-nothing.
-      for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
+      await rollbackStaged()
       return {
         ok: false, status: "blocked",
         experimentId, compositionId: format.compositionId,
@@ -1309,10 +2024,40 @@ export async function commissionVideoExperiment(
     }
     const hookLine = gated.hook
 
+    // 5b (wave 61, integrator). CONTENT FOR THIS VARIANT — the same resolver and
+    //    the same refusal the main commissionVideo path runs (its steps 6b/6c).
+    //    The experiment path staged CHROME ONLY (intro/outro/QR/mlsClean/music)
+    //    into input_props, so every A/B variant of a real listing, market update
+    //    or equity reel would have reached Remotion without one fact about its
+    //    subject and rendered the Studio sample data as the client's own. The
+    //    render-side contract (render-composition) would have cancelled the
+    //    render, but the manager would never have learned WHICH fact was
+    //    missing, and the QR + queue rows would already exist. One resolver
+    //    (lib/video/director-content.ts) and one contract (§6) for both doors.
+    const { resolveDirectorContentProps } = await import("@/lib/video/director-content")
+    const contentProps = await resolveDirectorContentProps(svc, situation, format.compositionId, {
+      brokerageId: opts.brokerageId,
+      agentUserId: opts.agentUserId,
+      listingId: opts.listingId ?? null,
+      contactId: opts.contactId ?? null,
+      hookLine,
+    })
+    const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+    const missingContent = missingContentProps(format.compositionId, contentProps)
+    if (missingContent.length > 0) {
+      await rollbackStaged()
+      return {
+        ok: false, status: "blocked",
+        experimentId, compositionId: format.compositionId,
+        reason: describeMissingContent(format.compositionId, missingContent),
+        violations: missingContent.map((m) => `content_prop_missing:${m}`),
+      }
+    }
+
     // Mint this variant's OWN tracked QR (idempotent per (entity, kind, variant) via
     // a variant-suffixed campaignId-free label — distinct QR so scans attribute per variant).
     let qr: import("@/lib/video/video-qr").MintedVideoQr | null = null
-    if (!opts.mlsClean) {
+    if (!opts.mlsClean && finish.qr) {
       try {
         const { mintVideoQr } = await import("@/lib/video/video-qr")
         qr = await mintVideoQr({
@@ -1356,22 +2101,64 @@ export async function commissionVideoExperiment(
       target_channels: format.targetChannels,
       intro: introProps,
       outro: outroProps,
-      music_mood: spec.music.mood,
+      music_mood: finish.music ? spec.music.mood : null,
       qr_code_id: qr?.qrCodeId ?? null,
       requested_via: "asset_manager",
       format_source: "default" as const,
       format_why: "Expert default (hook A/B holds the format constant).",
     }
 
+    // The body-visual plan per variant (see 6e on the main path) — the hook
+    // line differs per variant, so the hook segment's words (and its frames)
+    // do too. A composition with no rule blocks the experiment like a missing
+    // content prop, with the already-staged variants rolled back.
+    // Wave 80C — same plan-before-send as the main path: live overrides, the
+    // situation's purpose, the ONE dispatch gate before any variant row.
+    // Wave 84A — the SAME read-the-plan / check-the-buckets / create-what-is-
+    // missing pass as the main path (6e′), which stages and gates the plan
+    // through stageBodyVisualPlan / gateVisualPlanForDispatch itself.
+    const { bodyVisualStamp } = await import("@/lib/video/body-visual-model")
+    const { readyVisualPlanForDispatch } = await import("@/lib/video/plan-asset-readiness")
+    const { loadBodyVisualRuleOverrides } = await import("@/lib/video/body-visual-rule-ledger")
+    const visualOverrides = await loadBodyVisualRuleOverrides(opts.brokerageId, svc)
+    const stagedPurpose = videoPurposeForSituation(situation.kind, format.compositionId)
+    const narrationForVisual = (["narrationScript", "narration", "captionScript"] as const)
+      .map((k) => (contentProps as Record<string, unknown>)[k])
+      .find((x): x is string => typeof x === "string" && x.trim().length > 0) ?? hookLine
+    const visualProps: Record<string, unknown> = { ...contentProps, ...(stagedPurpose ? { videoPurpose: stagedPurpose } : {}) }
+    const readiness = await readyVisualPlanForDispatch({
+      svc, compositionId: format.compositionId, props: visualProps, avatarClip: requiresAvatar, script: narrationForVisual, overrides: visualOverrides,
+      ctx: {
+        brokerageId: opts.brokerageId, agentId: directorAgentId, agentUserId: opts.agentUserId,
+        listingId: opts.listingId ?? null, campaignId: opts.campaignId ?? null, cut: "ads",
+        address: stillAddressOf(contentProps),
+        subject: hookLine, musicMood: finish.music ? spec.music.mood : null,
+      },
+    })
+    if (!readiness.ok) {
+      await rollbackStaged()
+      return {
+        ok: false, status: "blocked",
+        experimentId, compositionId: format.compositionId,
+        reason: readiness.reason,
+        violations: readiness.violations,
+      }
+    }
+    const visual = { ok: true as const, plan: readiness.plan }
+
     const providerMetadata = {
       composition_id: format.compositionId,
       input_props: {
+        ...contentProps,
+        ...readiness.propsPatch,
+        bodyVisualPlan: visual.plan,
+        ...(stagedPurpose ? { videoPurpose: stagedPurpose } : {}),
         intro: introProps, outro: outroProps,
         // Flat outro-QR props (see the main path) — each A/B variant carries its OWN tracked QR.
         qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
         qrCaption: qrCaptionForSituation(situation.kind),
         mlsClean: opts.mlsClean ?? false,
-        music_mood: spec.music.mood,
+        music_mood: finish.music ? spec.music.mood : null,
       },
     }
 
@@ -1379,12 +2166,12 @@ export async function commissionVideoExperiment(
       .from("ai_video_projects")
       .insert({
         brokerage_id: opts.brokerageId,
-        agent_id: opts.agentUserId,
+        agent_id: directorAgentId,
         listing_id: opts.listingId ?? null,
         contact_id: opts.contactId ?? null,
         title: opts.title ? `${opts.title} — ${v.angle}` : `${hookLine} — ${format.compositionId} (${v.angle})`,
         script_content: hookLine,
-        status: "remotion_pending",
+        status: "queued",
         video_type: videoTypeForSituation(situation.kind),
         format: formatForAspect(format.aspect),
         audience_type: situation.kind === "cma" || situation.kind === "presentation" ? "in_house" : "customer_facing",
@@ -1393,11 +2180,13 @@ export async function commissionVideoExperiment(
         compliance_status: "passed",
         compliance_violations: [],
         compliance_evaluated_at: now,
-        brand_voice_context: {},
+        // Same cascade context as commissionVideo (§1, wave 60E) — shared
+        // across every variant since the experiment holds one brokerage/agent.
+        brand_voice_context: brandVoiceContext,
         intro_video_url: null,
         outro_video_url: null,
         b_roll_urls: null,
-        video_metadata: videoMetadata,
+        video_metadata: { ...videoMetadata, body_visual: bodyVisualStamp(visual.plan), asset_readiness: readiness.stamp },
         provider_metadata: providerMetadata,
         created_at: now,
         updated_at: now,
@@ -1406,7 +2195,7 @@ export async function commissionVideoExperiment(
       .maybeSingle()
 
     if (error || !inserted) {
-      for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
+      await rollbackStaged()
       return { ok: false, status: "failed", experimentId, reason: error?.message ?? "insert failed" }
     }
     const id = (inserted as { id: string }).id
@@ -1414,5 +2203,113 @@ export async function commissionVideoExperiment(
     staged.push({ videoProjectId: id, variantIndex: v.index, hookAngle: v.angle, hook: hookLine, qrCodeId: qr?.qrCodeId ?? null })
   }
 
+  // ONE creation, N hook variants of it: the experiment spends the allowance once
+  // (the variants are the platform's optimisation, not N videos the tenant asked for).
+  if (staged.length > 0) {
+    await meterVideoCreation({
+      brokerageId: opts.brokerageId, agentId: directorAgentId, userId: opts.autonomous ? null : opts.agentUserId,
+      plannedSeconds: null, feature: "video_director_experiment", projectId: staged[0].videoProjectId,
+      autonomous: opts.autonomous === true, decision: videoMeter,
+    })
+  }
   return { ok: true, status: "staged", experimentId, compositionId: format.compositionId, variants: staged }
+}
+
+// ============================================================================
+// WAVE 81C — ONE PLAN, TWO CUTS (listing videos) + THE "DESCRIBE A VIDEO" DOOR
+// ============================================================================
+
+export interface ListingCutsResult {
+  ok: boolean
+  /** The posting / ads cut (always attempted). */
+  ads: CommissionResult
+  /** The MLS cut — null when the composition has none (compositionHasMlsCut). */
+  mls: CommissionResult | null
+  compositionId?: string
+  /** The cuts the composition renders, from the registry. */
+  cuts: RenderCut[]
+}
+
+/**
+ * commissionListingCuts — OWNER (2026-09-24): "the listing videos have to be
+ * mls compliant. you can create one for mls and one for posting/ads."
+ *
+ * ONE call, TWO rows of ONE plan: the ads cut first (full branding), then the
+ * MLS cut of the same situation when the selected composition has one
+ * (lib/video/render-cut.ts — presenter-less property compositions whose
+ * content contract needs no branded key). The MLS cut carries its own
+ * idempotency discriminator, usage_intent 'mls', the strip proven clean and
+ * the fair-housing scan passed — all inside commissionVideo, so a caller that
+ * only ever wanted the ads cut is byte-identical to before. `ok` is the ADS
+ * cut's verdict; an MLS refusal is reported beside it, never hidden.
+ */
+export async function commissionListingCuts(
+  situation: VideoSituation,
+  opts: Omit<CommissionOpts, "cut" | "mlsClean">,
+  client?: AnyClient,
+): Promise<ListingCutsResult> {
+  const ads = await commissionVideo(situation, { ...opts, cut: "ads" }, client)
+  const compositionId = ads.compositionId ?? selectVideoFormat(situation).compositionId
+  const cuts = cutsForComposition(compositionId)
+  if (!cuts.includes("mls")) return { ok: ads.ok, ads, mls: null, compositionId, cuts }
+  const mls = await commissionVideo(situation, { ...opts, cut: "mls" }, client)
+  return { ok: ads.ok, ads, mls, compositionId, cuts }
+}
+
+export interface CustomVideoCommissionOpts extends Omit<CommissionOpts, "cut" | "mlsClean" | "idempotencyDiscriminator"> {
+  tier?: CompositionTierLite
+  targetChannel?: TargetChannel
+}
+
+export interface CustomVideoCommissionResult extends CommissionResult {
+  plan?: CustomVideoPlan
+  /** The MLS cut, when the plan named a listing and the composition has one. */
+  mls?: CommissionResult | null
+}
+
+/**
+ * commissionCustomVideo — THE "DESCRIBE A VIDEO" DOOR (owner: "make sure user
+ * can create any type of video to use with real estate not just the ones we
+ * listed"). A person in the studio or an AI manager hands in a CustomVideoBrief;
+ * the archetype rule (lib/video/custom-video-archetypes.ts) derives the
+ * purpose band, the body-visual rule and the composition; a brief that maps
+ * to no archetype is REFUSED with the reason. The commission then rides the
+ * ONE Director rail (hook gate, content contract, plan-before-send gate,
+ * pending_review) exactly like every listed kind — and, when the brief names
+ * a listing and the composition has an MLS cut, the MLS cut too.
+ */
+export async function commissionCustomVideo(
+  brief: CustomVideoBrief,
+  opts: CustomVideoCommissionOpts,
+  client?: AnyClient,
+): Promise<CustomVideoCommissionResult> {
+  if (!opts.brokerageId || !opts.agentUserId) {
+    return { ok: false, status: "failed", reason: "brokerageId + agentUserId required" }
+  }
+  let overrides: import("@/lib/video/body-visual-model").BodyVisualRuleOverride[] | null = null
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { loadBodyVisualRuleOverrides } = await import("@/lib/video/body-visual-rule-ledger")
+    overrides = await loadBodyVisualRuleOverrides(opts.brokerageId, client ?? createServiceClient())
+  } catch { overrides = null }
+  const planned = planCustomVideo(brief, { overrides })
+  if (!planned.ok) {
+    return { ok: false, status: "blocked", reason: planned.reason, violations: ["custom_video_unplanned"] }
+  }
+  const plan = planned.plan
+  const situation: VideoSituation = {
+    kind: "custom",
+    tier: opts.tier ?? "solo_agent",
+    targetChannel: opts.targetChannel ?? "instagram",
+    facts: { customPlan: plan, goal: brief.goal, audience: brief.audience, ...(brief.content ?? {}) },
+  }
+  const { tier: _t, targetChannel: _c, ...rest } = opts
+  void _t; void _c
+  const base: CommissionOpts = { ...rest, listingId: brief.listingId ?? rest.listingId ?? null, idempotencyDiscriminator: plan.key }
+  const ads = await commissionVideo(situation, { ...base, cut: "ads" }, client)
+  let mls: CommissionResult | null = null
+  if (ads.ok && plan.cuts.includes("mls")) {
+    mls = await commissionVideo(situation, { ...base, cut: "mls" }, client)
+  }
+  return { ...ads, plan, mls }
 }

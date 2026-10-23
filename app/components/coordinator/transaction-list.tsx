@@ -3,7 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { ClipboardList, MapPin, Calendar, ChevronRight, AlertTriangle, CheckCircle2 } from "lucide-react"
+import { ClipboardList, MapPin, Calendar, ChevronRight, AlertTriangle } from "lucide-react"
 import Link from "next/link"
 
 interface Transaction {
@@ -217,7 +217,7 @@ export function CoordinatorTransactionList({ transactions }: { transactions: Tra
                         </div>
 
                         {/* Action Button */}
-                        <Button variant="ghost" size="icon" asChild className="flex-shrink-0">
+                        <Button variant="ghost" size="icon" asChild className="flex-shrink-0" aria-label="Open transaction">
                           <Link href={`/transactions/${txn.id}`}>
                             <ChevronRight className="h-5 w-5" />
                           </Link>

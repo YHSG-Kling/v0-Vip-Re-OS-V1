@@ -3,12 +3,16 @@
 /**
  * app/components/contact/UnifiedInboxTab.tsx
  *
- * Unified cross-channel message timeline for a contact or lead record.
+ * Unified cross-channel message timeline for a CONTACT record — `contactId`
+ * is always a `contacts.id` (CLAUDE.md §3: contacts/leads are disjoint id
+ * spaces; never pass a `leads.id` here).
  *
  * Pulls from three sources (merged + sorted chronologically):
  *   1. messages     — email, sms, social, direct_mail, in_app rows
  *   2. voice_calls  — phone channel (inbound + outbound calls)
- *   3. isa_outreach_log — ISA first-touch logs with channel metadata
+ *   3. isa_outreach_log — ISA first-touch logs, filtered by `contact_id`
+ *      (re-pointed at conversion by history-carry.ts) so lead-era outreach
+ *      shows up on the contact too, not only sends made after conversion.
  *
  * Renders as a vertical timeline with per-channel icons, direction
  * badges (inbound / outbound), and status chips.
@@ -67,6 +71,13 @@ interface TimelineEntry {
   status?: string
   callDuration?: number
   createdAt: string
+  /** isa_outreach_log.them_first_score — the compliance/quality score the
+   *  send was graded on. Null/undefined for every non-ISA-outreach entry. */
+  themFirstScore?: number | null
+  /** isa_outreach_log.agent_id / provider_job_id / lob_letter_id, joined into
+   *  one tooltip string — the send's provenance (which agent, which vendor
+   *  job) without cluttering the timeline row itself. */
+  provenance?: string
 }
 
 // ─── CHANNEL META ─────────────────────────────────────────────────────────────
@@ -199,10 +210,20 @@ export default function UnifiedInboxTab({
       .limit(20)
 
     // 3. ISA outreach log
+    //
+    // BUG FIXED (2026-09-08, lane DE, CLAUDE.md §5 lead-history brief): this
+    // filtered `.eq("lead_id", contactId)` — but `contactId` is a
+    // `contacts.id`, never a `leads.id` (CLAUDE.md §3 — the two are disjoint
+    // id spaces), so this predicate matched ZERO rows for every caller,
+    // always. `isa_outreach_log` is one of `lib/contact-promotion/
+    // history-carry.ts`'s REPOINTED_HISTORY_TABLES — its lead-era rows are
+    // re-pointed onto `contact_id` at conversion — so `contact_id` is the
+    // column that actually answers "this contact's ISA outreach, lead-era
+    // included".
     const { data: outreach } = await supabase
       .from("isa_outreach_log")
-      .select("id, channel, subject, body_snippet, created_at")
-      .eq("lead_id", contactId)
+      .select("id, channel, subject, body_snippet, created_at, agent_id, them_first_score, provider_job_id, lob_letter_id")
+      .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(20)
 
@@ -244,6 +265,10 @@ export default function UnifiedInboxTab({
           Math.abs(new Date(t.createdAt).getTime() - new Date(o.created_at).getTime()) < 5000
       )
       if (!duplicate) {
+        const provenanceParts: string[] = []
+        if (o.agent_id) provenanceParts.push(`agent ${String(o.agent_id).slice(0, 8)}`)
+        if (o.provider_job_id) provenanceParts.push(`video job ${String(o.provider_job_id).slice(0, 8)}`)
+        if (o.lob_letter_id) provenanceParts.push(`mail piece ${String(o.lob_letter_id).slice(0, 8)}`)
         timeline.push({
           id: `outreach-${o.id}`,
           source: "isa_outreach",
@@ -253,6 +278,8 @@ export default function UnifiedInboxTab({
           body: o.body_snippet?.slice(0, 180) ?? undefined,
           status: "sent",
           createdAt: o.created_at,
+          themFirstScore: o.them_first_score ?? null,
+          provenance: provenanceParts.length > 0 ? provenanceParts.join(" · ") : undefined,
         })
       }
     }
@@ -381,6 +408,17 @@ export default function UnifiedInboxTab({
                     {entry.direction}
                   </span>
 
+                  {/* Missed/busy/failed CALL icon — built (present in this
+                      file, unmounted) under §1 wave 56: statusChip below
+                      already renders `status` as text ("no answer", "busy"),
+                      but a phone row otherwise looks identical to a completed
+                      call at a glance. directionIcon adds the distinct red
+                      PhoneMissed glyph next to the arrow badge for exactly
+                      the three non-connected call statuses; it returns null
+                      for every other channel/status so this is additive. */}
+                  {(entry.channel === "phone" || entry.channel === "voice") &&
+                    directionIcon(entry.direction, entry.status)}
+
                   {statusChip(entry.status)}
 
                   {entry.aiAuthored && entry.source === "message" && (
@@ -390,9 +428,20 @@ export default function UnifiedInboxTab({
                     </span>
                   )}
                   {entry.source === "isa_outreach" && (
-                    <span className="flex items-center gap-0.5 text-[9px] px-1 py-0.5 rounded bg-muted text-muted-foreground">
+                    <span
+                      className="flex items-center gap-0.5 text-[9px] px-1 py-0.5 rounded bg-muted text-muted-foreground"
+                      title={entry.provenance}
+                    >
                       <Bot size={9} />
                       AI ISA
+                    </span>
+                  )}
+                  {entry.themFirstScore != null && (
+                    <span
+                      className="text-[9px] px-1 py-0.5 rounded bg-emerald-50 text-emerald-700"
+                      title="Them-first score — how much this send centers the recipient's stated needs over a pitch"
+                    >
+                      Them-first {Math.round(entry.themFirstScore)}
                     </span>
                   )}
                 </div>

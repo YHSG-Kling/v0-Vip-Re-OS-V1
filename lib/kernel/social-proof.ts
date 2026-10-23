@@ -9,7 +9,8 @@
  * portal AI chat mines the client's question for a concern family and, on
  * a match, hands the model ONE grounded testimonial line it may weave in.
  * Zero matching reviews = zero social proof (honest silence beats a
- * generic blast). PURE; marketing_agent owns reputation. NOT server-only.
+ * generic blast). PURE; campaign_orchestrator owns reputation (m618: survivor of the
+ * retired marketing_agent seat). NOT server-only.
  */
 
 const CONCERN_FAMILIES: Array<{ key: string; pattern: RegExp }> = [

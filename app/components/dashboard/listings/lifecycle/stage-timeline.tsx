@@ -4,6 +4,7 @@ import { useState } from "react"
 import { Calendar, AlertTriangle, CheckCircle2, Pencil, Check, X, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { updateListingDate } from "@/app/actions/listing-dates"
+import { computeDaysOnMarketForListing, resolveMlsLiveDates, ymdOf, type MlsLiveDateColumns } from "@/lib/listings/compute-dom"
 
 interface LifecycleEvent {
   id: string
@@ -13,23 +14,44 @@ interface LifecycleEvent {
   created_at: string
 }
 
-interface Listing {
+interface Listing extends MlsLiveDateColumns {
   id: string
   go_live_date: string | null
   open_house_marketing_date: string | null
   open_house_event_date: string | null
+  /** listings.metadata — only `mls_live_check` (the last feed check) is read here. */
+  metadata?: { mls_live_check?: { checked_at?: string; verdict?: string } } | null
 }
 
 interface Props {
   listing: Listing
   lifecycleEvents: LifecycleEvent[]
+  /** The newest listing agreement's ladder state + execution stamp (wave 143, lane 143A). */
+  agreement?: { esign_status: string | null; fully_executed_at: string | null } | null
+  /** The stage machine's stage — the coming-soon / marketing status is read off it. */
+  lifecycleStage?: string | null
 }
 
 type DateField = "go_live_date" | "open_house_marketing_date" | "open_house_event_date"
 
+/** A calendar day (yyyy-mm-dd) or a timestamp, rendered without the UTC→local day shift `new Date("2026-10-25")`
+ *  causes in every US timezone (it would show the 24th). Timestamps keep their instant; days render as days. */
 function fmtDate(iso: string | null) {
   if (!iso) return null
+  const day = ymdOf(iso)
+  if (day && iso.length <= 10) {
+    return new Date(`${day}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+  }
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+}
+
+const FEED_LABEL: Record<string, string> = { rentcast: "RentCast", idx: "your IDX feed" }
+const BASIS_LABEL: Record<string, string> = { feed_list_date: "the feed's own list date", first_observed: "the first day we saw it live" }
+/** The coming-soon / marketing status, read off the stage machine (not a date, not a column). */
+function comingSoonLabel(stage: string | null | undefined): string | null {
+  if (stage === "COMING_SOON_ACTIVE") return "Coming soon — announced publicly"
+  if (stage === "MLS_DATE_CONFIRMED" || stage === "COMING_SOON_PREP" || stage === "REPAIRS_IN_PROGRESS" || stage === "MEDIA_APPROVED" || stage === "MLS_READY") return "Coming soon — in preparation (not public)"
+  return null
 }
 
 function toInputValue(iso: string | null) {
@@ -47,7 +69,14 @@ function fmtTime(iso: string) {
   })
 }
 
-export function StageTimeline({ listing, lifecycleEvents }: Props) {
+export function StageTimeline({ listing, lifecycleEvents, agreement = null, lifecycleStage = null }: Props) {
+  // PLANNED vs VERIFIED, from the one reader (lib/listings/compute-dom.ts). A planned date is NEVER shown as live.
+  const mls = resolveMlsLiveDates(listing)
+  // DAYS ON MARKET from the same resolver: counted from the VERIFIED live date; a planned date only counts once it has arrived,
+  // and the card says which it is (the legacy go_live_date-only readers elsewhere count the plan as if it were live).
+  const dom = computeDaysOnMarketForListing(listing)
+  const comingSoon = comingSoonLabel(lifecycleStage)
+  const lastCheck = listing.metadata?.mls_live_check ?? null
   // Descending order for display
   const events = [...lifecycleEvents].reverse()
 
@@ -55,6 +84,7 @@ export function StageTimeline({ listing, lifecycleEvents }: Props) {
   const [editingField, setEditingField] = useState<DateField | null>(null)
   const [editValue, setEditValue] = useState("")
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   // Local date values (optimistically updated on save)
   const [dates, setDates] = useState({
@@ -75,9 +105,13 @@ export function StageTimeline({ listing, lifecycleEvents }: Props) {
 
   async function saveEdit(field: DateField) {
     setSaving(true)
+    setSaveError(null)
     const result = await updateListingDate(listing.id, field, editValue || null)
     if (result.success) {
       setDates(prev => ({ ...prev, [field]: editValue || null }))
+    } else {
+      // A refused save is SAID (wave 143, lane 143A) — it used to close the editor as if it had worked.
+      setSaveError(result.error ?? "The date was not saved")
     }
     setSaving(false)
     setEditingField(null)
@@ -89,11 +123,15 @@ export function StageTimeline({ listing, lifecycleEvents }: Props) {
       {/* Date summary cards */}
       <div className="p-4 border-b border-border space-y-2">
         <h2 className="text-sm font-semibold text-foreground mb-3">Key Dates</h2>
+        {saveError && <p role="alert" className="text-[11px] text-destructive">{saveError}</p>}
 
         <EditableDateCard
-          label="MLS Live"
+          label="MLS Live — planned"
           field="go_live_date"
           value={fmtDate(dates.go_live_date)}
+          sub={dates.go_live_date
+            ? `A plan, not a fact${mls.timezone ? ` · ${mls.timezone}` : ""}${mls.basis === "planned" && mls.plannedInFuture ? " · not yet due" : ""}`
+            : "Set it so compliance can move the listing to coming soon"}
           icon={<Calendar className="w-3.5 h-3.5" />}
           editing={editingField === "go_live_date"}
           editValue={editValue}
@@ -103,6 +141,30 @@ export function StageTimeline({ listing, lifecycleEvents }: Props) {
           onSave={() => saveEdit("go_live_date")}
           onChangeEditValue={setEditValue}
         />
+        {/* VERIFIED — read-only: only a syndication feed writes this; nothing typed here can. */}
+        <ReadOnlyDateCard
+          label="MLS Live — verified"
+          value={mls.actual ? fmtDate(mls.actual) : null}
+          emptyText="Not verified yet"
+          sub={mls.actual
+            ? `Confirmed by ${FEED_LABEL[mls.verifiedSource ?? ""] ?? "a feed"} (${BASIS_LABEL[mls.actualBasis ?? ""] ?? "feed"})`
+              + (mls.varianceDays ? ` · ${Math.abs(mls.varianceDays)}d ${mls.varianceDays > 0 ? "after" : "before"} plan` : "")
+              + (dom.basis === "verified" && dom.days !== null ? ` · ${dom.days} day${dom.days === 1 ? "" : "s"} on market` : "")
+            : lastCheck?.checked_at
+              ? `Last checked ${fmtDate(lastCheck.checked_at)} — ${lastCheck.verdict ?? "no verdict"}`
+              : "Checked against RentCast / IDX once the listing is launched"}
+          icon={<CheckCircle2 className="w-3.5 h-3.5" />}
+        />
+        <ReadOnlyDateCard
+          label="Listing agreement executed"
+          value={agreement?.fully_executed_at ? fmtDate(agreement.fully_executed_at) : null}
+          emptyText={agreement ? "Awaiting compliance approval" : "No agreement yet"}
+          sub={agreement && !agreement.fully_executed_at ? `Signatures: ${agreement.esign_status ?? "pending"} — executed only after compliance approves` : undefined}
+          icon={<Calendar className="w-3.5 h-3.5" />}
+        />
+        {comingSoon && (
+          <p className="text-[10px] text-muted-foreground px-1">{comingSoon}</p>
+        )}
         <EditableDateCard
           label="OH Marketing"
           field="open_house_marketing_date"
@@ -215,6 +277,28 @@ export function StageTimeline({ listing, lifecycleEvents }: Props) {
             })}
           </ol>
         )}
+      </div>
+    </div>
+  )
+}
+
+/** A date a person cannot type: it is written only by the system that owns it (a feed, the compliance ladder). */
+function ReadOnlyDateCard({
+  label, value, emptyText, sub, icon,
+}: {
+  label: string
+  value: string | null
+  emptyText: string
+  sub?: string
+  icon: React.ReactNode
+}) {
+  return (
+    <div className="flex items-center gap-2.5 rounded-md border border-border bg-background px-3 py-2">
+      <span className="text-muted-foreground flex-shrink-0">{icon}</span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">{label}</p>
+        <p className={cn("text-xs font-semibold", value ? "text-foreground" : "text-muted-foreground")}>{value ?? emptyText}</p>
+        {sub && <p className="text-[10px] text-muted-foreground">{sub}</p>}
       </div>
     </div>
   )

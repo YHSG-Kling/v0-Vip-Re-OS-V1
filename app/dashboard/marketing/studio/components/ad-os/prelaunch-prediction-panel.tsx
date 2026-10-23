@@ -24,8 +24,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Loader2, Zap, TrendingUp, AlertTriangle, CheckCircle, XCircle, Clock } from "lucide-react"
-import { runPrelaunchCheck } from "./ad-os-actions"
+import { Loader2, Zap, TrendingUp, AlertTriangle, CheckCircle, XCircle, Clock, ShieldCheck, History } from "lucide-react"
+import { runPrelaunchCheck, loadReadinessHistory } from "./ad-os-actions"
+import { getPredictionAction } from "@/app/actions/content-prediction"
 import type { ContentType } from "@/lib/content/performance-predictor"
 
 interface Props {
@@ -111,30 +112,109 @@ export function PrelaunchPredictionPanel({ agentId }: Props) {
     } | null
     predictionError: string | null
     readinessError: string | null
+    readinessLogError: string | null
+    readinessReport: string | null
+    quickVerdict: { isReady: boolean; reason: string | null } | null
+    channelVerdict: { channel: string; isReady: boolean; reason: string | null } | null
+    compliance: {
+      status: "pass" | "fail" | "review_required"
+      violations: Array<{ severity: string; rule: string; detail: string; suggestedFix: string | null }>
+      requiredActions: string[]
+    } | null
+    approval: { status: string; blockingReason: string | null; requiredApprovers: string[] } | null
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Optional: analyse a SAVED asset so the verdict is recorded and its trail
+  // can be read back. Free-text checks have no id and are not recorded.
+  const [sourceId, setSourceId] = useState("")
+  const [history, setHistory] = useState<
+    Array<{ id: string; status: string; reasons: string[]; createdAt: string }> | null
+  >(null)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false)
+
+  // ── THE PREDICTION ALREADY ON FILE ──────────────────────────────────────────
+  // Running the check again costs a paid model call and writes another
+  // content_performance_predictions row. When this asset has already been
+  // scored, read the recorded verdict instead of buying a new one. Same source
+  // table the check itself defaults to, so the two agree on what they are
+  // keyed on.
+  const PREDICTION_SOURCE_TABLE = "marketing_assets"
+  const [savedPrediction, setSavedPrediction] = useState<{
+    predicted_score: number | null
+    confidence: string | null
+    rationale: string | null
+    created_at: string | null
+  } | null>(null)
+  const [savedPredictionMsg, setSavedPredictionMsg] = useState<string | null>(null)
+  const [isLoadingSaved, setIsLoadingSaved] = useState(false)
+
+  async function handleLoadSavedPrediction() {
+    const id = sourceId.trim()
+    if (!id) return
+    setIsLoadingSaved(true)
+    setSavedPrediction(null)
+    setSavedPredictionMsg(null)
+    try {
+      const res = await getPredictionAction(PREDICTION_SOURCE_TABLE, id)
+      if (!res.success) {
+        setSavedPredictionMsg(res.error ?? "Could not load the recorded prediction")
+      } else if (!res.prediction) {
+        // A clean read that found nothing is NOT a failure — say so plainly, so
+        // "never scored" cannot be mistaken for "we could not look".
+        setSavedPredictionMsg("No prediction on file for this asset yet.")
+      } else {
+        setSavedPrediction(res.prediction as typeof savedPrediction)
+      }
+    } catch {
+      setSavedPredictionMsg("Unexpected error loading the recorded prediction")
+    } finally {
+      setIsLoadingSaved(false)
+    }
+  }
 
   async function handleRun() {
     if (!contentText.trim()) return
     setIsRunning(true)
     setResult(null)
     setError(null)
+    setHistory(null)
+    setHistoryError(null)
 
     try {
       const res = await runPrelaunchCheck({
         contentText: contentText.trim(),
         contentType,
         platform,
+        sourceId: sourceId.trim() || undefined,
       })
       if (!res.success) {
         setError(res.error ?? "Check failed")
       } else {
         setResult(res as any)
       }
-    } catch (err) {
+    } catch {
       setError("Unexpected error — please try again")
     } finally {
       setIsRunning(false)
+    }
+  }
+
+  async function handleLoadHistory() {
+    const id = sourceId.trim()
+    if (!id) return
+    setIsLoadingHistory(true)
+    setHistoryError(null)
+    setHistory(null)
+    try {
+      const res = await loadReadinessHistory(id)
+      if (!res.success) setHistoryError(res.error ?? "Could not load history")
+      else setHistory(res.entries ?? [])
+    } catch {
+      setHistoryError("Unexpected error loading history")
+    } finally {
+      setIsLoadingHistory(false)
     }
   }
 
@@ -201,6 +281,69 @@ export function PrelaunchPredictionPanel({ agentId }: Props) {
           />
         </div>
 
+        <div className="space-y-1.5">
+          <Label className="text-xs font-medium">
+            Saved asset ID <span className="text-muted-foreground font-normal">(optional — records the verdict)</span>
+          </Label>
+          <div className="flex gap-2">
+            <input
+              className="flex h-8 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              placeholder="UUID of the marketing asset this content belongs to"
+              value={sourceId}
+              onChange={(e) => setSourceId(e.target.value)}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 shrink-0"
+              disabled={!sourceId.trim() || isLoadingHistory}
+              onClick={handleLoadHistory}
+            >
+              {isLoadingHistory ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <History className="h-3.5 w-3.5" />}
+              <span className="ml-1.5">History</span>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 shrink-0"
+              disabled={!sourceId.trim() || isLoadingSaved}
+              onClick={handleLoadSavedPrediction}
+              title="Read the prediction already recorded for this asset instead of paying for a new one"
+            >
+              {isLoadingSaved ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TrendingUp className="h-3.5 w-3.5" />}
+              <span className="ml-1.5">Last score</span>
+            </Button>
+          </div>
+
+          {savedPredictionMsg && (
+            <p className="text-xs text-muted-foreground">{savedPredictionMsg}</p>
+          )}
+          {savedPrediction && (
+            <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-medium">
+                  Recorded score: {savedPrediction.predicted_score ?? "—"} / 100
+                </span>
+                {savedPrediction.confidence && (
+                  <Badge variant="outline" className="text-[10px]">
+                    {savedPrediction.confidence} confidence
+                  </Badge>
+                )}
+                {savedPrediction.created_at && (
+                  <span className="text-muted-foreground">
+                    {new Date(savedPrediction.created_at).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+              {savedPrediction.rationale && (
+                <p className="text-muted-foreground leading-relaxed">{savedPrediction.rationale}</p>
+              )}
+            </div>
+          )}
+        </div>
+
         <Button
           onClick={handleRun}
           disabled={isRunning || !contentText.trim()}
@@ -232,6 +375,12 @@ export function PrelaunchPredictionPanel({ agentId }: Props) {
               <ReadinessBadge status={readinessStatus} />
             </div>
 
+            {result.readinessError && (
+              <p className="text-xs text-red-700 bg-red-50 rounded p-2">
+                Readiness check failed: {result.readinessError}
+              </p>
+            )}
+
             {result.readiness?.blocking_reasons && result.readiness.blocking_reasons.length > 0 && (
               <div className="rounded-md bg-red-50 p-2 space-y-1">
                 {result.readiness.blocking_reasons.map((r, i) => (
@@ -240,6 +389,117 @@ export function PrelaunchPredictionPanel({ agentId }: Props) {
                   </p>
                 ))}
               </div>
+            )}
+
+            {/* Compliance verdict — System 4.2, evaluated server-side */}
+            {result.compliance && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium flex items-center gap-1.5">
+                    <ShieldCheck className="h-4 w-4 text-indigo-600" /> Compliance
+                  </span>
+                  <Badge
+                    className={
+                      result.compliance.status === "pass"
+                        ? "bg-green-100 text-green-800 border-green-200"
+                        : result.compliance.status === "fail"
+                        ? "bg-red-100 text-red-800 border-red-200"
+                        : "bg-yellow-100 text-yellow-800 border-yellow-200"
+                    }
+                  >
+                    {result.compliance.status.replace("_", " ")}
+                  </Badge>
+                </div>
+                {result.compliance.violations.length > 0 && (
+                  <div className="rounded-md border divide-y">
+                    {result.compliance.violations.map((v, i) => (
+                      <div key={i} className="px-2 py-1.5 text-xs">
+                        <span className="font-medium capitalize">{v.severity}</span>
+                        <span className="text-muted-foreground"> · {v.rule}</span>
+                        <p className="text-muted-foreground mt-0.5">{v.detail}</p>
+                        {v.suggestedFix && <p className="text-indigo-700 mt-0.5">Fix: {v.suggestedFix}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {result.compliance.requiredActions.length > 0 && (
+                  <ul className="text-xs text-muted-foreground list-disc pl-4">
+                    {result.compliance.requiredActions.map((a, i) => <li key={i}>{a}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {/* Approval decision — System 4.3 */}
+            {result.approval && (
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-medium">Approval</span>
+                <span className="flex items-center gap-2">
+                  <Badge variant="outline" className="capitalize text-xs">{result.approval.status}</Badge>
+                  {result.approval.requiredApprovers.length > 0 && (
+                    <span className="text-xs text-muted-foreground">
+                      needs: {result.approval.requiredApprovers.join(", ")}
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
+            {result.approval?.blockingReason && (
+              <p className="text-xs text-red-700 bg-red-50 rounded p-2">{result.approval.blockingReason}</p>
+            )}
+
+            {/* Fast approval+compliance verdict */}
+            {result.quickVerdict && (
+              <div className="flex items-start justify-between gap-3 text-sm">
+                <span className="font-medium shrink-0">Quick check</span>
+                <span className="text-right">
+                  <Badge variant="outline" className="text-xs">
+                    {result.quickVerdict.isReady ? "ready" : "not ready"}
+                  </Badge>
+                  {result.quickVerdict.reason && (
+                    <span className="block text-xs text-muted-foreground mt-0.5">{result.quickVerdict.reason}</span>
+                  )}
+                </span>
+              </div>
+            )}
+
+            {/* Per-channel verdict for the selected platform */}
+            {result.channelVerdict && (
+              <div className="flex items-start justify-between gap-3 text-sm">
+                <span className="font-medium shrink-0 capitalize">
+                  {result.channelVerdict.channel.replace("_", " ")} channel
+                </span>
+                <span className="text-right">
+                  <Badge
+                    className={
+                      result.channelVerdict.isReady
+                        ? "bg-green-100 text-green-800 border-green-200 text-xs"
+                        : "bg-red-100 text-red-800 border-red-200 text-xs"
+                    }
+                  >
+                    {result.channelVerdict.isReady ? "eligible" : "blocked"}
+                  </Badge>
+                  {result.channelVerdict.reason && (
+                    <span className="block text-xs text-muted-foreground mt-0.5">{result.channelVerdict.reason}</span>
+                  )}
+                </span>
+              </div>
+            )}
+
+            {/* Full server-formatted readiness report */}
+            {result.readinessReport && (
+              <details className="rounded-md border bg-muted/30">
+                <summary className="cursor-pointer px-2 py-1.5 text-xs font-medium">Full readiness report</summary>
+                <pre className="px-2 pb-2 text-[11px] whitespace-pre-wrap font-mono text-muted-foreground">
+                  {result.readinessReport}
+                </pre>
+              </details>
+            )}
+
+            {result.readinessLogError && (
+              <p className="text-xs text-yellow-800 bg-yellow-50 rounded p-2">
+                Verdict not recorded: {result.readinessLogError}
+              </p>
             )}
 
             {/* Performance score */}
@@ -284,6 +544,37 @@ export function PrelaunchPredictionPanel({ agentId }: Props) {
               <p className="text-xs text-yellow-700 bg-yellow-50 rounded p-2">
                 Prediction unavailable: {result.predictionError}
               </p>
+            )}
+          </div>
+        )}
+
+        {/* Recorded readiness trail for the saved asset */}
+        {historyError && <p className="text-xs text-red-700 bg-red-50 rounded p-2">{historyError}</p>}
+        {history && (
+          <div className="space-y-1.5 border-t pt-4">
+            <p className="text-sm font-medium flex items-center gap-1.5">
+              <History className="h-4 w-4 text-muted-foreground" /> Recorded readiness trail
+            </p>
+            {history.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No readiness evaluations recorded for this asset in your brokerage yet.
+              </p>
+            ) : (
+              <div className="rounded-md border divide-y">
+                {history.map((h) => (
+                  <div key={h.id} className="px-2 py-1.5 text-xs flex items-start justify-between gap-2">
+                    <span>
+                      <Badge variant="outline" className="text-[10px] capitalize">{h.status}</Badge>
+                      {h.reasons.length > 0 && (
+                        <span className="block text-muted-foreground mt-0.5">{h.reasons.join("; ")}</span>
+                      )}
+                    </span>
+                    <span className="text-muted-foreground shrink-0">
+                      {new Date(h.createdAt).toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         )}

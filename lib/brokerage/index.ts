@@ -40,5 +40,12 @@ export {
   getClosingEntityType as getRequiredClosingEntityType,
 } from "./get-required-providers"
 
+// ─── ADVERTISING / COMPLIANCE IDENTITY ────────────────────────────────────────
+// The one resolver for "who is advertising" — brokerage name/DBA/licence plus
+// the acting agent's own licence, from the SESSION user. The survivor the five
+// duplicated brokerage-identity selects collapse into.
+export type { BrokerageComplianceIdentity } from "./compliance-identity"
+export { resolveBrokerageComplianceIdentity } from "./compliance-identity"
+
 // ─── REQUIRED STATE ───────────────────────────────────────────────────────────
 export { getRequiredPrimaryState as getRequiredState, getPrimaryState as getState } from "./get-required-state"

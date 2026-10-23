@@ -14,12 +14,14 @@ import { createListingPosts } from "@/app/actions/social-media-automation"
 import { prepareListingEmailCampaign } from "@/app/actions/email-campaigns"
 import { generateComingSoonContent } from "@/app/actions/coming-soon-content"
 import Link from "next/link"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 interface ComingSoonCommandCardProps {
   listingId: string
   userId: string
   brokerageId: string
-  role: "agent" | "team_lead" | "admin" | "broker"
+  /** users.user_type as stored — the tier is derived inside from the roster, never from a cast. */
+  role: string
   currentStage: string
   listingAddress: string
   listingStatus: string
@@ -70,8 +72,11 @@ export function ComingSoonCommandCard({
   launchDate.setDate(launchDate.getDate() + daysUntilLaunch)
   const launchDateStr = launchDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
 
-  const resolvedRole: "agent" | "team_lead" =
-    role === "admin" || role === "broker" ? "team_lead" : role
+  // Lane 90A: the capability tier is the ONE roster's answer — every tenant-admin
+  // seat (broker, owner, broker admin, admin, team lead, compliance officer) gets
+  // the team-lead tier; the `role === "admin" || role === "broker"` literal it
+  // replaces (plus the caller's four-role cast) sent a broker OWNER to the agent tier.
+  const resolvedRole: "agent" | "team_lead" = isAdminOrBroker({ user_type: role }) ? "team_lead" : "agent"
 
   function showToast(type: "success" | "error", text: string) {
     setToastMessage({ type, text })
@@ -126,16 +131,19 @@ export function ComingSoonCommandCard({
       // Fire marketing in parallel — non-blocking failures
       const marketing: Promise<any>[] = []
 
+      // Wave 142 (lane 142H): the two textareas above say "edit before publishing / sending" — the
+      // reviewed copy is what goes out. Before this, both calls regenerated their own text and the
+      // agent's edits were silently dropped (unwired generation).
       if (selectedPlatforms.length > 0) {
         marketing.push(
-          createListingPosts({ propertyId: listingId, agentId: userId, brokerageId, platforms: selectedPlatforms })
+          createListingPosts({ propertyId: listingId, agentId: userId, brokerageId, platforms: selectedPlatforms, contentOverride: socialPost })
             .catch(() => null)
         )
       }
 
       if (transactionId) {
         marketing.push(
-          prepareListingEmailCampaign({ transactionId, campaignType: "coming_soon" })
+          prepareListingEmailCampaign({ transactionId, campaignType: "coming_soon", bodyOverride: emailBody })
             .catch(() => null)
         )
       }
@@ -150,7 +158,7 @@ export function ComingSoonCommandCard({
   function handleEmailCampaign() {
     if (!transactionId) return
     startSendingEmail(async () => {
-      const result = await prepareListingEmailCampaign({ transactionId, campaignType: "coming_soon" })
+      const result = await prepareListingEmailCampaign({ transactionId, campaignType: "coming_soon", bodyOverride: emailBody })
       if (result.success) {
         showToast("success", "Email campaign sent to matching buyers.")
       } else {

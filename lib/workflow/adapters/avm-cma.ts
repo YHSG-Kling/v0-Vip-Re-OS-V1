@@ -2,10 +2,16 @@
  * AVM/CMA adapter — generates property valuation reports.
  *
  * Routes to the production-grade infrastructure already built:
- *   - lib/cma/ai-cma-orchestrator.runAiCma()  — Perplexity Sonar comps + state
+ *   - lib/cma/ai-cma-orchestrator.runAiCma()  — provider-sourced comps (RentCast
+ *                                               by default, the brokerage's connected
+ *                                               IDX feed for the active side) + state
  *                                               appraiser-guideline adjustments,
  *                                               with investor_arv mode for repair-budget
  *                                               + max-offer formulas
+ *
+ * NOTE on avm_data_source for a CMA: it no longer selects the comp provider —
+ * runAiCma has ONE provider-backed sourcing path for every mode. It still selects
+ * the mode label recorded on the document, and it still routes the AVM path below.
  *   - lib/avm/provider-chain.getCurrentAvm()  — Cached → Perplexity → HouseCanary →
  *                                               BatchData → ZenRows/Zillow → fallback
  *
@@ -58,7 +64,7 @@ export const avmCmaAdapter: ChannelAdapter = {
     }
 
     // Pending documents record so the variable graph can reference document_id
-    const { data: doc } = await supabase
+    const { data: doc, error: pendingDocErr } = await supabase
       .from("documents")
       .insert({
         brokerage_id: brokerageId,
@@ -70,14 +76,17 @@ export const avmCmaAdapter: ChannelAdapter = {
       })
       .select("id")
       .single()
+    // The report still generates without its pending row, but nothing will hold it.
+    if (pendingDocErr) console.error(`[avm-cma] pending ${reportType} document NOT created: ${pendingDocErr.message}`)
 
     const docId = doc?.id
 
     if (!propertyContext) {
       if (docId) {
-        await supabase.from("documents")
+        const { error: docCompleteErr } = await supabase.from("documents")
           .update({ status: "complete", content: "Insufficient property context to generate report." })
           .eq("id", docId)
+        if (docCompleteErr) console.error(`[avm-cma] report document NOT marked complete: ${docCompleteErr.message}`)
       }
       return {
         status: "sent",
@@ -90,7 +99,7 @@ export const avmCmaAdapter: ChannelAdapter = {
     try {
       // ── CMA path — runAiCma() ───────────────────────────────────────────
       if (reportType === "cma") {
-        const { runAiCma } = await import("@/lib/cma/ai-cma-orchestrator")
+        const { runAiCma, describeCompProvenance } = await import("@/lib/cma/ai-cma-orchestrator")
         const cmaMode: "standard" | "premium" | "investor_arv" = includeInvestorAdj
           ? "investor_arv"
           : dataSource === "housecannary" || dataSource === "batchdata"
@@ -125,15 +134,24 @@ export const avmCmaAdapter: ChannelAdapter = {
               arv: result.arv ?? null,
               comp_count: result.adjustedComps.length,
               state_guidelines_used: result.stateGuidelinesUsed,
+              // WHICH YEAR'S guidelines, stored with the document. A CMA on file
+              // that cannot say which vintage priced it cannot be audited later.
+              state_guideline_vintage: result.stateGuidelineVintage,
               citations: result.citations,
+              // WHERE the comps came from and how fresh they are, stored with the
+              // document so a CMA on file can be audited later without re-running it —
+              // the structured record plus the one-line human read of it.
+              comp_provenance: result.compProvenance,
+              comp_provenance_summary: describeCompProvenance(result.compProvenance),
             },
           }
           // tenant anchor (scope burn-down): pinned to the doc this run created
           // AND the workflow's brokerage.
-          await supabase.from("documents")
+          const { error: cmaDocErr } = await supabase.from("documents")
             .update(cmaDocUpdate)
             .eq("id", docId)
             .eq("brokerage_id", brokerageId)
+          if (cmaDocErr) console.error(`[avm-cma] CMA content NOT saved on the report document: ${cmaDocErr.message}`)
         }
 
         return {
@@ -156,9 +174,13 @@ export const avmCmaAdapter: ChannelAdapter = {
       if (reportType === "avm") {
         const { getCurrentAvm } = await import("@/lib/avm/provider-chain")
         // Skip non-preferred providers when an explicit source is set
+        // Wave 92 (lane 92B2): RentCast is the chain's FIRST tier for every tenant call. An explicit
+        // "perplexity" source still means "the AI estimate only" (RentCast skipped). The "batchdata"
+        // value source is retired from the chain (a home value is RentCast's — provider-chain.ts
+        // tombstone), so a workflow still naming it gets the RentCast-first chain instead of a
+        // chain with its only paid provider switched off.
         const skipProviders =
-          dataSource === "housecannary" ? ["batchdata" as const]
-          : dataSource === "batchdata"  ? ["rentcast" as const]
+          dataSource === "perplexity" ? ["rentcast" as const]
           : []
         const avm = await getCurrentAvm({
           address: propertyContext.address,
@@ -171,7 +193,7 @@ export const avmCmaAdapter: ChannelAdapter = {
         } as any)
 
         if (docId) {
-          await supabase.from("documents")
+          const { error: avmDocErr } = await supabase.from("documents")
             .update({
               status: "complete",
               content: avm
@@ -182,6 +204,7 @@ export const avmCmaAdapter: ChannelAdapter = {
                 : { error: "no avm result" },
             })
             .eq("id", docId)
+          if (avmDocErr) console.error(`[avm-cma] AVM content NOT saved on the report document: ${avmDocErr.message}`)
         }
 
         return {
@@ -225,7 +248,8 @@ export const avmCmaAdapter: ChannelAdapter = {
       }
 
       if (docId) {
-        await supabase.from("documents").update({ status: "complete" }).eq("id", docId)
+        const { error: reportDoneErr } = await supabase.from("documents").update({ status: "complete" }).eq("id", docId)
+        if (reportDoneErr) console.error(`[avm-cma] market report document NOT marked complete: ${reportDoneErr.message}`)
       }
       return {
         status: "sent",
@@ -236,9 +260,10 @@ export const avmCmaAdapter: ChannelAdapter = {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       if (docId) {
-        await supabase.from("documents")
+        const { error: reportReviewErr } = await supabase.from("documents")
           .update({ status: "review", metadata: { error: msg } })
           .eq("id", docId)
+        if (reportReviewErr) console.error(`[avm-cma] report failure NOT recorded on the document: ${reportReviewErr.message}`)
       }
       return { status: "error", providerKey: "avm", error: msg }
     }

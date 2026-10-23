@@ -131,8 +131,18 @@ export async function recordAgentOverride(input: {
 
 /**
  * Read the full audit trail for a document, grouped by field.
- * Surfaces in a "Review" tab so agents (and E&O auditors) can see exactly
- * which values were AI-suggested vs agent-typed vs agent-overridden.
+ *
+ * WIRED (was orphaned): the agent-facing surface is the FormWizard staged-packet
+ * banner — app/components/form-wizard/FormWizard.tsx renders it through the gated
+ * reader app/actions/document-field-audit.ts:getDocumentFieldAuditAction, which
+ * proves the document belongs to the caller's brokerage first. This function reads
+ * on the SERVICE client (RLS bypassed), so it must never be reachable without that
+ * gate in front of it.
+ *
+ * `error` is returned, not swallowed: supabase-js RESOLVES a refused query, so the
+ * old `const { data }` rendered "the table refused this read" and "this document
+ * has no audit rows" as the same empty trail — in an E&O audit view those two
+ * facts are not interchangeable.
  */
 export async function getDocumentAudit(documentId: string): Promise<{
   entries: FieldAuditEntry[]
@@ -142,9 +152,11 @@ export async function getDocumentAudit(documentId: string): Promise<{
     agentOverrode: number
     confidenceBreakdown: Record<FieldConfidence, number>
   }
+  /** Set only when the read itself was refused/failed — distinct from "no rows". */
+  error?: string
 }> {
   const svc = createServiceClient()
-  const { data } = await svc
+  const { data, error } = await svc
     .from("document_field_audit")
     .select("id, document_id, field_name, ai_value, ai_source, ai_confidence, agent_value, agent_overrode, override_reason, edited_at, created_at")
     .eq("document_id", documentId)
@@ -185,5 +197,6 @@ export async function getDocumentAudit(documentId: string): Promise<{
       agentOverrode,
       confidenceBreakdown,
     },
+    ...(error ? { error: error.message } : {}),
   }
 }

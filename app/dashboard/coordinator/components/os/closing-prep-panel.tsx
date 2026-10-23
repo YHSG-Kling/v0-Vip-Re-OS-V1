@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
-import { CheckCircle2, Home, TrendingUp } from 'lucide-react'
+import { CheckCircle2, Home } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 
 interface ClosingPrepPanelProps {
@@ -30,7 +30,9 @@ export function ClosingPrepPanel({ brokerageId }: ClosingPrepPanelProps) {
             purchase_price
           `)
           .eq('brokerage_id', brokerageId)
-          .eq('stage', 'closing')
+          // The stage is CLOSING_PREP — 'closing' is not in the CHECK, so the
+          // coordinator's closing-prep queue never listed a single deal.
+          .eq('stage', 'CLOSING_PREP')
           .order('close_date', { ascending: true })
           .limit(12)
 

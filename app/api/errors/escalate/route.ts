@@ -1,5 +1,7 @@
+import { bestEffort } from "@/lib/db/best-effort"
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * POST /api/errors/escalate
@@ -21,8 +23,10 @@ export async function POST(request: NextRequest) {
       .eq("id", user.id)
       .single()
 
-    const allowedRoles = ["superadmin", "admin", "broker"]
-    if (!userData || (!allowedRoles.includes(userData.user_type || "") && userData.platform_role !== "superadmin")) {
+    // TRUE ADMIN GATE (operational: error ops) — repointed to the ONE tenant
+    // roster; the separate platform_role clause is kept as the platform lane.
+    // 'superadmin' was dead in the array: 0 live rows store that users.user_type.
+    if (!userData || (!isAdminOrBroker({ user_type: userData.user_type }) && userData.platform_role !== "superadmin")) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
 
@@ -50,10 +54,10 @@ export async function POST(request: NextRequest) {
       try {
         // Update severity if provided
         if (escalatedSeverity) {
-          await supabase
+          await bestEffort(supabase
             .from("automation_errors")
             .update({ severity: escalatedSeverity })
-            .eq("id", id)
+            .eq("id", id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
         }
 
         // Get error details for notification
@@ -64,7 +68,7 @@ export async function POST(request: NextRequest) {
           .single()
 
         // Insert escalation log
-        await supabase
+        await bestEffort(supabase
           .from("error_resolution_log")
           .insert({
             error_id: id,
@@ -77,30 +81,28 @@ export async function POST(request: NextRequest) {
               escalated_severity: escalatedSeverity,
               notify_user_id: notifyUserId,
             },
-          })
+          }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
         // Emit kernel event for critical escalations
         if (escalatedSeverity === "critical" && errorRecord) {
-          await supabase
-            .from("lifecycle_events")
-            .insert({
-              brokerage_id: errorRecord.brokerage_id,
-              entity_type: "automation_error",
-              entity_id: id,
-              event_type: "SYSTEM_HEALTH_ALERT",
-              actor_user_id: user.id,
+          await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+              brokerageId: errorRecord.brokerage_id,
+              entityType: "automation_error",
+              entityId: id,
+              event: "SYSTEM_HEALTH_ALERT",
+              actorUserId: user.id,
               metadata: {
                 workflow_name: errorRecord.workflow_name,
                 severity: "critical",
                 escalated_by: user.id,
                 notes,
               },
-            })
+            }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
         }
 
         // Send notification if user specified
         if (notifyUserId && errorRecord) {
-          await supabase
+          const { error: notifyError } = await supabase
             .from("notifications")
             .insert({
               user_id: notifyUserId,
@@ -112,6 +114,7 @@ export async function POST(request: NextRequest) {
               entity_type: "automation_error",
               entity_id: id,
             })
+          if (notifyError) console.warn("[errors/escalate] notifications insert refused — the bell will not ring:", notifyError.message)
         }
 
         results.push({ errorId: id, success: true })

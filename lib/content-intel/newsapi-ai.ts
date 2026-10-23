@@ -12,6 +12,7 @@
 
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 const BASE = "https://eventregistry.org"
 
@@ -40,7 +41,7 @@ export async function resolveNewsApiAiKey(
       .eq("provider_name", "newsapi_ai")
       .eq("is_active", true)
       .maybeSingle()
-    if (cred?.api_key) return cred.api_key as string
+    if (cred?.api_key) return decryptSecret(cred.api_key as string)
   }
   return process.env.NEWSAPI_AI_KEY || null
 }

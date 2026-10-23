@@ -34,28 +34,24 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted }   from "@/lib/ai/models"
+import {
+  ALL_DOCUMENT_CLASSIFICATIONS,
+  type DocumentClassification,
+} from "@/lib/compliance/document-classifications"
 
-export type DocumentClassification =
-  | "pre_approval_letter"
-  | "proof_of_funds"
-  | "id_document"
-  | "signed_contract"
-  | "counter_offer"
-  | "addendum"
-  | "disclosure"
-  | "inspection_report"
-  | "appraisal_report"
-  | "title_report"
-  | "hoa_documents"
-  | "closing_disclosure"
-  | "wire_instructions"
-  | "agency_disclosure"
-  | "commission_agreement"
-  | "lender_letter"
-  | "earnest_money_receipt"
-  | "other"
+/**
+ * The taxonomy is NOT declared here. It lives in lib/compliance/document-
+ * classifications.ts, which is what the required-document presets and
+ * auditListingDocuments are written against. This module used to declare its
+ * own 18-value copy that had drifted behind that one — see CLASSIFICATIONS at
+ * the foot of the file for what that cost.
+ *
+ * Re-exported so existing importers of this name keep working.
+ */
+export type { DocumentClassification }
 
 export interface ScanResult {
   success:        boolean
@@ -67,14 +63,14 @@ export interface ScanResult {
   error?:         string
 }
 
+// The offered list is GENERATED from the canonical taxonomy. Writing it out by
+// hand is what let this prompt fall behind the vocabulary the compliance audit
+// requires — it never offered listing_agreement, so the model could not name
+// one, so the listing-agreement gate could never be satisfied by an upload.
 const SCAN_PROMPT = `You are classifying a document uploaded into a real estate deal file. Return ONLY valid JSON. No markdown, no commentary.
 
 Classify into ONE of:
-  pre_approval_letter | proof_of_funds | id_document | signed_contract |
-  counter_offer | addendum | disclosure | inspection_report |
-  appraisal_report | title_report | hoa_documents | closing_disclosure |
-  wire_instructions | agency_disclosure | commission_agreement |
-  lender_letter | earnest_money_receipt | other
+  ${ALL_DOCUMENT_CLASSIFICATIONS.join(" | ")}
 
 Output schema:
 {
@@ -82,16 +78,39 @@ Output schema:
   "confidence":     "high" | "medium" | "low",
   "summary":        "<1-2 sentence plain-English summary the agent reads at a glance>",
   "state_form_id":  "<the specific state form number when recognizable, e.g. 'TREC 20-17' / 'TREC OP-H' / 'CAR RPA-CA' / 'FAR/BAR ASIS-5' / 'CAR RLA' — null if generic>",
+  "signature_completeness": {
+    "signatures": [ { "signer_role": "agent" | "seller" | "buyer" | "broker" | "other", "signer_name": "<name or null>", "signed": true | false } ],
+    "initials":   [ { "signer_role": "agent" | "seller" | "buyer" | "broker" | "other", "all_required_initials_present": true | false } ]
+  },
   "extracted_fields": { ... }   // shape depends on classification (see below)
 }
+
+signature_completeness rules — a listing or purchase agreement is only EXECUTABLE
+when every required party has both signed AND initialed. Report what you can
+actually SEE on the document. Mark "signed": false when a signature line exists
+but is blank. Do NOT infer a signature from a typed name, and do NOT report a
+party you cannot find a signature block for — an unverifiable signature must
+read as missing, never as present, because a listing goes live on this answer.
+Return an empty array for a document type that carries no signatures.
 
 Per-classification extracted_fields shape:
   pre_approval_letter   → { lender_name, loan_type, max_loan_amount, issued_at, expires_at, borrower_name }
   proof_of_funds        → { institution, account_holder, available_funds, statement_date }
   id_document           → { document_type, full_name, expiration_date }
-  signed_contract       → { property_address, parties_signed[], signed_dates[], price, title_company, earnest_money_amount, earnest_money_due_days, contract_effective_date }
-  counter_offer         → { property_address, counter_price, counter_terms, seller_signed_at, round_label, earnest_money_due_days }
-  addendum              → { addendum_type, signed_parties[] }
+  signed_contract       → { property_address, parties_signed[], signed_dates[], price, title_company, earnest_money_amount, earnest_money_due_days, contract_effective_date,
+                            closing_date, seller_concession_amount, owner_title_policy_payer }
+  counter_offer         → { property_address, counter_price, counter_terms, seller_signed_at, round_label, earnest_money_due_days,
+                            signed_dates[], earnest_money_amount, closing_date, seller_concession_amount, owner_title_policy_payer }
+  addendum              → { addendum_type, signed_parties[], signed_dates[], price, earnest_money_amount, closing_date,
+                            seller_concession_amount, owner_title_policy_payer }
+                          (CONTRACT-TERM FIELDS — price, earnest_money_amount, closing_date, seller_concession_amount,
+                           owner_title_policy_payer — on signed_contract / counter_offer / addendum: report a term ONLY
+                           when THIS document states or changes it, as a number (dollars, no symbols), a yyyy-mm-dd
+                           date, or for owner_title_policy_payer exactly "buyer", "seller" or "split" (who the document
+                           says pays for the OWNER's title insurance policy; the lender's policy is a different line).
+                           Use null for any term the document does not state — never copy a term from your memory of
+                           the original contract, and never infer a payer from custom. These are compared against the
+                           settlement statement, so a guessed value would accuse a clean closing.)
   disclosure            → { disclosure_type, signed_parties[] }
   inspection_report     → { inspector_name, inspection_date, key_issues[] }
   appraisal_report      → { appraiser_name, appraised_value, appraisal_date }
@@ -99,7 +118,10 @@ Per-classification extracted_fields shape:
   hoa_documents         → { hoa_name, dues_amount, dues_frequency }
   closing_disclosure    → { closing_date, lender_name, loan_amount, cash_to_close,
                             total_closing_costs, owner_title_premium, lender_title_premium,
-                            settlement_fee, transfer_taxes, recording_fees }
+                            settlement_fee, transfer_taxes, recording_fees,
+                            sales_price, earnest_money_deposit, seller_credit_to_buyer,
+                            owner_title_policy_payer, commission_listing_broker,
+                            commission_buyer_broker, commission_total }
                           (dollar figures are the BORROWER-paid amounts as stated on the
                            document — page 2 sections B/C for title/settlement, section E
                            for recording_fees + transfer_taxes, section J for
@@ -110,12 +132,70 @@ Per-classification extracted_fields shape:
   commission_agreement  → { commission_percentage, commission_payer, expires_at }
   lender_letter         → { lender_name, letter_type, issued_at }
   earnest_money_receipt → { amount, depositor, escrow_holder, received_at }
+  listing_agreement     → { property_address, city, state, zip_code, list_price,
+                            list_date, expiration_date, commission_rate,
+                            seller_name, listing_agent_name, brokerage_name }
+                          (the SELLER-side agreement that puts the property on the
+                           market. list_price is the agreed list price stated on the
+                           agreement; commission_rate is the total listing-side rate
+                           as a percentage number, not a string. Use null for any
+                           figure not explicitly stated — never estimate.)
+  seller_broker_agreement → { seller_name, brokerage_name, commission_rate, effective_date, expires_at }
+  preliminary_closing_statement → { closing_date, seller_proceeds, total_seller_costs, title_company,
+                            sales_price, earnest_money_deposit, seller_credit_to_buyer,
+                            owner_title_policy_payer, commission_listing_broker,
+                            commission_buyer_broker, commission_total }
+                          (SETTLEMENT-COMPARISON FIELDS on closing_disclosure and preliminary_closing_statement —
+                           sales_price, earnest_money_deposit, seller_credit_to_buyer, commission_* — are dollar
+                           amounts exactly as the statement prints them; commission_listing_broker and
+                           commission_buyer_broker are the real-estate commission lines paid to each side's
+                           broker, commission_total the combined figure only if the statement prints one.
+                           owner_title_policy_payer is "buyer" when the OWNER's title insurance premium appears in
+                           the buyer/borrower column, "seller" when it appears in the seller column, "split" when
+                           it appears in both, null when it is not shown. A buyer's Closing Disclosure often prints
+                           no commissions — leave them null rather than computing them. Never estimate or total
+                           lines yourself.)
+  insurance_binder      → { carrier, policy_number, coverage_amount, annual_premium,
+                            effective_date, expiry, insured_name, property_address }
+                          (the BUYER'S hazard / homeowner's policy binder or
+                           declarations page — the evidence of coverage a lender
+                           requires before funding. NOT a vendor's own certificate
+                           of liability insurance, which is a different subject.
+                           coverage_amount is the DWELLING coverage as a number,
+                           effective_date and expiry are yyyy-mm-dd. Use null for
+                           anything not explicitly stated — never estimate a
+                           coverage figure or infer an expiry from the effective
+                           date.)
   other                 → { document_type_guess }
 
 Now classify this document content:
 
 `
 
+/**
+ * TENANCY — AUDITED 2026-08-26, NOT A DEFECT. Recorded so it is not re-flagged.
+ *
+ * The shape ("tenant taken from a row read on the SERVICE client, keyed by a
+ * caller-supplied id") was raised as a possible IDOR. It is not one, for two
+ * reasons that must both stay true:
+ *
+ *   1. This module is `server-only` and takes NO brokerageId. The tenant is
+ *      derived from the document's OWN row and is used only to (a) attribute the
+ *      AI spend and (b) write back to THAT SAME ROW. It never carries one
+ *      tenant's id onto another tenant's data — the direction §4 forbids.
+ *   2. Its callers gate FIRST and hand it a document they have already proved
+ *      access to. `lib/documents/upload-document.ts` scans the row it just
+ *      inserted; the surfaces that reach that uploader
+ *      (app/api/listings/[listingId]/upload-document/route.ts,
+ *      app/api/offers/[offerId]/upload-document/route.ts) each resolve the parent
+ *      on the session, compare `users.brokerage_id` to the parent's brokerage,
+ *      403 on a mismatch, and then pass the PARENT ROW'S brokerage_id — never a
+ *      body value. That is gate-then-service exactly as §4 prescribes.
+ *
+ * So: do not add a `brokerageId` parameter here. It would be a second, weaker
+ * source of truth for a tenant the row already carries. If a NEW caller ever
+ * accepts a documentId straight from a request, the gate belongs at that caller.
+ */
 export async function scanUploadedDocument(params: {
   documentId: string
   force?:     boolean
@@ -125,7 +205,10 @@ export async function scanUploadedDocument(params: {
 
   const { data: doc } = await supabase
     .from("documents")
-    .select("id, brokerage_id, contact_id, transaction_id, document_type, content, storage_url, classification, scanned_at, metadata")
+    // listing_id is selected because the listing gate below needs to know which
+    // listing a signed agreement belongs to. It was omitted, so every consumer
+    // downstream had to guess at the link that was sitting in the column.
+    .select("id, brokerage_id, contact_id, transaction_id, listing_id, document_type, content, storage_url, classification, scanned_at, metadata")
     .eq("id", documentId)
     .maybeSingle()
 
@@ -168,6 +251,7 @@ export async function scanUploadedDocument(params: {
   let result: any
   try {
     const { text } = await generateTextRouted({
+      brokerageId: (doc as { brokerage_id?: string | null }).brokerage_id ?? null,
       feature:    "document_classification",
       system:     "You are a strict JSON classifier for real estate documents. Output JSON only — no prose.",
       prompt:     SCAN_PROMPT + sourceText,
@@ -177,10 +261,10 @@ export async function scanUploadedDocument(params: {
     const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim()
     result = JSON.parse(cleaned)
   } catch (err: any) {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("documents")
       .update({ scan_error: err?.message ?? "scan failed", scanned_at: new Date().toISOString() })
-      .eq("id", documentId)
+      .eq("id", documentId), { table: "documents", flow: "documents_write", reason: "records the scan error on the document; the error is returned to the caller in the same step" })
     return { success: false, documentId, error: err?.message ?? "scan failed" }
   }
 
@@ -195,7 +279,16 @@ export async function scanUploadedDocument(params: {
   const stateFormId = (typeof result.state_form_id === "string" && result.state_form_id.trim())
     ? result.state_form_id.trim() : null
 
-  await supabase
+  // The signature verdict is its own fact, not an extracted field — the field
+  // extraction ledger below shreds `extracted` into per-field rows, and a nested
+  // verification object does not belong in that ledger. A malformed or missing
+  // answer stays NULL: downstream, null must read as "not verified", never as signed.
+  const signatureCompleteness =
+    result.signature_completeness && typeof result.signature_completeness === "object"
+      ? result.signature_completeness
+      : null
+
+  const { error: scanSaveErr } = await supabase
     .from("documents")
     .update({
       classification,
@@ -203,10 +296,84 @@ export async function scanUploadedDocument(params: {
       summary,
       extracted_fields:          extracted,
       state_form_id:             stateFormId,
+      signature_completeness:    signatureCompleteness,
       scanned_at:                new Date().toISOString(),
       scan_error:                null,
     })
     .eq("id", documentId)
+  if (scanSaveErr) return { success: false, documentId, error: `Scan ran but its classification was not saved: ${scanSaveErr.message}` }
+
+  // Post-scan hook 0 — THE LISTING GATE. A fully-executed listing agreement
+  // whose file has every required document is what takes a listing on. The gate
+  // returns immediately for every other classification, so it is called
+  // unconditionally rather than guarded here — one place owns the rule.
+  try {
+    const { runListingAgreementGate } = await import("./listing-agreement-gate")
+    const verdict = await runListingAgreementGate(supabase as any, {
+      documentId,
+      brokerageId:     doc.brokerage_id as string,
+      classification,
+      extractedFields: extracted as Record<string, unknown>,
+      signatureCompleteness: signatureCompleteness,
+      contactId:   (doc as any).contact_id ?? null,
+      listingId:   (doc as any).listing_id ?? null,
+      // `uploaded_by` is the key the existing upload routes already write.
+      agentUserId: ((doc as any).metadata?.uploaded_by as string | undefined) ?? null,
+    })
+    if (classification === "listing_agreement" && !verdict.passed) {
+      // NOT an error — this is the normal state of a listing agreement that is
+      // still missing a signature or a required form. It is recorded on the doc
+      // so the agent can see exactly what is holding the listing back.
+      await sentinelWrite(supabase, supabase
+        .from("documents")
+        .update({ metadata: { ...(doc.metadata as object ?? {}), listing_gate_blockers: verdict.blockers } })
+        .eq("id", documentId), { table: "documents", flow: "documents_write", reason: "listing-gate blocker annotation for display; the gate verdict is recomputed on every scan" })
+    }
+  } catch (err: any) {
+    console.error("[scan] listing-agreement gate failed (non-fatal):", err?.message ?? err)
+  }
+
+  // Post-scan hook 0b — THE COMPLIANCE LOOP RE-ENTERS HERE (owner: "…to upload so
+  // compliance can run again"). The document gate above records what THIS document
+  // still lacks; the listing loop asks the ONE listing gate whether the whole file now
+  // passes, walks the listing to COMING_SOON_PREP on a pass, and re-notifies the TC /
+  // compliance officer / agent only if the blocker set CHANGED. Any upload on a listing
+  // re-enters — the uploader does not have to know which document was the last one.
+  if ((doc as any).listing_id) {
+    try {
+      const { runListingComplianceLoop } = await import("@/lib/listings/listing-compliance-loop")
+      await runListingComplianceLoop(supabase as any, {
+        brokerageId: doc.brokerage_id as string,
+        listingId:   (doc as any).listing_id as string,
+        trigger:     "document_uploaded",
+        actorUserId: ((doc as any).metadata?.uploaded_by as string | undefined) ?? null,
+      })
+    } catch (err: any) {
+      console.error("[scan] listing compliance loop failed (non-fatal):", err?.message ?? err)
+    }
+  }
+
+  // Post-scan hook 0c — THE OFFER COMPLIANCE LOOP RE-ENTERS HERE (owner, 2026-09-06:
+  // "…looped for offers turning into active transactions after pass and if fail,
+  // same as the listing autonomous loop"). A document uploaded against an offer
+  // (metadata.linked_offer_id — the same link the participant populator below
+  // reads) re-asks the ONE offer gate; on a pass the transaction is created under
+  // contract, on a fail the blockers are re-recorded and the roles are paged only
+  // if the set changed. Idle for an offer that is not yet fully executed.
+  const linkedOfferId = ((doc as any).metadata?.linked_offer_id as string | undefined) ?? null
+  if (linkedOfferId) {
+    try {
+      const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
+      await runOfferComplianceLoop(supabase as any, {
+        brokerageId: doc.brokerage_id as string,
+        offerId:     linkedOfferId,
+        trigger:     "document_uploaded",
+        actorUserId: ((doc as any).metadata?.uploaded_by as string | undefined) ?? null,
+      })
+    } catch (err: any) {
+      console.error("[scan] offer compliance loop failed (non-fatal):", err?.message ?? err)
+    }
+  }
 
   // Post-scan hook: when the classification yields participant info (PAL →
   // lender; signed_contract → title_company), wire the extracted fields
@@ -291,6 +458,28 @@ export async function scanUploadedDocument(params: {
     }
   }
 
+  // Post-scan hook 6 — CLOSING COMPLIANCE (wave 143): a settlement statement, or a contract / counter /
+  // addendum that can change the governing terms, was just read for a transaction. Re-ask the ONE closing
+  // check: contract terms (latest executed instrument wins, per term) against the settlement statement, the
+  // brokerage's closing-stage checklist, and the state's closing participants. Findings land in
+  // transaction_compliance_log; a signed term is never edited, only flagged. It is idle until a settlement
+  // statement exists, and it writes and notifies nothing when nothing changed.
+  const closingTxId = ((doc as any).transaction_id as string | null) ?? null
+  if (closingTxId && (classification === "closing_disclosure" || classification === "preliminary_closing_statement" ||
+      classification === "signed_contract" || classification === "counter_offer" || classification === "addendum")) {
+    try {
+      const { runClosingCompliance } = await import("@/lib/transactions/closing-compliance")
+      await runClosingCompliance(supabase as any, {
+        transactionId: closingTxId,
+        brokerageId:   doc.brokerage_id as string,
+        trigger:       classification === "closing_disclosure" || classification === "preliminary_closing_statement" ? "settlement_scanned" : "contract_document_scanned",
+        actorUserId:   ((doc as any).metadata?.uploaded_by as string | undefined) ?? null,
+      })
+    } catch (err: any) {
+      console.error("[scan] closing compliance hook failed (non-fatal):", err?.message ?? err)
+    }
+  }
+
   return {
     success: true,
     documentId,
@@ -301,10 +490,19 @@ export async function scanUploadedDocument(params: {
   }
 }
 
-const CLASSIFICATIONS: DocumentClassification[] = [
-  "pre_approval_letter","proof_of_funds","id_document","signed_contract",
-  "counter_offer","addendum","disclosure","inspection_report",
-  "appraisal_report","title_report","hoa_documents","closing_disclosure",
-  "wire_instructions","agency_disclosure","commission_agreement",
-  "lender_letter","earnest_money_receipt","other",
-]
+/**
+ * THE ONE LIST — imported, never re-typed.
+ *
+ * This array used to be hand-written here, 18 values, and it did NOT include
+ * listing_agreement. Anything the model returned that was not in it was coerced
+ * to "other" (see the classification fold above), so a signed listing agreement
+ * could not be named by this scanner even when the model recognised it.
+ *
+ * ALL_DOCUMENT_CLASSIFICATIONS is derived from the label record in
+ * lib/compliance/document-classifications.ts, which is the same vocabulary the
+ * required-document presets and the compliance audit are written against. A
+ * value added there is offered by the prompt and accepted by the fold with no
+ * edit here — which is the point, because a hand-maintained copy next to a
+ * consumer that has grown past it is how this drift got in.
+ */
+const CLASSIFICATIONS: DocumentClassification[] = ALL_DOCUMENT_CLASSIFICATIONS

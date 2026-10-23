@@ -8,43 +8,52 @@ import { addRecruitingCost } from "@/app/actions/recruiting-roi"
 import { useTransition } from "react"
 import { toast } from "sonner"
 
-interface Props {
-  brokerageId: string
-}
+// `brokerageId` prop REMOVED (2026-09-03): the action derives the tenant from the
+// session (app/actions/recruiting-roi.ts, §4), so the page no longer hands one down.
+//
+// `agents` prop ADDED (2026-09-03, lane H4). Until now this form sent the typed
+// "Recruit Name" (free text) as `recruitedAgentId` — a uuid column, and the id
+// addRecruitingCost verifies against the tenant's agents — so the insert could
+// never succeed: every submission ended in "Recruit not found in your brokerage".
+// The page now reads the tenant's agents (listRecruitableAgents, gated the same
+// way as the write) and the form submits the chosen agents.id. An empty list is
+// named as such; it never falls back to a text box.
+export type RecruitableAgent = { id: string; name: string; isActive: boolean }
 
-export function CostEntryPanel({ brokerageId }: Props) {
+export function CostEntryPanel({ agents }: { agents: RecruitableAgent[] }) {
   const [isOpen, setIsOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
   const [formData, setFormData] = useState({
     cost_type: "training",
     amount: "",
-    recruit_name: "",
+    recruited_agent_id: "",
     notes: "",
   })
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!formData.amount || !formData.recruit_name) {
-      toast.error("Fill in required fields")
+    if (!formData.amount || !formData.recruited_agent_id) {
+      toast.error("Choose a recruit and enter an amount")
       return
     }
 
     startTransition(async () => {
       try {
         await addRecruitingCost(
-          brokerageId,
-          formData.recruit_name,
+          formData.recruited_agent_id,
           formData.cost_type,
           Math.round(parseFloat(formData.amount) * 100),
           formData.notes || undefined,
         )
 
-        setFormData({ cost_type: "training", amount: "", recruit_name: "", notes: "" })
+        setFormData({ cost_type: "training", amount: "", recruited_agent_id: "", notes: "" })
         setIsOpen(false)
         toast.success("Cost added")
       } catch (error) {
         console.error("Error adding cost:", error)
-        toast.error("Failed to add cost")
+        // The action's refusal is specific ("Recruit not found in your brokerage",
+        // "Forbidden: …"); surface it rather than a generic failure.
+        toast.error(error instanceof Error && error.message ? error.message : "Failed to add cost")
       }
     })
   }
@@ -68,15 +77,29 @@ export function CostEntryPanel({ brokerageId }: Props) {
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium mb-1">Recruit Name</label>
-              <input
-                type="text"
-                required
-                value={formData.recruit_name}
-                onChange={(e) => setFormData({ ...formData, recruit_name: e.target.value })}
-                className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="John Doe"
-              />
+              <label className="block text-sm font-medium mb-1" htmlFor="recruiting-cost-recruit">
+                Recruit
+              </label>
+              {agents.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No agents could be listed for your brokerage, so a cost cannot be attributed yet.
+                </p>
+              ) : (
+                <select
+                  id="recruiting-cost-recruit"
+                  required
+                  value={formData.recruited_agent_id}
+                  onChange={(e) => setFormData({ ...formData, recruited_agent_id: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Select a recruit…</option>
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.isActive ? a.name : `${a.name} (inactive)`}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div>
@@ -86,11 +109,10 @@ export function CostEntryPanel({ brokerageId }: Props) {
                 onChange={(e) => setFormData({ ...formData, cost_type: e.target.value })}
                 className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
+                <option value="recruiting_fee">Recruiting Fee</option>
+                <option value="signing_bonus">Signing Bonus</option>
                 <option value="training">Training</option>
-                <option value="marketing">Marketing</option>
-                <option value="technology">Technology</option>
-                <option value="bonus">Sign-on Bonus</option>
-                <option value="commission_guarantee">Commission Guarantee</option>
+                <option value="onboarding">Onboarding</option>
                 <option value="other">Other</option>
               </select>
             </div>
@@ -122,7 +144,7 @@ export function CostEntryPanel({ brokerageId }: Props) {
             <div className="flex gap-2">
               <Button
                 type="submit"
-                disabled={isPending}
+                disabled={isPending || agents.length === 0}
                 className="flex-1"
               >
                 {isPending ? "Saving..." : "Add Cost"}

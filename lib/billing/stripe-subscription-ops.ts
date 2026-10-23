@@ -11,6 +11,8 @@
 // NOTE: @/lib/stripe is `server-only` and requires STRIPE_SECRET_KEY at first use — it is imported LAZILY,
 // only AFTER the isStripeConfigured() guard, so the unconfigured path (and unit tests) never load it.
 
+import { normalizeStripeStatus } from "./stripe-status"
+
 export interface StripeOpResult {
   /** true ⇒ the change was pushed to Stripe. false ⇒ skipped (unconfigured / not Stripe-linked) or errored. */
   applied: boolean
@@ -51,11 +53,94 @@ export async function stripeSwapPrice(subscriptionId: string | null | undefined,
   try {
     const { stripe } = await import("@/lib/stripe")
     const sub = await stripe.subscriptions.retrieve(subscriptionId)
-    const itemId = (sub as any).items?.data?.[0]?.id
+    // The PLAN line is the first LICENSED item — never a metered overage item
+    // (wave 87C, lib/billing/stripe-overage-meter.ts), which a tier change must
+    // not reprice onto the plan price.
+    const items = ((sub as any).items?.data ?? []) as Array<{ id: string; price?: { recurring?: { usage_type?: string } | null } | string }>
+    const itemId = items.find((it) => typeof it.price !== "object" || (it.price?.recurring?.usage_type ?? "licensed") === "licensed")?.id
     if (!itemId) return { applied: false, skipped: false, error: "subscription has no line item to reprice" }
     await stripe.subscriptions.update(subscriptionId, { items: [{ id: itemId, price: newPriceId }], proration_behavior: "create_prorations" })
     return { applied: true, skipped: false }
   } catch (err: any) { return { applied: false, skipped: false, error: err?.message ?? String(err) } }
+}
+
+// ── SEAT PACKAGES + CATALOGUE READS (wave 79A) ───────────────────────────────
+// The only Stripe calls the seat door, the daily reconcile and the superadmin
+// catalogue sync make. They live HERE — beside stripeSwapPrice — because this
+// file is already on the platform-client roster (scripts/stripe-account-scope-
+// simulator.ts PLATFORM_CLIENT_IMPORTERS: platform_payee), so no new importer
+// of the platform key is minted for them.
+
+export interface SeatItemOpResult extends StripeOpResult {
+  /** The seat-package subscription item id after the write (null when skipped / errored). */
+  itemId?: string | null
+  quantity?: number
+}
+
+/**
+ * Set the tenant's seat-package QUANTITY on its Stripe subscription: updates
+ * the existing item on `seatPriceId` or adds one (Stripe: one item per price;
+ * a quantity change prorates the remainder of the period —
+ * proration_behavior create_prorations, docs.stripe.com/billing/subscriptions/
+ * prorations). Quantity 0 removes the item. Fails closed on a missing price
+ * or subscription: nothing is charged and nothing is recorded as bought.
+ */
+export async function stripeSetSeatPackages(
+  subscriptionId: string | null | undefined,
+  seatPriceId: string | null | undefined,
+  quantity: number,
+): Promise<SeatItemOpResult> {
+  if (!isStripeConfigured() || !subscriptionId) return skip()
+  if (!seatPriceId) return { applied: false, skipped: false, error: "this plan has no Stripe seat-package price linked — seats cannot be sold until the catalogue is synced" }
+  const qty = Math.max(0, Math.floor(quantity))
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    const sub = await stripe.subscriptions.retrieve(subscriptionId)
+    const items = ((sub as any).items?.data ?? []) as Array<{ id: string; price?: { id?: string } | string }>
+    const existing = items.find((it) => (typeof it.price === "string" ? it.price : it.price?.id) === seatPriceId)
+    if (existing) {
+      if (qty === 0) {
+        await stripe.subscriptions.update(subscriptionId, { items: [{ id: existing.id, deleted: true }], proration_behavior: "create_prorations" })
+        return { applied: true, skipped: false, itemId: null, quantity: 0 }
+      }
+      await stripe.subscriptions.update(subscriptionId, { items: [{ id: existing.id, quantity: qty }], proration_behavior: "create_prorations" })
+      return { applied: true, skipped: false, itemId: existing.id, quantity: qty }
+    }
+    if (qty === 0) return { applied: true, skipped: false, itemId: null, quantity: 0 }
+    const updated = await stripe.subscriptions.update(subscriptionId, { items: [{ price: seatPriceId, quantity: qty }], proration_behavior: "create_prorations" })
+    const added = (((updated as any).items?.data ?? []) as Array<{ id: string; price?: { id?: string } | string }>)
+      .find((it) => (typeof it.price === "string" ? it.price : it.price?.id) === seatPriceId)
+    return { applied: true, skipped: false, itemId: added?.id ?? null, quantity: qty }
+  } catch (err: any) { return { applied: false, skipped: false, error: err?.message ?? String(err) } }
+}
+
+/** Retrieve a subscription with its items (for the webhook-free reconcile).
+ *  Returns the raw SDK object; lib/billing/seat-packages.ts narrows it. */
+export async function stripeRetrieveSubscription(subscriptionId: string): Promise<{ ok: true; sub: any } | { ok: false; skipped: boolean; error?: string }> {
+  if (!isStripeConfigured() || !subscriptionId) return { ok: false, skipped: true }
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    const sub = await stripe.subscriptions.retrieve(subscriptionId, { expand: ["items.data.price"] })
+    return { ok: true, sub }
+  } catch (err: any) { return { ok: false, skipped: false, error: err?.message ?? String(err) } }
+}
+
+/** List every ACTIVE recurring price with its product expanded, newest first
+ *  (Stripe's default order) — the catalogue source for the superadmin sync. */
+export async function stripeListActivePrices(): Promise<{ ok: true; prices: any[] } | { ok: false; skipped: boolean; error?: string }> {
+  if (!isStripeConfigured()) return { ok: false, skipped: true }
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    const prices: any[] = []
+    let startingAfter: string | undefined
+    for (let page = 0; page < 20; page++) {
+      const res = await stripe.prices.list({ active: true, type: "recurring", limit: 100, expand: ["data.product"], ...(startingAfter ? { starting_after: startingAfter } : {}) })
+      prices.push(...(res.data ?? []))
+      if (!res.has_more || res.data.length === 0) break
+      startingAfter = res.data[res.data.length - 1]!.id
+    }
+    return { ok: true, prices }
+  } catch (err: any) { return { ok: false, skipped: false, error: err?.message ?? String(err) } }
 }
 
 /** Extend the trial to a new end (unix seconds). Comping free time = extending the trial. */
@@ -88,11 +173,112 @@ export function computeTrialExtension(currentTrialEnd: string | null, addDays: n
 export function stripeApplyCoupon(
   subscriptionId: string | null | undefined,
   stripeCouponId: string | null | undefined,
+  /** wave 141H: a Stripe PROMOTION CODE id (promo_…) names the coupon instead —
+   *  Stripe then counts the promotion code's own redemption. */
+  opts: { promotionCodeId?: string | null } = {},
 ): Promise<StripeOpResult> {
-  if (!stripeCouponId || stripeCouponId.startsWith("mock_")) return Promise.resolve(skip())
+  if (!opts.promotionCodeId && (!stripeCouponId || stripeCouponId.startsWith("mock_"))) return Promise.resolve(skip())
   return guard(subscriptionId, async (stripe) => {
-    await stripe.subscriptions.update(subscriptionId!, { discounts: [{ coupon: stripeCouponId }] })
+    await stripe.subscriptions.update(subscriptionId!, {
+      discounts: opts.promotionCodeId ? [{ promotion_code: opts.promotionCodeId }] : [{ coupon: stripeCouponId! }],
+    })
   })
+}
+
+// ─── DISCOUNT CODES (wave 141H) ───────────────────────────────────────────────
+//
+// Owner (wave 141, COUPONS): "code → Stripe validation → eligibility → application
+// → invoice/checkout → internal reconciliation. No independent discount math."
+// The READ half lives here so no new importer of the platform Stripe client is
+// minted (scripts/stripe-account-scope-simulator.ts PLATFORM_CLIENT_IMPORTERS).
+// lib/billing/discount-codes.ts is the orchestrator (platform_coupons row → this
+// lookup → lib/platform/coupons.ts evaluateStripeDiscount → `discounts` params).
+
+export type StripeDiscountLookup =
+  | { ok: true; coupon: any; promotionCode: any | null }
+  /** Stripe has no such coupon / no ACTIVE promotion code spelled that way. */
+  | { ok: false; notFound: true; skipped: false }
+  /** Stripe is not configured — nothing could be checked (the caller says so). */
+  | { ok: false; notFound: false; skipped: true }
+  | { ok: false; notFound: false; skipped: false; error: string }
+
+/**
+ * Look a discount up ON STRIPE: by the platform coupon's live Stripe id, or by a
+ * promotion code's customer-facing spelling (stripe.promotionCodes.list code=…,
+ * the code Stripe matches case-insensitively). applies_to is expanded so the
+ * product restriction is visible to the pure evaluator. Read-only.
+ */
+export async function stripeLookupDiscount(q: { stripeCouponId?: string | null; promotionCode?: string | null }): Promise<StripeDiscountLookup> {
+  if (!isStripeConfigured()) return { ok: false, notFound: false, skipped: true }
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    if (q.stripeCouponId && !q.stripeCouponId.startsWith("mock_")) {
+      const coupon = await stripe.coupons.retrieve(q.stripeCouponId, { expand: ["applies_to"] })
+      if (!coupon || (coupon as any).deleted) return { ok: false, notFound: true, skipped: false }
+      return { ok: true, coupon, promotionCode: null }
+    }
+    if (q.promotionCode) {
+      const list = await stripe.promotionCodes.list({ code: q.promotionCode, active: true, limit: 1, expand: ["data.coupon.applies_to"] })
+      const promo = (list as any)?.data?.[0] ?? null
+      if (!promo) return { ok: false, notFound: true, skipped: false }
+      const coupon = typeof promo.coupon === "string" ? await stripe.coupons.retrieve(promo.coupon, { expand: ["applies_to"] }) : promo.coupon
+      return { ok: true, coupon, promotionCode: promo }
+    }
+    return { ok: false, notFound: true, skipped: false }
+  } catch (err: any) {
+    // Stripe answers "No such coupon" with a 404 resource_missing — that is not found, not an outage.
+    if (err?.code === "resource_missing" || err?.statusCode === 404) return { ok: false, notFound: true, skipped: false }
+    return { ok: false, notFound: false, skipped: false, error: err?.message ?? String(err) }
+  }
+}
+
+// ─── SUBSCRIBER → BROKERAGE BILLING HANDOFF (wave 141H) ──────────────────────
+//
+// Owner (wave 141, BROKERAGE IDENTITY): "stop individual billing at the right
+// effective time → Stripe proration → no double billing … invoices immutable, no
+// lost paid period, no fabricated refund". The Stripe side of
+// lib/billing/subscriber-handoff.ts: Stripe computes every proration — a future
+// effective date is `cancel_at` with create_prorations (the unused remainder
+// credits the customer at the cancel), an effective date already reached is
+// `cancel(prorate: true, invoice_now: true)` (Stripe issues the final invoice
+// with the proration credit on it). No refund is created here: a credit only
+// exists if Stripe's own proration computed one (customer balance / credit
+// note), and invoices already issued are never touched.
+
+export interface HandoffStripeResult extends StripeOpResult {
+  mode?: "scheduled_cancel" | "cancelled_now"
+  /** The final invoice Stripe issued on an immediate cancel (null when scheduled). */
+  finalInvoiceId?: string | null
+  /** Stripe's own cancel_at (unix) after the write, for the evidence row. */
+  cancelAtUnix?: number | null
+}
+
+export async function stripeEndSubscriptionForHandoff(
+  subscriptionId: string | null | undefined,
+  effectiveAtUnix: number,
+  nowUnix: number,
+  idempotencyKey: string,
+  comment?: string,
+): Promise<HandoffStripeResult> {
+  if (!isStripeConfigured() || !subscriptionId) return skip()
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    if (effectiveAtUnix <= nowUnix) {
+      const cancelled = await stripe.subscriptions.cancel(
+        subscriptionId,
+        { prorate: true, invoice_now: true, cancellation_details: { comment: comment ?? "billing handed off to brokerage" } },
+        { idempotencyKey },
+      )
+      const inv = (cancelled as any)?.latest_invoice
+      return { applied: true, skipped: false, mode: "cancelled_now", finalInvoiceId: typeof inv === "string" ? inv : (inv?.id ?? null), cancelAtUnix: (cancelled as any)?.canceled_at ?? nowUnix }
+    }
+    const updated = await stripe.subscriptions.update(
+      subscriptionId,
+      { cancel_at: effectiveAtUnix, proration_behavior: "create_prorations", cancellation_details: { comment: comment ?? "billing handed off to brokerage" } },
+      { idempotencyKey },
+    )
+    return { applied: true, skipped: false, mode: "scheduled_cancel", finalInvoiceId: null, cancelAtUnix: (updated as any)?.cancel_at ?? effectiveAtUnix }
+  } catch (err: any) { return { applied: false, skipped: false, error: err?.message ?? String(err) } }
 }
 
 /** Refund the subscription's most recent PAID invoice (full or partial cents).
@@ -120,4 +306,488 @@ export async function stripeRefundLatestInvoice(
   } catch (err: any) {
     return { applied: false, skipped: false, error: err?.message ?? String(err) }
   }
+}
+
+// ─── TRIAL / RENEWAL LIFECYCLE (wave 99A) ─────────────────────────────────────
+//
+// What was missing (gap map row 7 (d)): nothing ever ENDED a trial. The paywall
+// refused an expired trial at login, but the row stayed 'trialing' forever, no
+// one converted a trial that had a card on file, and nobody was told before the
+// trial ended or before a renewal charged. This block finishes the loop on the
+// survivors: Stripe stays the source of truth for Stripe-linked rows (the
+// webhook + the daily reconcile in lib/billing/seat-sync.ts mirror its status);
+// this sweep owns only what Stripe cannot see — LOCAL trials (self-serve signup
+// creates no Stripe subscription) — plus the reminders, sent through the ONE
+// egress (dispatchEmail) with an action-ledger cycle so each goes out once.
+// Deterministic code only: no model is in this path (LAW 4), and every state
+// change leaves a kernel event + an action-ledger row (LAW 5).
+
+const DAY_MS = 86_400_000
+
+/** Stripe's own customer.subscription.trial_will_end lead time — the sweep matches it. */
+const TRIAL_REMINDER_DAYS = 3
+/** Renewal notice lead time (auto-renewal notice before the charge). */
+const RENEWAL_REMINDER_DAYS = 7
+
+export type LifecycleReminderKind = "trial_end" | "renewal"
+
+export interface LifecycleSubRow {
+  id: string
+  brokerage_id: string
+  status: string | null
+  trial_end: string | null
+  current_period_end: string | null
+  cancel_at: string | null
+  stripe_subscription_id: string | null
+  stripe_customer_id: string | null
+  tier_id: string | null
+}
+
+/** PURE: the ledger cycle of a reminder — one per (kind, the date it is about). An extended
+ *  trial or a new period is a NEW date and therefore a new reminder; the same date never twice. */
+export function reminderCycle(kind: LifecycleReminderKind, aboutIso: string): string {
+  return `${kind}:${new Date(Date.parse(aboutIso)).toISOString().slice(0, 10)}`
+}
+
+/** @proofSeam the lifecycle sweep below is its runtime caller; scripts/billing-access-simulator.ts Layer 1d asserts the windows directly.
+ *  PURE: the reminder due for this row right now — or null. `tenantTrialEnd` is the
+ *  brokerages.trial_ends_at fallback loadBillingAccess also honours. */
+export function planLifecycleReminder(
+  sub: Pick<LifecycleSubRow, "status" | "trial_end" | "current_period_end" | "cancel_at" | "stripe_subscription_id">,
+  now: Date,
+  tenantTrialEnd: string | null = null,
+): { kind: LifecycleReminderKind; cycle: string; aboutIso: string } | null {
+  const status = normalizeStripeStatus(sub.status)
+  if (status === "trialing") {
+    const iso = sub.trial_end ?? tenantTrialEnd
+    const end = iso ? Date.parse(iso) : NaN
+    if (!Number.isFinite(end)) return null
+    const left = end - now.getTime()
+    return left > 0 && left <= TRIAL_REMINDER_DAYS * DAY_MS ? { kind: "trial_end", cycle: reminderCycle("trial_end", iso!), aboutIso: iso! } : null
+  }
+  // A renewal only charges on a Stripe-linked subscription that is not set to cancel.
+  if (status === "active" && sub.stripe_subscription_id && !sub.cancel_at && sub.current_period_end) {
+    const end = Date.parse(sub.current_period_end)
+    if (!Number.isFinite(end)) return null
+    const left = end - now.getTime()
+    return left > 0 && left <= RENEWAL_REMINDER_DAYS * DAY_MS ? { kind: "renewal", cycle: reminderCycle("renewal", sub.current_period_end), aboutIso: sub.current_period_end } : null
+  }
+  return null
+}
+
+export type TrialEndAction = "none" | "defer_to_stripe" | "convert" | "expire"
+
+// PURE: what happens to a trial. Stripe-linked → Stripe decides (it charges the card or
+// pauses/cancels per its trial settings) and the reconcile mirrors it. A LOCAL trial that
+// has ended converts when a payment method is on file, otherwise it is moved to 'paused' —
+// Stripe's own state for "trial ended, no payment method" (trial_settings.end_behavior.
+// missing_payment_method = pause), refused by the paywall, and NOT 'past_due', which would
+// start the dunning ladder's "your payment failed" copy for a payment nobody attempted.
+/** @proofSeam the lifecycle sweep below is its runtime caller; scripts/billing-access-simulator.ts Layer 1d asserts the decision matrix directly. */
+export function planTrialEnd(i: { trialEnded: boolean; stripeLinked: boolean; hasPaymentMethod: boolean }): TrialEndAction {
+  if (!i.trialEnded) return "none"
+  if (i.stripeLinked) return "defer_to_stripe"
+  return i.hasPaymentMethod ? "convert" : "expire"
+}
+
+/** Emit the kernel event for a subscription status transition (webhook, reconcile, sweep). */
+export async function emitSubscriptionTransition(t: {
+  brokerageId: string
+  subscriptionId: string
+  from: string | null
+  to: string
+  source: "webhook" | "reconcile" | "sweep"
+  detail?: Record<string, unknown>
+}): Promise<{ ok: boolean; error: string | null }> {
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  const { KernelEvent } = await import("@/lib/kernel/events")
+  const converted = normalizeStripeStatus(t.from) === "trialing" && t.to === "active"
+  const r = converted
+    ? await emitKernelEvent({
+        event: KernelEvent.SUBSCRIPTION_TRIAL_CONVERTED, brokerageId: t.brokerageId,
+        entityType: "subscription", entityId: t.subscriptionId,
+        source: t.source === "webhook" ? "webhook" : "cron",
+        metadata: { from: t.from, to: t.to, via: t.source, ...(t.detail ?? {}) },
+        dedupeKey: `${t.from}->${t.to}`,
+      })
+    : await emitKernelEvent({
+        event: KernelEvent.SUBSCRIPTION_STATUS_CHANGED, brokerageId: t.brokerageId,
+        entityType: "subscription", entityId: t.subscriptionId,
+        source: t.source === "webhook" ? "webhook" : "cron",
+        metadata: { from: t.from, to: t.to, via: t.source, ...(t.detail ?? {}) },
+        dedupeKey: `${t.from}->${t.to}`,
+      })
+  return { ok: !r.error, error: r.error }
+}
+
+/** Does this Stripe customer have a payment method on file? Unconfigured / unlinked → false. */
+async function stripeCustomerHasPaymentMethod(customerId: string | null | undefined): Promise<{ ok: boolean; has: boolean; error?: string }> {
+  if (!isStripeConfigured() || !customerId) return { ok: true, has: false }
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    const pms = await stripe.paymentMethods.list({ customer: customerId, limit: 1 })
+    return { ok: true, has: ((pms as any)?.data ?? []).length > 0 }
+  } catch (err: any) { return { ok: false, has: false, error: err?.message ?? String(err) } }
+}
+
+/**
+ * Convert a LOCAL trial into a Stripe subscription on the tier's price, charging the card on
+ * file. Stripe idempotency key = (row, trial end): two sweeps can never create two
+ * subscriptions. The webhook (customer.subscription.created) links the new subscription to
+ * the existing row through upsertBrokerageSubscription — this op writes nothing locally.
+ */
+async function stripeConvertTrial(args: {
+  customerId: string; priceId: string; brokerageId: string; idempotencyKey: string
+  /** wave 141H: the signup coupon (brokerages.billing_metadata.coupon), resolved + Stripe-validated by
+   *  lib/billing/discount-codes.ts resolveDiscountForCheckout — applied as Stripe `discounts`, never as
+   *  a price this code computed. */
+  discounts?: Array<{ promotion_code: string } | { coupon: string }> | null
+}): Promise<StripeOpResult & { stripeSubscriptionId?: string }> {
+  if (!isStripeConfigured()) return skip()
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    const created = await stripe.subscriptions.create(
+      {
+        customer: args.customerId, items: [{ price: args.priceId }], metadata: { brokerage_id: args.brokerageId },
+        ...(args.discounts && args.discounts.length > 0 ? { discounts: args.discounts } : {}),
+      },
+      { idempotencyKey: args.idempotencyKey },
+    )
+    return { applied: true, skipped: false, stripeSubscriptionId: (created as any)?.id }
+  } catch (err: any) { return { applied: false, skipped: false, error: err?.message ?? String(err) } }
+}
+
+/**
+ * Send one lifecycle reminder to the tenant's commerce admins (the seats that may obligate
+ * the brokerage to pay — TENANT_COMMERCE_ADMIN_USER_TYPES) through dispatchEmail. Each
+ * recipient's send carries the ledger cycle `${cycle}:${userId}` on subject = the
+ * subscription, so the action ledger's idempotency key makes it at-most-once per cycle no
+ * matter how many sweeps or webhook deliveries ask. systemSource 'billing_lifecycle' is a
+ * BILLING_NOTICE_SOURCE — it reaches a lapsed tenant (that is its job).
+ */
+export async function sendSubscriptionReminder(
+  svc: any,
+  sub: Pick<LifecycleSubRow, "id" | "brokerage_id">,
+  plan: { kind: LifecycleReminderKind; cycle: string; aboutIso: string },
+  deps?: {
+    send?: (p: any) => Promise<{ success: boolean; providerKey?: string; error?: string }>
+    /** Kernel-event seam (default: emitKernelEvent). */
+    emit?: (e: { event: string; brokerageId: string; entityType: string; entityId: string; source: "cron"; metadata: Record<string, unknown>; dedupeKey: string; dedupeWindowSec: number }) => Promise<unknown>
+  },
+): Promise<{ attempted: number; sent: number; error: string | null }> {
+  const { TENANT_COMMERCE_ADMIN_USER_TYPES } = await import("@/lib/auth/resolve-user-role")
+  const [{ data: admins, error: aErr }, { data: brk, error: bErr }] = await Promise.all([
+    svc.from("users").select("id, email").eq("brokerage_id", sub.brokerage_id)
+      .in("user_type", [...TENANT_COMMERCE_ADMIN_USER_TYPES]).not("email", "is", null).limit(10),
+    svc.from("brokerages").select("name").eq("id", sub.brokerage_id).maybeSingle(),
+  ])
+  if (aErr) return { attempted: 0, sent: 0, error: `admin read refused: ${aErr.message}` }
+  const name = (!bErr && (brk as { name?: string } | null)?.name) || "your brokerage"
+  const date = new Date(Date.parse(plan.aboutIso)).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" })
+  const { siteUrl } = await import("@/lib/platform/site-url")
+  const billingUrl = `${siteUrl() || ""}/dashboard/admin/billing`
+  const subject = plan.kind === "trial_end" ? `Your ${name} trial ends on ${date}` : `Your ${name} subscription renews on ${date}`
+  const body = plan.kind === "trial_end"
+    ? `Your free trial for ${name} ends on ${date}. If a payment method is on file, your plan continues automatically. If not, access pauses when the trial ends — nothing is deleted, and adding a payment method restores it. Manage billing: ${billingUrl}`
+    : `Your subscription for ${name} renews automatically on ${date} at your plan's current price. To change or cancel before then, visit your billing page: ${billingUrl}`
+  const send = deps?.send ?? (async (p: any) => (await import("@/lib/providers/dispatch")).dispatchEmail(p))
+  let attempted = 0, sent = 0
+  for (const a of (admins ?? []) as Array<{ id: string; email: string | null }>) {
+    if (!a.email) continue
+    attempted += 1
+    const r = await send({
+      brokerageId: sub.brokerage_id, to: a.email, subject, html: `<p>${body}</p>`, text: body,
+      systemSource: "billing_lifecycle", channelPurpose: "transactional",
+      ledger: { subject: { type: "subscription", id: sub.id }, reasonCode: "COMPLIANCE_NOTICE", reasonDetail: `${plan.kind} reminder`, cycle: `${plan.cycle}:${a.id}` },
+    })
+    if (r.success) sent += 1
+  }
+  // `sent` counts DELIVERED-OR-ALREADY-DELIVERED: a ledger replay returns success too. The
+  // action ledger (idempotency key per recipient + cycle) is the once-only guarantee, and the
+  // event below is deduped on the cycle for 7 days — longer than either reminder window.
+  if (sent > 0) {
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    const emit = deps?.emit ?? (async (e: Parameters<NonNullable<NonNullable<typeof deps>["emit"]>>[0]) => (await import("@/lib/kernel/emit")).emitKernelEvent(e))
+    await emit({
+      event: KernelEvent.SUBSCRIPTION_REMINDER_SENT, brokerageId: sub.brokerage_id,
+      entityType: "subscription", entityId: sub.id, source: "cron",
+      metadata: { kind: plan.kind, cycle: plan.cycle, about: plan.aboutIso, recipients: sent },
+      dedupeKey: plan.cycle, dedupeWindowSec: 7 * 86_400,
+    })
+  }
+  return { attempted, sent, error: null }
+}
+
+export interface LifecycleSweepResult {
+  scanned: number
+  converted: number
+  expired: number
+  /** wave 141H: LOCAL (non-Stripe) rows whose cancel_at arrived and were moved to 'cancelled'. */
+  cancelAtReached: number
+  remindersAttempted: number
+  remindersSent: number
+  errors: string[]
+}
+
+export interface LifecycleSweepDeps {
+  hasPaymentMethod?: (customerId: string | null) => Promise<{ ok: boolean; has: boolean; error?: string }>
+  convert?: typeof stripeConvertTrial
+  send?: (p: any) => Promise<{ success: boolean; providerKey?: string; error?: string }>
+  /** Ledger client seam (default: the service client inside withActionLedger). */
+  ledgerClient?: { from: (table: string) => any }
+  /** wave 141H: the discount resolver seam (default: lib/billing/discount-codes.ts resolveDiscountForCheckout). */
+  resolveDiscount?: (svc: any, args: { brokerageId: string; tier: string | null }) => Promise<{ status: string; params?: { discounts: Array<{ promotion_code: string } | { coupon: string }> } | null; message?: string }>
+}
+
+/**
+ * THE DAILY SWEEP — rides /api/cron/billing-dunning (step 3, after the Stripe reconcile so
+ * Stripe-linked rows already carry Stripe's status). Every state write is COUNTED and runs
+ * inside withActionLedger with cycle = the trial end it is about, so it happens once.
+ */
+export async function runSubscriptionLifecycleSweep(svc: any, now: Date = new Date(), deps: LifecycleSweepDeps = {}): Promise<LifecycleSweepResult> {
+  const out: LifecycleSweepResult = { scanned: 0, converted: 0, expired: 0, cancelAtReached: 0, remindersAttempted: 0, remindersSent: 0, errors: [] }
+  const { data: rows, error } = await svc
+    .from("subscriptions")
+    .select("id, brokerage_id, status, trial_end, current_period_end, cancel_at, stripe_subscription_id, stripe_customer_id, tier_id")
+    .in("status", ["trialing", "active"])
+    .limit(1000)
+  if (error) { out.errors.push(`subscriptions read refused: ${error.message}`); return out }
+  const list = (rows ?? []) as LifecycleSubRow[]
+  out.scanned = list.length
+
+  // brokerages.trial_ends_at — the fallback loadBillingAccess honours for a NULL trial_end.
+  const trialIds = [...new Set(list.filter((r) => normalizeStripeStatus(r.status) === "trialing" && !r.trial_end).map((r) => r.brokerage_id))]
+  const tenantTrialEnd = new Map<string, string | null>()
+  if (trialIds.length > 0) {
+    const { data: brks, error: bErr } = await svc.from("brokerages").select("id, trial_ends_at").in("id", trialIds)
+    if (bErr) out.errors.push(`brokerages read refused: ${bErr.message}`)
+    for (const b of (brks ?? []) as Array<{ id: string; trial_ends_at: string | null }>) tenantTrialEnd.set(b.id, b.trial_ends_at)
+  }
+
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const hasPm = deps.hasPaymentMethod ?? stripeCustomerHasPaymentMethod
+  const convert = deps.convert ?? stripeConvertTrial
+  const ledgerOpts = deps.ledgerClient ? { client: deps.ledgerClient } : undefined
+
+  for (const row of list) {
+    try {
+      const fallback = tenantTrialEnd.get(row.brokerage_id) ?? null
+      const trialIso = row.trial_end ?? fallback
+      const isTrial = normalizeStripeStatus(row.status) === "trialing"
+      const trialEnded = isTrial && !!trialIso && Number.isFinite(Date.parse(trialIso)) && Date.parse(trialIso) <= now.getTime()
+
+      // wave 141H — a LOCAL row (no Stripe subscription: a trial, or a staff-invoiced tenant) whose
+      // cancel_at has arrived. Stripe-linked rows are cancelled BY Stripe at cancel_at and mirrored by
+      // the webhook / reconcile; nothing enforced the column on a local row, so a scheduled
+      // subscriber→brokerage handoff (lib/billing/subscriber-handoff.ts) of a trial would have stayed
+      // 'trialing' past its effective date. COUNTED, ledgered once per (row, cancel_at), evented.
+      if (!row.stripe_subscription_id && row.cancel_at && Number.isFinite(Date.parse(row.cancel_at)) && Date.parse(row.cancel_at) <= now.getTime()) {
+        const cycle = `cancel_at:${new Date(Date.parse(row.cancel_at)).toISOString()}`
+        const res = await withActionLedger<{ moved: number; error: string | null }>(
+          { brokerageId: row.brokerage_id, action: "billing.subscription.cancel_at_reached", actor: { type: "system" },
+            subject: { type: "subscription", id: row.id }, reasonCode: "SUBSCRIPTION_LIFECYCLE",
+            reasonDetail: "scheduled end reached on a local (non-Stripe) subscription", cycle, riskClass: "FINANCIAL",
+            systemSource: "billing_lifecycle", detail: { cancel_at: row.cancel_at, from: row.status, to: "cancelled" } },
+          async () => {
+            const { data: moved, error: mErr } = await svc.from("subscriptions")
+              .update({ status: "cancelled", cancelled_at: now.toISOString(), updated_at: now.toISOString() })
+              .eq("id", row.id).eq("status", row.status as string)
+              .select("id")
+            return { moved: ((moved ?? []) as unknown[]).length, error: mErr?.message ?? null }
+          },
+          {
+            settle: (r) => ({ status: r.error ? "failed" : "executed", outcome: r.error ? "refused" : r.moved === 1 ? "cancelled" : "already_moved", error: r.error }),
+            replay: () => ({ moved: 0, error: null }),
+          },
+          ledgerOpts,
+        )
+        if (res.error) { out.errors.push(`${row.id}: cancel_at refused — ${res.error}`); continue }
+        if (res.moved === 1) {
+          out.cancelAtReached += 1
+          const t = await emitSubscriptionTransition({ brokerageId: row.brokerage_id, subscriptionId: row.id, from: row.status, to: "cancelled", source: "sweep", detail: { cancel_at: row.cancel_at } })
+          if (!t.ok) out.errors.push(`${row.id}: cancel_at transition event not recorded — ${t.error}`)
+        }
+        continue
+      }
+
+      if (trialEnded) {
+        const stripeLinked = !!row.stripe_subscription_id
+        const pm = stripeLinked ? { ok: true, has: false } : await hasPm(row.stripe_customer_id)
+        if (!pm.ok) { out.errors.push(`${row.id}: payment-method check failed (${pm.error}) — trial left for the next sweep`); continue }
+        const action = planTrialEnd({ trialEnded, stripeLinked, hasPaymentMethod: pm.has })
+        const cycle = reminderCycle("trial_end", trialIso!)
+
+        if (action === "convert") {
+          const { data: tier, error: tErr } = await svc.from("subscription_tiers").select("stripe_price_id, tier_name").eq("id", row.tier_id).maybeSingle()
+          const priceId = (tier as { stripe_price_id?: string | null } | null)?.stripe_price_id ?? null
+          if (tErr || !priceId) { out.errors.push(`${row.id}: no Stripe price for tier ${row.tier_id} (${tErr?.message ?? "unpriced"}) — cannot convert`); continue }
+          // wave 141H — the coupon the tenant redeemed at signup (billing_metadata.coupon) rides the
+          // conversion as Stripe `discounts`, after Stripe re-validated it. A REFUSED code (expired on
+          // Stripe since signup, product-restricted) converts WITHOUT the discount and says so in the
+          // errors list — the paid period is never lost over a stale promo, and no price is invented.
+          const resolveDiscount = deps.resolveDiscount ?? (async (client: any, args: { brokerageId: string; tier: string | null }) =>
+            (await import("./discount-codes")).resolveDiscountForCheckout(client, { brokerageId: args.brokerageId, tier: args.tier }))
+          const discount = await resolveDiscount(svc, { brokerageId: row.brokerage_id, tier: (tier as { tier_name?: string | null } | null)?.tier_name ?? null })
+          if (discount.status === "refused") out.errors.push(`${row.id}: signup discount not applied — ${discount.message ?? "refused"}`)
+          const discounts = discount.status === "applied" ? discount.params?.discounts ?? null : null
+          const res = await withActionLedger<StripeOpResult & { stripeSubscriptionId?: string }>(
+            { brokerageId: row.brokerage_id, action: "billing.subscription.convert_trial", actor: { type: "system" },
+              subject: { type: "subscription", id: row.id }, reasonCode: "SUBSCRIPTION_LIFECYCLE",
+              reasonDetail: "trial ended with a payment method on file", cycle, riskClass: "FINANCIAL",
+              systemSource: "billing_lifecycle", detail: { trial_end: trialIso, price_id: priceId, discount: discount.status, discounts } },
+            () => convert({ customerId: row.stripe_customer_id!, priceId, brokerageId: row.brokerage_id, idempotencyKey: `trial-convert:${row.id}:${cycle}`, discounts }),
+            {
+              settle: (r) => ({ status: r.applied ? "executed" : "failed", outcome: r.applied ? "converted" : (r.skipped ? "stripe_unconfigured" : "stripe_refused"), provider: "stripe", providerRef: r.stripeSubscriptionId ?? null, error: r.error ?? null }),
+              replay: () => ({ applied: false, skipped: true }),
+            },
+            ledgerOpts,
+          )
+          // The kernel event is NOT emitted here: money has not moved until Stripe says so. The
+          // webhook's customer.subscription.created links the new subscription to this row and
+          // emits SUBSCRIPTION_TRIAL_CONVERTED on the trialing → active transition it observes.
+          if (res.applied) out.converted += 1
+          else if (res.error) out.errors.push(`${row.id}: convert failed — ${res.error}`)
+          continue
+        }
+
+        if (action === "expire") {
+          const res = await withActionLedger<{ moved: number; error: string | null }>(
+            { brokerageId: row.brokerage_id, action: "billing.subscription.expire_trial", actor: { type: "system" },
+              subject: { type: "subscription", id: row.id }, reasonCode: "SUBSCRIPTION_LIFECYCLE",
+              reasonDetail: "trial ended with no payment method — access paused until one is added", cycle, riskClass: "FINANCIAL",
+              systemSource: "billing_lifecycle", detail: { trial_end: trialIso, from: row.status, to: "paused" } },
+            async () => {
+              const { data: moved, error: mErr } = await svc.from("subscriptions")
+                .update({ status: "paused", updated_at: now.toISOString() })
+                .eq("id", row.id).eq("status", row.status as string)
+                .select("id")
+              return { moved: ((moved ?? []) as unknown[]).length, error: mErr?.message ?? null }
+            },
+            {
+              settle: (r) => ({ status: r.error ? "failed" : "executed", outcome: r.error ? "refused" : r.moved === 1 ? "paused" : "already_moved", error: r.error }),
+              replay: () => ({ moved: 0, error: null }),
+            },
+            ledgerOpts,
+          )
+          if (res.error) { out.errors.push(`${row.id}: expire refused — ${res.error}`); continue }
+          if (res.moved === 1) {
+            out.expired += 1
+            const { emitKernelEvent } = await import("@/lib/kernel/emit")
+            const { KernelEvent } = await import("@/lib/kernel/events")
+            await emitKernelEvent({
+              event: KernelEvent.SUBSCRIPTION_TRIAL_EXPIRED, brokerageId: row.brokerage_id,
+              entityType: "subscription", entityId: row.id, source: "cron",
+              metadata: { trial_end: trialIso, from: row.status, to: "paused", reason: "no_payment_method" },
+              dedupeKey: cycle, dedupeWindowSec: 7 * 86_400,
+            })
+          }
+          continue
+        }
+        // defer_to_stripe: the reconcile (seat-sync) already mirrored Stripe's status.
+        continue
+      }
+
+      const reminder = planLifecycleReminder(row, now, fallback)
+      if (reminder) {
+        const r = await sendSubscriptionReminder(svc, row, reminder, { send: deps.send })
+        out.remindersAttempted += r.attempted
+        out.remindersSent += r.sent
+        if (r.error) out.errors.push(`${row.id}: ${r.error}`)
+      }
+    } catch (e) {
+      out.errors.push(`${row.id}: ${(e as Error)?.message ?? String(e)}`)
+    }
+  }
+  return out
+}
+
+// ─── STRIPE EVENT IDEMPOTENCY (wave 140J) ─────────────────────────────────────
+//
+// What was missing: the tenant billing webhook's ROW writers are idempotent by key
+// (upsertBrokerageSubscription is brokerage-keyed, billing_invoices upserts on
+// stripe_invoice_id), but its SIDE EFFECTS were not — a redelivered
+// invoice.payment_failed inserted a second "Payment Failed" bell, a redelivered
+// customer.subscription.deleted re-emitted the cancellation transition and a second
+// alert. Stripe redelivers on any non-2xx and on its own retries, so a duplicate
+// event is routine, not hypothetical. No event ledger table exists live (checked
+// 2026-10-11: no *stripe*/*webhook* event table beyond the tenant-webhook and
+// workflow ones), and the ONE at-most-once mechanism the OS already has is
+// agent_action_ledger's UNIQUE idempotency_key (lib/kernel/action-ledger.ts
+// withActionLedger) — so the event rides it: subject = the Stripe event id, cycle =
+// the event id, action billing.stripe_event.apply. A replay returns the recorded
+// outcome without acting; a failed earlier attempt is re-claimed (Stripe's retry
+// re-runs it); an in-flight twin is told to stand down. LAW 5 for free: every
+// applied event is a ledger row naming the tenant, the event and what happened.
+//
+// Blind spot, published: an event whose tenant cannot be resolved BEFORE the
+// switch (account.updated has none) runs unledgered — its one write is a boolean
+// the applier derives from the event, so a replay re-derives the same value.
+
+/** Resolve the tenant a platform-signed Stripe event is about, from the OBJECT's
+ *  metadata first (sessions, subscriptions) and the subscription it names second
+ *  (invoices, a session without metadata). null = no tenant (account.updated),
+ *  or a refused retrieve — never a guess. */
+export async function resolveStripeEventTenant(
+  stripe: { subscriptions: { retrieve: (id: string) => Promise<{ metadata?: Record<string, string | undefined> | null }> } },
+  event: { type: string; data: { object: unknown } },
+): Promise<string | null> {
+  const obj = (event.data?.object ?? {}) as Record<string, any>
+  const direct = obj?.metadata?.brokerage_id
+  if (typeof direct === "string" && direct) return direct
+  if (String(event.type).startsWith("customer.subscription")) return null
+  const ref = typeof obj?.subscription === "string" ? obj.subscription : (obj?.subscription?.id ?? null)
+  if (!ref) return null
+  try {
+    const sub = await stripe.subscriptions.retrieve(ref)
+    const b = sub?.metadata?.brokerage_id
+    return typeof b === "string" && b ? b : null
+  } catch (err) {
+    console.error("[billing] Stripe event tenant could not be resolved from its subscription:", ref, (err as Error)?.message)
+    return null
+  }
+}
+
+export type StripeEventApplyOutcome<T> =
+  | { kind: "applied"; result: T; ledgered: boolean }
+  /** An earlier delivery of the SAME event id already executed — nothing re-ran. */
+  | { kind: "replay" }
+  /** The same event id is being applied by a concurrent delivery — this one stands down. */
+  | { kind: "in_flight" }
+  /** An earlier attempt's outcome is unknown (it threw a timeout-like error) — not re-run; the
+   *  daily reconcile (lib/billing/seat-sync.ts) re-mirrors Stripe's status. */
+  | { kind: "unknown" }
+  /** The ledger refused the claim — fail closed; the caller answers Stripe with a retryable 5xx. */
+  | { kind: "refused"; error: string }
+
+/**
+ * Apply one Stripe event AT MOST ONCE per event id for its tenant. `run` is the
+ * route's switch; it executes only for a fresh claim (or unledgered, when the
+ * event has no tenant). `client` is the proof's seam (default: the service client
+ * inside withActionLedger).
+ */
+export async function withStripeEventLedger<T>(
+  ev: { eventId: string; eventType: string; brokerageId: string | null },
+  run: () => Promise<T>,
+  opts: { client?: { from: (table: string) => any } } = {},
+): Promise<StripeEventApplyOutcome<T>> {
+  if (!ev.brokerageId) return { kind: "applied", result: await run(), ledgered: false }
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  type Boxed = { kind: "ran"; result: T } | { kind: "replay" | "in_flight" | "unknown" | "refused"; error?: string }
+  const boxed = await withActionLedger<Boxed>(
+    {
+      brokerageId: ev.brokerageId, action: "billing.stripe_event.apply", actor: { type: "system" },
+      subject: { type: "stripe_event", id: ev.eventId, ref: ev.eventType }, cycle: ev.eventId,
+      reasonCode: "SUBSCRIPTION_LIFECYCLE", reasonDetail: `Stripe ${ev.eventType}`, riskClass: "FINANCIAL",
+      systemSource: "billing_lifecycle", channel: "stripe_webhook", detail: { event_type: ev.eventType, event_id: ev.eventId },
+    },
+    async () => ({ kind: "ran" as const, result: await run() }),
+    {
+      settle: () => ({ status: "executed", outcome: "applied", provider: "stripe", providerRef: ev.eventId }),
+      replay: (claim) => claim.kind === "refused" ? { kind: "refused", error: claim.error } : { kind: claim.kind },
+    },
+    opts.client ? { client: opts.client } : undefined,
+  )
+  if (boxed.kind === "ran") return { kind: "applied", result: boxed.result, ledgered: true }
+  if (boxed.kind === "refused") return { kind: "refused", error: boxed.error ?? "action ledger refused the claim" }
+  return { kind: boxed.kind }
 }

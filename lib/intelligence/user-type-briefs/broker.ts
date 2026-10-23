@@ -1,8 +1,27 @@
-"use server"
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published generateBrokerBrief({ userId, brokerageId }) as a
+// public HTTP door with no gate: a service client reading deal_health_scores,
+// users, agent_retention_scores and more for a caller-supplied brokerageId —
+// section 4's named IDOR shape. Every caller is in-process server code
+// (re-verified 2026-09-03):
+//   · lib/intelligence/user-type-briefs/index.ts:15 (generateUserTypeBrief), whose
+//     value importers are app/actions/briefing-actions.ts:12 ("use server") and
+//     the server pages app/dashboard/{coordinator,brokerage,compliance}/page.tsx,
+//     app/vendor/dashboard/page.tsx, app/lender/dashboard/page.tsx; the two
+//     "use client" importers of the barrel take TYPES only (erased)
+//   · scripts/broker-brief-intel-simulator.ts:50 (tsx, outside the bundle)
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+// brokerageId / userId are now an IN-PROCESS CONTRACT: with the door closed,
+// the server caller that supplies them is the gate.
+import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import type { UserTypeBrief, BriefPriority, BriefMetric } from "./types"
+import { parseMarketPulseMetrics } from "./types"
 
 /**
  * Generate broker brief — surfaces critical brokerage-wide items.
@@ -62,7 +81,7 @@ export async function generateBrokerBrief(params: {
   const sixtyDaysOut = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
-  const [criticalDealsRes, expiringLicensesRes, complianceEventsRes, unassignedLeadsRes, activeAgentsRes] = await Promise.all([
+  const [criticalDealsRes, expiringLicensesRes, complianceEventsRes, unassignedLeadsRes] = await Promise.all([
     supabase
       .from("deal_health_scores")
       .select("transaction_id, overall_score, risk_level, score_components, transactions!inner(property_address, brokerage_id)")
@@ -91,11 +110,9 @@ export async function generateBrokerBrief(params: {
       .eq("brokerage_id", params.brokerageId)
       .is("agent_id", null)
       .eq("is_active", true),
-    supabase
-      .from("agents")
-      .select("id", { count: "exact", head: true })
-      .eq("brokerage_id", params.brokerageId)
-      .eq("is_active", true),
+    // TOMBSTONE (wave 107, lane 107C, CLAUDE.md §1.3): the active-agents head count that stood here
+    // re-derived a number the brokerage twin already carries — lib/kernel/brokerage-twin.ts
+    // TwinCapacity.activeAgents, read below through readBrokerageTwin (the ONE reader).
   ])
 
   const criticalDeals = (criticalDealsRes.data ?? []) as unknown as Array<{
@@ -116,7 +133,38 @@ export async function generateBrokerBrief(params: {
     blocked_reason: string | null
   }>
   const unassignedLeadsCount = unassignedLeadsRes.count ?? 0
-  const activeAgentsCount = activeAgentsRes.count ?? 0
+  // THE TWIN (wave 107C): the brokerage's operating numbers come from ONE reader — the last persisted
+  // brokerage-wide twin (readBrokerageTwin snapshot mode, ≤ TWIN_SNAPSHOT_MAX_AGE_HOURS; the Command
+  // Center's build). No fresh twin → a fresh read-only build (still the one reader, never a second
+  // derivation); no twin at all → "—", never a fabricated count.
+  let twin: import("@/lib/kernel/brokerage-twin").BrokerageTwin | null = null
+  try {
+    const { readBrokerageTwin } = await import("@/lib/kernel/brokerage-twin")
+    twin = (await readBrokerageTwin(params.brokerageId, { svc: supabase as any, snapshot: {} })) ?? (await readBrokerageTwin(params.brokerageId, { svc: supabase as any }))
+  } catch (err) {
+    console.error("[BrokerBrief] brokerage twin read failed:", err)
+  }
+  const activeAgentsCount: number | string = twin ? twin.capacity.activeAgents : "—"
+  const bottleneckLine = twin?.system?.bottleneck?.headline ?? null
+
+  // Points tiers across the roster (wave 103, lane 103C — incentives surface in the
+  // manager brief). agents.gamification_points is the ONE total the atomic award
+  // RPC maintains; the ladder is lib/gamification/tiers.ts. A refused read reads
+  // as "—", never as everyone unranked.
+  let agentTiersLine = "—"
+  {
+    const { data: tierRows, error: tierErr } = await supabase
+      .from("agents")
+      .select("gamification_points")
+      .eq("brokerage_id", params.brokerageId)
+      .eq("is_active", true)
+      .limit(5000)
+    if (tierErr) console.error(`[BrokerBrief] agent tier read refused: ${tierErr.message}`)
+    else {
+      const { tierDistributionLine } = await import("@/lib/gamification/tiers")
+      agentTiersLine = tierDistributionLine(((tierRows ?? []) as Array<{ gamification_points: number | null }>).map((r) => r.gamification_points))
+    }
+  }
 
   // 3. Build priorities (top 3 by severity)
   const priorities: BriefPriority[] = []
@@ -148,7 +196,11 @@ export async function generateBrokerBrief(params: {
       title: `${agentName}'s license expires in ${days} days`,
       body: `${expiringLicenses.length} agent${expiringLicenses.length === 1 ? "" : "s"} with licenses expiring within 60 days`,
       severity: days <= 14 ? "critical" : days <= 30 ? "high" : "medium",
-      ctas: [{ label: "Review licenses", href: "/dashboard/brokerage/licenses" }],
+      // /dashboard/brokerage/licenses never had a page.tsx. The brokerage licence
+      // board lives on the admin onboarding console's "License & CE" tab —
+      // app/dashboard/admin/onboarding/admin-onboarding-os-client.tsx:219 (roster,
+      // expiry filters, manual review). Same gate as this brief's reader (broker/admin).
+      ctas: [{ label: "Review licenses", href: "/dashboard/admin/onboarding?tab=license" }],
     })
   }
 
@@ -189,7 +241,11 @@ export async function generateBrokerBrief(params: {
         body: worst ? `Most at-risk: ${worst.name} (${worst.score}/100). Review their save-plays before they slip.` : "Review save-plays in your approval queue.",
         severity: retentionAtRisk > 2 ? "critical" : "high",
         manager: "recruiting_manager",
-        ctas: [{ label: "Open Command Center", href: "/dashboard/command-center" }],
+        // /dashboard/command-center never had a page.tsx. The Command Center is
+        // app/dashboard/admin/command-center/page.tsx — the manager approval queue,
+        // Trust Meter and Earned Autonomy this priority is sending the broker to.
+        // All four sites in this file now carry the one spelling (§6).
+        ctas: [{ label: "Open Command Center", href: "/dashboard/admin/command-center" }],
       })
     }
   } catch (err) {
@@ -199,6 +255,35 @@ export async function generateBrokerBrief(params: {
     const { generateCurriculumBoard } = await import("@/lib/intelligence/curriculum-board")
     curriculumPending = (await generateCurriculumBoard(params.brokerageId))?.pending ?? 0
   } catch { /* best-effort */ }
+
+  // 3a. LEDGER TRUTH (wave 104, lane 104A) — the brokerage's contribution margin
+  // from the economic graph (ledger rows only) and the reconciliation of every
+  // money summary back to it. A drift is a FINDING here and on the finance page;
+  // the reaper escalates it; nothing rewrites money. The broker brief is the
+  // brokerage's finance read — the agent brief never carries it (§5).
+  let contributionMarginLine = "—"
+  let summaryDrifts = 0
+  try {
+    const { loadEconomicGraph } = await import("@/lib/kernel/economic-graph")
+    const { reconcileSummariesAgainstLedger } = await import("@/lib/commission/reconcile-tracking")
+    const graph = await loadEconomicGraph(supabase, { brokerageId: params.brokerageId })
+    const rec = await reconcileSummariesAgainstLedger(supabase, { brokerageId: params.brokerageId, graph })
+    contributionMarginLine = `$${Math.round(graph.contributionMarginCents / 100).toLocaleString()}${graph.measured ? "" : " (floor — a ledger read was refused)"}`
+    summaryDrifts = rec.drifts.length
+    if (priorities.length < 3 && summaryDrifts > 0) {
+      const worst = [...rec.drifts].sort((a, b) => Math.abs(b.deltaCents) - Math.abs(a.deltaCents))[0]
+      priorities.push({
+        id: "ledger-summary-drift",
+        title: `${summaryDrifts} money summar${summaryDrifts === 1 ? "y" : "ies"} disagree with the ledger`,
+        body: `${worst.projection} reads $${(worst.projectedCents / 100).toFixed(2)} vs $${(worst.ledgerCents / 100).toFixed(2)} on the ledger (${worst.refs.length} rows). Nothing was rewritten — review and correct through the commission correction screen.`,
+        severity: "high",
+        manager: "finance_manager",
+        ctas: [{ label: "Open ledger truth", href: "/dashboard/financials/brokerage" }],
+      })
+    }
+  } catch (err) {
+    console.error("[BrokerBrief] economic graph failed:", err)
+  }
 
   // 3b. MANAGER DAILY STANDUP — what the ten Claude managers did in 24h and what
   // needs a human. Items needing approval become priorities (manager-attributed);
@@ -216,7 +301,7 @@ export async function generateBrokerBrief(params: {
           body: `${line.label} is waiting on your decision.`,
           severity: "high",
           manager: line.manager,
-          ctas: [{ label: "Open Command Center", href: "/dashboard/command-center" }],
+          ctas: [{ label: "Open Command Center", href: "/dashboard/admin/command-center" }],
         })
       }
     }
@@ -227,11 +312,15 @@ export async function generateBrokerBrief(params: {
   // 4. Build metrics
   const metrics: BriefMetric[] = [
     { label: "Active agents", value: activeAgentsCount, href: "/dashboard/admin/users" },
+    ...(bottleneckLine ? [{ label: "System bottleneck (twin, 90d)", value: bottleneckLine, href: "/dashboard/admin/command-center" }] : []),
     { label: "Critical deals", value: criticalDeals.length, href: "/dashboard/brokerage/deal-health" },
     { label: "Unassigned leads", value: unassignedLeadsCount, href: "/dashboard/admin/lead-lineage" },
     { label: "Compliance flags 7d", value: complianceEvents.length, href: "/dashboard/compliance" },
-    { label: "Agents at flight risk", value: retentionAtRisk, href: "/dashboard/command-center" },
-    ...(curriculumPending > 0 ? [{ label: "AI curriculum pending", value: curriculumPending, href: "/dashboard/command-center" }] : []),
+    { label: "Agents at flight risk", value: retentionAtRisk, href: "/dashboard/admin/command-center" },
+    { label: "Agent tiers", value: agentTiersLine, href: "/dashboard/intelligence" },
+    { label: "Contribution margin YTD (ledger)", value: contributionMarginLine, href: "/dashboard/financials/brokerage" },
+    ...(summaryDrifts > 0 ? [{ label: "Money summaries off the ledger", value: summaryDrifts, href: "/dashboard/financials/brokerage" }] : []),
+    ...(curriculumPending > 0 ? [{ label: "AI curriculum pending", value: curriculumPending, href: "/dashboard/admin/command-center" }] : []),
     // Standup digest — one metric per reporting manager (label = manager, value = 24h activity)
     ...standupLines.slice(0, 4).map((l) => ({
       label: l.label,
@@ -244,6 +333,8 @@ export async function generateBrokerBrief(params: {
   if (priorities.length > 0) {
     try {
       const { text } = await generateTextRouted({
+        brokerageId: params.brokerageId,
+        userId: params.userId,
         feature: "daily_briefing",
         prompt:
           `Write a one-sentence morning summary for a real estate broker. ` +
@@ -260,7 +351,7 @@ export async function generateBrokerBrief(params: {
   }
 
   // 6. Cache result
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("ai_daily_briefings")
     .upsert({
       user_id: params.userId,
@@ -271,7 +362,7 @@ export async function generateBrokerBrief(params: {
       market_pulse: JSON.stringify(metrics),
       ai_model_used: "claude-sonnet-routed",
       generated_at: new Date().toISOString(),
-    }, { onConflict: "agent_id,briefing_date" })
+    }, { onConflict: "agent_id,briefing_date" }), { table: "ai_daily_briefings", flow: "ai_daily_briefings_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return {
     userId: params.userId,
@@ -285,10 +376,6 @@ export async function generateBrokerBrief(params: {
   }
 }
 
-function parseMarketPulseMetrics(market_pulse: string): BriefMetric[] {
-  try {
-    const parsed = JSON.parse(market_pulse)
-    if (Array.isArray(parsed)) return parsed
-  } catch {}
-  return []
-}
+// TOMBSTONE: local parseMarketPulseMetrics merged onto
+// lib/intelligence/user-type-briefs/types.ts parseMarketPulseMetrics
+// (imported above) — §1/§6 SAME BODY census round 3, 2026-09-09.

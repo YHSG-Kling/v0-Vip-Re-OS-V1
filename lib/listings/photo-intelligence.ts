@@ -9,8 +9,8 @@
  *   · analyzeListingPhoto  — ONE vision call (gateway, same rail as
  *     lib/external/vision-property.ts) returns room type, 0-100 quality,
  *     hero-worthiness, lighting, and fixable issues; written to
- *     listing_photos so photo ordering / hero selection / readiness checks
- *     run on real scores.
+ *     listing_media (media_type='photo') so photo ordering / hero selection /
+ *     readiness checks run on real scores.
  *   · enhanceListingPhoto  — real pixel work (sharp): exposure, contrast,
  *     saturation, auto (normalize + sharpen). Original kept in
  *     photo_enhancement_jobs.original_url; finished JPEG hosted on Supabase
@@ -31,11 +31,31 @@
  * (applyEnhancements, buildMultipartBody, prompts). Never import from a
  * client component.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import sharp from "sharp"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
 
 const VISION_MODEL = process.env.PHOTO_INTEL_MODEL ?? "anthropic/claude-haiku-4-5-20251001"
+
+/**
+ * THE PHOTO SET LIVES IN `listing_media` (m368/m369 consolidation).
+ *
+ * `listing_photos` was a duplicate of `listing_media` spelled differently
+ * (photo_url/file_url, order_index/sort_order, is_hero/is_primary). listing_media
+ * survived because it carries the MLS compliance/branding/approval governance
+ * (has_eho_mark, has_brokerage_attribution, has_logo_overlay,
+ * uses_approved_template, kernel_compliance_passed, is_approved) and reaches the
+ * kernel; m368 moved the photo-intelligence columns (room_type,
+ * ai_quality_score, ai_analysis_completed, ai_analyzed_at, enhancement_applied)
+ * onto it.
+ *
+ * listing_media holds photo|video|reel|story|graphic|floorplan|virtual_tour|
+ * document. EVERY photo read and write must therefore pin media_type='photo' —
+ * without it a floorplan or a video comes back as a photo, which would be a new
+ * defect rather than a consolidation.
+ */
+export const PHOTO_MEDIA_TYPE = "photo" as const
 
 export const LISTING_ROOM_TYPES = [
   "exterior_front", "exterior_back", "living_room", "kitchen", "dining_room",
@@ -62,8 +82,10 @@ const EMPTY_ANALYSIS: PhotoAnalysis = {
   lighting: "poor", issues: [], vacant: false, error: null,
 }
 
-/** One vision call → structured analysis. Pure of the DB — see persistPhotoAnalysis. */
-export async function analyzeListingPhoto(params: {
+/** One vision call → structured analysis. Pure of the DB — see persistPhotoAnalysis.
+ *  Internal only (orphan-export guard, category B): called once, from
+ *  persistPhotoAnalysis below, and by nothing outside this module. */
+async function analyzeListingPhoto(params: {
   photoUrl: string
   /** Optional context ("4BR colonial in Naples FL, $1.2M") to sharpen judgment. */
   context?: string | null
@@ -118,19 +140,25 @@ export async function analyzeListingPhoto(params: {
   }
 }
 
-/** Analyze + write the result onto the listing_photos row. */
+/** Analyze + write the result onto the listing_media photo row. */
 export async function persistPhotoAnalysis(
   svc: any,
   params: { photoId: string; photoUrl: string; context?: string | null },
 ): Promise<PhotoAnalysis> {
   const analysis = await analyzeListingPhoto(params)
   if (analysis.error) return analysis
-  await svc.from("listing_photos").update({
+  // media_type is pinned so a photo tool can never write a room type or a
+  // quality score onto a video / floorplan / document row.
+  const { error } = await svc.from("listing_media").update({
     room_type: analysis.roomType,
     ai_quality_score: analysis.qualityScore,
     ai_analyzed_at: new Date().toISOString(),
     ai_analysis_completed: true,
-  }).eq("id", params.photoId)
+  }).eq("id", params.photoId).eq("media_type", PHOTO_MEDIA_TYPE)
+  // supabase-js RESOLVES a refused write. Without this the caller would be told
+  // the photo was analyzed while the row still reads ai_analysis_completed=false,
+  // and the nightly sweep would re-bill the same vision call every night.
+  if (error) return { ...analysis, error: `analysis could not be saved: ${error.message}` }
   return analysis
 }
 
@@ -170,7 +198,7 @@ export interface EnhanceResult {
 
 /**
  * Real enhancement, awaited inline. The original URL is preserved on the job
- * row; listing_photos.photo_url moves to the enhanced JPEG and
+ * row; listing_media.file_url moves to the enhanced JPEG and
  * enhancement_applied flips true.
  */
 export async function enhanceListingPhoto(
@@ -179,29 +207,41 @@ export async function enhanceListingPhoto(
 ): Promise<EnhanceResult> {
   const enhancements = params.enhancements?.length ? params.enhancements : (["auto"] as PhotoEnhancement[])
 
-  const { data: photo } = await svc.from("listing_photos")
-    .select("id, photo_url, listing_id, brokerage_id")
-    .eq("id", params.photoId).maybeSingle()
-  if (!photo?.photo_url) return { ok: false, jobId: null, enhancedUrl: null, error: "photo not found" }
+  // media_type pinned: enhancement is pixel work on a PHOTO. Handed a video or a
+  // document id this must resolve "photo not found", not download and rewrite it.
+  const { data: photo, error: photoError } = await svc.from("listing_media")
+    .select("id, file_url, listing_id, brokerage_id")
+    .eq("id", params.photoId).eq("media_type", PHOTO_MEDIA_TYPE).maybeSingle()
+  if (photoError) return { ok: false, jobId: null, enhancedUrl: null, error: photoError.message }
+  if (!photo?.file_url) return { ok: false, jobId: null, enhancedUrl: null, error: "photo not found" }
 
-  const { data: job } = await svc.from("photo_enhancement_jobs").insert({
+  // photo_enhancement_jobs.photo_id FKs listing_media(id) (repointed in m369).
+  // A rejected insert RESOLVES in supabase-js, so without naming the error the
+  // pipeline would spend a real image job with no audit row to show for it.
+  const { data: job, error: jobError } = await svc.from("photo_enhancement_jobs").insert({
     photo_id: params.photoId,
     agent_id: params.agentId,
     brokerage_id: params.brokerageId ?? photo.brokerage_id ?? null,
-    original_url: photo.photo_url,
+    original_url: photo.file_url,
     enhancement_type: enhancements.join(","),
     status: "processing",
     started_at: new Date().toISOString(),
-  }).select("id").single()
-  const jobId = (job as { id: string } | null)?.id ?? null
+  }).select("id").maybeSingle()
+  if (jobError || !job) {
+    return {
+      ok: false, jobId: null, enhancedUrl: null,
+      error: `enhancement job could not be opened: ${jobError?.message ?? "insert returned no row"}`,
+    }
+  }
+  const jobId = (job as { id: string }).id
 
   const fail = async (error: string): Promise<EnhanceResult> => {
-    if (jobId) await svc.from("photo_enhancement_jobs")
-      .update({ status: "failed", error_message: error }).eq("id", jobId)
+    if (jobId) await sentinelWrite(svc, svc.from("photo_enhancement_jobs")
+      .update({ status: "failed", error_message: error }).eq("id", jobId), { table: "photo_enhancement_jobs", flow: "photo_enhancement_jobs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     return { ok: false, jobId, enhancedUrl: null, error }
   }
 
-  const original = await downloadImageBytes(photo.photo_url)
+  const original = await downloadImageBytes(photo.file_url)
   if (!original) return fail("could not download the original photo")
 
   let enhanced: Buffer
@@ -218,9 +258,14 @@ export async function enhanceListingPhoto(
   if (jobId) await svc.from("photo_enhancement_jobs").update({
     status: "completed", enhanced_url: enhancedUrl, completed_at: new Date().toISOString(),
   }).eq("id", jobId)
-  await svc.from("listing_photos").update({
-    photo_url: enhancedUrl, enhancement_applied: true,
-  }).eq("id", params.photoId)
+  const { error: swapError } = await svc.from("listing_media").update({
+    file_url: enhancedUrl, enhancement_applied: true,
+  }).eq("id", params.photoId).eq("media_type", PHOTO_MEDIA_TYPE)
+  // A refused swap resolves rather than throwing. Reporting ok:true here would
+  // claim the listing now shows the enhanced photo while file_url still points
+  // at the original — and enhancement_applied would stay false, so the batch
+  // pass would re-enhance and re-bill it every run.
+  if (swapError) return fail(`enhanced photo could not be attached to the media row: ${swapError.message}`)
 
   return { ok: true, jobId, enhancedUrl, error: null }
 }
@@ -255,13 +300,15 @@ export function buildMultipartBody(
  * One gpt-image-1 EDIT call: photo bytes + instruction → transformed photo
  * bytes. Vercel AI Gateway first (one egress/billing), direct OpenAI as the
  * fallback — the same two-step image-generation.ts uses.
+ * Internal only (orphan-export guard, category B): called from
+ * virtualStagePhoto/twilightConvertPhoto below, and by nothing outside this module.
  */
-export async function editImageWithAI(params: {
+async function editImageWithAI(params: {
   imageBytes: Buffer
   prompt: string
   /** gpt-image-1 edit sizes; picked from the source aspect when omitted. */
   size?: "1024x1024" | "1536x1024" | "1024x1536"
-}): Promise<{ imageBytes: Buffer | null; error: string | null }> {
+}): Promise<{ imageBytes: Buffer | null; error: string | null; served?: { label: string; usage: unknown; size: string } }> {
   let size = params.size
   let pngBytes: Buffer
   try {
@@ -301,13 +348,13 @@ export async function editImageWithAI(params: {
   if (gatewayKey) {
     const res = await attempt("https://ai-gateway.vercel.sh", "openai/gpt-image-1", gatewayKey)
     const b64 = res.ok ? (res.data?.data?.[0]?.b64_json as string | undefined) : undefined
-    if (b64) return { imageBytes: Buffer.from(b64, "base64"), error: null }
+    if (b64) return { imageBytes: Buffer.from(b64, "base64"), error: null, served: { label: "openai/gpt-image-1 edit (AI Gateway)", usage: res.data?.usage ?? null, size: size as string } }
   }
   const openaiKey = process.env.OPENAI_API_KEY
   if (openaiKey) {
     const res = await attempt("https://api.openai.com", "gpt-image-1", openaiKey)
     const b64 = res.ok ? (res.data?.data?.[0]?.b64_json as string | undefined) : undefined
-    if (b64) return { imageBytes: Buffer.from(b64, "base64"), error: null }
+    if (b64) return { imageBytes: Buffer.from(b64, "base64"), error: null, served: { label: "gpt-image-1 edit (direct OpenAI key)", usage: res.data?.usage ?? null, size: size as string } }
     if (!res.ok) return { imageBytes: null, error: res.error ?? `edit call failed (${res.status})` }
   }
   return { imageBytes: null, error: "no image-edit provider available (AI_GATEWAY_API_KEY / OPENAI_API_KEY)" }
@@ -368,20 +415,39 @@ async function runPhotoEdit(
     tags: string[]
   },
 ): Promise<StagedPhotoResult> {
-  const { data: job } = await svc.from("photo_enhancement_jobs").insert({
+  // photo_enhancement_jobs.agent_id is agents-class — the USERS id written here was
+  // FK-rejected, so the job row never existed and the enhanced photo had no record
+  // to be marked complete against.
+  let jobAgentId: string | null = null
+  if (params.agentUserId) {
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    jobAgentId = await resolveUserIdToAgentRecord(params.agentUserId, params.brokerageId)
+  }
+
+  // Same FK + silent-resolve hazard as enhanceListingPhoto above: photo_id is a
+  // listing_media id since m369, and a rejected insert resolves rather than
+  // throwing. A staging/twilight run with no job row has no audit trail and no
+  // record of the disclosure it was produced under.
+  const { data: job, error: jobError } = await svc.from("photo_enhancement_jobs").insert({
     photo_id: params.photoId ?? null,
-    agent_id: params.agentUserId ?? null,
+    agent_id: jobAgentId,
     brokerage_id: params.brokerageId,
     original_url: params.photoUrl,
     enhancement_type: params.kind,
     status: "processing",
     started_at: new Date().toISOString(),
-  }).select("id").single()
-  const jobId = (job as { id: string } | null)?.id ?? null
+  }).select("id").maybeSingle()
+  if (jobError || !job) {
+    return {
+      ok: false, jobId: null, assetId: null, stagedUrl: null,
+      error: `photo-edit job could not be opened: ${jobError?.message ?? "insert returned no row"}`,
+    }
+  }
+  const jobId = (job as { id: string }).id
 
   const fail = async (error: string): Promise<StagedPhotoResult> => {
-    if (jobId) await svc.from("photo_enhancement_jobs")
-      .update({ status: "failed", error_message: error }).eq("id", jobId)
+    if (jobId) await sentinelWrite(svc, svc.from("photo_enhancement_jobs")
+      .update({ status: "failed", error_message: error }).eq("id", jobId), { table: "photo_enhancement_jobs", flow: "photo_enhancement_jobs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     return { ok: false, jobId, assetId: null, stagedUrl: null, error }
   }
 
@@ -390,6 +456,20 @@ async function runPhotoEdit(
 
   const edited = await editImageWithAI({ imageBytes: original, prompt: params.prompt })
   if (!edited.imageBytes) return fail(edited.error ?? "image edit produced no output")
+
+  // THE SPEND (wave 139, 139C) — the edit was unbooked. Booked the moment the provider returned
+  // bytes (it has charged), once per photo-edit job (the job id is the charge's identity).
+  {
+    const { imageUsageFrom, priceImageGeneration } = await import("@/lib/vendor-governance/cost-normalizer")
+    const { logAIImageUsage } = await import("@/lib/ai/cost-tracking")
+    const price = priceImageGeneration({ model: "gpt-image-1", quality: "standard", size: edited.served?.size ?? "1024x1024", usage: imageUsageFrom(edited.served?.usage) })
+    const booking = await logAIImageUsage({
+      brokerageId: params.brokerageId, userId: params.agentUserId ?? null, feature: `photo_${params.kind}`, manager: "asset_manager",
+      model: edited.served?.label ?? "gpt-image-1 edit", costUsd: price.costUsd, priceState: price.priceState, costBasis: price.costBasis,
+      idempotencyKey: `photo_edit:${jobId}`, contextExtra: { listing_id: params.listingId ?? null, photo_id: params.photoId ?? null, price_source: price.priceSource },
+    })
+    if (booking.error) console.error("[photo-intelligence] edit spend NOT booked:", booking.error)
+  }
 
   const jpeg = await sharp(edited.imageBytes).jpeg({ quality: 92, mozjpeg: true }).toBuffer()
   const stagedUrl = await hostRenderedMedia(
@@ -401,8 +481,10 @@ async function runPhotoEdit(
   }).eq("id", jobId)
 
   // The staged variant is a MARKETING asset carrying its disclosure — it never
-  // joins the listing_photos MLS set.
-  const { data: asset } = await svc.from("marketing_assets").insert({
+  // joins the listing_media photo set.
+  // The disclosure lives ON this row. A silently refused insert would leave a
+  // staged photo hosted and reachable with nothing recording that it is staged.
+  const { data: asset, error: assetError } = await svc.from("marketing_assets").insert({
     brokerage_id: params.brokerageId,
     agent_user_id: params.agentUserId ?? null,
     visibility_scope: "agent",
@@ -421,9 +503,12 @@ async function runPhotoEdit(
       listing_id: params.listingId ?? null,
       photo_id: params.photoId ?? null,
     },
-  }).select("id").single()
+  }).select("id").maybeSingle()
+  if (assetError || !asset) {
+    return fail(`staged asset could not be saved with its disclosure: ${assetError?.message ?? "insert returned no row"}`)
+  }
 
-  return { ok: true, jobId, assetId: (asset as { id: string } | null)?.id ?? null, stagedUrl, error: null }
+  return { ok: true, jobId, assetId: (asset as { id: string }).id, stagedUrl, error: null }
 }
 
 /** Stage an empty room. Output → marketing_assets with the staging disclosure. */
@@ -478,29 +563,43 @@ export async function runPhotoIntelligenceSweep(
   const listingIds = listingRows.map((l) => l.id)
   if (listingIds.length === 0) return { photosAnalyzed: 0, analysisFailures: 0, heroesSet: 0 }
 
-  // 1. Analyze the unanalyzed (bounded)
-  const { data: pending } = await svc.from("listing_photos")
-    .select("id, photo_url, listing_id")
+  // 1. Analyze the unanalyzed (bounded). media_type pinned — a video or a
+  //    floorplan row must never be sent to the listing-PHOTO vision prompt.
+  const { data: pending, error: pendingError } = await svc.from("listing_media")
+    .select("id, file_url, listing_id")
     .in("listing_id", listingIds)
+    .eq("media_type", PHOTO_MEDIA_TYPE)
     .eq("ai_analysis_completed", false)
-    .not("photo_url", "is", null)
+    .not("file_url", "is", null)
     .limit(analyzeLimit)
+  if (pendingError) {
+    // A refused read resolves as an empty backlog, which would make the cron
+    // report a clean "nothing to analyze" night forever.
+    console.error("[photo-intelligence] analysis backlog read failed:", pendingError.message)
+    return { photosAnalyzed: 0, analysisFailures: 0, heroesSet: 0 }
+  }
   let photosAnalyzed = 0, analysisFailures = 0
-  for (const p of (pending ?? []) as Array<{ id: string; photo_url: string; listing_id: string }>) {
+  for (const p of (pending ?? []) as Array<{ id: string; file_url: string; listing_id: string }>) {
     const l = listingById.get(p.listing_id)
     const context = l
       ? [l.address, [l.city, l.state].filter(Boolean).join(", "), l.list_price ? `$${Number(l.list_price).toLocaleString()}` : null].filter(Boolean).join(" · ")
       : null
-    const analysis = await persistPhotoAnalysis(svc, { photoId: p.id, photoUrl: p.photo_url, context })
+    const analysis = await persistPhotoAnalysis(svc, { photoId: p.id, photoUrl: p.file_url, context })
     if (analysis.error) analysisFailures++
     else photosAnalyzed++
   }
 
-  // 2. Fill missing heroes from analyzed inventory
-  const { data: allPhotos } = await svc.from("listing_photos")
-    .select("id, listing_id, is_hero, room_type, ai_quality_score, ai_analysis_completed")
+  // 2. Fill missing heroes from analyzed inventory. is_primary on a
+  //    media_type='photo' row IS the MLS hero (m368 absorbed is_hero).
+  const { data: allPhotos, error: allPhotosError } = await svc.from("listing_media")
+    .select("id, listing_id, is_primary, room_type, ai_quality_score, ai_analysis_completed")
     .in("listing_id", listingIds)
-  const byListing = new Map<string, Array<{ id: string; is_hero: boolean; room_type: string | null; ai_quality_score: number | null; ai_analysis_completed: boolean }>>()
+    .eq("media_type", PHOTO_MEDIA_TYPE)
+  if (allPhotosError) {
+    console.error("[photo-intelligence] hero-gap read failed:", allPhotosError.message)
+    return { photosAnalyzed, analysisFailures, heroesSet: 0 }
+  }
+  const byListing = new Map<string, Array<{ id: string; is_primary: boolean; room_type: string | null; ai_quality_score: number | null; ai_analysis_completed: boolean }>>()
   for (const p of (allPhotos ?? []) as Array<any>) {
     const arr = byListing.get(p.listing_id) ?? []
     arr.push(p)
@@ -508,7 +607,7 @@ export async function runPhotoIntelligenceSweep(
   }
   let heroesSet = 0
   for (const [, photos] of byListing) {
-    if (photos.some((p) => p.is_hero)) continue
+    if (photos.some((p) => p.is_primary)) continue
     const analyzed = photos.filter((p) => p.ai_analysis_completed && p.ai_quality_score !== null)
     if (analyzed.length === 0) continue
     analyzed.sort((a, b) => {
@@ -517,7 +616,10 @@ export async function runPhotoIntelligenceSweep(
       if (frontA !== frontB) return frontB - frontA
       return (b.ai_quality_score ?? 0) - (a.ai_quality_score ?? 0)
     })
-    const { error } = await svc.from("listing_photos").update({ is_hero: true }).eq("id", analyzed[0].id)
+    const { error } = await svc.from("listing_media")
+      .update({ is_primary: true })
+      .eq("id", analyzed[0].id)
+      .eq("media_type", PHOTO_MEDIA_TYPE)
     if (!error) heroesSet++
   }
 

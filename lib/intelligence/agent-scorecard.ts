@@ -27,6 +27,31 @@ export interface AgentScorecard {
   /** Recruiting source (null when the agent wasn't recruited through the pipeline). */
   recruitingRoiPct: number | null
   recruitingLifetimeNet: number | null
+  /** THE KNOWLEDGE GRAPH (wave 105, lane 105D) — the agent's structure edges (relationship_edges, agent =
+   *  users id): team, territories, competencies, education completed, opportunities owned, recruited-by,
+   *  residuals earned. Null when the graph is unreadable (never a fake zero). */
+  graph: { teams: number; territories: number; competencies: number; educationCompleted: number; opportunitiesOwned: number; recruitedBy: number; residuals: number } | null
+  /** ADAPTIVE DEVELOPMENT (wave 106, lane 106D) — the loop's last ledgered cycle for this agent
+   *  (agent_action_ledger development.competency.update: scores + improved). Null when no cycle has
+   *  run or the ledger read was refused (never a fake "no weakness"). */
+  development: { overall: number | null; weakest: { skill: string; score: number } | null; improvedLastCycle: string[]; cycleAt: string } | null
+}
+
+/** Pure: the development block from the latest development.competency.update ledger detail (lowest scored skill = the focus).
+ *  @proofSeam scripts/adaptive-development-guard.ts asserts the block from a ledger detail without a database. */
+export function developmentBlock(detail: { scores?: Record<string, number | null>; improved?: Array<{ skill: string }> } | null | undefined, cycleAt: string): NonNullable<AgentScorecard["development"]> {
+  const scored = Object.entries(detail?.scores ?? {}).filter((e): e is [string, number] => typeof e[1] === "number").sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+  const overall = scored.length ? Math.round(scored.reduce((a, e) => a + e[1], 0) / scored.length) : null
+  return { overall, weakest: scored.length ? { skill: scored[0][0], score: scored[0][1] } : null, improvedLastCycle: (detail?.improved ?? []).map((i) => i.skill), cycleAt }
+}
+
+/** Pure: the scorecard's graph block from the per-type counts (agentGraphCounts). */
+export function graphBlock(counts: Record<string, number>): NonNullable<AgentScorecard["graph"]> {
+  return {
+    teams: counts.member_of_team ?? 0, territories: counts.serves_territory ?? 0, competencies: counts.has_competency ?? 0,
+    educationCompleted: counts.completed_education ?? 0, opportunitiesOwned: counts.owns_opportunity ?? 0,
+    recruitedBy: counts.recruited_by ?? 0, residuals: counts.earns_residual ?? 0,
+  }
 }
 
 /** Pure: completion % (null when nothing assigned). */
@@ -122,11 +147,44 @@ export async function generateAgentScorecards(
     roiByAgent.set(r.recruited_agent_id, { roiPct: r.roi_pct != null ? Number(r.roi_pct) : null, net: r.lifetime_brokerage_net != null ? Number(r.lifetime_brokerage_net) : null })
   }
 
+  // THE KNOWLEDGE GRAPH (wave 105, lane 105D) — one read of the roster's structure edges; a refused or
+  // absent graph leaves `graph: null` on every card (published, never a fake zero).
+  let graphEdges: import("@/lib/kernel/relationship-graph").RelationshipEdge[] | null = null
+  let agentGraphCounts: ((edges: readonly import("@/lib/kernel/relationship-graph").RelationshipEdge[], agentUserId: string) => Record<string, number>) | null = null
+  if (userIds.length > 0) {
+    try {
+      const graph = await import("@/lib/kernel/relationship-graph")
+      const r = await graph.agentStructureEdges(supabase as any, { brokerageId: params.brokerageId, agentUserIds: userIds })
+      if (r.ok && !r.degraded) { graphEdges = r.edges; agentGraphCounts = graph.agentGraphCounts }
+      else if (r.error) console.warn("[agent-scorecard] relationship graph read refused:", r.error)
+    } catch (e) { console.warn("[agent-scorecard] relationship graph unavailable:", (e as Error).message) }
+  }
+
+  // ADAPTIVE DEVELOPMENT (wave 106, lane 106D) — the latest ledgered cycle per agent, one read.
+  const devByAgent = new Map<string, NonNullable<AgentScorecard["development"]>>()
+  let devReadable = false
+  {
+    const { data: devRows, error: devErr } = await supabase
+      .from("agent_action_ledger").select("subject_id, detail, created_at")
+      .eq("brokerage_id", params.brokerageId).eq("action", "development.competency.update").eq("subject_type", "agent").eq("status", "executed")
+      .in("subject_id", agentIds).order("created_at", { ascending: false }).limit(5000)
+    if (devErr) console.warn("[agent-scorecard] development ledger read refused:", devErr.message)
+    else {
+      devReadable = true
+      for (const r of (devRows ?? []) as Array<{ subject_id: string | null; detail: any; created_at: string }>) {
+        if (r.subject_id && !devByAgent.has(r.subject_id)) devByAgent.set(r.subject_id, developmentBlock(r.detail, r.created_at))
+      }
+    }
+  }
+
   const cards: AgentScorecard[] = agents.map((a) => {
     const p = prod.get(a.id) ?? { gci: 0, closings: 0 }
     const edu = (a.user_id && eduByUser.get(a.user_id)) || { assigned: 0, completed: 0 }
     const rr = roiByAgent.get(a.id) ?? { roiPct: null, net: null }
+    const graph = graphEdges && agentGraphCounts && a.user_id ? graphBlock(agentGraphCounts(graphEdges, a.user_id)) : null
     return {
+      graph,
+      development: devReadable ? (devByAgent.get(a.id) ?? null) : null,
       agentId: a.id,
       name: (a.user_id && nameByUser.get(a.user_id)) || "Agent",
       ytdGci: p.gci,

@@ -7,8 +7,20 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CheckCircle2, XCircle, HelpCircle, ShieldCheck } from "lucide-react"
 import { approveVendor, rejectVendor, requestVendorInfo, setVendorComplianceCredential, setVendorTierPricing } from "@/app/actions/vendor-verification"
+import { readVendorInsurance, type InsurancePosture, type InsuranceRecord } from "@/lib/vendors/insurance-posture"
 
-type TierPrice = { tier: "basic" | "standard" | "premium" | "preferred_network"; price: number }
+/** Same four-state vocabulary the vendor directory badges use. Grey means "we do
+ *  not know", which is never rounded up to green or down to red. */
+const INSURANCE_BADGE: Record<InsurancePosture, string> = {
+  verified:  "bg-green-100 text-green-800 border-green-200",
+  expiring:  "bg-amber-100 text-amber-900 border-amber-300",
+  expired:   "bg-red-100 text-red-800 border-red-300",
+  no_expiry: "bg-muted text-muted-foreground border-transparent",
+  never:     "bg-muted text-muted-foreground border-transparent",
+}
+
+/** `price` null = not yet set for this brokerage (wave 140J: there is no platform default price). */
+type TierPrice = { tier: "basic" | "standard" | "premium" | "preferred_network"; price: number | null }
 
 export interface PendingVendor {
   id: string
@@ -19,6 +31,8 @@ export interface PendingVendor {
   website: string | null
   ai_verification_score: number | null
   verification_flags: string[] | null
+  /** m376 credential bag — the certificate of insurance lives under `.insurance`. */
+  compliance_credentials?: Record<string, InsuranceRecord | null | undefined> | null
 }
 
 /**
@@ -29,10 +43,24 @@ export interface PendingVendor {
 export function VendorApprovalClient({ vendors, pricing }: { vendors: PendingVendor[]; pricing?: TierPrice[] }) {
   const router = useRouter()
   const [busy, setBusy] = useState<string | null>(null)
+  const [errors, setErrors] = useState<Record<string, string>>({})
 
+  // EVERY control here reads its outcome. These actions THROW on refusal (not an
+  // admin, vendor outside your brokerage, an illegal status transition, an
+  // expiry the m376 CHECK rejects) — and the previous version of this function
+  // had no catch at all, so a refusal was indistinguishable from success: the
+  // spinner stopped, the page refreshed, and nothing had happened.
   async function run(id: string, fn: () => Promise<unknown>) {
     setBusy(id)
-    try { await fn() ; router.refresh() } finally { setBusy(null) }
+    setErrors((prev) => ({ ...prev, [id]: "" }))
+    try {
+      await fn()
+      router.refresh()
+    } catch (e) {
+      setErrors((prev) => ({ ...prev, [id]: e instanceof Error ? e.message : "The server refused that change." }))
+    } finally {
+      setBusy(null)
+    }
   }
 
   const scoreColor = (s: number | null) =>
@@ -45,7 +73,7 @@ export function VendorApprovalClient({ vendors, pricing }: { vendors: PendingVen
     <Card>
       <CardHeader className="pb-2"><CardTitle className="text-base">Vendor subscription pricing (your brokerage)</CardTitle></CardHeader>
       <CardContent>
-        <p className="text-xs text-muted-foreground mb-3">Set custom monthly prices for vendor tiers. Blank/0 falls back to the platform default.</p>
+        <p className="text-xs text-muted-foreground mb-3">Set the monthly price vendors pay for each tier. A tier with no price cannot be purchased — vendors see "pricing not yet published" until you set one; 0 makes a tier free.</p>
         <div className="grid gap-3 sm:grid-cols-4">
           {pricing.map((p) => (
             <div key={p.tier} className="space-y-1">
@@ -53,13 +81,16 @@ export function VendorApprovalClient({ vendors, pricing }: { vendors: PendingVen
               <div className="flex items-center gap-1">
                 <span className="text-sm text-muted-foreground">$</span>
                 <input
-                  type="number" min={0} defaultValue={p.price}
+                  type="number" min={0} defaultValue={p.price ?? ""} placeholder="not set"
                   className="border rounded px-2 py-1 text-sm w-24"
                   disabled={busy === `price-${p.tier}`}
-                  onBlur={(e) => { const val = Number(e.target.value); if (val !== p.price) run(`price-${p.tier}`, () => setVendorTierPricing(p.tier, val)) }}
+                  onBlur={(e) => { if (e.target.value === "") return; const val = Number(e.target.value); if (val !== p.price) run(`price-${p.tier}`, () => setVendorTierPricing(p.tier, val)) }}
                 />
                 <span className="text-xs text-muted-foreground">/mo</span>
               </div>
+              {errors[`price-${p.tier}`] && (
+                <p className="text-[11px] text-destructive">{errors[`price-${p.tier}`]}</p>
+              )}
             </div>
           ))}
         </div>
@@ -119,12 +150,30 @@ export function VendorApprovalClient({ vendors, pricing }: { vendors: PendingVen
                 <HelpCircle className="h-4 w-4 mr-1" /> Request info
               </Button>
             </div>
-            {/* Record insurance / license expiry — the document-expiry monitor acts on these dates. */}
+            {/* INSURANCE POSTURE, computed from the stored expiry — so the
+                approver sees whether coverage is live BEFORE they click Approve
+                and put this vendor in front of a client. */}
+            {(() => {
+              const ins = readVendorInsurance(v.compliance_credentials, new Date())
+              return (
+                <div className="space-y-1">
+                  <Badge className={`text-[11px] border ${INSURANCE_BADGE[ins.posture]}`} title={ins.detail}>
+                    {ins.posture === "verified" ? <ShieldCheck className="h-3 w-3 mr-1" /> : null}
+                    {ins.label}
+                  </Badge>
+                  <p className="text-[11px] text-muted-foreground leading-snug">{ins.detail}</p>
+                </div>
+              )
+            })()}
+
+            {/* Record insurance / license expiry — the document-expiry monitor acts on these dates.
+                Pre-filled from what is on file, so the input shows the date it is about to replace. */}
             <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
               <span className="text-muted-foreground">Insurance expiry:</span>
               <input
                 type="date"
                 className="border rounded px-1.5 py-0.5 text-xs"
+                defaultValue={readVendorInsurance(v.compliance_credentials, new Date()).expiry ?? ""}
                 disabled={busy === v.id}
                 onChange={(e) => e.target.value && run(v.id, () => setVendorComplianceCredential(v.id, "insurance", e.target.value))}
               />
@@ -132,10 +181,14 @@ export function VendorApprovalClient({ vendors, pricing }: { vendors: PendingVen
               <input
                 type="date"
                 className="border rounded px-1.5 py-0.5 text-xs"
+                defaultValue={(v.compliance_credentials?.license?.expiry ?? "") as string}
                 disabled={busy === v.id}
                 onChange={(e) => e.target.value && run(v.id, () => setVendorComplianceCredential(v.id, "license", e.target.value))}
               />
             </div>
+
+            {/* The refusal, in the server's own words. */}
+            {errors[v.id] && <p className="text-xs text-destructive">{errors[v.id]}</p>}
           </CardContent>
         </Card>
       ))}

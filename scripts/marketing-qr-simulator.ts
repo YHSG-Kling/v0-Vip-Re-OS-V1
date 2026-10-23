@@ -28,19 +28,35 @@ async function main(): Promise<void> {
   console.log("\n[marketing QR · pure — material kind → destination_type + URL]")
   const ORIGIN = "https://app.example.com"
   const refs = { listingId: "L-1", agentSlug: "jane-doe" }
+  // Wave 141F: the open-house flyer used to pin `/listings/L-1/rsvp` — a route that does not
+  // exist (app/listings/[listingId] has no rsvp child). The paths now come from the one
+  // destination table (lib/marketing/qr-contract.ts) and are held to the RULE below: every
+  // built URL is an allow-listed in-app public path backed by a real app/<segment> directory.
+  const { isQrInAppPublicPath, QR_IN_APP_PUBLIC_PREFIXES } = await import("../lib/marketing/qr-contract")
+  const { existsSync } = await import("node:fs")
+  const { join } = await import("node:path")
   const expected: Record<MarketingQrKind, { dt: string; urlPart: string }> = {
     listing_flyer:    { dt: "listing_detail", urlPart: "/listings/L-1" },
     listing_packet:   { dt: "listing_detail", urlPart: "/listings/L-1" },
     just_sold_flyer:  { dt: "listing_detail", urlPart: "/listings/L-1" },
-    open_house_flyer: { dt: "book_meeting",   urlPart: "/listings/L-1/rsvp" },
+    open_house_flyer: { dt: "book_meeting",   urlPart: "/listings/L-1" },
     cma:              { dt: "landing_page",   urlPart: "/home-value/jane-doe" },
   }
   for (const kind of Object.keys(expected) as MarketingQrKind[]) {
     const d = qrDestinationForMaterial(kind)
     const url = d.buildTargetUrl(ORIGIN, refs)
     check(`${kind} → ${expected[kind].dt} @ ${expected[kind].urlPart}`,
-      d.destinationType === expected[kind].dt && url.includes(expected[kind].urlPart))
+      d.destinationType === expected[kind].dt && !!url && url.includes(expected[kind].urlPart))
+    const path = url ? url.slice(ORIGIN.length) : ""
+    const seg = path.split("/")[1]
+    check(`${kind}'s URL is an allow-listed in-app public path backed by app/${seg}`,
+      !!url && url.startsWith(ORIGIN + "/") && isQrInAppPublicPath(path) && existsSync(join(process.cwd(), "app", seg)))
   }
+  check("every allow-listed prefix is a real public route directory (the rule the table is held to)",
+    QR_IN_APP_PUBLIC_PREFIXES.every((p) => existsSync(join(process.cwd(), "app", p.replace(/\//g, "")))))
+  check("with NO listing and NO agent slug the open-house flyer points at nothing app-hosted (null → the code's own landing), never at the dashboard list",
+    qrDestinationForMaterial("open_house_flyer").buildTargetUrl(ORIGIN, {}) === null
+    && qrDestinationForMaterial("listing_flyer").buildTargetUrl(ORIGIN, {}) === null)
   // only enum-valid destination_types are emitted
   const dts = new Set((Object.keys(expected) as MarketingQrKind[]).map(k => qrDestinationForMaterial(k).destinationType))
   check("emits only enum-valid destination_types", [...dts].every(d => ["listing_detail", "book_meeting", "landing_page"].includes(d)))

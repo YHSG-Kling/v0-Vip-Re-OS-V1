@@ -8,6 +8,7 @@
 // Read-only on the deal; never throws into the caller. HONEST: a lender with no lock date is
 // skipped (the pure engine returns not_applicable).
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { computeRateLockRisk, type RateLockVerdict } from "./rate-lock-watch"
@@ -105,14 +106,14 @@ async function escalate(
   let escalated = false
   try {
     if (args.agentUserId) {
-      await svc.from("notifications").insert({
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: args.agentUserId, brokerage_id: args.brokerageId, type: "rate_lock_watch",
         title: verdict.status === "expired" ? "⛔ Rate lock expired — buyer's rate at risk" : "⏳ Rate lock expiring vs closing date",
         // Carry the dedupe key in the body so the idempotency probe can find it.
         body: `${draft.body}\n\n[${args.dedupeKey}]`,
         entity_type: "transaction", entity_id: args.transactionId,
         priority: verdict.status === "expired" ? "critical" : "high",
-      }).then(() => {}, () => {})
+      }), { table: "notifications", flow: "rate_lock_watch_runner_notify", brokerageId: args.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     }
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
     const sig = await publishManagerSignal({

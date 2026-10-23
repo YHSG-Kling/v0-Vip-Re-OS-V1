@@ -10,6 +10,10 @@ export { CURRENT_ENGINE_VERSION } from "./types"
 // ─── ENGINE (entry point) ─────────────────────────────────────────────────────
 export { calculateCommission } from "./engine"
 
+// ─── TEAM-LEAD OVERRIDE + TEAM CAP (pure money math, DB-free and testable) ────
+export type { TeamLeadAgreement, TeamLeadSplitResult, TeamCapStatus, TeamCapLedger, TeamCapResult } from "./team-lead-split"
+export { resolveTeamLeadOverride, isAgreementEffective, applyTeamCap } from "./team-lead-split"
+
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
 export { dollarsToCents, centsToDollars, calculatePercentAmount, validatePositive } from "./utils"
 
@@ -24,6 +28,7 @@ export { markCommissionPaid, markDistributionPaid, getCommissionPaymentStatus } 
 export { resolveGrossRate } from "./waterfall/01-resolve-rate"
 export { calculateGrossCommission } from "./waterfall/02-calculate-gross"
 export { applyGrossAdjustments } from "./waterfall/03-apply-gross-adjustments"
+export { applyReferralDeduction } from "./waterfall/03b-referral-deduction"
 export { splitAgentBrokerage } from "./waterfall/04-split-agent-brokerage"
 export { applyAgentAdjustments } from "./waterfall/05-apply-agent-adjustments"
 export { applyBrokerageAdjustments } from "./waterfall/06-apply-brokerage-adjustments"

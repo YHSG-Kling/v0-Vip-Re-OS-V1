@@ -30,7 +30,7 @@ export interface ModuleFreshnessRow {
 }
 
 /** PURE: the effective "content date" of a module — most recent of published/updated/created. */
-export function moduleContentDate(m: ModuleFreshnessRow): string | null {
+function moduleContentDate(m: ModuleFreshnessRow): string | null {
   return m.published_at ?? m.updated_at ?? m.created_at ?? null
 }
 

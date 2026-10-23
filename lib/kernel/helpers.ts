@@ -15,6 +15,7 @@
 // already running server-side via RSC / Route Handlers.
 
 import { createClient } from "@/lib/supabase/server"
+import { bestEffort } from "@/lib/db/best-effort"
 import { transitionLifecycle } from "./lifecycle"
 import { evaluateOutbound } from "./compliance"
 import { NAVIGATION_BY_ROLE } from "@/app/config/navigation-config"
@@ -58,7 +59,7 @@ export interface EmitEventParams {
 // ─── STAFF ROLES ─────────────────────────────────────────────────────────────
 // Roles that get the internal AI assistant and full dashboard navigation.
   const STAFF_ROLES = new Set([
-  "agent", "broker", "broker_admin", "admin", "tc", "transaction_coordinator",
+  "agent", "broker", "broker_admin", "broker_owner", "admin", "tc", "transaction_coordinator",
   "compliance_officer", "team_lead", "team_member", "lender", "vendor",
   "title", "superadmin", "isa",
   ])
@@ -66,18 +67,21 @@ export interface EmitEventParams {
 // ─── ROUTE → REQUIRED ROLE MAP ───────────────────────────────────────────────
 // Maps route prefix → minimum required role (checked against userContext.roles).
 // This is a coarse guard — fine-grained RLS lives in Supabase.
+// CLIENT-METADATA vocabulary, not users.user_type: UserContext.roles mixes demo
+// and auth-metadata fallbacks, which can carry "superadmin" — it stays here even
+// though it is dead as a user_type, or platform demo seats lose their nav.
 const ROUTE_ROLE_REQUIREMENTS: Record<string, string[]> = {
   "/admin":                  ["superadmin", "admin"],
-  "/dashboard/admin":        ["superadmin", "admin", "broker", "broker_admin"],
-  "/dashboard/financials":   ["agent", "broker", "broker_admin", "admin", "superadmin"],
-  "/dashboard/brokerage":    ["broker", "broker_admin", "admin", "superadmin"],
-  "/dashboard/recruiting":   ["broker", "broker_admin", "admin", "superadmin"],
-  "/dashboard/compliance":   ["broker", "broker_admin", "admin", "compliance_officer", "superadmin"],
-  "/dashboard/transactions": ["agent", "tc", "transaction_coordinator", "broker", "broker_admin", "admin", "superadmin"],
-  "/dashboard/isa":          ["isa", "broker", "broker_admin", "admin", "superadmin"],
+  "/dashboard/admin":        ["superadmin", "admin", "broker", "broker_admin", "broker_owner"],
+  "/dashboard/financials":   ["agent", "broker", "broker_admin", "broker_owner", "admin", "superadmin"],
+  "/dashboard/brokerage":    ["broker", "broker_admin", "broker_owner", "admin", "superadmin"],
+  "/dashboard/recruiting":   ["broker", "broker_admin", "broker_owner", "admin", "superadmin"],
+  "/dashboard/compliance":   ["broker", "broker_admin", "broker_owner", "admin", "compliance_officer", "superadmin"],
+  "/dashboard/transactions": ["agent", "tc", "transaction_coordinator", "broker", "broker_admin", "broker_owner", "admin", "superadmin"],
+  "/dashboard/isa":          ["isa", "broker", "broker_admin", "broker_owner", "admin", "superadmin"],
   "/dashboard":              [...STAFF_ROLES],
-  "/crm":                    ["agent", "broker", "broker_admin", "admin", "superadmin"],
-  "/leads":                  ["isa", "broker", "broker_admin", "admin", "superadmin"],
+  "/crm":                    ["agent", "broker", "broker_admin", "broker_owner", "admin", "superadmin"],
+  "/leads":                  ["isa", "broker", "broker_admin", "broker_owner", "admin", "superadmin"],
   "/portal":                 ["contact", "buyer", "seller", "lifetime"],
 }
 
@@ -218,6 +222,15 @@ export async function enforceCompliance(
  * Schema:
  *   activities:      activity_type, entity_type, entity_id(=contact_id), agent_id, brokerage_id, title, description, status, created_at
  *   lifecycle_events: event_type, entity_type, entity_id, actor_user_id, brokerage_id, metadata, created_at
+ *
+ * ONE VOCABULARY (2026-09-03): the lifecycle_events half goes through
+ * `emitKernelEvent` (lib/kernel/emit.ts) — this was the FIFTH spelling of "fire
+ * a kernel event", and it never reached the reactor. A typed KernelEvent passed
+ * here now fans out (staff bell / sequences / portal); a free-form audit string
+ * (the AI-ISA outreach telemetry that is this helper's main traffic) is still
+ * persisted and stops there — the emit gates on the KernelEvent enum. The
+ * `activities` mirror is unchanged. The emit is loaded at call time because it
+ * is `server-only` and this module is imported by simulators under plain tsx.
  */
 export async function emitLifecycleEvent(params: EmitEventParams): Promise<void> {
   try {
@@ -230,8 +243,14 @@ export async function emitLifecycleEvent(params: EmitEventParams): Promise<void>
     const entityUuid = params.entityId?.trim()   || null
     const brokerUuid = params.brokerageId?.trim() || null
 
-    await Promise.all([
-      supabase.from("activities").insert({
+    // Declared non-fatal — but the try/catch below could never see a rejected
+    // write (supabase-js resolves), so telemetry that silently stopped landing
+    // would look identical to telemetry that worked. bestEffort keeps it
+    // non-fatal AND logs, which is what "must never break the calling flow"
+    // was meant to buy.
+    const { emitKernelEvent } = await import("./emit")
+    const [, emitted] = await Promise.all([
+      bestEffort(supabase.from("activities").insert({
         activity_type:  params.eventType,
         entity_type:    params.entityType,
         contact_id:     params.contactId     ?? null,
@@ -242,17 +261,22 @@ export async function emitLifecycleEvent(params: EmitEventParams): Promise<void>
         description:    JSON.stringify(params.metadata ?? {}),
         status:         "completed",
         created_at:     now,
-      }),
-      supabase.from("lifecycle_events").insert({
-        event_type:    params.eventType,
-        entity_type:   params.entityType,
-        entity_id:     entityUuid,
-        actor_user_id: actorUuid,
-        brokerage_id:  brokerUuid,
+      }), "lifecycle activity mirror"),
+      emitKernelEvent({
+        event:         params.eventType,
+        entityType:    params.entityType,
+        entityId:      entityUuid ?? "",
+        actorUserId:   actorUuid,
+        brokerageId:   brokerUuid,
+        contactId:     params.contactId,
+        transactionId: params.transactionId,
         metadata:      params.metadata ?? {},
-        created_at:    now,
+        createdAt:     now,
       }),
     ])
+    if (emitted.error) {
+      console.error(`[kernel/helpers] lifecycle_events row refused for ${params.eventType}: ${emitted.error}`)
+    }
   } catch (err) {
     // Non-fatal — telemetry failures must never break the calling flow.
     console.error("[kernel/helpers] emitLifecycleEvent failed:", err)
@@ -299,7 +323,7 @@ export function resolvePageCapability(
 
   // Role-based capability matrix
   const isSuperadmin    = roles.includes("superadmin")
-  const isBrokerOrAdmin = roles.some(r => ["broker", "broker_admin", "admin"].includes(r))
+  const isBrokerOrAdmin = roles.some(r => ["broker", "broker_admin", "broker_owner", "admin"].includes(r))
   const isAgent         = roles.some(r => ["agent", "team_lead", "team_member"].includes(r))
   const isCompliance    = roles.includes("compliance_officer")
   const isTC            = roles.some(r => ["tc", "transaction_coordinator"].includes(r))

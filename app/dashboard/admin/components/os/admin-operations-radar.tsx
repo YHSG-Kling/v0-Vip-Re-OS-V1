@@ -55,7 +55,7 @@ export function AdminOperationsRadar({ brokerageId }: AdminOperationsRadarProps)
           .from("agent_onboarding")
           .select("id, status, updated_at, completion_percentage")
           .eq("brokerage_id", brokerageId)
-          .in("status", ["pending", "in_progress"]),
+          .in("status", ["in_progress"]),
         // Incomplete agent setups
         supabase
           .from("agents")

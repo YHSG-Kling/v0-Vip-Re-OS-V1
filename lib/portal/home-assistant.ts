@@ -33,6 +33,11 @@ export function validateHomeQuestion(raw: string | null | undefined): QuestionVa
   return { ok: true, clean: q }
 }
 
+// NOT merged into lib/format/money.ts's `usdOrNull` (§1/§6, 2026-09-08) despite
+// being its byte-equivalent source — this file's header contract is "Pure,
+// import-free helpers" so scripts/home-assistant-simulator.ts can exercise it
+// with zero module resolution. `usdOrNull` there is documented as this
+// function's canonical text; keep the two in sync by hand if either changes.
 const usd = (n: number | null | undefined) =>
   typeof n === "number" && Number.isFinite(n)
     ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
@@ -80,6 +85,69 @@ export function buildHomeAssistantSystemPrompt(facts: HomeFacts): string {
     `THE HOMEOWNER'S FACTS:`,
     buildHomeFactsBlock(facts),
   ].join("\n")
+}
+
+// ─── THE FOLLOW-UP THE QUESTION DESERVES (lane 90C) ─────────────────────────
+// The assistant answered a past client's home-value / refinance / vendor
+// question and then NOTHING happened ("no persistence, self-serve, no noise"):
+// the one moment a lifetime customer raises their hand ended the loop. The
+// sphere persona of the ISA playbook (lib/ai-isa/qualification-playbook.ts
+// PERSONA_QUESTION_GUIDE.sphere) already names the three offers — an equity
+// check-in the AGENT brings the number to, a trusted-vendor intro from the
+// brokerage's own bench, and a refinance review with the finance desk. This pure
+// classifier decides WHICH of the portal's EXISTING asks the question is
+// (app/actions/portal-lifetime.ts: requestValueUpdate / submitNextMoveIntent
+// 'refinance' / requestVendorIntro); the action files it once and says so.
+// Deliberately conservative: a question that names none of the three yields
+// null — the agent redirect in the answer is the floor, never a phantom task.
+
+export type HomeFollowUpKind = "home_value" | "refinance" | "vendor"
+
+const HOME_VALUE_RE = /\b(worth|home value|house value|property value|valuation|appraisal|equity|what (could|would|can) (it|my (home|house)) sell for|sell (it|my (home|house)) for|market value|cma|comps?)\b/i
+const REFINANCE_RE = /\b(refi|refinanc\w*|heloc|home equity (loan|line)|cash[- ]out|lower (my|the|our) (rate|payment|mortgage)|interest rate|mortgage rate|rate drop|second mortgage)\b/i
+const VENDOR_RE = /\b(plumber|plumbing|electrician|electrical|roofer|roofing|hvac|furnace|a\/?c|air condition\w*|contractor|handyman|landscap\w*|painter|painting|mover|moving company|cleaner|cleaning|pest|inspector|gutter\w*|window\w*|flooring|remodel\w*|renovat\w*|repair\w*|fix (my|the|our)|recommend(ation)? (for )?a|know (a|any|someone)|who (do|would) you (use|recommend)|referral for a|good (\w+ )?(guy|company|service|pro|vendor)|lender|mortgage broker)\b/i
+
+/** PURE: which follow-up the question earns; null when none of the three. Vendor
+ *  wins over refinance only when a trade is named ("a lender for a refi" is a
+ *  refinance review, "know a good plumber" is a vendor intro). */
+export function classifyHomeFollowUp(question: string | null | undefined): HomeFollowUpKind | null {
+  const q = (question ?? "").toString().trim()
+  if (!q) return null
+  if (REFINANCE_RE.test(q)) return "refinance"
+  if (VENDOR_RE.test(q)) return "vendor"
+  if (HOME_VALUE_RE.test(q)) return "home_value"
+  return null
+}
+
+const VENDOR_CATEGORY_WORDS: Array<[RegExp, string]> = [
+  [/plumb/i, "plumbing"], [/electric/i, "electrical"], [/roof/i, "roofing"], [/hvac|furnace|a\/?c\b|air condition/i, "hvac"],
+  [/landscap|lawn|yard/i, "landscaping"], [/paint/i, "painting"], [/mover|moving/i, "moving"], [/clean/i, "cleaning"],
+  [/pest/i, "pest_control"], [/inspect/i, "inspection"], [/gutter/i, "gutters"], [/window/i, "windows"], [/floor/i, "flooring"],
+  [/remodel|renovat|contractor/i, "general_contractor"], [/handyman|repair|fix/i, "handyman"], [/lender|mortgage/i, "lender"],
+]
+
+/** PURE: the vendor category a question names, matched against the brokerage's
+ *  own categories first (so the intro can land on a real bench row), then the
+ *  generic word list; "home_services" when only a vague ask ("know anyone?"). */
+export function vendorCategoryFor(question: string, knownCategories: string[] | null | undefined): string {
+  const q = question.toLowerCase()
+  for (const cat of knownCategories ?? []) {
+    const stem = cat.toLowerCase().replace(/_/g, " ").split(" ")[0]
+    if (stem && stem.length >= 4 && q.includes(stem.slice(0, 5))) return cat
+  }
+  for (const [re, cat] of VENDOR_CATEGORY_WORDS) if (re.test(q)) return cat
+  return "home_services"
+}
+
+/** PURE: the one sentence appended to the answer ONLY when the follow-up was
+ *  actually filed — never a promise the row does not back. */
+export function followUpAcknowledgement(kind: HomeFollowUpKind, agentName: string | null | undefined): string {
+  const agent = agentName || "your agent"
+  switch (kind) {
+    case "home_value": return `I've let ${agent} know you're curious about your home's value — they'll prepare an updated look and reach out to walk through it with you.`
+    case "refinance": return `I've flagged this for ${agent} so they can set up a refinance review with the finance desk — no obligation, just the numbers.`
+    case "vendor": return `I've asked ${agent} to connect you with a trusted pro from their own bench — they'll follow up with an intro.`
+  }
 }
 
 /**

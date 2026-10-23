@@ -3,14 +3,20 @@ import { Suspense } from "react"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import {
-  determinePortalView,
-  determinePortalModules,
+  resolvePortalLayouts,
+  determinePortalModulesForLayouts,
+  portalShowsLayout,
   logPortalAccess,
-  buildPortalNav,
+  buildPortalNavForLayouts,
   type PortalView,
 } from "@/lib/kernel/portal"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import { ensureContactPortalUser } from "@/lib/portal/portal-invite-core"
+// THE ONE resolver (§6) — same one app/api/forms/submit/route.ts and
+// app/api/open-house/attend/route.ts use.
+import { resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
+import { recordPortalFirstAccess } from "@/lib/portal/portal-first-access"
+import { headers } from "next/headers"
 import { resolveActiveImpersonation } from "@/lib/platform/impersonation"
 import PortalNav from "@/app/components/features/portal/base/PortalNav"
 import PortalUserMenu from "@/app/components/features/portal/base/PortalUserMenu"
@@ -60,7 +66,7 @@ export default async function PortalLayout({
   // Fetch contact (without broken embedded join)
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, brokerage_id, contact_type, buyer_stage, agent_id, created_at, contact_persona, email")
+    .select("id, first_name, last_name, brokerage_id, contact_type, buyer_stage, agent_id, created_at, contact_persona, email, metadata")
     .eq("id", contactId)
     .maybeSingle()
 
@@ -98,7 +104,9 @@ export default async function PortalLayout({
         .select("user_type, brokerage_id, platform_role")
         .eq("id", user.id)
         .maybeSingle()
-      const STAFF_TYPES = ["agent", "team_lead", "tc", "admin", "broker", "superadmin"]
+      // SCOPE LADDER (staff roster): 'superadmin' removed — dead as users.user_type
+      // (0 live rows); broker_owner added — storable same-tenant seat that owns the brokerage.
+      const STAFF_TYPES = ["agent", "team_lead", "tc", "admin", "broker", "broker_owner"]
       if (
         ur?.brokerage_id === contact.brokerage_id &&
         STAFF_TYPES.includes(ur?.user_type ?? "")
@@ -122,14 +130,30 @@ export default async function PortalLayout({
     // Rule 3 (legacy): kept for compatibility — same logic as 2b for non-agent staff
     // if it didn't match above (e.g. cross-brokerage admin). No-op when 2b passes.
 
-    // Rule 4: Accepted portal invite for this contact
+    // Rule 4: Accepted portal invite for this contact.
+    //
+    // `error` is destructured. supabase-js RESOLVES a refused query, so the
+    // previous `const { data: invite }` turned "this read was denied" into "there
+    // is no invite" and bounced a legitimate buyer to the login page with no way
+    // to tell an outage from a decision. The redirect still happens — failing
+    // CLOSED on an unreadable invite is right — but it is now logged as the
+    // refusal it is, so the buyer support ticket has something behind it.
+    //
+    // lib/portal/require-contact-access.ts applies the SAME rule (accepted AND
+    // unexpired) so an action can never refuse a buyer this page just admitted.
     if (!accessGranted) {
-      const { data: invite } = await supabase
+      const { data: invite, error: inviteError } = await supabase
         .from("portal_contact_invites")
         .select("status, expires_at")
         .eq("contact_id", contactId)
         .eq("email", user.email ?? "")
         .maybeSingle()
+      if (inviteError) {
+        console.error(
+          `[portal] invite check REFUSED for contact ${contactId} (${inviteError.message}) — ` +
+          "denying access, but this is an unreadable invite, not a missing one.",
+        )
+      }
       if (invite?.status === "accepted" && new Date(invite.expires_at) > new Date()) {
         accessGranted = true
       }
@@ -158,40 +182,40 @@ export default async function PortalLayout({
       },
     }).catch(() => {})
 
-    const { data: invite } = await supabase
-      .from("portal_contact_invites")
-      .select("id, status")
-      .eq("contact_id", contactId)
-      .eq("status", "sent")
-      .maybeSingle()
-
-    if (invite) {
-      await supabase
-        .from("portal_contact_invites")
-        .update({ status: "accepted", accepted_at: new Date().toISOString() })
-        .eq("id", invite.id)
-
-      // Notify assigned agent (non-blocking, fire-and-forget)
-      if (contact.agent_id) {
-        supabase
-          .from("agents")
-          .select("user_id")
-          .eq("id", contact.agent_id)
-          .maybeSingle()
-          .then(({ data: agent }) => {
-            if (agent?.user_id) {
-              void supabase.from("notifications").insert({
-                user_id: agent.user_id,
-                brokerage_id: contact.brokerage_id,
-                type: "portal_first_login",
-                title: `${contact.first_name} just opened their portal`,
-                entity_type: "contact",
-                entity_id: contactId,
-              })
-            }
-          }, () => {})
+    // FIRST ACCESS — mark the invite accepted, capture the browser language, tell
+    // the agent. Recorded through lib/portal/portal-first-access.ts on the SERVICE
+    // client, pinned to the tenant of the contact row read above (lane 87E): on
+    // this caller's own session every step was refused in silence — a portal
+    // client cannot read its invite (pci_agent_manage is agent-scoped) nor update
+    // its own contact row — so none of it had ever happened from this door.
+    //
+    // TIER 3 OF resolveContactLanguage (owner ruling, wave 51/52 — task item
+    // 4: "only forms capture Accept-Language"): portal invite ACCEPTANCE is
+    // the client's own browser hitting this page for the first time, so its
+    // Accept-Language header is a real signal — captured exactly once,
+    // fill-if-empty (never overwrites a language the contact or an agent
+    // already set explicitly, and never overwrites an earlier capture).
+    // Best-effort: never blocks portal access.
+    let capturedLanguage: string | null = null
+    const firstAccessMetadata = (contact as { metadata?: Record<string, unknown> | null }).metadata ?? null
+    try {
+      const existingMetadata = firstAccessMetadata
+      if (!(existingMetadata as any)?.captured_language) {
+        const h = await headers()
+        capturedLanguage = resolveCapturedLanguage(null, h.get("accept-language"))
       }
-    }
+    } catch { /* best-effort — never blocks portal access */ }
+
+    await recordPortalFirstAccess({
+      contactId,
+      brokerageId: contact.brokerage_id ?? null,
+      agentId: contact.agent_id ?? null,
+      contactFirstName: contact.first_name ?? null,
+      existingMetadata: firstAccessMetadata,
+      capturedLanguage,
+    }).catch((e: unknown) => {
+      console.warn("[portal] first-access record failed:", e instanceof Error ? e.message : e)
+    })
   }
 
   // Resolve agent via kernel identity function
@@ -199,26 +223,37 @@ export default async function PortalLayout({
     ? await resolveContactOwnerAgent(supabase, contact.agent_id)
     : null
 
-  // Check if agent has a saved D-ID avatar (photo or video) for Live Agent mode.
-  // Schema: agent_voice_profiles.agent_id (NOT user_id — old name from earlier
-  // migrations). Previously this select silently returned null and the DID
-  // chat widget never lit up.
-  // Prefer the trained did_avatar_id (presenter id from D-ID — reusable) when
-  // set; the photo/video URLs are the source assets used by talks/clips fallback.
+  // Whether the "Live: <agent>" button is offered — a REAL, setting-derived
+  // gate, not "any row exists" (CLAUDE.md §4 — no fabricated flag). Twin
+  // Studio twins (agent_avatar_assets) go through the brokerage's OWN
+  // approval workflow (brokerages.twins_require_approval → each twin's
+  // approval_status), the exact gate /api/did/agents/session already
+  // enforces at call time with a 409 — this used to just check "does ANY
+  // did_avatar_id/photo/video exist" on the LEGACY agent_voice_profiles
+  // table, so a portal client could see a live-looking button for a twin
+  // that was still training or awaiting brokerage sign-off, tap it, and get
+  // a 409 — an affordance describing a capability the session route was
+  // about to refuse. Prefer the default twin's real readiness; fall back to
+  // the legacy table's existence check ONLY for agents who have not migrated
+  // to Twin Studio at all (that table carries no separate approval column).
   let agentHasDIDAvatar = false
-  let agentDIDPhotoUrl: string | null = null
-  let agentDIDVideoUrl: string | null = null
-  let agentDIDAvatarId: string | null = null
   if (contact?.agent_id) {
-    const { data: voiceProfile } = await supabase
-      .from("agent_voice_profiles")
-      .select("did_photo_url, did_video_url, did_avatar_id")
+    const { data: defaultTwin } = await supabase
+      .from("agent_avatar_assets")
+      .select("status, approval_status")
       .eq("agent_id", contact.agent_id)
+      .eq("is_default", true)
       .maybeSingle()
-    agentDIDPhotoUrl = voiceProfile?.did_photo_url ?? null
-    agentDIDVideoUrl = voiceProfile?.did_video_url ?? null
-    agentDIDAvatarId = voiceProfile?.did_avatar_id ?? null
-    agentHasDIDAvatar = !!(agentDIDAvatarId || agentDIDPhotoUrl || agentDIDVideoUrl)
+    if (defaultTwin) {
+      agentHasDIDAvatar = defaultTwin.status === "ready" && defaultTwin.approval_status === "approved"
+    } else {
+      const { data: voiceProfile } = await supabase
+        .from("agent_voice_profiles")
+        .select("did_photo_url, did_video_url, did_avatar_id")
+        .eq("agent_id", contact.agent_id)
+        .maybeSingle()
+      agentHasDIDAvatar = !!(voiceProfile?.did_avatar_id || voiceProfile?.did_photo_url || voiceProfile?.did_video_url)
+    }
   }
 
   // Unread notification count for bell badge
@@ -228,25 +263,33 @@ export default async function PortalLayout({
     .eq("contact_id", contactId)
     .eq("is_read", false)
 
-  // Kernel-driven portal view determination — use normalized contract objects
-  const viewOutput = await determinePortalView(supabase, { contactId })
-  const modulesOutput = await determinePortalModules(supabase, { contactId, view: viewOutput.view })
+  // Kernel-driven portal LAYOUTS (wave 94 — "the kernel determines the portal layout").
+  // A dual client's shell carries BOTH journeys' modules and nav, seller first; a
+  // single-journey client's shell is exactly the one layout it always was.
+  const portalLayouts = await resolvePortalLayouts(supabase, { contactId })
+  const modules = await determinePortalModulesForLayouts(supabase, { contactId, layouts: portalLayouts.layouts })
 
-  // Extract canonical PortalView string from contract output
-  const view = viewOutput.view
-  const modules = modulesOutput.modules
+  // The primary layout leads the label, the badge and the chat persona.
+  const view = portalLayouts.primary
 
-  // Build nav from kernel function
-  const navItems = buildPortalNav(view, modules, contactId)
+  // Build nav from kernel function — every layout's destinations, one entry each.
+  const navItems = buildPortalNavForLayouts(portalLayouts.layouts, modules, contactId)
 
   // Portal access logged below after view is derived
 
   // Derive display values
   const contactName = contact.first_name || "Guest"
   const agentName = agentData?.full_name || "Your Agent"
-  const isBuyer = view === "buyer"
-  const isSeller = view === "seller"
+  const isBuyer = portalShowsLayout(portalLayouts, "buyer")
+  const isSeller = portalShowsLayout(portalLayouts, "seller")
   const persona = contact.contact_persona || "other"
+  // Lane 90D (89D P2-9): an INVESTOR is a contact_persona riding the buyer VIEW
+  // (determinePortalView returns buyer/seller/lifetime only — correct per the
+  // rulings), so the badge said "Buyer" to an investor. The label reads the
+  // persona; the view, the nav and every gate are unchanged.
+  const viewLabel = portalLayouts.layouts.length > 1
+    ? portalLayouts.layouts.map((v) => VIEW_LABELS[v]).join(" + ")
+    : view === "buyer" && persona === "investor" ? "Investor" : VIEW_LABELS[view]
   // Log access with resolved view for tracing
   logPortalAccess(supabase, contactId, "layout", `view:${view}`, agentData?.id).catch(() => {})
 
@@ -260,7 +303,7 @@ export default async function PortalLayout({
                 Welcome, {contactName}
               </h1>
               <Badge className={VIEW_COLORS[view]} variant="secondary">
-                {VIEW_LABELS[view]}
+                {viewLabel}
               </Badge>
             </div>
             <p className="text-sm text-muted-foreground">

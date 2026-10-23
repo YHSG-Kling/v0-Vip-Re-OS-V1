@@ -53,7 +53,7 @@ async function liveLayer(): Promise<void> {
     await svc.from("brokerages").insert([{ id: brokerageA, name: `${tag} A` }, { id: brokerageB, name: `${tag} B` }])
     await svc.from("users").insert([
       { id: brokerUserId, brokerage_id: brokerageA, email: `${tag}-broker@example.com`, user_type: "broker" },
-      { id: platformUserId, email: `${tag}-super@example.com`, user_type: "superadmin" },
+      { id: platformUserId, email: `${tag}-super@example.com`, user_type: "admin", platform_role: "superadmin" },
     ])
 
     // Brokerage A has a broker → broker is alerted.

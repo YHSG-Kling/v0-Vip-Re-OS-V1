@@ -1,8 +1,12 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { normalizeFormalityLevel } from "@/lib/branding/formality"
 
 // ── saveWidgetSettings ────────────────────────────────────────────────────────
 // Updates agents.widget_embed_enabled and agents.widget_position for the
@@ -48,14 +52,14 @@ export async function saveWidgetSettings({
     .maybeSingle()
 
   if (agent?.brokerage_id) {
-    await service.from("lifecycle_events").insert({
-      brokerage_id: agent.brokerage_id,
-      event_type: "widget_settings_updated",
-      entity_type: "agent",
-      entity_id: agentId,
-      actor_user_id: user.id,
+    await sentinelWrite(service, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: agent.brokerage_id,
+      event: "widget_settings_updated",
+      entityType: "agent",
+      entityId: agentId,
+      actorUserId: user.id,
       metadata: { widget_enabled: enabled, widget_position: position },
-    })
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   }
 
   revalidatePath("/dashboard/settings/widget")
@@ -68,7 +72,7 @@ export async function saveWidgetSettings({
 export async function saveAIIdentity({
   identityId,
   agentId,
-  brokerageId,
+  brokerageId: claimedBrokerageId,
   assistantName,
   personaLabel,
   tone,
@@ -86,11 +90,38 @@ export async function saveAIIdentity({
   welcomeMessage: string
   followupStyle: string
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated." }
+  // SESSION GATE (lane 91D2, CLAUDE.md §4). Before: any signed-in user could insert
+  // an assistant identity into ANY brokerage (body brokerageId) and rewrite ANY
+  // tenant's identity row by id — both on the service client. Now: the tenant is
+  // the session's (a different body brokerage is refused); a BROKERAGE-scope
+  // identity is a tenant-admin decision (the one roster); an AGENT-scope identity
+  // must name an agent of this tenant, and only that agent or a tenant admin may
+  // set it; an update touches only a row of this tenant, counted.
+  const caller = await requireCallerTenant(claimedBrokerageId)
+  if (!caller.ok) return { success: false, error: caller.error }
+  const brokerageId = caller.brokerageId
+  const user = { id: caller.userId }
+  const isAdmin = isAdminOrBroker({ user_type: caller.userType })
+
+  // ONE formality vocabulary (lib/branding/formality.ts): the widget offered "conversational" (its
+  // default) and "semi-formal", neither admitted by ai_identity_profiles_formality_level_check —
+  // a save on the default was refused outright. Normalize; refuse an unknown value out loud.
+  const formality = normalizeFormalityLevel(formalityLevel)
+  if (!formality) return { success: false, error: `Unknown formality level "${formalityLevel}" — use formal, semi-formal or casual.` }
 
   const service = createServiceClient()
+
+  if (!agentId) {
+    if (!isAdmin) return { success: false, error: "Only a brokerage admin can set the brokerage's assistant." }
+  } else {
+    const { data: agentRow, error: agentErr } = await service
+      .from("agents").select("id, user_id").eq("id", agentId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (agentErr) return { success: false, error: `Could not verify the agent: ${agentErr.message}` }
+    if (!agentRow) return { success: false, error: "Agent not found in your brokerage." }
+    if (!isAdmin && (agentRow as { user_id?: string | null }).user_id !== caller.userId) {
+      return { success: false, error: "You can only set your own assistant." }
+    }
+  }
 
   const payload = {
     brokerage_id: brokerageId,
@@ -99,7 +130,7 @@ export async function saveAIIdentity({
     assistant_name: assistantName.trim() || "Alex",
     persona_label: personaLabel.trim() || "Real Estate Assistant",
     tone,
-    formality_level: formalityLevel,
+    formality_level: formality,
     welcome_message: welcomeMessage.trim(),
     followup_style: followupStyle,
     active: true,
@@ -114,7 +145,11 @@ export async function saveAIIdentity({
       .from("ai_identity_profiles")
       .update(payload)
       .eq("id", identityId)
+      .eq("brokerage_id", brokerageId)
+      .select("id")
     error = res.error
+    // §3: an UPDATE that matched nothing also resolves — count it.
+    if (!error && (res.data ?? []).length === 0) return { success: false, error: "That assistant identity is not in your brokerage." }
   } else {
     // Insert new
     const res = await service
@@ -129,14 +164,14 @@ export async function saveAIIdentity({
   }
 
   // Emit lifecycle event
-  await service.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    event_type: "ai_identity_updated",
-    entity_type: agentId ? "agent" : "brokerage",
-    entity_id: agentId ?? brokerageId,
-    actor_user_id: user.id,
-    metadata: { assistant_name: assistantName, tone, formality_level: formalityLevel },
-  })
+  await sentinelWrite(service, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: brokerageId,
+    event: "ai_identity_updated",
+    entityType: agentId ? "agent" : "brokerage",
+    entityId: agentId ?? brokerageId,
+    actorUserId: user.id,
+    metadata: { assistant_name: assistantName, tone, formality_level: formality },
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   revalidatePath("/dashboard/settings/widget")
   return { success: true }

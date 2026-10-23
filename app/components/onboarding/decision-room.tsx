@@ -13,7 +13,10 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Sparkles, CheckCircle2, Clock } from "lucide-react"
-import { adoptAssistantIdentityAction } from "@/app/actions/onboarding-decisions"
+import {
+  adoptAssistantIdentityAction,
+  getOnboardingDecisionsAction,
+} from "@/app/actions/onboarding-decisions"
 import type { OnboardingDecision } from "@/lib/onboarding/onboarding-decisions"
 
 const STATE_BADGE: Record<string, { className: string; label: string }> = {
@@ -38,9 +41,20 @@ export function DecisionRoom({ decisions: initial }: { decisions: OnboardingDeci
       try {
         const r = await adoptAssistantIdentityAction()
         if (r.ok) {
-          setDecisions((prev) => prev.map((d) => d.key === "meet_your_assistant"
-            ? { ...d, state: "done" as const, adoptable: false, title: "Your AI assistant", evidence: `${r.assistantName} is live — it fronts your site chat, calls, and briefings.`, recommendation: "Nothing waiting here." }
-            : d))
+          // Re-read the REAL decision list rather than keeping the hand-written
+          // "done" card below. Adopting the identity can change more than one
+          // decision, and a locally-authored evidence string is a claim about
+          // server state that nothing checked. The optimistic patch stays only
+          // as the fallback for a refused/failed re-read — it is at least
+          // truthful about the one thing we just did.
+          const fresh = await getOnboardingDecisionsAction().catch(() => null)
+          if (fresh?.ok) {
+            setDecisions(fresh.decisions)
+          } else {
+            setDecisions((prev) => prev.map((d) => d.key === "meet_your_assistant"
+              ? { ...d, state: "done" as const, adoptable: false, title: "Your AI assistant", evidence: `${r.assistantName} is live — it fronts your site chat, calls, and briefings.`, recommendation: "Nothing waiting here." }
+              : d))
+          }
         } else setError(r.error)
       } finally {
         setBusy(false)

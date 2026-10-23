@@ -16,8 +16,15 @@
  *   · GONE QUIET   — a lifetime/past client with no contact in 90+ days
  *
  * Pure scorer exported for the sim; the reader composes per agent scope.
+ *
+ * WAVE 143 (lane 143E): the four signal WINDOWS (14d / 14d / 21d / 90d) were literals here. They are now the tenant's
+ * versioned followup_policy.sphere (lib/ai-isa/followup-policy.ts; the platform defaults are the same four numbers), read
+ * through loadFollowupPolicy. The `action` lines are agent-facing evidence labels for a human reading the list — NOT a message
+ * sent to anyone; what actually goes to a client is decided by the follow-up arbiter (lib/ai-isa/followup-arbiter.ts).
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import { LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
+import { loadFollowupPolicy, type FollowupPolicy } from "@/lib/ai-isa/followup-policy"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -53,9 +60,10 @@ const days = (iso: string | null | undefined): number =>
  *  agentId is null). Deduped per contact — the strongest signal wins. */
 export async function rankSphereActions(
   svc: Svc,
-  input: { brokerageId: string; agentId?: string | null; limit?: number },
+  input: { brokerageId: string; agentId?: string | null; limit?: number; policy?: FollowupPolicy["sphere"] },
 ): Promise<SphereAction[]> {
   const limit = input.limit ?? 8
+  const W = input.policy ?? (await loadFollowupPolicy(svc, input.brokerageId)).policy.sphere
   const byContact = new Map<string, SphereAction>()
   const consider = (a: SphereAction) => {
     const existing = byContact.get(a.contactId)
@@ -64,8 +72,8 @@ export async function rankSphereActions(
   const scope = <T extends { eq: any }>(q: T): T =>
     input.agentId ? q.eq("agent_id", input.agentId) : q
 
-  // LIFE EVENTS (last 14d)
-  const since14 = new Date(Date.now() - 14 * 86_400_000).toISOString()
+  // LIFE EVENTS (the policy's life-event window)
+  const since14 = new Date(Date.now() - W.lifeEventWindowDays * 86_400_000).toISOString()
   const { data: events } = await scope(
     svc.from("contacts")
       .select("id, first_name, last_name, last_life_event_detected, life_events")
@@ -87,11 +95,12 @@ export async function rankSphereActions(
     })
   }
 
-  // VALUE CHECKS (last 14d)
+  // VALUE CHECKS (the policy's value-check window)
+  const sinceValue = new Date(Date.now() - W.valueCheckWindowDays * 86_400_000).toISOString()
   const { data: checks } = await svc.from("home_value_estimates")
     .select("contact_id, generated_at, estimated_value_mid")
     .eq("brokerage_id", input.brokerageId)
-    .gte("generated_at", since14)
+    .gte("generated_at", sinceValue)
     .not("contact_id", "is", null)
     .limit(50)
   const checkRows = (checks ?? []) as any[]
@@ -116,7 +125,7 @@ export async function rankSphereActions(
     }
   }
 
-  // ANNIVERSARIES (next 21d — month/day match)
+  // ANNIVERSARIES (the policy's look-ahead — month/day match)
   const { data: annivContacts } = await scope(
     svc.from("contacts").select("id, first_name, last_name, home_anniversary")
       .eq("brokerage_id", input.brokerageId).not("home_anniversary", "is", null) as any,
@@ -128,7 +137,7 @@ export async function rankSphereActions(
     const next = new Date(now.getFullYear(), ann.getMonth(), ann.getDate())
     if (next < now) next.setFullYear(next.getFullYear() + 1)
     const inDays = Math.floor((next.getTime() - now.getTime()) / 86_400_000)
-    if (inDays > 21) continue
+    if (inDays > W.anniversaryLookaheadDays) continue
     const years = now.getFullYear() - ann.getFullYear() + (next.getFullYear() > now.getFullYear() ? 1 : 0)
     consider({
       contactId: c.id,
@@ -140,12 +149,12 @@ export async function rankSphereActions(
     })
   }
 
-  // GONE QUIET (lifetime/past clients, 90d+ silent)
-  const quietCutoff = new Date(Date.now() - 90 * 86_400_000).toISOString()
+  // GONE QUIET (lifetime/past clients silent past the policy's window)
+  const quietCutoff = new Date(Date.now() - W.goneQuietDays * 86_400_000).toISOString()
   const { data: quiet } = await scope(
     svc.from("contacts").select("id, first_name, last_name, last_contacted_at")
       .eq("brokerage_id", input.brokerageId)
-      .in("contact_type", ["past_client", "sphere", "lifetime_customer"])
+      .in("contact_type", [...LIFETIME_CONTACT_TYPES])
       .lt("last_contacted_at", quietCutoff) as any,
   ).limit(30)
   for (const c of ((quiet ?? []) as any[])) {

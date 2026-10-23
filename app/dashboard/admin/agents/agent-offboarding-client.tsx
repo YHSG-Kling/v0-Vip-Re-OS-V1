@@ -1,14 +1,18 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { UserMinus, Loader2, ArrowRightLeft, Archive, AlertTriangle } from "lucide-react"
+import { UserMinus, Loader2, ArrowRightLeft, Archive, AlertTriangle, CalendarClock } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { previewAgentDeactivation, deactivateAgent } from "@/app/actions/agent-deactivation"
+import {
+  previewAgentDeactivation, deactivateAgent,
+  reassignAgentBooksAction, listBookTransfersAction, revertBookTransferAction,
+} from "@/app/actions/agent-deactivation"
+import type { BookTransferRow, BookTransferScope } from "@/lib/agents/agent-books"
 
 type Agent = { id: string; name: string; isActive: boolean }
 type Plan = {
@@ -25,6 +29,64 @@ export function AgentOffboardingClient({ roster }: { roster: Agent[] }) {
   const [disposition, setDisposition] = useState<Disposition>("reassign")
   const [loadingPlan, setLoadingPlan] = useState(false)
   const [pending, startTransition] = useTransition()
+
+  // ── Books reassignment (wave 81A): temporary (auto-reverts) or permanent ──
+  const [booksFrom, setBooksFrom] = useState<string>("")
+  const [booksTo, setBooksTo] = useState<string>("")
+  const [booksScope, setBooksScope] = useState<BookTransferScope>("temporary")
+  const [booksUntil, setBooksUntil] = useState<string>("")
+  const [booksReason, setBooksReason] = useState<string>("")
+  // Permanent without off-boarding (wave 82E): role change / restructure — the agent stays.
+  const [booksKeepActive, setBooksKeepActive] = useState<boolean>(false)
+  const [transfers, setTransfers] = useState<BookTransferRow[] | null>(null)
+  const [transfersError, setTransfersError] = useState<string | null>(null)
+
+  const nameOf = (id: string) => agents.find((a) => a.id === id)?.name ?? id.slice(0, 8)
+  const loadTransfers = async () => {
+    const r = await listBookTransfersAction()
+    if (r.ok) { setTransfers(r.transfers); setTransfersError(null) }
+    else { setTransfers([]); setTransfersError(r.reason) }
+  }
+  useEffect(() => { void loadTransfers() }, [])
+
+  function reassignBooks() {
+    if (!booksFrom || !booksTo) { toast({ title: "Pick both agents", variant: "destructive" }); return }
+    if (booksScope === "temporary" && !booksUntil) { toast({ title: "Pick an end date", description: "A temporary transfer reverts automatically when it passes.", variant: "destructive" }); return }
+    startTransition(async () => {
+      const r = await reassignAgentBooksAction({
+        fromAgentId: booksFrom, toAgentId: booksTo, scope: booksScope,
+        until: booksScope === "temporary" ? new Date(`${booksUntil}T23:59:59`).toISOString() : null,
+        reason: booksReason || null,
+        keepActive: booksScope === "permanent" && booksKeepActive,
+      })
+      if (r.ok) {
+        const x = r.result
+        toast({
+          title: booksScope === "temporary" ? `${nameOf(booksFrom)}'s book is covered by ${nameOf(booksTo)}` : `${nameOf(booksFrom)}'s book moved to ${nameOf(booksTo)}`,
+          description: `${x.contacts} contact(s) · ${x.leads} lead(s) · ${x.dealRoles} deal role(s) · ${x.tasks} task(s) · ${x.listings} listing(s) · ${x.calendarEvents} event(s) · ${x.propertyAlerts} alert(s)${x.coverageSet ? " · new leads redirect while away" : ""}${x.agentDeactivated ? " · agent deactivated" : ""}${x.introductionsProposed > 0 ? ` · ${x.introductionsProposed} client introduction(s) queued for approval` : ""}${x.refused.length ? ` · ${x.refused.length} refusal(s): ${x.refused.join("; ")}` : ""}.`,
+        })
+        if (x.agentDeactivated) setAgents((cur) => cur.map((a) => (a.id === booksFrom ? { ...a, isActive: false } : a)))
+        setBooksFrom(""); setBooksTo(""); setBooksUntil(""); setBooksReason(""); setBooksKeepActive(false)
+        await loadTransfers()
+      } else {
+        toast({ title: "Books not reassigned", description: r.reason, variant: "destructive" })
+      }
+    })
+  }
+
+  function revertTransfer(id: string) {
+    startTransition(async () => {
+      const r = await revertBookTransferAction(id)
+      if (r.ok) {
+        const restored = Object.values(r.result.restored).reduce((a, b) => a + b, 0)
+        const skipped = Object.values(r.result.skipped).reduce((a, b) => a + b, 0)
+        toast({ title: "Books reverted", description: `${restored} row(s) moved back${skipped ? ` · ${skipped} left where they were re-pointed during the window` : ""}${r.result.coverageCleared ? " · coverage cleared" : ""}${r.result.introductionsWithdrawn > 0 ? ` · ${r.result.introductionsWithdrawn} unapproved cover intro(s) withdrawn` : ""}.` })
+        await loadTransfers()
+      } else {
+        toast({ title: "Not reverted", description: r.reason, variant: "destructive" })
+      }
+    })
+  }
 
   const activeOthers = (id: string) => agents.filter((a) => a.isActive && a.id !== id)
 
@@ -88,6 +150,92 @@ export function AgentOffboardingClient({ roster }: { roster: Agent[] }) {
               )}
             </div>
           ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2"><CalendarClock className="h-5 w-5" /> Reassign an agent&apos;s books</CardTitle>
+          <CardDescription>
+            Temporarily (leave, illness — the book comes back automatically on the end date and new leads redirect meanwhile)
+            or permanently (the agent leaves and is deactivated — or, for a role change or restructure, the book moves for good and the agent stays active).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <Label>Whose books</Label>
+              <Select value={booksFrom} onValueChange={(v) => { setBooksFrom(v); if (v === booksTo) setBooksTo("") }}>
+                <SelectTrigger><SelectValue placeholder="Choose an active agent…" /></SelectTrigger>
+                <SelectContent>
+                  {agents.filter((a) => a.isActive).map((a) => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label>To</Label>
+              <Select value={booksTo} onValueChange={setBooksTo}>
+                <SelectTrigger><SelectValue placeholder="Choose the receiving agent…" /></SelectTrigger>
+                <SelectContent>
+                  {activeOthers(booksFrom).map((a) => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex gap-2">
+              <Button type="button" size="sm" variant={booksScope === "temporary" ? "default" : "outline"} onClick={() => setBooksScope("temporary")}>Temporary</Button>
+              <Button type="button" size="sm" variant={booksScope === "permanent" ? "default" : "outline"} onClick={() => setBooksScope("permanent")}>Permanent</Button>
+            </div>
+            {booksScope === "permanent" && (
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={booksKeepActive} onChange={(e) => setBooksKeepActive(e.target.checked)} />
+                Keep the agent active (role change, not a departure)
+              </label>
+            )}
+            {booksScope === "temporary" && (
+              <div className="space-y-1">
+                <Label htmlFor="books-until">Until</Label>
+                <input id="books-until" type="date" className="block h-9 rounded-md border bg-background px-2 text-sm" value={booksUntil} onChange={(e) => setBooksUntil(e.target.value)} />
+              </div>
+            )}
+            <div className="space-y-1 flex-1 min-w-[200px]">
+              <Label htmlFor="books-reason">Reason (optional)</Label>
+              <input id="books-reason" className="block h-9 w-full rounded-md border bg-background px-2 text-sm" placeholder="Parental leave, resignation…" value={booksReason} onChange={(e) => setBooksReason(e.target.value)} maxLength={500} />
+            </div>
+            <Button onClick={reassignBooks} disabled={pending}>
+              {pending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <ArrowRightLeft className="h-4 w-4 mr-1" />}
+              {booksScope === "temporary" ? "Cover the book" : "Move the book"}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {booksScope === "temporary"
+              ? "Contacts, leads, in-flight deal roles, open tasks, active listings, upcoming events and alerts move to the covering agent and are recorded so they come back on the end date. The covering agent's introduction to each client is queued for their approval (withdrawn if still unapproved when the book comes back). Anything you re-point during the window stays where you put it. Drip sequences follow the contact: the next step goes out from whoever holds the contact."
+              : booksKeepActive
+                ? "The whole book moves for good to the receiving agent, a warm re-introduction is queued for approval, and the agent stays active with their login and seat — use this for a role change or restructure, not a departure."
+                : "Runs the off-boarding flow with the agent's own book reassigned (not archived): the successor inherits everything, a warm re-introduction is queued for approval, and the agent is deactivated."}
+          </p>
+          {transfersError && <p className="text-xs text-destructive">{transfersError}</p>}
+          {transfers && transfers.length > 0 && (
+            <div className="space-y-1">
+              <Label>Transfers</Label>
+              <ul className="space-y-1">
+                {transfers.map((t) => (
+                  <li key={t.id} className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs">
+                    <span>
+                      {nameOf(t.fromAgentId)} → {nameOf(t.toAgentId)} · {t.scope}
+                      {t.untilAt ? ` until ${t.untilAt.slice(0, 10)}` : ""} · <Badge variant={t.status === "active" ? "default" : "secondary"}>{t.status}</Badge>
+                      {t.revertedAt ? <span className="text-muted-foreground"> · reverted {t.revertedAt.slice(0, 10)}{t.revertedBy ? " by an admin" : " by the daily sweep"}{t.reverted && typeof (t.reverted as { skipped?: unknown }).skipped === "object" ? " (some rows left where the tenant re-pointed them)" : ""}</span> : null}
+                      {t.reason ? <span className="text-muted-foreground"> — {t.reason}</span> : null}
+                    </span>
+                    {t.status === "active" && (
+                      <Button size="sm" variant="outline" disabled={pending} onClick={() => revertTransfer(t.id)}>Revert now</Button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </CardContent>
       </Card>
 

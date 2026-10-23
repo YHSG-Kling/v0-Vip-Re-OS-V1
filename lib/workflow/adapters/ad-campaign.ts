@@ -53,6 +53,12 @@ export const adCampaignAdapter: ChannelAdapter = {
           locations: [],
           interests: step.ad_audience_prompt ? [step.ad_audience_prompt] : ["real estate", "homebuying"],
           custom_audience_ids: [],
+          // An automation NEVER suppresses an audience on its own initiative:
+          // exclusion is the regulated operation (Fair Housing / HUD v. Meta) and
+          // it is an operator's declared decision, gated when they make it. `[]`
+          // is stated rather than omitted so the field cannot be forgotten into
+          // meaning something else later.
+          excluded_audience_ids: [],
           lookalike_source_audience_id: null,
           income_percentile: "top_50",
           homeowner_status: "any",

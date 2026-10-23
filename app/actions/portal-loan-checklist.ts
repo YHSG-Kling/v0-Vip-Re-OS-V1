@@ -11,6 +11,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireContactAccess } from "@/lib/portal/require-contact-access"
 import { assessFinancingLetterStrength } from "@/lib/financing/letter-strength"
 
 export interface BuyerLoanChecklist {
@@ -29,12 +30,18 @@ export async function loadBuyerLoanChecklist(input: {
   contactId: string
   transactionId: string
 }): Promise<BuyerLoanChecklist | null> {
+  // Wave 139 (139G, P0): a "use server" export is a public endpoint — the party check below
+  // compared a BODY-supplied contactId, so anyone holding two ids read a deal's loan
+  // conditions with the service client. Gate first on the SESSION (the contact themself,
+  // an accepted invitee, or staff of the contact's brokerage), then the service client.
+  const access = await requireContactAccess(input.contactId)
+  if (!access.ok) return null
   const svc = createServiceClient()
 
-  // Party check — the requesting contact must be on THIS deal.
+  // Party check — the requesting contact must be on THIS deal, in the session's tenant.
   const { data: tx } = await svc.from("transactions")
     .select("id, contact_id, buyer_contact_id")
-    .eq("id", input.transactionId).maybeSingle()
+    .eq("id", input.transactionId).eq("brokerage_id", access.brokerageId).maybeSingle()
   if (!tx) return null
   const party = (tx as any).contact_id === input.contactId || (tx as any).buyer_contact_id === input.contactId
   if (!party) return null

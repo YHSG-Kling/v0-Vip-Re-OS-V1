@@ -15,6 +15,7 @@
 // Either way it records a compliance_events row so the catch is auditable.
 
 import { evaluateContentSafety } from "@/lib/compliance/content-safety-checks"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export interface ContentSafetyInput {
@@ -27,6 +28,8 @@ export interface ContentSafetyInput {
   contactId?: string | null
   actorUserId?: string | null
   systemSource?: string | null
+  /** A human approved this send — the human keeps the actor column even on an ISA source. */
+  humanApproved?: boolean
 }
 
 export interface ContentSafetyResult {
@@ -58,9 +61,20 @@ export async function contentSafetyBackstop(input: ContentSafetyInput): Promise<
   // Auditable record of the catch (best-effort — never let logging break the gate decision).
   try {
     const svc = createServiceClient()
-    await svc.from("compliance_events").insert({
+    // ISA IS A SYSTEM AI ISA (wave 101C): an ISA send's catch names the ISA's system user
+    // (lib/auth/isa-actor.ts isaAuditActor), never the agent whose id rode the send.
+    const { isAiIsaSystemSource } = await import("@/lib/kernel/action-ledger")
+    const isaActor = isAiIsaSystemSource(input.systemSource) && input.humanApproved !== true
+      ? await (await import("@/lib/auth/isa-actor")).isaAuditActor(svc as any, input.brokerageId, input.actorUserId ?? null)
+      : null
+    // SERVICE-ROLE client → sentinelWrite (lib/kernel/write-sentinel.ts). A lost
+    // safety-catch audit row is exactly the kind of loss the repair digest exists
+    // to rank: it means the platform blocked something and cannot prove it did.
+    await sentinelWrite(
+      svc,
+      svc.from("compliance_events").insert({
       brokerage_id: input.brokerageId,
-      actor_user_id: input.actorUserId ?? null,
+      actor_user_id: isaActor ? isaActor.actorUserId : (input.actorUserId ?? null),
       actor_role: input.isAutonomous ? "ai_manager" : "system",
       entity_type: `outbound_${input.channel}`,
       entity_id: input.contactId ?? null,
@@ -69,8 +83,15 @@ export async function contentSafetyBackstop(input: ContentSafetyInput): Promise<
       violations: hits.map((h) => ({ category: h.category, phrase: h.phrase, severity: h.severity, reference: h.reference })),
       blocked_reason: blocked ? reason : null,
       severity,
-      details: { system_source: input.systemSource ?? null, autonomous: input.isAutonomous, disposition: blocked ? "blocked" : "flagged", categories },
-    })
+      details: { system_source: input.systemSource ?? null, autonomous: input.isAutonomous, disposition: blocked ? "blocked" : "flagged", categories, ...(isaActor?.onBehalfOfUserId ? { on_behalf_of_user_id: isaActor.onBehalfOfUserId } : {}) },
+      }),
+      {
+        table: "compliance_events",
+        flow: "content_safety_backstop_audit",
+        brokerageId: input.brokerageId ?? null,
+        reason: "audit echo of a safety catch — the gate decision above is the real control and must not fail because logging did",
+      },
+    )
   } catch (err) {
     console.warn("[content-safety] compliance_events insert failed:", (err as any)?.message)
   }

@@ -7,14 +7,38 @@
 // behaviour-preserving hot-path change: assign a variant at enrollment, pick the matching step at
 // execution. Non-A/B sequences are completely unchanged (single step row → returned as-is).
 
+import { assignExperimentArm, EXPERIMENT_DEFINITIONS, type ExperimentPolicy } from "@/lib/kernel/experiments"
+
 export type AbVariant = "A" | "B"
 
-/** Assign an enrollment's variant. Pure (rng injectable for tests). Non-test sequences → null. */
-export function assignAbVariant(opts: { isAbTest?: boolean | null; provided?: string | null; rand?: number }): AbVariant | null {
-  if (opts.provided === "A" || opts.provided === "B") return opts.provided
-  if (!opts.isAbTest) return null
-  const r = typeof opts.rand === "number" ? opts.rand : Math.random()
-  return r < 0.5 ? "A" : "B"
+/**
+ * Assign an enrollment's variant. Pure. Non-test sequences → null.
+ * TOMBSTONE (wave 101, lane 101B — OWNER LAW 2): the Math.random() 50/50 split that lived here is
+ * gone. Survivor: lib/kernel/experiments.ts assignExperimentArm — a STABLE hash of (brokerage,
+ * recipient, `sequence_ab:<sequenceId>`) over the `sequence_ab` definition's weighted arms, so the
+ * same person in the same sequence always lands in the same arm (replayable), and the tenant's
+ * kill switch (brokerage_settings.settings.experiments) assigns control. `rand` was the test seam
+ * for the random draw and has no meaning against a deterministic hash — removed with it.
+ */
+export function assignAbVariant(opts: {
+  isAbTest?: boolean | null
+  provided?: string | null
+  brokerageId?: string | null
+  recipientId?: string | null
+  sequenceId?: string | null
+  policy?: ExperimentPolicy
+}): AbVariant | null {
+  const a = assignExperimentArm({
+    definition: EXPERIMENT_DEFINITIONS.sequence_ab,
+    brokerageId: opts.brokerageId ?? "",
+    subjectId: opts.recipientId ?? null,
+    instance: opts.sequenceId ?? null,
+    instanceOn: !!opts.isAbTest,
+    // No policy passed = the caller could not read one → control (fail closed).
+    policy: opts.policy ?? { readable: false, killSwitch: true, disabled: [] },
+    provided: opts.provided ?? null,
+  })
+  return a && (a.arm === "A" || a.arm === "B") ? a.arm : null
 }
 
 /**

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { UploadCloud, FileText, Loader2, CheckCircle2, AlertCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { checkUpload } from "@/lib/storage/file-limits"
 
 interface Props {
   listingId: string
@@ -29,8 +30,16 @@ export function OfferUploadZone({ listingId, brokerageId, onUploadComplete }: Pr
       setState("error")
       return
     }
-    if (file.size > 20 * 1024 * 1024) {
-      setError("File exceeds the 20 MB limit")
+    // COURTESY ONLY — /api/offers/upload holds the real gate. "20 MB" was
+    // unreachable through a Vercel Function's 4.5 MB request-body cap.
+    const gate = checkUpload({
+      bucket: "offer-documents",
+      transport: "route_handler",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!gate.ok) {
+      setError(gate.reason)
       setState("error")
       return
     }

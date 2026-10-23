@@ -19,31 +19,16 @@ import {
   type ApproverRole,
 } from "@/lib/approval-workflow"
 import { isValidUUID } from "@/lib/validations"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { requireSessionAgentId as getSessionAgentId } from "@/lib/identity/get-agent-context"
 
 // ============================================
 // SYSTEM 4.3 – CONTENT APPROVAL WORKFLOW
 // Server Actions (Public API)
 // ============================================
 
-/**
- * Resolves session-derived agent identifier for approval logging.
- * NEVER trusts caller-supplied agent_id.
- */
-async function getSessionAgentId(): Promise<
-  | { ok: true; agentId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return { ok: false, error: "Unauthorized" }
-  }
-  return {
-    ok: true,
-    agentId: ctx.agentId ?? ctx.userId,
-    brokerageId: ctx.brokerageId,
-  }
-}
+// TOMBSTONE: local getSessionAgentId merged onto
+// lib/identity/get-agent-context.ts requireSessionAgentId (imported above as
+// `getSessionAgentId`) — §1/§6 SAME BODY census round 3, 2026-09-09.
 
 /**
  * Evaluate approval decision for content
@@ -251,6 +236,13 @@ export async function formatApprovalDecisionForDisplay(
   error?: string
 }> {
   try {
+    // This was the one export in the file with no gate. It reads no tenant
+    // data, but a "use server" export is a public HTTP endpoint and every
+    // other action here is gated; an ungated sibling is the seam an audit
+    // misses.
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     if (!decision) {
       return { success: false, error: "No decision provided" }
     }

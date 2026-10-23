@@ -23,8 +23,20 @@ import {
   composeContextSummary,
   updateContactContext,
   loadContactContext,
+  recordMemoryFact,
+  currentMemoryFacts,
+  factsDueForReview,
+  memoryContextBlock,
+  compileObservedFacts,
+  factsFromQualification,
+  recordConversationFacts,
+  MEMORY_FACT_REVIEW_DAYS,
   type InteractionRow,
+  type MemoryFact,
 } from "../lib/kernel/conversation-memory"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { stripComments, blankStrings } from "./strip-comments"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -45,6 +57,193 @@ async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Context spine (conversation memory) simulator")
   console.log("══════════════════════════════════════════════════")
+
+  console.log("\n[Layer 0 · lane 97B memory compiler — facts with confidence + expiry]")
+  {
+    const T0 = new Date("2026-09-01T12:00:00Z")
+    const day = (d: number) => new Date(T0.getTime() + d * 86_400_000)
+    let ledger: MemoryFact[] = []
+    ledger = recordMemoryFact(ledger, { key: "price_expectation", value: "$550,000", observedAt: day(0).toISOString(), confidence: 0.7, source: "conversation" })
+    ledger = recordMemoryFact(ledger, { key: "price_expectation", value: "$600,000", observedAt: day(10).toISOString(), confidence: 0.8, source: "conversation" })
+    const cur = currentMemoryFacts(ledger, day(11))
+    const old = ledger.find((f) => f.value === "$550,000")
+    check("SUPERSEDE: a newer price fact supersedes the old one (the new one is current)",
+      cur.length === 1 && cur[0].value === "$600,000", JSON.stringify(cur))
+    check("SUPERSEDE-KEEPS-HISTORY: the old fact is KEPT, marked superseded, not overwritten",
+      !!old && old.supersededAt === day(10).toISOString() && old.supersededBy === "$600,000")
+    check("FACT-SHAPE: observed_at, confidence and review_by ride on every fact (review_by derived from the per-key table)",
+      cur[0].confidence === 0.8 && cur[0].reviewBy === new Date(day(10).getTime() + MEMORY_FACT_REVIEW_DAYS.price_expectation * 86_400_000).toISOString())
+    // A late-arriving OLDER statement never displaces a newer one.
+    const late = recordMemoryFact(ledger, { key: "price_expectation", value: "$500,000", observedAt: day(5).toISOString(), confidence: 0.9, source: "conversation" })
+    check("SUPERSEDE-ORDER: an older statement arriving late is history, not the current fact",
+      currentMemoryFacts(late, day(11))[0]?.value === "$600,000" && late.some((f) => f.value === "$500,000" && !!f.supersededAt))
+    // Same value re-stated → re-confirmed in place (no new row).
+    const reconf = recordMemoryFact(ledger, { key: "price_expectation", value: "$600,000 ", observedAt: day(20).toISOString(), confidence: 0.6, source: "call" })
+    check("RECONFIRM: restating the same value moves observed_at/review_by forward without a new row",
+      reconf.filter((f) => f.key === "price_expectation").length === 2 && currentMemoryFacts(reconf, day(21))[0].observedAt === day(20).toISOString())
+
+    // EXPIRY: past review_by the fact leaves the AI context.
+    ledger = recordMemoryFact(ledger, { key: "timeline", value: "1-3_months", observedAt: day(0).toISOString(), confidence: 0.8, source: "contacts.timeline" })
+    const spine = { summary: "Last touch today.", facts: ledger }
+    const inside = memoryContextBlock(spine, day(30))
+    const after = memoryContextBlock(spine, day(MEMORY_FACT_REVIEW_DAYS.timeline + 1))
+    check("EXPIRY-CONTROL (positive control): inside review_by the timeline IS in the AI context",
+      inside.includes("timeline: 1-3_months"), inside)
+    check("EXPIRY: past review_by the timeline leaves the AI context (only a re-confirm cue remains)",
+      !after.includes("1-3_months") && /re-confirming[^\n]*timeline/.test(after), after)
+    check("EXPIRY-SUPERSEDED-NEVER-IN-CONTEXT: a superseded value never reaches the context",
+      !inside.includes("$550,000") && inside.includes("$600,000"))
+    check("DUE-FOR-REVIEW: the expired key is listed for re-confirmation", factsDueForReview(spine, day(70)).some((f) => f.key === "timeline"))
+
+    // The column observer: an UNCHANGED column is not a re-statement; a CHANGED one supersedes.
+    const same = compileObservedFacts({ facts: ledger }, [{ key: "timeline", value: "1-3_months", confidence: 0.8, source: "contacts.timeline" }], day(40))
+    check("OBSERVER-UNCHANGED: re-reading an unchanged column does not refresh observed_at",
+      currentMemoryFacts(same, day(41)).find((f) => f.key === "timeline")?.observedAt === day(0).toISOString())
+    const changed = compileObservedFacts({ facts: ledger }, [{ key: "timeline", value: "3-6_months", confidence: 0.8, source: "contacts.timeline" }], day(40))
+    check("OBSERVER-CHANGED: a changed column supersedes the old timeline",
+      currentMemoryFacts(changed, day(41)).find((f) => f.key === "timeline")?.value === "3-6_months"
+        && changed.some((f) => f.value === "1-3_months" && !!f.supersededAt))
+
+    // WIRING (stripped source — a tombstone is not a call site).
+    const root = join(import.meta.dirname, "..")
+    const code = (rel: string) => blankStrings(stripComments(readFileSync(join(root, rel), "utf8")))
+    check("WIRED-WRITER: updateContactContext carries the ledger forward through compileObservedFacts",
+      /spine\.facts\s*=\s*compileObservedFacts\(/.test(code("lib/kernel/conversation-memory.ts")))
+    check("WIRED-READER: the portal AI chat reads the compiled block, not the raw spine summary",
+      /memoryContextBlock\(/.test(code("app/api/portal/ai-chat/route.ts")))
+    check("WIRED-DECAY: the decayed intent ages the stated timeline from the memory fact",
+      /currentMemoryFacts\(/.test(code("lib/lead-intelligence/behavioral-summary.ts")))
+    check("WIRED-SCAN-CONTROL (positive control): the writer regex matches the shape it guards",
+      /spine\.facts\s*=\s*compileObservedFacts\(/.test("spine.facts = compileObservedFacts(prior, x, now)"))
+  }
+
+  console.log("\n[Layer 0a · lane 99B — the ONE memory read, on every conversing AI surface]")
+  {
+    const T0 = new Date("2026-09-01T12:00:00Z")
+    const day = (d: number) => new Date(T0.getTime() + d * 86_400_000)
+    let ledger: MemoryFact[] = []
+    ledger = recordMemoryFact(ledger, { key: "timeline", value: "1-3_months", observedAt: day(0).toISOString(), confidence: 0.8, source: "contacts.timeline" })
+    ledger = recordMemoryFact(ledger, { key: "channel_preference", value: "sms", observedAt: day(0).toISOString(), confidence: 0.9, source: "conversation" })
+    const spine = { summary: "Wants a yard; touring weekends.", facts: ledger }
+    const BRK = "11111111-1111-1111-1111-111111111111", OTHER = "22222222-2222-2222-2222-222222222222", CID = "33333333-3333-3333-3333-333333333333"
+    // Injected client: records every predicate and answers ONLY a contact in BRK (a foreign
+    // brokerage's predicate matches nothing — exactly what PostgREST does).
+    const fake = (opts: { refuse?: boolean } = {}) => {
+      const calls: Array<[string, unknown]> = []
+      const q: any = {
+        from: (t: string) => { calls.push(["from", t]); return q },
+        select: (c: string) => { calls.push(["select", c]); return q },
+        eq: (c: string, v: unknown) => { calls.push([c, v]); return q },
+        maybeSingle: async () => {
+          if (opts.refuse) return { data: null, error: { message: "permission denied" } }
+          const brk = calls.find(([c]) => c === "brokerage_id")?.[1]
+          return { data: brk === BRK ? { metadata: { context_spine: spine } } : null, error: null }
+        },
+      }
+      return { client: q, calls }
+    }
+    const { loadContactMemoryForPrompt, contactMemoryPromptSection } = await import("../lib/kernel/conversation-memory")
+
+    const ok = fake()
+    const mem = await loadContactMemoryForPrompt({ contactId: CID, brokerageId: BRK, client: ok.client, now: day(30) })
+    const section = contactMemoryPromptSection(mem)
+    check("INJECT: a current fact reaches the prompt section (timeline + channel, with the summary)",
+      !!mem && section.includes("timeline: 1-3_months") && section.includes("preferred channel: sms") && section.includes("Wants a yard"), section)
+    check("INJECT: the raw spine is handed back for the playbook's known.memory", !!mem && (mem.spine as any)?.facts?.length === 2)
+    check("TENANT: the read carries BOTH predicates (id AND brokerage_id)",
+      ok.calls.some(([c, v]) => c === "id" && v === CID) && ok.calls.some(([c, v]) => c === "brokerage_id" && v === BRK))
+    const expired = await loadContactMemoryForPrompt({ contactId: CID, brokerageId: BRK, client: fake().client, now: day(MEMORY_FACT_REVIEW_DAYS.timeline + 1) })
+    const expiredSection = contactMemoryPromptSection(expired)
+    check("EXPIRED: an expired timeline leaves the section and a RE-CONFIRM cue names it",
+      !expiredSection.includes("1-3_months") && /re-confirming[^\n]*timeline/.test(expiredSection), expiredSection)
+    const foreign = await loadContactMemoryForPrompt({ contactId: CID, brokerageId: OTHER, client: fake().client, now: day(30) })
+    check("TENANT: a contact outside the session/event brokerage reads as NO memory", foreign === null && contactMemoryPromptSection(foreign) === "")
+    const lead = fake()
+    const leadMem = await loadContactMemoryForPrompt({ contactId: null, brokerageId: BRK, client: lead.client, now: day(30) })
+    check("LEAD: no contact id (a lead has no spine) → null, and NOT ONE query is issued", leadMem === null && lead.calls.length === 0)
+    const refused = await loadContactMemoryForPrompt({ contactId: CID, brokerageId: BRK, client: fake({ refuse: true }).client, now: day(30) })
+    check("FAIL CLOSED: a refused read injects nothing (never a guessed memory)", refused === null)
+    const noTenant = fake()
+    check("FAIL CLOSED: no tenant → null without a query",
+      (await loadContactMemoryForPrompt({ contactId: CID, brokerageId: null, client: noTenant.client })) === null && noTenant.calls.length === 0)
+
+    // WIRING — each of the five surfaces calls the ONE read and renders it (stripped source).
+    const root = join(import.meta.dirname, "..")
+    const code = (rel: string) => blankStrings(stripComments(readFileSync(join(root, rel), "utf8")))
+    const reads = (src: string) => /\bloadContactMemoryForPrompt\s*\(/.test(src) && /\bcontactMemoryPromptSection\s*\(/.test(src)
+    const SURFACES: Array<[string, string[]]> = [
+      ["D-ID custom LLM", ["app/api/did/custom-llm/route.ts"]],
+      ["ISA inbound email", ["app/actions/ai-isa/handle-inbound-email.ts"]],
+      ["voice agent (reception turn + outbound brief turn)", ["lib/voice/twilio-voice.ts", "app/api/voice/twilio/turn/route.ts"]],
+      ["ISA SMS reply (reply coach core)", ["lib/ai-reply-coach/reply-draft-core.ts"]],
+      ["staff copilot (contact in context)", ["app/api/internal/ai-chat/route.ts"]],
+    ]
+    for (const [name, files] of SURFACES) {
+      check(`WIRED-READ ${name}: calls loadContactMemoryForPrompt + contactMemoryPromptSection`, files.every((f) => reads(code(f))), files.join(", "))
+    }
+    check("WIRED-SCAN-CONTROL (positive control): the finder matches the call shape, and NOT a bare mention",
+      reads("const m = await loadContactMemoryForPrompt({}); x(contactMemoryPromptSection(m))") && !reads("loadContactMemoryForPrompt contactMemoryPromptSection"))
+    // LEADS: each surface keys the read on a CONTACT id, never a lead id.
+    check("LEAD-ISA-EMAIL: the ISA email reads lead.contact_id (a bare lead skips), never the lead id",
+      /loadContactMemoryForPrompt\(\s*\{\s*contactId:\s*lead\.contact_id/.test(code("app/actions/ai-isa/handle-inbound-email.ts")))
+    check("LEAD-VOICE: the voice turns read the call's contact_id, never voice_calls.lead_id",
+      /contactId:\s*input\.voiceToolCtx\?\.contactId/.test(code("lib/voice/twilio-voice.ts"))
+        && /contactId:\s*\(call as any\)\?\.contact_id/.test(code("app/api/voice/twilio/turn/route.ts")))
+    // PUBLIC claimed-identity surfaces are deliberately excluded (contact linked by a visitor-typed email).
+    check("PUBLIC-EXCLUSION: the public widget does not inject contact memory (claimed identity)",
+      !/\bloadContactMemoryForPrompt\s*\(/.test(code("app/api/widget/message/route.ts")))
+    check("PUBLIC-EXCLUSION: D-ID skips memory on an embed (public) session",
+      /contactId:\s*ctx && !embedSessionId \? resolvedContactId : null/.test(code("app/api/did/custom-llm/route.ts")))
+  }
+
+  console.log("\n[Layer 0b · lane 98B conversation → memory fact, written NOW]")
+  {
+    const facts = factsFromQualification({ timeline: "1-3_months", preferredChannel: "sms", maxPrice: 650000, reasonForMove: "new job in Tampa" })
+    check("qualification → facts in the observer's spelling (timeline bucket, channel, 'up to <max>', reason)",
+      facts.length === 4 && facts.some((f) => f.key === "price_expectation" && f.value === "up to 650000") && facts.some((f) => f.key === "channel_preference" && f.value === "sms"))
+    check("POSITIVE CONTROL: an empty answer states no fact", factsFromQualification({}).length === 0)
+
+    // In-memory contacts row — the recorder reads + writes metadata, tenant-pinned, counted.
+    const BRK = "11111111-1111-4111-8111-111111111111", CID = "22222222-2222-4222-8222-222222222222"
+    const row: Record<string, any> = { id: CID, brokerage_id: BRK, motivation_type: null, metadata: { preferences: ["pool"], context_spine: { summary: "s", facts: [] } } }
+    const fake = {
+      from(_t: string) {
+        const f: Array<[string, unknown]> = []
+        let patch: Record<string, unknown> | null = null
+        const hit = () => f.every(([k, v]) => row[k] === v)
+        const b: any = {
+          select() { return b }, update(p: Record<string, unknown>) { patch = p; return b },
+          eq(k: string, v: unknown) { f.push([k, v]); return b },
+          maybeSingle() { return Promise.resolve({ data: hit() ? { metadata: row.metadata, motivation_type: row.motivation_type } : null, error: null }) },
+          then(res: (v: unknown) => unknown) { if (patch && hit()) Object.assign(row, patch); return Promise.resolve({ data: patch && hit() ? [{ id: CID }] : [], error: null }).then(res) },
+        }
+        return b
+      },
+    }
+    const t1 = new Date("2026-06-01T00:00:00Z")
+    const r1 = await recordConversationFacts(CID, BRK, facts, { client: fake as never, now: t1, source: "conversation.record_qualification" })
+    const led1 = currentMemoryFacts(row.metadata.context_spine, t1)
+    check("a stated timeline is recorded IMMEDIATELY (current, source conversation, observed now)",
+      r1.recorded === 4 && led1.some((f) => f.key === "timeline" && f.value === "1-3_months" && f.source === "conversation.record_qualification" && f.observedAt === t1.toISOString()))
+    check("sibling metadata + spine keys preserved; price mirrored to metadata.price_expectation (the observer's column)",
+      row.metadata.preferences?.[0] === "pool" && row.metadata.context_spine.summary === "s" && row.metadata.price_expectation === "up to 650000")
+    const t2 = new Date("2026-07-15T00:00:00Z")
+    await recordConversationFacts(CID, BRK, [{ key: "timeline", value: "1-3_months", confidence: 0.85 }], { client: fake as never, now: t2 })
+    const tl = currentMemoryFacts(row.metadata.context_spine, t2).find((f) => f.key === "timeline")
+    check("a RE-STATEMENT of the same value refreshes observed_at / review_by now (not only on the 6h refresh)", tl?.observedAt === t2.toISOString())
+    check("the spine refresh then sees an UNCHANGED price and does not flip it back",
+      compileObservedFacts(row.metadata.context_spine, [{ key: "price_expectation", value: "up to 650000", confidence: 0.7, source: "contacts.metadata.price_expectation" }], t2)
+        .filter((f) => f.key === "price_expectation" && !f.supersededAt).length === 1)
+    const wrong = await recordConversationFacts(CID, "99999999-9999-4999-8999-999999999999", facts, { client: fake as never, now: t2 })
+    check("POSITIVE CONTROL: another tenant's id matches nothing — recorded 0, said", wrong.recorded === 0 && !!wrong.error)
+    row.motivation_type = "relocation"
+    const r3 = await recordConversationFacts(CID, BRK, [{ key: "motivation", value: "closer to family", confidence: 0.7 }], { client: fake as never, now: t2 })
+    check("a typed motivation_type column wins — free words are not recorded beside it (no flip-flop)", r3.recorded === 0)
+
+    const tool = blankStrings(stripComments(readFileSync(join(process.cwd(), "lib/ai-isa/customer-context-tools.ts"), "utf8")))
+    check("WIRED: record_qualification (every AI surface's shared tool) records the facts via recordConversationFacts",
+      /factsFromQualification\(\{/.test(tool) && /recordConversationFacts\(ctx\.contactId, ctx\.brokerageId, facts,/.test(tool))
+  }
 
   console.log("\n[Layer 1 · pure compose]")
   const rows: InteractionRow[] = [

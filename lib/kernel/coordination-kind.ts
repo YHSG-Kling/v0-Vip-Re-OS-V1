@@ -16,8 +16,23 @@ export function classifyCoordination(signalType: string | null | undefined): Coo
   // Something needs human/senior attention NOW.
   if (/escalat|fire_drill|overload|war_room|crushed_cap|stalling|risk_escalated|convened|huddle|deal_save|action_pending|lapsing/.test(t)) return "escalation"
   // A compliance/quality flag was raised (not an emergency, but needs review).
-  if (/violation|compliance_failed|surprise|finding|regulatory|fatigue|autopsy|withdrawn|endpoint_dead|custom_domain_error/.test(t)) return "alert"
+  // capability_dark is named EXPLICITLY, not by a loose /dark/ pattern: a
+  // capability the OS cannot run is a condition that needs review, which is
+  // exactly what this bucket means — but a broad match would sweep up any future
+  // signal that happens to contain the word.
+  // determinism_leak sits with fatigue, not with the "update" bucket: nothing is
+  // broken for a client, but the OS is burning render spend it cannot recover and
+  // the broker should notice it rather than scroll past it.
+  // video_stale sits with outcome_contradicted for a stronger reason — a client
+  // is holding a video that tells them the wrong price.
+  // dsar is named EXPLICITLY for the same reason capability_dark is: a data
+  // subject request carries a STATUTORY clock (45 days), so "needs review" is
+  // literally the law's own posture — but a loose /dsar/-adjacent pattern would
+  // sweep unrelated future types. It is not an escalation: nothing is on fire on
+  // the day it is filed, and rendering every access request as an emergency is
+  // how a compliance feed teaches people to ignore it.
+  if (/violation|compliance_failed|surprise|finding|regulatory|fatigue|autopsy|withdrawn|endpoint_dead|custom_domain_error|capability_dark|outcome_contradicted|determinism_leak|video_stale|dsar/.test(t)) return "alert"
   // One manager handed work/an asset to another (claimed, ready, routed).
-  if (/claim|ready|appointment|recovery|watch|handoff|candidate|reengage|call_|next_move|relocation|certification_issued/.test(t)) return "handoff"
+  if (/claim|ready|appointment|recovery|watch|handoff|candidate|reengage|call_|next_move|relocation|certification_issued|voice_command_dispatched/.test(t)) return "handoff"
   return "update"
 }

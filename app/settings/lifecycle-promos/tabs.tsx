@@ -1,6 +1,5 @@
 "use client"
 
-import { useRouter, usePathname } from "next/navigation"
 import { useState, useTransition } from "react"
 import type { PolicyScopeAccess } from "@/lib/identity/policy-scope"
 import type { LifecycleEventDisplay } from "@/app/actions/lifecycle-promo-policy"
@@ -9,6 +8,7 @@ import {
   deleteLifecyclePromoPolicy,
   upsertLifecycleMailFields,
 } from "@/app/actions/lifecycle-promo-policy"
+import { useGotoTab } from "@/hooks/use-goto-tab"
 
 type TabKey = "agent" | "team" | "brokerage"
 
@@ -37,8 +37,7 @@ export function LifecyclePromoSettingsTabs({
   events:       LifecycleEventDisplay[]
   error:        string | null
 }) {
-  const router = useRouter()
-  const pathname = usePathname()
+  const gotoTab = useGotoTab<TabKey>()
   const [events, setEvents] = useState(initialEvents)
   const [error, setError] = useState<string | null>(initialError)
   const [isPending, startTransition] = useTransition()
@@ -49,12 +48,8 @@ export function LifecyclePromoSettingsTabs({
     ...(access.canEditBrokerage ? ["brokerage"] as TabKey[] : []),
   ]
 
-  function gotoTab(tab: TabKey, team?: string) {
-    const url = new URL(pathname, "http://x")
-    url.searchParams.set("tab", tab)
-    if (team) url.searchParams.set("team", team)
-    router.push(url.pathname + url.search)
-  }
+  // `gotoTab` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+  // byte-identical to hooks/use-goto-tab.ts `useGotoTab` (used above).
 
   function handleToggle(eventType: LifecycleEventDisplay["eventType"], next: boolean) {
     setError(null)

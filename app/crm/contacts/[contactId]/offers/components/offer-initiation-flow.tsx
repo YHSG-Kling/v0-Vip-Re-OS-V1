@@ -38,6 +38,11 @@
 
 import { useState, useCallback, useTransition, useRef, useEffect } from "react"
 import { cn } from "@/lib/utils"
+// Wave 140 (lane 140P): the browser Nominatim fetch moved onto the server action over the
+// osint_free survivor (lib/external/nominatim-geocode.ts) — tenant from the session, health-gated,
+// usage booked, ONE parser (the state table lived only in address-autocomplete.tsx before).
+import { suggestAddresses } from "@/app/actions/address-suggestions"
+import type { AddressSuggestion } from "@/lib/external/nominatim-geocode"
 import {
   searchListingsByAddress,
   resolveFormSource,
@@ -65,10 +70,6 @@ import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 import { createClient } from "@/lib/supabase/client"
 import { getOfferContext, type OfferContext } from "@/lib/contacts/ownership-model"
 import { FormSelectorStep, type FormFieldValues } from "@/app/components/forms/form-selector-step"
-import {
-  TransactionFormEsignFlow,
-  type FormTemplate,
-} from "@/app/dashboard/transactions/[id]/components/transaction-form-esign-flow"
 
 import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
 
@@ -103,12 +104,16 @@ interface OfferInitiationFlowProps {
   initialAddress?:    string
   initialBuyerPhone?: string
   initialBuyerEmail?: string
+  /** offer_intents.id (m619) when this flow was opened via "Start Offer" from
+   *  the agent's Buyer offer requests queue — carried through to
+   *  OfferFormWizard so createOffer can bridge it. */
+  initialOfferIntentId?: string
 }
 
 export function OfferInitiationFlow({
   contactId, brokerageId, agentUserId,
   contactName, contactEmail, onSuccess, onCancel,
-  initialAddress, initialBuyerPhone, initialBuyerEmail,
+  initialAddress, initialBuyerPhone, initialBuyerEmail, initialOfferIntentId,
 }: OfferInitiationFlowProps) {
   // If address was pre-filled from CRM, skip directly to form_source step
   const [flowStep, setFlowStep]   = useState<FlowStep>(initialAddress ? "form_source" : "address")
@@ -124,7 +129,7 @@ export function OfferInitiationFlow({
     getConnectedEsignProvider(brokerageId).then(setConnectedProvider).catch(() => setConnectedProvider(null))
   }, [brokerageId])
   const [suggestions, setSuggestions]   = useState<{ id: string; address: string; city: string; state: string; zip: string; list_price: number }[]>([])
-  const [nominatimSuggestions, setNominatimSuggestions] = useState<{ display_name: string; address: { house_number?: string; road?: string; city?: string; town?: string; village?: string; state?: string; postcode?: string } }[]>([])
+  const [nominatimSuggestions, setNominatimSuggestions] = useState<AddressSuggestion[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
   const [formSrc, setFormSrc]     = useState<ResolvedFormSource | null>(null)
   const [recommendation, setRecommendation] = useState<StrategyRecommendation | null>(null)
@@ -214,20 +219,17 @@ export function OfferInitiationFlow({
         setSuggestions(results)
         setShowDropdown(results.length > 0 || value.length >= 3)
 
-        // Only call Nominatim when internal results are insufficient
+        // Only ask the address service when internal results are insufficient (server action —
+        // the server refuses stubs below its minimum length and answers [] for them).
         if (results.length < 2) {
           try {
-            const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=us&limit=5&q=${encodeURIComponent(value)}`
-            const response = await fetch(nominatimUrl, {
-              headers: { 'User-Agent': 'KernelOS-RealEstate/1.0' }
-            })
-            if (response.ok) {
-              const nominatimResults = await response.json()
-              setNominatimSuggestions(nominatimResults ?? [])
+            const res = await suggestAddresses(value)
+            if (res.ok && res.suggestions.length > 0) {
+              setNominatimSuggestions(res.suggestions)
               setShowDropdown(true)
             }
           } catch {
-            // Nominatim failure is silent — internal results still shown
+            // address-service failure is silent — internal results still shown
           }
         }
       })
@@ -250,22 +252,18 @@ export function OfferInitiationFlow({
     })
   }
 
-  function selectNominatimResult(result: typeof nominatimSuggestions[0]) {
-    const addr = result.address
-    const street = [addr.house_number, addr.road].filter(Boolean).join(" ")
-    const city = addr.city ?? addr.town ?? addr.village ?? ""
-    const state = addr.state ?? ""
-    const zip = addr.postcode ?? ""
-    const fullAddress = street || result.display_name
+  function selectNominatimResult(result: AddressSuggestion) {
+    // Parsed server-side (parseNominatimAddressRow) — street, city, abbreviated state, zip.
+    const fullAddress = result.street || result.label
     setAddressInput(fullAddress)
     setShowDropdown(false)
     setSuggestions([])
     setNominatimSuggestions([])
     setProperty({
       address:         fullAddress,
-      city,
-      state,
-      zip,
+      city:            result.city,
+      state:           result.state,
+      zip:             result.zip,
       listingId:       null,
       listPrice:       null,
       aiFilledAddress: false,
@@ -363,7 +361,7 @@ export function OfferInitiationFlow({
             <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-2 mb-4">
               <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
               <div>
-                <p className="text-sm font-medium text-amber-800">No transaction provider connected</p>
+                <p className="text-sm font-medium text-amber-800">No legal-forms provider connected</p>
                 <p className="text-xs text-amber-700 mt-0.5">
                   Connect a forms provider in Settings for state-approved forms. Using brokerage in-app forms below.
                 </p>
@@ -962,6 +960,7 @@ export function OfferInitiationFlow({
         buyerRiskTolerance={contingencyForm.riskTolerance}
         inAppSelectedFormIds={offerSelectedFormIds.length > 0 ? offerSelectedFormIds : undefined}
         inAppFormFieldValues={Object.keys(offerFormFieldValues).length > 0 ? offerFormFieldValues : undefined}
+        offerIntentId={initialOfferIntentId}
         onBack={() => setFlowStep("contingencies")}
         onSuccess={(newOfferId?: string) => {
           awardPointsForAction(agentUserId, "offer_submitted").catch(() => {})
@@ -1062,13 +1061,13 @@ export function OfferInitiationFlow({
                     <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground bg-muted/40 border-b border-border/50">
                       Address Search
                     </div>
-                    {nominatimSuggestions.map((n, i) => (
+                    {nominatimSuggestions.map((n) => (
                       <button
-                        key={i}
+                        key={n.placeId}
                         onClick={() => selectNominatimResult(n)}
                         className="w-full text-left px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors border-b border-border/50 last:border-0"
                       >
-                        <span className="text-foreground">{n.display_name}</span>
+                        <span className="text-foreground">{n.label}</span>
                       </button>
                     ))}
                   </>
@@ -1188,7 +1187,7 @@ export function OfferInitiationFlow({
                     <div className="flex items-start gap-2">
                       <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-sm font-medium text-amber-800">No transaction provider connected</p>
+                        <p className="text-sm font-medium text-amber-800">No legal-forms provider connected</p>
                         <p className="text-xs text-amber-700 mt-0.5">
                           Using brokerage in-app forms. Connect a provider in Settings for state-approved forms.
                           You will select and fill forms in the next step.

@@ -1,4 +1,6 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { STAGE_TRANSITIONS, CRITICAL_MILESTONES, TransactionStage, STAGE_TO_STATUS_MAP } from "./transaction-stages"
 import { getMilestones } from "./milestone-service"
@@ -105,7 +107,7 @@ export async function canAdvanceStage(
       .select("id, flag_type:violation_type, severity, status")
       .eq("contact_id", txn.contact_id)
       .eq("severity", "deal_breaker")
-      .in("status", ["unresolved", "flagged"])
+      .in("status", ["flagged"])
 
     if (dealBreakerFlags && dealBreakerFlags.length > 0) {
       for (const flag of dealBreakerFlags) {
@@ -235,6 +237,32 @@ export async function advanceStage(params: {
     eventType:    "stage.advanced",
     metadata:     { reason: params.reason ?? null },
   })
+
+  // 4b. KernelEvent.TRANSACTION_STAGE_CHANGED — CLAUDE.md §1 (BUILD the missing half, lane Z1
+  // 2026-09-08 hunt 3): the dotted `lifecycle.stage.advanced` row above is the audit trail, but
+  // nothing was ever emitting the ENUM event that the kernel event-reactor, the portal ("Deal
+  // update" card), the just-in-time education firer, the deal-ended contact-recheck, and the Deal
+  // Coordinator spawn trigger all read (lib/kernel/event-reactor.ts, lib/kernel/event-fanout.ts) —
+  // every one of them was silently dead on the real stage-advance path since this IS where a
+  // transaction's stage actually changes. Best-effort / non-blocking: the stage write above already
+  // succeeded, so a fan-out failure here must not undo or fail the advance.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    await emitTransactionEvent({
+      event:       KernelEvent.TRANSACTION_STAGE_CHANGED,
+      brokerageId: params.brokerageId,
+      entityId:    params.transactionId,
+      actorUserId: params.userId,
+      metadata: {
+        from_stage: currentStage,
+        to_stage:   params.targetStage,
+        reason:     params.reason ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[stage-progression] emitTransactionEvent(TRANSACTION_STAGE_CHANGED) failed (non-blocking)", err)
+  }
 
   // 5. Seed stage auto-tasks for the new stage
   await seedStageAutoTasks({
@@ -404,7 +432,7 @@ export async function advanceStage(params: {
     // 1. Get transaction to find seller_contact_id and listing_id
     const { data: closedTxn } = await supabase
       .from("transactions")
-      .select("seller_contact_id, buyer_contact_id, contact_id, listing_id, close_date")
+      .select("seller_contact_id, buyer_contact_id, contact_id, listing_id, close_date, brokerage_id")
       .eq("id", params.transactionId)
       .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
@@ -439,13 +467,27 @@ export async function advanceStage(params: {
     //    past-client journey AND every contact_type reader (reel persona, referral radar, portal role)
     //    recognizes them. Writing the legacy 'lifetime' here drifted from the listing close path.
     if (closedTxn?.seller_contact_id) {
-      await supabase
+      // The error is READ. The past-client journey, the reel persona, the referral
+      // radar and the portal role all branch on contact_type — a refusal left the
+      // seller of a CLOSED deal outside every one of them, silently.
+      const { error: lifetimePromotionError } = await supabase
         .from("contacts")
         .update({
           contact_type: LIFETIME_CUSTOMER_TYPE,
+          // The other half of the same fact — see the note at lib/kernel/transactions.ts.
+          // contact_type and lifecycle_state are one idea in two columns; the promotion
+          // writers are what keep them agreeing now that m539 has retired the spelling
+          // the old cross-column CHECK policed.
+          lifecycle_state: LIFETIME_CUSTOMER_TYPE,
           updated_at: new Date().toISOString(),
         })
         .eq("id", closedTxn.seller_contact_id)
+      if (lifetimePromotionError) {
+        console.error(
+          `[stage-progression] lifetime-customer promotion REFUSED for seller contact ${closedTxn.seller_contact_id}:`,
+          lifetimePromotionError.message,
+        )
+      }
 
       // Promote the past client into the FB retargeting audiences (brokerage + agent) —
       // past clients are the highest-ROI referral/repeat + lookalike-seed audience, and the
@@ -466,20 +508,28 @@ export async function advanceStage(params: {
       } catch { /* best-effort */ }
 
       // 3. Grant portal access to the sold listing view if not already enabled
-      await supabase
+      //    Tenant comes from the TRANSACTION record this grant hangs off —
+      //    closedTxn.brokerage_id, which the select above already constrained
+      //    to params.brokerageId, so the row cannot carry a tenant the deal
+      //    doesn't belong to. Unstamped it would be readable AND writable by
+      //    every brokerage (`brokerage_id IS NULL OR …` policy), which for a
+      //    portal-access grant means any tenant could toggle a client's portal.
+      await sentinelWrite(supabase, supabase
         .from("contact_portal_modules")
         .upsert({
+          brokerage_id: closedTxn.brokerage_id,
           contact_id: closedTxn.seller_contact_id,
           module_key: "sold_listing",
           is_enabled: true,
-          enabled_by_agent_id: params.userId,
+          // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
+          enabled_by_agent_id: await resolveAgentId(supabase, params.userId),
           enabled_at: new Date().toISOString(),
-        }, { onConflict: "contact_id,module_key" })
+        }, { onConflict: "contact_id,module_key" }), { table: "contact_portal_modules", flow: "contact_portal_modules_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
 
     // 4. Mark the listing as sold
     if (closedTxn?.listing_id) {
-      await supabase
+      const { error: listingSoldErr } = await supabase
         .from("listings")
         .update({
           status: "sold",
@@ -489,37 +539,25 @@ export async function advanceStage(params: {
         })
         .eq("id", closedTxn.listing_id)
         .eq("brokerage_id", params.brokerageId)
+      if (listingSoldErr) console.error(`[stage-progression] listing NOT marked sold on close: ${listingSoldErr.message}`)
+
+      // A newly-closed listing grades the listing_price accuracy rail — drop the
+      // accuracy-gate's cached verdicts so autonomy reflects the new track record
+      // without waiting out the TTL or a process restart. Best-effort.
+      try {
+        const { __clearAccuracyGateCache } = await import("@/lib/managers/accuracy-gate")
+        __clearAccuracyGateCache()
+      } catch { /* cache invalidation is never load-bearing */ }
     }
 
-    // 5. Auto-schedule review request draft (5 days post-close)
-    // Creates a draft in review_requests so it's ready; agent is notified via task at day 5
-    void (async () => {
-      try {
-        const { aiGenerateReviewRequest } = await import("@/app/actions/ai-review-automation")
-        await aiGenerateReviewRequest({
-          transactionId: params.transactionId,
-          agentId: params.userId,
-          platform: "google",
-          channel: "email",
-        })
-
-        // Schedule an agent notification 5 days from now to send the review
-        const sendDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)
-        await supabase.from("activities").insert({
-          brokerage_id: params.brokerageId,
-          agent_id: params.userId,
-          activity_type: "review_request_scheduled",
-          title: "Review request ready to send",
-          notes: `Auto-generated review request draft created. Recommend sending on ${sendDate.toLocaleDateString()}.`,
-          entity_type: "transaction",
-          entity_id: params.transactionId,
-          status: "pending",
-          scheduled_at: sendDate.toISOString(),
-        })
-      } catch {
-        // Non-blocking — review request draft failure doesn't affect close
-      }
-    })()
+    // 5. TOMBSTONE (wave 143, lane 143E): "Auto-schedule review request draft (5 days post-close)" — this hook drafted a
+    //    `pending` review_requests row at the stage move AND wrote a reminder activity a hard-coded 5 days out (ignoring
+    //    the tenant's review_request_delay_days). The pending row then made the review-request-on-close cron skip the
+    //    client (its dedupe was "any review_requests row for this contact"), so the autonomous ask never went out; the
+    //    reminder told the agent to send a draft nobody had reviewed. SURVIVOR: lib/reputation/review-ask.ts
+    //    askForReviewAtClose — the ONE path from a verified closing (status closed | funded) to a sent ask, called by
+    //    app/api/cron/review-request-on-close once the tenant's delay has elapsed. Nothing is written here: the closing
+    //    IS the trigger, and the engine owns timing, duplicates, platform, copy screening and the send.
   } else if (params.targetStage === "LOST") {
     // ── AI-PREDICTION CLOSE-TIME GRADER, lost side (owner round 36) ───────────
     // LOST is the other REAL terminal event — grading only wins would inflate

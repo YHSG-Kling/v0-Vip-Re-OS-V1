@@ -332,6 +332,16 @@ export function IntelligenceMeshClient({ open, dismissed, agents }: Props) {
                   <span className="text-muted-foreground">{PATTERN_LABEL[i.patternKey] ?? i.patternKey}:</span>
                   <span className="font-medium">{i.headline}</span>
                 </div>
+                {/* WHO WAVED IT AWAY, AND ON WHAT GROUNDS. All three were written
+                    by dismissInsightAction and read by nothing, so this list could
+                    say a brokerage-wide pattern had been dismissed without naming
+                    the decision — which is exactly what a second reviewer needs
+                    before reopening it. */}
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  {i.dismissedByName ? `dismissed by ${i.dismissedByName}` : "dismissed"}
+                  {i.dismissedAt ? ` · ${new Date(i.dismissedAt).toLocaleDateString()}` : ""}
+                  {i.dismissalReason ? ` — ${i.dismissalReason}` : " — no reason recorded"}
+                </div>
               </li>
             ))}
           </ul>

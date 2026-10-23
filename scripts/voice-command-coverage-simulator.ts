@@ -39,6 +39,9 @@ import { voiceTools, authorityAllows } from "../lib/voice/tool-registry"
 import { voiceCoverageViolations } from "../lib/voice/voice-coverage"
 import { parseTeamCommandText } from "../lib/voice/parse-team-command"
 import { TEAM_ACTION_COMMANDS, TEAM_COMMANDS } from "../lib/voice/team-command-names"
+// The deal-decision override roster, asked of the SAME predicate the backend
+// calls — so this proof cannot agree with a rule the code does not use.
+import { isAdminOrBroker, isAgentOrTenantAdmin, isAgentOrCommerceAdmin } from "../lib/auth/resolve-user-role"
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 const src = (p: string) => readFileSync(join(ROOT, p), "utf8")
@@ -153,12 +156,112 @@ function main() {
     'offer.offer_type === "counter"',             // not a counter
     '"pending"',                                  // still open …
     '"submitted"',
-    '"team_lead"',                                // override roles
   ]) {
     check(`deal-decision guard literal present: ${literal}`, dealDecisionSrc.includes(literal))
   }
-  check("backend re-checks authority itself (run_team_command lane has no registry gate)",
-    dealDecisionSrc.includes("DECISION_OVERRIDE_ROLES"))
+
+  // THE OVERRIDE ROSTER IS A CLAIM, NOT A SPELLING.
+  //
+  // These two checks used to be `includes('"team_lead"')` and
+  // `includes("DECISION_OVERRIDE_ROLES")` — pinned to the TEXT of a local role
+  // array and the NAME of the const holding it. That made them fail on an
+  // improvement: the roster was replaced by the ONE shared tenant-admin
+  // predicate (owner ruling: "having more than one vocab over the same function
+  // or feature is dangerous"), which ADDED broker_owner — refused by the local
+  // literal, i.e. the person who owns the brokerage could not decide a deal by
+  // voice — and DROPPED a `superadmin` branch that MEASURED live matches zero
+  // users.user_type rows. Worse, they would have stayed GREEN through a real
+  // regression: deleting the `if` and leaving the const would satisfy both.
+  //
+  // Pinned now to what actually matters — the backend consults a shared roster
+  // ITSELF (the run_team_command free-text lane reaches it without a per-tool
+  // registry check), and that roster admits and refuses the right roles.
+  // RETARGETED AGAIN, 2026-09-04 — AND THE SECOND TIME IS THE INTERESTING ONE.
+  //
+  // The paragraph above congratulates itself for replacing a pinned LITERAL with
+  // a claim, and then pins the claim to a SPELLING one level up: it hardcoded
+  // the predicate's NAME, `isAdminOrBroker`. Wave 27 merged this backend's
+  // hand-written `userType !== "agent" && !isAdminOrBroker(…)` — the fourth copy
+  // of the staff ladder in the tree — onto a derived `isAgentOrTenantAdmin`,
+  // which is `agent` ∪ the SAME TENANT_ADMIN_USER_TYPES. Membership is
+  // byte-identical. These three checks went red anyway, and they went red for
+  // the merge finishing: CLAUDE.md §2's forbidden waypoint, in a check whose own
+  // header is about not doing that.
+  //
+  // So the predicate is now DISCOVERED from the file rather than named here. The
+  // rule is "the backend consults A SHARED, IMPORTED roster predicate on the
+  // actor and refuses" — not "it consults this particular one", which is a fact
+  // about today's factoring and will change again.
+  const ROSTER_PREDICATES: Record<string, (p: { user_type?: string | null }) => boolean> = {
+    isAdminOrBroker,
+    isAgentOrTenantAdmin,
+    isAgentOrCommerceAdmin,
+  }
+  const rosterImport = dealDecisionSrc.match(
+    /import\s*\{([^}]*)\}\s*from\s*"@\/lib\/auth\/resolve-user-role"/,
+  )
+  const importedPredicate = (rosterImport?.[1] ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .find((n) => n in ROSTER_PREDICATES)
+  // The detail goes to stdout rather than to check(), whose signature in this
+  // file is (name, cond) — a third argument type-checks nowhere and was the one
+  // error `tsc --noEmit` caught on the chain re-run.
+  if (!importedPredicate) {
+    console.log(`      deal-decision imports no known roster predicate from resolve-user-role (saw: ${rosterImport?.[1]?.trim() ?? "no import at all"})`)
+  }
+  check("...and it is IMPORTED, not re-declared locally (a second copy is the drift the ruling forbids)",
+    !!importedPredicate)
+  check("backend re-checks authority ITSELF — the shared tenant-admin roster is called on the actor",
+    !!importedPredicate &&
+    new RegExp(`if\\s*\\([^)]*\\b${importedPredicate}\\s*\\(\\s*\\{\\s*user_type`).test(dealDecisionSrc) &&
+    /return\s*\{\s*error:/.test(dealDecisionSrc.slice(dealDecisionSrc.indexOf(importedPredicate ?? " "))))
+  // POSITIVE CONTROL for the discovery above (§2 — a broken finder and a correct
+  // file both "find" nothing): the finder must NOT match a predicate the file
+  // does not import.
+  check("POSITIVE CONTROL — the predicate finder is discriminating, not just truthy",
+    !!importedPredicate &&
+    Object.keys(ROSTER_PREDICATES).some((n) => n !== importedPredicate) &&
+    !new RegExp(`import\\s*\\{[^}]*\\b${Object.keys(ROSTER_PREDICATES).find((n) => n !== importedPredicate)}\\b[^}]*\\}\\s*from\\s*"@/lib/auth/resolve-user-role"`)
+      .test(dealDecisionSrc))
+  // The MEMBERSHIP half stays asked of the BROKERAGE-WIDE override roster
+  // regardless of which wrapper the file imports, because that is the question:
+  // who may decide a deal that is not their own. `isAgentOrTenantAdmin` is built
+  // from this exact Set plus `agent`, and an agent deciding their OWN deal is
+  // gated by the self-scope literal checked above, not by this roster.
+  // THE MEMBERSHIP HALF IS ASKED OF THE PREDICATE THE FILE ACTUALLY USES, not of
+  // a predicate this guard picked. That distinction stopped being cosmetic on
+  // 2026-09-04: the owner's ruling seated `compliance_officer` in
+  // TENANT_ADMIN_USER_TYPES, so isAdminOrBroker — which this line used to ask —
+  // now ADMITS it, and asking the wrong predicate would have reported the deal
+  // lane as wide open when it is not, or as broken when it is correct.
+  const dealPredicate = ROSTER_PREDICATES[importedPredicate ?? ""] ?? (() => false)
+  check("...and that roster admits the override roles the deal lane needs, broker_owner included",
+    ["broker", "broker_owner", "admin", "team_lead"].every((r) => dealPredicate({ user_type: r })))
+  check("...and the producing agent themselves is admitted (they self-scope below, they are not locked out)",
+    dealPredicate({ user_type: "agent" }))
+  check("...and refuses the roles that must not decide a deal brokerage-wide",
+    // `compliance_officer` IS in the tenant admin roster as of the 2026-09-04
+    // ruling and is refused HERE anyway: accepting an offer binds a client to a
+    // purchase contract (the accept_offer registry row is is_nar_regulated), so
+    // the deal lane takes the COMMERCE tier — the same subtraction the four
+    // gates that obligate the brokerage to pay already make. If the owner rules
+    // that a compliance officer may accept offers, this line and the import in
+    // lib/voice/deal-decision.ts move together.
+    //
+    // 'lender' is deliberately still listed even though that same day's ruling
+    // made it a vendor CATEGORY and dropped it from users_user_type_check: a
+    // value the column can no longer hold cannot reach this predicate, but a
+    // roster edit that re-admitted the word would be a regression this still
+    // catches. It is the one entry asserted about a spelling rather than a seat.
+    ["isa", "tc", "contact", "lender", "vendor", "compliance_officer"].every((r) => !dealPredicate({ user_type: r })))
+  check("...and it FAILS CLOSED on an unresolvable role (§4 — 'nobody checked' is not 'checked and fine')",
+    !dealPredicate({ user_type: "" }) && !dealPredicate({ user_type: null }) && !dealPredicate({}))
+  // POSITIVE CONTROL for the two lines above: a predicate that answered NO to
+  // everything would satisfy the refusal list, and one that answered YES to
+  // everything would satisfy the admission list. Neither is true of this one.
+  check("POSITIVE CONTROL — the deal predicate discriminates (it is neither always-yes nor always-no)",
+    dealPredicate({ user_type: "broker" }) && !dealPredicate({ user_type: "contact" }))
   check("tool-registry row accept_offer exists with authority 'agent'",
     voiceTools.accept_offer?.authority === "agent" && voiceTools.accept_offer?.is_nar_regulated === true)
   check("authorityAllows blocks isa/tc for accept_offer, allows agent + broker",

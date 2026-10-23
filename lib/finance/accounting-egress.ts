@@ -13,6 +13,7 @@
 // when nothing was attempted). quickbooks_sync_log is retired.
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { QuickBooksProvider } from "@/lib/providers/accounting/quickbooks"
@@ -89,7 +90,7 @@ async function logSync(
   svc: Svc,
   p: { brokerageId: string; syncType: "expense" | "commission" | "invoice" | "journal"; startedAt: string; success: boolean; error?: string | null },
 ) {
-  await svc.from("accounting_sync_log").insert({
+  await sentinelWrite(svc, svc.from("accounting_sync_log").insert({
     brokerage_id: p.brokerageId,
     provider: "quickbooks",
     sync_type: p.syncType,
@@ -99,7 +100,7 @@ async function logSync(
     started_at: p.startedAt,
     completed_at: new Date().toISOString(),
     error_summary: p.success ? null : (p.error ?? "unknown error").slice(0, 500),
-  })
+  }), { table: "accounting_sync_log", flow: "accounting_egress_log", brokerageId: p.brokerageId, reason: "sync log of a push that already happened (or failed) at QuickBooks; the caller already has the push result" })
 }
 
 /** Push ONE brokerage-scoped expense to the brokerage's QuickBooks as a

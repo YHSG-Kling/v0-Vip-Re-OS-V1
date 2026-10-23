@@ -57,7 +57,7 @@ export async function shareCallWithCoach(input: {
   const { data: leaders } = await svc.from("users")
     .select("id, user_type")
     .eq("brokerage_id", caller.brokerageId)
-    .in("user_type", ["broker", "broker_admin", "admin", "team_lead"])
+    .in("user_type", ["broker", "admin", "team_lead"])
     .limit(20)
 
   const targets = ((leaders ?? []) as Array<{ id: string }>).filter((u) => u.id !== caller.userId)

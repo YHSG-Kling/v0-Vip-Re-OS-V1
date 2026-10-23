@@ -13,7 +13,7 @@ import { Grid3x3, Loader2 } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import {
   PLATFORM_CAPABILITIES, OVERRIDABLE_PLATFORM_ROLES, platformStaffCan,
-  type CapabilityOverride, type PlatformCapability,
+  type CapabilityOverride, type PlatformCapability, type OverridablePlatformRole,
 } from '@/lib/platform/platform-staff-roster'
 import { setCapabilityOverrideAction, listCapabilityOverridesAction } from '@/app/actions/superadmin/platform-staff'
 
@@ -32,7 +32,7 @@ export function CapabilityMatrix({ initialOverrides }: { initialOverrides: Capab
 
   const find = (role: string, cap: string) => overrides.find((o) => o.role === role && o.capability === cap)
 
-  function apply(role: string, capability: PlatformCapability, override: { allowed: boolean; access: 'read' | 'write' } | null) {
+  function apply(role: OverridablePlatformRole, capability: PlatformCapability, override: { allowed: boolean; access: 'read' | 'write' } | null) {
     const key = `${role}:${capability}`
     setPendingCell(key)
     startTransition(async () => {

@@ -16,8 +16,28 @@ import {
 import {
   createPropertyAlert, updatePropertyAlert, pausePropertyAlert,
   resumePropertyAlert, deletePropertyAlert, getAlertResults,
-  getBuyerAlertSummary, runAlertNow, previewAlertCriteria, prefillFromProfile
+  getBuyerAlertSummary, runAlertNow, previewAlertCriteria, prefillFromProfile,
+  saveAlertResultForBuyer, sendAlertResultNow, markResultViewed
 } from "@/app/actions/property-alerts/alert-actions"
+// ONE SCREEN, ONE SPELLING (§6). Every result card here is the agent's PREVIEW
+// of the exact card the buyer receives on the portal (app/portal/[contactId]/
+// alerts/[alertId]/alert-match-list.tsx) and in the alert email — the agent
+// reading a different word than the one the client was sent is the drift §6
+// forbids, so the badge, the result filter and the criteria checkbox all speak
+// the same public word.
+//
+// FLAGGED FOR THE OWNER: this is the one place where the ruling's PUBLIC scope
+// was extended to an agent-console control. The alternative — a "Price Improved"
+// badge sitting under a "Price Reductions" filter tab — was worse. Every other
+// agent-only picker (the video panel, the social composer, the lifecycle-promo
+// settings, the workflow palette) was deliberately LEFT in the internal wording.
+//
+// The internal filter key `price_reductions`, the `is_price_reduction` column and
+// the `include_price_reductions` / `price_reduction_min_percent` criteria columns
+// are all unchanged.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
+import { useAuth } from "@/lib/auth/client"
+import { BROKERAGE_ADMIN_USER_TYPES } from "@/lib/auth/require-brokerage-admin"
 
 type Filter = "all" | "new_listings" | "price_reductions" | "not_viewed"
 
@@ -62,7 +82,10 @@ interface ResultRecord {
 const FREQUENCY_LABELS: Record<string, string> = {
   instant: "Every 15 min", twice_daily: "Twice Daily", daily: "Daily", weekly: "Weekly"
 }
-const PROPERTY_TYPE_OPTIONS = ["Single Family", "Condo", "Townhouse", "Multi-Family", "Land", "Commercial"]
+// Canonical {value,label} options. This list previously held DISPLAY strings and saved
+// them verbatim, so an alert for "Single Family" could never match a listing stored as
+// "single_family" (see canonicalPropertyType).
+import { PROPERTY_TYPE_OPTIONS } from "@/lib/constants"
 
 export default function BuyerAlertsPage() {
   const params  = useParams()
@@ -71,8 +94,29 @@ export default function BuyerAlertsPage() {
   // Derived from URL — brokerage_id pulled from first alert or contact
   const [brokerageId, setBrokerageId] = useState<string>("")
   const [alerts, setAlerts]           = useState<AlertRecord[]>([])
-  const [idxStatus, setIdxStatus]     = useState<"checking" | "configured" | "not_configured">("checking")
-  const [isAdmin, setIsAdmin]         = useState(false)
+  // WHICH SOURCE ANSWERS THIS TENANT'S ALERTS — not "is IDX configured".
+  // This banner read an IDX-only probe and said "IDX Not Configured" whenever a
+  // brokerage had no IDX Broker account. Alerts are now served by the platform's
+  // property provider for exactly those brokerages, so that wording told an
+  // agent their alerts were broken while they ran. The state carries the source
+  // the sweep itself resolves, plus the sentence explaining it.
+  const [sourceStatus, setSourceStatus] = useState<"checking" | "idx" | "rentcast" | "none" | "unreadable">("checking")
+  const [sourceDetail, setSourceDetail] = useState<string>("")
+  // WHO MAY BE POINTED AT THE IDX SETTINGS PAGE. This was `useState(false)` with
+  // a setter nobody called, so the "Connect / Configure IDX Broker" links at the
+  // bottom of the source banner could never render for anyone — a broker read
+  // "ask your admin" about themselves. The role now comes from the canonical
+  // client auth hook (lib/auth/useAuth.ts — users.user_type ∪ user_role_assignments,
+  // read under the session's own RLS, never a cookie or a body field), tested
+  // against the SAME set the destination page enforces server-side
+  // (BROKERAGE_ADMIN_USER_TYPES, lib/auth/require-brokerage-admin.ts — one
+  // vocabulary, §6; `broker_owner` canonicalises to `broker` on the client,
+  // lib/security/types.ts:100, so it is still admitted). While the session is
+  // still resolving this reads false: FAIL CLOSED, the link appears only once
+  // the role is known. The link is a pointer, not the gate — the settings page
+  // refuses a non-admin on its own.
+  const { userContext, loading: authLoading } = useAuth()
+  const isAdmin = !authLoading && (userContext?.roles ?? []).some((r) => BROKERAGE_ADMIN_USER_TYPES.has(r))
   const [loading, setLoading]         = useState(true)
 
   // Results panel state
@@ -117,15 +161,68 @@ export default function BuyerAlertsPage() {
 
   useEffect(() => { loadAlerts() }, [loadAlerts])
 
-  // IDX status check
+  // Listing-source status check
   useEffect(() => {
     if (!brokerageId) return
-    import("@/app/actions/property-alerts/alert-actions").then(({ testIdxConnection }) => {
-      testIdxConnection(brokerageId).then(r => {
-        setIdxStatus(r.success && r.configured ? "configured" : "not_configured")
+    import("@/app/actions/property-alerts/alert-actions").then(({ resolveAlertListingSourceStatus }) => {
+      resolveAlertListingSourceStatus(brokerageId).then(r => {
+        // A FAILED READ IS NOT "NO SOURCE". The action already distinguishes an
+        // unreadable connection check from an absent one; a thrown/refused call
+        // lands on the same honest "we could not tell" rather than accusing the
+        // brokerage of having nothing connected.
+        if (!r.success) {
+          setSourceStatus("unreadable")
+          setSourceDetail(r.error ?? "The listing source could not be resolved.")
+          return
+        }
+        setSourceStatus((r.source ?? "none") as "idx" | "rentcast" | "none" | "unreadable")
+        setSourceDetail(r.detail ?? "")
       })
     })
   }, [brokerageId])
+
+  // Per-result action state. Keyed by `${resultId}:${action}` so the button the
+  // agent pressed is the one that shows a spinner, and two results can be acted
+  // on independently.
+  const [resultBusy, setResultBusy] = useState<string | null>(null)
+  const [resultMsg, setResultMsg] = useState<Record<string, { ok: boolean; text: string }>>({})
+
+  // These three buttons rendered on every match and NONE had an onClick. The
+  // capability behind each was complete; the wire was never built, so an agent
+  // clicked and nothing happened — and nothing said so.
+  //
+  // Every one READS its outcome. saveAlertResultForBuyer and sendAlertResultNow
+  // return { success, error } and never throw, so a refusal (no reachable
+  // channel, offer on an external property, a dismissed property) renders as a
+  // refusal instead of a silent no-op wearing a success.
+  const runResultAction = async (
+    resultId: string,
+    action: "save" | "tour" | "send",
+    fn: () => Promise<{ success: boolean; error?: string }>,
+    okText: string,
+  ) => {
+    const key = `${resultId}:${action}`
+    setResultBusy(key)
+    setResultMsg((m) => ({ ...m, [resultId]: undefined as any }))
+    const res = await fn()
+    setResultBusy(null)
+    setResultMsg((m) => ({
+      ...m,
+      [resultId]: res.success ? { ok: true, text: okText } : { ok: false, text: res.error ?? "That did not go through" },
+    }))
+    if (res.success && expandedAlertId) await loadResults(expandedAlertId, resultFilter)
+  }
+
+  // Opening a match IS the buyer-viewed signal. markResultViewed was complete and
+  // had zero callers, so `unviewed_count` and the "Not viewed" filter only ever
+  // grew — the badge could never come down.
+  const openResult = async (r: ResultRecord, contactId: string) => {
+    if (r.listing_url) window.open(r.listing_url, "_blank", "noopener,noreferrer")
+    if (!r.buyer_viewed) {
+      const res = await markResultViewed(r.id, contactId)
+      if (res.success && expandedAlertId) await loadResults(expandedAlertId, resultFilter)
+    }
+  }
 
   const loadResults = async (alertId: string, filter: Filter = "all") => {
     setResultsLoading(true)
@@ -292,30 +389,50 @@ export default function BuyerAlertsPage() {
   return (
     <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto">
 
-      {/* IDX Status Banner */}
-      <div className={`flex items-center gap-3 rounded-lg border px-4 py-3 text-sm font-medium
-        ${idxStatus === "configured"
+      {/* Listing-source banner — which source answers these saved searches */}
+      <div className={`flex items-start gap-3 rounded-lg border px-4 py-3 text-sm font-medium
+        ${sourceStatus === "idx" || sourceStatus === "rentcast"
           ? "border-green-200 bg-green-50 text-green-800"
-          : idxStatus === "not_configured"
+          : sourceStatus === "none" || sourceStatus === "unreadable"
           ? "border-amber-200 bg-amber-50 text-amber-800"
           : "border-border bg-muted/30 text-muted-foreground"}`}>
-        {idxStatus === "configured" && (
+        {sourceStatus === "idx" && (
           <>
-            <span className="h-2 w-2 rounded-full bg-green-500" />
-            Connected to IDX Broker
+            <span className="h-2 w-2 rounded-full bg-green-500 mt-1.5" />
+            <span>
+              Searching IDX Broker
+              {sourceDetail && <span className="block font-normal opacity-80">{sourceDetail}</span>}
+            </span>
           </>
         )}
-        {idxStatus === "not_configured" && (
+        {sourceStatus === "rentcast" && (
           <>
-            <span className="h-2 w-2 rounded-full bg-amber-400" />
-            IDX Not Configured —{" "}
-            {isAdmin
-              ? <a href="/dashboard/settings/integrations/idx-broker" className="underline font-semibold ml-1">Configure Now &rarr;</a>
-              : "Ask your admin to configure IDX Broker"
-            }
+            <span className="h-2 w-2 rounded-full bg-green-500 mt-1.5" />
+            <span>
+              Searching the platform property feed
+              {sourceDetail && <span className="block font-normal opacity-80">{sourceDetail}</span>}
+              {isAdmin && (
+                <a href="/dashboard/settings/integrations/idx-broker" className="underline font-semibold block mt-1">
+                  Connect your own IDX Broker feed &rarr;
+                </a>
+              )}
+            </span>
           </>
         )}
-        {idxStatus === "checking" && "Checking IDX connection..."}
+        {(sourceStatus === "none" || sourceStatus === "unreadable") && (
+          <>
+            <span className="h-2 w-2 rounded-full bg-amber-400 mt-1.5" />
+            <span>
+              {sourceStatus === "none" ? "No property source — these searches cannot run" : "The property source could not be determined"}
+              {sourceDetail && <span className="block font-normal opacity-80">{sourceDetail}</span>}
+              {isAdmin
+                ? <a href="/dashboard/settings/integrations/idx-broker" className="underline font-semibold block mt-1">Configure IDX Broker &rarr;</a>
+                : <span className="block font-normal">Ask your admin to configure a listing source.</span>
+              }
+            </span>
+          </>
+        )}
+        {sourceStatus === "checking" && "Checking which property source answers these searches..."}
       </div>
 
       {/* Header */}
@@ -414,7 +531,7 @@ export default function BuyerAlertsPage() {
                         {{
                           all: "All",
                           new_listings: "New Listings",
-                          price_reductions: "Price Reductions",
+                          price_reductions: `${priceImprovementLabel("noun")}s`,
                           not_viewed: `Not Viewed${unviewedCount > 0 ? ` (${unviewedCount})` : ""}`,
                         }[f]}
                       </Button>
@@ -438,7 +555,7 @@ export default function BuyerAlertsPage() {
                             <div className="flex items-start justify-between gap-2">
                               <p className="text-sm font-medium leading-snug">{r.property_address}{r.city ? `, ${r.city}` : ""}</p>
                               {r.is_price_reduction
-                                ? <Badge variant="destructive" className="text-xs flex-shrink-0">Price Reduced</Badge>
+                                ? <Badge variant="destructive" className="text-xs flex-shrink-0">{priceImprovementLabel("badge")}</Badge>
                                 : <Badge className="text-xs flex-shrink-0 bg-green-600">New</Badge>
                               }
                             </div>
@@ -470,14 +587,43 @@ export default function BuyerAlertsPage() {
                             )}
                             <div className="flex gap-1.5 pt-1 flex-wrap">
                               {r.listing_url && (
-                                <a href={r.listing_url} target="_blank" rel="noopener noreferrer">
-                                  <Button size="sm" variant="outline" className="text-xs h-7">View on IDX &nearr;</Button>
-                                </a>
+                                <Button
+                                  size="sm" variant="outline" className="text-xs h-7"
+                                  onClick={() => openResult(r, buyerId)}
+                                >
+                                  View on IDX &nearr;
+                                </Button>
                               )}
-                              <Button size="sm" variant="outline" className="text-xs h-7">Save for Buyer</Button>
-                              <Button size="sm" variant="outline" className="text-xs h-7">Add to Tour</Button>
-                              <Button size="sm" variant="outline" className="text-xs h-7">Send Now</Button>
+                              <Button
+                                size="sm" variant="outline" className="text-xs h-7"
+                                disabled={resultBusy !== null}
+                                onClick={() => runResultAction(r.id, "save",
+                                  () => saveAlertResultForBuyer(r.id, "saved"), "Saved to their list")}
+                              >
+                                {resultBusy === `${r.id}:save` ? "Saving…" : "Save for Buyer"}
+                              </Button>
+                              <Button
+                                size="sm" variant="outline" className="text-xs h-7"
+                                disabled={resultBusy !== null}
+                                onClick={() => runResultAction(r.id, "tour",
+                                  () => saveAlertResultForBuyer(r.id, "tour_requested"), "Added to their tour")}
+                              >
+                                {resultBusy === `${r.id}:tour` ? "Adding…" : "Add to Tour"}
+                              </Button>
+                              <Button
+                                size="sm" variant="outline" className="text-xs h-7"
+                                disabled={resultBusy !== null}
+                                onClick={() => runResultAction(r.id, "send",
+                                  () => sendAlertResultNow(r.id), "Sent to the buyer")}
+                              >
+                                {resultBusy === `${r.id}:send` ? "Sending…" : "Send Now"}
+                              </Button>
                             </div>
+                            {resultMsg[r.id] && (
+                              <p className={`text-xs ${resultMsg[r.id].ok ? "text-emerald-600" : "text-destructive"}`}>
+                                {resultMsg[r.id].text}
+                              </p>
+                            )}
                           </div>
                         </div>
                       ))}
@@ -547,15 +693,15 @@ export default function BuyerAlertsPage() {
                 <div className="flex flex-wrap gap-2">
                   {PROPERTY_TYPE_OPTIONS.map(pt => (
                     <button
-                      key={pt}
+                      key={pt.value}
                       type="button"
-                      onClick={() => togglePropType(pt)}
+                      onClick={() => togglePropType(pt.value)}
                       className={`text-xs px-3 py-1 rounded-full border transition-colors ${
-                        form.propertyTypes.includes(pt)
+                        form.propertyTypes.includes(pt.value)
                           ? "bg-primary text-primary-foreground border-primary"
                           : "bg-background border-border text-foreground hover:bg-muted"
                       }`}
-                    >{pt}</button>
+                    >{pt.label}</button>
                   ))}
                 </div>
               </div>
@@ -573,11 +719,11 @@ export default function BuyerAlertsPage() {
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
                   <Checkbox id="priceReductions" checked={form.includePriceReductions} onCheckedChange={v => setForm(p => ({...p, includePriceReductions: !!v}))} />
-                  <Label htmlFor="priceReductions">Include Price Reductions</Label>
+                  <Label htmlFor="priceReductions">Include {priceImprovementLabel("noun")}s</Label>
                 </div>
                 {form.includePriceReductions && (
                   <div className="space-y-1 ml-6">
-                    <Label className="text-xs">Min Reduction %</Label>
+                    <Label className="text-xs">Min {priceImprovementLabel("noun")} %</Label>
                     <Input type="number" value={form.priceReductionMinPercent} onChange={e => setForm(p => ({...p, priceReductionMinPercent: e.target.value}))} className="w-24" />
                   </div>
                 )}

@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { requireTitleActor, PortalAuthError } from "@/lib/kernel/portal-auth"
-import { TITLE_VISIBLE_MILESTONES, TITLE_STATUS_OPTIONS, type TitleStatus } from "@/lib/title-portal/constants"
+import { TITLE_VISIBLE_MILESTONES, type TitleStatus } from "@/lib/title-portal/constants"
 
 // ─── GET TITLE USER DASHBOARD ────────────────────────────────────────────────
 export async function getTitleDashboard(titleUserId: string) {
@@ -32,7 +32,15 @@ export async function getTitleDashboard(titleUserId: string) {
   }
 
   // Get all transactions assigned to this title company
-  const { data: titleEscrowRecords } = await supabase
+  //
+  // TWO defects in the old embed, either one fatal to the WHOLE query:
+  //  1. `agents` has NO first_name / last_name / email / phone — those live on
+  //     `users` via agents_user_id_fkey (the only agents→users FK, so an OBJECT).
+  //  2. `agents(...)` was UNHINTED, and `transactions` has THREE FKs to agents
+  //     (agent_id, buyer_agent_id, seller_agent_id), so PostgREST could not pick
+  //     one. It is now pinned to agent_id, the listing/deal agent.
+  // The result was that the title company's entire deal pipeline rendered empty.
+  const { data: titleEscrowRecords, error: recordsError } = await supabase
     .from("transaction_title_escrow")
     .select(`
       id,
@@ -55,14 +63,46 @@ export async function getTitleDashboard(titleUserId: string) {
         purchase_price,
         buyer_contact_id,
         agent_id,
-        agents(id, first_name, last_name, email, phone)
+        agents:agent_id(
+          id, phone_mobile, phone_office,
+          users:user_id(first_name, last_name, email, phone)
+        )
       )
     `)
     .eq("title_company_email", titleUser.email)
     .order("created_at", { ascending: false })
 
+  // supabase-js RESOLVES a failed query, so `const { data }` alone reported a
+  // rejected select as "this title company has no deals".
+  if (recordsError) {
+    throw new Error(`Could not load the title pipeline: ${recordsError.message}`)
+  }
+
+  // Flattened to the same agent shape the title detail page renders, so a row
+  // carries agent identity in one predictable form across both surfaces.
+  const records = (titleEscrowRecords ?? []).map((r: any) => {
+    const tx = Array.isArray(r.transactions) ? r.transactions[0] : r.transactions
+    if (!tx) return r
+    const a = tx.agents as Record<string, any> | null
+    const u = (a?.users ?? null) as Record<string, any> | null
+    return {
+      ...r,
+      transactions: {
+        ...tx,
+        agents: a
+          ? {
+              id: a.id,
+              first_name: u?.first_name ?? null,
+              last_name: u?.last_name ?? null,
+              email: u?.email ?? null,
+              phone: a.phone_mobile ?? a.phone_office ?? u?.phone ?? null,
+            }
+          : null,
+      },
+    }
+  })
+
   // Calculate dashboard stats
-  const records = titleEscrowRecords || []
   const activeCount = records.filter((r) => {
     const tx = Array.isArray(r.transactions) ? r.transactions[0] : r.transactions
     return !["closed", "cancelled"].includes(tx?.status || "")
@@ -148,7 +188,10 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
       seller_contact_id,
       agent_id,
       contacts:buyer_contact_id(id, first_name, last_name, email, phone),
-      agents:agent_id(id, first_name, last_name, email, phone)
+      agents:agent_id(
+        id, phone_mobile, phone_office,
+        users:user_id(first_name, last_name, email, phone)
+      )
     `)
     .eq("id", transactionId)
     .single()
@@ -175,6 +218,9 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
       "settlement_statement",
       "final_closing_disclosure",
       "wire_instructions",
+      // Wave 142 (142C): the brokerage's approved + signed Commission Disbursement Authorization,
+      // delivered INTO this portal (app/actions/cda-portal.ts sendCdaToTitleAction, method 'portal').
+      "cda",
     ])
     .order("created_at", { ascending: false })
 
@@ -194,8 +240,27 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
     daysUntilClose = Math.ceil((date.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
   }
 
+  // Flattened to the shape the page already renders
+  // (app/portal/title/[transactionId]/page.tsx:360-374 reads
+  // transaction.agents.first_name / last_name / email / phone), so no consumer
+  // changes — but the values are now real.
+  const a = (transaction as any).agents as Record<string, any> | null
+  const u = (a?.users ?? null) as Record<string, any> | null
+  const transactionWithAgent = {
+    ...(transaction as any),
+    agents: a
+      ? {
+          id: a.id,
+          first_name: u?.first_name ?? null,
+          last_name: u?.last_name ?? null,
+          email: u?.email ?? null,
+          phone: a.phone_mobile ?? a.phone_office ?? u?.phone ?? null,
+        }
+      : null,
+  }
+
   return {
-    transaction,
+    transaction: transactionWithAgent,
     titleEscrow,
     milestones: milestones || [],
     documents: documents || [],
@@ -260,10 +325,108 @@ export async function uploadTitleDocument(data: {
 
   if (error) throw error
 
+  // ── THE TITLE COMPANY SUPPLIES THE PRELIMINARY / FINAL STATEMENT (wave 142, lane 142C) ──
+  // Owner: "the TITLE COMPANY supplies it … upload through the authorized title portal → notify
+  // agent + TC immediately → attach to the transaction (document version + closing event)". The CDA
+  // chain's beginning (app/actions/cda-portal.ts notifyAgentOfPreliminaryCdAction: the versioned
+  // attach, the agent + TC bells, the task, the CD_RECEIVED fan-out) was reachable only from the
+  // brokerage's own CDA screen; a statement uploaded HERE landed as a document nobody was told about.
+  // Bridged in the SAME request, its result READ; a refusal is escalated to the brokerage's admins at
+  // once (service client, after the gate) instead of waiting for someone to notice.
+  let cdaBridge: { kind: "preliminary" | "final"; ok: boolean; cdaId?: string | null; version?: number; error?: string } | null = null
+  if (data.documentType === "settlement_statement" || data.documentType === "final_closing_disclosure") {
+    const kind: "preliminary" | "final" = data.documentType === "settlement_statement" ? "preliminary" : "final"
+    try {
+      if (kind === "preliminary") {
+        const { notifyAgentOfPreliminaryCdAction } = await import("@/app/actions/cda-portal")
+        const r = await notifyAgentOfPreliminaryCdAction({ transactionId: data.transactionId, documentId: document.id })
+        cdaBridge = r.success ? { kind, ok: true, cdaId: r.cdaId, version: r.version } : { kind, ok: false, error: r.error }
+      } else {
+        cdaBridge = await attachFinalStatementFromTitle(supabase, { transactionId: data.transactionId, documentId: document.id, brokerageId: actor.brokerageId })
+      }
+    } catch (e) {
+      cdaBridge = { kind, ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+    if (!cdaBridge.ok) {
+      console.error(`[title-portal] ${kind} statement uploaded but NOT attached to the CDA chain for transaction ${data.transactionId}:`, cdaBridge.error)
+      try {
+        const { createServiceClient } = await import("@/lib/supabase/service")
+        const { notifyBrokerageAdmins } = await import("@/lib/notifications/brokerage-admins")
+        await notifyBrokerageAdmins(createServiceClient() as never, actor.brokerageId, {
+          type: "title_statement_unattached",
+          title: `A ${kind === "preliminary" ? "preliminary settlement statement" : "final closing disclosure"} from title needs attention`,
+          body: `Title uploaded "${data.fileName}" but it could not be attached to the closing's CDA chain (${cdaBridge.error ?? "unknown"}). Open the transaction and attach it so the agent and TC can review it.`,
+          entityType: "transaction",
+          entityId: data.transactionId,
+          priority: "high",
+        })
+      } catch (e) {
+        console.error("[title-portal] admin escalation for an unattached statement failed:", e instanceof Error ? e.message : String(e))
+      }
+    }
+  }
+
   // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/title/${data.transactionId}`)
-  return document
+  return { ...(document as Record<string, unknown>), cda_bridge: cdaBridge }
+}
+
+/**
+ * The FINAL closing disclosure from title: attached to the CDA (uploadFinalCdAction — the one writer of
+ * final_cd_* and the 'cd_uploaded' finalization lock) when the brokerage runs a CDA; for a no-CDA
+ * brokerage the finalization lock still fires on the transaction. Agent + TC are told at once either way.
+ */
+async function attachFinalStatementFromTitle(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  args: { transactionId: string; documentId: string; brokerageId: string },
+): Promise<{ kind: "final"; ok: boolean; cdaId?: string | null; error?: string }> {
+  const { data: cda, error: cdaErr } = await supabase
+    .from("closing_disclosure_agreement")
+    .select("id")
+    .eq("transaction_id", args.transactionId)
+    .eq("brokerage_id", args.brokerageId)
+    .maybeSingle()
+  if (cdaErr) return { kind: "final", ok: false, error: `cda_read_refused:${cdaErr.message}` }
+  if (cda?.id) {
+    const { uploadFinalCdAction } = await import("@/app/actions/cda-portal")
+    const r = await uploadFinalCdAction({ cdaId: cda.id as string, documentId: args.documentId })
+    if (!r.success) return { kind: "final", ok: false, cdaId: cda.id as string, error: r.error }
+  } else {
+    try {
+      const { finalizeTransactionCommission } = await import("@/lib/commission/finalization")
+      await finalizeTransactionCommission(supabase, args.transactionId, "cd_uploaded")
+    } catch { /* the finalization lock is best-effort; the document is on the transaction either way */ }
+  }
+  const { data: txn } = await supabase
+    .from("transactions")
+    .select("agent_id, coordinator_id, property_address")
+    .eq("id", args.transactionId)
+    .eq("brokerage_id", args.brokerageId)
+    .maybeSingle()
+  const t = txn as { agent_id?: string | null; coordinator_id?: string | null; property_address?: string | null } | null
+  const recipients = new Set<string>()
+  if (t?.agent_id) {
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    const agentUserId = await resolveUserIdForAgentRecord(supabase, t.agent_id)
+    if (agentUserId) recipients.add(agentUserId)
+  }
+  if (t?.coordinator_id) recipients.add(t.coordinator_id)
+  for (const userId of recipients) {
+    const { error: bellErr } = await supabase.from("notifications").insert({
+      user_id: userId,
+      brokerage_id: args.brokerageId,
+      type: "final_cd_received",
+      title: "Final closing disclosure received from title",
+      body: `Title uploaded the final closing disclosure${t?.property_address ? ` for ${t.property_address}` : ""}. Review it against the executed contract and the commission waterfall.`,
+      entity_type: "transaction",
+      entity_id: args.transactionId,
+      priority: "high",
+      channel: "in_app",
+    })
+    if (bellErr) console.error("[title-portal] final_cd_received bell refused:", bellErr.message)
+  }
+  return { kind: "final", ok: true, cdaId: (cda?.id as string | undefined) ?? null }
 }
 
 // ─── UPDATE TITLE STATUS ─────────────────────────────────────────────────────
@@ -487,4 +650,94 @@ export async function sendTitleMessageToAgent(data: {
   const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/title/${data.transactionId}`)
   return { success: true }
+}
+
+// ─── BATCH MILESTONE ACTIONS ──────────────────────────────────────────────────
+// Backs ExternalBatchActionsPanel on /title/dashboard (title/dashboard/page.tsx
+// mounts it on titleBatchItems — title-visible transaction_milestones, one row
+// per assigned deal). The panel's three buttons are real title-order lifecycle
+// stages, not a bespoke batch primitive: each one calls the SAME
+// updateTitleStatus this file already exports and gates (kernel fan-out +
+// milestone completion included), once per DISTINCT transaction behind the
+// selected items — never a second status writer.
+//
+// No titleUserId is threaded in from the page: a title_company_users row is
+// scoped to ONE transaction (see getTitleTransactionDetail's own comment), so
+// there is no single company-wide id for an aggregate, multi-deal batch. This
+// resolves the caller's OWN title_company_users row per transaction instead —
+// updateTitleStatus's requireTitleActor call still re-verifies every one.
+async function batchSetTitleTransactionStatus(
+  milestoneIds: string[],
+  newStatus: TitleStatus,
+): Promise<{ success: boolean; count: number; error?: string }> {
+  if (!milestoneIds?.length) return { success: true, count: 0 }
+
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, count: 0, error: "Not authenticated" }
+
+  const { data: rows, error: readError } = await supabase
+    .from("transaction_milestones")
+    .select("transaction_id")
+    .in("id", milestoneIds)
+  if (readError) return { success: false, count: 0, error: readError.message }
+
+  const transactionIds = [...new Set((rows ?? []).map((r) => r.transaction_id))]
+  if (transactionIds.length === 0) return { success: true, count: 0 }
+
+  const { data: titleUserRows } = await supabase
+    .from("title_company_users")
+    .select("id, transaction_id")
+    .eq("user_id", user.id)
+    .in("transaction_id", transactionIds)
+
+  let count = 0
+  let lastError: string | undefined
+  for (const row of titleUserRows ?? []) {
+    const result = await updateTitleStatus({
+      transactionId: row.transaction_id,
+      titleUserId: row.id,
+      newStatus,
+    })
+    if (result.success) count++
+    else lastError = result.error
+  }
+
+  if (count === 0) {
+    return { success: false, count: 0, error: lastError ?? "Not assigned to any of the selected transactions" }
+  }
+  return { success: true, count, error: count < transactionIds.length ? lastError : undefined }
+}
+
+/** "Confirm Orders" — the title company acknowledges the selected orders. */
+export async function batchConfirmTitleMilestones(
+  milestoneIds: string[],
+): Promise<{ success: boolean; count: number; error?: string }> {
+  return batchSetTitleTransactionStatus(milestoneIds, "commitment_issued")
+}
+
+/** "Send to Settlement" — moves the underlying deal(s) to closing-ready. */
+export async function batchSendTitleMilestonesToSettlement(
+  milestoneIds: string[],
+): Promise<{ success: boolean; count: number; error?: string }> {
+  return batchSetTitleTransactionStatus(milestoneIds, "closing_ready")
+}
+
+/**
+ * "Mark Closed" — ExternalBatchActionsPanel's generic onBatchUpdate, which
+ * the panel today only ever calls with the item-status word "completed" (its
+ * own pending/ready/completed vocabulary, not TitleStatus). Mapped onto the
+ * one TitleStatus value that means the same thing rather than growing a
+ * second status vocabulary (§6); any TitleStatus value passed through
+ * verbatim otherwise.
+ */
+export async function batchUpdateTitleMilestoneStatus(
+  milestoneIds: string[],
+  newStatus: string,
+): Promise<{ success: boolean; count: number; error?: string }> {
+  const TITLE_STATUSES: readonly string[] = ["title_search", "commitment_issued", "closing_ready", "closed"]
+  const mapped: TitleStatus = newStatus === "completed"
+    ? "closed"
+    : (TITLE_STATUSES.includes(newStatus) ? (newStatus as TitleStatus) : "closed")
+  return batchSetTitleTransactionStatus(milestoneIds, mapped)
 }

@@ -55,7 +55,11 @@ export function inferTransport(fields: CredentialFields): Transport {
   return "api_key"
 }
 
-/** Pure: assess whether a credential is a COMPLETE, usable shape for its transport. */
+/** Pure: assess whether a credential is a COMPLETE, usable shape for its transport.
+ *  CENSUS NOTE: proof-only (scripts/scraper-simulator.ts:848-850). The live scan
+ *  (resolve-connectivity.ts) deliberately never selects the secret columns, so it cannot
+ *  hand this a CredentialFields without reading tokens into the report path. */
+/** @proofSeam proof-only by design — resolve-connectivity.ts deliberately never selects secret columns, so it cannot hand this a CredentialFields without reading tokens into the report path; see CENSUS NOTE above */
 export function assessShape(fields: CredentialFields, transportHint?: Transport): ShapeAssessment {
   const transport = transportHint ?? inferTransport(fields)
   const missing: string[] = []
@@ -146,7 +150,10 @@ export function adaptResponse(raw: Record<string, unknown>, spec: ConnectorShape
 }
 
 /** Pure: a connection is HEALTHY-SHAPED when no required field is missing. Aliased-but-present
- *  is still healthy (we adapted) — it only warrants a proactive "vendor changed" notice. */
+ *  is still healthy (we adapted) — it only warrants a proactive "vendor changed" notice.
+ *  CENSUS NOTE: proof-only (scripts/scraper-simulator.ts:854); the live probe's classifyProbe
+ *  takes the primitive missingRequired[] so it stays testable without a ShapeDrift object. */
+/** @proofSeam proof-only by design — classifyProbe (connector-probe.ts) takes the primitive missingRequired[] directly so it stays testable without a ShapeDrift object; see CENSUS NOTE above */
 export function shapeHealthy(drift: ShapeDrift): boolean {
   return drift.missingRequired.length === 0
 }

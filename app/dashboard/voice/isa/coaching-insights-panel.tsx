@@ -1,5 +1,6 @@
 "use client"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { useState } from "react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
@@ -85,10 +86,10 @@ export function CoachingInsightsPanel({ insights, agentId }: CoachingInsightsPan
     setDismissing(insightId)
     const supabase = createClient()
     
-    await supabase
+    await bestEffort(supabase
       .from("call_coaching_insights")
       .update({ dismissed: true })
-      .eq("id", insightId)
+      .eq("id", insightId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     
     setDismissing(null)
     router.refresh()
@@ -141,7 +142,7 @@ export function CoachingInsightsPanel({ insights, agentId }: CoachingInsightsPan
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 shrink-0"
-                  onClick={() => handleDismiss(insight.id)}
+                  aria-label="Dismiss insight" onClick={() => handleDismiss(insight.id)}
                   disabled={dismissing === insight.id}
                 >
                   <X className="h-4 w-4" />

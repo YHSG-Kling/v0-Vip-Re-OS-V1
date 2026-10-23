@@ -1,7 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import { finalizeVoiceCockpitPacket, finalizeLegacyEsignArtifacts } from "@/lib/esign-webhooks/finalize-packet"
+import { evaluateEnvelopeExecution, resolveEnvelopeBrokerageId, recordEnvelopeTerminalState } from "@/lib/forms/esign-execution-loop"
+import { providerTerminalState } from "@/lib/esign/packet-states"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOCUSIGN CONNECT WEBHOOK HANDLER
@@ -80,6 +81,14 @@ export async function POST(request: NextRequest) {
       const q = await quarantineDriftedPayload(supabase as any, { connector: "docusign", source: "esign_completion", raw: body, missing: adapted.missingRequired, eventType: event || envelopeStatus })
       return NextResponse.json({ received: true, quarantined: true, ref: q.ref })
     }
+    // THE PROVIDER'S TERMINAL OUTCOME (wave 142, lane 142B): envelope-declined / envelope-voided /
+    // expired used to be "ignored" — the agent heard it from DocuSign's email, or never. Recorded on the
+    // matched offer / listing agreement through the ONE packet writer (ladder-guarded, deduped, bell).
+    const terminal = !isCompleted ? providerTerminalState(event, envelopeStatus) : null
+    if (terminal && envelopeId) {
+      const recorded = await recordEnvelopeTerminalState(supabase as any, { provider: "docusign", envelopeId, state: terminal, reason: envelopeStatus || event || null })
+      return NextResponse.json({ received: true, action: "terminal", state: terminal, envelopeId, offers: recorded.offers, agreements: recorded.agreements, refused: recorded.refused.length })
+    }
     if (!isCompleted || !envelopeId) {
       // We log non-completion events but don't take action on them.
       return NextResponse.json({ received: true, action: "ignored", event, envelopeStatus })
@@ -92,9 +101,25 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Voice-cockpit packet + legacy artifacts — shared helpers handle both.
-    const voice  = await finalizeVoiceCockpitPacket(supabase as any, envelopeId, "docusign")
-    const legacy = await finalizeLegacyEsignArtifacts(supabase as any, envelopeId)
+    // PROVIDER-AGNOSTIC LOOP-EXECUTION GATE (wave 47 lane FA, generalized off
+    // app/api/webhooks/dotloop/route.ts's wave-46 gate — see
+    // lib/forms/esign-execution-loop.ts). DocuSign's own envelope-completed
+    // event only proves ONE envelope finished; a transaction/listing tracking
+    // MORE than one envelope (a purchase agreement plus a later addendum,
+    // say) isn't actually done until every tracked document is. The gate
+    // reads BOTH client_documents and transaction_documents, and only when
+    // every one of them is signed does it call finalizeVoiceCockpitPacket +
+    // stamp the offer/listing-agreement — otherwise it signals
+    // compliance_officer → deal_coordinator (esign_loop_partially_signed)
+    // instead of finalizing early.
+    const brokerageId = await resolveEnvelopeBrokerageId(supabase as any, envelopeId)
+    const execution = brokerageId
+      ? await evaluateEnvelopeExecution(supabase as any, {
+          brokerageId,
+          providerSource: "docusign",
+          externalEnvelopeId: envelopeId,
+        })
+      : null
 
     // INGRESS CONTINUITY: an envelope that matched NOTHING (dispatch race /
     // transient failure) is parked as a dead letter for the daily reconciler
@@ -103,11 +128,12 @@ export async function POST(request: NextRequest) {
     await ensureEsignIngressContinuity(supabase as any, { provider: "docusign", envelopeId })
 
     return NextResponse.json({
-      received:    true,
+      received:   true,
       envelopeId,
-      docs_signed: voice.docs_signed,
-      bba_signed:  voice.bba_signed,
-      legacy,
+      evaluated:  execution?.evaluated ?? false,
+      fully_executed: execution?.fullyExecuted ?? false,
+      ready_writes_applied: execution?.readyWritesApplied ?? false,
+      signal_published: execution?.signalPublished ?? false,
     })
   } catch (error: any) {
     console.error("[docusign-webhook] Error:", error)

@@ -5,7 +5,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
-  Settings,
   ChevronRight,
   AlertCircle,
   CheckCircle2,
@@ -16,11 +15,15 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
+import { DEFAULT_ESIGN_PROVIDER } from "@/lib/integrations/providers/catalog"
 
 interface ProviderIntelligencePanelProps {
   brokerageId: string
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  stats?: any
+  /** optional by design: getAdminDashboardStats (the caller's data source)
+   *  carries agent/transaction/listing/lead counts — nothing provider-shaped.
+   *  This panel already fetches provider_overrides itself; there is no
+   *  provider-relevant field in `stats` to read. */
+  stats?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 }
 
 interface ProviderStatus {
@@ -74,7 +77,8 @@ export function ProviderIntelligencePanel({ brokerageId }: ProviderIntelligenceP
     { type: "email", label: "Email", default: "sendgrid" },
     { type: "sms", label: "SMS", default: "twilio" },
     { type: "calendar", label: "Calendar", default: "google" },
-    { type: "esign", label: "E-Sign", default: "dotloop" },
+    // Lane 88B (owner, wave 88: "google esign is default not dotloop.") — the catalog's ONE default.
+    { type: "esign", label: "E-Sign", default: DEFAULT_ESIGN_PROVIDER },
     { type: "ai", label: "AI", default: "anthropic" },
     { type: "social", label: "Social", default: "buffer" },
   ]

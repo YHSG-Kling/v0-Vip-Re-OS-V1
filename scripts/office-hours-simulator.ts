@@ -33,12 +33,13 @@ async function main() {
   console.log("══════════════════════════════════════════════════")
 
   console.log("\n[Layer 1 · compose]")
+  // m618: "marketing_agent" retired as a ManagerKey — survivor campaign_orchestrator.
   const drop = composeDrop("morning", [
-    { manager: "marketing_agent", subject: "a", hoursWaiting: 9 },
-    { manager: "marketing_agent", subject: "b", hoursWaiting: 2 },
+    { manager: "campaign_orchestrator", subject: "a", hoursWaiting: 9 },
+    { manager: "campaign_orchestrator", subject: "b", hoursWaiting: 2 },
     { manager: "sphere_of_influence", subject: "c", hoursWaiting: 1 },
   ])
-  check("drop: counts grouped by manager, biggest first", drop.body.includes("Marketing Manager 2") && drop.body.includes("Sphere Manager 1"))
+  check("drop: counts grouped by manager, biggest first", drop.body.includes("Campaign Orchestrator 2") && drop.body.includes("Sphere Manager 1"))
   check("drop: oldest wait surfaced (9h)", drop.body.includes("9h"))
   check("drop: titled as the slot", drop.title.includes("morning drop — 3 proposals"))
 
@@ -83,7 +84,7 @@ async function main() {
       cleanup.push({ table: "notifications", id: (n as any).id })
       return { proposalId: (p as any).id as string, pingId: (n as any).id as string }
     }
-    const a = await mk("marketing_agent", "post draft", 9)
+    const a = await mk("campaign_orchestrator", "post draft", 9) // m618: was "marketing_agent" (retired seat)
     const b = await mk("sphere_of_influence", "anniversary", 1)
     const { data: crit } = await svc.from("notifications").insert({
       user_id: agentUserId, brokerage_id: brokerageId, type: "approval_needed",
@@ -97,7 +98,7 @@ async function main() {
       .eq("user_id", agentUserId).eq("type", "office_hours_drop")
       .gte("created_at", new Date(Date.now() - 60_000).toISOString()).maybeSingle()
     if (digest) cleanup.push({ table: "notifications", id: (digest as any).id })
-    check("digest: grouped by manager with the oldest wait", ((digest as any)?.body ?? "").includes("Marketing Manager 1") && ((digest as any)?.body ?? "").includes("9h"))
+    check("digest: grouped by manager with the oldest wait", ((digest as any)?.body ?? "").includes("Campaign Orchestrator 1") && ((digest as any)?.body ?? "").includes("9h"))
     const { data: pingA } = await svc.from("notifications").select("is_read").eq("id", a.pingId).single()
     const { data: pingB } = await svc.from("notifications").select("is_read").eq("id", b.pingId).single()
     check("swept pings are READ (collapsed, not deleted — audit kept)", (pingA as any).is_read === true && (pingB as any).is_read === true)

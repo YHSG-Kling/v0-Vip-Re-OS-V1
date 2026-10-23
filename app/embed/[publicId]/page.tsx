@@ -12,6 +12,7 @@
 import { notFound } from "next/navigation"
 import { createServiceClient } from "@/lib/supabase/service"
 import { EmbedWidget } from "./embed-widget"
+import { normalizeEnabledModes } from "@/lib/embed/widget-modes"
 
 export const dynamic = "force-dynamic"
 
@@ -62,7 +63,7 @@ export default async function EmbedPage({ params, searchParams }: PageProps) {
             referrer={referrer ?? null}
             pageUrl={pageUrl ?? null}
             welcomeMessage={widget.welcome_message ?? null}
-            enabledModes={widget.enabled_modes as ("text" | "live")[]}
+            enabledModes={normalizeEnabledModes(widget.enabled_modes)}
             leadCaptureMode={widget.lead_capture_mode as "immediate" | "after_first_message" | "optional"}
             leadCaptureFields={widget.lead_capture_fields as string[]}
             label={widget.label ?? "Chat"}

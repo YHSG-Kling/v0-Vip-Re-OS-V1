@@ -8,6 +8,7 @@ import { Bed, Bath, Square, Calendar, MapPin, Phone, Mail } from "lucide-react"
 import { PublicShowingForm } from "./public-showing-form"
 import { OutsideAgentShowingForm } from "./outside-agent-showing-form"
 import { PublicInfoForm } from "./public-info-form"
+import { LandingVideo } from "@/app/components/public-site/LandingVideo"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -25,7 +26,7 @@ export async function generateMetadata({ params }: ListingPageProps): Promise<Me
     .from("listings")
     .select("address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description:public_remarks")
     .eq("id", listingId)
-    .in("status", ["active", "pending", "coming_soon", "sold", "under_contract"])
+    .in("status", ["active", "pending", "coming_soon", "sold"])
     .single()
 
   if (!listing) {
@@ -65,7 +66,7 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
       "id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description:public_remarks, property_type, year_built, mls_number, status, agent_id, brokerage_id, created_at"
     )
     .eq("id", listingId)
-    .in("status", ["active", "pending", "coming_soon", "sold", "under_contract"])
+    .in("status", ["active", "pending", "coming_soon", "sold"])
     .single()
 
   if (listingError || !listing) {
@@ -258,11 +259,11 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {videos.map((video) => (
               <div key={video.id} className="rounded-xl overflow-hidden bg-black aspect-video">
-                <video
+                {/* ONE video slot (wave 142, lane 142F): poster + a functional fallback, never a broken player. */}
+                <LandingVideo
                   src={video.file_url}
-                  poster={video.thumbnail_url ?? undefined}
-                  controls
-                  playsInline
+                  poster={video.thumbnail_url ?? null}
+                  title={`${listing.address ?? "Property"} video`}
                   className="w-full h-full object-cover"
                 />
               </div>

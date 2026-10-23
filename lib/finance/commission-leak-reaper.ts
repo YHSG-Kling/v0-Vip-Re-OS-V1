@@ -7,6 +7,7 @@
 // commission would silently show $0. Scans recently-closed transactions and
 // escalates ONCE per deal. Pure policy in commission-leak-policy.ts.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyCommissionLeak, COMMISSION_LEAK_GRACE_DAYS } from "./commission-leak-policy"
 
@@ -77,7 +78,7 @@ export async function reapCommissionLeaks(
     })
     if (!agentUserId) continue
 
-    await svc.from("notifications").insert({
+    await sentinelWrite(svc, svc.from("notifications").insert({
       user_id: agentUserId,
       brokerage_id: brokerageId,
       type: "commission_unrecorded",
@@ -87,7 +88,7 @@ export async function reapCommissionLeaks(
       entity_id: row.id,
       priority: "high",
       is_read: false,
-    })
+    }), { table: "notifications", flow: "commission_leak_reaper_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     result.escalated++
   }
 

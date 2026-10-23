@@ -15,6 +15,9 @@
 
 import type { BoardPacketData } from "./board-packet"
 import type { PartnersMeetingReelProps, ReelCard } from "@/lib/intelligence/partners-meeting-reel-props"
+import type { ReelQueueOutcome } from "@/lib/intelligence/partners-meeting"
+// PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 
 export const BOARD_PACKET_REEL_COMPOSITION = "PartnersMeetingReel"
 /** entity_type on the render row — the dedupe + delivery-sweep key. */
@@ -31,7 +34,12 @@ const money = (cents: number) => {
  *  > 0 to appear); the finance card is the attribution receipt. */
 export function buildBoardPacketReelProps(
   d: BoardPacketData,
-  opts: { agentName?: string; avatarVideoUrl?: string | null; agentPhotoUrl?: string | null; brand?: Partial<PartnersMeetingReelProps["brand"]> } = {},
+  // avatarDurationSeconds threaded for interface parity with the weekly show
+  // (lib/intelligence/partners-meeting.ts, wave 62); no caller here ever
+  // passes avatarVideoUrl (the board packet always presents via photo/
+  // monogram — see the tombstone-adjacent "opts.avatarVideoUrl ?? null"
+  // below), so this is always null in practice — never invented.
+  opts: { agentName?: string; avatarVideoUrl?: string | null; avatarDurationSeconds?: number | null; agentPhotoUrl?: string | null; brand?: Partial<PartnersMeetingReelProps["brand"]> } = {},
 ): PartnersMeetingReelProps {
   const cards: ReelCard[] = []
   if (d.closedCount > 0) cards.push({ value: String(d.closedCount), label: "CLOSED THIS MONTH", sub: `${money(d.closedVolumeCents)} volume`, kind: "team" })
@@ -64,6 +72,7 @@ export function buildBoardPacketReelProps(
     narration: spoken.join(" "),
     agentName: opts.agentName ?? "Your AI Team",
     avatarVideoUrl: opts.avatarVideoUrl ?? null,
+    avatarDurationSeconds: opts.avatarDurationSeconds ?? null,
     agentPhotoUrl: opts.agentPhotoUrl ?? null,
     brand: {
       primaryColor: opts.brand?.primaryColor ?? "#0F172A",
@@ -78,10 +87,11 @@ export function buildBoardPacketReelProps(
 /** Queue ONE packet reel per brokerage per month (idempotent by entity + month
  *  window on the render ledger). Best-effort — a queue failure never blocks
  *  the PDF packet. Branded from the LIVE tenant brand tables + a branded
- *  VideoCoverThumb pass (thumbnail_props). */
+ *  VideoCoverThumb pass (thumbnail_props). Returns the disposition (the same
+ *  vocabulary as the weekly show — §6), never a bare boolean. */
 export async function queueBoardPacketReel(
   svc: any, p: { brokerageId: string; monthStartIso: string; data: BoardPacketData },
-): Promise<boolean> {
+): Promise<ReelQueueOutcome> {
   const { data: existing } = await svc.from("remotion_composition_renders").select("id")
     .eq("brokerage_id", p.brokerageId)
     .eq("composition_id", BOARD_PACKET_REEL_COMPOSITION)
@@ -89,7 +99,7 @@ export async function queueBoardPacketReel(
     .eq("entity_id", p.brokerageId)
     .gte("created_at", p.monthStartIso)
     .limit(1).maybeSingle()
-  if (existing) return false
+  if (existing) return { status: "already_queued", reason: "one packet reel per brokerage per month; this month's row exists" }
   const { resolveReelBrand } = await import("@/lib/video/reel-brand")
   const { resolveVideoIdentity } = await import("@/lib/video/video-identity")
   const [brand, identity] = await Promise.all([
@@ -101,20 +111,56 @@ export async function queueBoardPacketReel(
   const props = buildBoardPacketReelProps(p.data, {
     brand, agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,
   }) as unknown as Record<string, unknown>
+  // THE CONTENT GATE, before any spend (the voiceover below is a TTS call) and
+  // before the insert. Every push in buildBoardPacketReelProps is gated on a
+  // count > 0, so a month with no closings, no AI calls, no attributed volume
+  // and no opt-outs yields `cards: []` — the contract reads that as unsupplied,
+  // render-composition would cancel the row, and this used to return `true`.
+  const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+  const missing = missingContentProps(BOARD_PACKET_REEL_COMPOSITION, props)
+  if (missing.length > 0) {
+    const reason = describeMissingContent(BOARD_PACKET_REEL_COMPOSITION, missing)
+    console.warn(`[board-packet-reel] ${BOARD_PACKET_REEL_COMPOSITION} for brokerage ${p.brokerageId} (${p.data.monthLabel}) skipped — ${reason}`)
+    return { status: "refused", reason }
+  }
   // Voice on every video: the assistant narrates the month (its ElevenLabs
   // voice, the same one that answers the phone). Best-effort.
   const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
+  // INTERNAL/BOARD-FACING (owner ruling, wave 51): this reports TO the broker,
+  // never a contact — there is no per-recipient language to resolve here, only
+  // DEFAULT_LANGUAGE, named explicitly (never a second "en" literal, §6).
+  const { DEFAULT_LANGUAGE } = await import("@/lib/video/multilingual-reel")
   const vo = await prepareReelVoiceover({
     brokerageId: p.brokerageId, narration: (props as any).narration,
     voiceId: identity.voiceId, renderKey: `packet-${p.brokerageId.slice(0, 8)}`,
+    languageCode: DEFAULT_LANGUAGE,
   })
   if (vo) props.voiceover_url = vo.url
-  props.thumbnail_props = {
+  // THE PACKET IS AS LONG AS ITS NARRATION (wave 78, lib/video/duration-model.ts):
+  // stage the measured length so calculateMetadata sizes the reel to it.
+  const { spokenSecondsProps } = await import("@/lib/video/duration-model")
+  Object.assign(props, spokenSecondsProps({ measuredSeconds: vo?.durationSeconds ?? null, narration: (props as { narration?: string }).narration ?? null, compositionId: BOARD_PACKET_REEL_COMPOSITION }))
+  // THE COMPANION CARD. `seoHint` is REQUIRED on VideoCoverThumb and this
+  // producer omitted it, so a BOARD PACKET card printed the just-listed
+  // composition's sample sentence as its summary line and as the hero image's
+  // alt text. Cut verbatim from this packet's own narration instead.
+  //
+  // CAPPED AT THE FRAMING SENTENCE (§5). buildBoardPacketReelProps' second
+  // sentence reads the month's closed VOLUME out loud and the attribution
+  // sentence reads the money the marketing closed; this card becomes the
+  // og:image the moment a broker publishes the render to /v/[slug]. The opening
+  // line — "<Month> at <Brokerage>, presented by your AI team." — is the whole
+  // honest summary and carries no figure.
+  const cardSeoHint = seoHintFromNarration((props as { narration?: unknown }).narration as string | null, SEO_HINT_MAX_CHARS, 1)
+  const card = companionCard(VIDEO_COVER_THUMB, {
     kind: "presentation", title: `${p.data.monthLabel} Board Packet`,
     subtitle: "Presented by your AI team", eyebrow: "BOARD PACKET",
     agentName: brand.brokerageName,
     brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true, ...(brand.logoUrl ? { logoUrl: brand.logoUrl } : {}) },
-  }
+    seoHint: cardSeoHint,
+  })
+  if (card.card) props.thumbnail_props = card.card
+  else console.warn(`[board-packet-reel] no companion share card for brokerage ${p.brokerageId} (${p.data.monthLabel}) — ${describeMissingContent(VIDEO_COVER_THUMB, card.missing)}`)
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
     brokerageId: p.brokerageId,
@@ -126,7 +172,8 @@ export async function queueBoardPacketReel(
     scopeId: p.brokerageId,
     requestedVia: "cron",
   })
-  return r.ok
+  if (r.ok) return { status: "queued" }
+  return { status: "failed", reason: ("error" in r && typeof r.error === "string" ? r.error : null) ?? "render row insert refused" }
 }
 
 export interface PacketReelDeliveryResult { completed: number; notified: number }
@@ -142,5 +189,10 @@ export async function deliverBoardPacketReels(svc: any, now: Date = new Date()):
     notificationType: "board_packet_ready",
     title: "Your board packet video is ready",
     bodyIntro: "Your AI team presents the month on camera — production, the receipts, and the compliance line.",
+    // Wave 58 — the video-loop audit: board_packet's domain owner
+    // (lib/kernel/manager-registry.ts) is finance_manager (owner-facing
+    // reporting), so the delivered reel's outcome signal announces there.
+    toManager: "finance_manager",
+    signalType: "board_packet_reel_delivered",
   })
 }

@@ -58,19 +58,13 @@ interface ReviewIssue {
   recommendation?: string
 }
 
-function IssueBadge({ level }: { level: IssueLevel }) {
-  const map: Record<IssueLevel, { label: string; cls: string }> = {
-    critical: { label: "Critical", cls: "bg-red-100 text-red-700 border-red-200" },
-    warning: { label: "Warning", cls: "bg-amber-100 text-amber-700 border-amber-200" },
-    info: { label: "Info", cls: "bg-blue-100 text-blue-700 border-blue-200" },
-  }
-  const { label, cls } = map[level]
-  return (
-    <Badge variant="outline" className={`text-xs ${cls}`}>
-      {label}
-    </Badge>
-  )
-}
+// TOMBSTONE (§1, wave 56 dead-code sweep): `IssueBadge` stood here, never
+// called. The severity it would have labeled is already communicated twice
+// over at every row's real render site (~line 890): the group the row sits
+// in is titled by severity ("Critical Issues (N)" / "Warnings (N)" /
+// "Notes (N)", ~line 877), and each row already carries the color-coded
+// severity glyph from the survivor below, `IssueIcon`. A third, redundant
+// text badge per row was not built to replace either.
 
 function IssueIcon({ level }: { level: IssueLevel }) {
   if (level === "critical") return <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />

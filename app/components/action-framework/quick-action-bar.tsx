@@ -31,6 +31,10 @@ export function QuickActionBar({
 }: QuickActionBarProps) {
   const buttonSize = size === "sm" ? "sm" : "default"
 
+  // Lane 90D (test:rendered-empty-states): with no actions this rendered an
+  // empty flex container — a bar of nothing. A bar with nothing to offer hides.
+  if (actions.length === 0) return null
+
   return (
     <div
       className={cn(

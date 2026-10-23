@@ -1,10 +1,11 @@
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
 import { getAgentContext } from '@/lib/identity'
 import { getQualificationOutcomes } from '@/app/actions/ai-isa'
+import { getSpeedToLeadMetrics } from '@/app/actions/ai-isa/speed-to-lead-metrics'
+import { IsaProofNumbersStrip } from '../components/speed-to-lead-panel'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { BarChart3, ArrowLeft, TrendingUp, Phone, CheckCircle2 } from 'lucide-react'
+import { BarChart3, ArrowLeft, TrendingUp, Phone, CheckCircle2, Zap } from 'lucide-react'
 import Link from 'next/link'
 
 export const dynamic = 'force-dynamic'
@@ -14,14 +15,29 @@ export default async function ISAAnalyticsPage() {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect('/login')
 
-  let outcomes: any = { totalQualified: 0, totalContacted: 0, conversionRate: 0 }
+  // Lane 90C: this page read `outcomes.totalContacted` / `totalQualified` /
+  // `byOutcome` — fields getQualificationOutcomes has never returned (it returns
+  // `outcomes[]`, `stats`, `chartData`), so every tile rendered 0 forever and
+  // "Detailed analytics will populate as calls are completed" was permanent. The
+  // reader's real shape is used now, and the three proof numbers ride the same
+  // strip the console and the Intelligence Center show.
+  const emptyStats = { qualified: 0, not_qualified: 0, appointment_set: 0, no_response: 0, needs_follow_up: 0 }
+  let outcomes: Awaited<ReturnType<typeof getQualificationOutcomes>> = { success: false, outcomes: [], stats: emptyStats, chartData: [] }
+  let speedToLead: Awaited<ReturnType<typeof getSpeedToLeadMetrics>> | null = null
+  let readError: string | null = null
   if (ctx.brokerageId) {
-    try { outcomes = await getQualificationOutcomes(ctx.brokerageId) || outcomes } catch {}
+    const [q, s] = await Promise.all([
+      getQualificationOutcomes(ctx.brokerageId).catch((e: unknown) => ({ ...outcomes, error: (e as Error)?.message ?? 'refused' })),
+      getSpeedToLeadMetrics(ctx.brokerageId).catch(() => null),
+    ])
+    outcomes = q
+    speedToLead = s
+    if (q.error) readError = q.error
   }
 
-  const conversionRate = outcomes.totalContacted > 0
-    ? Math.round((outcomes.totalQualified / outcomes.totalContacted) * 100)
-    : 0
+  const totalContacted = outcomes.outcomes.length
+  const totalQualified = outcomes.stats.qualified + outcomes.stats.appointment_set
+  const conversionRate = totalContacted > 0 ? Math.round((totalQualified / totalContacted) * 100) : 0
 
   return (
     <div className="p-6 space-y-6">
@@ -32,14 +48,18 @@ export default async function ISAAnalyticsPage() {
             <BarChart3 className="w-6 h-6 text-purple-600" />
             ISA Analytics
           </h1>
-          <p className="text-gray-500 text-sm">Qualification performance and conversion tracking</p>
+          <p className="text-gray-500 text-sm">Qualification performance and conversion tracking · last 30 days</p>
         </div>
       </div>
 
+      {readError && (
+        <p className="text-sm text-amber-700">The qualification ledger refused to read: {readError}. The tiles below are partial.</p>
+      )}
+
       <div className="grid grid-cols-3 gap-4">
         {[
-          { label: 'Total Contacted', value: outcomes.totalContacted || 0, icon: Phone, color: 'text-blue-600' },
-          { label: 'Leads Qualified', value: outcomes.totalQualified || 0, icon: CheckCircle2, color: 'text-green-600' },
+          { label: 'Total Contacted', value: totalContacted, icon: Phone, color: 'text-blue-600' },
+          { label: 'Leads Qualified', value: totalQualified, icon: CheckCircle2, color: 'text-green-600' },
           { label: 'Conversion Rate', value: `${conversionRate}%`, icon: TrendingUp, color: 'text-orange-600' },
         ].map((stat) => (
           <Card key={stat.label}>
@@ -52,12 +72,27 @@ export default async function ISAAnalyticsPage() {
         ))}
       </div>
 
+      {speedToLead && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Zap className="w-4 h-4 text-indigo-600" />
+              Proof numbers
+              <span className="text-xs font-normal text-muted-foreground">response rate · connect rate · days of follow-up</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <IsaProofNumbersStrip proof={speedToLead.proof} refused={speedToLead.refused} />
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader><CardTitle className="text-base">Performance by Outcome</CardTitle></CardHeader>
         <CardContent>
-          {outcomes.byOutcome ? (
+          {totalContacted > 0 ? (
             <div className="space-y-2">
-              {Object.entries(outcomes.byOutcome).map(([outcome, count]: any) => (
+              {Object.entries(outcomes.stats).map(([outcome, count]) => (
                 <div key={outcome} className="flex items-center justify-between p-2 bg-gray-50 rounded">
                   <span className="text-sm capitalize">{outcome.replace(/_/g, ' ')}</span>
                   <span className="text-sm font-semibold">{count}</span>
@@ -65,7 +100,7 @@ export default async function ISAAnalyticsPage() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-gray-500 text-center py-8">Detailed analytics will populate as calls are completed</p>
+            <p className="text-sm text-gray-500 text-center py-8">No qualification outcomes in the last 30 days yet.</p>
           )}
         </CardContent>
       </Card>

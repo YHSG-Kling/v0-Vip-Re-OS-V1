@@ -1,6 +1,9 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useTransition } from "react"
+import Link from "next/link"
+import { useRouter } from "next/navigation"
+import { ROI_WINDOW_OPTIONS, isRoiWindowKey, resolveRoiWindow, type RoiWindowKey } from "./roi-window"
 import {
   Card,
   CardContent,
@@ -44,12 +47,71 @@ import {
   Award,
   ArrowUpRight,
   ArrowDownRight,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
   Filter,
   RefreshCw,
   AlertCircle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatDistanceToNow } from "date-fns"
+
+// ─── Campaign table sorting ───────────────────────────────────────────────────
+//
+// `sortBy` / `sortOrder` were READ by the sort below and by the memo's dep array
+// but neither setter was ever called, so the table was frozen at
+// `roi_percentage desc` and no column header could change it. These are the
+// missing half: one column list drives both the headers and the comparator, so a
+// header can never offer an ordering the comparator does not implement.
+const ROI_COLUMNS: Array<{ key: string; label: string; numeric: boolean }> = [
+  { key: "campaign_name",       label: "Campaign",    numeric: false },
+  { key: "campaign_type",       label: "Type",        numeric: false },
+  { key: "total_spend",         label: "Spend",       numeric: true },
+  { key: "total_leads",         label: "Leads",       numeric: true },
+  { key: "total_conversions",   label: "Conversions", numeric: true },
+  { key: "cost_per_lead",       label: "CPL",         numeric: true },
+  { key: "cost_per_conversion", label: "CPC",         numeric: true },
+  { key: "roi_percentage",      label: "ROI %",       numeric: true },
+  { key: "calculated_at",       label: "Updated",     numeric: true },
+]
+
+/** The value a row sorts by for a column — nested and date fields included. */
+function roiSortValue(row: any, key: string): number | string | null {
+  switch (key) {
+    case "campaign_name":
+      return row.marketing_campaigns?.campaign_name ?? ""
+    case "campaign_type":
+      return row.marketing_campaigns?.campaign_type ?? ""
+    case "calculated_at":
+      return row.calculated_at ? new Date(row.calculated_at).getTime() : null
+    default: {
+      const v = row[key]
+      return typeof v === "number" ? v : v == null ? null : Number(v)
+    }
+  }
+}
+
+function compareRoiRows(a: any, b: any, key: string, order: "asc" | "desc"): number {
+  const av = roiSortValue(a, key)
+  const bv = roiSortValue(b, key)
+
+  if (typeof av === "string" || typeof bv === "string") {
+    const cmp = String(av ?? "").localeCompare(String(bv ?? ""))
+    return order === "desc" ? -cmp : cmp
+  }
+
+  // MISSING NUMBERS SORT LAST IN BOTH DIRECTIONS. The old comparator coerced
+  // null to -Infinity, which read as "the worst campaign" descending and "the
+  // best" ascending — a campaign with no CPL yet is not the cheapest lead in the
+  // brokerage. Descending (the only order previously reachable) is unchanged:
+  // absent values stayed at the bottom then and stay there now.
+  const an = av as number | null
+  const bn = bv as number | null
+  if (an == null || Number.isNaN(an)) return bn == null || Number.isNaN(bn) ? 0 : 1
+  if (bn == null || Number.isNaN(bn)) return -1
+  return order === "desc" ? bn - an : an - bn
+}
 
 interface ROIDashboardClientProps {
   userId: string
@@ -66,6 +128,8 @@ interface ROIDashboardClientProps {
   channelPerformance: any[]
   topCampaigns: any[]
   agents: any[]
+  /** The window the server page fetched the channel comparison for (from ?window=). */
+  window: RoiWindowKey
   accessError?: string
 }
 
@@ -78,14 +142,28 @@ export function ROIDashboardClient({
   channelPerformance,
   topCampaigns,
   agents,
+  window: windowKey,
   accessError,
 }: ROIDashboardClientProps) {
+  const router = useRouter()
+  const [refreshing, setRefreshing] = useState(false)
   const [selectedCampaignType, setSelectedCampaignType] = useState<string>("all")
   const [selectedStatus, setSelectedStatus] = useState<string>("all")
   const [selectedAgent, setSelectedAgent] = useState<string>("all")
-  const [dateWindow, setDateWindow] = useState<string>("this_month")
+  // Wave 142 (lane 142H): `dateWindow` was set by the select and read by NOTHING. The window lives in the
+  // URL so the server page re-fetches the channel comparison for it (useTransition keeps the select
+  // responsive while the page re-renders — vercel-react-best-practices rendering-usetransition-loading).
+  const [dateWindow, setDateWindow] = useState<RoiWindowKey>(windowKey)
+  const [windowPending, startWindowChange] = useTransition()
+  const windowLabel = resolveRoiWindow(dateWindow).label
+  const changeWindow = (v: string) => {
+    if (!isRoiWindowKey(v)) return
+    setDateWindow(v)
+    startWindowChange(() => router.replace(`?window=${v}`))
+  }
   const [sortBy, setSortBy] = useState<string>("roi_percentage")
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc")
+  const [activeTab, setActiveTab] = useState<string>("campaigns")
 
   // Filter and sort campaigns
   const filteredCampaigns = useMemo(() => {
@@ -113,14 +191,21 @@ export function ROIDashboardClient({
     }
 
     // Sort
-    result.sort((a, b) => {
-      const aVal = a[sortBy] ?? -Infinity
-      const bVal = b[sortBy] ?? -Infinity
-      return sortOrder === "desc" ? bVal - aVal : aVal - bVal
-    })
+    result.sort((a, b) => compareRoiRows(a, b, sortBy, sortOrder))
 
     return result
   }, [campaigns, selectedCampaignType, selectedStatus, selectedAgent, sortBy, sortOrder])
+
+  // Click a header: same column flips direction, a new column starts at desc
+  // (highest first, which is what every metric in this table is read for).
+  const toggleSort = (key: string) => {
+    if (sortBy === key) {
+      setSortOrder((o) => (o === "desc" ? "asc" : "desc"))
+    } else {
+      setSortBy(key)
+      setSortOrder("desc")
+    }
+  }
 
   // Channel chart data
   const channelChartData = useMemo(() => {
@@ -142,7 +227,13 @@ export function ROIDashboardClient({
         <p className="text-muted-foreground text-center max-w-md">
           {accessError}
         </p>
-        <Button variant="outline">Upgrade Plan</Button>
+        {/* Had no handler. This is the ONLY control on the plan-gated dead end,
+            so an agent who hit the gate had no way to act on it. Billing and the
+            plan upgrade live at /settings/billing — the same destination the
+            admin usage page already sends people to. */}
+        <Button variant="outline" asChild>
+          <Link href="/settings/billing">Upgrade Plan</Link>
+        </Button>
       </div>
     )
   }
@@ -157,9 +248,23 @@ export function ROIDashboardClient({
             Track and analyze your marketing campaign performance
           </p>
         </div>
-        <Button variant="outline" size="sm">
-          <RefreshCw className="mr-2 h-4 w-4" />
-          Refresh Data
+        {/* Had no onClick — the ROI numbers went stale and the refresh button
+            was decoration. The data comes from the server page's own loader, so
+            router.refresh() re-runs it; there is no second fetch path to drift. */}
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={refreshing}
+          onClick={() => {
+            setRefreshing(true)
+            router.refresh()
+            // router.refresh() resolves before React has re-rendered with the
+            // new payload, so hold the spinner briefly rather than flashing it.
+            setTimeout(() => setRefreshing(false), 800)
+          }}
+        >
+          <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+          {refreshing ? "Refreshing…" : "Refresh Data"}
         </Button>
       </div>
 
@@ -261,7 +366,7 @@ export function ROIDashboardClient({
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue="campaigns" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList>
           <TabsTrigger value="campaigns">Campaign ROI</TabsTrigger>
           <TabsTrigger value="channels">Channel Comparison</TabsTrigger>
@@ -344,17 +449,21 @@ export function ROIDashboardClient({
 
                 <div className="flex flex-col gap-1.5">
                   <label className="text-sm font-medium">Date Window</label>
-                  <Select value={dateWindow} onValueChange={setDateWindow}>
+                  <Select value={dateWindow} onValueChange={changeWindow} disabled={windowPending}>
                     <SelectTrigger className="w-[160px]">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="this_month">This Month</SelectItem>
-                      <SelectItem value="last_month">Last Month</SelectItem>
-                      <SelectItem value="last_90_days">Last 90 Days</SelectItem>
-                      <SelectItem value="ytd">Year to Date</SelectItem>
+                      {ROI_WINDOW_OPTIONS.map((o) => (
+                        <SelectItem key={o.key} value={o.key}>{o.label}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
+                  {/* campaign_roi rows are lifetime totals per campaign (no period columns) — the window
+                      applies where the data is windowed, and says so rather than pretending. */}
+                  <p className="text-[11px] text-muted-foreground max-w-[220px]">
+                    Applies to the Channel Comparison tab. Campaign rows are lifetime totals.
+                  </p>
                 </div>
               </div>
             </CardContent>
@@ -372,21 +481,45 @@ export function ROIDashboardClient({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Campaign</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead className="text-right">Spend</TableHead>
-                    <TableHead className="text-right">Leads</TableHead>
-                    <TableHead className="text-right">Conversions</TableHead>
-                    <TableHead className="text-right">CPL</TableHead>
-                    <TableHead className="text-right">CPC</TableHead>
-                    <TableHead className="text-right">ROI %</TableHead>
-                    <TableHead className="text-right">Updated</TableHead>
+                    {ROI_COLUMNS.map((col) => {
+                      const active = sortBy === col.key
+                      const Arrow = !active ? ArrowUpDown : sortOrder === "desc" ? ArrowDown : ArrowUp
+                      return (
+                        <TableHead
+                          key={col.key}
+                          className={col.numeric ? "text-right" : undefined}
+                          aria-sort={
+                            active ? (sortOrder === "desc" ? "descending" : "ascending") : "none"
+                          }
+                        >
+                          <button
+                            type="button"
+                            onClick={() => toggleSort(col.key)}
+                            title={
+                              active && sortOrder === "desc"
+                                ? `Sort by ${col.label} ascending`
+                                : `Sort by ${col.label} descending`
+                            }
+                            className={cn(
+                              "inline-flex items-center gap-1 transition-colors hover:text-foreground",
+                              col.numeric && "flex-row-reverse",
+                              active ? "font-semibold text-foreground" : "text-muted-foreground",
+                            )}
+                          >
+                            {col.label}
+                            <Arrow
+                              className={cn("h-3.5 w-3.5", active ? "opacity-100" : "opacity-40")}
+                            />
+                          </button>
+                        </TableHead>
+                      )
+                    })}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredCampaigns.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-8">
+                      <TableCell colSpan={ROI_COLUMNS.length} className="text-center py-8">
                         <p className="text-muted-foreground">
                           No campaigns found matching filters
                         </p>
@@ -464,7 +597,8 @@ export function ROIDashboardClient({
             <CardHeader>
               <CardTitle>Channel ROI Comparison</CardTitle>
               <CardDescription>
-                Compare ROI performance across marketing channels
+                Compare ROI performance across marketing channels · {windowLabel}
+                {windowPending ? " (updating…)" : ""}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -630,8 +764,12 @@ export function ROIDashboardClient({
 
               {topCampaigns.length > 0 && (
                 <div className="mt-4 text-center">
-                  <Button variant="link" size="sm">
-                    View Full Dashboard
+                  {/* Had no handler, and "View Full Dashboard" was a lie — this
+                      IS the dashboard. The leaderboard is capped at the top 5
+                      campaigns; the unabridged, filterable table is the
+                      Campaign ROI tab, so that is where this goes now. */}
+                  <Button variant="link" size="sm" onClick={() => setActiveTab("campaigns")}>
+                    View all {campaigns.length} campaigns
                   </Button>
                 </div>
               )}

@@ -9,6 +9,7 @@ type FormField = {
   type: 'text' | 'email' | 'tel' | 'textarea' | 'select'
   required?: boolean
   options?: string[]
+  placeholder?: string
 }
 
 interface FormDef {
@@ -49,10 +50,18 @@ export default function FormRenderer({ form }: Props) {
     setError(null)
     startTransition(async () => {
       try {
+        // THE CONSENT TRAVELS WITH THE SUBMISSION (wave 142): this body used to carry no tcpaConsent at all, so
+        // the door read every submission as un-consented and dropped the phone the visitor typed — while the
+        // checkbox above was required. The checked box and the text the visitor agreed to are sent.
         const res = await fetch('/api/forms/submit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ slug: form.slug, data: values }),
+          body: JSON.stringify({
+            slug: form.slug,
+            data: values,
+            tcpaConsent: tcpaChecked,
+            tcpaConsentText: form.tcpa_disclosure_text ?? 'By submitting this form you consent to receive communications from us. Message and data rates may apply.',
+          }),
         })
         const json = await res.json() as {
           success: boolean
@@ -103,6 +112,7 @@ export default function FormRenderer({ form }: Props) {
               value={values[field.key] ?? ''}
               onChange={e => handleChange(field.key, e.target.value)}
               rows={4}
+              placeholder={field.placeholder || undefined}
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
           ) : field.type === 'select' && field.options ? (
@@ -125,6 +135,7 @@ export default function FormRenderer({ form }: Props) {
               required={field.required}
               value={values[field.key] ?? ''}
               onChange={e => handleChange(field.key, e.target.value)}
+              placeholder={field.placeholder || undefined}
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
           )}

@@ -29,6 +29,7 @@
 // closed deal. The bus carries the convening line so the Command Center shows six
 // managers converging on one address. NOT server-only (simulator-driven).
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { NeighborScraper } from "@/lib/kernel/neighbor-farm"
 import type { PromoDispatcher } from "@/lib/kernel/voice-delegation"
@@ -266,9 +267,9 @@ export async function runFarmPlays(
       entityType: "listing", entityId: t.listing_id,
     }, supabase)
     if (conv.ok && conv.signalId && !conv.reason) {
-      await supabase.from("manager_signals")
+      await sentinelWrite(supabase, supabase.from("manager_signals")
         .update({ status: "consumed", consumed_at: now.toISOString(), consumed_action: "farm play staged across the marketing bench (gated)" })
-        .eq("id", conv.signalId)
+        .eq("id", conv.signalId), { table: "manager_signals", flow: "farm_play_consume", reason: "consumes the signal for a play already staged" })
     }
 
     result.plays += 1

@@ -9,6 +9,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { AlertTriangle, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
+import { toast } from 'sonner'
 
 export default function NewViolationPage() {
   const router = useRouter()
@@ -24,8 +25,16 @@ export default function NewViolationPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
       })
-      if (res.ok) router.push('/compliance/violations')
-    } catch {}
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.success) {
+        toast.success(`Flag "${data.flag?.violation_type ?? form.violation_type}" recorded`)
+        router.push('/compliance/violations')
+      } else {
+        toast.error(data.error ?? 'Could not create the flag')
+      }
+    } catch {
+      toast.error('Could not create the flag')
+    }
     setLoading(false)
   }
 

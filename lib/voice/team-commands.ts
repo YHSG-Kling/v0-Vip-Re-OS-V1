@@ -13,6 +13,10 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  matchManagerInText, composeManagerStatus, composeTeamStatus, skillNameFromSpeech, assistantSkillRefusal, assistantRequestingManager,
+  assistantReachMatrix, reachGaps,
+} from "@/lib/voice-admin/assistant-reach"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -52,6 +56,18 @@ async function resolveContactId(params: Record<string, unknown>, brokerageId: st
   const { runTeamQuery } = await import("@/lib/kernel/team-query")
   const tq = await runTeamQuery(brokerageId, personQuery, {}, svc)
   return tq.found && tq.contactId ? { contactId: tq.contactId } : { contactId: null, spoken: tq.spoken }
+}
+
+/** Wave 138E: the tenant-admin gate for the brokerage-wide team commands — the ONE roster (resolveTenantAdmin:
+ *  user_type OR a grant pinned to THIS session's tenant). null = admitted; otherwise the spoken refusal. A role
+ *  that cannot be read REFUSES (fail closed — "nobody checked" never renders as "checked and fine"). */
+async function tenantAdminRefusal(ctx: TeamCommandCtx, svc: Svc, what: string): Promise<string | null> {
+  const { data: me, error } = await svc.from("users").select("user_type").eq("id", ctx.agentUserId).maybeSingle()
+  if (error || !me) return `I couldn't verify your role, so I won't open ${what} — try again in a moment.`
+  const { resolveTenantAdmin } = await import("@/lib/auth/resolve-user-role")
+  const r = await resolveTenantAdmin(svc, ctx.agentUserId, { user_type: (me as { user_type?: string | null }).user_type ?? null, brokerage_id: ctx.brokerageId })
+  if (!r.ok) return `I couldn't verify your role, so I won't open ${what} — try again in a moment.`
+  return r.isTenantAdmin ? null : `${what.charAt(0).toUpperCase()}${what.slice(1)} is for the brokerage's admins — ask your broker.`
 }
 
 /**
@@ -129,10 +145,11 @@ async function routeTeamCommand(
     case "quarterly_review": {
       // THE QBR SPOKEN TWIN — the same loader the Command Center card uses
       // (keep-one), principal-gated exactly like the dashboard action.
-      const { data: me } = await svc.from("users").select("role").eq("id", ctx.agentUserId).maybeSingle()
+      // user_type, never legacy users.role — PRINCIPAL_ROLES is user_type vocabulary.
+      const { data: me } = await svc.from("users").select("user_type").eq("id", ctx.agentUserId).maybeSingle()
       const { isTenancyPrincipal } = await import("@/lib/kernel/tenancy-principal")
       const principal = await isTenancyPrincipal(svc, {
-        userId: ctx.agentUserId, brokerageId: ctx.brokerageId, role: String((me as any)?.role ?? ""),
+        userId: ctx.agentUserId, brokerageId: ctx.brokerageId, role: String((me as any)?.user_type ?? ""),
       })
       if (!principal) {
         return { ok: false, spoken: "The quarterly review is for the account principal — ask your broker or team lead to pull it up." }
@@ -400,6 +417,73 @@ async function routeTeamCommand(
       const top = results[0]
       const spoken = `I found ${results.length} ${results.length === 1 ? "match" : "matches"}. The top one is a ${top.bedrooms}-bed, ${top.bathrooms}-bath in ${top.city} at ${formatSpokenPrice(top.price)}.${top.headline ? ` ${top.headline}` : ""} Want the rest?`
       return { ok: true, spoken, data: { count: results.length, contactId: resolved.contactId, top: { listing_id: top.listing_id ?? null, city: top.city, price: top.price, source: top.source ?? "platform" } } }
+    }
+
+    // ── Wave 138E — THE WHOLE TEAM, 24/7 (lib/voice-admin/assistant-reach.ts). Each reads or commits the
+    //    BROKERAGE's board, so each re-checks the tenant-admin roster here (the run_team_command bridge reaches
+    //    these without the registry's own authority row) and fails closed when the role cannot be read. ──
+    case "manager_status": {
+      const refusedRole = await tenantAdminRefusal(ctx, svc, "the whole team's board")
+      if (refusedRole) return { ok: false, spoken: refusedRole }
+      const manager = params.manager ? matchManagerInText(String(params.manager)) : null
+      if (params.manager && !manager) return { ok: false, spoken: `I don't have a manager called "${String(params.manager)}". Try the ISA, the listing concierge, the ads manager, finance or compliance.` }
+      const { pendingDelegationsFor } = await import("@/lib/kernel/manager-delegation")
+      const refused: string[] = []
+      const pend = await pendingDelegationsFor(ctx.brokerageId, { assignedManager: manager, limit: 50 }, svc)
+      if (pend.readRefused) refused.push(`open delegations: ${pend.readRefused}`)
+      if (!manager) {
+        // The whole bench answers with its DOORS too: per manager, what the asker may speak / ask / request, and
+        // any manager the assistant cannot command (with its named reason) — the reach matrix, live on the surface.
+        const reach = assistantReachMatrix()
+        const doors = reach.map((r) => ({ manager: r.manager, speak: r.speak.length, tools: r.tools.length, skills: r.skills.length, exempt: r.exempt }))
+        return { ok: true, spoken: composeTeamStatus(pend.pending, refused), data: { open: pend.pending.length, attention: pend.attention.length, refused, doors, gaps: reachGaps(reach) } }
+      }
+      const { loadManagerActivity } = await import("@/lib/kernel/manager-activity")
+      const activity = (await loadManagerActivity(ctx.brokerageId, 60, svc, (source, message) => refused.push(`${source}: ${message}`)))
+        .filter((a) => a.managerKey === manager)
+      return {
+        ok: true,
+        spoken: composeManagerStatus(manager, pend.pending, activity, refused),
+        data: { manager, open: pend.pending.length, attention: pend.attention.length, recent: activity.slice(0, 5), refused },
+      }
+    }
+    case "broker_objective": {
+      // The SAME kernel path as the Missions card (app/actions/missions.ts submitBrokerObjectiveAction): an
+      // objective commits the brokerage, so the admin roster only; nothing runs until a human approves.
+      const refusedRole = await tenantAdminRefusal(ctx, svc, "a brokerage objective")
+      if (refusedRole) return { ok: false, spoken: refusedRole }
+      const text = String(params.text ?? params.objective ?? "").trim()
+      if (text.length < 8) return { ok: false, spoken: "What's the objective? For example: grow listings 10% in one of your territories under a monthly cap." }
+      const { submitBrokerObjective } = await import("@/lib/kernel/broker-objectives")
+      const r = await submitBrokerObjective({ brokerageId: ctx.brokerageId, text, actorUserId: ctx.agentUserId }, svc)
+      if (!r.ok) return { ok: false, spoken: r.examples?.length ? `${r.reason} Try: ${r.examples.slice(0, 2).join(" · ")}` : r.reason }
+      const o = r.outcome
+      const spoken = o.kind === "investigation"
+        ? `${o.report.headline}${o.report.causes[0] ? ` Top cause: ${o.report.causes[0].label}.` : ""}`
+        : o.kind === "directive"
+          ? (o.proposal.projection ? "I drafted a proposal — it waits for your approval on the Missions card." : `No proposal fits: ${o.proposal.reason}`)
+          : `I split it into ${o.children.length} proposed child mission${o.children.length === 1 ? "" : "s"} across the managers — approve them on the Missions card.${o.refused.length ? ` ${o.refused.length} part(s) were refused.` : ""}`
+      return { ok: true, spoken, data: { kind: o.kind, missionId: o.mission.id } }
+    }
+    case "run_skill": {
+      // REQUEST a skill through the ONE run path (runSkill — entitlement, metering, the owner's authority rung,
+      // withActionLedger, a delegation per capability a human accepts). Tenant admin, like runSkillForTenant.
+      const refusedRole = await tenantAdminRefusal(ctx, svc, "a skill request")
+      if (refusedRole) return { ok: false, spoken: refusedRole }
+      const skill = skillNameFromSpeech(String(params.skill ?? params.name ?? ""))
+      if (!skill) return { ok: false, spoken: "Which skill? Say \"run skill\" and its name." }
+      const { resolveRunnableSkill, runSkill } = await import("@/lib/kernel/skill-marketplace")
+      const resolved = await resolveRunnableSkill(ctx.brokerageId, skill, svc)
+      if (!resolved.ok) return { ok: false, spoken: `I can't run ${skill.replace(/_/g, " ")} here (${resolved.reason.replace(/_/g, " ")}).` }
+      const voiceRefusal = assistantSkillRefusal(resolved.declaration)
+      if (voiceRefusal) return { ok: false, spoken: `I won't request ${skill.replace(/_/g, " ")} by voice: ${voiceRefusal}.` }
+      const inputs = params.inputs && typeof params.inputs === "object" && !Array.isArray(params.inputs) ? params.inputs as Record<string, unknown> : {}
+      const objective = String(params.objective ?? "").trim() || `requested through the assistant: ${skill.replace(/_/g, " ")}`
+      const r = await runSkill({ brokerageId: ctx.brokerageId, skill, requestingManager: assistantRequestingManager(resolved.declaration.manager_owner), inputs, objective }, svc)
+      if (!r.ok) {
+        return { ok: false, spoken: r.reason === "inputs_invalid" ? `That skill needs more: ${(r.errors ?? []).slice(0, 3).join("; ")}.` : `The request was refused: ${r.reason.replace(/_/g, " ")}.`, data: { reason: r.reason, errors: r.errors ?? [] } }
+      }
+      return { ok: true, spoken: `Asked ${resolved.declaration.manager_owner.replace(/_/g, " ")} to run ${skill.replace(/_/g, " ")} — ${r.delegationIds.length} request${r.delegationIds.length === 1 ? "" : "s"} wait for acceptance on the Missions card.`, data: { skill: r.skill, delegationIds: r.delegationIds, costUsd: r.costUsd } }
     }
 
     default:

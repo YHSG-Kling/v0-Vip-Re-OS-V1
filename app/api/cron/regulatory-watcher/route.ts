@@ -8,6 +8,7 @@ import {
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { runRegulatoryWatcher } from "@/lib/kernel/regulatory-watcher"
+import { runLawRuleHealing } from "@/lib/kernel/law-rule-healing"
 
 /**
  * REGULATORY-CHANGE WATCHER cron (weekly sweep). For each brokerage, the Data Steward
@@ -44,6 +45,10 @@ export async function GET(req: NextRequest) {
   const supabase = createServiceClient()
   const errors: string[] = []
   let brokeragesScanned = 0, changesScanned = 0, flagged = 0, escalated = 0
+  // Wave 138C — LAW-RULE SELF-HEALING rides this same weekly pass (cron owner compliance_officer): per tenant,
+  // missing / stale law rules for its derived jurisdictions are researched (metered, capped), drafted with
+  // primary citations, and resolved — stricter-only → WARN mode; loosening / money / ambiguous → the compliance officer.
+  const lawRules = { findings: 0, verified: 0, enabledWarn: 0, proposed: 0, refused: 0, spentUsd: 0 }
 
   try {
     const { data: rows, error } = await supabase.from("brokerages").select("id").limit(500)
@@ -56,12 +61,18 @@ export async function GET(req: NextRequest) {
         flagged += r.flagged.length
         escalated += r.escalated
       } catch (e: any) { errors.push(`${b.id}: ${e?.message ?? String(e)}`) }
+      try {
+        const h = await runLawRuleHealing(supabase, b.id)
+        lawRules.findings += h.findings.length; lawRules.verified += h.verified.length; lawRules.enabledWarn += h.enabledWarn.length
+        lawRules.proposed += h.proposed.length; lawRules.refused += h.refused.length; lawRules.spentUsd += h.spentUsd
+        if (h.refusedRails.length) errors.push(`${b.id} law-rules: ${h.refusedRails.slice(0, 3).join("; ")}`)
+      } catch (e: any) { errors.push(`${b.id} law-rules: ${e?.message ?? String(e)}`) }
     }
     await recordCronSuccessAction({
-      context_id: contextId, records_processed: escalated,
-      metadata: { brokeragesScanned, changesScanned, flagged, escalated, errors: errors.slice(0, 10) },
+      context_id: contextId, records_processed: escalated + lawRules.enabledWarn + lawRules.proposed,
+      metadata: { brokeragesScanned, changesScanned, flagged, escalated, lawRules, errors: errors.slice(0, 10) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, brokeragesScanned, changesScanned, flagged, escalated })
+    return NextResponse.json({ ok: true, brokeragesScanned, changesScanned, flagged, escalated, lawRules })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

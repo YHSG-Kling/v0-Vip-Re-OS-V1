@@ -16,26 +16,43 @@
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import type { SellerDecisionState } from "./decision-state-definitions"
+import type { UserRole } from "@/lib/auth/resolve-user-role"
 
 // activities live schema has activity_type (not event_type), requires a NOT NULL
 // brokerage_id, and exposes a polymorphic (entity_type, entity_id) pointer plus
 // listing_id. Source brokerage_id from the listing and write real columns here so
 // the governance audit rows actually persist.
+/**
+ * The result every logger below returns.
+ *
+ * WHY THIS IS NOT `void`. Every one of these functions used to return void and
+ * swallow whatever the database said: the listing read did not destructure
+ * `error`, and neither did the insert. supabase-js RESOLVES a refused query, so
+ * an RLS denial arrived as `data: null, error: null` — read back as "listing not
+ * found" — and a refused INSERT arrived as a resolved promise the caller could
+ * not tell from a written row. The server actions above then returned
+ * `{ success: true }` over an audit row that was never written, which is the one
+ * thing an audit trail may never do. Callers now branch on a real answer.
+ */
+export type DecisionLogResult = { ok: true } | { ok: false; error: string }
+
 async function insertListingActivities(
   supabase: Awaited<ReturnType<typeof createClient>>,
   listingId: string,
   rows: Array<{ activity_type: string; metadata: Record<string, any> }>,
-): Promise<void> {
-  const { data: listing } = await supabase
+): Promise<DecisionLogResult> {
+  const { data: listing, error: readErr } = await supabase
     .from("listings")
     .select("brokerage_id")
     .eq("id", listingId)
     .maybeSingle()
+  // A REFUSED read and a MISSING listing are different facts and must not be
+  // reported as the same one — the first is an outage, the second is bad input.
+  if (readErr) return { ok: false, error: `Could not read the listing: ${readErr.message}` }
   if (!listing?.brokerage_id) {
-    console.error("[v0] decision-logger: listing/brokerage not found for", listingId)
-    return
+    return { ok: false, error: "Listing not found, or it carries no brokerage to file the record under" }
   }
-  await supabase.from("activities").insert(
+  const { error: insErr } = await supabase.from("activities").insert(
     rows.map((r) => ({
       brokerage_id: listing.brokerage_id,
       listing_id: listingId,
@@ -45,13 +62,19 @@ async function insertListingActivities(
       metadata: r.metadata,
     })),
   )
+  if (insErr) return { ok: false, error: `The audit row was refused: ${insErr.message}` }
+  return { ok: true }
 }
 
 export interface DecisionTransitionEvent {
   listing_id: string
   from_state?: SellerDecisionState
   to_state: SellerDecisionState
-  authority_role: "agent" | "team_lead" | "broker" | "admin"
+  // ONE VOCABULARY: this records WHICH `users.user_type` acted, so it is the
+  // user_type vocabulary, imported. The four-value literal it replaces could
+  // not record a broker_owner or a compliance_officer transition at all — the
+  // CMA and net-sheet evaluators ADMIT roles this audit trail could not name.
+  authority_role: UserRole
   override_flag?: boolean
   override_reason?: string
   metadata?: Record<string, any>
@@ -93,15 +116,16 @@ export interface DecisionReversalEvent {
 /**
  * Log decision state transition
  */
-export async function logDecisionTransition(event: DecisionTransitionEvent): Promise<void> {
+export async function logDecisionTransition(event: DecisionTransitionEvent): Promise<DecisionLogResult> {
   if (!isValidUUID(event.listing_id)) {
-    console.error("[v0] Invalid listing_id in logDecisionTransition")
-    return
+    // A refusal the CALLER can see. This used to console.error and return void,
+    // so a bad id and a written audit row were indistinguishable upstream.
+    return { ok: false, error: "Invalid listing ID" }
   }
   
   const supabase = await createClient()
   
-  await insertListingActivities(supabase, event.listing_id, [{
+  return insertListingActivities(supabase, event.listing_id, [{
     activity_type: "seller.decision.transition",
     metadata: {
       from_state: event.from_state,
@@ -117,15 +141,16 @@ export async function logDecisionTransition(event: DecisionTransitionEvent): Pro
 /**
  * Log CMA quality verification
  */
-export async function logCMAQualityVerified(event: CMAQualityEvent): Promise<void> {
+export async function logCMAQualityVerified(event: CMAQualityEvent): Promise<DecisionLogResult> {
   if (!isValidUUID(event.listing_id)) {
-    console.error("[v0] Invalid listing_id in logCMAQualityVerified")
-    return
+    // A refusal the CALLER can see. This used to console.error and return void,
+    // so a bad id and a written audit row were indistinguishable upstream.
+    return { ok: false, error: "Invalid listing ID" }
   }
   
   const supabase = await createClient()
   
-  await insertListingActivities(supabase, event.listing_id, [{
+  return insertListingActivities(supabase, event.listing_id, [{
     activity_type: "seller.cma.quality_verified",
     metadata: {
       comparable_count: event.comparable_count,
@@ -141,10 +166,11 @@ export async function logCMAQualityVerified(event: CMAQualityEvent): Promise<voi
 /**
  * Log net sheet event
  */
-export async function logNetSheetEvent(event: NetSheetEvent): Promise<void> {
+export async function logNetSheetEvent(event: NetSheetEvent): Promise<DecisionLogResult> {
   if (!isValidUUID(event.listing_id)) {
-    console.error("[v0] Invalid listing_id in logNetSheetEvent")
-    return
+    // A refusal the CALLER can see. This used to console.error and return void,
+    // so a bad id and a written audit row were indistinguishable upstream.
+    return { ok: false, error: "Invalid listing ID" }
   }
   
   const supabase = await createClient()
@@ -156,7 +182,7 @@ export async function logNetSheetEvent(event: NetSheetEvent): Promise<void> {
     regenerated: "seller.net_sheet.regenerated",
   }
   
-  await insertListingActivities(supabase, event.listing_id, [{
+  return insertListingActivities(supabase, event.listing_id, [{
     activity_type: eventTypeMap[event.event_type],
     metadata: {
       days_remaining: event.days_remaining,
@@ -169,10 +195,11 @@ export async function logNetSheetEvent(event: NetSheetEvent): Promise<void> {
 /**
  * Log presentation event
  */
-export async function logPresentationEvent(event: PresentationEvent): Promise<void> {
+export async function logPresentationEvent(event: PresentationEvent): Promise<DecisionLogResult> {
   if (!isValidUUID(event.listing_id)) {
-    console.error("[v0] Invalid listing_id in logPresentationEvent")
-    return
+    // A refusal the CALLER can see. This used to console.error and return void,
+    // so a bad id and a written audit row were indistinguishable upstream.
+    return { ok: false, error: "Invalid listing ID" }
   }
   
   const supabase = await createClient()
@@ -184,7 +211,7 @@ export async function logPresentationEvent(event: PresentationEvent): Promise<vo
     drip_paused: "seller.presentation_drip.paused",
   }
   
-  await insertListingActivities(supabase, event.listing_id, [{
+  return insertListingActivities(supabase, event.listing_id, [{
     activity_type: eventTypeMap[event.event_type],
     metadata: event.metadata || {},
   }])
@@ -193,15 +220,16 @@ export async function logPresentationEvent(event: PresentationEvent): Promise<vo
 /**
  * Log decision reversal
  */
-export async function logDecisionReversal(event: DecisionReversalEvent): Promise<void> {
+export async function logDecisionReversal(event: DecisionReversalEvent): Promise<DecisionLogResult> {
   if (!isValidUUID(event.listing_id)) {
-    console.error("[v0] Invalid listing_id in logDecisionReversal")
-    return
+    // A refusal the CALLER can see. This used to console.error and return void,
+    // so a bad id and a written audit row were indistinguishable upstream.
+    return { ok: false, error: "Invalid listing ID" }
   }
   
   const supabase = await createClient()
   
-  await insertListingActivities(supabase, event.listing_id, [{
+  return insertListingActivities(supabase, event.listing_id, [{
     activity_type: "seller.decision.reversed",
     metadata: {
       from_state: event.from_state,
@@ -221,17 +249,18 @@ export async function batchLogEvents(
     eventType: string
     metadata?: Record<string, any>
   }>
-): Promise<void> {
+): Promise<DecisionLogResult> {
   if (!isValidUUID(listingId)) {
-    console.error("[v0] Invalid listing_id in batchLogEvents")
-    return
+    return { ok: false, error: "Invalid listing ID" }
   }
-  
-  if (events.length === 0) return
-  
+
+  // Nothing to write is not a failure — but it is also not a written row, and
+  // the caller is told which by getting a real result either way.
+  if (events.length === 0) return { ok: true }
+
   const supabase = await createClient()
   
-  await insertListingActivities(
+  return insertListingActivities(
     supabase,
     listingId,
     events.map((event) => ({ activity_type: event.eventType, metadata: event.metadata || {} })),

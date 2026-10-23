@@ -18,6 +18,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
+import { stripComments } from "./strip-comments"
 import { detectKnowledgeGaps, MIN_RECURRENCE, type GapSignal } from "../lib/education/knowledge-gap-detector"
 import { classifyQuestion, buildQuestionSignals, QUESTION_MIN_ASKERS } from "../lib/education/question-gap"
 import { summarizeCurriculumBoard } from "../lib/intelligence/curriculum-board"
@@ -26,6 +27,10 @@ let pass = 0, fail = 0
 const fails: string[] = []
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+// Wave 142G — the cron-host pin reads STRIPPED source: the recruit-outreach route now carries a tombstone that NAMES
+// runCurriculumAuthorAll (its survivor), and a raw read would count that tombstone as the call it records having
+// moved (CLAUDE.md §2). strip-comments is the one correct scanner.
+const code = (p: string) => stripComments(src(p))
 
 const sig = (o: Partial<GapSignal>): GapSignal => ({ topicKey: "objection:x", topicLabel: "X", source: "objection_drill", weakCount: 5, totalCount: 8, avgScore: 55, evidence: ["struggled to reframe value"], ...o })
 
@@ -70,8 +75,14 @@ function sourceLayer() {
   check("authors via the model, grounded in real evidence (no generic filler)", /generateObjectRouted[\s\S]*?CurriculumSchema/.test(author) && /evidence/i.test(author))
   check("persists a GATED DRAFT on the CANONICAL learning_modules (not a parallel table)", /from\("learning_modules"\)\.insert\([\s\S]*?status: "pending_review"[\s\S]*?gap_tags: \[gap\.topicKey\]/.test(author))
   check("idempotent per gap tag (no duplicate module for a topic)", /contains\("gap_tags", \[gap\.topicKey\]\)/.test(author))
-  const cron = src("app/api/cron/recruit-outreach/route.ts")
-  check("the weekly recruit-outreach cron runs the author", /runCurriculumAuthorAll/.test(cron))
+  // The author rides the EDUCATION owner's weekly cron (wave 142G moved it off recruit-outreach, the talent-pipeline
+  // host) — the rule, not the host's name: the cron that runs it is owned by recruiting_manager in CRON_MANAGER.
+  const eduCron = code("app/api/cron/education-delivery/route.ts")
+  check("the weekly education-delivery cron runs the author", /runCurriculumAuthorAll\(/.test(eduCron))
+  check("…and the repeat measure beside it (did the repeats decrease?)", /runEducationRepeatMeasureAll\(/.test(eduCron))
+  const recruitCron = code("app/api/cron/recruit-outreach/route.ts")
+  check("the recruit-outreach cron no longer runs the author (stripped source; its tombstone names the survivor)", !/runCurriculumAuthorAll\(/.test(recruitCron) && /runCurriculumAuthorAll/.test(src("app/api/cron/recruit-outreach/route.ts")))
+  check("POSITIVE CONTROL: a comment naming the runner is not a call", !/runCurriculumAuthorAll\(/.test(stripComments("// const { runCurriculumAuthorAll } = x; runCurriculumAuthorAll(s)\nconst y = 1")))
   const cc = src("lib/kernel/command-center.ts")
   check("curriculumBoard is wired into loadCommandCenter", /curriculumBoard:\s*import\("@\/lib\/intelligence\/curriculum-board"\)/.test(cc) && /generateCurriculumBoard\(brokerageId\)/.test(cc))
   const client = src("app/dashboard/admin/command-center/command-center-client.tsx")

@@ -15,7 +15,9 @@
  * Any mismatch → reject.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
+import { queueContactEnrichment } from "@/lib/enrichment/contact-enrichment-core"
 
 export interface ProfileLeadInput {
   agentId: string
@@ -83,7 +85,22 @@ export async function captureProfileLead(input: ProfileLeadInput): Promise<{
     return { success: false, error: error?.message ?? "Failed to create contact" }
   }
 
-  await svc.from("activities").insert({
+  // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). This door creates a
+  // contact row directly and emits no kernel event, so the event-reactor lane
+  // never saw it. Best-effort and voided: the queue write must never block or
+  // fail the inquiry. Suppression (no enrichment during a live listing or
+  // transaction) and de-duplication live inside queueContactEnrichment.
+  void queueContactEnrichment({
+    contactId: contact.id,
+    brokerageId: agent.brokerage_id,
+    triggerType: "agent_public_profile",
+    supabase: svc,
+  }).catch(() => {})
+
+  // THIS ROW IS THE RECORD OF THE INQUIRY. The kernel's conversation memory
+  // reads it back as "this person reached out"; losing it silently makes the
+  // assistant believe the inquiry never happened. Read the error and say so.
+  const { error: inquiryActivityError } = await svc.from("activities").insert({
     contact_id: contact.id,
     brokerage_id: agent.brokerage_id,
     agent_user_id: agent.user_id,
@@ -91,8 +108,11 @@ export async function captureProfileLead(input: ProfileLeadInput): Promise<{
     description: `Inquiry from agent public profile: ${input.message ? `"${input.message}"` : "general contact request"}`,
     metadata: { source: "agent_public_profile" },
   })
+  if (inquiryActivityError) {
+    console.error("[agentPublicProfile] profile_inquiry activity REJECTED — the contact's timeline will not show this inquiry:", inquiryActivityError.message)
+  }
 
-  await svc.from("notifications").insert({
+  await sentinelWrite(svc, svc.from("notifications").insert({
     user_id: agent.user_id,
     brokerage_id: agent.brokerage_id,
     title: "📩 New profile inquiry",
@@ -102,7 +122,7 @@ export async function captureProfileLead(input: ProfileLeadInput): Promise<{
     entity_id: contact.id,
     priority: "high",
     is_read: false,
-  })
+  }), { table: "notifications", flow: "agent_public_profile_notify", brokerageId: agent.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
 
   return { success: true, contactId: contact.id }
 }

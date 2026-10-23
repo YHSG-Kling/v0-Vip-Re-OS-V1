@@ -25,7 +25,6 @@ import {
 } from "../lib/lead-pipeline/source-intent-map"
 import {
   isViableRecord,
-  hasPromotionEligibleIdentity,
   type NormalizedScrapedRecord,
 } from "../lib/lead-pipeline/raw-record-types"
 import { normalizeRedditPost, normalizeFacebookPost } from "../lib/lead-pipeline/social-sourcer"
@@ -259,7 +258,10 @@ function stageScoring(records: NormalizedScrapedRecord[]) {
 // ── STAGE 7 — Promotion eligibility ──────────────────────────────────────────
 function stagePromotion(records: NormalizedScrapedRecord[]) {
   console.log("\n[7] Promotion eligibility (raw → lead gate)")
-  const eligible = records.filter(hasPromotionEligibleIdentity)
+  // REPOINTED (orphan doctrine §1.1, wave 65A): hasPromotionEligibleIdentity was
+  // byte-identical to isViableRecord and was merged onto it — see the tombstone
+  // at lib/lead-pipeline/raw-record-types.ts (where the function used to be).
+  const eligible = records.filter(isViableRecord)
   check("all viable in-territory records are promotion-eligible", eligible.length === records.length, `${eligible.length}/${records.length}`)
 }
 
@@ -273,12 +275,27 @@ function stageUsage(costByVendor: Record<string, number>) {
   console.log(`     spend: ${JSON.stringify(costByVendor)} total=$${total.toFixed(4)}`)
 }
 
-// ── STAGE 9 — Listing source (RentCast default / IDX optional) ───────────────
+// ── STAGE 9 — Listing source (RentCast serves tenants who own no feed) ───────
+//
+// WAVE 18 REVERSED THE THIRD CASE BELOW, and it is worth saying why rather than
+// quietly editing an expectation. This stage used to assert:
+//
+//     "IDX connected but empty → RentCast fallback"
+//
+// That was the tree's ONLY executable precedence and it encoded a RESULTS rule:
+// RentCast was skipped only when IDX happened to return rows. The owner ruling is
+// a CONNECTION rule — "rentcast is platform owned and should not be used if the
+// tenant adds their idx broker credentials" — and it does not ask what IDX
+// returned. A brokerage with its own feed was still paying for RentCast on every
+// thin search, which is the exact case they connect IDX to fix.
+//
+// So an empty IDX result is now an honest empty FROM THE TENANT'S OWN BOARD, not
+// a fall-through to a provider the owner has ruled out for them.
 function stageListingSource() {
-  console.log("\n[9] Listing source — RentCast default, IDX optional")
+  console.log("\n[9] Listing source — RentCast serves tenants who own no feed")
   check("no IDX → RentCast (platform default)", resolveListingSource({ hasIdx: false, idxResultCount: 0, hasRentcast: true }) === "rentcast")
-  check("IDX connected + results → IDX (subscriber opt-in wins)", resolveListingSource({ hasIdx: true, idxResultCount: 5, hasRentcast: true }) === "idx")
-  check("IDX connected but empty → RentCast fallback", resolveListingSource({ hasIdx: true, idxResultCount: 0, hasRentcast: true }) === "rentcast")
+  check("IDX connected + results → IDX (the tenant's own board)", resolveListingSource({ hasIdx: true, idxResultCount: 5, hasRentcast: true }) === "idx")
+  check("IDX connected but EMPTY → still IDX, never a RentCast fallback (owner ruling: connection decides, not results)", resolveListingSource({ hasIdx: true, idxResultCount: 0, hasRentcast: true }) === "idx")
   check("neither provider → none", resolveListingSource({ hasIdx: false, idxResultCount: 0, hasRentcast: false }) === "none")
 }
 

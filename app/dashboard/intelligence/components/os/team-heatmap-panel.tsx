@@ -3,7 +3,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Progress } from "@/components/ui/progress"
 import Link from "next/link"
 import { Users, TrendingUp, TrendingDown, AlertTriangle, ArrowRight } from "lucide-react"
 
@@ -68,7 +67,7 @@ export function TeamHeatmapPanel({
           {sortedMembers.slice(0, 20).map((member) => (
             <div
               key={member.id}
-              className={`h-6 w-6 rounded ${getActivityColor(member.activityScore)} cursor-pointer transition-transform hover:scale-110`}
+              className={`h-6 w-6 rounded ${getActivityColor(member.activityScore)} transition-transform hover:scale-110`}
               title={`${member.name}: ${member.activityScore}% activity`}
             />
           ))}

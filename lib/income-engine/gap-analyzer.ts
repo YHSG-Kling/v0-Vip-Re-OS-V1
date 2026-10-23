@@ -17,11 +17,12 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export interface GapAnalysisInput {
-  /** agents.id — used to query agent_goals, agent_pl_snapshot, persisted tables. */
+  /** agents.id — the single identity every table below keys off, including
+   *  income_forecast_snapshots now that its agent_id points at agents(id). */
   agentId:      string
-  /** users.id — REQUIRED because income_forecast_snapshots.agent_id FKs users(id),
-   *  not agents(id). Mismatch is pre-existing in Sprint 3 migration 1036. */
-  userId:       string
+  /** users.id of the same agent. Nothing in here keys off it any more; kept
+   *  because callers hold it and pass it as part of their actor context. */
+  userId?:      string
   brokerageId:  string
   /** Override CURRENT_DATE for testing. */
   asOf?:        Date
@@ -57,12 +58,11 @@ export async function analyzeIncomeGap(
   const asOf  = input.asOf ?? new Date()
   const year  = asOf.getUTCFullYear()
 
-  // 1. Latest forecast snapshot. NOTE: income_forecast_snapshots.agent_id
-  // FKs users(id) (per 1036), so we query by userId here, NOT agentId.
+  // 1. Latest forecast snapshot.
   const { data: snap } = await svc
     .from("income_forecast_snapshots")
     .select("id, weighted_30, weighted_60, weighted_90, sphere_referral_expected, low_band_pct, high_band_pct, deal_count, active_listing_count")
-    .eq("agent_id", input.userId)
+    .eq("agent_id", input.agentId)
     .order("computed_at", { ascending: false })
     .limit(1)
     .maybeSingle()

@@ -79,7 +79,7 @@ async function liveLayer() {
   const brokerageId = (brk as any).id
   const cleanup: Array<{ table: string; id: string }> = []
   try {
-    const { data: vend } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "ZZ Test Inspections", category: "Inspector", rating: 4.9, status: "active" }).select("id").single()
+    const { data: vend } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "ZZ Test Inspections", category: "inspector", rating: 4.9, status: "active" }).select("id").single()
     const vendorId = (vend as any).id
     cleanup.push({ table: "vendors", id: vendorId })
     const { data: rate } = await svc.from("vendor_ratings").insert({ brokerage_id: brokerageId, vendor_id: vendorId, avg_agent_rating: 4.9, avg_client_rating: 4.8, five_star_count: 14, total_bookings: 16 }).select("id").single()

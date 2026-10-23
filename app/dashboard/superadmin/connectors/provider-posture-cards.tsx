@@ -132,6 +132,9 @@ export function FullProviderRegistryCard() {
                             <span className="font-medium" title={`Sources: ${r.sources.join(", ")}${r.envVars.length ? ` · Env: ${r.envVars.join(", ")}` : ""}`}>
                               {r.label}
                             </span>
+                            {r.healthState !== "healthy" && (
+                              <span className="ml-1 text-[11px] text-muted-foreground" title={r.healthReason}>· {r.healthState.replace("_", " ")}</span>
+                            )}
                             {r.needsAttention && (
                               <div className="text-[11px] text-red-600 max-w-[360px]">
                                 needs attention — {r.attentionReason}{" "}

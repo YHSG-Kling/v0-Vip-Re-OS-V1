@@ -10,6 +10,8 @@
  * This is GOVERNANCE ONLY - no net sheet calculations, no data generation
  */
 
+import { isBrokerageFinanceAdmin, type UserRole } from "@/lib/auth/resolve-user-role"
+
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 
@@ -21,7 +23,9 @@ export interface NetSheetValidityInput {
   validityDays?: number
   
   // Override context
-  overrideByRole?: "agent" | "team_lead" | "broker" | "admin"
+  // ONE VOCABULARY — see cma-quality-evaluator: the value is judged by
+  // isBrokerageFinanceAdmin, which keys on `users.user_type`.
+  overrideByRole?: UserRole
   overrideReason?: string
 }
 
@@ -62,7 +66,13 @@ export function validateNetSheetValidity(input: NetSheetValidityInput): NetSheet
   }
   
   // Check for explicit override
-  if (input.overrideByRole && ["broker", "admin"].includes(input.overrideByRole)) {
+  // BROKERAGE-WIDE MONEY (m472): the owner's ruling names the net-sheet and
+  // CMA-quality OVERRIDES among the financial gates team_lead is held out of.
+  // An override here suppresses a governance failure on a document the SELLER
+  // relies on, so it is authority over money, not a display preference. Asking
+  // the ONE shared finance roster rather than a literal keeps that true as roles
+  // change, and admits broker_owner, whom the literal refused.
+  if (input.overrideByRole && isBrokerageFinanceAdmin({ user_type: input.overrideByRole })) {
     return {
       isValid: true,
       isExpired: false,

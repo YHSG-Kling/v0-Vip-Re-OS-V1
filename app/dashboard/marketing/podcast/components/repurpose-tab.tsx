@@ -23,7 +23,7 @@ import {
   Copy,
   CheckCircle2,
 } from "lucide-react"
-import { toast } from "sonner"
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard"
 import {
   generatePodcastSnippetSuggestions,
   generatePodcastBlogPost,
@@ -133,14 +133,10 @@ export function RepurposeTab({ episodes }: Props) {
     }
   }
 
-  async function copyText(text: string, label = "Copied") {
-    try {
-      await navigator.clipboard.writeText(text)
-      toast.success(label)
-    } catch {
-      toast.error("Could not copy")
-    }
-  }
+  // `copyText` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+  // byte-identical to hooks/use-copy-to-clipboard.ts `useCopyToClipboard`
+  // (used below).
+  const copyText = useCopyToClipboard()
 
   return (
     <div className="space-y-6">
@@ -312,7 +308,7 @@ export function RepurposeTab({ episodes }: Props) {
                   Copy Markdown
                 </Button>
                 <Button asChild size="sm">
-                  <Link href={blogSavedId ? `/dashboard/blog?postId=${blogSavedId}` : "/dashboard/blog"}>
+                  <Link href={blogSavedId ? `/dashboard/marketing/blog/${blogSavedId}` : "/dashboard/marketing/blog"}>
                     Open in Blog Editor
                     <ExternalLink className="h-3.5 w-3.5 ml-1.5" />
                   </Link>

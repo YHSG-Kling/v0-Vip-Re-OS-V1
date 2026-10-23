@@ -26,17 +26,18 @@
  * reuse the same data payload across organic and paid renders.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame, useVideoConfig } from "remotion"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { mlsNeutralTitle } from "../lib/video/render-cut"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaBadgeSlot, cinemaDisclosureStyle, cinemaFrame, slideDisclosureText } from "../lib/video/cinema-finish"
+import { brollMountWindows, fitBodyVisualPlan, photoSpansAround, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { PlannedBrollLayer, type BrollClip } from "./_BrollLayer"
 
 export interface JustListedReelSquareProps {
   hook:      string
@@ -60,6 +61,9 @@ export interface JustListedReelSquareProps {
      *  optional for non-listing organic content; here it defaults
      *  to true. */
     showEhoMark?: boolean
+    /** Wave 91 (lane 91E): the brokerage attribution on the end card — every producer stages it. */
+    brokerageName?: string
+    licenseLine?:   string
   }
   voiceoverUrl?: string
   /** Paid-ad CTA the brokerage wants on screen for the final
@@ -76,32 +80,57 @@ export interface JustListedReelSquareProps {
   captionsCues?: CaptionCue[] | null
   /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
   captionScript?: string | null
+  /** Wave 81C — THE MLS CUT (lib/video/render-cut.ts): no logo, no name, no phone, no CTA, no QR; the address instead. */
+  mlsClean?: boolean
+  /** WAVE 92 (lane 92E) — the cutaway footage the Video Director picked (lib/video/broll-picker.ts)
+   *  when brollBenefit says this listing has too few photos to fill its narration. Before this the
+   *  Director staged clips here and NOTHING read them (no b-roll layer — lane 91E's open item). */
+  brollClips?: BrollClip[]
+  /** "own" = the listing's own footage; anything else is stock — never on the MLS cut. */
+  brollSource?: "own" | "stock" | null
+  /** The staged body-visual plan: footage plays ONLY in the segments it cut to b-roll. */
+  bodyVisualPlan?: BodyVisualPlan | null
 }
 
 const FPS    = 30
-const TOTAL  = 12 * FPS                          // 360 frames
-const COVER  = 2  * FPS                          // 0-2s
-const PHOTOS = 8  * FPS                          // 2-10s
-const CTA    = 2  * FPS                          // 10-12s
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `PHOTOS = 8 * FPS` stood here. Bookends come from the ONE registry; the
+// photo window is whatever the render's durationInFrames leaves between them.
+const BOOKENDS = compositionBookends("JustListedReelSquare")
+const COVER  = BOOKENDS.introFrames
+const CTA    = BOOKENDS.outroFrames
+void FPS
 
 /** Ken-Burns zoom factor — slow 1.0 → 1.08 over the photo's visible
  *  window. Subtle enough that the photo still reads as a single
  *  image, lively enough that the feed scroll doesn't read it as a
  *  static frame and skip past. */
 function kenBurnsScale(localFrame: number, span: number): number {
-  return interpolate(localFrame, [0, span], [1, 1.08], { extrapolateRight: "clamp" })
+  return interpolate(localFrame, [0, span], [1, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
 }
 
 export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
   hook, address, cityState, price, bedrooms, bathrooms, sqft,
   imageUrls, brand, voiceoverUrl, ctaLabel, qrCodeDataUrl, qrCaption,
-  captionsCues, captionScript,
+  captionsCues, captionScript, mlsClean, brollClips, brollSource, bodyVisualPlan,
 }) => {
   const frame      = useCurrentFrame()
+  const { durationInFrames, width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
+  const timeline   = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const PHOTOS     = timeline.body.durationInFrames
   const images     = imageUrls.slice(0, 4)
-  const perPhoto   = images.length > 0 ? PHOTOS / images.length : PHOTOS
+  // WAVE 92 (lane 92E): footage only in the plan's narration gaps (brollMountWindows — never the
+  // CTA end card), never stock on the MLS cut; the photos tile the frames the footage leaves
+  // (photoSpansAround) so no photo repeats under the narration.
+  const footage    = mlsClean && brollSource !== "own" ? [] : (brollClips ?? [])
+  const brollWins  = footage.length > 0 ? brollMountWindows(fitBodyVisualPlan(bodyVisualPlan, "JustListedReelSquare", durationInFrames), { within: timeline.body }) : []
+  const photoSpans = photoSpansAround(PHOTOS, brollWins.map((w) => ({ from: w.from - COVER, durationInFrames: w.durationInFrames })), images.length)
   const showEho    = brand.showEhoMark ?? true
-  const finalCta   = ctaLabel ?? "Tour this listing"
+  // Wave 91 (lane 91E): brokerage · Equal Housing Opportunity · licence, composed ONCE
+  // (slideDisclosureText). The MLS cut stays unbranded — the mark alone (lib/video/render-cut.ts).
+  const disclosure = slideDisclosureText({ brokerageName: mlsClean ? null : brand.brokerageName, showEhoMark: showEho, licenseLine: mlsClean ? null : brand.licenseLine })
+  const finalCta   = mlsClean ? mlsNeutralTitle(address, cityState) : (ctaLabel ?? "Tour this listing")
 
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
@@ -115,27 +144,27 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
         }}>
           <div style={{
             fontSize: 28, letterSpacing: 6, textTransform: "uppercase",
-            color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [0, 15], [0, 1]),
+            color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [0, 15], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {hook}
           </div>
           <div style={{
             fontSize: 80, fontWeight: 800, color: "#fff", lineHeight: 1.05,
-            marginTop: 28, opacity: interpolate(frame, [10, 30], [0, 1]),
+            marginTop: 28, opacity: interpolate(frame, [10, 30], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {address}
           </div>
           <div style={{
-            fontSize: 36, color: "#fff", opacity: interpolate(frame, [20, 40], [0, 0.85]),
+            fontSize: 36, color: "#fff", opacity: interpolate(frame, [20, 40], [0, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 16,
           }}>
             {cityState}
           </div>
           <div style={{
-            position: "absolute", top: 40, left: 40, color: "#fff", opacity: 0.85,
+            position: "absolute", top: safe.top, left: safe.left, color: "#fff", opacity: 0.85,
             fontSize: 22, fontWeight: 600, letterSpacing: 2,
           }}>
-            {brand.logoUrl ? <Img src={brand.logoUrl} style={{ height: 56, objectFit: "contain" }} /> : null}
+            {!mlsClean && brand.logoUrl ? <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain" }} /> : null}
           </div>
         </AbsoluteFill>
       </Sequence>
@@ -153,23 +182,26 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
             Photos coming soon
           </AbsoluteFill>
         ) : (
-          images.map((url, idx) => {
-            const start    = idx * perPhoto
-            return (
-              <Sequence key={idx} from={start} durationInFrames={perPhoto}>
-                <PhotoFrame url={url} span={perPhoto} />
-              </Sequence>
-            )
-          })
+          photoSpans.map((p, idx) => (
+            <Sequence key={idx} from={p.from} durationInFrames={p.durationInFrames}>
+              <PhotoFrame url={images[p.photoIndex]} span={p.durationInFrames} />
+            </Sequence>
+          ))
         )}
+        <PlannedBrollLayer clips={footage} windows={brollWins} offset={COVER}
+          overlayColor={`${brand.primaryColor}59`} clipCaptions={false} filmGrain />
         {/* Persistent facts strip. Floats over the photos so the
             viewer always sees the offer without waiting for a card
             section. Bottom-anchored so it doesn't compete with the
-            photo's natural focal point. */}
+            photo's natural focal point.
+            WAVE 91 (lane 91E — the real render, after-JustListedReelSquare-mid.png): the price
+            sat 32 px from the frame's edge, inside the player's bottom UI and UNDER the burned-in
+            caption band — the JustSoldReelSquare defect, same strip. The gradient still reaches
+            the edge; the TEXT stands in the badge slot, above the caption band. */}
         <AbsoluteFill style={{ pointerEvents: "none" }}>
           <div style={{
             position: "absolute", bottom: 0, left: 0, right: 0,
-            padding: "32px 56px",
+            padding: `32px ${cinemaBadgeSlot(width, height).right}px ${cinemaBadgeSlot(width, height).bottom}px ${cinemaBadgeSlot(width, height).left}px`,
             background: "linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0) 100%)",
             color: "#fff",
           }}>
@@ -194,23 +226,23 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
           }}>
             {finalCta}
           </div>
-          {brand.agentName && (
+          {!mlsClean && brand.agentName && (
             <div style={{ fontSize: 40, color: brand.accentColor, fontWeight: 700 }}>{brand.agentName}</div>
           )}
-          {brand.agentPhone && (
+          {!mlsClean && brand.agentPhone && (
             <div style={{ fontSize: 32, color: "#fff", opacity: 0.85, marginTop: 12 }}>
               {brand.agentPhone}
             </div>
           )}
-          {showEho && (
-            <div style={{
-              position: "absolute", bottom: 24, left: 24,
-              fontSize: 16, color: "#fff", opacity: 0.5, letterSpacing: 1,
-            }}>
-              Equal Housing Opportunity
+          {disclosure && (
+            /* Wave 89 — the disclosure on the safe bottom inset at the caption
+               step (cinemaDisclosureStyle); it was a 24 px corner in 16 px type. */
+            <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), color: "#fff" }}>
+              {disclosure}
             </div>
           )}
           <QrOutroBadge
+            mlsClean={mlsClean}
             qrCodeDataUrl={qrCodeDataUrl}
             caption={qrCaption ?? "Scan to tour"}
             primaryColor={brand.primaryColor}
@@ -222,11 +254,13 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
       {/* Total duration sanity check — this guarantees the
           renderer always knows the length even if a Sequence is
           missing its photos. */}
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + PHOTOS} />
     </AbsoluteFill>
   )
 }
@@ -236,11 +270,11 @@ const PhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
   const scale = kenBurnsScale(frame, span)
   return (
     <AbsoluteFill style={{ overflow: "hidden" }}>
-      <Img
+      <SafeImg
         src={url}
         style={{
           width: "100%", height: "100%", objectFit: "cover",
-          transform: `scale(${scale})`, transformOrigin: "center center",
+          scale, transformOrigin: "center center",
         }}
       />
     </AbsoluteFill>

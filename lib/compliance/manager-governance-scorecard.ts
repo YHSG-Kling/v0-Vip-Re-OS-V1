@@ -57,8 +57,10 @@ export interface ManagerGovernanceScore {
 
 // ── Applicability: which managers actually touch each risk surface ────────────
 // OUTBOUND managers produce client-facing content/outreach → bias, hallucination, reward all apply.
+// m618: "marketing_agent" retired (owner: "we don't have a marketing agent manager") —
+// its outbound-content surfaces are campaign_orchestrator's now, already listed.
 const OUTBOUND_MANAGERS = new Set<ManagerKey>([
-  "ai_isa", "campaign_orchestrator", "marketing_agent", "asset_manager",
+  "ai_isa", "campaign_orchestrator", "asset_manager",
   "sphere_of_influence", "listing_concierge", "shopping_agent", "ads_manager",
 ])
 // INGEST managers consume EXTERNAL untrusted content (inbound replies, scraped rows) → injection applies.

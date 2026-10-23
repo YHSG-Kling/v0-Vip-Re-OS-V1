@@ -8,7 +8,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
-import { Badge } from "@/components/ui/badge"
 import { createClient } from "@/lib/supabase/client"
 
 interface Notification {
@@ -75,11 +74,18 @@ export function PortalNotificationBell({ contactId, initialUnread }: Props) {
 
   async function markAllRead() {
     const supabase = createClient()
-    await supabase
+    // Read the refusal before clearing the badge (lane 87E, swallowed-refusal
+    // census): a refused mark-read used to zero the count locally, and every
+    // notification came back unread on the next visit with no word why.
+    const { error } = await supabase
       .from("notifications")
       .update({ is_read: true })
       .eq("contact_id", contactId)
       .eq("is_read", false)
+    if (error) {
+      console.warn("[portal] mark-all-read refused:", error.message)
+      return
+    }
     setNotifications((prev) => prev.map((n: Notification) => ({ ...n, is_read: true })))
     setUnread(0)
   }
@@ -98,7 +104,7 @@ export function PortalNotificationBell({ contactId, initialUnread }: Props) {
   return (
     <Popover open={open} onOpenChange={handleOpen}>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" className="relative h-9 w-9">
+        <Button variant="ghost" size="icon" className="relative h-9 w-9" aria-label="Notifications">
           <Bell className="h-5 w-5" />
           {unread > 0 && (
             <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white">

@@ -1,115 +1,78 @@
 // Layer 8.4 — Video Repurposing Utilities (non-server)
-// Platform configurations and validation helpers
+// The repurposed_content_log CHECK vocabularies, which cannot live in the
+// "use server" sibling. Platform configuration moved to that sibling — see the
+// tombstone below.
 
-export type PlatformTarget = 
-  | "instagram_reel"
-  | "tiktok"
-  | "youtube_short"
-  | "linkedin_video"
-  | "facebook_reel"
-  | "twitter_video"
+// TOMBSTONE: `PlatformTarget`, `PlatformConfig`, `PLATFORM_CONFIGS`,
+// `getPlatformConfig`, `getAllPlatformConfigs` and `validateSnippetForPlatform`
+// — ALL DELETED as a second, disagreeing copy of one vocabulary.
+// SURVIVOR: app/actions/video-repurposing.ts:60 (`PlatformTarget`) and its
+// module-private `PLATFORM_CONFIGS` immediately below it.
+//
+// WHY THAT ONE SURVIVES. It is the map every writer of
+// `video_snippets.platform_target` normalises against — createVideoSnippet,
+// generateSnippetSuggestions and the batch creator all key off it — so it is the
+// vocabulary the database actually receives. The copy that stood here reached
+// nothing: its three functions had exactly one importer, and that import
+// (app/actions/video-repurposing.ts:11) never called them.
+//
+// THE TWO COPIES DISAGREED, which is why this was a defect and not a tidy-up.
+// Different NAMES for the same platform — `instagram_reel`/`instagram_reels`,
+// `youtube_short`/`youtube_shorts`, `linkedin_video`/`linkedin`,
+// `facebook_reel`/`facebook_reels`, `twitter_video`/`twitter` — and different
+// LIMITS for the same platform: tiktok 600s and 10 hashtags here against 180s
+// and 100 there, linkedin 1:1 here against 16:9 there. This copy also had no
+// `instagram_story` or `instagram_post` at all, two platforms the survivor
+// writes.
+//
+// WHAT WAS MERGED FORWARD: `minDuration`, and the too-SHORT rejection that
+// validateSnippetForPlatform performed with it. The survivor's create path
+// checked only the maximum, so a 2-second Reel was accepted and stored and then
+// refused by the platform at distribution time. See the `minDuration <` throw in
+// createVideoSnippet.
+//
+// WHAT WAS NOT MERGED, AND WHY: `recommendedDuration`, `captionRequired` and
+// `ctaRequired` had no reader anywhere in the tree — not in this module, not in
+// the survivor, not in any surface. Carrying them onto the survivor would have
+// created three fresh write-with-no-read columns of exactly the kind this
+// burn-down exists to close.
+//
+// NOTE for future readers of lib/validations/index.ts: two tombstones there
+// name `validateSnippetForPlatform` as the survivor of `validateHashtags` and
+// describe it as "live via app/actions/video-repurposing.ts:11". That import
+// was dead. The per-platform hashtag limit those tombstones point at lives on
+// the survivor's PLATFORM_CONFIGS (`hashtagLimit`), which is where it always
+// really was.
 
-export interface PlatformConfig {
-  platform: PlatformTarget
-  minDuration: number
-  maxDuration: number
-  aspectRatio: "9:16" | "1:1" | "16:9"
-  recommendedDuration: number
-  captionRequired: boolean
-  hashtagLimit: number
-  ctaRequired: boolean
-}
+// ─── repurposed_content_log VOCABULARY ────────────────────────────────────────
+//
+// Verified against the LIVE database, not against convention:
+//   repurposed_content_log_status_check
+//     CHECK (status IN ('generated','scheduled','published','failed'))
+//   repurposed_content_log_approval_status_check
+//     CHECK (approval_status IN ('draft','pending_review','approved','rejected'))
+//
+// These live HERE and not in app/actions/video-repurposing.ts because that file
+// carries a top-level "use server" directive, and such a module may only export
+// async functions — exporting a const array from it fails Next.js page-data
+// collection at build time (scripts/use-server-export-guard.ts is the ratchet).
 
-const PLATFORM_CONFIGS: Record<PlatformTarget, PlatformConfig> = {
-  instagram_reel: {
-    platform: "instagram_reel",
-    minDuration: 3,
-    maxDuration: 90,
-    aspectRatio: "9:16",
-    recommendedDuration: 15,
-    captionRequired: true,
-    hashtagLimit: 30,
-    ctaRequired: false,
-  },
-  tiktok: {
-    platform: "tiktok",
-    minDuration: 3,
-    maxDuration: 600,
-    aspectRatio: "9:16",
-    recommendedDuration: 21,
-    captionRequired: true,
-    hashtagLimit: 10,
-    ctaRequired: true,
-  },
-  youtube_short: {
-    platform: "youtube_short",
-    minDuration: 15,
-    maxDuration: 60,
-    aspectRatio: "9:16",
-    recommendedDuration: 45,
-    captionRequired: true,
-    hashtagLimit: 30,
-    ctaRequired: true,
-  },
-  linkedin_video: {
-    platform: "linkedin_video",
-    minDuration: 3,
-    maxDuration: 600,
-    aspectRatio: "1:1",
-    recommendedDuration: 30,
-    captionRequired: true,
-    hashtagLimit: 10,
-    ctaRequired: false,
-  },
-  facebook_reel: {
-    platform: "facebook_reel",
-    minDuration: 3,
-    maxDuration: 240,
-    aspectRatio: "9:16",
-    recommendedDuration: 30,
-    captionRequired: true,
-    hashtagLimit: 30,
-    ctaRequired: true,
-  },
-  twitter_video: {
-    platform: "twitter_video",
-    minDuration: 1,
-    maxDuration: 140,
-    aspectRatio: "16:9",
-    recommendedDuration: 45,
-    captionRequired: false,
-    hashtagLimit: 5,
-    ctaRequired: false,
-  },
-}
+export const REPURPOSE_LOG_STATUSES = [
+  "generated",
+  "scheduled",
+  "published",
+  "failed",
+] as const
 
-export function getPlatformConfig(platform: PlatformTarget): PlatformConfig {
-  return PLATFORM_CONFIGS[platform]
-}
+export const REPURPOSE_LOG_APPROVAL_STATUSES = [
+  "draft",
+  "pending_review",
+  "approved",
+  "rejected",
+] as const
 
-export function getAllPlatformConfigs(): Record<PlatformTarget, PlatformConfig> {
-  return PLATFORM_CONFIGS
-}
-
-export function validateSnippetForPlatform(
-  duration: number,
-  platform: PlatformTarget
-): { valid: boolean; message?: string } {
-  const config = getPlatformConfig(platform)
-
-  if (duration < config.minDuration) {
-    return {
-      valid: false,
-      message: `Video must be at least ${config.minDuration}s for ${platform.replace(/_/g, " ")}`,
-    }
-  }
-
-  if (duration > config.maxDuration) {
-    return {
-      valid: false,
-      message: `Video must be no longer than ${config.maxDuration}s for ${platform.replace(/_/g, " ")}`,
-    }
-  }
-
-  return { valid: true }
-}
+// TOMBSTONE (§1.3, 2026-08-27): the derived union types `RepurposeLogStatus` /
+// `RepurposeLogApprovalStatus` are deleted — nothing consumed them. The vocabulary
+// and its ENFORCEMENT live in the two rosters above: imported by
+// app/actions/video-repurposing.ts (runtime-validated on every filtered read) and
+// rendered as the filter options in the repurpose dashboard.

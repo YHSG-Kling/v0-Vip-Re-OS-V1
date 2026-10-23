@@ -8,11 +8,19 @@
 // the active agents (the solo owner) as the fallback, so a red-flag is NEVER silently dropped for a solo.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-/** Staff roles that receive brokerage-level reports when the org has them. */
-export const ORG_STAFF_ROLES = ["broker", "broker_admin", "admin", "compliance_officer"] as const
+/**
+ * Staff roles that receive brokerage-level reports when the org has them: the tenant's OPERATIONAL
+ * admin class (CLAUDE.md §4 — spread the Set, never restate it) minus `team_lead` by NAMED
+ * subtraction, because a team is a mini brokerage that sees only its own board and a brokerage-level
+ * red-flag is the brokerage's. Wave 141K found the old hand-typed list omitted `broker_owner`, so a
+ * brokerage whose only staff seat was its owner fell through to the solo fallback and the owner was
+ * reached as "an agent" (or not at all when they hold no agents row).
+ */
+export const ORG_STAFF_ROLES: readonly string[] = Object.freeze([...TENANT_ADMIN_USER_TYPES].filter((r) => r !== "team_lead"))
 
 /**
  * Resolve the USER ids that should receive a brokerage-level red-flag/report. Broker/admin/compliance

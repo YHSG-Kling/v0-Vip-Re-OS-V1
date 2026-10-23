@@ -40,6 +40,15 @@ export interface ConversationCriteria {
   minBaths?: number
   propertyTypes?: string[]
   cities?: string[]
+  /** Two-letter state the buyer named (wave 91) — RentCast cannot search a
+   *  city without one. property_alerts has no state column; the sweep resolves
+   *  one from the brokerage (alert-engine.ts resolveAlertSearchState). */
+  state?: string
+  /** Five-digit ZIPs the buyer named (wave 91) → property_alerts.zip_codes. */
+  zipCodes?: string[]
+  /** 'rent' when the buyer's words say renting (wave 91) →
+   *  property_alerts.listing_type (m657, PROPERTY_ALERT_LISTING_TYPES). */
+  listingType?: "sale" | "rent"
   /** Concrete feature words (pool, garage, …) → must_have_features. */
   features?: string[]
   /** BUYER-STATED school-district / school-zone phrases ("Mocksley school
@@ -203,6 +212,9 @@ export function extractCriteriaFromTranscript(text: string): ExtractedConversati
     if (parsed.minBaths != null) { criteria.minBaths = parsed.minBaths; contributed = true }
     if (parsed.propertyTypes?.length) { criteria.propertyTypes = unionInto(criteria.propertyTypes, parsed.propertyTypes); contributed = true }
     if (parsed.features?.length)      { criteria.features      = unionInto(criteria.features, parsed.features);           contributed = true }
+    if (parsed.zipCodes?.length)      { criteria.zipCodes      = unionInto(criteria.zipCodes, parsed.zipCodes);           contributed = true }
+    if (parsed.states?.length)        { criteria.state = parsed.states[0]; contributed = true }
+    if (parsed.listingType === "rent") { criteria.listingType = "rent" }
 
     const cities = parsed.cities ?? []
     if (cities.length === 0) {
@@ -227,16 +239,7 @@ export function extractCriteriaFromTranscript(text: string): ExtractedConversati
     delete criteria.minPrice
   }
 
-  let signalCount = 0
-  if (criteria.minPrice != null || criteria.maxPrice != null) signalCount++
-  if (criteria.cities?.length) signalCount++
-  if (criteria.minBeds != null) signalCount++
-  if (criteria.minBaths != null) signalCount++
-  if (criteria.propertyTypes?.length) signalCount++
-  // Buyer-stated school district / 55+ community are CONCRETE signals — the
-  // buyer named a searchable criterion in their own words.
-  if (criteria.schoolDistricts?.length) signalCount++
-  if (criteria.ageRestrictedCommunity) signalCount++
+  const signalCount = countCriteriaSignals(criteria)
 
   return {
     criteria,
@@ -244,6 +247,142 @@ export function extractCriteriaFromTranscript(text: string): ExtractedConversati
     signalCount,
     evidence: evidence.slice(0, 6),
   }
+}
+
+/** How many distinct CONCRETE signal groups the criteria carry (features
+ *  excluded) — the one count both the rules pass and the model-assisted pass
+ *  (lib/buyer-search/parse-buyer-criteria.ts) grade confidence on. */
+export function countCriteriaSignals(criteria: ConversationCriteria): number {
+  let signalCount = 0
+  if (criteria.minPrice != null || criteria.maxPrice != null) signalCount++
+  if (criteria.cities?.length || criteria.zipCodes?.length) signalCount++
+  if (criteria.minBeds != null) signalCount++
+  if (criteria.minBaths != null) signalCount++
+  if (criteria.propertyTypes?.length) signalCount++
+  // Buyer-stated school district / 55+ community are CONCRETE signals — the
+  // buyer named a searchable criterion in their own words.
+  if (criteria.schoolDistricts?.length) signalCount++
+  if (criteria.ageRestrictedCommunity) signalCount++
+  return signalCount
+}
+
+// ─── Model assist (wave 91) — the PURE half ──────────────────────────────────
+//
+// Owner: "we use rentcast for property listings to send to the buyers that
+// reflect their criteria (even nlp natural language)". The rules above are the
+// FIRST pass and cost nothing; they miss what no word list can hold (a city
+// not on the metro list with no "in" before it, "a couple hundred thousand",
+// "3 or 4 bedrooms"). lib/buyer-search/parse-buyer-criteria.ts asks the cheap
+// model lane (AI_TASK_ROUTING.buyer_criteria_parse, Haiku) ONLY when a gap
+// below is open, and merges its answer through mergeModelCriteria — which is
+// where the no-steering line holds for the model exactly as it does for the
+// rules: the model may only FILL a gap, only with something the buyer's own
+// words contain, and never with a school, age or household criterion.
+
+/** The concrete gaps a search cannot run well without. Location is the one
+ *  RentCast needs; price and beds are what make a list worth sending. */
+export type CriteriaGap = "location" | "price" | "beds"
+
+export function criteriaGaps(criteria: ConversationCriteria): CriteriaGap[] {
+  const gaps: CriteriaGap[] = []
+  if (!criteria.cities?.length && !criteria.zipCodes?.length) gaps.push("location")
+  if (criteria.minPrice == null && criteria.maxPrice == null) gaps.push("price")
+  if (criteria.minBeds == null) gaps.push("beds")
+  return gaps
+}
+
+/** What the model lane may return — deliberately no school, age, household,
+ *  or neighborhood-character field: a field that does not exist cannot be
+ *  filled (fair housing, conversation-criteria.ts header). */
+export interface ModelCriteria {
+  minPrice?: number | null
+  maxPrice?: number | null
+  minBeds?: number | null
+  minBaths?: number | null
+  propertyTypes?: string[] | null
+  cities?: string[] | null
+  state?: string | null
+  zipCodes?: string[] | null
+  features?: string[] | null
+  listingType?: "sale" | "rent" | null
+}
+
+const MODEL_PROPERTY_TYPES = new Set(["single_family", "condo", "townhouse", "multi_family", "land"])
+
+/** Did the buyer's own words contain this number? Accepts the figure as said
+ *  ("450", "450k", "450,000") — the model may convert units, never invent. */
+function numberStatedIn(text: string, n: number): boolean {
+  if (!Number.isFinite(n) || n <= 0) return false
+  const digits = text.replace(/,/g, "")
+  const forms = new Set<string>([String(n)])
+  if (n >= 1000 && n % 1000 === 0) forms.add(String(n / 1000))
+  if (n >= 1_000_000) forms.add(String(n / 1_000_000))
+  for (const f of forms) {
+    if (new RegExp(`(^|[^\\d.])${f.replace(".", "\\.")}([^\\d]|$)`).test(digits)) return true
+  }
+  return false
+}
+
+/** Does the buyer's text contain this word/phrase (case-insensitive, whole word)? */
+function phraseStatedIn(text: string, phrase: string): boolean {
+  const p = phrase.trim()
+  if (!p) return false
+  const esc = p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return new RegExp(`\\b${esc}\\b`, "i").test(text)
+}
+
+/**
+ * PURE. Rules win; the model FILLS a gap only, and every value it fills must
+ * be backed by the buyer's own words (numberStatedIn / phraseStatedIn). The
+ * one inference allowed is a STATE for a city the buyer named — a location
+ * fact RentCast needs to search a city, never a characterization.
+ */
+export function mergeModelCriteria(
+  rules: ConversationCriteria,
+  model: ModelCriteria | null | undefined,
+  text: string,
+): ConversationCriteria {
+  const out: ConversationCriteria = { ...rules }
+  if (!model) return out
+  const priceOk = (n: number | null | undefined): n is number =>
+    n != null && Number.isFinite(n) && n > 0 && numberStatedIn(text, n)
+
+  if (out.minPrice == null && out.maxPrice == null) {
+    if (priceOk(model.minPrice)) out.minPrice = model.minPrice
+    if (priceOk(model.maxPrice)) out.maxPrice = model.maxPrice
+    if (out.minPrice != null && out.maxPrice != null && out.minPrice > out.maxPrice) delete out.minPrice
+  }
+  if (out.minBeds == null && model.minBeds != null && model.minBeds > 0 && model.minBeds < 20 && numberStatedIn(text, model.minBeds)) out.minBeds = model.minBeds
+  if (out.minBaths == null && model.minBaths != null && model.minBaths > 0 && model.minBaths < 20 && numberStatedIn(text, model.minBaths)) out.minBaths = model.minBaths
+
+  if (!out.cities?.length && !out.zipCodes?.length) {
+    const cities = (model.cities ?? []).filter((c) => typeof c === "string" && phraseStatedIn(text, c))
+    if (cities.length) out.cities = cities.map((c) => c.trim().split(/\s+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" "))
+    const zips = (model.zipCodes ?? []).filter((z) => /^\d{5}$/.test(String(z)) && text.includes(String(z)))
+    if (zips.length) out.zipCodes = zips
+  }
+  if (!out.state && out.cities?.length && typeof model.state === "string" && /^[A-Z]{2}$/.test(model.state.trim().toUpperCase())) {
+    out.state = model.state.trim().toUpperCase()
+  }
+  if (!out.propertyTypes?.length) {
+    const types = (model.propertyTypes ?? []).filter((t) => MODEL_PROPERTY_TYPES.has(String(t)))
+    if (types.length) out.propertyTypes = types
+  }
+  const features = (model.features ?? []).filter((f) => typeof f === "string" && phraseStatedIn(text, f))
+  if (features.length) out.features = unionInto(out.features, features.map((f) => f.toLowerCase()))
+  if (!out.listingType && model.listingType === "rent" && /\b(rent|renting|rental|lease|leasing|month)\b/i.test(text)) out.listingType = "rent"
+  return out
+}
+
+/** Asks the buyer made that no listing feed can filter on, said back honestly
+ *  instead of silently dropped. School QUALITY is the fair-housing case: the
+ *  OS does not rank schools (a stated district name IS captured above). */
+export function unsearchableAsks(text: string): string[] {
+  const notes: string[] = []
+  if (/\b(good|great|best|top|top[- ]rated|highly[- ]rated|excellent)\s+schools?\b/i.test(text)) {
+    notes.push("School quality is not a listing filter — the agent can share the attendance-zone boundaries for any home, and the buyer can check the district's own ratings.")
+  }
+  return notes
 }
 
 // ─── Alert-row mapping ───────────────────────────────────────────────────────
@@ -299,6 +438,7 @@ export function describeCriteria(criteria: ConversationCriteria): string {
   else if (criteria.maxPrice != null) parts.push(`under ${fmtPrice(criteria.maxPrice)}`)
   else if (criteria.minPrice != null) parts.push(`over ${fmtPrice(criteria.minPrice)}`)
   if (criteria.cities?.length) parts.push(`in ${criteria.cities.join(", ")}`)
+  if (criteria.zipCodes?.length) parts.push(`${criteria.cities?.length ? "" : "in "}${criteria.zipCodes.join(", ")}`.trim())
   for (const s of criteria.schoolDistricts ?? []) {
     parts.push(s.endsWith("school district") ? `in the ${s}` : `zoned for ${s}`)
   }
@@ -321,6 +461,8 @@ export interface ProposedAlertRow {
   alert_name: string
   source: string
   is_active: false
+  /** m657 sale|rent (live CHECK property_alerts_listing_type_check). */
+  listing_type: "sale" | "rent"
   min_price: number | null
   max_price: number | null
   bedrooms_min: number | null
@@ -354,13 +496,17 @@ export function criteriaToAlertRow(
     alert_name:                  ids.alertName,
     source:                      ids.source ?? SPOKEN_ALERT_SOURCE,
     is_active:                   false, // PROPOSED — only agent approval activates
+    // A renter's monthly budget must not be swept against for-sale prices
+    // (m657; lib/property-alerts/idx-alert-search.ts routes 'rent' to the
+    // RentCast RENTAL endpoint only).
+    listing_type:                criteria.listingType === "rent" ? "rent" : "sale",
     min_price:                   criteria.minPrice ?? null,
     max_price:                   criteria.maxPrice ?? null,
     bedrooms_min:                criteria.minBeds ?? null,
     bathrooms_min:               criteria.minBaths ?? null,
     property_types:              criteria.propertyTypes ?? [],
     cities:                      criteria.cities ?? [],
-    zip_codes:                   [],
+    zip_codes:                   criteria.zipCodes ?? [],
     // Buyer-STATED criteria only (see the no-steering block above): a stated
     // 55+ request lands as a must-have feature; stated school-district
     // phrases land as keywords. Both trace to evidence quotes.

@@ -10,7 +10,7 @@
  */
 import { listContentSources, type ContentSourceRow } from "@/app/actions/content-intel/sources"
 import { ContentSourceForm } from "./content-source-form"
-import { ToggleButton } from "./toggle-button"
+import { ToggleButton, DeleteSourceButton } from "./toggle-button"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -121,8 +121,9 @@ function SourceTable({
                 </span>
               </td>
               {editable && (
-                <td className="px-3 py-2 text-right">
+                <td className="px-3 py-2 text-right whitespace-nowrap">
                   <ToggleButton id={s.id} isActive={s.is_active} />
+                  <DeleteSourceButton id={s.id} label={s.label} />
                 </td>
               )}
             </tr>

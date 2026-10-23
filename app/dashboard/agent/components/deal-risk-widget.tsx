@@ -10,7 +10,6 @@ import Link from "next/link"
 import { ShieldAlert, AlertTriangle, AlertCircle, ArrowRight, Clock } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import type { AgentDealRisk } from "@/app/actions/deal-risk-agent"
 
 interface Props {

@@ -30,6 +30,7 @@ import {
   qboRequest,
   findOrCreateQboCustomer,
 } from "@/lib/connections/accounting-scopes"
+import { QBO_MINOR_VERSION } from "@/lib/agentic-os/connector-registry"
 
 type ServiceClient = ReturnType<typeof createServiceClient>
 
@@ -128,7 +129,7 @@ export async function pushVendorInvoiceToQuickBooks(
       accessToken,
       realmId: cred.realmId,
       method: "POST",
-      path: "/invoice?minorversion=73",
+      path: `/invoice?minorversion=${QBO_MINOR_VERSION}`,
       body: {
         CustomerRef: { value: customerId },
         ...(invoice.invoice_number ? { DocNumber: String(invoice.invoice_number).slice(0, 21) } : {}),

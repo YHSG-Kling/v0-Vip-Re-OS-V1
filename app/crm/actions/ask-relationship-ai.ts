@@ -1,6 +1,10 @@
 "use server"
 
 import { generateTextRouted } from "@/lib/ai/models"
+// THE SPEND ACTOR. Every export in this "use server" file is a public HTTP
+// endpoint, so the AI cost ledger's tenant can only come from the SESSION
+// (CLAUDE.md §4) — never from an id the caller supplied.
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function askRelationshipAI(params: {
   question: string
@@ -9,6 +13,10 @@ export async function askRelationshipAI(params: {
   systemPrompt?: string
 }): Promise<{ success: boolean; answer?: string; error?: string }> {
   const { question, contactName, contactPersona, systemPrompt } = params
+
+  // Tenant for the AI cost ledger — SESSION (§4). Every argument here is
+  // caller-supplied copy; none of it can name a payer.
+  const spendActor = await getAgentContext()
 
   if (!question?.trim()) {
     return { success: false, error: "Question is required" }
@@ -28,6 +36,8 @@ export async function askRelationshipAI(params: {
 
   try {
     const { text } = await generateTextRouted({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       feature:     "ai_isa_response",
       system:      resolvedSystemPrompt,
       prompt:      question.trim(),

@@ -23,6 +23,7 @@
 // it. Everything is GATED (nothing auto-sends) and IDEMPOTENT (one concierge bundle per
 // offer). The bus carries the convening line. NOT server-only (simulator-driven).
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
@@ -31,7 +32,7 @@ type Svc = ReturnType<typeof createServiceClient>
 
 // Pre-acceptance offer statuses where a competitive prep still matters (the seller has not
 // accepted/rejected/withdrawn — the buyer can still improve their position).
-export const COMPETITIVE_OFFER_STATUSES = ["draft", "submitted", "pending", "countered", "negotiating"] as const
+const COMPETITIVE_OFFER_STATUSES = ["draft", "submitted", "pending", "countered", "negotiating"] as const
 
 // ─── PURE LAYER 1 ─────────────────────────────────────────────────────────────
 
@@ -516,10 +517,10 @@ export async function runBiddingWarConcierge(
     )
     if (conv.ok && conv.signalId && !conv.reason) {
       result.signalsPublished += 1
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("manager_signals")
         .update({ status: "consumed", consumed_at: (opts.now ?? new Date()).toISOString(), consumed_action: "bidding-war bundle staged (gated)" })
-        .eq("id", conv.signalId)
+        .eq("id", conv.signalId), { table: "manager_signals", flow: "bidding_war_consume", reason: "consumes the signal for a bundle already staged" })
     }
 
     if (briefRes.ok || letterRes.ok || noteRes.ok) result.bundles += 1
