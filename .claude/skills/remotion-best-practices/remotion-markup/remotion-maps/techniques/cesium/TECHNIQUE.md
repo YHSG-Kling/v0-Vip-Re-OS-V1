@@ -35,8 +35,11 @@ requests.
 
 ## Build the flight
 
-1. Copy `assets/CesiumFlythrough.tsx`, a path JSON and `assets/example-Root.tsx` into the Remotion
-   project, or import the component directly.
+1. Copy `assets/CesiumFlythrough.tsx` together with the files it imports — `assets/flight-path.ts` and
+   `assets/cesium-path.json` (the component's default `path`) — and `assets/example-Root.tsx` with the
+   `assets/city-path.json` it imports, into the Remotion project. Keep them side by side: the imports
+   are relative (`./flight-path`, `./cesium-path.json`, `./city-path.json`). Or import the component
+   directly.
 2. Supply the camera route as `[longitude, latitude][]`. Use only meaningful control points; do not hand-author dozens of tiny corrections.
 3. Leave `pathSmoothingPasses={3}` initially. The component applies repeated Chaikin corner cutting, turning straight-then-corner input into a continuous swerve. Increase to `4` for a softer route or reduce to `2` when the camera must follow a tight corridor.
 4. Set absolute camera altitudes for the location. City cameras normally fly lower than landscape

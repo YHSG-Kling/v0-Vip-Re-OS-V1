@@ -14,35 +14,40 @@ for (const l of m.getStyle().layers as any[])
 - `type === "symbol"` → every place/water/road **label** (the "MapTiler labels"). Gone.
 - Inner admin-border layer IDs vary by style. Inspect the loaded style, remove state/province/district
   layers as needed, and retain only the context borders the production requires.
-- Logo/attribution: `maptilerLogo:false` + `attributionControl:false` aren't always enough — also hide
-  via CSS in the component:
-  ```tsx
-  <style>
-    {`
-      .maplibregl-ctrl-bottom-left,
-      .maplibregl-ctrl-bottom-right,
-      .maplibregl-ctrl-attrib,
-      .maptiler-logo {
-        display: none !important;
-      }
-    `}
-  </style>
-  ```
+- Logo/attribution: **keep it visible — never hide it.** Required provider attribution (for MapTiler
+  `© MapTiler © OpenStreetMap contributors`, plus the MapTiler logo where your plan requires it) must
+  appear in the rendered frames; verify the current terms of your plan before rendering. Leave
+  `maptilerLogo: true` and `attributionControl: true` (as `assets/RiverReveal.tsx` does) and do not hide
+  `.maplibregl-ctrl-attrib`, the bottom controls or `.maptiler-logo` with CSS. If the framing cannot
+  spare the control, draw an equivalent on-frame credit instead — legible, in a corner that survives
+  every required aspect ratio — rather than removing the attribution.
 
 ## `../scripts/prep-geo.mjs` → outputs
 
-Reads a routed river GeoJSON + country polygon GeoJSONs; writes:
+Reads a routed river GeoJSON + country polygon GeoJSONs; writes three files into `out/` (the `out/`
+directory next to `scripts/` — not into your Remotion project), then **you copy them into place**:
 
-- **River line** — simplified for a smooth draw. For a braided river, route one source→mouth path through
-  the network first: greedy endpoint-chaining bounces between parallel channels. → `src/geo/river-flow.json`.
-- **`public/geo/borders.geojson`** — each country's polygon tagged `{country: name}` (one source,
-  filtered per country for the fills).
-- **`src/geo/country-meta.json`** — per country `{ stop, anchor, border }`.
+- **`out/river-flow.json`** — the river line, simplified for a smooth draw. For a braided river, route one
+  source→mouth path through the network first: greedy endpoint-chaining bounces between parallel channels.
+  Copy → `src/geo/river-flow.json`.
+- **`out/borders.geojson`** — each country's polygon tagged `{country: name}` (one source, filtered per
+  country for the fills). Copy → `public/geo/borders.geojson` (loaded via `staticFile`).
+- **`out/country-meta.json`** — per country `{ stop, anchor, border }`. Copy → `src/geo/country-meta.json`.
+
+The script prints the same copy step when it finishes.
 
 ### `stop` — when a country lights up
 
 Walk the river points; first point inside a country (`turf.booleanPointInPolygon`) = the arc-length
 fraction where the river **enters** it. Drives the trigger time. The headwaters country = 0.
+
+**Limitation:** only the river's *vertices* are tested, so a country the line crosses entirely between two
+consecutive vertices (a long segment, e.g. after heavy simplification) is never "entered": its `stop` stays
+at the sentinel `1` and it lights up at the very end instead of when the river reaches it. Remedies:
+densify the line before testing (e.g. `turf.lineChunk` / `turf.along` every few km), or intersect each
+segment with the polygon boundary (`turf.lineIntersect`) and use the arc length of the first intersection.
+Check every `stop` printed by the script against the map — a non-headwaters country left at `1` is
+suspect.
 
 ### `anchor` — label centre via pole of inaccessibility
 

@@ -7,6 +7,7 @@
  * Exit 3 = the scenario needs the live DB: batch.sql (in BRIDGE_DIR) is printed;
  * run it with the Supabase MCP execute_sql, save the JSON answer, re-run with
  * --ingest. Exit 0 = the scenario completed; its step table is printed.
+ * Exit 1 = the scenario completed but CRASHED (the step table is partial; CRASH is printed).
  */
 import path from "node:path"
 import fs from "node:fs"
@@ -15,6 +16,14 @@ import { start, finish, isStopped, BridgeStop, ingest, externalCalls, emulations
 
 export interface StepRow { step: string; capability: string; via: string; verdict: "works" | "refused" | "error" | "not reachable" | "emulated"; detail: string }
 export interface WalkCtx { row: (r: StepRow) => void; ids: Record<string, string>; log: (...a: unknown[]) => void }
+
+/** Exit with `code` once stdout has drained. process.exit() right after out() can cut a large
+ *  batch.sql off at the pipe buffer, so set exitCode and let the loop empty; the unref'd timer
+ *  only fires if app code left a handle open, and exits with the same code instead of hanging. */
+function settle(code: number) {
+  process.exitCode = code
+  setTimeout(() => process.exit(), 3000).unref()
+}
 
 async function main() {
   const args = process.argv.slice(2)
@@ -42,7 +51,9 @@ async function main() {
     for (const r of rows.slice(process.env.W91_ALLROWS ? 0 : -1)) out(`  row ${r.step} ${r.verdict}: ${r.detail.slice(0, 200)}`)
     if (crash) out("CRASH " + String((crash as Error).stack ?? crash).slice(0, 1500))
     out(fs.readFileSync(path.join(dir, "batch-current.sql"), "utf8"))
-    process.exit(3)
+    await new Promise((r) => appLog.end(r))
+    settle(3)
+    return
   }
   fs.writeFileSync(path.join(dir, "result.json"), JSON.stringify({ rows, ids, logs, externalCalls, emulations, crash: crash ? String((crash as Error).stack ?? crash) : null }, null, 1))
   out(`DONE calls=${stats().calls}`)
@@ -50,6 +61,7 @@ async function main() {
   if (crash) out("CRASH " + String((crash as Error).stack ?? crash).slice(0, 2000))
   out("external calls refused: " + externalCalls.length + " " + [...new Set(externalCalls.map((u) => { try { return new URL(u).host } catch { return u } }))].join(", "))
   await new Promise((r) => appLog.end(r))
-  process.exit(0)
+  // A scenario that crashed is not a success: the step table above is partial.
+  settle(crash ? 1 : 0)
 }
 main()

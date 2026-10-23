@@ -21,14 +21,25 @@ For any 2D pan/zoom:
 Keep pitch and bearing constant. Use a 3D engine such as Cesium for genuine changing pitch/bearing or a terrain flythrough.
 
 ```ts
-const baseZoom = Math.max(start.zoom, end.zoom);
+import * as maptilersdk from "@maptiler/sdk";
+
+// `cameras` = EVERY approved camera waypoint ({center: [lng, lat], zoom, pitch?, bearing?}), including
+// intermediate and hold cameras, not just the first and last.
+const baseZoom = Math.max(...cameras.map((c) => c.zoom));
+const lngs = cameras.map((c) => c.center[0]);
+const lats = cameras.map((c) => c.center[1]);
+const plateCenter: [number, number] = [
+  (Math.min(...lngs) + Math.max(...lngs)) / 2,
+  (Math.min(...lats) + Math.max(...lats)) / 2,
+];
+const last = cameras[cameras.length - 1];
 const map = new maptilersdk.Map({
   container,
   style,
-  center: end.center,
+  center: plateCenter,
   zoom: baseZoom,
-  pitch: end.pitch ?? 0,
-  bearing: end.bearing ?? 0,
+  pitch: last.pitch ?? 0,
+  bearing: last.bearing ?? 0,
   interactive: false,
   fadeDuration: 0,
   canvasContextAttributes: {preserveDrawingBuffer: true},
@@ -61,4 +72,4 @@ const labelY = labelPoint.y * scale + height / 2 - projected.y * scale;
 - Render a short MP4, not only a Studio preview.
 - Inspect static terrain texture and satellite detail while the camera moves.
 - If any underlying map detail wavers, use the fixed map plate. Do not approve it as a minor preview artefact.
-- Render WebGL with `--gl=angle`, `preserveDrawingBuffer:true`, and conservative concurrency (`1`) while validating.
+- Render WebGL with `--gl=angle`, `canvasContextAttributes: {preserveDrawingBuffer: true}`, and conservative concurrency (`1`) while validating.

@@ -6,6 +6,10 @@ export async function cookies() {
     set: (n: string, v: string) => { jar.set(n, v) },
     delete: (n: string) => { jar.delete(n) },
     has: (n: string) => jar.has(n),
+    // The real store serialises as a Cookie request header (`a=1; b=2`, values URI-encoded).
+    // Callers forward it verbatim — `headers: { Cookie: cookieStore.toString() }` in
+    // app/actions/reputation-kernel.ts — and without this they sent "[object Object]".
+    toString: () => [...jar].map(([name, value]) => `${name}=${encodeURIComponent(value)}`).join("; "),
   }
 }
 export async function headers() {

@@ -24,8 +24,11 @@ npx remotion add @remotion/transitions
 // MyVideo.tsx
 ```tsx
 import {TransitionSeries} from '@remotion/transitions';
+import {useVideoConfig} from 'remotion';
 
 const MyVideo: React.FC = () => {
+  const {fps} = useVideoConfig();
+
   return (
     <TransitionSeries>
       <TransitionSeries.Sequence durationInFrames={4 * fps} name="SceneA">
@@ -50,7 +53,7 @@ export const Root: React.FC = () => {
         <Composition
           id="Scene1"
           component={Scene1}
-          durationInFrames={5 * fps}
+          durationInFrames={150} // 5 s at 30 fps
           fps={30}
           width={1920}
           height={1080}
@@ -58,7 +61,7 @@ export const Root: React.FC = () => {
         <Composition
           id="Scene2"
           component={Scene2}
-          durationInFrames={5 * fps}
+          durationInFrames={150} // 5 s at 30 fps
           fps={30}
           width={1920}
           height={1080}
@@ -67,7 +70,7 @@ export const Root: React.FC = () => {
       <Composition
         id="MyVideo"
         component={MyVideo}
-        durationInFrames={10 * fps}
+        durationInFrames={240} // 8 s at 30 fps: SceneA (4 s) + SceneB (4 s), no transition overlap
         fps={30}
         width={1920}
         height={1080}

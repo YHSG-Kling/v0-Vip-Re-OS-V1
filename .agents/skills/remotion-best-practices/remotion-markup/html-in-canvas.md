@@ -100,25 +100,53 @@ export const Blur = () => {
 
 For WebGL, set up the context, program, and texture in `onInit` and return a cleanup function. Inside `onPaint`, upload the captured DOM with `gl.texElementImage2D(...)` and draw.
 
-```tsx
-const onInit: HtmlInCanvasOnInit = useCallback(({ canvas }) => {
-  const gl = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: true });
-  if (!gl) {
-    throw new Error(
-      "WebGL2 unavailable. Try rendering with the --gl=angle option. See https://remotion.dev/docs/gl-options.",
-    );
-  }
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-  // compile program, create texture, set up VAO...
-  return () => {
-    // delete program, texture, buffers...
-  };
-}, []);
+`onInit` and `onPaint` do not share a scope, so keep the context in a ref, and pass both callbacks to `<HtmlInCanvas>`:
 
-const onPaint: HtmlInCanvasOnPaint = useCallback(({ elementImage }) => {
-  gl.texElementImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, elementImage);
-  gl.drawArrays(gl.TRIANGLES, 0, 6);
-}, []);
+```tsx
+import { useCallback, useRef } from "react";
+import {
+  AbsoluteFill,
+  HtmlInCanvas,
+  type HtmlInCanvasOnInit,
+  type HtmlInCanvasOnPaint,
+  useVideoConfig,
+} from "remotion";
+
+export const WebGLEffect = () => {
+  const { width, height } = useVideoConfig();
+  const glRef = useRef<WebGL2RenderingContext | null>(null);
+
+  const onInit: HtmlInCanvasOnInit = useCallback(({ canvas }) => {
+    const gl = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: true });
+    if (!gl) {
+      throw new Error(
+        "WebGL2 unavailable. Try rendering with the --gl=angle option. See https://remotion.dev/docs/gl-options.",
+      );
+    }
+    glRef.current = gl;
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    // compile program, create texture, set up VAO...
+    return () => {
+      // delete program, texture, buffers...
+      glRef.current = null;
+    };
+  }, []);
+
+  const onPaint: HtmlInCanvasOnPaint = useCallback(({ elementImage }) => {
+    const gl = glRef.current;
+    if (!gl) return;
+    gl.texElementImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, elementImage);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }, []);
+
+  return (
+    <HtmlInCanvas width={width} height={height} onInit={onInit} onPaint={onPaint}>
+      <AbsoluteFill style={{ justifyContent: "center", alignItems: "center", fontSize: 120 }}>
+        <h1>Hello</h1>
+      </AbsoluteFill>
+    </HtmlInCanvas>
+  );
+};
 ```
 
 For a fully working minimal example, see https://github.com/remotion-dev/remotion/blob/main/packages/docs/components/demos/HtmlInCanvasDocsDemoWebGL.tsx.

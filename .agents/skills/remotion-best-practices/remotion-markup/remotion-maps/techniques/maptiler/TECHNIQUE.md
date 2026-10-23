@@ -13,7 +13,7 @@ Imperatively update `setData`/`setPaintProperty`.
 Use `jumpTo` only for a static shot, or a fixed map plate for any pan/zoom.
 Gate with [`delayRender`](https://www.remotion.dev/docs/delay-render.md) until `map.once('idle')`.
 
-Use `preserveDrawingBuffer:true`.
+Pass `canvasContextAttributes: {preserveDrawingBuffer: true}` in the map options (nested, as in `assets/RiverReveal.tsx`), so every frame can be read back.
 
 Render labels as positioned [`<Interactive.Div>`](https://www.remotion.dev/docs/interactive.md) elements.
 
@@ -61,7 +61,7 @@ Use MapTiler vector layers for suitable provider features and custom GeoJSON for
 
 ## Keep it minmal
 
-Strip clutter on `load`: remove `symbol` layers (place labels) and `/other border/i` (admin-1 inner borders); hide the logo via CSS. Keep country + disputed borders.
+Strip clutter on `load`: remove `symbol` layers (place labels) and `/other border/i` (admin-1 inner borders); keep the provider logo and attribution visible, never hidden (see `references/map-geo-prep.md`). Keep country + disputed borders.
 
 ## Files
 

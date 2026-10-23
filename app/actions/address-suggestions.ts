@@ -17,7 +17,7 @@
 // Tenant: the SESSION (requireCaller). No brokerageId parameter — none is accepted.
 // Fail closed: no session → no suggestions, no egress.
 
-import { requireCaller } from "@/lib/auth/require-caller"
+import { requireCallerWithAgent } from "@/lib/auth/require-caller"
 import { suggestAddressesDetailed, type AddressSuggestion } from "@/lib/external/nominatim-geocode"
 import { trackVendorUsageService } from "@/lib/vendor-governance/track-vendor-usage"
 
@@ -31,7 +31,9 @@ export type AddressSuggestionsResult =
  * provider was unreachable / skipped for health, or the caller has no session.
  */
 export async function suggestAddresses(query: string): Promise<AddressSuggestionsResult> {
-  const caller = await requireCaller()
+  // requireCallerWithAgent: vendor_usage_tracking.agent_id is an FK to agents.id, and agents.id and
+  // users.id are DISJOINT (CLAUDE.md §3) — booking the users.id here was refused (23503) on every call.
+  const caller = await requireCallerWithAgent()
   if (!caller.ok) return { ok: false, suggestions: [], outcome: "refused", error: caller.error }
 
   const probe = await suggestAddressesDetailed(String(query ?? ""), { brokerageId: caller.brokerageId })
@@ -46,7 +48,7 @@ export async function suggestAddresses(query: string): Promise<AddressSuggestion
         systemSource: "address_autocomplete",
         unitCount: 1,
         brokerageId: caller.brokerageId,
-        agentId: caller.userId,
+        agentId: caller.agentId ?? undefined,
         metadata: { lane: "osint_free", connector: "nominatim", cost: 0, outcome: probe.outcome, status: probe.status, results: probe.value?.length ?? 0 },
       })
     } catch (err) {

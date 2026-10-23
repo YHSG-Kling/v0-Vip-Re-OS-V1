@@ -49,6 +49,11 @@ const response = await fetch(
   },
 );
 
+if (!response.ok) {
+  // Do not write an error body to an .mp3 — Remotion would later fail on an undecodable file.
+  throw new Error(`ElevenLabs request failed (${response.status}): ${await response.text()}`);
+}
+
 const audioBuffer = Buffer.from(await response.arrayBuffer());
 writeFileSync(`public/voiceover/${compositionId}/${scene.id}.mp3`, audioBuffer);
 ```
@@ -82,11 +87,13 @@ export const calculateMetadata: CalculateMetadataFunction<Props> = async ({
 
   return {
     durationInFrames: Math.ceil(sceneDurations.reduce((sum, d) => sum + d, 0)),
+    // Props returned from calculateMetadata go under `props` (the return value is not itself the props).
+    props: { ...props, voiceover: { sceneDurations } },
   };
 };
 ```
 
-The computed `sceneDurations` are passed into the component via a `voiceover` prop so the component knows how long each scene should be.
+The computed `sceneDurations` are passed into the component via the `voiceover` prop returned above so the component knows how long each scene should be.
 
 If the composition uses [`<TransitionSeries>`](./transitions.md), subtract the overlap from total duration: [./transitions.md#calculating-total-composition-duration](./transitions.md#calculating-total-composition-duration)
 

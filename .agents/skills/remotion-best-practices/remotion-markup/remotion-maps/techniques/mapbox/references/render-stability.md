@@ -1,18 +1,18 @@
 # Moving Map Render Stability
 
-Read this reference before building a moving 2D MapTiler scene or diagnosing a wavering Remotion render.
+Read this reference before building a moving 2D Mapbox scene or diagnosing a wavering Remotion render.
 
 ## Symptom and cause
 
 If basemap detail shimmers or jitters during a pan/zoom, the likely cause is per-frame `map.jumpTo()`.
-Headless MapTiler capture can resample both vector hillshade and satellite imagery differently frame to
+Headless Mapbox capture can resample both vector hillshade and satellite imagery differently frame to
 frame. Tile retries, easing changes, and label changes do not solve that renderer effect.
 
 ## Required pattern: fixed map plate
 
 For any 2D pan/zoom:
 
-1. Render the MapTiler canvas once at the largest required zoom in an oversized container. Size it from the camera route and keep each dimension below the browser's reliable WebGL render-buffer limit (commonly 4096 px). Do **not** blindly use 3×: a 1920×1080 composition becomes 5760 px wide and Chromium may silently downsample it, causing visible pixelation during the CSS zoom.
+1. Render the Mapbox canvas once at the largest required zoom in an oversized container. Size it from the camera route and keep each dimension below the browser's reliable WebGL render-buffer limit (commonly 4096 px). Do **not** blindly use 3×: a 1920×1080 composition becomes 5760 px wide and Chromium may silently downsample it, causing visible pixelation during the CSS zoom.
 2. Keep the map's camera static.
 3. For each frame, calculate the approved target centre/zoom, then move the canvas with CSS `translate` + `scale`.
 4. Apply the same transform to every projected HTML overlay.
@@ -21,14 +21,26 @@ For any 2D pan/zoom:
 Keep pitch and bearing constant. Use a 3D engine such as Cesium for genuine changing pitch/bearing or a terrain flythrough.
 
 ```ts
-const baseZoom = Math.max(start.zoom, end.zoom);
-const map = new maptilersdk.Map({
+import mapboxgl from "mapbox-gl";
+
+// `cameras` = EVERY approved camera waypoint ({center: [lng, lat], zoom, pitch?, bearing?}), including
+// intermediate and hold cameras, not just the first and last.
+const baseZoom = Math.max(...cameras.map((c) => c.zoom));
+const lngs = cameras.map((c) => c.center[0]);
+const lats = cameras.map((c) => c.center[1]);
+const plateCenter: [number, number] = [
+  (Math.min(...lngs) + Math.max(...lngs)) / 2,
+  (Math.min(...lats) + Math.max(...lats)) / 2,
+];
+const last = cameras[cameras.length - 1];
+const map = new mapboxgl.Map({
   container,
   style,
-  center: end.center,
+  accessToken: mapboxAccessToken,
+  center: plateCenter,
   zoom: baseZoom,
-  pitch: end.pitch ?? 0,
-  bearing: end.bearing ?? 0,
+  pitch: last.pitch ?? 0,
+  bearing: last.bearing ?? 0,
   interactive: false,
   fadeDuration: 0,
   canvasContextAttributes: {preserveDrawingBuffer: true},
@@ -61,4 +73,4 @@ const labelY = labelPoint.y * scale + height / 2 - projected.y * scale;
 - Render a short MP4, not only a Studio preview.
 - Inspect static terrain texture and satellite detail while the camera moves.
 - If any underlying map detail wavers, use the fixed map plate. Do not approve it as a minor preview artefact.
-- Render WebGL with `--gl=angle`, `preserveDrawingBuffer:true`, and conservative concurrency (`1`) while validating.
+- Render WebGL with `--gl=angle`, `canvasContextAttributes: {preserveDrawingBuffer: true}`, and conservative concurrency (`1`) while validating.

@@ -1,5 +1,9 @@
 export type LngLat = [number, number];
 
+// Every pass roughly doubles the point count, so `passes` must be bounded: Infinity would never
+// terminate, and a large finite value exhausts memory. 8 passes is already a ~256x denser curve.
+const MAX_SMOOTHING_PASSES = 8;
+
 // Chaikin corner cutting turns a sparse route into a continuous curve. Repeated passes round
 // direction changes into deliberate swerves instead of left-right heading bumps.
 export const smoothFlightPath = (source: LngLat[], passes = 3): LngLat[] => {
@@ -17,8 +21,13 @@ export const smoothFlightPath = (source: LngLat[], passes = 3): LngLat[] => {
 		unwrapped.push([adjusted, lat]);
 	}
 
+	// Clamp to an integer in [0, MAX_SMOOTHING_PASSES]; NaN counts as 0.
+	const passCount = Number.isNaN(passes)
+		? 0
+		: Math.min(MAX_SMOOTHING_PASSES, Math.max(0, Math.floor(passes)));
+
 	let curve = unwrapped;
-	for (let pass = 0; pass < Math.max(0, passes); pass++) {
+	for (let pass = 0; pass < passCount; pass++) {
 		const next: LngLat[] = [curve[0]];
 		for (let i = 0; i < curve.length - 1; i++) {
 			const a = curve[i];

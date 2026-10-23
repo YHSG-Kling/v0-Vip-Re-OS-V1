@@ -29,7 +29,7 @@ export default async function LenderTransactionsPage() {
   const lenderVendor = await lenderVendorForUser(supabase, ctx.userId)
   if (!lenderVendor) redirect("/")
 
-  const lenderAssignments = (await lenderVendorTransactionIds(supabase, lenderVendor.vendorId))
+  const lenderAssignments = (await lenderVendorTransactionIds(supabase, lenderVendor.vendorId, lenderVendor.brokerageId))
     .map((id) => ({ transaction_id: id }))
 
   if (!lenderAssignments || lenderAssignments.length === 0) {

@@ -135,11 +135,9 @@ export function ExternalPartnerCommandStrip({
         <Link href="/notifications">
           <Button variant="ghost" size="sm" className="h-8 relative" title="Notifications">
             <Bell className="h-4 w-4" />
-            {pendingActions > 0 && (
-              <Badge className="absolute -top-1 -right-1 h-4 w-4 p-0 flex items-center justify-center text-[10px] bg-yellow-500">
-                {pendingActions}
-              </Badge>
-            )}
+            {/* No count on the bell: pendingActions is the partner's PENDING WORK (closings /
+                jobs / orders — badged on the dashboard button above), not unread notifications,
+                and a "3" that opens an empty notification centre is a false signal. */}
           </Button>
         </Link>
 

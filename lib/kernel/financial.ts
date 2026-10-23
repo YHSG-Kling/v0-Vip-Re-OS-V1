@@ -1994,6 +1994,7 @@ export async function loadAgentProfitLossSummary(
     const { data: expenses, error: expensesError } = await service
       .from("business_expenses")
       .select("amount")
+      .eq("brokerage_id", input.ctx.brokerageId)
       .eq("agent_id", input.agentId)
 
     if (expensesError) {
@@ -2042,6 +2043,7 @@ export async function loadAgentFinancialDashboardSummary(
       service
         .from("business_expenses")
         .select("id, category, amount, description, receipt_url, expense_date")
+        .eq("brokerage_id", input.ctx.brokerageId)
         .eq("agent_id", input.agentId),
 
       service

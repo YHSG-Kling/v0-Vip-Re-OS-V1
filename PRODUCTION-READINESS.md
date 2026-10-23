@@ -138,7 +138,13 @@ The launch checklist tells you *whether* these are done; this is *how*:
    job bills, client payments, agent payouts — runs on that brokerage's OWN
    Stripe account, connected per tenant in Settings → Connections and resolved by
    `lib/billing/resolve-stripe-account.ts` through the standard ownership cascade
-   (agent → team → brokerage). A tenant with no Stripe credential **refuses** with
+   (agent → team → brokerage). Two vendor flows are NOT that money: a vendor's own
+   marketplace tier is a payment TO the platform (`vendor_platform_tier` in
+   `lib/vendors/vendor-money-directions.ts` — the platform's account), and a vendor's
+   job bill is the vendor's invoice to the brokerage (`vendor_job_bill`, recorded in
+   `vendor_invoices`, not a charge on either Stripe account) — so a connected tenant
+   account covers what the brokerage COLLECTS, not every vendor flow. A tenant with
+   no Stripe credential **refuses** with
    a sentence naming what is missing; it never falls back to the platform's
    account, because charging the wrong Stripe account is a money defect, not a
    config defect. The go-live board reports the tenant half as its own row
@@ -150,7 +156,9 @@ The launch checklist tells you *whether* these are done; this is *how*:
    (`lib/billing/stripe-webhook-secrets.ts`) rather than verifying against one
    env secret, and refuse a tenant-signed delivery for the platform's ledger. A
    tenant's signing secret belongs on that tenant's `platform_credentials` row
-   (`config.webhook_secret`), never in an environment variable.
+   (`config.webhook_secret` for the tenant-billing endpoint, `config.vendor_webhook_secret`
+   for the vendor-marketplace endpoint — `lib/billing/stripe-webhook-secrets.ts` reads the
+   endpoint-specific key), never in an environment variable.
 4. **Email**: `SENDGRID_API_KEY` + `SENDGRID_FROM_EMAIL`; complete sender
    domain authentication (the go-live board probes it); register the SendGrid
    event webhook → `/api/webhooks/sendgrid-events` and set
