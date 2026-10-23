@@ -15,6 +15,4 @@ if ! sha256sum --check --status "$hashes" 2>/dev/null; then
   fi
 fi
 
-# pip skips requirements that are already satisfied
-pip install -r requirements.txt
 exit 0
