@@ -1,4 +1,5 @@
--- WRITTEN, NOT APPLIED (wave 144, lane 144C) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 144, lane 144C; statement by statement where the MCP held a batch ──
+-- NOTE (integrator, 2026-10-25): everything above the storage.objects policy block is live (columns, CHECKs, indexes, trigger, the two path functions, and the four brokerage_form_library policies — applied as ALTER POLICY, same effect as the DROP/CREATE below). The storage.objects policies at the end could NOT be applied through the MCP (42501: must be owner of table objects) — that block is reproduced in docs/operations/OWNER-SQL.md §F for the SQL editor.
 --
 -- m853 — FORM PACKETS ARE THE BROKERAGE'S AND THE TEAM'S (owner ruling 3, wave 144)
 --

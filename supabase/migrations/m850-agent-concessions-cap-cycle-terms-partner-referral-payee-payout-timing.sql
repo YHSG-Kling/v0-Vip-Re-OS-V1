@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 144, lane 144D) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 144, lane 144D; statement by statement where the MCP held a batch ──
 --
 -- m850 — AGENT CONCESSIONS · CAP CYCLES FROM THE AGREEMENT · THE OUTSIDE-PARTNER REFERRAL PAYEE · THE PAYOUT GATE
 --        (wave 144, lane 144D; owner rulings 4, 5, 8, 9 of 2026-10-25).

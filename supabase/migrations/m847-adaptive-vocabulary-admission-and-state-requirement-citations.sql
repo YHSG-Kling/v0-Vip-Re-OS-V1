@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 144, lane 144A) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 144, lane 144A; statement by statement where the MCP held a batch ──
 --
 -- m847 — THE ADAPTIVE VOCABULARY REACHES THE DATABASE, AND A STATE REQUIREMENT CARRIES ITS CITATION
 --

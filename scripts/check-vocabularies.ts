@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 461 tables, 847 columns.
+ * MEASURED AT GENERATION: 461 tables, 850 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-23
+ * generated: 2026-10-25
  * source: public.live_check_constraints_json()
- * body-sha256: 251514bc1bb9f4c860152635d3f9fd6de73035abe796d782799d7029e3ee6333
+ * body-sha256: e4623f936445f33b87dc5fd62cb295a2ad9109f9d40e2cc93342b7206e4d77c7
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -343,10 +343,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   brokerage_required_documents: {
     classification: ["addendum", "agency_disclosure", "appraisal_report", "closing_disclosure", "commission_agreement", "counter_offer", "disclosure", "earnest_money_receipt", "hoa_documents", "id_document", "inspection_report", "insurance_binder", "lender_letter", "listing_agreement", "other", "pre_approval_letter", "preliminary_closing_statement", "proof_of_funds", "seller_broker_agreement", "signed_contract", "title_report", "wire_instructions"],
-    contract_subtype: ["lease_option", "new_construction", "probate_estate", "reo_bank_owned", "short_sale", "standard"],
     deal_type: ["buyer", "dual", "seller"],
     financing_kind: ["cash", "financed"],
-    representation: ["designated_agency", "dual_agency", "single_agency", "transaction_brokerage"],
+    legal_basis: ["brokerage_policy", "state_requirement"],
     required_stage: ["closing", "contract", "listing", "offer"],
     scope_type: ["agent", "brokerage", "multi_location", "platform", "team"],
   },
@@ -355,6 +354,8 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     target_role: ["agent", "team_lead"],
   },
   brokerages: {
+    agent_concession_approval: ["broker_approval_required", "no_approval_required"],
+    commission_payout_timing: ["after_brokerage_receipt", "at_closing_per_cda"],
     default_assignment_method: ["geo_based", "load_balance", "manual", "round_robin", "specialization"],
     default_cap_anniversary_basis: ["agent_start_date", "brokerage_fiscal_year", "calendar_year"],
     non_cda_payout_default: ["check", "direct_deposit"],
@@ -493,8 +494,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   commission_adjustments: {
     adjustment_type: ["charity_donation", "credit", "custom", "discount", "first_responder", "rate_override"],
     applies_to: ["agent", "brokerage", "gross"],
+    approval_status: ["approved", "denied", "not_required", "requested", "withdrawn"],
     direction: ["credit", "surcharge"],
     recipient_type: ["agent", "brokerage", "buyer", "charity", "seller"],
+    settlement_treatment: ["closing_statement_credit", "reduced_commission_rate"],
     value_type: ["flat", "percent"],
   },
   commission_distributions: {
@@ -502,7 +505,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     cap_status: ["hit_cap", "n/a", "post_cap", "pre_cap"],
     distribution_type: ["agent", "brokerage", "fee", "referral", "residual", "royalty", "team_member"],
     entry_type: ["adjustment", "entry", "reversal"],
-    source_of_funds: ["agent", "brokerage", "buyer", "seller_concession"],
+    source_of_funds: ["agent", "brokerage", "buyer"],
     status: ["approved", "paid", "pending", "voided"],
   },
   commission_rules: {

@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1853 of 1924 pairs) — storing them would be
+ * overwhelming majority (1856 of 1928 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,18 +75,18 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 2016 edges across 737 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1924 unordered
- * table pairs carry at least one FK; 71
+ * MEASURED AT GENERATION: 2022 edges across 737 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1928 unordered
+ * table pairs carry at least one FK; 72
  * carry more than one and are listed below. 15 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
  * however many columns it spans, so counting its unnested rows separately would flag an
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-23
+ * generated: 2026-10-25
  * source: public.live_foreign_keys_json()
- * body-sha256: 8e2b1e56441774eede0769579f8d51280b5bc6852a15594ac84214e8503cfa70
+ * body-sha256: b6589e27693a8875f375be7bf7be87150a2e3372312d4fef7d3c6baf5365ea78
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -223,12 +223,12 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "brokerage_cda_templates": { "brokerage_id": "brokerages", "uploaded_by": "users" },
   "brokerage_earnings": { "brokerage_id": "brokerages" },
   "brokerage_fee_types": { "brokerage_id": "brokerages" },
-  "brokerage_form_library": { "brokerage_id": "brokerages", "uploaded_by": "users" },
+  "brokerage_form_library": { "brokerage_id": "brokerages", "source_platform_packet_id": "platform_form_packets", "team_id": "teams", "uploaded_by": "users" },
   "brokerage_forms": { "brokerage_id": "brokerages", "created_by": "users" },
   "brokerage_integrations": { "brokerage_id": "brokerages" },
   "brokerage_intelligence_insights": { "brokerage_id": "brokerages", "dismissed_by": "users" },
   "brokerage_p_l": { "brokerage_id": "brokerages" },
-  "brokerage_required_documents": { "brokerage_id": "brokerages", "created_by": "users", "template_form_id": "brokerage_form_library" },
+  "brokerage_required_documents": { "approved_by": "users", "brokerage_id": "brokerages", "created_by": "users", "template_form_id": "brokerage_form_library" },
   "brokerage_settings": { "brokerage_id": "brokerages" },
   "brokerage_transfer_requests": { "brokerage_id": "brokerages", "initiated_by_user_id": "users", "source_brokerage_id": "brokerages", "subject_user_id": "users", "target_brokerage_id": "brokerages" },
   "brokerage_twin_snapshots": { "brokerage_id": "brokerages", "previous_snapshot_id": "brokerage_twin_snapshots", "team_id": "teams" },
@@ -289,9 +289,9 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "collaborative_search_members": { "collaborative_search_id": "collaborative_searches" },
   "collaborative_search_properties": { "added_by_contact_id": "contacts", "collaborative_search_id": "collaborative_searches" },
   "collaborative_searches": { "brokerage_id": "brokerages", "contact_id": "contacts", "created_by_contact_id": "contacts" },
-  "commission_adjustments": { "approved_by_agent_id": "agents", "brokerage_id": "brokerages", "created_by_agent_id": "agents", "transaction_id": "transactions" },
+  "commission_adjustments": { "approval_decided_by": "users", "approved_by_agent_id": "agents", "brokerage_id": "brokerages", "concession_agent_id": "agents", "created_by_agent_id": "agents", "transaction_id": "transactions" },
   "commission_calculations": { "agent_id": "agents", "brokerage_id": "brokerages", "transaction_id": "transactions" },
-  "commission_distributions": { "adjusts_distribution_id": "commission_distributions", "agent_id": "agents", "brokerage_id": "brokerages", "commission_id": "agent_commissions", "corrected_by": "users", "rule_id": "commission_rules", "team_id": "teams", "transaction_id": "transactions" },
+  "commission_distributions": { "adjusts_distribution_id": "commission_distributions", "agent_id": "agents", "brokerage_id": "brokerages", "commission_id": "agent_commissions", "corrected_by": "users", "referral_partner_id": "referral_partners", "rule_id": "commission_rules", "team_id": "teams", "transaction_id": "transactions" },
   "commission_rules": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "commission_splits": { "agent_id": "agents", "brokerage_id": "brokerages", "location_id": "locations", "transaction_id": "transactions" },
   "commission_structures": { "brokerage_id": "brokerages" },
@@ -863,7 +863,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "agent_commissions|users": 3,
   "agent_mentor_relationships|agents": 2,
   "agent_relationships|agents": 2,
-  "agents|commission_adjustments": 2,
+  "agents|commission_adjustments": 3,
   "agents|embed_widgets": 2,
   "agents|offers": 2,
   "agents|referrals": 2,
@@ -877,6 +877,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "ai_video_projects|users": 2,
   "automation_errors|users": 4,
   "blog_posts|users": 2,
+  "brokerage_required_documents|users": 2,
   "brokerage_transfer_requests|brokerages": 3,
   "brokerage_transfer_requests|users": 2,
   "brokerages|leads": 2,

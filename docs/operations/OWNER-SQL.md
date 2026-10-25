@@ -101,6 +101,47 @@ select pg_get_constraintdef(oid) from pg_constraint where conname = 'users_user_
 | `m840-preliminary-statement-has-one-doc-type-spelling.sql` | One `UPDATE`: `transaction_documents.doc_type 'settlement_statement'` → `'preliminary_closing_disclosure'` (the title portal's spelling joins the survivor `cda-portal.ts` already writes). 0 rows today. | A guarded `UPDATE` — the MCP accepts it. Owner approval requested because it renames a vocabulary value. | Four code sites in lanes B/C/G (file:line in the lane notes) ship in the same release. Safe before or after the code: the family reader accepts both spellings. |
 | `m841-global-settings-timezone-null-means-derive-from-state.sql` | `ALTER COLUMN timezone DROP NOT NULL` + `DROP DEFAULT` on `global_settings`: NULL = "the tenant has not chosen", so the CDA deadline can use the tenant's zone *when chosen* and the brokerage's state otherwise. 0 rows today. | `ALTER COLUMN` — the MCP accepts it. | The reaper, the milestone bridge and the settings form (file:line in the lane notes). Useless but harmless without them. |
 
+## F. m853 — the `brokerage-forms` storage policies (SQL editor; the MCP role is not the owner of storage.objects)
+
+**Why this is yours:** `storage.objects` is owned by the storage admin role, and the integration role that applied the rest of
+m853 through the Supabase MCP was refused with `42501: must be owner of table objects`. Everything else in m853 is live
+(the `brokerage_form_library` columns, CHECKs, indexes, trigger, the two path functions and its four table policies).
+
+**What it fixes (P1, security):** today the four live policies on the `brokerage-forms` bucket admit EVERY signed-in user to
+read, overwrite and delete ANY object — other tenants' form masters and filled offers included. This block replaces them
+with per-folder ownership (`brokerage/{brokerage_id}/…`, `teams/{team_id}/…`, `agents/{user_id}/…`, `filled/{offer}/…`)
+through `public.brokerage_forms_path_readable` / `_writable`, which are already live. Run it as-is in the SQL editor
+(the `DROP POLICY IF EXISTS` lines are the point: the open policies must go). Safe to re-run.
+
+```sql
+DROP POLICY IF EXISTS "auth read brokerage-forms"   ON storage.objects;
+DROP POLICY IF EXISTS "auth upload brokerage-forms" ON storage.objects;
+DROP POLICY IF EXISTS "auth update brokerage-forms" ON storage.objects;
+DROP POLICY IF EXISTS "auth delete brokerage-forms" ON storage.objects;
+
+CREATE POLICY "brokerage-forms owner read" ON storage.objects
+  FOR SELECT TO authenticated
+  USING (bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_readable(name));
+CREATE POLICY "brokerage-forms owner upload" ON storage.objects
+  FOR INSERT TO authenticated
+  WITH CHECK (bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_writable(name));
+CREATE POLICY "brokerage-forms owner update" ON storage.objects
+  FOR UPDATE TO authenticated
+  USING (bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_writable(name))
+  WITH CHECK (bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_writable(name));
+CREATE POLICY "brokerage-forms owner delete" ON storage.objects
+  FOR DELETE TO authenticated
+  USING (bucket_id = 'brokerage-forms' AND public.brokerage_forms_path_writable(name));
+
+-- ── 4. m807 is the platform CATALOGUE now (comment only — no row touched) ───────────────────────────────────────────────────
+```
+
+**Verify afterwards:**
+```sql
+SELECT policyname, cmd FROM pg_policies WHERE schemaname='storage' AND tablename='objects' AND policyname ILIKE '%brokerage-forms%' ORDER BY policyname;
+-- expect exactly: "brokerage-forms owner delete" DELETE · "brokerage-forms owner read" SELECT · "brokerage-forms owner update" UPDATE · "brokerage-forms owner upload" INSERT
+```
+
 ## After you run anything on this page
 
 1. In the repository (or ask the integrator): flip the file's first-line status from `WRITTEN, NOT APPLIED` to `APPLIED <date>` and lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file applied.

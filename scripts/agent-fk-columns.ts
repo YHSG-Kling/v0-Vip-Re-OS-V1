@@ -18,12 +18,12 @@
  * credentials, so without the cache the identity-class guard goes blind — that is the only reason
  * it is committed.
  *
- * MEASURED AT GENERATION: 238 agents(id) columns across 228 tables, 38 agent-ish users(id) columns across 36 tables, 172 contact_id tables.
+ * MEASURED AT GENERATION: 239 agents(id) columns across 228 tables, 38 agent-ish users(id) columns across 36 tables, 172 contact_id tables.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-23
+ * generated: 2026-10-25
  * source: public.live_foreign_keys_json()
- * body-sha256: d68002ca696b4ade0913a013e7ada085cb39b7f11712d5042139443d34f9acd4
+ * body-sha256: 2532516ac2d3866320d112cf8fc2984c21f9d5af2b4a88541e4b7be5db075b5c
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -122,7 +122,7 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   closing_gifts: ["agent_id"],
   cma_packages: ["agent_id"],
   cma_reports: ["agent_id"],
-  commission_adjustments: ["approved_by_agent_id", "created_by_agent_id"],
+  commission_adjustments: ["approved_by_agent_id", "concession_agent_id", "created_by_agent_id"],
   commission_calculations: ["agent_id"],
   commission_distributions: ["agent_id"],
   commission_rules: ["agent_id"],
