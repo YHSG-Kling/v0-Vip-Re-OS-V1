@@ -10,8 +10,17 @@
  * MEASURED AT HEAD (the 142C hook): the command carries no payout-pending state, and a second close of the same
  * transaction inserts the touchpoint schedule AGAIN (the duplicate the ruling closes) — both printed as findings,
  * never asserted as the contract. In-memory only (transactions: 2 live rows, neither closed through this command).
+ *
+ * WAVE 144 (lane 144J — GREEN-AFTER-SEED, the gate is never weakened): lane 144I applied lane 144B's close gate to
+ * closeTransactionCommand (a close runs canAdvanceStage(stage → "CLOSED")), so this canary now SEEDS A GATE-PASSING DEAL per
+ * $S/lane144B-notes.md "## Canary requirements" (shared tail): stage CLOSING_PREP, a contract_date, compliance_passed_at (the
+ * executed terms cleared compliance), the brokerage's offers_cda = false (no CDA required — a CDA brokerage would need a completed
+ * cda_delivered milestone), no deal-breaker flag, no trid_timeline row (cash), and NO blocking transaction_compliance_log row
+ * (closing compliance clean). The closing-compliance gate (canProceedToClosingPrep) is SESSION-bound, so the closing agent is
+ * signed in through the harness's opt-in session actor (setSessionUser) and the REAL gate runs — no stub. At HEAD (ungated
+ * command) the seed changes nothing; against the integrated tree the close passes the gate the way a real deal must.
  */
-import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSvc, uuid } from "./_harness"
+import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSessionUser, setSvc, uuid } from "./_harness"
 import { hooksFor, readRepo, strippedRepo } from "./_registry"
 
 export async function run() {
@@ -19,18 +28,24 @@ export async function run() {
   if (LIVE) return c.report([], 0, "refused in CANARY_LIVE mode: in-memory only — a close is a financial event; the live table has 2 rows that are not the canary's")
   const B = uuid(), B2 = uuid(), AG_U = uuid(), AG = uuid(), BUYER = uuid(), SELLER = uuid(), BUYER2 = uuid(), L = uuid(), TX = uuid(), TX2 = uuid()
   const contact = (id: string, type: string, first: string) => ({ id, brokerage_id: B, agent_id: AG, contact_type: type, lifecycle_state: type, first_name: first, last_name: "Canary", email: `${first.toLowerCase()}@${CANARY_EMAIL_DOMAIN}`, created_at: nowIso(), updated_at: nowIso() })
+  // THE GATE-PASSING SEED (wave 144, lane 144J — see the header): the executed contract's date + the compliance stamp on every
+  // deal this canary closes; no CDA required by these brokerages.
+  const contractDate = new Date(Date.now() - 45 * 86_400_000).toISOString().slice(0, 10)
+  const gatePassing = { contract_date: contractDate, compliance_passed_at: nowIso(), offer_id: null }
   const svc = canaryClient({
-    brokerages: [{ id: B, name: `${CANARY_TAG} Brokerage`, plan_tier: "brokerage", slug: `${CANARY_TAG}-life` }, { id: B2, name: `${CANARY_TAG} Other`, plan_tier: "team", slug: `${CANARY_TAG}-life2` }],
+    brokerages: [{ id: B, name: `${CANARY_TAG} Brokerage`, plan_tier: "brokerage", slug: `${CANARY_TAG}-life`, offers_cda: false, non_cda_payout_default: "direct_deposit" }, { id: B2, name: `${CANARY_TAG} Other`, plan_tier: "team", slug: `${CANARY_TAG}-life2`, offers_cda: false }],
     users: [{ id: AG_U, email: `agent@${CANARY_EMAIL_DOMAIN}`, user_type: "agent", brokerage_id: B, platform_role: null, first_name: "Canary", last_name: "Agent" }],
     agents: [{ id: AG, user_id: AG_U, brokerage_id: B, first_name: "Canary", last_name: "Agent", is_active: true }],
     contacts: [contact(BUYER, "buyer", "Blake"), contact(SELLER, "seller", "Sam"), contact(BUYER2, "buyer", "Bea")],
     listings: [{ id: L, brokerage_id: B, agent_id: AG, status: "pending", address: `1 ${CANARY_TAG} Way`, contact_id: SELLER, created_at: nowIso(), updated_at: nowIso() }],
     transactions: [
-      { id: TX, brokerage_id: B, agent_id: AG, listing_id: L, buyer_contact_id: BUYER, seller_contact_id: SELLER, contact_id: BUYER, deal_type: "buyer", status: "under_contract", stage: "CLOSING_PREP", property_address: `1 ${CANARY_TAG} Way`, sales_price: 400_000, created_at: nowIso(), updated_at: nowIso() },
-      { id: TX2, brokerage_id: B, agent_id: AG, listing_id: null, buyer_contact_id: BUYER2, seller_contact_id: null, contact_id: BUYER2, deal_type: "buyer", status: "under_contract", stage: "CLOSING_PREP", property_address: `2 ${CANARY_TAG} Way`, sales_price: 300_000, created_at: nowIso(), updated_at: nowIso() },
+      { id: TX, brokerage_id: B, agent_id: AG, listing_id: L, buyer_contact_id: BUYER, seller_contact_id: SELLER, contact_id: BUYER, deal_type: "buyer", status: "under_contract", stage: "CLOSING_PREP", property_address: `1 ${CANARY_TAG} Way`, sales_price: 400_000, ...gatePassing, created_at: nowIso(), updated_at: nowIso() },
+      { id: TX2, brokerage_id: B, agent_id: AG, listing_id: null, buyer_contact_id: BUYER2, seller_contact_id: null, contact_id: BUYER2, deal_type: "buyer", status: "under_contract", stage: "CLOSING_PREP", property_address: `2 ${CANARY_TAG} Way`, sales_price: 300_000, ...gatePassing, created_at: nowIso(), updated_at: nowIso() },
     ],
   })
   setSvc(svc)
+  // The closing agent presses the button (the session the closing-compliance gate reads); the gate itself is untouched.
+  setSessionUser(svc, AG_U)
   const contacts = () => svc.tables.contacts ?? []
   const touchpoints = () => (svc.tables.lifetime_customer_touchpoints ?? []).filter((t) => t.related_transaction_id === TX)
 
@@ -108,11 +123,11 @@ export async function run() {
     const L = await import("../../lib/kernel/lifetime-conversion")
     const B3 = uuid(), AG3_U = uuid(), AG3 = uuid(), BUYER3 = uuid(), SELLER3 = uuid(), TX3 = uuid()
     const c3row = (id: string, type: string, first: string) => ({ ...contact(id, type, first), brokerage_id: B3, agent_id: AG3 })
-    ;(svc.tables.brokerages ??= []).push({ id: B3, name: `${CANARY_TAG} Holds`, plan_tier: "brokerage", slug: `${CANARY_TAG}-life3` })
+    ;(svc.tables.brokerages ??= []).push({ id: B3, name: `${CANARY_TAG} Holds`, plan_tier: "brokerage", slug: `${CANARY_TAG}-life3`, offers_cda: false })
     ;(svc.tables.users ??= []).push({ id: AG3_U, email: `agent3@${CANARY_EMAIL_DOMAIN}`, user_type: "agent", brokerage_id: B3, platform_role: null, first_name: "Canary", last_name: "Three" })
     ;(svc.tables.agents ??= []).push({ id: AG3, user_id: AG3_U, brokerage_id: B3, first_name: "Canary", last_name: "Three", is_active: true })
     ;(svc.tables.contacts ??= []).push(c3row(BUYER3, "buyer", "Bobbi"), c3row(SELLER3, "seller", "Sal"))
-    ;(svc.tables.transactions ??= []).push({ id: TX3, brokerage_id: B3, agent_id: AG3, listing_id: null, buyer_contact_id: BUYER3, seller_contact_id: SELLER3, contact_id: BUYER3, deal_type: "buyer", status: "under_contract", stage: "CLOSING_PREP", property_address: `3 ${CANARY_TAG} Way`, sales_price: 350_000, created_at: nowIso(), updated_at: nowIso() })
+    ;(svc.tables.transactions ??= []).push({ id: TX3, brokerage_id: B3, agent_id: AG3, listing_id: null, buyer_contact_id: BUYER3, seller_contact_id: SELLER3, contact_id: BUYER3, deal_type: "buyer", status: "under_contract", stage: "CLOSING_PREP", property_address: `3 ${CANARY_TAG} Way`, sales_price: 350_000, ...gatePassing, created_at: nowIso(), updated_at: nowIso() })
     ;(svc.tables.brokerage_settings ??= []).push({ id: uuid(), brokerage_id: B3, settings: { [L.LIFETIME_CONVERSION_POLICY_KEY]: { require_payout_verified: true } }, created_at: nowIso() })
     const verdicts = [
       L.lifetimeConversionVerdict({ closed: false, requiredRecordsComplete: true, payoutVerified: true, requirePayoutVerified: true }),
@@ -126,6 +141,7 @@ export async function run() {
     const held = () => (svc.tables.activities ?? []).filter((a) => a.brokerage_id === B3 && a.transaction_id === TX3 && a.activity_type === L.LIFETIME_HOLD_ACTIVITY_TYPE)
     const tp3 = () => (svc.tables.lifetime_customer_touchpoints ?? []).filter((t) => t.related_transaction_id === TX3)
     let closeHeld: { success: boolean; error?: string } = { success: false, error: "not run" }
+    setSessionUser(svc, AG3_U) // the holding tenant's own closing agent presses its button
     try { closeHeld = await closeTransactionCommand({ transactionId: TX3, brokerageId: B3, agentId: AG3_U, reason: "canary close (payout pending)" }) } catch (e) { closeHeld = { success: false, error: `THREW: ${(e as Error).message}` } }
     c.step(`${h.lane} landed (${at}) — CLOSED / PAYOUT PENDING: on a tenant whose policy (brokerage_settings.settings.lifetime_conversion.require_payout_verified) holds conversion until the agent is paid, the VERIFIED closing closes the transaction but converts NOBODY yet — ONE open hold activity (${L.LIFETIME_HOLD_ACTIVITY_TYPE}, the "${L.LIFETIME_HOLD_LABEL}" label on the deal), the buyer + seller still buyer / seller, 0 touchpoints; the pure verdict ladder reads not_closed → hold_records → hold_payout_pending → convert (and convert-at-close when the policy does not require it)`, closeHeld.success && policy.requirePayoutVerified && /brokerage_settings/.test(policy.source) && verdicts.join() === "not_closed,hold_records,hold_payout_pending,convert,convert" && (svc.tables.transactions ?? []).find((t) => t.id === TX3)?.status === "closed" && held().length === 1 && held()[0].status === "pending" && c3(BUYER3)?.contact_type === "buyer" && c3(SELLER3)?.contact_type === "seller" && tp3().length === 0, closeHeld.error ?? `hold ${held().length}; touchpoints ${tp3().length}`)
     const release = await L.releaseLifetimeConversionOnPayout(svc as never, { brokerageId: B3, transactionId: TX3, actorUserId: AG3_U })

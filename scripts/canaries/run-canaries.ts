@@ -34,19 +34,29 @@
  * commercial-platform), every one IN-MEMORY ONLY (the live database has never been operated — a live run would
  * prove nothing). Steps written against lanes 142A–I's contracts are WAVE142 HOOKS (same probes, same ⏳), and the
  * census prints one line per wave.
+ *
+ * WAVE 144 (lane 144J — integrated real-estate, financial & AI canaries): `CANARY_WAVE=144` (scripts/wave144-canaries.ts,
+ * `test:wave144-canaries`) runs the fourteen wave-144 OWNER-RULING canaries (WAVE144_CANARY_KEYS) on this same runner and
+ * harness. Their steps are RULING steps (c.rule — owner lane named): never pending, red where HEAD does not yet behave as the
+ * owner ruled, and the runner prints a VERDICT TABLE (green / red-awaiting-lane-X / red-defect) beside the RESULT line. The
+ * default roster is untouched.
  */
 import "./_harness"
 import type { CanaryReport } from "./_harness"
-import { CANARY_KEYS, hookCensus } from "./_registry"
+import { CANARY_KEYS, WAVE144_CANARY_KEYS, hookCensus, rulingVerdict } from "./_registry"
 
 const only = (process.env.CANARY_ONLY ?? "").split(",").map((s) => s.trim()).filter(Boolean)
-const CANARIES: Array<{ key: string; load: () => Promise<{ run: () => Promise<CanaryReport> }> }> = CANARY_KEYS
+// WAVE 144 (lane 144J): CANARY_WAVE=144 runs the wave-144 ruling roster instead (scripts/wave144-canaries.ts sets it); the
+// default roster — and so `test:canaries` and the release gate — is unchanged.
+const WAVE144 = process.env.CANARY_WAVE === "144"
+const ROSTER: readonly string[] = WAVE144 ? WAVE144_CANARY_KEYS : CANARY_KEYS
+const CANARIES: Array<{ key: string; load: () => Promise<{ run: () => Promise<CanaryReport> }> }> = ROSTER
   .filter((key) => only.length === 0 || only.includes(key))
   .map((key) => ({ key, load: () => import(`./${key}`) as Promise<{ run: () => Promise<CanaryReport> }> }))
 
 async function main() {
   console.log("══════════════════════════════════════════════════════════════")
-  console.log(` Synthetic production canaries (${process.env.CANARY_LIVE === "1" ? "LIVE" : "in-memory"} mode)${only.length ? ` — only ${only.join(",")}` : ""}`)
+  console.log(` Synthetic production canaries (${process.env.CANARY_LIVE === "1" ? "LIVE" : "in-memory"} mode)${WAVE144 ? " — WAVE 144 owner-ruling roster" : ""}${only.length ? ` — only ${only.join(",")}` : ""}`)
   console.log("══════════════════════════════════════════════════════════════")
   const reports: Array<{ key: string; report: CanaryReport }> = []
   for (const { key, load } of CANARIES) {
@@ -69,11 +79,25 @@ async function main() {
   const deleted = reports.flatMap((r) => r.report.cleanup).reduce((n, c) => n + Math.max(0, c.deleted), 0)
   console.log("\n──────────────────────────────────────────────────────────────")
   for (const r of reports) console.log(` ${r.report.passed ? "PASS" : "FAIL"}  ${r.key.padEnd(20)} steps ${r.report.steps.filter((s) => s.ok && !s.hook).length}/${r.report.steps.filter((s) => !s.hook).length}${r.report.hooks ? `  hooks ${r.report.hooks}` : ""}  deleted ${r.report.cleanup.reduce((n, c) => n + Math.max(0, c.deleted), 0)}  residual ${r.report.residual}${r.report.skipped ? "  (skipped)" : ""}`)
+  if (WAVE144) {
+    // THE VERDICT TABLE (lane 144J): every red ruling step classified by the owner it names — red-awaiting-lane-X (a wave-144
+    // lane's brief carries the fix) or red-defect (no lane owns it; a cleanup / fixture failure is a defect too).
+    let awaitingTotal = 0, defectTotal = 0
+    console.log(" WAVE 144 VERDICTS:")
+    for (const r of reports) {
+      const v = rulingVerdict(r.report.steps)
+      awaitingTotal += Object.values(v.awaiting).reduce((n, x) => n + x, 0); defectTotal += v.defects
+      const lanes = Object.entries(v.awaiting).map(([l, n]) => `red-awaiting-lane-${l}×${n}`)
+      console.log(`   ${r.key.padEnd(16)} ${v.verdict === "green" ? "green" : [...lanes, ...(v.defects ? [`red-defect×${v.defects}`] : [])].join(", ")}`)
+    }
+    console.log(` WAVE144 RULINGS: ${steps.filter((s) => s.owner).length} ruling steps — ${steps.filter((s) => s.owner && s.ok).length} green, ${awaitingTotal} red-awaiting-lane, ${defectTotal} red-defect`)
+  }
   // THE HOOK CENSUS — read from the registry's probes (stripped source), not from the steps, so the
   // runner and the release gate (production-readiness-guard section G) print the same facts. One line per
   // wave (lane 142J): the wave-141 hooks landed through integration; the wave-142 hooks are the lanes A–I
   // still to land at fec8b6a95.
-  for (const wave of ["141", "142"] as const) {
+  // (The wave-144 roster carries no hooks — a ruling step is never pending — so its run prints the verdict table instead.)
+  for (const wave of WAVE144 ? [] : (["141", "142"] as const)) {
     const census = hookCensus(wave)
     const byLane = new Map<string, number>()
     for (const h of census.pending) byLane.set(h.lane, (byLane.get(h.lane) ?? 0) + 1)

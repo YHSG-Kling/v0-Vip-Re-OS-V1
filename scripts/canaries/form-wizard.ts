@@ -16,7 +16,7 @@
  * In-memory only; the real PDF bytes are built here with pdf-lib (the same library the fill survivor uses).
  */
 import { PDFDocument, StandardFonts } from "pdf-lib"
-import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSvc, uuid } from "./_harness"
+import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, landedModule, nowIso, setSvc, uuid } from "./_harness"
 import { hooksFor, listFiles, readRepo, strippedRepo } from "./_registry"
 import { overflowFindings } from "./mobile"
 
@@ -181,22 +181,25 @@ export async function run() {
       const approved = { id: "11111111-1111-4111-8111-111111111111", status: "approved", state: null, packet_type: "offer", field_count: 4, license_note: "Licensed to the platform by the association for member redistribution", license_expires_at: null, approved_by: "u1", storage_path: "platform/11111111-1111-4111-8111-111111111111/contract.pdf" }
       const registry = (rows: Array<Record<string, unknown>>) => ({ from: () => ({ select: () => ({ in: () => Promise.resolve({ data: rows, error: null }) }) }) })
       const actor = { brokerageId: B, teamId: null, userId: "u1" }
-      const admitted = await checkFormPathsInScope(registry([approved]), [approved.storage_path], actor)
-      const refusedDraft = await checkFormPathsInScope(registry([{ ...approved, status: "draft" }]), [approved.storage_path], actor)
-      const refusedExpired = await checkFormPathsInScope(registry([{ ...approved, license_expires_at: "2020-01-01" }]), [approved.storage_path], actor)
-      const failedClosed = await checkFormPathsInScope({ from: () => ({ select: () => ({ in: () => Promise.resolve({ data: null, error: { message: "boom" } }) }) }) }, [approved.storage_path], actor)
+      // WAVE 144 (lane 144J, per lane 144C Outside-lane 1 — owner ruling 3: form packets are BROKERAGE / TEAM-owned): the wave-143
+      // rule this step asserted ("a tenant agent fills an approved platform packet directly") is REVERSED. The platform registry
+      // (m807) stays as a labelled CATALOGUE a brokerage copies from (addPlatformPacketToLibrary → brokerage_form_library, m853);
+      // agents reach only their brokerage's / team's packets. The m807 CHECK, the path grammar, the prefill rail and the superadmin
+      // items are kept. At 967a4866 alone (without 144C) the catalogue-master item is red — the reversal is the ruling.
+      const tenantPackets = await landedModule("../../lib/forms/tenant-form-packets.ts")
+      const catalogueRefused = await checkFormPathsInScope(registry([approved]), [approved.storage_path], actor)
       const wiring: Array<[string, boolean]> = [
         ["m807 registers the packets with an approval-evidence CHECK", /platform_form_packets_approved_needs_evidence/.test(sql) && /field_count > 0/.test(sql)],
-        ["an approved, licensed, fillable packet is admitted by the fill action's scope check", admitted.ok],
-        ["a DRAFT and an EXPIRED licence are refused", !refusedDraft.ok && !refusedExpired.ok],
-        ["a refused registry read FAILS CLOSED", !failedClosed.ok && /could not verify/.test(failedClosed.error ?? "")],
+        ["a tenant NEVER fills a catalogue master (platform/… refused even when approved)", !catalogueRefused.ok],
+        ["a brokerage / team packet path names its owner", tenantPackets?.parseTenantPacketPath?.(`teams/${"11111111-1111-4111-8111-111111111111"}/packets/${"22222222-2222-4222-8222-222222222222"}/x.pdf`)?.kind === "team"],
         ["the platform path grammar refuses traversal and depth", packets.parsePlatformPacketPath("platform/11111111-1111-4111-8111-111111111111/../x.pdf") === null && packets.parsePlatformPacketPath("platform/11111111-1111-4111-8111-111111111111/a/b.pdf") === null],
-        ["the wizard lists the platform group through the session-gated route and keeps ONE source vocabulary", /\/api\/form-wizard\/platform-packets/.test(wizard) && /scope: "platform"/.test(wizard) && !/source: "platform/.test(wizard)],
+        ["the wizard lists the brokerage's / team's packets through /api/form-wizard/form-packets and never a platform group", /\/api\/form-wizard\/form-packets/.test(wizard) && !/\/api\/form-wizard\/platform-packets/.test(wizard) && !/scope: "platform"/.test(wizard) && !/source: "platform/.test(wizard)],
+        ["a brokerage ADDS a catalogue packet to its own library", /addPlatformPacketToLibrary\(/.test(strippedRepo("app/api/admin/transaction-forms/route.ts") ?? "")],
         ["the fill action reaches the packet through checkFormPathsInScope (unchanged rail)", /checkFormPathsInScope/.test(strippedRepo("app/actions/buyer-offer/prefill-storage-form.ts") ?? "")],
         ["approval is superadmin-gated and recorded", /requireSuperadmin\(\)/.test(strippedRepo("app/actions/superadmin/platform-form-packets.ts") ?? "") && /platform_form_packet\.approved/.test(readRepo("app/actions/superadmin/platform-form-packets.ts") ?? "")],
       ]
       const bad = wiring.filter(([, ok]) => !ok).map(([n]) => n)
-      c.step(`${h.lane} landed (${at}) — SOURCE (a): the PLATFORM holds licensed fillable packets (registry m807: approver, licence basis, expiry, ≥1 fillable field enforced by CHECK); tenants see only approved in-licence ones for the deal's state, through a session-gated route, as "My Forms" entries with scope platform; the same fill rail (verified-data prefill, autosave, versioned filled/ PDFs, download) takes them, and the scope check admits a platform path ONLY while its row is approved and in licence (fail closed); superadmin approves / retires with an audit row`, bad.length === 0, bad.join(" | ") || `${m807 ?? "m807 MISSING"}; ${wiring.length} checks`)
+      c.step(`${h.lane} landed (${at}) — SOURCE (a), re-asserted for owner ruling 3 (wave 144): the platform holds a licensed CATALOGUE (registry m807: approver, licence basis, expiry, ≥1 fillable field enforced by CHECK); brokerages add packets to their own library; agents see only their brokerage's / team's — a platform/… master is never filled directly (refused even when approved), a tenant packet path names its owner (brokerage | team), the wizard lists the tenant library only, the same fill rail (checkFormPathsInScope) takes it, and superadmin approves / retires catalogue rows with an audit row`, bad.length === 0, bad.join(" | ") || `${m807 ?? "m807 MISSING"}; ${wiring.length} checks`)
       continue
     }
     if (/SOURCE \(b\)/.test(h.contract)) {

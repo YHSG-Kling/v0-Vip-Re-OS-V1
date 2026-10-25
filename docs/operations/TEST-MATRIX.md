@@ -592,6 +592,33 @@ NAME, DEPENDENCY, TESTED INSTEAD, FUTURE VALIDATION, RISK. Nothing here is a ski
 | NR-21 Production smoke drill | an owner-authorized run: it writes a synthetic tenant to the real database and cleans it up | `test:tenant-provisioning-loops`, `test:tenant-creation` (in memory) | `npm run test:production-smoke` after the owner authorizes it | MEDIUM |
 | NR-22 Avatar video and voice generation | `DID_API_KEY`, `ELEVENLABS_API_KEY` and a budget | `test:avatar-loop`, `test:did-live-agent`, `test:video-pipeline-reaper` | one metered generation, then a playability probe | MEDIUM |
 
+## Wave 144 owner-ruling canaries
+
+Lane 144J (wave 144). Fourteen IN-MEMORY canaries on the existing harness (`scripts/canaries/_harness.ts`, `_registry.ts`, `run-canaries.ts`), run by `scripts/wave144-canaries.ts` (`CANARY_WAVE=144`; the default roster `test:canaries` is unchanged). Each step that encodes an owner ruling names its owner and is NEVER pending: false is RED. The runner prints a verdict table (green / red-awaiting-lane-X / red-defect). Mode: IN-MEMORY (STATIC for the source-rule steps); no live payment, outreach, provider call or publication.
+
+"Integrated" = 967a4866 + the published patches of lanes 144A, 144B, 144C, 144D, 144E, 144G, 144H and 144I applied together in the lane-144J worktree and reverted after the run (144F had published notes, no patch). Totals: HEAD 115 ruling steps — 60 green, 51 red-awaiting-lane, 4 red-defect; integrated — 96 green, 15 red-awaiting-lane, 4 red-defect.
+
+| Canary | File | Rulings | HEAD verdict at 967a4866 | Integrated |
+|---|---|---|---|---|
+| seller journey (+ the verified-closing tail) | `scripts/canaries/seller-journey.ts`, `scripts/canaries/_verified-closing.ts` | 19, 13 | red-awaiting-lane-144B×6, 144I×1, red-defect×2 | red-defect×2 (activateComingSoon ungated; the coming-soon policy is not read at the door) |
+| taxonomy | `scripts/canaries/taxonomy.ts` | 1, 17 | red-awaiting-lane-144A×5, 144C×1, red-defect×1 | 144A×1 (A + I interaction: the vocabulary approval door passes no approver role and 144I's proposal kernel now requires one), 144C×1 (literal financing picker), red-defect×1 (preference patterns). With 144A alone: 9/11 |
+| buyer journey | `scripts/canaries/buyer-journey.ts` | 19 | red-defect×1 | red-defect×1 (BBA not bound at the offer write) |
+| counter | `scripts/canaries/counter-offer.ts` | 2 | red-awaiting-lane-144C×2 | 144C×1 (the accepted counter's own unsigned paper does not block when the checklist omits counters) |
+| forms | `scripts/canaries/form-packets.ts` | 3 | red-awaiting-lane-144C×2 | green (driven through 144C's brokerage / team library, m853) |
+| concessions | `scripts/canaries/concessions.ts` | 4 | red-awaiting-lane-144D×4 | green |
+| financials | `scripts/canaries/financials.ts`, `scripts/canaries/_commission-deal.ts` | 5–9 | red-awaiting-lane-144D×6 | green |
+| Versium | `scripts/canaries/versium.ts` | 10 | red-awaiting-lane-144E×3 | 144E×1 (the research-only home for protected fields is an owner decision per 144E) |
+| channels | `scripts/canaries/channels.ts` | 11, 12 | red-awaiting-lane-144F×4 | 144F×4 (no patch) |
+| first touch | `scripts/canaries/first-touch.ts` | 13 | red-awaiting-lane-144F×2 | 144F×2 (no patch) |
+| AI journeys | `scripts/canaries/ai-journeys.ts` | 11, 12, 18 | red-awaiting-lane-144F×3 | 144F×3 (no patch) |
+| local intelligence | `scripts/canaries/local-intel.ts` | 14 | red-awaiting-lane-144G×4 | 144G×1 (the proposal-awaits-approval half is not wired) |
+| publishing | `scripts/canaries/publishing.ts` | 15, 16, 18 | red-awaiting-lane-144H×5 | 144H×1 (no logo / colours in the lead-magnet book's rendered data) |
+| graph | `scripts/canaries/graph.ts` | 18, laws 2 + 5 | red-awaiting-lane-144I×2, 144D×1 | green |
+| lifetime (default roster, `test:canaries`) | `scripts/canaries/lifetime.ts` | 13 | green-after-seed (14/14): the deal is seeded to pass the integrated close gate (contract_date, compliance_passed_at, no CDA required, closing compliance clean) and the closing agent is signed in (`setSessionUser`), so the real gate runs | green-after-seed (14/14) |
+| form wizard SOURCE (a) (default roster, `test:canaries`) | `scripts/canaries/form-wizard.ts` | 3 | red at 967a4866 alone (the step now asserts owner ruling 3, which 144C delivers): `test:canaries` 33/34 | green: `test:canaries` 34/34 — the step and 144C must land together |
+
+A capability with no survivor at HEAD is probed on STRIPPED source (`findLanded` in `scripts/canaries/_registry.ts`, positive + negative control in the graph canary); a landed file is evidence, never a pass — the step stays red until its behavioural assertion is wired at its `WAVE144 WIRE (integrator)` line. Where a lane's module has landed with a published contract (144A, 144C, 144D, 144E, 144G, 144H), the canary drives it through `landedModule` (`scripts/canaries/_harness.ts`): only a missing FILE reads as "not landed", and a file that fails to load throws. So the same step is red at the base commit and green on the landed behaviour, with no edit in between. The full per-step table and the counts are in the lane-144J notes.
+
 ## Pending proofs
 
 Wave-143 lanes that are still building a proof. Recorded, not run. Each lands as `scripts/<name>.ts`; when the file exists, run it and add its rows here.
@@ -605,6 +632,7 @@ Wave-143 lanes that are still building a proof. Recorded, not run. Each lands as
 | 143E | `scripts/intent-driven-followup-guard.ts` | intent-driven follow-up, review request at verified closing | pending 143E |
 | 143F | `scripts/public-media-scope-guard.ts` | fair-housing scope negative guard, podcasts, book export, lead magnets, Remotion root cause | pending 143F |
 | 143J | `scripts/feature-certification-guard.ts` | advertised-feature certification, dead controls | pending 143J |
+| 144J | `scripts/wave144-canaries.ts` (`test:wave144-canaries`, key to register) | the fourteen wave-144 owner-ruling canaries (section "Wave 144 owner-ruling canaries") | written; package.json key + chain membership are the integrator's |
 
 ## Credential-gated proofs
 

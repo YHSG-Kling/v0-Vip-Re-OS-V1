@@ -29,6 +29,7 @@
     "test:transaction-provider-matrix": "tsx scripts/transaction-provider-matrix-guard.ts",
     "test:tenant-baseline": "tsx --conditions=react-server scripts/tenant-baseline-guard.ts",
     "test:canaries": "tsx scripts/canaries/run-canaries.ts",
+    "test:wave144-canaries": "tsx scripts/wave144-canaries.ts",
     "test:phone-a2p-automation": "tsx scripts/phone-a2p-automation-guard.ts",
     "test:seat-user-convergence": "tsx scripts/seat-user-convergence-guard.ts",
     "test:subscriber-convergence": "tsx --conditions=react-server scripts/subscriber-convergence-guard.ts",

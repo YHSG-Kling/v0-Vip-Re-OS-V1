@@ -63,6 +63,63 @@ export const CANARY_KEYS = [
   "lifetime", "immediate-enrichment", "autonomous-marketing", "video-pipeline", "ai-by-your-side", "commercial-platform",
 ] as const
 export type CanaryKey = (typeof CANARY_KEYS)[number]
+
+/**
+ * WAVE 144 (lane 144J — integrated real-estate, financial & AI canaries): the owner's fourteen verification areas, on the SAME
+ * harness, run by `CANARY_WAVE=144` (scripts/wave144-canaries.ts → `test:wave144-canaries`). A SEPARATE roster on purpose:
+ * these canaries encode the wave-144 OWNER RULINGS as the expected behaviour and are RED at the base commit 967a4866 wherever
+ * HEAD does not yet behave that way (lanes 144A–I land the fixes). Folding them into CANARY_KEYS before the lanes land would
+ * turn `test:canaries` — a member of the guard chain that certified waves 140–143 — red for every lane at once. The integrator
+ * appends them to CANARY_KEYS (and so to the release gate) once the verdict table reads green, or chains the wave key.
+ * Every wave-144 canary is IN-MEMORY ONLY (no live payment, outreach, publication or provider call — the brief's rule).
+ * A ruling step is never PENDING (no hook): false is red, named red-awaiting-lane-X or red-defect by rulingVerdict below.
+ */
+// ORDER IS LOAD-BEARING for one entry: seller-journey runs FIRST because it installs lane 144B's recorder stubs (scripts/canaries/
+// _verified-closing.ts) before anything else reaches lib/transactions/stage-progression.ts (a stub reaches only modules loaded
+// after it — the harness's stubModule rule).
+export const WAVE144_CANARY_KEYS = [
+  "seller-journey", "taxonomy", "buyer-journey", "counter-offer", "form-packets", "concessions", "financials",
+  "versium", "channels", "first-touch", "ai-journeys", "local-intel", "publishing", "graph",
+] as const
+export type Wave144CanaryKey = (typeof WAVE144_CANARY_KEYS)[number]
+
+/** One canary's wave-144 verdict: green, or every red step classified by the owner it names (pure — the runner prints it). */
+export interface RulingVerdict { verdict: "green" | "red"; awaiting: Record<string, number>; defects: number; redSteps: Array<{ owner: string; step: string }> }
+export function rulingVerdict(steps: ReadonlyArray<{ step: string; ok: boolean; hook?: string; owner?: string }>): RulingVerdict {
+  const red = steps.filter((s) => !s.ok && !s.hook)
+  const awaiting: Record<string, number> = {}
+  let defects = 0
+  for (const s of red) { if (s.owner && s.owner !== "defect") awaiting[s.owner] = (awaiting[s.owner] ?? 0) + 1; else defects += 1 }
+  return { verdict: red.length ? "red" : "green", awaiting, defects, redSteps: red.map((s) => ({ owner: s.owner && s.owner !== "defect" ? `red-awaiting-lane-${s.owner}` : "red-defect", step: s.step })) }
+}
+
+/**
+ * WAVE 144 (lane 144J): WHERE DID A LANE LAND A NEW CAPABILITY? The first file under `roots` (repo-relative dirs or files)
+ * whose STRIPPED source matches `re` — TypeScript with comments stripped and string literals KEPT (a column name in a select
+ * list is code), SQL migrations with `--` comment lines dropped (a tombstone or a prose line is not a landing — CLAUDE.md §2).
+ * A wave-144 canary uses it ONLY for a capability that has no survivor at HEAD; the answer is evidence, never a pass: a landed
+ * file still has to meet the ruling's behavioural assertion (the canary wires it at its `WAVE144 WIRE (integrator)` line).
+ */
+export function findLanded(roots: readonly string[], re: RegExp): string | null {
+  for (const root of roots) {
+    const files = /\.(tsx?|sql)$/.test(root) ? (existsSync(join(ROOT, root)) ? [root] : []) : listFiles(root, (f) => /\.(tsx?|sql)$/.test(f))
+    for (const f of files) {
+      const raw = readRepo(f)
+      if (raw === null) continue
+      const code = f.endsWith(".sql") ? raw.split("\n").filter((l) => !/^\s*--/.test(l)).join("\n") : stripComments(raw)
+      if (re.test(code)) return f
+    }
+  }
+  return null
+}
+/** WAVE 144 (lane 144J): the body of `function <name>(` in STRIPPED source (lane 144B's slice, same rule) — "" when absent. */
+export function fnBody(src: string, name: string): string {
+  const m = new RegExp(`(?:^|\\n)(?:export\\s+)?(?:async\\s+)?function\\s+${name}\\s*[(<]`).exec(src)
+  if (!m) return ""
+  const rest = src.slice(m.index + m[0].length)
+  const next = /\n(?:export\s+(?:async\s+)?function|async\s+function|function)\s+\w+\s*[(<]/.exec(rest)
+  return src.slice(m.index, m.index + m[0].length + (next ? next.index : rest.length))
+}
 export type Wave141Lane = "141A" | "141B" | "141C" | "141D" | "141E" | "141F" | "141G" | "141H" | "141I"
 /** WAVE 142 (lane 142J): the lanes whose contracts the wave-142 canaries are written against ($S/prompt142A..I.md). */
 export type Wave142Lane = "142A" | "142B" | "142C" | "142D" | "142E" | "142F" | "142G" | "142H" | "142I"

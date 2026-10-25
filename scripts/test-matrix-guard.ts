@@ -39,7 +39,10 @@
  *       .env.example. Presence is printed by NAME ONLY; no value is ever read into output.
  *   R7  every proof the matrix lists as credential-gated really reads process.env
  *       and really has a skip path (soundness only — see BLIND SPOTS).
- *   R8  every Pending row names a wave-143 lane (143A–143J) and a scripts/ path.
+ *   R8  every Pending row names a wave LANE (wave number + lane letter: 143A–143J, 144A–144K …) and a scripts/ path.
+ *       WAVE 144 (lane 144J): the rule was pinned to the wave-143 waypoint (`143[A-J]`), so the first wave-144 pending
+ *       proof could only be recorded by breaking the guard. Re-asserted as the RULE — a lane id of the repo's own
+ *       `<wave><letter>` form — with a positive control for both waves and a negative one for a lane-less row.
  *
  * POSITIVE CONTROLS. Each finder is first run on a fixture that contains exactly the
  * defect it exists to catch, and must report it (a clean tree and a broken regex both
@@ -221,12 +224,14 @@ function unregisteredNotRun(tierRows: string[][], registerRows: string[][]): str
   const names = new Set(registerRows.map((r) => normName(r[0] ?? "")))
   return tierRows.filter((r) => /\bNOT RUN\b/.test(r.join(" ")) && !names.has(normName(r[0] ?? ""))).map((r) => r[0] || "(unnamed row)")
 }
-/** Pending rows without a wave-143 lane or without a scripts/ path. */
+/** A lane id in the repo's own form: the wave number (140 and up) + the lane letter ("143A", "144J"). */
+const LANE_ID = /\b1(?:4\d|[5-9]\d)[A-K]\b/
+/** Pending rows without a wave lane or without a scripts/ path. */
 function badPendingRows(rows: string[][]): string[] {
   const bad: string[] = []
   for (const r of rows) {
     const label = r[0] || "(unnamed row)"
-    if (!/\b143[A-J]\b/.test(r[0] ?? "")) bad.push(`${label}: first cell must name a lane 143A–143J`)
+    if (!LANE_ID.test(r[0] ?? "")) bad.push(`${label}: first cell must name a wave lane (e.g. 143A, 144J)`)
     if (!scriptPathsIn(r.join(" ")).length) bad.push(`${label}: no scripts/ path`)
   }
   return bad
@@ -290,7 +295,9 @@ console.log("\n[0 · positive controls — each finder must see the defect it ex
     JSON.stringify(inventedPaths(["scripts/a.ts", "scripts/b.ts", "scripts/c.ts"], (p) => p === "scripts/a.ts", new Set(["scripts/b.ts"]))) === JSON.stringify(["scripts/c.ts"]))
   ok("control · a Pending row without a lane or without a scripts/ path is caught",
     badPendingRows([["143A", "`scripts/outside-offer-loop-guard.ts`"]]).length === 0 &&
-    badPendingRows([["offers", "`scripts/x.ts`"]]).length === 1 && badPendingRows([["143B", "no path"]]).length === 1)
+    badPendingRows([["144J", "`scripts/wave144-canaries.ts`"]]).length === 0 &&
+    badPendingRows([["offers", "`scripts/x.ts`"]]).length === 1 && badPendingRows([["143B", "no path"]]).length === 1 &&
+    badPendingRows([["1430A", "`scripts/x.ts`"]]).length === 1)
   const withComment = "// process.env.ONLY_IN_A_COMMENT_143K\nconst k = process.env.REAL_READ_143K\nconst j = process.env[\"BRACKET_READ_143K\"]"
   const names = envNamesInCode(stripComments(withComment + '\nconst L = ["LISTED_NAME_143K"]'), ["ONLY_IN_A_COMMENT_143K", "REAL_READ_143K", "BRACKET_READ_143K", "LISTED_NAME_143K", "REAL_READ"])
   ok("control · an env name that appears only in a comment is NOT a code token; dotted, bracketed and listed names are; a longer name does not match a shorter one",
@@ -425,7 +432,7 @@ console.log("\n[8 · R8 — pending lane proofs are named]")
   const rows = tableRows(pendingBody)
   ok(`the pending list has rows (${rows.length})`, rows.length > 0)
   const bad = badPendingRows(rows)
-  ok("R8 · every pending row names a wave-143 lane and a scripts/ path", bad.length === 0, bad.join("; "))
+  ok("R8 · every pending row names a wave lane and a scripts/ path", bad.length === 0, bad.join("; "))
   const landed = rows.map((r) => scriptPathsIn(r.join(" "))[0]).filter((p) => p && existsSync(p))
   console.log(`  · informational: ${landed.length} of ${rows.length} pending proofs are on disk at this commit${landed.length ? ` (run them: ${landed.join(", ")})` : ""}`)
 }

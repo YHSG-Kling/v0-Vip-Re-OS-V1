@@ -30,8 +30,22 @@
  * compliance gate blocks BEFORE any provider (the portal-e2e-simulator's own method).
  */
 import { randomUUID } from "node:crypto"
+import { existsSync } from "node:fs"
 import { registerHooks } from "node:module"
+import { fileURLToPath } from "node:url"
 import { memSupabase, type MemClient, type MemOptions, type Row } from "../in-memory-supabase"
+
+/**
+ * WAVE 144 (lane 144J): a module ANOTHER LANE lands this wave, or null while its FILE does not exist. Path relative to
+ * scripts/canaries/. Only a missing file reads as "not landed": a file that exists and fails to load THROWS (a broken
+ * landing is a failure, never a quiet "not yet"). A wave-144 canary drives the landed survivor through it, so the same
+ * step is red at the base commit and green the moment the lane's behaviour meets the ruling — no edit in between.
+ */
+export async function landedModule<T = Record<string, any>>(relFromCanaries: string): Promise<T | null> {
+  const url = new URL(relFromCanaries, import.meta.url)
+  if (!existsSync(fileURLToPath(url))) return null
+  return (await import(url.href)) as T
+}
 
 export const CANARY_TAG = "wave140-canary"
 export const CANARY_EMAIL_DOMAIN = "wave140-canary.test"
@@ -83,7 +97,15 @@ export function stubModule(spec: string, source: string): void { STUB_BY_SPEC[sp
  *  canary proves the invite is attempted IN the request and its result READ. */
 export interface CanaryAuthCall { method: "inviteUserByEmail" | "createUser"; email: string; ok: boolean }
 /** Faults a canary injects ONCE (consumed on first use) to prove a refusal is read, never swallowed. */
-export interface CanaryControls { authCalls: CanaryAuthCall[]; faults: { inviteUserByEmail?: { message: string } | null } }
+export interface CanaryControls {
+  authCalls: CanaryAuthCall[]; faults: { inviteUserByEmail?: { message: string } | null }
+  /** WAVE 144 (lane 144J): an OPT-IN session actor. null (the default — every pre-144 canary) = nobody is signed in. A canary that
+   *  drives a SESSION-bound gate for real (canProceedToClosingPrep reads getAgentContext → auth.getUser) sets the seeded users.id
+   *  of the actor whose button it presses (setSessionUser), so the real gate runs instead of a stub. */
+  sessionUserId: string | null
+}
+/** WAVE 144 (lane 144J): sign the canary's synthetic actor in (or out with null) on an in-memory client. */
+export function setSessionUser(svc: CanarySvc, userId: string | null): void { svc.canary.sessionUserId = userId }
 
 export type CanarySvc = MemClient & { canary: CanaryControls }
 
@@ -111,12 +133,12 @@ export function canaryClient(seed: Record<string, Row[]> = {}, opts: Pick<MemOpt
     const { createClient } = require("@supabase/supabase-js") as typeof import("@supabase/supabase-js")
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? ""
     const live = createClient(url, process.env.SUPABASE_SERVICE_ROLE_KEY ?? "", { auth: { autoRefreshToken: false, persistSession: false } })
-    ;(live as unknown as { canary: CanaryControls }).canary = { authCalls: [], faults: {} }
+    ;(live as unknown as { canary: CanaryControls }).canary = { authCalls: [], faults: {}, sessionUserId: null }
     return live as unknown as CanarySvc
   }
   const mem = memSupabase(seed, { stampCreatedAt: true, uuidIds: true, unique: CANARY_UNIQUE, ...opts })
   const authUsers: Array<{ id: string; email: string }> = []
-  const controls: CanaryControls = { authCalls: [], faults: {} }
+  const controls: CanaryControls = { authCalls: [], faults: {}, sessionUserId: null }
   const admin = {
     // The auth user exists FIRST and the on_auth_user_created trigger seeds public.users with
     // the auth id (lib/kernel/users.ts provisionTenantOwner's invariant) — modelled here.
@@ -158,7 +180,14 @@ export function canaryClient(seed: Record<string, Row[]> = {}, opts: Pick<MemOpt
     // WAVE 142 (lane 142J): a canary has NO SESSION — the session gate (lib/auth/require-caller.ts resolveCallerIdentity →
     // supabase.auth.getUser()) must read "nobody is signed in", never a TypeError from a missing door, so a sessionless
     // automation (auto-execute-offer presenting CRON_SECRET) takes its own admitted path and a session-only door refuses.
-    getUser: async () => ({ data: { user: null }, error: { message: "canary: no session (a sessionless automation, or nobody signed in)", code: "canary_no_session" } }),
+    getUser: async () => {
+      // WAVE 144 (lane 144J): the opt-in session actor (setSessionUser) — default null keeps "nobody is signed in".
+      if (controls.sessionUserId) {
+        const u = (mem.tables.users ?? []).find((r) => r.id === controls.sessionUserId)
+        return { data: { user: { id: controls.sessionUserId, email: u?.email ?? null, user_metadata: {}, app_metadata: {} } }, error: null }
+      }
+      return { data: { user: null }, error: { message: "canary: no session (a sessionless automation, or nobody signed in)", code: "canary_no_session" } }
+    },
   }
   m.rpc = async (fn: string) => ({ data: null, error: { message: `canary: rpc ${fn} is not modelled (refused, not faked)`, code: "42883" } })
   m.storage = { from: () => ({ upload: async () => ({ data: null, error: { message: "canary: storage is not modelled" } }), remove: async () => ({ data: null, error: null }) }) }
@@ -169,7 +198,16 @@ export function canaryClient(seed: Record<string, Row[]> = {}, opts: Pick<MemOpt
 // ── the report every canary publishes ───────────────────────────────────────────────
 /** `hook` names the wave-141 lane whose contract this step is written against while that lane's module
  *  is absent at HEAD: the step is PENDING (counted, printed ⏳, never a pass of the contract itself). */
-export interface CanaryStep { step: string; ok: boolean; evidence: string; hook?: string }
+export interface CanaryStep {
+  step: string; ok: boolean; evidence: string; hook?: string
+  /** WAVE 144 (lane 144J): a step that encodes an OWNER RULING names who owns the behaviour — the wave-144 lane whose brief
+   *  carries the fix ("144D"), or "defect" when no lane's brief owns it. A ruling step is NEVER pending: false is RED, it fails
+   *  the canary, and the runner classifies it red-awaiting-lane-X / red-defect (scripts/canaries/_registry.ts rulingVerdict). */
+  owner?: RulingOwner
+}
+/** WAVE 144 (lane 144J): the owner of a ruling step — a wave-144 lane, or "defect" (no lane's brief owns the fix). */
+export type Wave144Lane = "144A" | "144B" | "144C" | "144D" | "144E" | "144F" | "144G" | "144H" | "144I"
+export type RulingOwner = Wave144Lane | "defect"
 export interface CanaryCleanup { table: string; deleted: number }
 export interface CanaryReport {
   chain: string
@@ -198,6 +236,14 @@ export function canary(chain: string) {
     hook(lane: string, contract: string, evidence = ""): void {
       steps.push({ step: `WAVE${lane.slice(0, 3)} HOOK (${lane}): ${contract}`, ok: true, evidence, hook: lane })
       console.log(`    ⏳ HOOK ${lane} — ${contract.slice(0, 160)}${evidence ? ` — ${evidence.slice(0, 120)}` : ""}`)
+    },
+    /** WAVE 144 (lane 144J): an OWNER-RULING step. Same as step() — a false is a failure, never pending — plus the owner the
+     *  verdict table names. `owner` is the lane whose brief carries the behaviour (a green ruling step still names it: the
+     *  lane that must PRESERVE it), or "defect" when no wave-144 brief owns it. */
+    rule(owner: RulingOwner, step: string, ok: boolean, evidence = ""): boolean {
+      steps.push({ step, ok, evidence, owner })
+      console.log(`    ${ok ? "✓" : "✗"} [${owner}] ${step}${evidence ? ` — ${evidence.slice(0, 220)}` : ""}`)
+      return ok
     },
     blind(s: string) { blindSpots.push(s) },
     allOk: () => steps.every((s) => s.ok),
