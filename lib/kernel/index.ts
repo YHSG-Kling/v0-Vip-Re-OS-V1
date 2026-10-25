@@ -369,7 +369,8 @@ export {
   acceptOfferConditionally,
   createTransactionFromCompliantAcceptedOffer,
   seedTransactionMilestones,
-  linkOfferToTransaction,
+  // TOMBSTONE (wave 144I): linkOfferToTransaction retired — survivor lib/transactions/offer-bridge.ts
+  // createTransactionFromOffer (the ONE writer of both offer ↔ transaction pointers; see lib/kernel/transactions.ts §5).
   emitTransactionInitiatedEvent,
   loadComplianceBridgeStatus,
   // ─── CANONICAL TRANSACTION OS COMMANDS ───────────────────────────────────────

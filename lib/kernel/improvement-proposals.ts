@@ -146,6 +146,9 @@ export interface ProposalActor {
   managerKey?: string | null
   /** For a `user`: the SESSION role is on the tenant admin roster (TENANT_ADMIN_USER_TYPES via isTenantAdminGrantRole). */
   isTenantAdmin?: boolean
+  /** For a `user`: the SESSION's users.user_type (wave 144I). Required to APPROVE a proposal whose
+   *  proposed_change.requires_compliance is true — only VOCABULARY_COMPLIANCE_APPROVER_USER_TYPES may (fail closed when absent). */
+  userType?: string | null
   reason?: string | null
 }
 
@@ -210,6 +213,57 @@ export function promotionDecision(input: {
 const REPLAYABLE_ISA_FIELDS = ["blocked_lifecycle_states", "max_touches_lead", "touch_interval_days", "lead_allowed_channels"] as const
 
 /**
+ * WAVE 144 (lane 144A Outside-lane 4, applied by 144I) — the deterministic re-validation of an
+ * ADAPTIVE-VOCABULARY policy proposal (adaptive_vocabulary / coming_soon_policy) at EVALUATION, whatever door
+ * raised it. The validators are lane 144A's (lib/compliance/adaptive-vocabulary.ts validateVocabularyChange,
+ * lib/compliance/coming-soon-policy.ts validateComingSoonPolicyReport) — never a second copy of their rules.
+ * FAIL: a change that no longer validates against the LIVE vocabulary, a patch that writes anything but the
+ * change it describes (an attestation is never proposed — it is written by vocabulary-healing.ts alone), or a
+ * stored requires_compliance that disagrees with the re-validation (a state-scoped change cannot dodge the
+ * compliance approver). A refused live read FAILS closed. A valid change is inconclusive: a human decides.
+ */
+async function evaluateVocabularyPolicyProposal(
+  svc: Svc,
+  row: Pick<ImprovementProposalRow, "brokerage_id" | "subject_key">,
+  change: Record<string, unknown>,
+): Promise<ProposalEvaluation> {
+  const fail = (why: string, detail: Record<string, unknown> = {}): ProposalEvaluation => ({ evaluator: "none", verdict: "fail", score: null, why, detail })
+  const patch = (change.patch ?? null) as Record<string, unknown> | null
+  if (!patch || typeof patch !== "object" || Array.isArray(patch) || Object.keys(patch).length === 0) return fail(`a ${row.subject_key} proposal carries no patch — refused`)
+  if (row.subject_key === "adaptive_vocabulary") {
+    const { validateVocabularyChange, loadTenantVocabulary } = await import("@/lib/compliance/adaptive-vocabulary")
+    const vc = change.vocabulary_change as Parameters<typeof validateVocabularyChange>[0] | undefined
+    if (!vc || typeof vc !== "object" || typeof vc.op !== "string" || typeof vc.dimension !== "string") return fail("a vocabulary proposal carries no vocabulary_change — refused")
+    const live = await loadTenantVocabulary(svc, row.brokerage_id)
+    if (!live.ok) return fail(`re-validation could not read the live vocabulary (${live.error}) — refused, never promoted unvalidated`)
+    const v = validateVocabularyChange(vc, live.vocabulary)
+    if (!v.ok) return fail(`re-validated against the live vocabulary: ${v.errors.join("; ")}`, { errors: v.errors, warnings: v.warnings })
+    const allowed = new Set(["terms", "aliases", "labels", "deactivations"])
+    const stray = Object.keys(patch).filter((k) => !allowed.has(k))
+    if (stray.length) return fail(`the patch writes ${stray.join(", ")} — a vocabulary change writes terms / aliases / labels / deactivations only (an attestation is never proposed)`)
+    const foreign = Object.values(patch).flatMap((m) => Object.keys((m ?? {}) as Record<string, unknown>)).filter((id) => !id.startsWith(`${vc.dimension}:`))
+    if (foreign.length) return fail(`the patch touches entries outside the ${vc.dimension} vocabulary it describes: ${foreign.slice(0, 5).join(", ")}`)
+    if ((change.requires_compliance === true) !== v.requiresCompliance) return fail(`requires_compliance is stored ${change.requires_compliance === true} but the change is ${v.requiresCompliance ? "state-scoped (a compliance approver decides)" : "not state-scoped"} — refused`)
+    return { evaluator: "none", verdict: "inconclusive", score: null, why: `re-validated against the live vocabulary (${vc.op} ${vc.dimension}) — ${v.requiresCompliance ? "a compliance approver decides" : "a human decides"}`, detail: { warnings: v.warnings, requiresCompliance: v.requiresCompliance } }
+  }
+  // coming_soon_policy — the stored entry is re-derived from the rule as reported; the patch must be exactly it.
+  const { validateComingSoonPolicyReport } = await import("@/lib/compliance/coming-soon-policy")
+  type Entry = { mls_slug: string; mls_name: string; state_codes: string[]; permitted: boolean; max_days: number | null; showings_permitted: boolean; mls_submission_within_business_days: number | null; source: { url: string; rule_ref: string; title: string | null } }
+  const e = change.coming_soon_entry as Entry | undefined
+  if (!e || typeof e !== "object" || typeof e.mls_slug !== "string" || !e.source) return fail("a coming-soon proposal carries no coming_soon_entry — refused")
+  const v = validateComingSoonPolicyReport({
+    mlsName: e.mls_name, stateCodes: e.state_codes, permitted: e.permitted, maxDays: e.max_days, showingsPermitted: e.showings_permitted,
+    mlsSubmissionWithinBusinessDays: e.mls_submission_within_business_days, sourceUrl: e.source.url, ruleRef: e.source.rule_ref, sourceTitle: e.source.title,
+  }, new Date().toISOString())
+  if (!v.ok) return fail(`re-validated the MLS rule: ${v.errors.join("; ")}`, { errors: v.errors })
+  if (v.entry.mls_slug !== e.mls_slug) return fail(`the entry's slug ${e.mls_slug} is not the MLS it names (${v.entry.mls_slug})`)
+  const mls = (patch.mls ?? null) as Record<string, unknown> | null
+  if (Object.keys(patch).length !== 1 || !mls || Object.keys(mls).length !== 1 || JSON.stringify(mls[e.mls_slug]) !== JSON.stringify(e)) return fail("the patch is not exactly { mls: { <slug>: the stored entry } } — refused")
+  if (change.requires_compliance !== true) return fail("an MLS coming-soon rule always needs a compliance approver — requires_compliance must be true")
+  return { evaluator: "none", verdict: "inconclusive", score: null, why: `re-validated the MLS coming-soon rule (${e.mls_name}) — a compliance approver decides`, detail: {} }
+}
+
+/**
  * Score a proposal from its evidence — deterministic, no model call.
  * @proofSeam exported so scripts/controlled-learning-guard.ts scores fixtures directly.
  */
@@ -248,6 +302,14 @@ export async function evaluateImprovement(
     case "policy": {
       const policyKey = parsePolicyKey(row.subject_key)
       if (!policyKey) return { evaluator: "none", verdict: "fail", score: null, why: `"${row.subject_key}" is not a registered tenant policy key`, detail: {} }
+      // WAVE 144 (lane 144A Outside-lane 4, applied by 144I): the two ADAPTIVE-VOCABULARY keys are re-validated
+      // here, against the LIVE tenant vocabulary, on EVERY path — not only on the required-documents settings door.
+      // The generic Manager Trust panel used to evaluate them as "a human decides" with no re-check, so a change
+      // that no longer validates (a label now taken, a target since deactivated, an uncited state rule) could
+      // reach promotion. Errors → verdict fail (→ REJECTED); a valid change stays inconclusive — a human decides.
+      if (policyKey.kind === "settings" && (row.subject_key === "adaptive_vocabulary" || row.subject_key === "coming_soon_policy")) {
+        return evaluateVocabularyPolicyProposal(svc, row, change)
+      }
       if (policyKey.kind !== "isa") return { evaluator: "none", verdict: "inconclusive", score: null, why: `no deterministic replay exists for ${policyKey.kind} policy ${row.subject_key} — a human decides`, detail: { kind: policyKey.kind } }
       const patch: Record<string, unknown> = {}
       for (const f of REPLAYABLE_ISA_FIELDS) if (f in change) patch[f] = change[f]
@@ -462,6 +524,19 @@ export async function decideProposal(
   if (input.actor.type === "agent") return { ok: false, error: "an AI agent never decides a proposal (LAW 4)" }
   if (input.actor.type === "user" && !input.actor.isTenantAdmin) return { ok: false, error: "only a broker, owner, admin, team lead or compliance officer decides a proposal" }
   if (input.decision === "approve") {
+    // WAVE 144 (lane 144A Outside-lane 4, applied by 144I): a proposal whose change is state-scoped / regulatory
+    // (proposed_change.requires_compliance) is approved ONLY by a human compliance approver — the broker of
+    // record / owner / broker admin or the compliance officer (lib/compliance/vocabulary-healing.ts
+    // VOCABULARY_COMPLIANCE_APPROVER_USER_TYPES, derived from the tenant roster by named subtraction). A manager
+    // or the system never approves one; a user whose role was not supplied is refused (fail closed). This is the
+    // kernel half of the rule, so the generic Manager Trust door cannot bypass the settings door's check.
+    if ((row.proposed_change ?? {}).requires_compliance === true) {
+      if (input.actor.type !== "user") return { ok: false, error: "a compliance-scoped change is approved by a human compliance approver — never by a manager or the system" }
+      const { VOCABULARY_COMPLIANCE_APPROVER_USER_TYPES } = await import("@/lib/compliance/vocabulary-healing")
+      if (!input.actor.userType || !VOCABULARY_COMPLIANCE_APPROVER_USER_TYPES.has(String(input.actor.userType))) {
+        return { ok: false, error: `a compliance-scoped change needs a compliance approver (${[...VOCABULARY_COMPLIANCE_APPROVER_USER_TYPES].join(", ")})${input.actor.userType ? ` — not ${input.actor.userType}` : " — the approver's role was not supplied"}` }
+      }
+    }
     const optimization = await optimizationContext(svc, row, input.actor)
     if (optimization.surface.scope === "forbidden") return { ok: false, error: `forbidden surface ${optimization.surface.surface}: ${optimization.surface.reason}` }
     if (input.actor.type !== "user") {

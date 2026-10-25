@@ -84,7 +84,11 @@ export type TransferStep = (typeof TRANSFER_MIGRATION_STEPS)[number]
  *  and evidence are preserved, money never crosses tenants): subscriptions, billing_invoices,
  *  ai_tool_usage, vendor_usage_tracking, agent_action_ledger, lifecycle_events, notifications,
  *  brokerage_settings / policies / entitlements / feature flags / managed_agents, commission_*,
- *  agent_book_transfers, user_invitations. */
+ *  agent_book_transfers, user_invitations, and the BROKERAGE-level rows of brokerage_form_library (wave 144I, m853:
+ *  a brokerage packet's licence is the source workspace's and it is shared with every agent of its brokerage — moving
+ *  it would hand a licensed form to the whole adopting brokerage; the m853 CHECK pins its path under the source).
+ *  A TEAM's packets (brokerage_form_library.team_id) are NOT a family either: they follow their TEAM in the membership
+ *  step, the way the team itself does (same team id, same `teams/{teamId}/packets/…` path). */
 export const TRANSFER_DATA_FAMILIES: readonly { table: string; what: string }[] = [
   { table: "contacts", what: "the book — contacts (agents see contacts; §5)" },
   { table: "leads", what: "unconverted leads the tenant owned" },
@@ -629,6 +633,31 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
       const { data: teams, error: teamErr } = await svc.from("teams").update({ brokerage_id: targetId }).eq("brokerage_id", sourceId).select("id")
       if (teamErr) return { error: `teams could not be moved: ${teamErr.message}` }
       record.counts.teams = (record.counts.teams ?? 0) + (teams ?? []).length
+      // A TEAM'S FORM PACKETS FOLLOW THE TEAM (wave 144, lane 144I — m853 / lane 144C Outside-lane 3; owner ruling 3:
+      // "the brokerage or team uploads approved form packets into THEIR OWN tenant/team bucket"). A team packet
+      // (brokerage_form_library.team_id) lives at `teams/{teamId}/packets/…` and the team moves with the SAME id, so the
+      // m853 path-under-owner CHECK still holds and the m853 trigger (the team must belong to the row's brokerage) is
+      // satisfied because the team moved first. Left behind, the team's own packets would sit in the archived tenant,
+      // where its members' RLS (brokerage_id = current_user_brokerage_id()) can no longer reach them.
+      // A BROKERAGE-level packet STAYS with the archived source (declared beside TRANSFER_DATA_FAMILIES): its licence is
+      // the source workspace's, it is shared with EVERY agent of its brokerage (moving it would hand a licensed form to
+      // the whole adopting brokerage — the leakage ruling 3 forbids), and the CHECK pins its path under the source.
+      // Pre-m853 (no team_id column — 42703 / PGRST204) no team packet can exist: nothing to move, said in the detail.
+      const movedTeamIds = ((teams ?? []) as Array<{ id: string }>).map((t) => t.id)
+      let teamPacketNote = ""
+      if (movedTeamIds.length) {
+        const { data: pk, error: pkErr } = await svc.from("brokerage_form_library").update({ brokerage_id: targetId }).eq("brokerage_id", sourceId).in("team_id", movedTeamIds).select("id")
+        const missingCol = !!pkErr && (String((pkErr as { code?: string }).code ?? "") === "42703" || String((pkErr as { code?: string }).code ?? "") === "PGRST204")
+        if (pkErr && !missingCol) return { error: `the moved team(s)' form packets could not follow them: ${pkErr.message}` }
+        if (missingCol) teamPacketNote = ", team form packets: none possible (m853 not applied)"
+        else {
+          record.counts.team_form_packets = (record.counts.team_form_packets ?? 0) + (pk ?? []).length
+          const { data: pkLeft, error: pkLeftErr } = await svc.from("brokerage_form_library").select("id").eq("brokerage_id", sourceId).in("team_id", movedTeamIds).limit(1)
+          if (pkLeftErr) return { error: `team form packet post-condition read refused: ${pkLeftErr.message}` }
+          if ((pkLeft ?? []).length) return { error: "post-condition failed: a moved team's form packet is still in the source tenant" }
+          teamPacketNote = `, ${(pk ?? []).length} team form packet(s)`
+        }
+      }
       // IMMEDIATE POST-CONDITION: no seat is left behind, and the subject sits in the target.
       const { data: left, error: leftErr } = await svc.from("users").select("id, user_type").eq("brokerage_id", sourceId).is("platform_role", null)
       if (leftErr) return { error: `post-condition read refused: ${leftErr.message}` }
@@ -636,7 +665,7 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
       if (stragglers.length) return { error: `post-condition failed: ${stragglers.length} seat(s) still in the source tenant` }
       const { data: subjNow } = await svc.from("users").select("brokerage_id").eq("id", req.subject_user_id).maybeSingle()
       if ((subjNow as { brokerage_id?: string } | null)?.brokerage_id !== targetId) return { error: "post-condition failed: the adopted owner is not in the target tenant" }
-      return { detail: `${moved} member(s), ${(teams ?? []).length} team(s)` }
+      return { detail: `${moved} member(s), ${(teams ?? []).length} team(s)${teamPacketNote}` }
     })
     if (!okM) return stall("membership", "data_move_failed", `Membership migration stalled: ${record.last_error}. Retry from Settings → Users once the cause is fixed.`, true)
 

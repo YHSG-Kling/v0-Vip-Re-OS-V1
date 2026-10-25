@@ -235,7 +235,7 @@ async function approveComingSoonProposal(svc: Svc, input: { brokerageId: string;
     mlsSubmissionWithinBusinessDays: entry.mls_submission_within_business_days, sourceUrl: entry.source?.url ?? null, ruleRef: entry.source?.rule_ref ?? null, sourceTitle: entry.source?.title ?? null,
   }, at) : null
   if (!entry || !recheck?.ok) return { ok: false, error: "the proposal carries no valid coming-soon rule — reject it", errors: recheck && !recheck.ok ? recheck.errors : [] }
-  const actor = { type: "user" as const, userId: approver.userId, isTenantAdmin: true, reason: `MLS coming-soon rule approved: ${String(row.proposed_change?.summary ?? entry.mls_name)}`.slice(0, 500) }
+  const actor = { type: "user" as const, userId: approver.userId, isTenantAdmin: true, userType: approver.userType ?? null, reason: `MLS coming-soon rule approved: ${String(row.proposed_change?.summary ?? entry.mls_name)}`.slice(0, 500) }
   if (row.status === "EVALUATED") {
     const d = await decideProposal(svc, { brokerageId: input.brokerageId, id: row.id, decision: "approve", actor, reason: actor.reason })
     if (!d.ok) return { ok: false, error: d.error }
@@ -290,7 +290,7 @@ export async function approveVocabularyProposal(
     }
   }
 
-  const actor = { type: "user" as const, userId: approver.userId, isTenantAdmin: true, reason: `vocabulary change approved from the required-documents settings: ${String(row.proposed_change?.summary ?? change.op)}`.slice(0, 500) }
+  const actor = { type: "user" as const, userId: approver.userId, isTenantAdmin: true, userType: approver.userType ?? null, reason: `vocabulary change approved from the required-documents settings: ${String(row.proposed_change?.summary ?? change.op)}`.slice(0, 500) }
   if (row.status === "EVALUATED") {
     const d = await decideProposal(svc, { brokerageId: input.brokerageId, id: row.id, decision: "approve", actor, reason: actor.reason })
     if (!d.ok) return { ok: false, error: d.error }

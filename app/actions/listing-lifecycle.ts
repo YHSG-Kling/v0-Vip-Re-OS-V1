@@ -5,7 +5,6 @@ import { createClient } from "@/lib/supabase/server"
 import {
   scheduleListingAppointmentService,
   advanceListingStageService,
-  getListingTimelineService,
   getListingTasksService,
   completeListingTaskService,
   sendReviewRequestService,
@@ -284,14 +283,11 @@ async function fireStageAutomations(listingId: string, toStage: string, actorUse
   }
 }
 
-// The session check and the brokerage ownership gate live in the service (which
-// is now the ONE timeline read — app/actions/listings.ts used to hold a second
-// copy that embedded a `profiles` table the database does not have). Do not
-// re-inline the query here.
-export async function getListingTimeline(listingId: string) {
-  if (!listingId) throw new Error("listingId is required")
-  return getListingTimelineService(listingId)
-}
+// TOMBSTONE (wave 144, lane 144I — the 43 duplicate action names, triaged). A second public
+// `getListingTimeline(listingId)` stood here — a bare pass-through to getListingTimelineService that THREW on
+// a missing id, imported by nothing. SURVIVOR: app/actions/listings.ts:592 getListingTimeline — the same ONE
+// service read (session + brokerage ownership gate inside lib/application/listing-lifecycle.ts), plus UUID
+// validation and the `{ success }` envelope instead of a throw. Nothing was missing from it.
 
 export async function getListingTasks(listingId: string) {
   if (!listingId) throw new Error("listingId is required")

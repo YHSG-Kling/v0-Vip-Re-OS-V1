@@ -280,7 +280,9 @@ export async function ensureWelcomeAvatarVideo(
   // Same reason portal-access.ts defers the invite core.
   try {
     const { dispatchAssignmentIntroVideo } = await import("@/lib/video/intro-video-reactor")
-    const r = await dispatchAssignmentIntroVideo({
+    // `dispatch`, not `r`: this file also iterates agent_client_messages rows as `r`, and the
+    // vocabulary guard resolves a receiver by its NAME — a reactor result is not a row.
+    const dispatch = await dispatchAssignmentIntroVideo({
       brokerageId: params.brokerageId,
       contactId: params.contactId,
       agentId: params.agentId,
@@ -294,19 +296,19 @@ export async function ensureWelcomeAvatarVideo(
       },
     })
 
-    out.videoProjectId = r.videoProjectId ?? null
+    out.videoProjectId = dispatch.videoProjectId ?? null
 
-    if (r.status === "already_queued") {
+    if (dispatch.status === "already_queued") {
       // The idempotency ledger caught it BEFORE the draft. Nothing was spent.
       out.commissioned = true
       out.reason = "already_commissioned"
       return out
     }
-    if (r.status === "suppressed") {
+    if (dispatch.status === "suppressed") {
       out.reason = "video_opt_out"
       return out
     }
-    if (r.ok) {
+    if (dispatch.ok) {
       out.commissioned = true
       out.reason = "commissioned"
       return out
@@ -314,7 +316,7 @@ export async function ensureWelcomeAvatarVideo(
 
     // A refusal. Distinguish the agent-actionable one, because "this agent has
     // never recorded an avatar" is a setup task and not an incident.
-    if (r.reason === "agent voice/avatar profile not configured") {
+    if (dispatch.reason === "agent voice/avatar profile not configured") {
       out.reason = "agent_not_video_ready"
       out.warnings.push(
         `no welcome video for contact ${params.contactId}: the assigned agent has no cloned voice / ` +
@@ -326,8 +328,8 @@ export async function ensureWelcomeAvatarVideo(
 
     out.reason = "refused"
     out.warnings.push(
-      `welcome avatar video NOT commissioned for contact ${params.contactId}: ${r.reason ?? "the reactor refused"}` +
-        (r.violations?.length ? ` — ${r.violations.join("; ").slice(0, 400)}` : ""),
+      `welcome avatar video NOT commissioned for contact ${params.contactId}: ${dispatch.reason ?? "the reactor refused"}` +
+        (dispatch.violations?.length ? ` — ${dispatch.violations.join("; ").slice(0, 400)}` : ""),
     )
     return out
   } catch (e: any) {

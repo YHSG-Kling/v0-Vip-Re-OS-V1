@@ -421,14 +421,12 @@ export async function findDuplicateContacts(contactId: string): Promise<
   }
 }
 
-/**
- * @deprecated Use addContactNote from communications.ts which includes GHL sync
- * This is a thin wrapper for backward compatibility
- */
-export async function addContactNote(contactId: string, note: string) {
-  const { addContactNote: addNoteWithSync } = await import("./communications")
-  return addNoteWithSync({ contactId, note })
-}
+// TOMBSTONE (wave 144, lane 144I — the 43 duplicate action names, triaged). The @deprecated
+// "backward compatibility" wrapper `addContactNote(contactId, note)` stood here — a pure delegation to
+// app/actions/communications.ts:391 addContactNote (session-gated, tenant-anchored, GHL-synced), with no
+// remaining caller to be compatible with. SURVIVOR: app/actions/communications.ts:391 addContactNote. (The
+// note writer the CRM page actually uses is app/actions/contacts.ts addContactNote — the act-as write seam;
+// whether a note should ALSO sync to GHL is a product decision recorded in lane 144I notes, not made here.)
 
 /**
  * Record an explicit FUTURE-INTENT re-contact date on a contact.

@@ -194,7 +194,7 @@ In-product (presence only, no value ever carried into the result): **Superadmin 
 | `TWILIO_INTELLIGENCE_SERVICE_SID` | OPTIONAL | server config | platform | Twilio Voice Intelligence service SID (app/api/voice/twilio/inbound/route.ts:34). | 3 @ app/api/voice/twilio/inbound/route.ts:34 | .env.example |
 | `TWILIO_PHONE_NUMBER` | REQUIRED | server config | platform_subaccount + byo_top_tier | Platform default sending/receiving number (E.164). | 11 @ app/actions/superadmin/platform-reception.ts:41 | .env.example |
 | `TWILIO_STATUS_WEBHOOK_SECRET` | OPTIONAL | server secret | platform | Shared secret for the Twilio status-callback door. | 1 @ app/api/webhooks/twilio-sms-status/route.ts:48 | .env.example |
-| `VAPI_ISA_ASSISTANT_ID` | RETIRED | server config | platform | RETIRED Vapi lane (replaced by Twilio-native). The census sees it only because lib/kernel/manager-registry.ts:964 quotes it in prose. | 1 @ lib/kernel/manager-registry.ts:966 | .env.example |
+| `VAPI_ISA_ASSISTANT_ID` | RETIRED | server config | platform | RETIRED Vapi lane (replaced by Twilio-native). The census sees it only because lib/kernel/manager-registry.ts:964 quotes it in prose. | 1 @ lib/kernel/manager-registry.ts:975 | .env.example |
 | `VOICE_TOOL_ROUND_DEADLINE_MS` | OPTIONAL | server config | platform | Voice tool-round deadline in ms; default 4000 (lib/voice/twilio-voice.ts:420). | 1 @ lib/voice/twilio-voice.ts:420 | .env.example |
 
 ### Email (SendGrid egress, inbound parsers, sender identity)

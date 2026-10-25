@@ -200,6 +200,10 @@ export async function updateGoalProgress(params: {
     await recordGoalMissionProgress(caller.brokerageId, [data as { id: string; goal_type: string; current_value: number | null; mission_id: string | null }])
 
     revalidatePath("/dashboard")
+    // MERGED from the retired duplicate (app/actions/agents.ts, wave 144I): the broker's Agent 360 view
+    // (app/actions/admin/agent-360.ts reads agent_goals) lives under /dashboard/admin/users/[userId] —
+    // revalidate the whole subtree so it shows the new progress.
+    revalidatePath("/dashboard/admin/users", "layout")
     return { success: true, data }
   } catch (error) {
     return handleError(error, "updateGoalProgress")

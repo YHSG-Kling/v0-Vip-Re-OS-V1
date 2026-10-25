@@ -38,7 +38,9 @@ async function requireLearningAdmin(reason?: string | null): Promise<AdminGate> 
   if (!isTenantAdminGrantRole(caller.userType)) {
     return { ok: false, error: "Only a broker, owner, admin, team lead or compliance officer can decide on improvement proposals." }
   }
-  return { ok: true, brokerageId: caller.brokerageId, actor: { type: "user", userId: caller.userId, isTenantAdmin: true, reason: reason ?? null } }
+  // userType (wave 144I): the kernel's decideProposal approves a compliance-scoped change (proposed_change.requires_compliance)
+  // only for a compliance approver — the SESSION's role travels with the actor so this generic door cannot bypass it.
+  return { ok: true, brokerageId: caller.brokerageId, actor: { type: "user", userId: caller.userId, isTenantAdmin: true, userType: caller.userType ?? null, reason: reason ?? null } }
 }
 
 export async function listProposals(): Promise<{ ok: true; available: boolean; rows: ImprovementProposalRow[] } | { ok: false; error: string }> {

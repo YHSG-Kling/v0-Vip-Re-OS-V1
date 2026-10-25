@@ -26,6 +26,8 @@
 // Team scope: categories whose rows carry no team column are WITHHELD for a team (teams see only
 // their own board) — said, never zeroed. Pure core + one async loader. Read-only.
 
+import type { ManagerKey } from "@/lib/kernel/manager-registry"
+
 export type ExceptionCategoryKey =
   | "transaction_at_risk" | "human_intervention" | "agent_capacity" | "campaign_overspend"
   | "compliance_approval" | "billing_anomaly" | "mission_decision" | "os_health"
@@ -43,18 +45,25 @@ export interface ExceptionCategorySpec {
   door: ExceptionDoor
   /** False → the reader's rows carry no team column: a TEAM scope withholds the category. */
   teamNarrowable: boolean
+  /** THE ACCOUNTABLE REGISTERED MANAGER for this exception (wave 144, lane 144I; owner ruling 18 — "every
+   *  workflow exception has an accountable registered owner"). Derived, not invented: the TABLE_MANAGER
+   *  steward of the table the category's reader stands on (deal_health_scores / tasks → deal_coordinator,
+   *  the capacity answer → recruiting_manager, ad_campaigns → ads_manager, compliance_flags →
+   *  compliance_officer, billing_invoices → finance_manager, missions → campaign_orchestrator,
+   *  self_heal_events → cron_manager). scripts/parent-child-graph-guard.ts re-derives it from the registry. */
+  owner: ManagerKey
 }
 
 /** THE category table — order is the final tie-break in the ranking. */
 export const EXCEPTION_CATEGORIES: Readonly<Record<ExceptionCategoryKey, ExceptionCategorySpec>> = {
-  transaction_at_risk: { label: "Transactions at risk", reader: "brokerage twin atRisk[deal_health] (deal_health_scores · calculateDealHealth)", door: { label: "Open the at-risk deals", href: "/dashboard/transactions" }, teamNarrowable: true },
-  human_intervention: { label: "Opportunities needing a human", reader: "Command Center clientDecisions (tasks · decision-signal rail) + SLA-breached approvals (evaluateApprovalSla)", door: { label: "Decide now", href: "/dashboard/admin/command-center#approval-queue" }, teamNarrowable: true },
-  agent_capacity: { label: "Agent capacity problems", reader: "brokerage twin capacity (capacityFor · capacity-guardian bands)", door: { label: "Rebalance the book", href: "/dashboard/admin/agents" }, teamNarrowable: true },
-  campaign_overspend: { label: "Campaign overspend", reader: "Ads Manager (lib/ads/ad-manager.ts) pause proposals + loadCampaignOverruns (ad_campaigns.daily_budget × ad_performance.spend)", door: { label: "Review ad spend", href: "/dashboard/campaigns/ads" }, teamNarrowable: true },
-  compliance_approval: { label: "Compliance approvals required", reader: "Command Center compliancePreflight (manager-dissent) + brokerage twin atRisk[compliance] (compliance_flags)", door: { label: "Review compliance", href: "/dashboard/compliance" }, teamNarrowable: true },
-  billing_anomaly: { label: "Billing anomalies", reader: "economic graph reconcileSummariesAgainstLedger (summary drift · conservation) + billing_invoices (open past due_date)", door: { label: "Open billing", href: "/dashboard/admin/billing" }, teamNarrowable: false },
-  mission_decision: { label: "Missions needing a decision", reader: "missions activeMissionsFor (BLOCKED / APPROVAL_REQUIRED / ESCALATED) + mission-controller missionVerdictLines (humanNeeded)", door: { label: "Decide on the Missions card", href: "/dashboard/admin/command-center#missions" }, teamNarrowable: false },
-  os_health: { label: "OS health incidents", reader: "Exception Center composeExceptionCenter (self_heal_events escalated) + heartbeat (cron_execution_logs failed / timeout)", door: { label: "Open the Exception Center", href: "/dashboard/brokerage#exception-center" }, teamNarrowable: false },
+  transaction_at_risk: { owner: "deal_coordinator", label: "Transactions at risk", reader: "brokerage twin atRisk[deal_health] (deal_health_scores · calculateDealHealth)", door: { label: "Open the at-risk deals", href: "/dashboard/transactions" }, teamNarrowable: true },
+  human_intervention: { owner: "deal_coordinator", label: "Opportunities needing a human", reader: "Command Center clientDecisions (tasks · decision-signal rail) + SLA-breached approvals (evaluateApprovalSla)", door: { label: "Decide now", href: "/dashboard/admin/command-center#approval-queue" }, teamNarrowable: true },
+  agent_capacity: { owner: "recruiting_manager", label: "Agent capacity problems", reader: "brokerage twin capacity (capacityFor · capacity-guardian bands)", door: { label: "Rebalance the book", href: "/dashboard/admin/agents" }, teamNarrowable: true },
+  campaign_overspend: { owner: "ads_manager", label: "Campaign overspend", reader: "Ads Manager (lib/ads/ad-manager.ts) pause proposals + loadCampaignOverruns (ad_campaigns.daily_budget × ad_performance.spend)", door: { label: "Review ad spend", href: "/dashboard/campaigns/ads" }, teamNarrowable: true },
+  compliance_approval: { owner: "compliance_officer", label: "Compliance approvals required", reader: "Command Center compliancePreflight (manager-dissent) + brokerage twin atRisk[compliance] (compliance_flags)", door: { label: "Review compliance", href: "/dashboard/compliance" }, teamNarrowable: true },
+  billing_anomaly: { owner: "finance_manager", label: "Billing anomalies", reader: "economic graph reconcileSummariesAgainstLedger (summary drift · conservation) + billing_invoices (open past due_date)", door: { label: "Open billing", href: "/dashboard/admin/billing" }, teamNarrowable: false },
+  mission_decision: { owner: "campaign_orchestrator", label: "Missions needing a decision", reader: "missions activeMissionsFor (BLOCKED / APPROVAL_REQUIRED / ESCALATED) + mission-controller missionVerdictLines (humanNeeded)", door: { label: "Decide on the Missions card", href: "/dashboard/admin/command-center#missions" }, teamNarrowable: false },
+  os_health: { owner: "cron_manager", label: "OS health incidents", reader: "Exception Center composeExceptionCenter (self_heal_events escalated) + heartbeat (cron_execution_logs failed / timeout)", door: { label: "Open the Exception Center", href: "/dashboard/brokerage#exception-center" }, teamNarrowable: false },
 }
 export const EXCEPTION_CATEGORY_ORDER = Object.keys(EXCEPTION_CATEGORIES) as ExceptionCategoryKey[]
 

@@ -716,8 +716,8 @@ export async function generateQRCodeAction(input: { magnetId: string; url: strin
   }
 }
 
-// Re-exports are illegal in "use server" files — wrap instead.
-import { captureFormSubmissionAction as _captureFormSubmission } from "./lead-magnet-capture"
-export async function captureFormSubmissionAction(...args: Parameters<typeof _captureFormSubmission>) {
-  return _captureFormSubmission(...args)
-}
+// TOMBSTONE (wave 144, lane 144I — the 43 duplicate action names, triaged). A wrapper
+// `captureFormSubmissionAction(...args)` stood here (re-exports are illegal in "use server" files, so it
+// wrapped) — a second public door to the same capture, imported by nothing. SURVIVOR:
+// app/actions/lead-magnet-capture.ts captureFormSubmissionAction — the public capture every form imports, which
+// runs the full kernel flow (lib/kernel/lead-magnets.ts captureFormSubmission; scripts/lead-magnet-flow-simulator.ts).

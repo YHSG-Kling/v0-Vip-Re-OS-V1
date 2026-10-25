@@ -29,6 +29,7 @@ import { KernelEvent }         from "@/lib/kernel/events"
 import { isValidUUID }         from "@/lib/validations"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { STAGE_TRANSITIONS, type TransactionStage } from "@/lib/transactions/transaction-stages"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -630,38 +631,17 @@ export async function seedTransactionMilestones(
 }
 
 // ─── 5. LINK OFFER TO TRANSACTION ────────────────────────────────────────────
-/**
- * Back-links an offer to a transaction after creation.
- * Idempotent: no-op if offer.transaction_id is already set.
- */
-export async function linkOfferToTransaction(params: {
-  offerId:       string
-  transactionId: string
-}): Promise<KernelTxResult<{ linked: boolean }>> {
-  const { offerId, transactionId } = params
-  if (!isValidUUID(offerId) || !isValidUUID(transactionId)) {
-    return { success: false, error: "Invalid IDs" }
-  }
-
-  const supabase = createServiceClient()
-
-  const { data: offer } = await supabase
-    .from("offers")
-    .select("id, transaction_id")
-    .eq("id", offerId)
-    .maybeSingle()
-
-  if (!offer) return { success: false, error: "Offer not found" }
-  if ((offer as any).transaction_id) return { success: true, data: { linked: false } }  // already linked
-
-  const { error } = await supabase
-    .from("offers")
-    .update({ transaction_id: transactionId, updated_at: new Date().toISOString() })
-    .eq("id", offerId)
-
-  if (error) return { success: false, error: error.message }
-  return { success: true, data: { linked: true } }
-}
+// TOMBSTONE (wave 144, lane 144I — parent/child graph audit, arrow deal.offer>transaction).
+// `linkOfferToTransaction` stood here: a SECOND writer of the back-pointer offers.transaction_id,
+// unpinned to any tenant (`.eq("id", offerId)` on the service client) and called by nothing — only the
+// lib/kernel/index.ts barrel re-exported it. offers ↔ transactions is a TWO-WAY pointer
+// (transactions.offer_id AND offers.transaction_id), and a two-way pointer may have exactly ONE writer
+// or the two halves can disagree. SURVIVOR: lib/transactions/offer-bridge.ts createTransactionFromOffer —
+// it writes transactions.offer_id when it creates the deal (:377), back-links offers.transaction_id in the
+// same flow (:509-513), and already carries this function's only extra behaviour, the "already linked"
+// idempotency, as a REFUSAL before any transaction is created (offer-bridge.ts:139 "transaction already
+// exists for this offer"). Nothing was merged because nothing was missing on the survivor.
+// Held by scripts/parent-child-graph-guard.ts (bidirectional-second-writer).
 
 // ─── 7. EMIT TRANSACTION INITIATED EVENT ─────────────────────────────────────
 /**
@@ -1152,14 +1132,35 @@ export async function closeTransactionCommand(params: {
     const nowIso = new Date().toISOString()
 
     // Capture related entities BEFORE the close so we can propagate state
-    const { data: txBefore } = await supabase
+    const { data: txBefore, error: txBeforeError } = await supabase
       .from("transactions")
-      .select("listing_id, buyer_contact_id, seller_contact_id, contact_id, deal_type, property_address")
+      .select("listing_id, buyer_contact_id, seller_contact_id, contact_id, deal_type, property_address, stage")
       .eq("id", params.transactionId)
       .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
+    if (txBeforeError) return { success: false, error: `Could not read the transaction before closing it: ${txBeforeError.message}` }
+    if (!txBefore) return { success: false, error: "Transaction not found in this brokerage — nothing was closed" }
 
-    const { error } = await supabase
+    // THE VERIFIED CLOSE IS GATED AT ITS AUTHORITATIVE WRITE (wave 144, lane 144B outside-lane item 1, applied by
+    // lane 144I — owner ruling 19: "every promotion is guarded at its authoritative WRITE, not only in the UI").
+    // This door (the "Close Transaction" button) used to close a deal from ANY stage with no closing compliance,
+    // CDA or milestone check, and the review ask, lifetime conversion and commission finalization below then
+    // followed an UNVERIFIED close. The gate is THE stage machine's (lib/transactions/stage-progression.ts
+    // canAdvanceStage — transition order, contract date, closing compliance, CDA only where the brokerage uses
+    // one, critical milestones); never a second copy of its rules here.
+    // Re-closing an already-CLOSED deal is idempotent: success, and nothing below runs twice (the 142K re-run
+    // second-hold finding).
+    const stageBefore = (txBefore as { stage?: string | null }).stage ?? null
+    if (stageBefore === "CLOSED") return { success: true }
+    // An unknown / missing stage cannot be judged by the stage machine — refuse rather than close (fail closed).
+    if (!stageBefore || !Object.prototype.hasOwnProperty.call(STAGE_TRANSITIONS, stageBefore)) {
+      return { success: false, error: `Closing blocked: the transaction's stage (${stageBefore ?? "none"}) is not a stage the closing gate can judge` }
+    }
+    const { canAdvanceStage } = await import("@/lib/transactions/stage-progression")
+    const closeGate = await canAdvanceStage(params.transactionId, stageBefore as TransactionStage, "CLOSED", params.brokerageId)
+    if (!closeGate.allowed) return { success: false, error: `Closing blocked: ${closeGate.blockers.join("; ")}` }
+
+    const { data: closedRows, error } = await supabase
       .from("transactions")
       .update({
         status:     "closed",
@@ -1169,8 +1170,12 @@ export async function closeTransactionCommand(params: {
       })
       .eq("id", params.transactionId)
       .eq("brokerage_id", params.brokerageId)
+      .select("id")
 
     if (error) return { success: false, error: error.message }
+    // A tenant-pinned UPDATE that matches nothing RESOLVES with no error (CLAUDE.md §3) — count it, or a
+    // wrong-tenant / already-gone deal reports a close that never happened (the 142J finding).
+    if (!closedRows || closedRows.length === 0) return { success: false, error: "No transaction was closed — 0 rows matched this transaction in this brokerage" }
 
     // Timeline + lifecycle_event + per-contact activity rows
     // (activity rows are what the CRM contact Activity tab reads — the

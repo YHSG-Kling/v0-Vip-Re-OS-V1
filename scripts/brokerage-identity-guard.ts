@@ -32,6 +32,8 @@
  *     cards wired, no "platform-covered" in tenant copy.
  *     E2 (wave 143G) FK CLOSURE — a moved family's FK children follow it: the landing-page tables are a
  *     zero-exception rule (positive control); the rest is a published FROZEN ceiling that only goes down.
+ *     (wave 144I) every unmoved child has a TABLE_MANAGER owner, and the debt is published per owning manager
+ *     and per moved parent — the owner's history-vs-state ruling can be asked manager by manager.
  *  F. ARCHIVED SOURCE FORWARDS (wave 143G) — an archived workspace has no public surface of its own: its storefront
  *     redirects, and its website chat is served, by the brokerage of its COMPLETED transfer (one hop, fail closed:
  *     unreadable ⇒ 503, no transfer ⇒ 404); a same-name decoy is never the successor (positive control).
@@ -221,6 +223,12 @@ function railSeed(): { seed: Record<string, Row[]>; f: Fixture } {
     seed[fam.table].push({ id: `${fam.table}-s2`, brokerage_id: f.S2, agent_id: "ag-o2", label: `S2 ${fam.table}` })
   }
   seed.contacts.push({ id: "contacts-s-2", brokerage_id: f.S, agent_id: "ag-o", label: "S second contact" })
+  // FORM PACKETS (wave 144I, m853): the team tenant's TEAM packet, its BROKERAGE-level packet, and the decoy's packet.
+  seed.brokerage_form_library = [
+    { id: "pk-team", brokerage_id: f.S2, team_id: "team-s2", name: "Team listing packet", storage_path: "teams/team-s2/packets/pk-team/listing.pdf", is_active: true },
+    { id: "pk-brk", brokerage_id: f.S2, team_id: null, name: "Workspace purchase packet", storage_path: `brokerage/${f.S2}/packets/pk-brk/purchase.pdf`, is_active: true },
+    { id: "pk-decoy", brokerage_id: f.D, team_id: null, name: "Decoy packet", storage_path: `brokerage/${f.D}/packets/pk-decoy/x.pdf`, is_active: true },
+  ]
   return { seed, f }
 }
 
@@ -397,6 +405,12 @@ const realBillingDeps = (c: MemClient, s: Spies, actors: Array<string | null>, s
   const subjectAsActor = await stripeSideHandoff(svc, { sourceBrokerageId: f.S, targetBrokerageId: f.T, effectiveAt: NOW.toISOString(), actorUserId: f.O }, { ledgerClient: svc, endSubscription: async () => ({ applied: true, skipped: false, mode: "scheduled_cancel" as const }), emit: async () => ({}), now: NOW })
   check("POSITIVE CONTROL: the Stripe side refuses the adopted OWNER as actor (actor_not_authorized) — the subject can never be the billing actor", !subjectAsActor.ok && subjectAsActor.refused === "actor_not_authorized")
   check("membership + data already done; billing failed; archive + readiness pending; status migrating", mid.status === "migrating" && mid.migration?.steps.membership?.status === "done" && mid.migration?.steps.data?.status === "done" && mid.migration?.steps.billing_handoff?.status === "failed" && transferStepsPending(mid.migration).join(",") === "billing_handoff,archive_source,target_readiness")
+  {
+    const pkt = (id: string) => svc.tables.brokerage_form_library.find((r) => r.id === id)!
+    check("TEAM FORM PACKETS FOLLOW THE TEAM (wave 144I, m853): the team's packet moved with it — same id, same teams/{teamId}/ path", pkt("pk-team").brokerage_id === f.T && pkt("pk-team").storage_path === "teams/team-s2/packets/pk-team/listing.pdf")
+    check("…the workspace's BROKERAGE-level packet STAYS with the source (its licence; never shared with the whole adopting brokerage), and the decoy's is untouched", pkt("pk-brk").brokerage_id === f.S2 && pkt("pk-decoy").brokerage_id === f.D)
+    check("…counted in the migration record", (svc.tables.brokerage_transfer_requests.find((r) => r.id === id)!.migration as any)?.counts?.team_form_packets === 1)
+  }
   check("the team moved as a unit (same id) with both members; the member stays an agent, the owner is the team lead", svc.tables.teams[0].brokerage_id === f.T && svc.tables.users.filter((u) => u.brokerage_id === f.S2 && !u.platform_role).length === 0 && svc.tables.users.find((u) => u.id === f.O2)!.user_type === "team_lead" && svc.tables.users.find((u) => u.email === "member@team.test")!.user_type === "agent" && mid.migration?.counts.members === 2 && mid.migration?.counts.teams === 1)
   check("NOT ARCHIVED while billing is pending (no double billing by omission); the Stripe row untouched", svc.tables.brokerages.find((b) => b.id === f.S2)!.status === "active" && svc.tables.subscriptions.find((x) => x.id === "sub-s2")!.status === "active")
   check("the Finance Manager route carried the pending handoff to staff AND the target admins; a stalled event was recorded", s.staff.some((n) => n.type === "brokerage_transfer_billing_pending" && /Finance Manager/.test(n.title)) && s.admins.some((n) => n.type === "brokerage_transfer_billing_pending") && s.events.some((e) => e.event === "brokerage_transfer_stalled" && e.metadata?.step === "billing_handoff"))
@@ -517,6 +531,18 @@ console.log("\n[E · registration, derived vocabularies, wiring]")
   const debt = unmovedChildren(famSet)
   check(`FK-closure debt does not GROW: ${debt.length} unmoved child tables (frozen ceiling ${FROZEN_UNMOVED_FK_CHILDREN}; lower the ceiling when a family is added — a count that moves is the finding)`, debt.length <= FROZEN_UNMOVED_FK_CHILDREN, `grew by ${debt.length - FROZEN_UNMOVED_FK_CHILDREN}: ${debt.slice(0, 8).join(",")}`)
   console.log(`    (published) FK-closure census: ${Object.keys(SCHEMA_FK_MAP).filter((t) => (SCHEMA_SNAPSHOT[t] ?? []).includes("brokerage_id")).length} tables in the FK cache carry brokerage_id; ${famSet.size} are moved families; ${debt.length} are unmoved children of a moved family; ${debt.filter((t) => /commission/.test(t)).length} of those are commission money that stays by design.`)
+  // (3) THE DEBT HAS ACCOUNTABLE OWNERS (wave 144, lane 144I; owner ruling 18 — "every workflow exception has an
+  // accountable registered owner"). Which unmoved children are history vs state is still the OWNER's ruling
+  // (lane 143G notes, Still open #1) — but each of them already belongs to a registered manager's burn-down, so
+  // the ruling can be asked per manager instead of as one 286-table question. Derived, never listed by hand.
+  const debtUnowned = debt.filter((t) => !(t in TABLE_MANAGER))
+  check(`every unmoved FK-closure child has a TABLE_MANAGER owner (${debt.length - debtUnowned.length}/${debt.length})`, debtUnowned.length === 0, debtUnowned.join(","))
+  const debtByOwner = new Map<string, number>()
+  for (const t of debt) debtByOwner.set(TABLE_MANAGER[t] ?? "∅", (debtByOwner.get(TABLE_MANAGER[t] ?? "∅") ?? 0) + 1)
+  console.log(`    (published) FK-closure debt per owning manager: ${[...debtByOwner].sort((a, b) => b[1] - a[1]).map(([m, n]) => `${m} ${n}`).join(" · ")}`)
+  const debtParents = new Map<string, number>()
+  for (const t of debt) for (const p of new Set(Object.values(SCHEMA_FK_MAP[t] ?? {}).filter((x) => famSet.has(x)))) debtParents.set(p, (debtParents.get(p) ?? 0) + 1)
+  console.log(`    (published) …by the moved parent they hang off: ${[...debtParents].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([p, n]) => `${p} ${n}`).join(" · ")}`)
 
 
   const mig = "supabase/migrations/m765-brokerage-identity-declared-affiliation-and-transfer-requests.sql"

@@ -908,22 +908,11 @@ export async function unsaveProperty(contactId: string, savedPropertyId: string)
   return { success: true }
 }
 
-export async function getSavedProperties(contactId: string) {
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("saved_properties")
-    .select("*")
-    .eq("contact_id", contactId)
-    .order("saved_at", { ascending: false })
-
-  if (error) {
-    console.error("[v0] Error fetching saved properties:", error)
-    return []
-  }
-
-  return data || []
-}
+// TOMBSTONE (wave 144, lane 144I — the 43 duplicate action names, triaged). A second public
+// `getSavedProperties(contactId)` stood here — the byte-identical saved_properties read (same filter, same
+// order) that swallowed its refusal into `[]`, imported by nothing. SURVIVOR: app/actions/idx-search.ts:548
+// getSavedProperties — the same read in the module that owns saving (saveProperty / unsaveProperty), returning
+// `{ success, properties, error }` so a refusal is reported instead of rendering as "no saved homes".
 
 /** Same class correction as unsaveProperty: the caller holds a saved_properties.id.
  *  Filtering listing_id with it always returned false, so the heart rendered

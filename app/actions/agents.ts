@@ -823,25 +823,12 @@ export async function getExpenseSummary(
 
 // ==================== GOALS ====================
 
-export async function getAgentGoals(agentId: string, year?: number) {
-  const supabase = await createClient()
-
-  const currentYear = year || new Date().getFullYear()
-
-  const { data, error } = await supabase
-    .from("agent_goals")
-    .select("*")
-    .eq("agent_id", agentId)
-    .eq("year", currentYear)
-    .order("created_at", { ascending: false })
-
-  if (error) {
-    console.error("Error fetching agent goals:", error)
-    return []
-  }
-
-  return data || []
-}
+// TOMBSTONE (wave 144, lane 144I — the 43 duplicate action names, triaged).
+// `getAgentGoals(agentId, year?)` stood here: a second, UNGATED reader of agent_goals (no session, no tenant
+// check — every "use server" export is a public endpoint, CLAUDE.md §4) that nothing imported.
+// SURVIVOR: app/actions/ai-agent-goals.ts:36 getAgentGoals — the wired reader (app/dashboard/goals/page.tsx);
+// it validates both ids, refuses a foreign tenant (refuseForeignTenant) and returns the same rows. Nothing was
+// missing from it, so nothing was merged.
 
 
 // TOMBSTONE (orphan doctrine §1.1 and §6 one-vocabulary; wave 27)
@@ -868,24 +855,12 @@ export async function getAgentGoals(agentId: string, year?: number) {
 // generated cache of the live CHECKs) instead of a hand-typed list, because the
 // hand-typed list was the seven-member one.
 
-export async function updateGoalProgress(goalId: string, currentValue: number) {
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("agent_goals")
-    .update({ current_value: currentValue })
-    .eq("id", goalId)
-    .select()
-    .single()
-
-  if (error) {
-    console.error("Error updating goal progress:", error)
-    return { error: error.message }
-  }
-
-  revalidatePath("/dashboard/admin/users")
-  return { data }
-}
+// TOMBSTONE (wave 144, lane 144I — duplicate action names). `updateGoalProgress(goalId, currentValue)` stood
+// here: a second, UNGATED writer of agent_goals.current_value (any goal by id), imported by nothing.
+// SURVIVOR: app/actions/ai-agent-goals.ts:171 updateGoalProgress — gated (requireCaller), owner-pinned, and it
+// records the new value on the goal's mission (recordMissionProgress — scripts/missions-guard.ts G7). MERGED
+// onto it first: this copy's /dashboard/admin/users revalidation (the Agent 360 panel reads agent_goals through
+// app/actions/admin/agent-360.ts), as a subtree revalidation so /dashboard/admin/users/[userId] refreshes too.
 
 // ==================== AGENT ASSIGNMENT ====================
 
