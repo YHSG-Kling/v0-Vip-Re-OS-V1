@@ -150,6 +150,22 @@ export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition>
   // automatically (lib/video/youtube-publish.ts queueYouTubeAutoPublish, read through readVideoAutoPublishPolicy).
   // DEFAULT ON; an UNREADABLE value refuses (fail closed). Written only through mergeBrokerageSettings (a policy proposal).
   video_auto_publish:      { label: "Video auto-publish (approved public marketing videos → the connected YouTube channel)", store: "brokerage_settings.settings", defaultNote: "on — every approved non-personal marketing video is queued to the brokerage's connected YouTube channel" },
+  // Wave 144 (144A, owner ruling 1 — "contract subtype, financing and representation must be SELF-HEALING"): THE ADAPTIVE
+  // VOCABULARY — { terms, aliases, labels, deactivations, attestations } keyed `<dimension>:<key>`: a brokerage's own terms
+  // (each rolling up to one platform key), the spellings it reads as an existing term, display labels, terms retired for new
+  // work (never deleted — history keeps resolving) and a compliance approver's attestation of a state-scoped term's official
+  // source. Read ONLY through lib/compliance/adaptive-vocabulary.ts loadTenantVocabulary (sanitized by resolveTenantVocabulary;
+  // the m847 trigger on brokerage_required_documents admits a stored term by its key). Written ONLY by the `policy` proposal
+  // promotion path (lib/compliance/vocabulary-healing.ts → improvement_proposals → mergeBrokerageSettings) and, for the
+  // attestation alone, by vocabulary-healing.ts writeAttestation (compliance approver, session actor, ledgered).
+  adaptive_vocabulary:     { label: "Adaptive vocabulary (brokerage terms, aliases, labels, retirements, compliance attestations)", store: "brokerage_settings.settings", defaultNote: "the platform vocabulary only — no brokerage term, alias or label" },
+  // Wave 144 (144A, handed over by 144B): THE MLS COMING-SOON POLICY — { mls: { [mls_slug]: { mls_name, state_codes, permitted,
+  // max_days, showings_permitted, mls_submission_within_business_days, source { url, rule_ref, title, verified_on }, attestation } } }.
+  // The local MLS's own published rule, never a platform guess. Read ONLY through lib/compliance/coming-soon-policy.ts
+  // loadComingSoonPolicy → evaluateComingSoonReadiness (an entry is effective only once a compliance approver attests it; absent /
+  // unattested / unreadable = UNKNOWN = coming soon stays closed). Written ONLY by the `policy` proposal promotion path
+  // (lib/compliance/vocabulary-healing.ts reportComingSoonPolicy → approveVocabularyProposal, compliance approver) and the attestation.
+  coming_soon_policy:      { label: "MLS coming-soon rules (permitted, max days, showings, MLS submission window — cited, compliance-attested)", store: "brokerage_settings.settings", defaultNote: "unknown — coming soon stays closed until a compliance approver records the MLS's published rule" },
 }
 
 /** Real columns that are tenant operating policy. */

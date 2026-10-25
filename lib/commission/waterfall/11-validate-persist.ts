@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { transitionLifecycle } from '@/lib/kernel/lifecycle'
 import { isCommissionFinalized } from '@/lib/commission/finalization'
 import { liveLedgerEntries } from '@/lib/commission/distribution-correction'
+import { ensureAgentCapWindow } from '@/lib/commission/cap-resolver'
 import { withActionLedger } from '@/lib/kernel/action-ledger'
 import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -48,17 +49,22 @@ export async function validateAndPersist(
   // commission_adjustments id). The concession's record stays commission_adjustments; this calculation cites it
   // in commission_calculations (breakdown_json / engine_inputs). The REFERRAL fee (stage 03b) IS a payout: it is
   // here, conserved, and funded by the deal.
+  //
+  // WAVE 144 (lane 144D): the ROYALTY (stage 10, owner ruling 7) is a payout to the brokerage under the agreement — it is
+  // here, conserved, as its own row (distribution_type 'royalty'), never folded into the fees.
   const allDistributions = [
     ...(context.referralDistributions ?? []),
     ...context.agentAdjustments,
     ...context.brokerageAdjustments,
     ...context.teamDistributions,
     ...context.revenueShareDistributions,
-    ...context.feeDistributions
+    ...context.feeDistributions,
+    ...(context.royaltyDistributions ?? []),
   ]
-  // The commission the brokerage actually RECEIVES: the gross after any seller concession. It is what the summary
-  // row, the CDA and the statement-vs-contract comparison must foot to (equal to grossCommissionCents when no
-  // concession exists).
+  // The commission the brokerage actually RECEIVES: the gross after any AGENT concession (a listing-agreement commission
+  // reduction or an agent's approved credit to the buyer / seller — stage 03; owner ruling 4). A SELLER concession never
+  // appears here: it is the seller's money to the buyer and never moves the commission. It is what the summary row, the CDA
+  // and the statement-vs-contract comparison must foot to (equal to grossCommissionCents when no concession exists).
   const grossOfRecordCents = context.adjustedGrossCents
   const companyObligations = context.companyObligations ?? []
 
@@ -308,6 +314,13 @@ export async function validateAndPersist(
     }
   }
 
+  // 0d. CLAIM THE CAP CYCLE (wave 144, lane 144D — owner ruling 9) BEFORE anything is posted. The cycle is the one
+  // containing the DEAL's date (stage 07); a cycle with no ledger row is opened here (the anniversary restart); the counter
+  // advances by COMPARE-AND-SWAP on the paid-to-date the deal was priced on, so two deals priced against the same remaining
+  // cap cannot both cross it (the second fails and is recalculated). A posting failure below RELEASES the claim, so a retry
+  // never counts the deal twice.
+  const capClaim = await claimCapCycle(supabase, context)
+
   // 1. Insert the summary row into the one commission ledger.
   // KEEP-ONE (m283/m284): agent_commissions absorbed the `commissions` twin.
   // agent_commission/brokerage_commission there are GENERATED from
@@ -337,6 +350,7 @@ export async function validateAndPersist(
     .single()
 
   if (commissionError || !commission) {
+    await releaseCapClaim(supabase, capClaim)
     throw new Error(`[commission-engine] Failed to insert commission summary: ${commissionError?.message}`)
   }
 
@@ -348,6 +362,9 @@ export async function validateAndPersist(
       brokerage_id: context.brokerageId,
       distribution_type: dist.distribution_type,
       agent_id: dist.agent_id,
+      // WAVE 144 (lane 144D): an OUTSIDE referral payee (m850). Named only on the row that has one, so a deal without an
+      // outside partner never names the column (pre-m850 a PGRST204 would refuse the WHOLE insert — CLAUDE.md §3).
+      ...(dist.referral_partner_id ? { referral_partner_id: dist.referral_partner_id } : {}),
       team_id: dist.team_id,
       calculation_type: dist.calculation_type,
       calculation_value: dist.calculation_value,
@@ -397,6 +414,7 @@ export async function validateAndPersist(
     .select('id, distribution_type, agent_id')
 
   if (distributionsError) {
+    await releaseCapClaim(supabase, capClaim)
     throw new Error(`[commission-engine] Failed to insert distributions: ${distributionsError.message}`)
   }
 
@@ -421,6 +439,7 @@ export async function validateAndPersist(
     triggeredBy: triggeredBy ?? null,
     distributions: allDistributions,
     grossOfRecordCents,
+    capClaim,
   })
 
   // 2b. BRIDGE TO THE DASHBOARD/LIFECYCLE TABLE. The agent's earnings P&L dashboard
@@ -470,56 +489,27 @@ export async function validateAndPersist(
     console.error('[commission-engine] agent_commissions dashboard-bridge insert failed:', e)
   }
 
-  // 3. Update cap tracking (fetch → add → update)
-  if (context.capApplied || context.amountTowardsCap > 0) {
-    // agent_cap_tracking has no is_active/updated_at — the active row is the one whose
-    // anniversary window contains today.
-    const nowDate = new Date().toISOString().slice(0, 10)
-    const { data: capTracking } = await supabase
-      .from('agent_cap_tracking')
-      .select('*')
-      .eq('agent_id', context.agentId)
-      .eq('brokerage_id', context.brokerageId)
-      .lte('anniversary_start', nowDate)
-      .gte('anniversary_end', nowDate)
-      .single()
-
-    if (capTracking) {
-      const newPaidToDate = capTracking.cap_paid_to_date + centsToDollars(context.amountTowardsCap)
-      const isCapped = newPaidToDate >= capTracking.cap_amount
-
-      // A refused cap write leaves cap_paid_to_date behind the money actually
-      // collected — the next calc under-credits the cap. Read it; and never
-      // celebrate a cap crossing that did not land.
-      const { error: capWriteErr } = await supabase
-        .from('agent_cap_tracking')
-        .update({
-          cap_paid_to_date: newPaidToDate,
-          is_capped: isCapped
+  // 3. CAP TRACKING — advanced ONCE, by step 0d's compare-and-swap claim, before anything was posted (wave 144, lane 144D).
+  // TOMBSTONE: the fetch → add → update that stood here read the window containing TODAY (not the deal's), ignored the
+  // read's error, added dollar floats, and raced a concurrent deal. SURVIVOR: claimCapCycle below (this file).
+  // AUTONOMOUS CAP-CRUSH MOMENT — if this calc is the one that CROSSED the cap, the Finance Manager celebrates the agent
+  // (they keep 100% now) and hands the live proof to Recruiting on the bus. Best-effort, deduped per anniversary — never
+  // blocks the calc.
+  if (capClaim) {
+    try {
+      const { detectCapCrush, celebrateCapCrush } = await import('@/lib/finance/cap-crush')
+      const { justCrossed } = detectCapCrush({ capAmount: capClaim.capAmountCents / 100, paidBefore: capClaim.paidBeforeCents / 100, paidAfter: capClaim.paidAfterCents / 100 })
+      if (justCrossed) {
+        await celebrateCapCrush(supabase, {
+          agentId: context.agentId,
+          brokerageId: context.brokerageId,
+          capAmount: capClaim.capAmountCents / 100,
+          capPaidToDate: capClaim.paidAfterCents / 100,
+          anniversaryStart: capClaim.start,
         })
-        .eq('id', capTracking.id)
-      if (capWriteErr) {
-        console.error(`[commission-engine] agent_cap_tracking update REFUSED for ${capTracking.id} (cap progress not advanced by ${centsToDollars(context.amountTowardsCap)}): ${capWriteErr.message}`)
       }
-
-      // AUTONOMOUS CAP-CRUSH MOMENT — if this calc is the one that CROSSED the cap, the Finance Manager
-      // celebrates the agent (they keep 100% now) and hands the live proof to Recruiting on the bus.
-      // Best-effort, deduped per anniversary — never blocks the calc.
-      if (!capWriteErr) try {
-        const { detectCapCrush, celebrateCapCrush } = await import('@/lib/finance/cap-crush')
-        const { justCrossed } = detectCapCrush({ capAmount: capTracking.cap_amount, paidBefore: capTracking.cap_paid_to_date, paidAfter: newPaidToDate })
-        if (justCrossed) {
-          await celebrateCapCrush(supabase, {
-            agentId: context.agentId,
-            brokerageId: context.brokerageId,
-            capAmount: capTracking.cap_amount,
-            capPaidToDate: newPaidToDate,
-            anniversaryStart: (capTracking as { anniversary_start?: string | null }).anniversary_start ?? null,
-          })
-        }
-      } catch (e) {
-        console.error('[commission-engine] cap-crush celebration failed:', e)
-      }
+    } catch (e) {
+      console.error('[commission-engine] cap-crush celebration failed:', e)
     }
   }
 
@@ -528,7 +518,8 @@ export async function validateAndPersist(
   // it is the same question one level down: what has this TEAM collected from
   // this agent in this anniversary year, and is it done collecting?
   if (context.teamCapTeamId && (context.teamAmountTowardsCap ?? 0) > 0) {
-    const teamNowDate = new Date().toISOString().slice(0, 10)
+    // WAVE 144 (lane 144D): the DEAL's cycle — the same window stage 08 priced the team's take in (never today's).
+    const teamNowDate = context.agreement?.asOf ?? new Date().toISOString().slice(0, 10)
     // .maybeSingle() is safe over this date range because m461 put a UNIQUE index
     // on (team_id, agent_id, anniversary_start) — unlike agent_cap_tracking,
     // which has no such constraint and would throw here if two overlapping rows
@@ -756,6 +747,7 @@ async function recordCalculationEvidence(
     triggeredBy: string | null
     distributions: Array<{ distribution_type: string; calculated_amount: number }>
     grossOfRecordCents: number
+    capClaim?: CapClaim | null
   },
 ): Promise<void> {
   const c = input.context
@@ -781,15 +773,51 @@ async function recordCalculationEvidence(
     referral: { link: c.referralLink ?? null, deduction_cents: c.referralDeductionCents ?? 0, findings: c.referralFindings ?? [] },
     revenue_share_skipped: c.revenueShareSkipped ?? null,
     team_cap_status: c.teamCapStatus ?? 'n/a',
+    // WAVE 144 (lane 144D, owner ruling 9): the cap cycle the deal was priced in and what it contributed, by type — the
+    // record a refund / correction (lib/kernel/financial.ts) reads to move the cap ledger by what actually changed.
+    cap: c.capCycle
+      ? {
+          tracking_id: input.capClaim?.trackingId ?? c.capCycle.trackingId,
+          cycle_start: c.capCycle.start,
+          cycle_end: c.capCycle.end,
+          as_of: c.capCycle.asOf,
+          cap_amount: centsToDollars(c.capCycle.capAmountCents),
+          cap_source: c.capCycle.capSource,
+          eligible: c.capCycle.eligible,
+          paid_before: centsToDollars(c.capCycle.paidToDateCents),
+          paid_after: input.capClaim ? centsToDollars(input.capClaim.paidAfterCents) : centsToDollars(c.capCycle.paidToDateCents),
+          contributed_cents: c.amountTowardsCap,
+          contributed_by_type_cents: c.capCycle.contributedByType,
+          cap_status: c.capStatus,
+          findings: c.capCycle.findings,
+        }
+      : null,
   }
   const breakdown = {
     gross_commission_before_adjustments: centsToDollars(c.grossCommissionCents),
     gross_adjustments: c.grossAdjustments.map((a) => ({ adjustment_id: a.rule_id ?? null, calculation_type: a.calculation_type, calculation_value: a.calculation_value ?? null, signed_amount: a.calculated_amount, notes: a.notes ?? null })),
+    // WAVE 144 (lane 144D, owner ruling 4): every gross-level row as stage 03 judged it — agent, beneficiary, amount,
+    // reason, approval, settlement treatment and ledger effect (applied / skipped / held, with the finding).
+    agent_concessions: (c.concessions ?? []).map((x) => ({
+      adjustment_id: x.adjustmentId,
+      kind: x.kind,
+      verdict: x.verdict,
+      concession_agent_id: x.concessionAgentId,
+      beneficiary: x.beneficiary,
+      beneficiary_name: x.beneficiaryName,
+      reason: x.reason,
+      approval_status: x.approvalStatus,
+      settlement_treatment: x.settlementTreatment,
+      signed_amount: x.signedCents / 100,
+      ledger_effect: x.ledgerEffect,
+      finding: x.finding,
+    })),
     adjusted_gross: centsToDollars(input.grossOfRecordCents),
     referral_deduction: centsToDollars(c.referralDeductionCents ?? 0),
     agent_final_net: centsToDollars(c.agentFinalNetCents),
     brokerage_final: centsToDollars(c.brokerageFinalCents),
     total_fees: centsToDollars(c.totalFeesCents),
+    royalty: centsToDollars(c.royaltyCents ?? 0),
     distributions_by_type: byType,
   }
   await sentinelWrite(supabase, supabase.from('commission_calculations').insert({
@@ -828,5 +856,81 @@ async function recordCalculationEvidence(
     )
   } catch (e) {
     console.error('[commission-engine] calculation evidence claim failed:', e)
+  }
+}
+
+// ─── THE CAP CYCLE CLAIM (wave 144, lane 144D — owner ruling 9) ───────────────────────────────────────────────────
+
+/** What step 0d moved on the cap ledger — kept so a posting failure can release it and the evidence can cite it. */
+interface CapClaim {
+  trackingId: string
+  start: string
+  capAmountCents: number
+  paidBeforeCents: number
+  paidAfterCents: number
+}
+
+/**
+ * Advance the deal's cap cycle by what the deal contributed (context.amountTowardsCap — the split from stage 07 plus any
+ * cap-eligible fee / royalty from stage 10), BEFORE the ledger is posted. Opens the cycle's window when none exists (the
+ * anniversary restart — lib/commission/cap-resolver.ts ensureAgentCapWindow, judged on the DEAL's date with the agreement's
+ * cap and anniversary), then COMPARE-AND-SWAPs on the paid-to-date the deal was priced on. FAILS CLOSED: a refused read or
+ * write, or a counter that moved underneath this calculation, throws — nothing is posted on an unproved cap.
+ */
+async function claimCapCycle(
+  supabase: ReturnType<typeof createServiceClient>,
+  context: WaterfallContext,
+): Promise<CapClaim | null> {
+  const cycle = context.capCycle
+  if (!cycle || context.amountTowardsCap <= 0) return null
+
+  let trackingId = cycle.trackingId
+  let paidRaw: number | string | null = cycle.paidToDateRaw
+  if (!trackingId) {
+    const seeded = await ensureAgentCapWindow(supabase as never, {
+      agentId: context.agentId,
+      brokerageId: context.brokerageId,
+      today: cycle.asOf,
+      explicitCapAmount: cycle.capAmountCents / 100,
+      agreementAnniversaryDate: cycle.agreementAnniversaryDate,
+    })
+    if (!seeded.ok) throw new Error(`[commission-engine:cap] the deal's cap cycle (${cycle.start} → ${cycle.end}) could not be opened: ${seeded.error}`)
+    if (!seeded.result.trackingId) throw new Error(`[commission-engine:cap] the deal's cap cycle was not opened (${seeded.result.outcome})`)
+    trackingId = seeded.result.trackingId
+    // A window that appeared between stage 07 and here was opened by a concurrent deal: the swap below is predicated on
+    // the $0 this deal was priced on, so a counter that already moved refuses rather than double-counting.
+    paidRaw = 0
+  }
+
+  const before = cycle.paidToDateCents
+  const after = before + context.amountTowardsCap
+  const base = supabase
+    .from('agent_cap_tracking')
+    .update({ cap_paid_to_date: after / 100, is_capped: after >= cycle.capAmountCents })
+    .eq('id', trackingId)
+    .eq('brokerage_id', context.brokerageId)
+  const swap = paidRaw === null ? base.is('cap_paid_to_date', null) : base.eq('cap_paid_to_date', paidRaw)
+  const { data: moved, error } = await swap.select('id')
+  if (error) throw new Error(`[commission-engine:cap] the cap ledger could not be advanced: ${error.message}`)
+  if (!moved || moved.length !== 1) {
+    throw new Error(
+      `[commission-engine:cap] the agent's cap ledger moved while this deal was calculated (another deal posted against the same cycle) — ` +
+      `recalculate so the cap is not crossed twice`,
+    )
+  }
+  return { trackingId, start: cycle.start, capAmountCents: cycle.capAmountCents, paidBeforeCents: before, paidAfterCents: after }
+}
+
+/** Undo step 0d after a posting failure (compare-and-swap on the value it wrote). A refused release is logged by name. */
+async function releaseCapClaim(supabase: ReturnType<typeof createServiceClient>, claim: CapClaim | null): Promise<void> {
+  if (!claim) return
+  const { data, error } = await supabase
+    .from('agent_cap_tracking')
+    .update({ cap_paid_to_date: claim.paidBeforeCents / 100, is_capped: claim.paidBeforeCents >= claim.capAmountCents })
+    .eq('id', claim.trackingId)
+    .eq('cap_paid_to_date', claim.paidAfterCents / 100)
+    .select('id')
+  if (error || !data || data.length !== 1) {
+    console.error(`[commission-engine:cap] the cap claim on ${claim.trackingId} could NOT be released after a posting failure (${error?.message ?? `${data?.length ?? 0} rows`}) — cap_paid_to_date is ahead by ${(claim.paidAfterCents - claim.paidBeforeCents) / 100}; a finance admin must correct it`)
   }
 }

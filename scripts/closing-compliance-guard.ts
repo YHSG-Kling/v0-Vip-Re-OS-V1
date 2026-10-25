@@ -25,6 +25,12 @@
  *      signed-term table; every query is tenant-pinned; no fair-housing logic leaks into closing
  *      (owner: fair-housing checks belong to public marketing copy only); the scanner and the pre-CDA gate
  *      are wired to the runner; the migration states its status on line 1 (applied live at wave-143 integration).
+ *   F. FORM PACKETS (wave 144, lane 144C — owner ruling 3; re-asserted as the RULE over wave 143's platform-owned packets): a packet
+ *      is the brokerage's or ONE team's, stored under its owner's folder with its licence recorded; an agent sees and fills only
+ *      the brokerage's and their OWN team's packets (canonical membership), never another team's or tenant's; sharing is an
+ *      authority (oversight class brokerage-wide, a team lead for their team); the platform registry is a CATALOGUE a brokerage
+ *      ADDS from (a copy into its own folder) — a tenant never fills a platform/… path; m853 scopes the bucket and the rows;
+ *      no m807 row is dropped. Blind spot: RLS / storage policies are asserted from the migration TEXT, not executed.
  *
  * BLIND SPOTS (published beside the number, not hidden in it): the runner runs against an in-memory
  * database — RLS and the live column set are NOT modelled (the live columns were read through the Supabase
@@ -73,6 +79,9 @@ function makeDb(tables: Record<string, Row[]>, refuse: Record<string, string> = 
         upload: async (path: string, buf: Uint8Array) => (objects.has(`${bucket}/${path}`) ? { data: null, error: { message: "The resource already exists" } } : (objects.set(`${bucket}/${path}`, buf), { data: { path }, error: null })),
         remove: async (paths: string[]) => ({ data: paths.filter((p) => objects.delete(`${bucket}/${p}`)).map((name) => ({ name })), error: null }),
         createSignedUrl: async (path: string) => ({ data: { signedUrl: `https://signed.example/${bucket}/${path}` }, error: null }),
+        // wave 144 (lane 144C): the packet library lists an owner's folder (files directly in it) and copies a catalogue master.
+        list: async (prefix: string) => ({ data: [...objects.keys()].filter((k) => k.startsWith(`${bucket}/${prefix}/`) && !k.slice(`${bucket}/${prefix}/`.length).includes("/")).map((k) => ({ name: k.slice(`${bucket}/${prefix}/`.length), id: k })), error: null }),
+        copy: async (from: string, to: string) => (!objects.has(`${bucket}/${from}`) ? { data: null, error: { message: "Object not found" } } : objects.has(`${bucket}/${to}`) ? { data: null, error: { message: "The resource already exists" } } : (objects.set(`${bucket}/${to}`, objects.get(`${bucket}/${from}`)!), { data: { path: to }, error: null })),
       }),
     },
     from(table: string) {
@@ -464,99 +473,248 @@ async function main() {
     assessClosingParticipants({ stateCode: "DE", participantRoles: ["Buyer's Attorney"] }).gaps.length === 0
     && assessClosingParticipants({ stateCode: "DE", participantRoles: ["inspector", "title_company", "lender"] }).gaps.length > 0)
 
-  // ═══ F. PLATFORM MEDIA PACKETS (wave 142's pending hook "142B SOURCE (a)") ══════════════════════════════
-  section("F platform form packets — licensed, fillable, approved by a person, refused the moment they stop being usable")
+  // ═══ F. FORM PACKETS ARE THE BROKERAGE'S AND THE TEAM'S (wave 144, lane 144C — owner ruling 3) ═════════════════════════════
+  // Re-asserted as the RULE: wave 143 proved a PLATFORM-owned packet reached every tenant's fill action. The owner has ruled that
+  // packets are brokerage / team owned, so the assertions that pinned "a tenant fills a platform/… path" are replaced by the rule
+  // that replaces them — the catalogue's own rules (licence, approval, fillable, supersede, retire) are kept and still proved.
+  section("F form packets — owned by the brokerage or one team, shared through real memberships; the platform catalogue is a source, never an owner")
   const packets = await import("../lib/forms/platform-form-packets")
+  const tp = await import("../lib/forms/tenant-form-packets")
   const { checkFormPathsInScope } = await import("../lib/forms/form-path-scope")
   const { PDFDocument } = await import("pdf-lib")
+  const { readdirSync } = await import("node:fs")
   const vocabSrc = read("scripts/check-vocabularies.ts")
   const libraryTypes = (() => { const m = /brokerage_form_library:\s*\{\s*packet_type:\s*\[([^\]]*)\]/.exec(vocabSrc); return m ? [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]) : null })()
   const sql7 = read("supabase/migrations/m807-platform-form-packets.sql"), sql7Code = sql7.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
   const checkIn = (col: string) => { const m = new RegExp(`${col} IN \\(([^)]*)\\)`).exec(sql7Code); return m ? [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]) : null }
+  // The ownership migration is FOUND BY ITS NAME, not its number (the integrator may renumber it) — assert the rule, not the waypoint.
+  const ownMig = readdirSync("supabase/migrations").find((f) => /^m\d+-form-packets-are-brokerage-and-team-owned\.sql$/.test(f)) ?? null
+  const sqlOwn = ownMig ? read(`supabase/migrations/${ownMig}`) : ""
+  const sqlOwnCode = sqlOwn.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
   check("m807 states its status on line 1 (the lane stamp until applied; APPLIED LIVE once the integrator applied it)", /^-- (WRITTEN, NOT APPLIED \(wave 143, lane 143B\)|── APPLIED LIVE )/.test(sql7.split("\n")[0]))
-  check("PLATFORM_PACKET_TYPES = brokerage_form_library.packet_type (ONE vocabulary for the kind of packet) = the m807 CHECK", sameSet(libraryTypes, packets.PLATFORM_PACKET_TYPES) && sameSet(checkIn("packet_type"), packets.PLATFORM_PACKET_TYPES))
-  check("PLATFORM_PACKET_STATUSES = the m807 CHECK", sameSet(checkIn("status"), packets.PLATFORM_PACKET_STATUSES))
-  check("the database refuses an approved row with no approver, no licence basis or no fillable field (m807 CHECK)", /platform_form_packets_approved_needs_evidence/.test(sql7Code) && /approved_by IS NOT NULL/.test(sql7Code) && /length\(btrim\(license_note\)\) >= 20/.test(sql7Code) && /field_count > 0/.test(sql7Code))
+  check(`the ownership migration exists and states its status on line 1 (${ownMig ?? "MISSING"})`, !!ownMig && /^-- (WRITTEN, NOT APPLIED \(wave 144, lane 144C\)|── APPLIED LIVE )/.test(sqlOwn.split("\n")[0]))
+  check("ONE vocabulary for the kind of packet: the library's live CHECK = FORM_PACKET_TYPES = the m807 CHECK, and the catalogue IMPORTS it (same array, not a copy)",
+    sameSet(libraryTypes, tp.FORM_PACKET_TYPES) && sameSet(checkIn("packet_type"), tp.FORM_PACKET_TYPES) && packets.PLATFORM_PACKET_TYPES === tp.FORM_PACKET_TYPES)
+  check("PLATFORM_PACKET_STATUSES = the m807 CHECK; the catalogue still refuses an approved row with no approver / licence / fillable field (m807 CHECK)",
+    sameSet(checkIn("status"), packets.PLATFORM_PACKET_STATUSES) && /platform_form_packets_approved_needs_evidence/.test(sql7Code) && /approved_by IS NOT NULL/.test(sql7Code) && /length\(btrim\(license_note\)\) >= 20/.test(sql7Code) && /field_count > 0/.test(sql7Code))
+  check("the migration gives the TENANT registry a team owner, the object path, the licence record and the catalogue provenance",
+    ["team_id", "storage_path", "license_note", "license_expires_at", "field_count", "source_platform_packet_id"].every((c) => new RegExp(`ADD COLUMN IF NOT EXISTS ${c}\\b`).test(sqlOwnCode)))
+  check("…a packet's path must sit under its OWNER (brokerage/{id}/packets/… or teams/{id}/packets/…), and a team must be a team of the same brokerage",
+    /brokerage_form_library_storage_path_under_owner/.test(sqlOwnCode) && /'brokerage\/' \|\| brokerage_id::text \|\| '\/packets\/%'/.test(sqlOwnCode) && /'teams\/' +\|\| team_id::text +\|\| '\/packets\/%'/.test(sqlOwnCode)
+    && /CREATE TRIGGER brokerage_form_library_team_in_brokerage/.test(sqlOwnCode) && /t\.brokerage_id = NEW\.brokerage_id/.test(sqlOwnCode))
+  const dropsBucketWide = ["auth read brokerage-forms", "auth upload brokerage-forms", "auth update brokerage-forms", "auth delete brokerage-forms"].every((n) => sqlOwnCode.includes(`DROP POLICY IF EXISTS "${n}"`))
+  check("the bucket-wide storage policies (any signed-in user could read / overwrite / delete ANY tenant's forms and filled offers) are DROPPED and replaced by owner-scoped ones",
+    dropsBucketWide && ["SELECT", "INSERT", "UPDATE", "DELETE"].every((op) => new RegExp(`FOR ${op} TO authenticated[\\s\\S]{0,160}brokerage_forms_path_(readable|writable)\\(name\\)`).test(sqlOwnCode)))
+  check("…the readable rule scopes every root: own brokerage, own team (or oversight), own agent folder, own / own-tenant filled copies; platform/ is staff-only",
+    /split_part\(p_name, '\/', 1\) = 'brokerage' AND split_part\(p_name, '\/', 2\) = public\.current_user_brokerage_id\(\)::text/.test(sqlOwnCode)
+    && /resolve_team_id\(auth\.uid\(\), NULL::uuid\)/.test(sqlOwnCode) && /'agents' AND split_part\(p_name, '\/', 2\) = auth\.uid\(\)::text/.test(sqlOwnCode)
+    && /o\.brokerage_id = public\.current_user_brokerage_id\(\)/.test(sqlOwnCode) && !/split_part\(p_name, '\/', 1\) = 'platform'/.test(sqlOwnCode))
+  check("…the library's row policies follow membership too (a team packet is not readable by another team's agent through a direct client read)",
+    /CREATE POLICY brokerage_form_library_tenant_select[\s\S]{0,400}team_id IS NULL[\s\S]{0,120}team_id = public\.resolve_team_id\(auth\.uid\(\), NULL::uuid\)/.test(sqlOwnCode))
+  check("NO m807 data is lost: the migration never drops, deletes from or truncates platform_form_packets (comment only)",
+    !/DROP\s+TABLE[^;]*platform_form_packets|DELETE\s+FROM\s+public\.platform_form_packets|TRUNCATE[^;]*platform_form_packets|ALTER TABLE public\.platform_form_packets\s+DROP/i.test(sqlOwnCode) && /COMMENT ON TABLE public\.platform_form_packets/.test(sqlOwnCode))
+  control("the data-loss finder catches a DROP of the catalogue", (s) => /DROP\s+TABLE[^;]*platform_form_packets/i.test(s), "DROP TABLE IF EXISTS public.platform_form_packets;")
+  control("the bucket-policy finder catches a policy that is still bucket-wide", (s) => /FOR SELECT TO authenticated\s+USING \(bucket_id = 'brokerage-forms'\)/.test(s), `CREATE POLICY "x" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'brokerage-forms');`)
 
+  // ── PURE: path grammar, visibility, authority ──
+  const T1 = randomUUID(), T2 = randomUUID(), RID = randomUUID()
+  const bPath = `brokerage/${B1}/packets/${RID}/our-branded-contract-v2.pdf`, tPath = `teams/${T1}/packets/${RID}/team.pdf`
+  check("path grammar: a brokerage packet path brokerage/{id}/packets/{row}/… and a team packet path teams/{id}/packets/{row}/… parse back to their owner and row; traversal, depth, a non-pdf and a non-uuid are refused",
+    tp.parseTenantPacketPath(bPath)?.kind === "brokerage" && tp.parseTenantPacketPath(bPath)?.ownerId === B1 && tp.parseTenantPacketPath(tPath)?.ownerId === T1 && tp.parseTenantPacketPath(tPath)?.rowId === RID
+    && tp.parseTenantPacketPath(`brokerage/${B1}/packets/${RID}/../x.pdf`) === null && tp.parseTenantPacketPath(`brokerage/${B1}/packets/${RID}/a/b.pdf`) === null
+    && tp.parseTenantPacketPath(`teams/${T1}/packets/${RID}/x.docx`) === null && tp.parseTenantPacketPath(`teams/not-a-uuid/packets/${RID}/x.pdf`) === null && tp.parseTenantPacketPath(`platform/${RID}/x.pdf`) === null)
+  const actorOf = (o: Partial<import("../lib/forms/tenant-form-packets").PacketActor>) => ({ userId: randomUUID(), brokerageId: B1, userType: "agent", teamId: null, ledTeamId: null, oversight: false, ...o })
+  const member1 = actorOf({ teamId: T1 }), member2 = actorOf({ teamId: T2 }), lead2 = actorOf({ userType: "team_lead", teamId: T2, ledTeamId: T2 }), broker = actorOf({ userType: "broker", oversight: true }), foreign = actorOf({ brokerageId: B2 })
+  // VISIBILITY, exercised THROUGH the fill admission (a one-row library per case) — not by importing a private helper.
+  const vis = async (row: Row, a: any): Promise<boolean> => {
+    const id = randomUUID(), owner = row.team_id ? `teams/${row.team_id}` : `brokerage/${B1}`
+    const r0 = { id, brokerage_id: B1, team_id: null, is_active: true, license_expires_at: null, name: "p", state: "TX", packet_type: "offer", ...row }
+    const path = `${owner}/packets/${id}/p.pdf`
+    const r = await tp.usableTenantPacketPaths(makeDb({ brokerage_form_library: [{ ...r0, storage_path: path }] }), a, [path], new Date("2026-10-25T12:00:00Z"))
+    return r.ok && r.usable.has(path)
+  }
+  check("VISIBILITY: a brokerage-wide packet reaches every member of THAT brokerage and nobody in another", (await vis({}, member1)) && (await vis({}, member2)) && !(await vis({}, foreign)))
+  check("…a TEAM packet reaches that team's members and the brokerage's oversight class — never another team's agent, nor another team's LEAD",
+    (await vis({ team_id: T1 }, member1)) && (await vis({ team_id: T1 }, broker)) && !(await vis({ team_id: T1 }, member2)) && !(await vis({ team_id: T1 }, lead2)))
+  check("…a retired packet, or one whose licence expired yesterday, reaches nobody (one expiring today still does)",
+    !(await vis({ is_active: false }, member1)) && !(await vis({ license_expires_at: "2026-10-24" }, member1)) && (await vis({ license_expires_at: "2026-10-25" }, member1)))
+  check("the oversight class is the tenant admin roster MINUS team_lead, derived by subtraction (never a copied list)",
+    !tp.PACKET_OVERSIGHT_USER_TYPES.has("team_lead") && tp.PACKET_OVERSIGHT_USER_TYPES.has("broker") && tp.PACKET_OVERSIGHT_USER_TYPES.has("broker_owner") && !tp.PACKET_OVERSIGHT_USER_TYPES.has("agent")
+    && /new Set\(\[\.\.\.TENANT_ADMIN_USER_TYPES\]\.filter\(/.test(code("lib/forms/tenant-form-packets.ts")))
+  check("AUTHORITY: brokerage-wide sharing is the oversight class's; a team lead shares with their OWN team only; an agent shares with no one",
+    tp.mayManagePacketScope(broker, null) && tp.mayManagePacketScope(broker, T1) && !tp.mayManagePacketScope(lead2, null) && tp.mayManagePacketScope(lead2, T2) && !tp.mayManagePacketScope(lead2, T1) && !tp.mayManagePacketScope(member1, null) && !tp.mayManagePacketScope(member1, T1))
+
+  // ── LIVE on the in-memory database: who the actor really is, what they see, what they may fill ──
+  const U_M1 = randomUUID(), U_M2 = randomUUID(), U_LEAD1 = randomUUID(), U_BROKER = randomUUID(), U_FOREIGN = randomUUID(), A_M1 = randomUUID(), A_M2 = randomUUID()
+  const T_FOREIGN = randomUUID()
+  const world = () => makeDb({
+    users: [
+      { id: U_M1, brokerage_id: B1, user_type: "agent", team_id: null }, { id: U_M2, brokerage_id: B1, user_type: "agent", team_id: T2 },
+      // the team LEAD's users row carries NO team_id — the old scope check (users.team_id only) refused them their own team's library
+      { id: U_LEAD1, brokerage_id: B1, user_type: "team_lead", team_id: null }, { id: U_BROKER, brokerage_id: B1, user_type: "broker", team_id: null },
+      { id: U_FOREIGN, brokerage_id: B2, user_type: "agent", team_id: T_FOREIGN },
+    ],
+    teams: [
+      { id: T1, brokerage_id: B1, team_lead_id: U_LEAD1, deleted_at: null, name: "North", created_at: iso("2026-01-01") },
+      { id: T2, brokerage_id: B1, team_lead_id: null, deleted_at: null, name: "South", created_at: iso("2026-01-02") },
+      { id: T_FOREIGN, brokerage_id: B2, team_lead_id: null, deleted_at: null, name: "Elsewhere", created_at: iso("2026-01-03") },
+    ],
+    agents: [{ id: A_M1, user_id: U_M1, team_id: null }, { id: A_M2, user_id: U_M2, team_id: null }],
+    // member 1's team comes from the JUNCTION (team_members), not users.team_id
+    team_members: [{ id: randomUUID(), team_id: T1, agent_id: A_M1, brokerage_id: B1, is_active: true, effective_from: "2026-01-01", effective_to: null }],
+    brokerage_form_library: [], platform_form_packets: [], offers: [],
+  })
+  const w = world()
+  const ra = async (u: string, db: any = w) => { const r = await tp.resolvePacketActor(db, u); return r.ok ? r.actor : null }
+  const aM1 = await ra(U_M1), aM2 = await ra(U_M2), aLead = await ra(U_LEAD1), aBroker = await ra(U_BROKER), aForeign = await ra(U_FOREIGN)
+  check("MEMBERSHIP is the canonical one: the junction row puts member 1 on North, users.team_id puts member 2 on South, the lead's team is the one they LEAD, the broker is oversight",
+    aM1?.teamId === T1 && aM2?.teamId === T2 && aLead?.teamId === T1 && aLead?.ledTeamId === T1 && !aLead?.oversight && aBroker?.oversight === true && aBroker?.teamId === null && aForeign?.brokerageId === B2)
+  {
+    const crossed = world(); crossed.tables.users.find((u: Row) => u.id === U_M2).team_id = T_FOREIGN
+    check("…a team that belongs to ANOTHER brokerage is dropped, never trusted", (await ra(U_M2, crossed))?.teamId === null)
+    check("…a refused account read is an error (fail closed), never an actor with no team", !(await tp.resolvePacketActor(makeDb({}, { users: "permission denied" }), U_M1)).ok)
+  }
+  const makePdf = async (fields: number) => { const doc = await PDFDocument.create(); const page = doc.addPage(); const form = doc.getForm(); for (let i = 0; i < fields; i++) { const f = form.createTextField(`field_${i}`); f.addToPage(page, { x: 20, y: 700 - i * 24, width: 200, height: 18 }) } return new Uint8Array(await doc.save()) }
+  const reg = (a: any, o: Record<string, unknown> = {}, db: any = w) => tp.registerTenantFormPacket(db, a, { name: "Residential Contract", state: "TX", packetType: "offer", licenseNote: "Texas REALTORS member licence 2026", fileName: "contract.pdf", bytes: null, ...o } as any)
+  const pdf3 = await makePdf(3)
+  const refusedAgent = await reg(aM1, { bytes: pdf3 })
+  const refusedLeadWide = await reg(aLead, { bytes: pdf3 })
+  const refusedLeadOther = await reg(aLead, { bytes: pdf3, teamId: T2 })
+  const refusedForeignTeam = await reg(aBroker, { bytes: pdf3, teamId: T_FOREIGN })
+  check("SHARING is an authority, refused by name: an agent cannot share; a team lead cannot share brokerage-wide or with another team; a team outside the brokerage is refused — and nothing was stored",
+    !refusedAgent.ok && !refusedLeadWide.ok && /team lead shares with their own team/.test((refusedLeadWide as any).error) && !refusedLeadOther.ok && !refusedForeignTeam.ok && /not in your brokerage/.test((refusedForeignTeam as any).error)
+    && w.objects.size === 0 && w.tables.brokerage_form_library.length === 0)
+  const wide = await reg(aBroker!, { bytes: pdf3, name: "Brokerage Listing Agreement", packetType: "listing", formCode: "BRK-LA-1" })
+  const north = await reg(aLead!, { bytes: await makePdf(5), teamId: T1, name: "North Team Offer Packet" })
+  const south = await reg(aBroker!, { bytes: await makePdf(2), teamId: T2, name: "South Team Offer Packet" })
+  check("a brokerage admin shares brokerage-wide and with ANY of its teams; a team lead shares with their own team — each stored in the OWNER's folder with its fillable-field count and its licence recorded",
+    wide.ok && north.ok && south.ok && wide.packet.storage_path === `brokerage/${B1}/packets/${wide.packet.id}/contract.pdf` && wide.packet.team_id === null
+    && north.packet.storage_path!.startsWith(`teams/${T1}/packets/${north.packet.id}/`) && north.packet.field_count === 5 && north.packet.license_note === "Texas REALTORS member licence 2026"
+    && w.objects.has(`brokerage-forms/${north.packet.storage_path}`) && w.objects.size === 3)
+  {
+    const brokenDb = makeDb({ brokerage_form_library: [] }, { "brokerage_form_library:insert": "boom" })
+    const lost = await tp.registerTenantFormPacket(brokenDb, aBroker!, { name: "Will not land", state: "TX", packetType: "offer", fileName: "x.pdf", bytes: await makePdf(1) })
+    check("when the library insert is refused the stored object is REMOVED and the removal is counted (no orphan master)", !lost.ok && /1 stored file\(s\) removed/.test((lost as any).error) && brokenDb.objects.size === 0)
+  }
+  // a loose legacy file in the brokerage folder and in each team folder (uploaded before the library recorded paths)
+  w.objects.set(`brokerage-forms/brokerage/${B1}/TX-offer-legacy.pdf`, new Uint8Array([1]))
+  w.objects.set(`brokerage-forms/teams/${T1}/north-loose.pdf`, new Uint8Array([1]))
+  w.objects.set(`brokerage-forms/teams/${T2}/south-loose.pdf`, new Uint8Array([1]))
+  w.objects.set(`brokerage-forms/brokerage/${B2}/foreign.pdf`, new Uint8Array([1]))
+  const names = async (a: any, q: Record<string, unknown> = {}) => { const r = await tp.listFormPacketsForActor(w, a, q as any); return r.ok ? r.packets.map((p) => p.name).sort().join(" | ") : `ERR ${(r as any).error}` }
+  const m1Sees = await names(aM1), m2Sees = await names(aM2), brokerSees = await names(aBroker), leadSees = await names(aLead)
+  check("WHAT AN AGENT SEES: the brokerage's packets and loose files + their OWN team's — member 1 (North) never sees South's packet or South's folder, and no one sees another tenant's file",
+    m1Sees.includes("Brokerage Listing Agreement") && m1Sees.includes("North Team Offer Packet") && m1Sees.includes("north-loose.pdf") && m1Sees.includes("TX-offer-legacy.pdf")
+    && !m1Sees.includes("South") && !m1Sees.includes("south-loose") && !m1Sees.includes("foreign.pdf")
+    && m2Sees.includes("South Team Offer Packet") && !m2Sees.includes("North") && leadSees.includes("North Team Offer Packet") && !leadSees.includes("South"), `m1: ${m1Sees} / m2: ${m2Sees}`)
+  check("…the brokerage's oversight class sees every team's packet in the brokerage (and still nothing of another tenant's)", brokerSees.includes("North Team Offer Packet") && brokerSees.includes("South Team Offer Packet") && !brokerSees.includes("foreign"))
+  check("…a listing packet is not offered to an offer, and a packet for another state is not offered for this deal's state", !(await names(aM1, { purpose: "offer" })).includes("Brokerage Listing Agreement") && !(await names(aM1, { stateCode: "FL" })).includes("North Team Offer Packet"))
+  check("…a REFUSED library read is an error — never an empty list that reads as 'your brokerage shares nothing'", !(await tp.listFormPacketsForActor(makeDb({}, { brokerage_form_library: "permission denied" }), aM1!)).ok)
+
+  // the fill action's scope check, live
+  const scope = (paths: string[], userId: string, teamId: string | null = null, brokerageId = B1, db: any = w) => checkFormPathsInScope(db, paths, { brokerageId, teamId, userId })
+  check("FILL SCOPE: a registered packet is admitted for an agent it is shared with — the brokerage's for anyone in it, North's for North", (await scope([wide.ok ? wide.packet.storage_path! : ""], U_M2)).ok && (await scope([north.ok ? north.packet.storage_path! : ""], U_M1)).ok)
+  check("…and REFUSED for another team's agent, even one who names the packet's exact path", !(await scope([north.ok ? north.packet.storage_path! : ""], U_M2, T2)).ok)
+  check("…and REFUSED for another tenant (the brokerage segment is not theirs)", !(await scope([wide.ok ? wide.packet.storage_path! : ""], U_FOREIGN, T_FOREIGN, B2)).ok)
+  check("…and refused for a path that is not EXACTLY the registered object (same row, other file)", north.ok && !(await scope([`teams/${T1}/packets/${north.packet.id}/other.pdf`], U_M1)).ok)
+  check("…a team LEAD whose users row carries no team_id is admitted to their OWN team's loose folder by their real membership; a non-member is refused it",
+    (await scope([`teams/${T1}/north-loose.pdf`], U_LEAD1, null)).ok && !(await scope([`teams/${T1}/north-loose.pdf`], U_M2, T2)).ok && (await scope([`teams/${T2}/south-loose.pdf`], U_BROKER, null)).ok)
+  if (north.ok) {
+    const before = (await scope([north.packet.storage_path!], U_M1)).ok
+    const retired = await tp.retireTenantFormPacket(w, aLead!, north.packet.id)
+    check("retiring a packet makes the fill action's scope check refuse it IMMEDIATELY; retiring it twice is reported, not 'success'", before && retired.ok && !(await scope([north.packet.storage_path!], U_M1)).ok && !(await tp.retireTenantFormPacket(w, aLead!, north.packet.id)).ok)
+    check("…a lead cannot retire another team's packet, and an edit can never widen a team packet (no team_id in the patch vocabulary)", south.ok && !(await tp.retireTenantFormPacket(w, aLead!, south.packet.id)).ok && !/team_id/.test(code("lib/forms/tenant-form-packets.ts").slice(code("lib/forms/tenant-form-packets.ts").indexOf("export interface TenantPacketPatch"), code("lib/forms/tenant-form-packets.ts").indexOf("export async function updateTenantFormPacket"))))
+  }
+  const failClosed = await scope([wide.ok ? wide.packet.storage_path! : ""], U_M1, null, B1, makeDb({ ...w.tables }, { brokerage_form_library: "relation does not exist" }))
+  check("a REFUSED library read FAILS CLOSED: the path is refused and the reason is returned", !failClosed.ok && /could not verify the form packet/.test(failClosed.error ?? ""))
+  check("existing scopes are unchanged: own brokerage loose file allowed, another tenant refused, own agent folder allowed, someone else's refused, traversal refused",
+    (await scope([`brokerage/${B1}/a.pdf`], U_M1)).ok && !(await scope([`brokerage/${B2}/a.pdf`], U_M1)).ok && (await scope([`agents/${U_M1}/uploads/x.pdf`], U_M1)).ok && !(await scope([`agents/${U_M2}/x.pdf`], U_M1)).ok && !(await scope([`brokerage/${B1}/../${B2}/a.pdf`], U_M1)).ok)
+
+  // ── THE PLATFORM CATALOGUE: its own rules kept; never fillable by a tenant; reaches agents only once a brokerage ADDS it ──
   const pid = randomUUID()
-  check("path grammar: platform/{uuid}/{file}.pdf parses; traversal, wrong root, depth, a non-pdf and a non-uuid are refused",
+  check("catalogue path grammar: platform/{uuid}/{file}.pdf parses; traversal, wrong root, depth, a non-pdf and a non-uuid are refused",
     packets.parsePlatformPacketPath(`platform/${pid}/TAR-1601.pdf`)?.packetId === pid
     && packets.parsePlatformPacketPath(`platform/${pid}/../x.pdf`) === null && packets.parsePlatformPacketPath(`brokerage/${pid}/x.pdf`) === null
     && packets.parsePlatformPacketPath(`platform/${pid}/a/b.pdf`) === null && packets.parsePlatformPacketPath(`platform/${pid}/x.docx`) === null
     && packets.parsePlatformPacketPath("platform/not-a-uuid/x.pdf") === null && packets.parsePlatformPacketPath(null) === null)
   const good = { status: "approved", state: null, packet_type: "offer", field_count: 12, license_note: "Licensed to the platform by the state association, redistribution to members permitted", license_expires_at: null, approved_by: randomUUID() } as Row
-  // THE USABILITY RULE, exercised THROUGH the tenant read (a one-row registry per case) — not by importing a private helper.
   const NOW = new Date("2026-10-23T12:00:00Z")
   const usable = async (o: Row, q: Record<string, unknown> = {}): Promise<boolean> => {
     const id = randomUUID()
     const r = await packets.listPlatformPacketsForTenant(makeDb({ platform_form_packets: [{ id, name: "Case", form_code: null, description: null, file_name: "c.pdf", version: 1, approved_at: iso("2026-10-01"), ...good, ...o, storage_path: `platform/${id}/c.pdf` }] }), { now: NOW, ...q } as any)
     return r.ok && r.packets.length === 1
   }
-  check("an approved, licensed, fillable packet is usable", await usable({}))
-  check("a DRAFT is never usable", !(await usable({ status: "draft" })))
-  check("a RETIRED packet is never usable", !(await usable({ status: "retired" })))
-  check("an approved row with no approver is not usable", !(await usable({ approved_by: null })))
-  check("a licence basis under 20 characters is not usable", !(await usable({ license_note: "ok" })))
-  check("an EXPIRED licence is not usable (and one expiring today still is)", !(await usable({ license_expires_at: "2026-10-22" })) && (await usable({ license_expires_at: "2026-10-23" })))
-  check("a packet with no fillable fields is not usable", !(await usable({ field_count: 0 })))
-  check("a state-pinned packet is offered only for that state; an UNKNOWN state sees only the neutral ones",
-    (await usable({ state: "FL" }, { stateCode: "FL" })) && !(await usable({ state: "FL" }, { stateCode: "TX" })) && !(await usable({ state: "FL" })) && (await usable({ state: null })))
-  check("a listing packet is not offered to an offer; a transaction / disclosure / custom packet is offered to both",
-    !(await usable({ packet_type: "listing" }, { purpose: "offer" })) && (await usable({ packet_type: "disclosure" }, { purpose: "offer" })) && (await usable({ packet_type: "listing" }, { purpose: "listing" })))
+  check("the catalogue offers a brokerage an approved, licensed, fillable packet", await usable({}))
+  check("…never a DRAFT, a RETIRED packet, one with no approver, a licence basis under 20 characters, or no fillable fields",
+    !(await usable({ status: "draft" })) && !(await usable({ status: "retired" })) && !(await usable({ approved_by: null })) && !(await usable({ license_note: "ok" })) && !(await usable({ field_count: 0 })))
+  check("…an EXPIRED licence is not offered (one expiring today still is); a state-pinned packet only for that state; a listing packet not for an offer",
+    !(await usable({ license_expires_at: "2026-10-22" })) && (await usable({ license_expires_at: "2026-10-23" })) && (await usable({ state: "FL" }, { stateCode: "FL" })) && !(await usable({ state: "FL" }, { stateCode: "TX" })) && !(await usable({ packet_type: "listing" }, { purpose: "offer" })))
+  check("…a REFUSED catalogue read is ok:false — never an empty list", !(await packets.listPlatformPacketsForTenant(makeDb({}, { platform_form_packets: "permission denied" }), { stateCode: "TX" })).ok)
 
-  // The registry, the tenant read and the scope check against an in-memory database.
-  const row = (o: Row): Row => ({ id: randomUUID(), name: "Residential contract", state: null, packet_type: "offer", form_code: null, description: null, file_name: "x.pdf", field_count: 9, status: "approved", version: 1, license_note: good.license_note, license_expires_at: null, approved_by: randomUUID(), approved_at: iso("2026-10-01"), ...o })
-  const withPath = (r: Row): Row => ({ ...r, storage_path: `platform/${r.id}/${r.file_name}` })
-  const apprvd = withPath(row({ name: "Approved" })), draft = withPath(row({ name: "Draft", status: "draft", approved_by: null, approved_at: null, license_note: null }))
-  const retired = withPath(row({ name: "Retired", status: "retired" })), expired = withPath(row({ name: "Expired", license_expires_at: "2020-01-01" })), fl = withPath(row({ name: "Florida", state: "FL" }))
-  const reg = makeDb({ platform_form_packets: [apprvd, draft, retired, expired, fl] })
-  const listedTx = await packets.listPlatformPacketsForTenant(reg, { stateCode: "TX", purpose: "offer", now: new Date("2026-10-23T12:00:00Z") })
-  const listedFl = await packets.listPlatformPacketsForTenant(reg, { stateCode: "FL", purpose: "offer", now: new Date("2026-10-23T12:00:00Z") })
-  check("the tenant read returns ONLY approved, in-licence packets for the deal's state (draft / retired / expired / other-state are absent)", listedTx.ok && listedTx.packets.map((p) => p.name).join() === "Approved" && listedFl.ok && listedFl.packets.map((p) => p.name).sort().join() === "Approved,Florida")
-  check("a REFUSED registry read is ok:false — never an empty list that reads as 'no packets exist'", !(await packets.listPlatformPacketsForTenant(makeDb({}, { platform_form_packets: "permission denied" }), { stateCode: "TX" })).ok)
-
-  const actor = { brokerageId: B1, teamId: null, userId: randomUUID() }
-  const scope = (paths: string[], db: any = reg) => checkFormPathsInScope(db, paths, actor)
-  check("the scope check ADMITS an approved platform packet", (await scope([apprvd.storage_path])).ok)
-  check("…and REFUSES a draft, a retired packet and an expired licence", !(await scope([draft.storage_path])).ok && !(await scope([retired.storage_path])).ok && !(await scope([expired.storage_path])).ok)
-  check("…and refuses a path that is not EXACTLY the registered object (same id, other file) or sits deeper", !(await scope([`platform/${apprvd.id}/other.pdf`])).ok && !(await scope([`platform/${apprvd.id}/x/${apprvd.file_name}`])).ok)
-  const failClosed = await scope([apprvd.storage_path], makeDb({}, { platform_form_packets: "relation does not exist" }))
-  check("a REFUSED registry read FAILS CLOSED: the path is refused and the reason is returned", !failClosed.ok && failClosed.refused.includes(apprvd.storage_path) && /could not verify the platform packet/.test(failClosed.error ?? ""))
-  check("existing scopes are unchanged: own brokerage allowed, another tenant refused, traversal refused", (await scope([`brokerage/${B1}/a.pdf`])).ok && !(await scope([`brokerage/${B2}/a.pdf`])).ok && !(await scope([`platform/${apprvd.id}/../../brokerage/${B2}/a.pdf`])).ok)
-  // A packet retired AFTER a wizard listed it stops being fillable at once.
-  const live = makeDb({ platform_form_packets: [{ ...apprvd }] })
-  const before = (await scope([apprvd.storage_path], live)).ok
-  live.tables.platform_form_packets[0].status = "retired"
-  check("retiring a packet makes the fill action's scope check refuse it immediately", before === true && (await scope([apprvd.storage_path], live)).ok === false)
-
-  // Register → approve → supersede → retire, with a real fillable PDF made by pdf-lib.
-  const makePdf = async (fields: number) => { const doc = await PDFDocument.create(); const page = doc.addPage(); const form = doc.getForm(); for (let i = 0; i < fields; i++) { const f = form.createTextField(`field_${i}`); f.addToPage(page, { x: 20, y: 700 - i * 24, width: 200, height: 18 }) } return new Uint8Array(await doc.save()) }
   const staff = randomUUID()
-  const sdb = makeDb({ platform_form_packets: [] })
-  const flat = await packets.registerPlatformPacket(sdb, { actorUserId: staff, name: "Scanned contract", packetType: "offer", fileName: "scan.pdf", bytes: await makePdf(0) })
-  check("a PDF with NO fillable fields cannot be registered, and nothing is stored", !flat.ok && /no fillable form fields/.test((flat as any).error) && sdb.objects.size === 0 && sdb.tables.platform_form_packets.length === 0)
-  check("a file that is not a PDF cannot be registered", !(await packets.registerPlatformPacket(sdb, { actorUserId: staff, name: "Not a pdf", packetType: "offer", fileName: "x.pdf", bytes: new TextEncoder().encode("hello world") })).ok)
-  check("an unknown packet type is refused (the vocabulary is the library's)", !(await packets.registerPlatformPacket(sdb, { actorUserId: staff, name: "Odd packet", packetType: "mystery", fileName: "x.pdf", bytes: await makePdf(2) })).ok)
-  const reg1 = await packets.registerPlatformPacket(sdb, { actorUserId: staff, name: "Residential contract v1", state: "fl", packetType: "offer", formCode: "FAR 1", fileName: "far one.pdf", bytes: await makePdf(5) })
-  check("a fillable PDF registers as a DRAFT with its counted fields and a platform/{id}/ object", reg1.ok && reg1.packet.status === "draft" && reg1.packet.field_count === 5 && reg1.packet.state === "FL" && !!packets.parsePlatformPacketPath(reg1.packet.storage_path) && sdb.objects.size === 1)
-  check("a DRAFT is not offered to tenants and not admitted by the scope check", reg1.ok && (await packets.listPlatformPacketsForTenant(sdb, { stateCode: "FL" })).ok && (await packets.listPlatformPacketsForTenant(sdb, { stateCode: "FL" }) as any).packets.length === 0 && !(await scope([reg1.packet.storage_path], sdb)).ok)
-  const brokenInsert = makeDb({ platform_form_packets: [] }, { "platform_form_packets:insert": "boom" })
-  const lost = await packets.registerPlatformPacket(brokenInsert, { actorUserId: staff, name: "Will not land", packetType: "offer", fileName: "x.pdf", bytes: await makePdf(1) })
-  check("when the registry insert is refused the stored object is REMOVED and the removal is counted (no orphan master)", !lost.ok && /1 stored file\(s\) removed/.test((lost as any).error) && brokenInsert.objects.size === 0)
+  const reg1 = await packets.registerPlatformPacket(w, { actorUserId: staff, name: "Residential contract v1", state: "tx", packetType: "offer", formCode: "TXR 1", fileName: "txr one.pdf", bytes: await makePdf(5) })
+  check("a fillable PDF registers in the catalogue as a DRAFT with its counted fields; a flat PDF / a non-PDF / an unknown type cannot",
+    reg1.ok && reg1.packet.status === "draft" && reg1.packet.field_count === 5 && reg1.packet.state === "TX" && !!packets.parsePlatformPacketPath(reg1.packet.storage_path)
+    && !(await packets.registerPlatformPacket(w, { actorUserId: staff, name: "Scanned contract", packetType: "offer", fileName: "scan.pdf", bytes: await makePdf(0) })).ok
+    && !(await packets.registerPlatformPacket(w, { actorUserId: staff, name: "Not a pdf", packetType: "offer", fileName: "x.pdf", bytes: new TextEncoder().encode("hello world") })).ok
+    && !(await packets.registerPlatformPacket(w, { actorUserId: staff, name: "Odd packet", packetType: "mystery", fileName: "x.pdf", bytes: await makePdf(2) })).ok)
   if (reg1.ok) {
-    check("approval needs a licence basis", !(await packets.approvePlatformPacket(sdb, { actorUserId: staff, packetId: reg1.packet.id, licenseNote: "yes" })).ok)
-    const ok1 = await packets.approvePlatformPacket(sdb, { actorUserId: staff, packetId: reg1.packet.id, licenseNote: "Licensed to the platform by the association for member redistribution (agreement 2026-09)" })
-    const stored = sdb.tables.platform_form_packets.find((r: Row) => r.id === reg1.packet.id)
-    check("a named human approves it: status, approver and time are recorded, and it is now usable", ok1.ok && stored?.status === "approved" && stored.approved_by === staff && !!stored.approved_at && (await scope([reg1.packet.storage_path], sdb)).ok)
-    check("approving twice is refused (only a draft can be approved)", !(await packets.approvePlatformPacket(sdb, { actorUserId: staff, packetId: reg1.packet.id, licenseNote: "Licensed to the platform by the association for member redistribution" })).ok)
-    const reg2 = await packets.registerPlatformPacket(sdb, { actorUserId: staff, name: "Residential contract v2", state: "FL", packetType: "offer", formCode: "FAR 1", fileName: "far one v2.pdf", bytes: await makePdf(6) })
+    const catPath = reg1.packet.storage_path
+    check("a DRAFT catalogue packet cannot be added to a brokerage's library", !(await packets.addPlatformPacketToLibrary(w, aBroker!, { packetId: reg1.packet.id })).ok)
+    check("approval needs a licence basis; a named human approves it (status, approver, time recorded); approving twice is refused",
+      !(await packets.approvePlatformPacket(w, { actorUserId: staff, packetId: reg1.packet.id, licenseNote: "yes" })).ok
+      && (await packets.approvePlatformPacket(w, { actorUserId: staff, packetId: reg1.packet.id, licenseNote: "Licensed to the platform by the association for member redistribution (agreement 2026-09)" })).ok
+      && w.tables.platform_form_packets.find((r: Row) => r.id === reg1.packet.id)?.approved_by === staff
+      && !(await packets.approvePlatformPacket(w, { actorUserId: staff, packetId: reg1.packet.id, licenseNote: "Licensed to the platform by the association for member redistribution" })).ok)
+    check("A TENANT NEVER FILLS THE CATALOGUE MASTER: even approved and in licence, the platform/… path is refused by the fill action's scope check (positive control: the registry admits it)",
+      !(await scope([catPath], U_BROKER)).ok && !(await scope([catPath], U_M1)).ok && (await packets.usablePlatformPaths(w, [catPath])).ok && ((await packets.usablePlatformPaths(w, [catPath])) as any).usable.has(catPath))
+    const added = await packets.addPlatformPacketToLibrary(w, aBroker!, { packetId: reg1.packet.id })
+    const again = await packets.addPlatformPacketToLibrary(w, aBroker!, { packetId: reg1.packet.id })
+    check("a brokerage ADDS it: the master is COPIED into the brokerage's own folder and registered in ITS library with the catalogue provenance and the licence it came under; adding again is idempotent",
+      added.ok && added.packet.storage_path!.startsWith(`brokerage/${B1}/packets/${added.packet.id}/`) && added.packet.source_platform_packet_id === reg1.packet.id
+      && /member redistribution/.test(added.packet.license_note ?? "") && w.objects.has(`brokerage-forms/${added.packet.storage_path}`) && again.ok && again.existing && again.packet.id === added.packet.id)
+    if (added.ok) {
+      check("…from then on it is the BROKERAGE's packet: offered to its agents (labelled as from the catalogue) and fillable by them, never by another tenant",
+        (await tp.listFormPacketsForActor(w, aM1!)).ok && ((await tp.listFormPacketsForActor(w, aM1!)) as any).packets.some((p: any) => p.path === added.packet.storage_path && p.origin === "platform_catalogue")
+        && (await scope([added.packet.storage_path!], U_M1)).ok && !(await scope([added.packet.storage_path!], U_FOREIGN, T_FOREIGN, B2)).ok)
+    }
+    check("…a team lead adds it to their OWN team only; an agent cannot add it at all",
+      (await packets.addPlatformPacketToLibrary(w, aLead!, { packetId: reg1.packet.id, teamId: T1 })).ok && !(await packets.addPlatformPacketToLibrary(w, aLead!, { packetId: reg1.packet.id, teamId: T2 })).ok && !(await packets.addPlatformPacketToLibrary(w, aM1!, { packetId: reg1.packet.id })).ok)
+    const reg2 = await packets.registerPlatformPacket(w, { actorUserId: staff, name: "Residential contract v2", state: "TX", packetType: "offer", formCode: "TXR 1", fileName: "txr one v2.pdf", bytes: await makePdf(6) })
     if (reg2.ok) {
-      const ok2 = await packets.approvePlatformPacket(sdb, { actorUserId: staff, packetId: reg2.packet.id, licenseNote: "Licensed to the platform by the association for member redistribution (agreement 2026-10)" })
-      check("approving a NEWER packet for the same state + kind + form code RETIRES the older one (counted)", ok2.ok && ok2.retiredOlder === 1 && sdb.tables.platform_form_packets.find((r: Row) => r.id === reg1.packet.id)?.status === "retired" && !(await scope([reg1.packet.storage_path], sdb)).ok && (await scope([reg2.packet.storage_path], sdb)).ok)
-    } else check("second version registers", false)
-    const again = await packets.retirePlatformPacket(sdb, { actorUserId: staff, packetId: reg1.packet.id, reason: "superseded" })
-    check("retiring an already-retired packet reports it (a count of zero is not 'success')", !again.ok)
+      const ok2 = await packets.approvePlatformPacket(w, { actorUserId: staff, packetId: reg2.packet.id, licenseNote: "Licensed to the platform by the association for member redistribution (agreement 2026-10)" })
+      check("approving a NEWER version of the same form RETIRES the older one in the catalogue (counted) — and a retired catalogue packet can no longer be added",
+        ok2.ok && ok2.retiredOlder === 1 && w.tables.platform_form_packets.find((r: Row) => r.id === reg1.packet.id)?.status === "retired" && !(await packets.addPlatformPacketToLibrary(w, aBroker!, { packetId: reg1.packet.id, teamId: T2 })).ok)
+    } else check("second catalogue version registers", false)
+    const neutral = await packets.registerPlatformPacket(w, { actorUserId: staff, name: "State-neutral disclosure", packetType: "disclosure", fileName: "n.pdf", bytes: await makePdf(2) })
+    if (neutral.ok) {
+      await packets.approvePlatformPacket(w, { actorUserId: staff, packetId: neutral.packet.id, licenseNote: "Platform's own form, free to members — drafted in house 2026" })
+      check("a STATE-NEUTRAL catalogue packet needs the brokerage to choose its state before it is added (the library is state-scoped)",
+        !(await packets.addPlatformPacketToLibrary(w, aBroker!, { packetId: neutral.packet.id })).ok && (await packets.addPlatformPacketToLibrary(w, aBroker!, { packetId: neutral.packet.id, state: "TX" })).ok)
+    }
+    check("retiring an already-retired catalogue packet reports it (a count of zero is not 'success')", !(await packets.retirePlatformPacket(w, { actorUserId: staff, packetId: reg1.packet.id, reason: "superseded" })).ok)
   }
+
+  // ── WIRING, on stripped source ──
+  const wizardSrcF = codeWithStrings("app/components/form-wizard/FormWizard.tsx")
+  const packetRouteSrc = codeWithStrings("app/api/form-wizard/form-packets/route.ts")
+  const wizardFetchesPlatform = (s: string) => /\/api\/form-wizard\/platform-packets/.test(s) || /scope: "platform"/.test(s)
+  check("the wizard lists the brokerage's and team's packets through the session-gated route, never a platform group, and keeps ONE source vocabulary (my_forms | legal_forms_provider)",
+    /\/api\/form-wizard\/form-packets/.test(wizardSrcF) && !wizardFetchesPlatform(wizardSrcF) && !/source: "platform/.test(wizardSrcF) && /source: "legal_forms_provider"/.test(wizardSrcF) && /source: "my_forms"/.test(wizardSrcF))
+  control("the platform-group finder catches the wave-143 wizard fetch", wizardFetchesPlatform, "const res = await fetch(`/api/form-wizard/platform-packets?${qs}`)")
+  check("the wizard no longer lists brokerage/ or teams/ folders from the browser session (the route resolves the agent's REAL membership)", !/prefix: `brokerage\//.test(wizardSrcF) && !/prefix: `teams\//.test(wizardSrcF))
+  check("the packet route reads the SESSION user before it opens the service client, resolves the actor from it, and takes no id from the query",
+    packetRouteSrc.indexOf("auth.getUser()") >= 0 && packetRouteSrc.indexOf("auth.getUser()") < packetRouteSrc.indexOf("createServiceClient()") && /resolvePacketActor\(svc as never, user\.id\)/.test(packetRouteSrc) && !/searchParams\.get\(["'](brokerage|team|user|agent)/i.test(packetRouteSrc))
+  check("the wave-143 platform route is GONE and its tombstone names the survivor", !existsSync("app/api/form-wizard/platform-packets/route.ts") && read("app/api/form-wizard/form-packets/route.ts").includes("app/api/form-wizard/platform-packets/route.ts") && /TOMBSTONE/.test(read("app/api/form-wizard/form-packets/route.ts")))
+  const libRouteSrc = codeWithStrings("app/api/admin/transaction-forms/route.ts")
+  check("the brokerage's ONE upload path writes through the ONE packet writer (no inline library insert left) and adds catalogue packets through addPlatformPacketToLibrary",
+    /registerTenantFormPacket\(/.test(libRouteSrc) && /addPlatformPacketToLibrary\(/.test(libRouteSrc) && !/\.from\("brokerage_form_library"\)\.insert\(/.test(libRouteSrc))
+  check("…and opens the service client only AFTER the session + role gate", libRouteSrc.indexOf("isTenantAdminOrPlatformStaff(userRow)") > 0 && libRouteSrc.indexOf("isTenantAdminOrPlatformStaff(userRow)") < libRouteSrc.indexOf("createServiceClient()"))
+  const brokerageOnly = (f: string) => /\.from\("brokerage_form_library"\)[\s\S]{0,700}\.is\("team_id", null\)/.test(codeWithStrings(f))
+  check("the two person-less readers of the library (the AI form-fill engine, the agent Forms Library loader) are held to BROKERAGE-WIDE packets — a team packet cannot leak through them",
+    brokerageOnly("lib/workflow/intake/form-fill-engine.ts") && brokerageOnly("lib/kernel/forms.ts"))
+  control("the brokerage-only finder fails a reader with no team predicate", (s) => !/\.from\("brokerage_form_library"\)[\s\S]{0,700}\.is\("team_id", null\)/.test(s), `svc.from("brokerage_form_library").select("id").eq("brokerage_id", b).eq("is_active", true)`)
+  check("no packet code mints a PUBLIC url (private bucket, signed links only)", ["lib/forms/platform-form-packets.ts", "lib/forms/tenant-form-packets.ts", "app/api/form-wizard/form-packets/route.ts", "app/api/admin/transaction-forms/route.ts", "app/actions/superadmin/platform-form-packets.ts"].every((f) => !/getPublicUrl/.test(code(f))))
   // ═══ G. THE COACH LISTENS (lib/forms/intake-from-notes.ts) — suggestions the agent's own words must back ═══
   section("G the wizard coach — rules first, a routed model assist, and a verifier no proposal escapes")
   const intake = await import("../lib/forms/intake-from-notes")
@@ -624,11 +782,8 @@ async function main() {
   check("every superadmin packet action opens with requireSuperadmin() BEFORE the service client (gate first, CLAUDE.md §4)", gatedBeforeService(actionSrc))
   check("POSITIVE CONTROL — the gate-order finder rejects an action that opens the service client first",
     gatedBeforeService(`export async function a(x: string) {\n const svc = createServiceClient()\n const g = await requireSuperadmin()\n}`) === false && gatedBeforeService(`export async function a(x: string) {\n const g = await requireSuperadmin()\n const svc = createServiceClient()\n}`) === true)
-  const routeSrc = codeWithStrings("app/api/form-wizard/platform-packets/route.ts")
-  check("the tenant route reads the SESSION user before it opens the service client, and takes no id from the query", routeSrc.indexOf("auth.getUser()") >= 0 && routeSrc.indexOf("auth.getUser()") < routeSrc.indexOf("createServiceClient()") && !/searchParams\.get\(["'](brokerage|team|user|agent)/i.test(routeSrc))
-  check("no platform-packet code mints a PUBLIC url (private bucket, signed previews only)", ["lib/forms/platform-form-packets.ts", "app/api/form-wizard/platform-packets/route.ts", "app/actions/superadmin/platform-form-packets.ts"].every((f) => !/getPublicUrl/.test(code(f))))
-  const wizardSrc = codeWithStrings("app/components/form-wizard/FormWizard.tsx")
-  check("the wizard offers the platform group through the route and keeps ONE source vocabulary (my_forms | legal_forms_provider)", /\/api\/form-wizard\/platform-packets/.test(wizardSrc) && /scope: "platform"/.test(wizardSrc) && !/source: "platform/.test(wizardSrc))
+  // (wave 144, lane 144C) The tenant packet route, the wizard's packet source and the no-public-url census moved to section F —
+  // the route is now the brokerage / team packet route (app/api/form-wizard/form-packets), asserted there with its tombstone.
   const probe = /\b(platform_form_packets|platformFormPackets|PLATFORM_FORM_PACKET\w*|platform_form_library|platformFormLibrary)\b/
   check("wave 142's SOURCE (a) probe now finds the packet source in lib/forms (stripped source — a tombstone would not count)", probe.test(stripComments(read("lib/forms/platform-form-packets.ts"))) && !probe.test(stripComments("// platform_form_packets was here")))
 

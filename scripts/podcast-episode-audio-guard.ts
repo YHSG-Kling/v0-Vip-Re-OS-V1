@@ -16,6 +16,8 @@
  *   D. THE DOORS: the manual action joins the segments and records the file's own duration (no `audioSegments[0].url` as the episode, no
  *      buffer written to the row, an assembly failure FAILS the generation); the weekly auto-producer probes the TTS bytes BEFORE hosting,
  *      levels them, records the measured duration, and says so on the run when the level was skipped.
+ *   E. THE PRESET DOOR (wave 144, lane 144H — approved creative keeps its human approval): a preset stages distribution only for an
+ *      APPROVED, finished episode of its own tenant; refused reads are reported as refusals.
  */
 import { readFileSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
@@ -26,6 +28,9 @@ import { stripComments } from "./strip-comments"
 import { PODCAST_AUDIO_SPEC, probeMp3, evaluatePodcastAudio, parseAudioInfo, podcastTrimGainDb, type PodcastAudioFacts } from "../lib/podcast/episode-audio-spec"
 import { assemblePodcastEpisode } from "../lib/podcast/episode-audio"
 import { measurePodcastAudio } from "../lib/podcast/episode-audio-measure"
+// Wave 144 (lane 144H): the preset publish door, driven on an in-memory database.
+import { orchestratePodcastPresetPublish } from "../lib/podcast/orchestrate-podcast-preset-publish"
+import { memSupabase } from "./in-memory-supabase"
 
 const ROOT = process.cwd()
 const code = (p: string) => stripComments(readFileSync(join(ROOT, p), "utf8"))
@@ -107,6 +112,39 @@ async function main() {
   check("…and the audio buffers never reach the episode row (segments are mapped to {url, duration})", /segments: audioSegments\.map\(\(\{ url, duration \}\) => \(\{ url, duration \}\)\)/.test(action))
   check("auto-producer: the TTS bytes are PROBED before anything is hosted, and a refusal throws (the run is marked failed with the reason)", producer.indexOf("probeMp3(tts.audioBuffer)") > 0 && producer.indexOf("probeMp3(tts.audioBuffer)") < producer.indexOf("hostRenderedMedia(") && /ElevenLabs returned audio that is not playable/.test(producer))
   check("auto-producer: the audio is levelled + measured; a SKIPPED level is recorded on the run's error_message, never silent; the duration is the measured one", /assemblePodcastEpisode\(\[tts\.audioBuffer\]/.test(producer) && /audio not loudness-levelled/.test(producer) && /\.\.\.\(masterNote \? \{ error_message: masterNote \} : \{\}\)/.test(producer) && /mastered\.facts\.durationSeconds/.test(producer))
+
+  // ═══════════════════ E · the preset door keeps the human approval (wave 144, lane 144H, owner ruling 18) ═══════════════════
+  // Measured at 967a4866: orchestratePodcastPresetPublish READ the episode's status and never checked it, and swallowed both reads'
+  // errors — a preset staged distribution rows for an episode still pending_review. The distributor cron filtered on approval, so the
+  // egress held; the authoritative WRITE did not.
+  section("E · the podcast preset door — approved, finished, tenant-pinned, refusals read")
+  {
+    const B = "00000000-0000-4000-8000-0000000000b1", B2 = "00000000-0000-4000-8000-0000000000b2", EP = "44444444-4444-4444-8444-444444444444", PRE = "55555555-5555-4555-8555-555555555555"
+    const world = (ep: Record<string, unknown>, o: { refuse?: Record<string, string> } = {}) => memSupabase({
+      podcast_episode_presets: [{ id: PRE, brokerage_id: B, name: "Monthly show", podcast_episode_id: EP, target_distribution_channels: ["spotify", "apple"], is_active: true }],
+      podcast_episodes: [{ id: EP, brokerage_id: B, status: "completed", approval_status: "approved", ...ep }],
+      podcast_distribution_log: [],
+    }, { uuidIds: true, refuse: o.refuse })
+    const run = (db: ReturnType<typeof world>, tenant = B) => orchestratePodcastPresetPublish({ brokerageId: tenant, presetId: PRE }, { client: db as never })
+    const okDb = world({})
+    const ok = await run(okDb)
+    check("an APPROVED, finished episode is staged to every target channel (one pending log row each)", ok.success && ok.channelsCount === 2 && okDb.tables.podcast_distribution_log.length === 2 && okDb.tables.podcast_distribution_log.every((r) => r.distribution_status === "pending" && r.podcast_episode_id === EP))
+    for (const [label, ep, re] of [
+      ["an episode still PENDING REVIEW (the auto-producer's state)", { approval_status: "pending_review" }, /episode_not_approved/],
+      ["an episode with NO approval recorded", { approval_status: null }, /episode_not_approved/],
+      ["an approved episode that is not finished (generating)", { status: "generating" }, /episode_not_ready/],
+    ] as Array<[string, Record<string, unknown>, RegExp]>) {
+      const db = world(ep)
+      const r = await run(db)
+      check(`REFUSED: ${label} — no distribution row written`, !r.success && re.test(r.error ?? "") && db.tables.podcast_distribution_log.length === 0, r.error)
+    }
+    check("another tenant's preset is refused (tenant_mismatch), nothing written", (await run(world({}), B2)).error === "tenant_mismatch")
+    const refusedEp = await run(world({}, { refuse: { podcast_episodes: "permission denied for table podcast_episodes" } }))
+    const refusedPre = await run(world({}, { refuse: { podcast_episode_presets: "permission denied for table podcast_episode_presets" } }))
+    check("a REFUSED read is reported as a refusal (never 'not found'), for the preset and for the episode (§3)", !refusedEp.success && /episode_read_refused: permission denied/.test(refusedEp.error ?? "") && !refusedPre.success && /preset_read_refused: permission denied/.test(refusedPre.error ?? ""))
+    const presetSrc = code("lib/podcast/orchestrate-podcast-preset-publish.ts"), cron = code("app/api/cron/distribute-podcast-episodes/route.ts")
+    check("ONE approval vocabulary: the preset door and the distributor both gate on approval_status 'approved' (positive control: the distributor carries it)", /ep\.approval_status !== "approved"/.test(presetSrc) && /\.eq\("approval_status", "approved"\)/.test(cron))
+  }
   finish()
 
   function finish() {

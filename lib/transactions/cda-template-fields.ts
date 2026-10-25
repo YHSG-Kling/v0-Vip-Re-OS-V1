@@ -32,6 +32,9 @@ export const CDA_WATERFALL_KEYS: Record<string, { label: string; field_type: Cda
   revenue_share: { label: "Revenue Share", field_type: "currency" },
   // Wave 143 (143C): the referral payout the CDA must show (distribution_type 'referral', the waterfall's step 03b).
   referral: { label: "Referral Fee", field_type: "currency" },
+  // Wave 144 (144D, owner ruling 7): the ROYALTY is a brokerage fee of its own (distribution_type 'royalty', stage 10) —
+  // its own CDA line, never folded into "Fees".
+  royalty: { label: "Royalty Fee (to brokerage)", field_type: "currency" },
 }
 
 export const CDA_TRANSACTION_KEYS: Record<string, { label: string; field_type: CdaFieldType }> = {
@@ -243,5 +246,6 @@ export function cdaWaterfallContext(input: CdaWaterfallInput): Record<string, nu
     team_split: byType["team_member"] ?? null,
     revenue_share: byType["residual"] ?? null,
     referral: byType["referral"] ?? null,
+    royalty: byType["royalty"] ?? null,
   }
 }

@@ -144,6 +144,8 @@ export interface PeopleDataPersonLike {
   age?: number
   ageRange?: string
   birthYear?: number
+  /** Wave 144 (lane 144E): PDL birth_date ("YYYY-MM-DD" / "YYYY-MM") — profile key `birth_date`. */
+  birthDate?: string
   gender?: string
   maritalStatus?: string
   childrenCount?: number
@@ -201,6 +203,7 @@ export function buildPeopleDataProfile(enriched: PeopleDataPersonLike, capturedA
     age: enriched.age,
     age_range: enriched.ageRange,
     birth_year: enriched.birthYear,
+    birth_date: enriched.birthDate,
     gender: enriched.gender,
     marital_status: enriched.maritalStatus,
     children_count: enriched.childrenCount,
@@ -636,10 +639,18 @@ export function buildVersiumDemographicProfile(
   const children = typeof childrenRaw === 'string' && /^(yes|y)$/i.test(childrenRaw.trim()) ? 1
     : typeof childrenRaw === 'string' && /^(no|n)$/i.test(childrenRaw.trim()) ? 0 : int(childrenRaw)
   const educationRaw = str(pick(d, ['Education Level', 'Education']))
+  // Wave 144 (lane 144E): Versium's basic demographic output carries "DOB" as YEAR + MONTH ("197203" in the vendor's own
+  // Demographic Output Sample, api-documentation.versium.com/reference/demographic-output-sample, read 2026-10-25) — never a
+  // day. Kept as `birth_year_month` ("1972-03") on the profile: a birthday-MONTH signal (card timing at month precision, the
+  // education format by band), never written to contacts.birthday (a date column — a fabricated day would be a lie).
+  const dobRaw = str(pick(d, ['DOB']))?.replace(/\D/g, '')
+  const birthYearMonth = dobRaw && /^\d{6}/.test(dobRaw) && Number(dobRaw.slice(4, 6)) >= 1 && Number(dobRaw.slice(4, 6)) <= 12
+    ? `${dobRaw.slice(0, 4)}-${dobRaw.slice(4, 6)}` : undefined
   const profile: Record<string, any> = {
     provider: 'versium',
     captured_at: capturedAt,
     age_range: str(pick(d, ['Age Range', 'Age'])),
+    birth_year_month: birthYearMonth,
     gender: str(pick(d, ['Gender'])),
     household_size: int(pick(d, ['Household Size', 'Number of People in Household', 'Number of Adults in Household'])),
     children_count: children,

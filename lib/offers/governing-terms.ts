@@ -24,19 +24,24 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import {
-  GOVERNING_TERM_KEYS, OFFER_COLUMN_TO_KEY, TERM_VERSION_SOURCES, TERM_VERSION_STATUSES, canonicalTerms, mergeVersions, resolveGoverningTerms,
+  GOVERNING_TERM_KEYS, OFFER_COLUMN_TO_KEY, TERM_VERSION_SOURCES, TERM_VERSION_STATUSES, acceptedOfferSequence, canonicalTerms, mergeVersions, resolveGoverningTerms,
   signaturesPresent, versionsFromOfferChain,
-  type GoverningTerms, type OfferRowForTerms, type TermVersionSource, type TermVersionStatus, type TermsVersion,
+  type AcceptedOfferSequence, type AcceptedSequenceRefusal, type GoverningTerms, type OfferRowForTerms, type TermVersionSource, type TermVersionStatus, type TermsVersion,
 } from "./governing-terms-rule"
 
 type Svc = SupabaseClient<any, any, any>
 
 // ─── I/O: the ONE reader and the writers ────────────────────────────────────────────────────────────────
 
-const OFFER_COLS = ["id", "parent_offer_id", "offer_type", "current_round", "status", "esign_status", "buyer_signed_at", "seller_signed_at", "fully_signed_contract_received_at", "esign_completed_at", "responded_at", "created_at", "transaction_id", ...GOVERNING_TERM_KEYS.filter((k) => !["title_policy_payer", "title_company", "buyer_agent_commission_pct", "buyer_agent_commission_flat", "commission_payer"].includes(k)), ...Object.keys(OFFER_COLUMN_TO_KEY)].join(", ")
+// `seller_response_type` rides along (wave 144, lane 144C): the executed reading now includes the ONE definition
+// (offer-execution-state isOfferFullyExecuted), which reads it.
+const OFFER_COLS_BASE = ["id", "parent_offer_id", "offer_type", "current_round", "status", "esign_status", "buyer_signed_at", "seller_signed_at", "seller_response_type", "fully_signed_contract_received_at", "esign_completed_at", "responded_at", "created_at", "transaction_id", ...GOVERNING_TERM_KEYS.filter((k) => !["title_policy_payer", "title_company", "buyer_agent_commission_pct", "buyer_agent_commission_flat", "commission_payer"].includes(k)), ...Object.keys(OFFER_COLUMN_TO_KEY)]
+const OFFER_COLS = OFFER_COLS_BASE.join(", ")
+
+const NO_SUCH_OFFER = "no such offer in this brokerage"
 
 /** Walk each anchor offer up to its chain root, then gather every descendant (counters hang off the row they counter, so the chain is deeper than one level). Tenant-pinned; a refused read is a returned reason. */
-async function collectChain(svc: Svc, brokerageId: string, anchorIds: string[]): Promise<
+async function collectChain(svc: Svc, brokerageId: string, anchorIds: string[], columns: string = OFFER_COLS): Promise<
   | { ok: true; roots: Set<string>; rows: Map<string, OfferRowForTerms>; transactionId: string | null }
   | { ok: false; reason: string }
 > {
@@ -46,9 +51,9 @@ async function collectChain(svc: Svc, brokerageId: string, anchorIds: string[]):
   for (const id of anchorIds) {
     let cur = id
     for (let i = 0; i < 20; i++) {
-      const { data, error } = await svc.from("offers").select(OFFER_COLS).eq("id", cur).eq("brokerage_id", brokerageId).maybeSingle()
+      const { data, error } = await svc.from("offers").select(columns).eq("id", cur).eq("brokerage_id", brokerageId).maybeSingle()
       if (error) return { ok: false, reason: `offer read refused: ${error.message}` }
-      if (!data) { if (i === 0) return { ok: false, reason: "no such offer in this brokerage" }; break }
+      if (!data) { if (i === 0) return { ok: false, reason: NO_SUCH_OFFER }; break }
       const row = data as unknown as OfferRowForTerms
       rows.set(row.id, row)
       if (!row.parent_offer_id) { roots.add(row.id); break }
@@ -57,7 +62,7 @@ async function collectChain(svc: Svc, brokerageId: string, anchorIds: string[]):
   }
   let frontier = [...roots]
   for (let depth = 0; depth < 20 && frontier.length > 0; depth++) {
-    const { data, error } = await svc.from("offers").select(OFFER_COLS).in("parent_offer_id", frontier).eq("brokerage_id", brokerageId)
+    const { data, error } = await svc.from("offers").select(columns).in("parent_offer_id", frontier).eq("brokerage_id", brokerageId)
     if (error) return { ok: false, reason: `offer chain read refused: ${error.message}` }
     const kids = (data ?? []) as unknown as OfferRowForTerms[]
     for (const k of kids) rows.set(k.id, k)
@@ -117,6 +122,63 @@ export async function governingContractTerms(
   return { ok: true, rootOfferId: rootList[0] ?? null, transactionId, governing: resolveGoverningTerms(mergeVersions(recorded, derived)) }
 }
 
+
+/**
+ * The whole chain of one offer — root and every descendant — through the ONE chain walk above, with the caller's extra columns
+ * (closing compliance reads money columns the terms reader does not). Tenant-pinned; a refused read is a returned reason.
+ */
+export async function loadOfferChainRows(
+  svc: Svc,
+  brokerageId: string,
+  offerId: string,
+  extraColumns: readonly string[] = [],
+): Promise<{ ok: true; rows: OfferRowForTerms[]; rootOfferIds: string[] } | { ok: false; reason: string }> {
+  if (!brokerageId) return { ok: false, reason: "no tenant: the offer chain was not read" }
+  const columns = [...new Set([...OFFER_COLS_BASE, ...extraColumns])].join(", ")
+  const chain = await collectChain(svc, brokerageId, [offerId], columns)
+  // An offer that is not in this brokerage is an EMPTY chain (a read that worked and found nothing), never a refused read.
+  if (!chain.ok) return chain.reason === NO_SUCH_OFFER ? { ok: true, rows: [], rootOfferIds: [] } : chain
+  return { ok: true, rows: [...chain.rows.values()], rootOfferIds: [...chain.roots] }
+}
+
+/** What the compliance scan must read for ONE executed contract (wave 144, lane 144C — owner ruling 2). */
+export interface GoverningOfferPacket extends AcceptedOfferSequence {
+  /** The documents behind EXECUTED addenda / amendments recorded against this contract (contract_term_versions.document_id). */
+  addendumDocumentIds: string[]
+}
+
+/**
+ * THE GOVERNING PACKET of the offer being promoted: the accepted sequence (original offer → … → accepted counter) plus every
+ * executed addendum / amendment recorded against the contract. The creation gate and the compliance checkpoint both scan exactly
+ * this set — never only the submitted row's paperwork. Two kinds of failure, kept apart because their remedies differ:
+ * `kind: "unreadable"` (a refused read — nothing was verified, the gate cannot run) and `kind: "refused"` (the chain says this row
+ * is not the contract: not executed, superseded by a later executed instrument, or competing with another executed branch).
+ */
+export async function governingOfferPacket(
+  svc: Svc,
+  brokerageId: string,
+  offerId: string,
+): Promise<
+  | { ok: true; packet: GoverningOfferPacket }
+  | { ok: false; kind: "unreadable"; reason: string }
+  | { ok: false; kind: "refused"; code: AcceptedSequenceRefusal; reason: string; offerIds: string[] }
+> {
+  const chain = await loadOfferChainRows(svc, brokerageId, offerId)
+  if (!chain.ok) return { ok: false, kind: "unreadable", reason: chain.reason }
+  const seq = acceptedOfferSequence(chain.rows, offerId)
+  if (!seq.ok) return { ok: false, kind: "refused", code: seq.code, reason: seq.reason, offerIds: seq.offerIds }
+  const { data, error } = await svc
+    .from("contract_term_versions")
+    .select("document_id, source, status")
+    .eq("brokerage_id", brokerageId)
+    .eq("root_offer_id", seq.sequence.rootOfferId)
+    .eq("status", "executed")
+  if (error) return { ok: false, kind: "unreadable", reason: `contract_term_versions read refused: ${error.message}` }
+  const addendumDocumentIds = [...new Set(((data ?? []) as Array<{ document_id: string | null; source: string }>)
+    .filter((v) => (v.source === "addendum" || v.source === "amendment") && typeof v.document_id === "string" && v.document_id.length > 0)
+    .map((v) => v.document_id as string))]
+  return { ok: true, packet: { ...seq.sequence, addendumDocumentIds } }
+}
 
 export interface RecordVersionInput {
   brokerageId: string

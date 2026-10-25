@@ -212,7 +212,10 @@ export interface KdpRightsRecord {
   aiDisclosure: { text: "ai_generated"; images: "ai_generated" | "none"; translations: "none"; explanation: string }
   provenance: { manuscriptLane: string; factCheckLane: string; coverArt: "image_rail" | "typographic_only" }
   /** What the human must confirm before uploading — approveKdpPackage requires every one. */
-  attestations: ReadonlyArray<{ id: "i_hold_rights" | "ai_disclosure_confirmed" | "content_guidelines_reviewed" | "no_rank_claims" | "facts_reviewed"; text: string }>
+  attestations: ReadonlyArray<{ id: "i_hold_rights" | "ai_disclosure_confirmed" | "content_guidelines_reviewed" | "no_rank_claims" | "facts_reviewed" | "humanized_review"; text: string }>
+  /** WHOSE retail book this is (wave 144): the publication context, its owner and the rights holder of record. Absent on
+   *  packages built before it existed. */
+  publication?: { context: "tenant_kdp" | "platform_kdp"; owner: "agent" | "brokerage" | "platform"; rightsHolder: string }
 }
 
 export const KDP_ATTESTATIONS = [
@@ -221,13 +224,16 @@ export const KDP_ATTESTATIONS = [
   { id: "content_guidelines_reviewed", text: "I reviewed KDP's content guidelines, including intellectual-property rights, and the back-matter link (if any) against them." },
   { id: "no_rank_claims", text: "I understand nothing guarantees or implies a sales rank, and I will add no ranking or bestseller claim to the title, cover, description or keywords." },
   { id: "facts_reviewed", text: "I reviewed the manuscript's facts — the fact-check pass flags unsupported figures, it does not certify the book." },
+  // Wave 144 (lane 144H, owner ruling 15 — "ALWAYS a humanized review after the draft").
+  { id: "humanized_review", text: "I read the whole manuscript after the AI draft, as a reader would, and rewrote anything that did not sound like me — the book is in my own voice." },
 ] as const satisfies KdpRightsRecord["attestations"]
 
 /** PURE. The rights + AI-disclosure record for a book made by lib/lead-magnets/book-creator.ts. */
-export function composeRightsRecord(b: { authorName: string; year: number; coverArt: "image_rail" | "typographic_only" }): KdpRightsRecord {
+export function composeRightsRecord(b: { authorName: string; year: number; coverArt: "image_rail" | "typographic_only"; publication?: KdpRightsRecord["publication"] }): KdpRightsRecord {
   return {
+    ...(b.publication ? { publication: b.publication } : {}),
     authorOfRecord: b.authorName,
-    copyrightLine: `© ${b.year} ${b.authorName}. All rights reserved.`,
+    copyrightLine: `© ${b.year} ${b.publication?.rightsHolder ?? b.authorName}. All rights reserved.`,
     aiDisclosure: {
       text: "ai_generated",
       images: b.coverArt === "image_rail" ? "ai_generated" : "none",
@@ -291,6 +297,10 @@ export interface EpubInput extends KdpBookInput {
   identifier: string
   /** Composed description (plain text) for dc:description. */
   description?: string | null
+  /** The brand's APPROVED tagline (claim- and fair-housing-clean, vetted by the producer) for the about-the-author page. */
+  brandTagline?: string | null
+  /** The rights holder of record for the copyright page (default the author). */
+  rightsHolder?: string | null
   now?: Date
 }
 
@@ -298,16 +308,17 @@ export interface EpubInput extends KdpBookInput {
 export function buildEpub(b: EpubInput): Buffer {
   const now = b.now ?? new Date()
   const modified = now.toISOString().replace(/\.\d{3}Z$/, "Z")
+  const holder = b.rightsHolder?.trim() || b.authorName
   const files: Array<{ id: string; href: string; title: string; xhtml: string; spine: boolean; nav: boolean; type?: string; linear?: boolean }> = []
   const add = (id: string, href: string, title: string, body: string, opts: { spine?: boolean; nav?: boolean; type?: string } = {}) => files.push({ id, href, title, xhtml: xhtml(title, body, opts.type), spine: opts.spine ?? true, nav: opts.nav ?? true, type: opts.type })
 
   if (b.coverJpeg) add("cover", "cover.xhtml", "Cover", `<section epub:type="cover"><img class="cover" src="images/cover.jpg" alt="Cover of ${esc(b.title)}"/></section>`, { nav: false, type: "cover" })
   add("titlepage", "title.xhtml", "Title page", `<section class="title-page"><h1 style="page-break-before:auto">${esc(b.title)}</h1>${b.subtitle ? `<p class="sub">${esc(b.subtitle)}</p>` : ""}<p class="by">${esc(b.authorName)}</p></section>`, { type: "titlepage" })
-  add("copyright", "copyright.xhtml", "Copyright", `<section><p class="small">© ${b.year} ${esc(b.authorName)}. All rights reserved.</p><p class="small">This book is general information, not legal, tax or lending advice. Programs, rates and requirements change — verify details with licensed professionals for your situation.</p><p class="small">Published by ${esc(b.brokerageName)}.</p></section>`, { nav: false, type: "copyright-page" })
+  add("copyright", "copyright.xhtml", "Copyright", `<section><p class="small">© ${b.year} ${esc(holder)}. All rights reserved.</p><p class="small">This book is general information, not legal, tax or lending advice. Programs, rates and requirements change — verify details with licensed professionals for your situation.</p><p class="small">Published by ${esc(b.brokerageName)}.</p></section>`, { nav: false, type: "copyright-page" })
   if (b.introduction?.trim()) add("intro", "intro.xhtml", "Introduction", `<section><h1>Introduction</h1>\n${proseToXhtml(b.introduction)}</section>`, { type: "introduction" })
   b.chapters.forEach((c, i) => add(`ch${String(i + 1).padStart(3, "0")}`, `ch${String(i + 1).padStart(3, "0")}.xhtml`, c.heading, `<section epub:type="chapter"><h1>${esc(c.heading)}</h1>\n${proseToXhtml(c.body)}</section>`, { type: "chapter" }))
   if (b.closing?.trim()) add("closing", "closing.xhtml", "Your next step", `<section><h1>Your next step</h1>\n${proseToXhtml(b.closing)}</section>`, { type: "conclusion" })
-  add("about", "about.xhtml", "About the author", `<section><h1>About the author</h1><p>${esc(b.authorName)} of ${esc(b.brokerageName)}.</p>${b.landingUrl ? `<p class="small">More at ${esc(b.landingUrl)}</p>` : ""}</section>`, { type: "afterword" })
+  add("about", "about.xhtml", "About the author", `<section><h1>About the author</h1><p>${esc(b.authorName)} of ${esc(b.brokerageName)}.</p>${b.brandTagline?.trim() ? `<p><em>${esc(b.brandTagline.trim())}</em></p>` : ""}${b.landingUrl ? `<p class="small">More at ${esc(b.landingUrl)}</p>` : ""}</section>`, { type: "afterword" })
 
   const navItems = files.filter((f) => f.nav)
   const nav = xhtml("Contents", `<nav epub:type="toc" id="toc"><h1>Contents</h1><ol>${navItems.map((f) => `<li><a href="${f.href}">${esc(f.title)}</a></li>`).join("")}</ol></nav>\n<nav epub:type="landmarks" hidden="hidden"><h2>Guide</h2><ol>${b.coverJpeg ? `<li><a epub:type="cover" href="cover.xhtml">Cover</a></li>` : ""}<li><a epub:type="toc" href="nav.xhtml#toc">Contents</a></li><li><a epub:type="bodymatter" href="${(files.find((f) => f.type === "introduction" || f.type === "chapter") ?? files[0]).href}">Start</a></li></ol></nav>`)
@@ -329,7 +340,7 @@ export function buildEpub(b: EpubInput): Buffer {
     <dc:creator>${esc(b.authorName)}</dc:creator>
     <dc:language>en</dc:language>
     <dc:publisher>${esc(b.brokerageName)}</dc:publisher>
-    <dc:rights>© ${b.year} ${esc(b.authorName)}. All rights reserved.</dc:rights>
+    <dc:rights>© ${b.year} ${esc(holder)}. All rights reserved.</dc:rights>
 ${b.description ? `    <dc:description>${esc(b.description)}</dc:description>\n` : ""}    <meta property="dcterms:modified">${modified}</meta>
     <meta property="schema:accessMode">textual</meta>
     <meta property="schema:accessModeSufficient">textual</meta>

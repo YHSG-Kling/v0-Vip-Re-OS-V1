@@ -1546,37 +1546,44 @@ export async function recalculateCommissionStateCommand(params: {
     // the next. Resolved ONCE, at the top, for every agents-class write below.
     const agentRecordId = await resolveUserIdToAgentRecord(params.agentId, params.brokerageId)
 
-    // Load transaction purchase_price + agent commission profile
-    const [{ data: tx }, { data: profile }] = await Promise.all([
-      supabase
-        .from("transactions")
-        .select("purchase_price, commission_percentage, estimated_commission")
-        .eq("id", params.transactionId)
-        .maybeSingle(),
-      supabase
-        .from("agent_commission_profiles")
-        .select("split_percent, cap_amount, transaction_fee, royalty_percent")
-        .eq("agent_id", agentRecordId)
-        .eq("brokerage_id", params.brokerageId)
-        .eq("is_active", true)
-        .order("effective_date", { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-    ])
-
+    // TOMBSTONE (wave 144, lane 144D — LAW 2 "one canonical path"; owner ruling 9 "deterministic engine calculates"):
+    // the SECOND commission calculator that stood here is GONE. It priced the deal on today's live profile (never the
+    // agreement in force on the deal's date), INVENTED terms when none existed (an 80 % split, a 3 % gross — and fell back to
+    // the agent's split_percent AS the gross rate, the exact defect lib/brokerage/get-default-commission-structure.ts names and
+    // fixed), read the legacy royalty_percent as a percent of gross though its units are unrecorded, ignored concessions,
+    // referrals, the cap, team splits and revenue share, and wrote a commission_calculations row whose total_commission
+    // disagreed with the engine's (lib/kernel/economic-graph.ts reads that table for its conservation check). Nothing in it
+    // was missing from the survivor. SURVIVOR: lib/commission/engine.ts calculateCommission — run here in PREVIEW (it posts
+    // nothing); the stamp below carries the engine's numbers, or nothing at all when the engine refuses.
+    const { data: tx, error: txErr } = await supabase
+      .from("transactions")
+      .select("id, agent_id")
+      .eq("id", params.transactionId)
+      .eq("brokerage_id", params.brokerageId)
+      .maybeSingle()
+    if (txErr) return { success: false, error: `Transaction read refused: ${txErr.message}` }
     if (!tx) return { success: false, error: "Transaction not found" }
+    // The stamp is the DEAL AGENT's (agents-class, the engine's own agent — transactions.agent_id), never the closing
+    // user's: a broker or coordinator who closes a deal must not be stamped as the agent paid on it (ledger-sync matches
+    // agent_commissions.agent_id — the engine's agent — against recipient_id).
+    const dealAgentId = ((tx as { agent_id?: string | null }).agent_id ?? null) || agentRecordId
 
-    const purchasePrice    = (tx as any).purchase_price        ?? 0
-    const commPct          = (tx as any).commission_percentage ?? (profile as any)?.split_percent ?? 3
-    const splitPercent     = (profile as any)?.split_percent   ?? 80
-    const txFee            = (profile as any)?.transaction_fee ?? 0
-    const royaltyPct       = (profile as any)?.royalty_percent ?? 0
-
-    const grossCommission  = (purchasePrice * commPct)  / 100
-    const agentGross       = (grossCommission * splitPercent) / 100
-    const royaltyFee       = (grossCommission * royaltyPct)   / 100
-    const agentNet         = agentGross - txFee - royaltyFee
-    const brokerageNet     = grossCommission - agentNet
+    const { calculateCommission } = await import("@/lib/commission/engine")
+    const priced = await calculateCommission({
+      transactionId: params.transactionId,
+      brokerageId: params.brokerageId,
+      calculationMode: "preview",
+      triggeredBy: params.agentId,
+    })
+    if (!priced.success) {
+      return { success: false, error: `The commission engine could not price this deal, so no commission stamp was written: ${priced.error ?? "unknown"}` }
+    }
+    const grossCommission  = priced.gross_commission
+    const agentNet         = priced.net_to_agent
+    const brokerageNet     = priced.net_to_brokerage
+    // The stamp's rate is the agent's EFFECTIVE share of the gross of record (after fees, caps, team and referral) — the
+    // figure the stamp's amount is, not the agreement's headline split.
+    const splitPercent     = grossCommission > 0 ? Math.round((agentNet / grossCommission) * 10000) / 100 : 0
 
     // Upsert transaction_commissions rows. THIS IS THE DEAL STAMP — the record
     // retention keeps for seven years and the numbers the agent is paid on. The
@@ -1605,8 +1612,8 @@ export async function recalculateCommissionStateCommand(params: {
     // and the two commission ledgers could never agree — the exact divergence
     // ledger-sync.ts was written to prevent. `agentRecordId` is already resolved
     // at the top of this command through lib/kernel/agent-identity-resolver.ts.
-    if (!agentRecordId) {
-      return { success: false, error: "No agents record resolves for this user in this brokerage — the commission stamp was NOT written rather than stamped with an id no reader can match" }
+    if (!dealAgentId) {
+      return { success: false, error: "No agents record resolves for this deal in this brokerage — the commission stamp was NOT written rather than stamped with an id no reader can match" }
     }
     const { error: stampError } = await supabase.from("transaction_commissions").upsert([
       {
@@ -1614,7 +1621,7 @@ export async function recalculateCommissionStateCommand(params: {
         brokerage_id:      params.brokerageId,
         recipient_type:    "agent",
         recipient_name:    "Agent",
-        recipient_id:      agentRecordId,
+        recipient_id:      dealAgentId,
         commission_type:   "commission_split",
         rate_percentage:   splitPercent,
         calculated_amount: agentNet,
@@ -1638,18 +1645,9 @@ export async function recalculateCommissionStateCommand(params: {
       return { success: false, error: `Could not persist the recalculated commission stamp: ${stampError.message}` }
     }
 
-    // Write commission_calculations record for audit trail
-    await sentinelWrite(supabase, supabase.from("commission_calculations").insert({
-      transaction_id:       params.transactionId,
-      brokerage_id:         params.brokerageId,
-      agent_id:             agentRecordId,
-      total_commission:     grossCommission,
-      // commission_calculations has no gross_commission/agent_commission columns —
-      // fold into the existing breakdown_json.
-      breakdown_json:       { gross_commission: grossCommission, agent_commission: agentNet },
-      calculation_version:  1,
-      calculated_at:        new Date().toISOString(),
-    } as any), { table: "commission_calculations", flow: "commission_calculation_audit", brokerageId: params.brokerageId, reason: "audit trail of a recalculation whose stamp already landed (checked above)" })
+    // TOMBSTONE (wave 144, lane 144D): the commission_calculations insert that stood here is gone — that table is the
+    // ENGINE's frozen snapshot of a FINAL calculation (lib/commission/waterfall/11-validate-persist.ts recordCalculationEvidence,
+    // with the agreement, concessions, referral and cap it used). A preview re-stamp is not a calculation of record.
 
     return {
       success: true,

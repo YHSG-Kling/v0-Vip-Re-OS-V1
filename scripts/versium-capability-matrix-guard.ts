@@ -28,16 +28,36 @@
  *  G. THE AD DRAFT carries no research block (research ≠ targeting).
  *  H. THE STORE — indicators persist tenant-anchored, gap-only, with provenance, read back through the allow-list.
  *  I. THE MCP VERDICT is data, re-proved against the live server's OAuth metadata, and the scanner's colleague rule.
- * BLIND SPOTS (published): no Versium credential exists in this environment, so NO live Versium call is made — every
+ * WAVE 144 (lane 144E — owner ruling 10; RE-ASSERTED as rules where 143D pinned waypoints: the POLICY_GATED membership of
+ * online_audience_append and the literal "2026-10-23" re-verification date):
+ *  J. ONLINE AUDIENCE APPEND — a MATCH + APPEND, not targeting: the vendor's documented response schema (output-sample-new)
+ *     mapped onto ONE identifier vocabulary, HASHES ONLY (every plaintext value dropped and counted), 1 credit booked, the leg's
+ *     pre-flight / booking / refusals, the REQUIRED GAP (governed audiences in use), the rung over the in-memory database
+ *     (appended, tenant-anchored, gap-only, only enrichment_profile written), the readers, and the FIREWALL (no channel module
+ *     imports the store or reads the block — stripped source, positive controls).
+ *  K. THE ESTIMATE IS A NUMBER — typed a count, contactsReturned 0, with provenance (query_id, criteria, retrieved-at); a null
+ *     count is null, never zero people (positive control).
+ *  L. THE MCP's ACTUAL TOOL LIST — 20 tools, each mapped to a REST product; the vendor's exclusions verified absent (positive
+ *     control); create_job is the one spending tool (OWNER_DECISION); still WAITING_EXTERNAL.
+ *  M. PEOPLEDATA ↔ VERSIUM DEDUP — no silent overwrite of a human-stated value or the record's own e-mail (conflict recorded,
+ *     stamp kept), the carried profile blocks, freshness, and the three writers wired (stripped source, positive control).
+ *  N. INTENT / LIFE-CHANGE SIGNAL SOURCES for lane F — stored facts only, no protected characteristic, an empty record yields
+ *     nothing (positive control); Versium DOB is year + month only.
+ *  O. docs/commercial/VERSIUM-CAPABILITY-MATRIX.md agrees with the code, row by row (positive control).
+ * BLIND SPOTS (published): no Versium credential exists in this environment, so NO live Versium call is made (144E: the Online
+ * Audience response is the vendor's Output Sample re-typed — its hash values are the vendor's own; the MCP tool list is read
+ * from the vendor's MCP Server Overview + the Glama registry's authenticated inspection, because tools/list needs an OAuth
+ * Bearer this platform cannot mint; the firewall scan covers lib/** and app/** importers of the store and readers of its key,
+ * not a value copied out of the profile by a generic spread) — every
  * response is the vendor's documented sample re-typed (the b2b2c-output-sample page carries Cloudflare-obfuscated
  * e-mails, so addresses here are fixtures); the credit WEIGHTS are read from the vendor's own conversion table, not
  * measured on an invoice; Predictive Scores' weight is unpublished and stays WAITING_EXTERNAL; the research is not run
  * against real customers (the live database has 0 closed deals); `after()` is proved outside a request scope only (the
  * request-scope path is Next's); content_topic_bank / lead_scraping_keywords RLS is not exercised by the fake.
  */
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
-import { stripComments } from "./strip-comments"
+import { stripComments, blankStrings } from "./strip-comments"
 import { memSupabase, type Row } from "./in-memory-supabase"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
@@ -45,10 +65,18 @@ import {
   VERSIUM_PRODUCT_MATRIX, versiumProductsByStatus, VERSIUM_CREDIT_WEIGHTS, VERSIUM_MATCH_CREDIT_USD, VERSIUM_REACH_MCP,
   appendVersiumB2B2C, appendVersiumRealEstateIndicators, estimateVersiumAudience, versiumB2B2CWorstCaseCredits,
   type VersiumProduct, type VersiumAudienceFilters,
+  // Wave 144 (lane 144E): the Online Audience match + append and its firewall predicate.
+  appendVersiumOnlineAudience, isOnlineAudienceIdentifier,
 } from "../lib/external/versium-client"
 import {
   CONTACT_PROVIDER_ROUTES, FREE_CAPABILITIES, runVersiumBusinessIdentityLeg, runVersiumOnlinePresenceLeg, runVersiumAudienceEstimateLeg,
+  runVersiumOnlineAudienceLeg, DEGRADABLE_CAPABILITIES,
 } from "../lib/ai-isa/property-lookup-rail"
+import { appendOnlineAudienceForContact, onlineAudienceSummary, ONLINE_AUDIENCE_KEY } from "../lib/enrichment/online-audience-store"
+import { protectStatedValues, carryForwardProfileBlocks, keepPriorStamps, withProviderConflicts, CARRIED_PROFILE_BLOCKS, PROVIDER_CONFLICTS_KEY, isFresh } from "../lib/enrichment/provider-dedup"
+import { intentSignalsFromContact, INTENT_SIGNAL_SOURCES } from "../lib/enrichment/intent-signal-sources"
+import { buildVersiumDemographicProfile } from "../lib/lead-pipeline/enrichment-column-map"
+import { mapPeopleDataPerson } from "../lib/external/peopledata-client"
 import {
   researchLookalikeDenominators, composeResearchBriefs, composeAcquisitionInputs, lookalikeSeedProfile,
   LOOKALIKE_RESEARCH_ATTRIBUTES, LOOKALIKE_PROTECTED_CATEGORIES, LOOKALIKE_AD_POLICY, RESEARCH_MIN_SEED,
@@ -85,7 +113,7 @@ type RouteMap = Readonly<Record<string, ReadonlyArray<{ provider: string; unitCo
 function matrixFaults(matrix: readonly VersiumProduct[], routes: RouteMap, stripped: (file: string) => string | null, free: ReadonlySet<string>): string[] {
   const faults: string[] = []
   const ids = new Set<string>()
-  const STATUSES = new Set(["WIRED", "WIRED_143D", "POLICY_GATED", "OWNER_DECISION", "WAITING_EXTERNAL", "NOT_ROUTED_SURVIVOR", "NOT_BUILT_NO_CALLER", "NOT_APPLICABLE"])
+  const STATUSES = new Set(["WIRED", "WIRED_143D", "WIRED_144E", "POLICY_GATED", "OWNER_DECISION", "WAITING_EXTERNAL", "NOT_ROUTED_SURVIVOR", "NOT_BUILT_NO_CALLER", "NOT_APPLICABLE"])
   for (const p of matrix) {
     if (ids.has(p.id)) faults.push(`${p.id}: duplicate id`)
     ids.add(p.id)
@@ -99,7 +127,7 @@ function matrixFaults(matrix: readonly VersiumProduct[], routes: RouteMap, strip
       else if (p.status === "NOT_ROUTED_SURVIVOR") { if (route.some((e) => e.provider === "versium")) faults.push(`${p.id}: NOT_ROUTED_SURVIVOR but capability ${cap} names versium (then it is routed — change the status)`) }
       else if (!route.some((e) => e.provider === "versium")) faults.push(`${p.id}: capability ${cap} does not name versium`)
     }
-    const wired = p.status === "WIRED" || p.status === "WIRED_143D"
+    const wired = p.status === "WIRED" || p.status === "WIRED_143D" || p.status === "WIRED_144E"
     if (wired) {
       if (!p.capability) faults.push(`${p.id}: WIRED with no capability`)
       if (!p.caller) faults.push(`${p.id}: WIRED with no caller`)
@@ -143,8 +171,12 @@ const stripFile = (file: string) => (existsSync(join(ROOT, file)) ? strippedSrc(
   const have = new Set(VERSIUM_PRODUCT_MATRIX.map((p) => p.id))
   ok(EXPECTED.every((id) => have.has(id)) && have.size === VERSIUM_PRODUCT_MATRIX.length, `every product family in the vendor's published index is a matrix row (${EXPECTED.length} expected, ${have.size} present)`, EXPECTED.filter((id) => !have.has(id)).join(","))
   const byStatus = (s: Parameters<typeof versiumProductsByStatus>[0]) => versiumProductsByStatus(s).map((p) => p.id)
-  ok(byStatus("WAITING_EXTERNAL").includes("predictive_scores") && byStatus("WAITING_EXTERNAL").includes("reach_mcp") && byStatus("OWNER_DECISION").includes("b2c_listgen_job") && byStatus("POLICY_GATED").includes("online_audience_append"),
-    `the blocked products are named with their reason: waiting ${byStatus("WAITING_EXTERNAL").join(", ")}; owner decision ${byStatus("OWNER_DECISION").join(", ")}; policy-gated ${byStatus("POLICY_GATED").join(", ")}`)
+  // Wave 144 (144E): re-asserted as the RULE, not the 143D waypoint — the owner ruled Online Audience Append a MATCH + APPEND
+  // (not targeting), so it is WIRED on its own capability; whatever is still POLICY_GATED must name no capability.
+  ok(byStatus("WAITING_EXTERNAL").includes("predictive_scores") && byStatus("WAITING_EXTERNAL").includes("reach_mcp") && byStatus("OWNER_DECISION").includes("b2c_listgen_job")
+    && VERSIUM_PRODUCT_MATRIX.find((p) => p.id === "online_audience_append")?.status === "WIRED_144E" && VERSIUM_PRODUCT_MATRIX.find((p) => p.id === "online_audience_append")?.capability === "online_audience_match"
+    && versiumProductsByStatus("POLICY_GATED").every((p) => p.capability === null),
+    `the blocked products are named with their reason: waiting ${byStatus("WAITING_EXTERNAL").join(", ")}; owner decision ${byStatus("OWNER_DECISION").join(", ")}; policy-gated ${byStatus("POLICY_GATED").join(", ") || "(none)"} — and online_audience_append is WIRED on online_audience_match (owner ruling 10: a match + append, not targeting)`)
   ok(!versiumProductsByStatus("WAITING_EXTERNAL").some((p) => p.capability !== null), "a product waiting on a credential / price / person is mapped to NO capability (nothing routes to a rail that cannot run)")
   ok(/online behaviour|Online Presence Indicator/i.test(VERSIUM_PRODUCT_MATRIX.find((p) => p.id === "full_demographic")?.name ?? "") && VERSIUM_PRODUCT_MATRIX.find((p) => p.id === "full_demographic")?.status === "WIRED_143D", "online behaviour (the Online Presence Indicator — Real Estate) is a WIRED product with a stored result and a reader")
 }
@@ -465,13 +497,15 @@ console.log("\n━━━ I · the MCP verdict (data, re-proved against the live 
 {
   ok(VERSIUM_REACH_MCP.status === "WAITING_EXTERNAL" && VERSIUM_REACH_MCP.wired === false && VERSIUM_REACH_MCP.oauth.clientCredentialsGrant === false && VERSIUM_REACH_MCP.oauth.grantTypes.join() === "authorization_code,refresh_token" && VERSIUM_REACH_MCP.oauth.pkce === "S256" && VERSIUM_REACH_MCP.waitingOn.length >= 3,
     "the REACH MCP is WAITING_EXTERNAL with its exact reason as data: OAuth authorization-code + PKCE only (no client_credentials grant), an unauthenticated initialize is a 401 Bearer challenge, three named dependencies")
-  ok(/authorization_endpoint|oauth\/authorize/.test(JSON.stringify(VERSIUM_REACH_MCP)) && VERSIUM_REACH_MCP.reverifiedAt === "2026-10-23" && /batchdata-mcp/.test(VERSIUM_REACH_MCP.wiringPattern), "…with the live endpoints, the date it was re-proved, and the survivor pattern to reuse if it is ever wired")
+  // Wave 144 (144E): the date is a RULE (an ISO day on or after the first verification), not the 143D waypoint "2026-10-23".
+  ok(/authorization_endpoint|oauth\/authorize/.test(JSON.stringify(VERSIUM_REACH_MCP)) && /^\d{4}-\d{2}-\d{2}$/.test(VERSIUM_REACH_MCP.reverifiedAt) && VERSIUM_REACH_MCP.reverifiedAt >= VERSIUM_REACH_MCP.verifiedAt && /batchdata-mcp/.test(VERSIUM_REACH_MCP.wiringPattern), `…with the live endpoints, the date it was re-proved (${VERSIUM_REACH_MCP.reverifiedAt}), and the survivor pattern to reuse if it is ever wired`)
   const adapters = await import("../lib/kernel/provider-adapters")
   const versium = adapters.deriveProviderAdapters().adapters.find((a: { provider: string }) => a.provider === "versium")
   ok(!!versium && adapters.validateProviderAdapter(versium).length === 0 && versium.capabilities.includes("audience_estimate") && /WAITING_EXTERNAL/.test(versium.api.urlNote ?? ""), "the provider adapter certification READS the matrix + MCP verdict (valid, declares audience_estimate, says WAITING_EXTERNAL)")
-  const sources = ["lib/external/versium-client.ts", "lib/ai-isa/property-lookup-rail.ts", "lib/kernel/lookalike-audience.ts", "lib/enrichment/online-presence-store.ts"].map((f) => strippedSrc(f))
+  // Wave 144 (144E): + the online-audience store, the dedup rule and the signal reader.
+  const sources = ["lib/external/versium-client.ts", "lib/ai-isa/property-lookup-rail.ts", "lib/kernel/lookalike-audience.ts", "lib/enrichment/online-presence-store.ts", "lib/enrichment/online-audience-store.ts", "lib/enrichment/provider-dedup.ts", "lib/enrichment/intent-signal-sources.ts"].map((f) => strippedSrc(f))
   ok(/process\.env\.VERSIUM_API_KEY/.test(sources[0]), "POSITIVE CONTROL: the credential finder DOES see the adapter's own read")
-  ok(!/process\.env\.VERSIUM/.test(sources[1] + sources[2] + sources[3]), "the rail, the research and the store never read the Versium credential (the adapter does — LAW 3, principle 5)")
+  ok(!/process\.env\.VERSIUM/.test(sources.slice(1).join("\n")), "the rail, the research, the stores, the dedup rule and the signal reader never read the Versium credential (the adapter does — LAW 3, principle 5)")
 
   // brokerage affiliation: the scanner's colleague rule (pure)
   ok(isExistingTenantMember("agent", "u1", "agent") && isExistingTenantMember("agent", "u1", "team_lead") && isExistingTenantMember("agent", "u1", "broker_owner") && isExistingTenantMember("agent", "u1", "isa") && isExistingTenantMember("agent", "u1", "tc"), "an AGENT card whose email/phone is already an INTERNAL seat of this tenant (agent, team_lead, broker_owner, isa, tc) is a colleague — not filed as a recruit")
@@ -483,6 +517,295 @@ console.log("\n━━━ I · the MCP verdict (data, re-proved against the live 
   ok(/subjectType: PreScanChoice/.test(card) && /resolvePreScanChoice\(params\.subjectType, params\.target\)/.test(card) && /if \(!pick\) throw new Error\(PRE_SCAN_CHOICE_REQUIRED\)/.test(card), "the type (vendor / contact / agent) is REQUIRED before the scan and fails closed without it (142D, preserved)")
   const ui = strippedSrc("app/dashboard/agent/business-cards/page.tsx")
   ok(/subjectType/.test(ui.slice(ui.indexOf("uploadBusinessCard(") - 100, ui.indexOf("uploadBusinessCard(") + 700)) || /subjectType/.test(ui), "the scan page passes the chosen type to uploadBusinessCard (the picker precedes the scan)")
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// WAVE 144 (lane 144E) — owner ruling 10: Estimate is a NUMBER; Online Audience Append is a MATCH + APPEND (not targeting);
+// the MCP's ACTUAL tool list; PeopleData-vs-Versium dedup with no silent overwrite; the intent-signal sources for lane F.
+// ══════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+const walkTs = (dir: string, out: string[] = []): string[] => {
+  for (const name of readdirSync(join(ROOT, dir))) {
+    const rel = `${dir}/${name}`
+    if (name === "node_modules" || name.startsWith(".")) continue
+    const st = statSync(join(ROOT, rel))
+    if (st.isDirectory()) walkTs(rel, out)
+    else if (/\.(ts|tsx)$/.test(name) && !/\.d\.ts$/.test(name)) out.push(rel)
+  }
+  return out
+}
+
+console.log("\n━━━ J · Online Audience Append: the documented schema, hash identifiers only, appended — never targeting, never an address ━━━")
+// The vendor's Output Sample (api-documentation.versium.com/reference/output-sample-new, read 2026-10-25), re-typed: the hash
+// values are the vendor's own sample values; the plaintext Google Zip/Country and LinkedIn names are the vendor's too.
+const H = (c: string, n = 64) => c.repeat(n).slice(0, n)
+const OA_DOC = {
+  versium: {
+    version: "2.0", match_counts: { online_audience: 1 }, num_matches: 1, num_results: 1, query_id: "5a33fb7787db999ff74dba71a853019e", query_time: 0.26,
+    results: [{
+      adroll: [{ email: ["8c39f76bb12ebfe364196707a494f903"] }],
+      facebook: [{
+        email: ["c16de487618e5362e11259dd7cd570cfa063b077a56b4a996c99c35e15265536", "de9e7ccb1432bafdf7ecf3ef8e3e9bfa5f9e4d6af6d8a4781603646435e124df", "6974bbad3d7d5a8a4816a16b7b976124970c732d956e53804ca9cff1a8bb67ef"],
+        phone: ["6d7b2430882a509b4049c67fd1cfd48b091fca5981033c77cbba8ca5bc4b9885", "eda461cbe422a01b15cf3ffea4a0d1528e66b52250aa7ab3fbc2999ad0f9c4e5", "4845670b2d303f9a2611b4febc2da2020c63231d0862c5480b943e903e6f48af"],
+        fn: ["19e37c4dfe9a2e1570be1f4cbafca76f3ed757231c0865e02465c909d916b1d1"], ln: ["0f8d3694dbe219e87be4f163ed392dd195ccdf1c417613714c94eaab98757c54"],
+        ct: ["3f780370dcefe1e745f2808b64c876778d5e606a67a8a2367e44f645f8307557"], st: ["87b810070b7c739690268360ea392429368787010a558a1837643058d2437dce"],
+        zip: ["f5f325affe6d349af0f5ddd37020813e7c46211e900b5a3afdbdcb867a19de5c"], country: ["79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b6a5e09e1ef3a08084a904621"],
+      }],
+      generic: [{ email: ["c16de487618e5362e11259dd7cd570cfa063b077a56b4a996c99c35e15265536"] }, { email: ["2049eb435680ba1e764227b83e363ed36266fbf8b3369d7e12fa892e0b8ebc7c"] }],
+      google: [{ Email: ["c16de487618e5362e11259dd7cd570cfa063b077a56b4a996c99c35e15265536", "9878571bc7ea1b4cca511c84210a14653deb566d08fac63d47547ff9434a9e08"], Phone: ["20c7dadcf9f5606dee56d9d7da48dedcffc2fcfa55845fc97d972d07bb8b66c1"], "First Name": ["19e37c4dfe9a2e1570be1f4cbafca76f3ed757231c0865e02465c909d916b1d1"], "Last Name": ["0f8d3694dbe219e87be4f163ed392dd195ccdf1c417613714c94eaab98757c54"], Zip: ["98052"], Country: ["us"] }],
+      linkedin: [{ email: ["c16de487618e5362e11259dd7cd570cfa063b077a56b4a996c99c35e15265536"], firstname: ["mauro"], lastname: ["rizzi"], jobtitle: [""], employeecompany: [""], country: ["us"], appleidfa: [""], googleaid: [""] }],
+      tiktok: [{ email: ["c16de487618e5362e11259dd7cd570cfa063b077a56b4a996c99c35e15265536"], phone: ["20c7dadcf9f5606dee56d9d7da48dedcffc2fcfa55845fc97d972d07bb8b66c1"] }],
+      original: [{ email: ["c16de487618e5362e11259dd7cd570cfa063b077a56b4a996c99c35e15265536"] }],
+    }],
+    input_query: { first: "John", last: "Smith", zip: "98052" },
+  },
+}
+// The mapper is module-private — it is driven through the public append with the document injected as the vendor's answer.
+const viaCall = (doc: unknown) => appendVersiumOnlineAudience({ email: "pat@example.test" }, {}, { call: async () => ({ ok: true, status: 200, data: doc }) })
+{
+  const parsed = await viaCall(OA_DOC)
+  const sv = parsed.identifiers?.services ?? {}
+  ok(sv.facebook?.email_sha256?.length === 3 && sv.facebook?.phone_sha256?.length === 3 && sv.facebook?.first_name_sha256?.length === 1 && sv.facebook?.zip_sha256?.length === 1
+    && sv.google?.email_sha256?.length === 2 && sv.google?.phone_sha256?.length === 1 && sv.google?.last_name_sha256?.length === 1
+    && sv.adroll?.email_md5?.length === 1 && sv.generic?.email_sha256?.length === 2 && sv.linkedin?.email_sha256?.length === 1 && sv.tiktok?.phone_sha256?.length === 1 && sv.original?.email_sha256?.length === 1,
+    "THE DOCUMENTED SCHEMA maps: facebook {email, phone, fn, ln, ct, st, zip, country} · google {Email, Phone, First Name, Last Name} · linkedin {email} · tiktok · adroll (MD5) · generic · original — onto ONE identifier vocabulary")
+  ok(parsed.dropped.plaintext === 5 && !JSON.stringify(parsed.identifiers).match(/98052|"us"|mauro|rizzi|@/),
+    `every PLAINTEXT value the vendor's own sample returns (Google Zip + Country, LinkedIn firstname + lastname + country = ${parsed.dropped.plaintext}) is DROPPED and counted — no invented plaintext profile reaches the record`)
+  const all = Object.values(sv).flatMap((k) => Object.values(k ?? {}).flat())
+  ok(all.length === parsed.identifiers?.identifierCount && all.every((v) => isOnlineAudienceIdentifier(v)), `all ${all.length} kept values are hash-shaped identifiers (isOnlineAudienceIdentifier) — none is an e-mail address or a phone number`)
+  ok(parsed.credits === VERSIUM_CREDIT_WEIGHTS.online_audience && VERSIUM_CREDIT_WEIGHTS.online_audience === 1, "one matched record bills the published weight: Online Audience Append = 1 match credit")
+  // POSITIVE CONTROLS — the mapper must SEE each defect it exists to drop
+  const planted = await viaCall({ versium: { match_counts: { online_audience: 1 }, results: [{ facebook: [{ email: ["pat@example.test", "8c39f76bb12ebfe364196707a494f903"], phone: ["5551234567"] }], liveramp: [{ id: ["abc"] }], linkedin: [{ appleidfa: ["6d92078a-8246-4ba4-ae5b-76104861e7dc"], googleaid: ["00000000-0000-0000-0000-000000000000"] }] }] } })
+  ok(planted.dropped.malformed === 4 && planted.dropped.unknownService === 1 && planted.identifiers?.services.linkedin?.maid_idfa?.length === 1 && !planted.identifiers?.services.facebook,
+    "POSITIVE CONTROL: a plaintext e-mail and a raw phone planted in facebook.*, an MD5 where SHA-256 is documented and an all-zero ad ID are each MALFORMED-dropped; an undocumented service (liveramp) is counted; a UUID mobile ad ID is kept as maid_idfa", JSON.stringify(planted.dropped))
+  ok(!isOnlineAudienceIdentifier("pat@example.test") && !isOnlineAudienceIdentifier("+15551234567") && isOnlineAudienceIdentifier(H("a")) && isOnlineAudienceIdentifier(H("b", 32)), "the firewall predicate: an address / a phone number is NOT an identifier; a 64-hex / 32-hex hash IS")
+
+  // THE CALL — path, inputs, billing, refusals
+  const calls: Array<{ path: string; query: Record<string, string> }> = []
+  const r = await appendVersiumOnlineAudience({ firstName: "John", lastName: "Smith", zip: "98052" }, { services: ["facebook", "google"] }, { call: async (path, query) => { calls.push({ path, query }); return { ok: true, status: 200, data: OA_DOC } } })
+  ok(calls[0]?.path === "onlineAudience?rcfg_oa_services[]=facebook&rcfg_oa_services[]=google" && calls[0]?.query.first === "John" && calls[0]?.query.zip === "98052" && calls[0]?.query.cfg_maxrecs === "1",
+    "GET /v2/onlineAudience with the consumer inputs, cfg_maxrecs=1 and ONLY the platforms in use as repeated rcfg_oa_services[] on the path (data minimisation)", calls[0]?.path)
+  ok(r.matched && r.credits === 1 && r.cost === round2(USD) && r.queryId === "5a33fb7787db999ff74dba71a853019e" && r.provenance?.capability === "person.enrich_online_audience" && r.provenance?.source === "versium",
+    `a match books 1 credit ($${r.cost}) and carries provenance (capability person.enrich_online_audience) and the vendor query_id`)
+  ok(!("emails" in r) && !("phones" in r) && !JSON.stringify(r).includes("@"), "the result has NO e-mail / phone field and no address anywhere — nothing in it can be mailed or dialled")
+  const noMatch = await appendVersiumOnlineAudience({ email: "pat@example.test" }, {}, { call: async (path) => { calls.push({ path, query: {} }); return { ok: true, status: 200, data: { versium: { match_counts: { online_audience: 0 }, num_results: 0, results: [] } } } } })
+  ok(!noMatch.matched && noMatch.cost === 0 && !noMatch.error && calls[calls.length - 1].path === "onlineAudience", "a no-match is free and not an error; no services asked → no filter (every section)")
+  const drift = await appendVersiumOnlineAudience({ email: "pat@example.test" }, {}, { call: async () => ({ ok: true, status: 200, data: { versium: { match_counts: { online_audience: 1 }, results: [{ facebook: [{ "Email Address": ["pat@example.test"] }] }] } } }) })
+  ok(!drift.matched && drift.credits === 1 && drift.cost === round2(USD) && /online_audience_schema_drift/.test(drift.error ?? ""), "POSITIVE CONTROL: a BILLED match whose row carries no documented hash field is schema drift — still booked, never read as free")
+  ok((await appendVersiumOnlineAudience({ email: "pat@example.test" })).skipped === "unconfigured" && (await appendVersiumOnlineAudience({ firstName: "Pat" }, {}, { call: async () => ({ ok: true, status: 200, data: OA_DOC }) })).skipped === "no_identity",
+    "no key and no injected call → unconfigured (no network); an identity Versium cannot match → no_identity (nothing asked, nothing spent)")
+  const refused = await appendVersiumOnlineAudience({ email: "pat@example.test" }, {}, { call: async () => ({ ok: false, status: 402, data: null, error: "credits" }) })
+  ok(refused.cost === 0 && /402/.test(refused.error ?? ""), "a refused call bills nothing and says why (402)")
+
+  // THE LEG — capability routing, budget pre-flight BEFORE the call, one booking
+  ok(CONTACT_PROVIDER_ROUTES.online_audience_match.length === 1 && CONTACT_PROVIDER_ROUTES.online_audience_match[0].provider === "versium" && CONTACT_PROVIDER_ROUTES.online_audience_match[0].unitCostUsd === USD && DEGRADABLE_CAPABILITIES.has("online_audience_match") && !FREE_CAPABILITIES.has("online_audience_match"),
+    "online_audience_match is a PAID capability on the ONE route table (Versium, the same credit constant), degradable (never blocks a failover)")
+  const asked: number[] = [], booked: Array<Record<string, any>> = []
+  let legCalls = 0
+  const legOk = await runVersiumOnlineAudienceLeg({ brokerageId: B, identity: { email: "pat@example.test" }, services: ["facebook"], systemSource: "guard", attribution: { contactId: U(1) } },
+    { call: async () => { legCalls++; return { ok: true, status: 200, data: OA_DOC } }, checkBudget: async (p) => { asked.push(p.addCost); return { allowed: true } }, providerHealth: healthy, meter: async (m) => { booked.push(m as never); return true } })
+  ok(legOk.answered && asked[0] === round2(USD) && booked.length === 1 && booked[0].usageType === "online_audience_append" && booked[0].metadata.capability === "person.enrich_online_audience" && booked[0].cost === round2(USD) && booked[0].brokerageId === B,
+    `the leg pre-flights the published worst case ($${asked[0]}) BEFORE the call and books ONE ledger row (online_audience_append, capability person.enrich_online_audience)`)
+  ok(!("emails" in legOk) && !("phones" in legOk), "the leg result carries identifiers, never an e-mail/phone list")
+  const before = legCalls
+  const budgetNo = await runVersiumOnlineAudienceLeg({ brokerageId: B, identity: { email: "pat@example.test" }, systemSource: "guard" }, { call: async () => { legCalls++; return { ok: true, status: 200, data: OA_DOC } }, checkBudget: async () => ({ allowed: false }), providerHealth: healthy })
+  const noTenant = await runVersiumOnlineAudienceLeg({ brokerageId: null, identity: { email: "pat@example.test" }, systemSource: "guard" }, { call: async () => { legCalls++; return { ok: true, status: 200, data: OA_DOC } } })
+  const failingOA = await runVersiumOnlineAudienceLeg({ brokerageId: B, identity: { email: "pat@example.test" }, systemSource: "guard" }, { call: async () => { legCalls++; return { ok: true, status: 200, data: OA_DOC } }, providerHealth: async () => ({ state: "failing", routeAround: true, reason: "5xx burst" }) })
+  ok(budgetNo.skipped === "budget" && noTenant.skipped === "no_brokerage" && /provider_failing/.test(failingOA.skipped ?? "") && legCalls === before, "a budget refusal, a missing tenant and a failing provider each refuse BY NAME and the vendor is never called")
+
+  // THE REQUIRED GAP — the governed audiences in use
+  const AUD = (o: Row) => ({ id: `a-${Math.random()}`, brokerage_id: B, audience_type: "custom", consent_basis: "first_party_crm", status: "synced", target_platform: "facebook", lookalike_seed_audience_id: null, ...o })
+  const audiences = [AUD({ target_platform: "facebook" }), AUD({ target_platform: "instagram" }), AUD({ target_platform: "google", consent_basis: null }), AUD({ target_platform: "tiktok", audience_type: "lookalike" }), AUD({ target_platform: "linkedin", status: "deleted" }), AUD({ target_platform: "linkedin", brokerage_id: OTHER })]
+
+  // THE RUNG over the in-memory database — appended, tenant-anchored, gap-only, nothing but the jsonb block written
+  const NOW144 = new Date("2026-10-25T12:00:00Z")
+  const seedDb = () => memSupabase({
+    contacts: [
+      { id: U(1), brokerage_id: B, first_name: "John", last_name: "Smith", email: "john@example.test", phone: "5551234567", zip_code: "98052", enrichment_profile: { household_financials: { keep: true }, field_provenance: { phone: { source: "staff" } } } },
+      { id: U(2), brokerage_id: OTHER, first_name: "Ann", last_name: "Other", email: "ann@example.test", enrichment_profile: null },
+      { id: U(3), brokerage_id: B, first_name: "Social", last_name: "Lead", email: null, phone: null, enrichment_profile: null },
+    ],
+    facebook_custom_audiences: audiences,
+  })
+  const db = seedDb()
+  let rungCalls = 0
+  const legDeps = { call: async () => { rungCalls++; return { ok: true, status: 200, data: OA_DOC } }, checkBudget: async () => ({ allowed: true }), providerHealth: healthy, meter: async () => true }
+  const run1 = await appendOnlineAudienceForContact(db as never, { contactId: U(1), brokerageId: B }, { legDeps, now: NOW144 })
+  const row1 = (db.tables.contacts as Row[])[0]
+  const block = row1.enrichment_profile?.[ONLINE_AUDIENCE_KEY]
+  ok(run1.ok && run1.asked && run1.wrote && run1.identifierCount > 0 && block?.services_asked?.join() === "facebook" && block?.query_id === "5a33fb7787db999ff74dba71a853019e" && row1.enrichment_profile.field_provenance[ONLINE_AUDIENCE_KEY]?.source === "versium",
+    `the identifiers are APPENDED to the record (enrichment_profile.${ONLINE_AUDIENCE_KEY}, ${run1.identifierCount} identifiers) with provenance in the one shape — and ONLY the platform a governed audience of THIS tenant uses was asked: facebook + instagram → [${block?.services_asked?.join(", ")}]; a no-consent google, a look-alike tiktok, a deleted linkedin and another tenant's linkedin ask nothing`)
+  ok(row1.enrichment_profile.household_financials.keep === true && row1.enrichment_profile.field_provenance.phone.source === "staff" && row1.email === "john@example.test" && row1.phone === "5551234567",
+    "the other profile blocks and provenance survive, and the contact's own e-mail / phone are untouched")
+  const updates = db.writes.filter((w) => w.table === "contacts" && w.op === "update")
+  ok(updates.length === 1 && Object.keys(updates[0].payload).join() === "enrichment_profile", "the ONLY column written is enrichment_profile — no address column (email / phone / phone_secondary) can ever carry an ad-tech identifier")
+  const run2 = await appendOnlineAudienceForContact(db as never, { contactId: U(1), brokerageId: B }, { legDeps, now: new Date(NOW144.getTime() + 86_400_000) })
+  ok(run2.skipped === "fresh" && rungCalls === 1, "GAP-ONLY: a fresh block covering the needed platforms is not re-bought")
+  const run3 = await appendOnlineAudienceForContact(db as never, { contactId: U(1), brokerageId: B }, { legDeps, now: new Date(NOW144.getTime() + 200 * 86_400_000) })
+  ok(run3.asked && rungCalls === 2, "a block older than the freshness window is re-asked")
+  const cross = await appendOnlineAudienceForContact(db as never, { contactId: U(2), brokerageId: B }, { legDeps, now: NOW144 })
+  const stub = await appendOnlineAudienceForContact(db as never, { contactId: U(3), brokerageId: B }, { legDeps, now: NOW144 })
+  const noAud = await appendOnlineAudienceForContact(memSupabase({ contacts: [{ id: U(1), brokerage_id: B, email: "john@example.test", enrichment_profile: null }] }) as never, { contactId: U(1), brokerageId: B }, { legDeps, now: NOW144 })
+  ok(cross.skipped === "not_found" && stub.skipped === "no_identifier" && noAud.skipped === "no_governed_audience" && rungCalls === 2,
+    "POSITIVE CONTROLS: another tenant's contact is not found; a placeholder stub has no identifier; a tenant with no governed audience pays nothing — the vendor is never called for any of them")
+  const refusedRung = await appendOnlineAudienceForContact(memSupabase({ contacts: [{ id: U(1), brokerage_id: B, email: "john@example.test" }] }, { refuse: { facebook_custom_audiences: "RLS" } }) as never, { contactId: U(1), brokerageId: B }, { legDeps, now: NOW144 })
+  ok(!refusedRung.ok && /governed-audience read refused/.test(refusedRung.error ?? "") && rungCalls === 2, "a refused governed-audience read refuses the spend (fail closed)")
+
+  // THE READERS — downstream match keys for the governed sync, counts for a person, tampering dropped
+  const summary = onlineAudienceSummary(row1.enrichment_profile)
+  ok(!!summary && summary.matchKeysByPlatform.facebook === 6 && summary.matchKeysByPlatform.instagram === 6 && summary.matchKeysByPlatform.google === 0 && summary.matchKeysByPlatform.tiktok === 0,
+    `the match keys a governed sync would gain, per platform: facebook ${summary?.matchKeysByPlatform.facebook} (3 e-mail + 3 phone SHA-256 keys — Instagram reads Meta's section), and none for a platform whose section was not asked`)
+  ok(!!summary && summary.matched && !/[a-f0-9]{32}/.test(JSON.stringify(summary)), "the person-facing summary is COUNTS only — no hash leaves it")
+  const tamperedProfile = { [ONLINE_AUDIENCE_KEY]: { captured_at: "2026-10-01T00:00:00Z", identifiers: { facebook: { email_sha256: ["pat@example.test", H("c")] }, mailchimp: { email_sha256: [H("d")] } } } }
+  const tampered = onlineAudienceSummary(tamperedProfile)
+  ok(tampered?.identifierCount === 1 && tampered.platforms.join() === "facebook" && tampered.matchKeysByPlatform.facebook === 1 && !JSON.stringify(tampered).includes("@"), "POSITIVE CONTROL: a plaintext address planted in a stored blob, or a foreign service, is dropped on READ (identifiers and match keys both re-validate)")
+
+  // THE FIREWALL — over STRIPPED source: who may import the store, and no channel module reads the block
+  const IMPORT_RE = /from\s+["'][^"']*enrichment\/online-audience-store["']|import\(\s*["'][^"']*enrichment\/online-audience-store["']\s*\)/
+  const ALLOWED_IMPORTERS = new Set(["lib/enrichment/contact-enrichment-core.ts", "lib/enrichment/intent-signal-sources.ts", "lib/enrichment/online-audience-store.ts"])
+  const importers = [...walkTs("lib"), ...walkTs("app")].filter((f) => IMPORT_RE.test(strippedSrc(f)))
+  ok(importers.length >= 2 && importers.every((f) => ALLOWED_IMPORTERS.has(f)), `the store is imported ONLY by the enrichment pass and the signal reader (${importers.join(", ")}) — no channel / dispatch / outreach module can read an ad-tech identifier`, importers.filter((f) => !ALLOWED_IMPORTERS.has(f)).join(","))
+  ok(IMPORT_RE.test(`import { onlineAudienceMatchKeysFor } from "@/lib/enrichment/online-audience-store"`) && IMPORT_RE.test(`const m = await import("@/lib/enrichment/online-audience-store")`) && !IMPORT_RE.test(strippedSrc("lib/providers/dispatch.ts")),
+    "POSITIVE CONTROL: the importer finder sees a static AND a dynamic import of the store (and the dispatcher has neither)")
+  // A bracket read needs its string literal (stripped source); a dot read is matched with strings BLANKED, so a path written in
+  // prose inside a string (the signal census's `storedAt`) is not a read. The adapter's own `match_counts.online_audience` is
+  // the VENDOR response's count, not the stored block — allowed by name.
+  const BRACKET_READ = /\[\s*["']online_audience["']\s*\]/, DOT_READ = /\.online_audience\b/
+  const keyRead = (src: string) => BRACKET_READ.test(stripComments(src)) || DOT_READ.test(blankStrings(stripComments(src)))
+  const KEY_ALLOWED = new Set([...ALLOWED_IMPORTERS, "lib/enrichment/provider-dedup.ts", "lib/external/versium-client.ts"])
+  const keyReaders = [...walkTs("lib"), ...walkTs("app")].filter((f) => keyRead(readSrc(f)))
+  ok(keyReaders.every((f) => KEY_ALLOWED.has(f)), `no module outside the store reads the stored block by its key (readers: ${keyReaders.join(", ") || "none"} — the adapter's is the vendor's match count)`, keyReaders.filter((f) => !KEY_ALLOWED.has(f)).join(","))
+  ok(keyRead(`const x = profile["online_audience"]`) && keyRead(`const y = profile.online_audience.identifiers`) && !keyRead(`const z = "contacts.enrichment_profile.online_audience.identifier_count"`), "POSITIVE CONTROL: the key-read finder sees a bracket AND a dot read, and not a path inside a string")
+  const core = strippedSrc("lib/enrichment/contact-enrichment-core.ts")
+  ok(/appendOnlineAudienceForContact\(supabase, \{ contactId, brokerageId \}\)/.test(core) && core.indexOf("appendOnlineAudienceForContact(") > core.indexOf(".update(guardedUpdate)"),
+    "THE CALLER: the contact enrichment pass runs the rung AFTER its own write landed (additive — a refused append never fails the enrichment)")
+}
+
+console.log("\n━━━ K · the Estimate is a NUMBER with provenance — never a contact, never a purchase ━━━")
+{
+  const est = await estimateVersiumAudience({ zips: ["98052", "98033"], ownRent: ["H"], lengthOfResidenceYears: { min: 10, max: 20 }, refinanceDateRange: { from: "2016-01-01", to: "20170101" }, dwellingType: "S" }, { call: async () => ({ ok: true, status: 200, data: ESTIMATE_DOC }), brokerageId: B })
+  ok(est.kind === "count" && est.contactsReturned === 0 && est.estimatedRecords === 20121 && est.estimatedTimeSeconds === 120 && est.cost === 0, "the result is typed a COUNT (kind 'count', contactsReturned 0, $0) — the run-time estimate rides along for the human")
+  const pv = est.provenance
+  ok(!!pv && pv.source === "versium" && pv.capability === "audience.estimate" && pv.queryId === "x" && pv.endpoint === "GET /v2/b2cListGen/estimate" && /estimates-api/.test(pv.docs) && !!pv.retrievedAt,
+    "…with PROVENANCE: source, capability, endpoint, docs, the vendor query_id and retrieved-at")
+  const cr = pv?.criteria ?? {}
+  ok(JSON.stringify(cr["d_zip[]"]) === JSON.stringify(["98052", "98033"]) && JSON.stringify(cr["d_ownrent[]"]) === JSON.stringify(["H"]) && cr.d_lor === "10-20" && cr.d_refi_date === "20160101-20170101" && cr.d_dwellingtype === "S" && JSON.stringify(cr["required_fields[]"]) === JSON.stringify(["address"]),
+    "…and the CRITERIA the number describes (the decoded request: ZIPs, owner, tenure, the refinance-date range lead-gen criterion, dwelling type)", JSON.stringify(cr))
+  ok(!JSON.stringify(est).match(/Mayank|preview|\*\*\*/), "no person — the masked preview is never requested and never returned")
+  const badDate = await estimateVersiumAudience({ zips: ["98052"], refinanceDateRange: { from: "2017-13-01", to: "2016-01-01" } }, { call: async (path, query) => ({ ok: true, status: 200, data: { ...ESTIMATE_DOC, echo: query } }) })
+  ok(!badDate.provenance?.criteria.d_refi_date, "a malformed / inverted refinance range is not sent")
+  const nullCount = await estimateVersiumAudience({ zips: ["98052"] }, { call: async () => ({ ok: true, status: 200, data: { versium: { query_id: "q", results: { estimated_record_count: null, estimated_records_available: null } } } }) })
+  ok(nullCount.estimatedRecords === null && nullCount.provenance === null, "POSITIVE CONTROL: a vendor that states no count reads as NULL, never as ZERO people (Number(null) is 0 — the old parser's trap)")
+  const note = VERSIUM_PRODUCT_MATRIX.find((p) => p.id === "b2c_listgen_estimate")?.note ?? ""
+  ok(/NUMBER/.test(note) && /lead-gen/.test(note) && VERSIUM_PRODUCT_MATRIX.find((p) => p.id === "b2c_listgen_job")?.status === "OWNER_DECISION", "the matrix states it: a number for lead-gen criteria; the list PURCHASE is the separate OWNER_DECISION product")
+}
+
+console.log("\n━━━ L · the REACH MCP's ACTUAL tool list — mapped, exclusions verified absent, still WAITING_EXTERNAL ━━━")
+{
+  const tools = VERSIUM_REACH_MCP.tools
+  const names = tools.map((t) => t.name)
+  const productIds = new Set(VERSIUM_PRODUCT_MATRIX.map((p) => p.id))
+  const VERDICTS = new Set(["REST_SURVIVOR", "SURVIVOR_ELSEWHERE", "OWNER_DECISION", "NO_CALLER", "NOT_APPLICABLE"])
+  ok(tools.length === 20 && new Set(names).size === 20, `the tool list is the 20 tools the authenticated registry enumerates (${tools.length}, distinct)`)
+  ok(tools.every((t) => VERDICTS.has(t.verdict) && (t.product === null ? t.verdict === "NOT_APPLICABLE" : productIds.has(t.product))), "every tool maps to a REST product of the matrix (or is NOT_APPLICABLE), with a verdict from the vocabulary")
+  const EXCLUDED = /online.?audience|look.?alike|\babm\b|dedupe|cleanse|data.?prep/i
+  const exclusionFaults = (list: readonly { name: string }[]) => list.filter((t) => EXCLUDED.test(t.name)).map((t) => t.name)
+  ok(exclusionFaults(tools).length === 0 && (VERSIUM_REACH_MCP.excludedByVendor as readonly string[]).includes("online_audience_append") && (VERSIUM_REACH_MCP.excludedByVendor as readonly string[]).includes("lookalike_list_generation"),
+    "the vendor's documented exclusions are VERIFIED ABSENT: no Online Audience Append, look-alike / ABM list generation or Data Prep tool")
+  ok(exclusionFaults([...tools, { name: "online_audience_append" }, { name: "lookalike_listgen" }]).length === 2, "POSITIVE CONTROL: a planted online-audience tool and a planted look-alike tool are each caught")
+  const wiredProducts = new Set(VERSIUM_PRODUCT_MATRIX.filter((p) => /^WIRED/.test(p.status)).map((p) => p.id))
+  const restSurvivors = tools.filter((t) => t.verdict === "REST_SURVIVOR")
+  ok(restSurvivors.length >= 4 && restSurvivors.every((t) => t.product !== null && wiredProducts.has(t.product)), `${restSurvivors.map((t) => t.name).join(", ")} are already WIRED over REST with the platform key — a second, interactive-credential rail would add nothing (LAW 2)`)
+  const createJob = tools.find((t) => t.name === "create_job")
+  ok(!!createJob && createJob.readOnly === false && createJob.verdict === "OWNER_DECISION", "create_job (a list job billed on completion) is the one spending tool — OWNER_DECISION, never unattended")
+  ok(["contact_append", "demographic_append", "firmographic_append", "c2b_append", "ip_to_domain_append", "b2c_listgen_estimate", "b2b_listgen_estimate", "email_validation", "docs_search"].every((n) => names.includes(n as never)),
+    "the vendor's own 'Available Tools' categories (MCP Server Overview) are all present")
+  ok(VERSIUM_REACH_MCP.status === "WAITING_EXTERNAL" && VERSIUM_REACH_MCP.oauth.clientCredentialsGrant === false && VERSIUM_REACH_MCP.toolListSources.some((u) => u.startsWith("https://reach-help.versium.com/")) && /^\d{4}-\d{2}-\d{2}$/.test(VERSIUM_REACH_MCP.toolListVerifiedAt),
+    "still WAITING_EXTERNAL (OAuth authorization-code only) — the tool list cites the vendor's own page and its verification date")
+}
+
+console.log("\n━━━ M · PeopleData ↔ Versium dedup: no silent overwrite, carried blocks, fresh answers reused ━━━")
+{
+  const NOWm = new Date("2026-10-25T12:00:00Z")
+  const prior = {
+    email: "own@example.test", marital_status: "Married", age_range: null, occupation: "Teacher", gender: "F",
+    enrichment_profile: { field_provenance: { marital_status: { source: "staff", capability: "contact.manual_edit", purpose: "staff_edit", retrievedAt: "2026-09-01T00:00:00Z", matchConfidence: null }, occupation: { source: "peopledata", capability: "person.enrich_identity", purpose: "enrichment", retrievedAt: "2026-01-01T00:00:00Z", matchConfidence: null }, gender: { source: "contact", capability: "contact.self_edit", purpose: "self_service", retrievedAt: "2026-09-02T00:00:00Z", matchConfidence: null } } },
+  }
+  const g = protectStatedValues(prior, { email: "work@acme.test", marital_status: "Single", age_range: "35-44", occupation: "Principal", gender: "female", household_income: "$100k" }, "peopledata", NOWm)
+  ok(!("email" in g.patch) && !("marital_status" in g.patch) && g.patch.age_range === "35-44" && g.patch.occupation === "Principal" && g.patch.household_income === "$100k",
+    "a STAFF-stated marital status and the record's own e-mail are KEPT; a gap (age band) is filled; a PROVIDER-written occupation is refreshed")
+  ok(g.conflicts.length === 3 && g.conflicts.map((c) => c.field).sort().join() === "email,gender,marital_status" && g.conflicts.find((c) => c.field === "marital_status")?.keptSource === "staff" && g.conflicts.find((c) => c.field === "gender")?.keptSource === "contact",
+    "…and every kept value RECORDS the provider's competing offer (field, who stated the kept value, the offer) — not silent", JSON.stringify(g.conflicts.map((c) => c.field)))
+  ok(protectStatedValues(prior, { marital_status: "married" }, "peopledata").conflicts.length === 0, "the same value in another case is a no-op, not a conflict")
+  const restamped = keepPriorStamps({ field_provenance: { marital_status: { source: "peopledata" }, age_range: { source: "peopledata" } } }, prior.enrichment_profile, ["marital_status"])
+  ok((restamped.field_provenance as Record<string, any>).marital_status.source === "staff" && (restamped.field_provenance as Record<string, any>).age_range.source === "peopledata", "the kept value keeps ITS provenance stamp (the provider's stamp would have claimed the staff value)")
+  const many = withProviderConflicts({ [PROVIDER_CONFLICTS_KEY]: Array.from({ length: 19 }, (_, i) => ({ field: `f${i}` })) }, g.conflicts)
+  ok((many[PROVIDER_CONFLICTS_KEY] as unknown[]).length === 20, "the conflict record is bounded (newest 20)")
+  const carried = carryForwardProfileBlocks({ provider: "peopledata", online_audience: null }, { real_estate_indicators: { onlinePresenceRealEstate: true }, online_audience: { identifiers: {} }, last_investigation_summary: "s", stale: "x" })
+  ok(!!carried.real_estate_indicators && !!carried.online_audience && carried.last_investigation_summary === "s" && !("stale" in carried) && Object.keys(CARRIED_PROFILE_BLOCKS).length === 5,
+    "a wholesale profile replacement CARRIES the blocks other writers own (indicators, identifiers, investigation summary) — and only those (a foreign key is not resurrected)")
+  ok(isFresh("2026-10-01T00:00:00Z", 90, NOWm) && !isFresh("2026-01-01T00:00:00Z", 90, NOWm) && !isFresh("2027-01-01T00:00:00Z", 90, NOWm) && !isFresh(null, 90, NOWm), "freshness: within the window is fresh; old, future or missing is not (re-ask)")
+  // WIRED — over stripped source, with a positive control on the finder
+  const orch = strippedSrc("lib/lead-pipeline/enrichment-orchestrator.ts")
+  const overwriteFinder = (src: string) => /\.from\('contacts'\)\s*\.update\(\{\s*\.\.\.\(primaryEmail && \{ email: primaryEmail \}\)/.test(src) || /\.\.\.\(primaryEmail && \{ email: primaryEmail \}\),\s*\.\.\.leadPhonePatch/.test(src)
+  ok(!overwriteFinder(orch) && /protectStatedValues\(entity, contactPatch, 'peopledata'\)/.test(orch) && /\.update\(guardedContact\.patch\)/.test(orch) && /primaryEmail && !entity\.email && \{ email: primaryEmail \}/.test(orch) && /batchDataFallback\.emails\[0\] && !entity\.email/.test(orch) && /carryForwardProfileBlocks\(profile, entity\.enrichment_profile/.test(orch),
+    "the orchestrator: the contact write goes through protectStatedValues, a provider e-mail fills only a GAP on every leg, and the profile replacement carries the other writers' blocks")
+  ok(overwriteFinder(`supabase.from('contacts')\n .update({\n ...(primaryEmail && { email: primaryEmail }),`), "POSITIVE CONTROL: the overwrite finder sees the pre-144 contact write")
+  const coreSrc = strippedSrc("lib/enrichment/contact-enrichment-core.ts")
+  ok(/protectStatedValues\(contact as Record<string, unknown>, enrichmentUpdate/.test(coreSrc) && /\.update\(guardedUpdate\)/.test(coreSrc) && /marital_status, household_income, net_worth_range/.test(coreSrc),
+    "the contact enrichment core: the write goes through protectStatedValues and the read selects the columns it protects")
+  const inv = strippedSrc("lib/agentic-os/deal-investigator.ts")
+  ok(/isFresh\(storedProfile\.captured_at, PROVIDER_FRESHNESS_DAYS\.peopledata_profile\)/.test(inv) && /isFresh\(storedIndicators\.capturedAt, PROVIDER_FRESHNESS_DAYS\.versium_online_presence\)/.test(inv) && /persistRealEstateIndicators\(svc/.test(inv) && /intentSignalsFromContact\(/.test(inv),
+    "the deal investigator REUSES a fresh PeopleData profile and fresh Versium indicators ($0), PERSISTS a bought answer, and reads the observed signals")
+}
+
+console.log("\n━━━ N · intent / life-change signal SOURCES for lane F — stored facts only, never a protected characteristic ━━━")
+{
+  const NOWn = new Date("2026-10-25T12:00:00Z")
+  const vd = buildVersiumDemographicProfile({ demographic: { "Individual Level Match": "Yes", DOB: "197203", "Age Range": "45-55", "Ethnic Group": "Western European", Religion: "Protestant" } }, "2026-10-20T00:00:00Z")
+  ok(vd.birth_year_month === "1972-03" && !JSON.stringify(vd).match(/Western|Protestant|ethnic|religion/i), "Versium's DOB (YEAR + MONTH, the vendor's sample '197203') lands as birth_year_month '1972-03' — no day invented; ethnicity / religion of the same row are not mapped")
+  const pdl = mapPeopleDataPerson({ birth_date: "1980-06-14", birth_year: 1980, full_name: "Pat" }, {}, NOWn)
+  const pdlBad = mapPeopleDataPerson({ birth_date: "June 1980" }, {}, NOWn)
+  ok(pdl.birthDate === "1980-06-14" && pdlBad.birthDate === undefined, "PeopleData birth_date is kept only in its documented shape")
+  const contact = {
+    enrichment_profile: {
+      captured_at: "2026-10-20T00:00:00Z", birth_year_month: "1972-03", job_start_date: "2026-08-01", location_history: ["austin, texas", "denver, colorado"],
+      real_estate_indicators: { provider: "versium", captured_at: "2026-10-01T00:00:00Z", onlinePresenceRealEstate: true, refinanceDate: "2019-10-15", lengthOfResidence: "5-10 Years", homeImprovementInterest: false },
+      [ONLINE_AUDIENCE_KEY]: { captured_at: "2026-10-02T00:00:00Z", services_asked: [], identifiers: { facebook: { email_sha256: [H("e")] } } },
+      Ethnicity: "X", religion: "Y",
+    },
+    life_events: [{ type: "relocation" }], last_life_event_detected: "2026-10-10T00:00:00Z", home_anniversary: "2018-05-01",
+  }
+  const sig = intentSignalsFromContact(contact, NOWn)
+  const k = (key: string) => sig.find((s) => s.key === key)
+  ok(k("online_real_estate_activity")?.value === true && k("refinance_date")?.monthsSince === 84 && k("length_of_residence")?.value === "5-10 Years" && k("online_audience_matched")?.value === 1 && k("birthday_month")?.sensitivity === "age" && k("job_change")?.monthsSince === 2 && k("location_history")?.value === 2 && k("public_life_event")?.sensitivity === "life_event" && k("home_anniversary")?.intents.includes("relationship_moment"),
+    `the stored facts become ${sig.length} observed signals, each with its provider, real field, observed-at and duration — no score, no threshold`, sig.map((s) => s.key).join(","))
+  ok(!k("home_improvement_interest") && !JSON.stringify(sig).match(/Ethnicity|religion|"X"|"Y"/), "a false indicator is no signal, and a protected value sitting in the blob never becomes one")
+  ok(intentSignalsFromContact({ enrichment_profile: null }, NOWn).length === 0 && intentSignalsFromContact({}, NOWn).length === 0, "POSITIVE CONTROL: an empty record yields NO signal (nothing invented)")
+  const PROTECTED_FIELD = /ethnic|religio|gender|children|single parent|veteran|party|disab|language|marital/i
+  ok(INTENT_SIGNAL_SOURCES.every((s) => !s.responseFields.some((f) => PROTECTED_FIELD.test(f)) && s.docs.length > 5 && s.entities.length > 0) && PROTECTED_FIELD.test("Presence of Children"),
+    `every one of the ${INTENT_SIGNAL_SOURCES.length} signal sources names a real response field that is NOT a protected characteristic (positive control: the finder sees 'Presence of Children')`)
+  ok(INTENT_SIGNAL_SOURCES.filter((s) => s.sensitivity === "age").every((s) => s.intents.join() === "relationship_moment"), "the only age-derived sources (birthday month / birth date) bear on a relationship moment (cards, education format) — never a move / sale / refinance intent")
+}
+
+console.log("\n━━━ O · the published capability matrix (docs/commercial/VERSIUM-CAPABILITY-MATRIX.md) agrees with the code ━━━")
+{
+  const DOC = "docs/commercial/VERSIUM-CAPABILITY-MATRIX.md"
+  const docFaults = (doc: string | null): string[] => {
+    if (doc === null) return [`${DOC} does not exist`]
+    const faults: string[] = []
+    for (const p of VERSIUM_PRODUCT_MATRIX) {
+      const row = doc.split("\n").find((l) => l.startsWith(`| \`${p.id}\` |`))
+      if (!row) faults.push(`${p.id}: no row`)
+      else if (!row.includes(`| ${p.status} |`)) faults.push(`${p.id}: doc status disagrees with the code (${p.status})`)
+    }
+    for (const t of VERSIUM_REACH_MCP.tools) if (!doc.includes(`\`${t.name}\``)) faults.push(`MCP tool ${t.name}: not listed`)
+    return faults
+  }
+  const doc = existsSync(join(ROOT, DOC)) ? readSrc(DOC) : null
+  const faults = docFaults(doc)
+  ok(faults.length === 0, `the doc lists every product with the code's status and every MCP tool (${VERSIUM_PRODUCT_MATRIX.length} products, ${VERSIUM_REACH_MCP.tools.length} tools, ${faults.length} faults)`, faults.join(" | "))
+  const planted = docFaults((doc ?? "").replace(/\| `online_audience_append` \| [^\n]*/, "| `online_audience_append` | stale | POLICY_GATED |"))
+  ok(planted.some((f) => f.startsWith("online_audience_append:")), "POSITIVE CONTROL: a doc row carrying a stale status is caught")
 }
 
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)

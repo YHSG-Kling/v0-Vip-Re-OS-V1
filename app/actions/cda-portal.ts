@@ -1480,13 +1480,33 @@ export async function sendCdaToTitleAction(input: {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const { cdaPayeesFromDistributions } = await import("@/lib/transactions/cda-payees")
     const svc = createServiceClient()
+    // WAVE 144 (lane 144D): select("*") so the outside-partner payee (referral_partner_id, m850) is read once applied
+    // without naming a column that does not exist before it (a 42703 would refuse the whole send).
     const { data: payeeRows, error: payeeErr } = await svc
       .from("commission_distributions")
-      .select("distribution_type, calculated_amount, status, agent_id")
+      .select("*")
       .eq("transaction_id", cda.transaction_id)
       .eq("brokerage_id", cda.brokerage_id)
       .in("distribution_type", ["referral", "team_member"])
     if (payeeErr) return { success: false as const, error: `cda_payees_read_refused:${payeeErr.message}` }
+    const payeePartnerIds = Array.from(new Set(((payeeRows ?? []) as Array<{ referral_partner_id?: string | null }>).map((r) => r.referral_partner_id).filter((x): x is string => !!x)))
+    const nameByPartnerId = new Map<string, string>()
+    if (payeePartnerIds.length > 0) {
+      const { data: partners, error: partnersErr } = await svc
+        .from("referral_partners")
+        .select("id, company_name, partner_name")
+        .eq("brokerage_id", cda.brokerage_id)
+        .in("id", payeePartnerIds)
+      if (partnersErr) return { success: false as const, error: `cda_payees_read_refused:${partnersErr.message}` }
+      for (const p of (partners ?? []) as Array<{ id: string; company_name?: string | null; partner_name?: string | null }>) {
+        const brokerage = (p.company_name ?? "").trim()
+        const agent = (p.partner_name ?? "").trim()
+        if (brokerage) nameByPartnerId.set(p.id, agent ? `${brokerage} (${agent})` : brokerage)
+      }
+      // An outside payee title cannot be told the name of is an authorization missing a payee — not sent.
+      const unnamed = payeePartnerIds.filter((id) => !nameByPartnerId.has(id))
+      if (unnamed.length > 0) return { success: false as const, error: `cda_partner_payee_unnamed:${unnamed.join(",")}` }
+    }
     const payeeAgentIds = Array.from(new Set(((payeeRows ?? []) as Array<{ agent_id?: string | null }>).map((r) => r.agent_id).filter((x): x is string => !!x)))
     const nameByAgentId = new Map<string, string>()
     if (payeeAgentIds.length > 0) {
@@ -1502,7 +1522,7 @@ export async function sendCdaToTitleAction(input: {
         if (name) nameByAgentId.set(a.id, name)
       }
     }
-    const payees = cdaPayeesFromDistributions((payeeRows ?? []) as Array<{ distribution_type?: string | null; calculated_amount?: number | string | null; status?: string | null; agent_id?: string | null }>, nameByAgentId)
+    const payees = cdaPayeesFromDistributions((payeeRows ?? []) as Array<{ distribution_type?: string | null; calculated_amount?: number | string | null; status?: string | null; agent_id?: string | null; referral_partner_id?: string | null }>, nameByAgentId, nameByPartnerId)
 
     const { composeCdaDisbursementLines } = await import("@/lib/transactions/deal-vendor-notify")
     const lines = composeCdaDisbursementLines({

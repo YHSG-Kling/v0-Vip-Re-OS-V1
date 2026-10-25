@@ -3,6 +3,7 @@ import { redirect, notFound } from "next/navigation"
 import { TRANSACTION_STAGES } from "@/lib/transactions/transaction-stages"
 import { isBrokerageFinanceAdminGrantRole } from "@/lib/auth/resolve-user-role"
 import { CDAWorkflowClient } from "./cda-workflow-client"
+import { AgentConcessionsCard } from "./agent-concessions-card"
 import { resolveCdaMode } from "@/lib/transactions/cda-closing-policy"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
@@ -134,7 +135,9 @@ export default async function CDAPage({ params }: PageProps) {
   // year is being reported. `.limit(1)` rather than `.maybeSingle()`:
   // agent_cap_tracking carries no uniqueness on the window, and a CDA must not
   // 500 because two overlapping rows exist.
-  const todayIso = new Date().toISOString().slice(0, 10)
+  // WAVE 144 (lane 144D, owner ruling 9): stage 07 now prices a deal in the cycle containing the DEAL's date (its close
+  // date), not today's — so this page reads that same window.
+  const todayIso = ((transaction as { close_date?: string | null }).close_date ?? "").slice(0, 10) || new Date().toISOString().slice(0, 10)
   const { data: capRows, error: capError } = await supabase
     .from("agent_cap_tracking")
     .select("cap_amount, cap_paid_to_date, is_capped")
@@ -227,6 +230,7 @@ export default async function CDAPage({ params }: PageProps) {
     .limit(15)
 
   return (
+    <>
     <CDAWorkflowClient
       transaction={transaction}
       brokerageId={brokerageId}
@@ -244,5 +248,10 @@ export default async function CDAPage({ params }: PageProps) {
       complianceChecks={complianceChecks ?? []}
       cdaTimeline={cdaTimeline ?? []}
     />
+    {/* WAVE 144 (lane 144D, owner ruling 4): the agent concession request / broker decision for this deal. */}
+    <div className="mx-auto max-w-5xl px-4 pb-8">
+      <AgentConcessionsCard transactionId={id} />
+    </div>
+    </>
   )
 }

@@ -18,6 +18,14 @@
  * not an AI agent tool, so the server-side backup is permitted here.
  *
  * Every external call routes through the canonical gateway. Never throws (gateway contract).
+ *
+ * WAVE 144 (lane 144E — owner ruling 10's dedup rule: "field completeness → verified prior data → provenance/freshness →
+ * required gap → cheaper appropriate provider → cost gate → append"): the investigator used to BUY both paid person legs on
+ * every click — a $0.25 PeopleData match even when the contact's own profile carried a PeopleData capture from last week, and
+ * three Versium credits for the online-presence indicators even when online-presence-store.ts already held them — and then
+ * DROPPED the Versium answer (the gap 143D's store header names). Now: a FRESH stored answer is REUSED at $0 (freshness =
+ * provider-dedup.ts PROVIDER_FRESHNESS_DAYS), a bought online-presence answer is PERSISTED through the store's one writer, and
+ * the synthesis reads the observed intent / life-change facts (intent-signal-sources.ts) instead of a raw blob.
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -42,6 +50,8 @@ export interface DealInvestigation {
      *  indicators (OUR shape; protected characteristics dropped inside the adapter). */
     onlinePresence: Record<string, unknown> | null
   }
+  /** Wave 144 (144E): the observed intent / life-change facts the record carries (intent-signal-sources.ts) — facts, not a score. */
+  signals?:      import("@/lib/enrichment/intent-signal-sources").ObservedIntentSignal[]
   cost:          number
   warnings:      string[]
 }
@@ -62,7 +72,7 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
   const svc = createServiceClient()
   const { data: contact } = await svc
     .from("contacts")
-    .select("id, brokerage_id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, enrichment_profile")
+    .select("id, brokerage_id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, enrichment_profile, life_events, last_life_event_detected, home_anniversary")
     .eq("id", params.contactId)
     .maybeSingle()
   if (!contact) {
@@ -72,8 +82,21 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
   const address = params.propertyAddress
     ?? [contact.mailing_address, contact.mailing_city, contact.mailing_state, contact.mailing_zip].filter(Boolean).join(", ")
 
-  // (1) Person — PDL via existing client
-  try {
+  const { PROVIDER_FRESHNESS_DAYS, isFresh } = await import("@/lib/enrichment/provider-dedup")
+  const storedProfile = (contact.enrichment_profile && typeof contact.enrichment_profile === "object" ? contact.enrichment_profile : null) as Record<string, unknown> | null
+
+  // (1) Person — PDL via existing client. Wave 144 (144E): a FRESH PeopleData capture already on the contact is reused at $0.
+  const reusePdl = !!storedProfile && storedProfile.provider === "peopledata" && isFresh(storedProfile.captured_at, PROVIDER_FRESHNESS_DAYS.peopledata_profile)
+  if (reusePdl) {
+    // An ALLOW-LIST of the person-profile fields, never the whole jsonb: the profile also carries the household financials
+    // (incl. the MODELED credit band — never a synthesis input, enrichment-one-rail-guard Layer 8d), the online-audience
+    // hashes, provenance and the conflict record — none of which belongs in a prompt.
+    const PERSON_FIELDS = ["full_name", "job_title", "employer", "industry", "job_start_date", "years_of_experience", "metro", "location_history", "interests", "education", "age_range", "home_owner_status", "life_events", "linkedin_url", "captured_at"] as const
+    const person: Record<string, unknown> = { reused_from_profile: true }
+    for (const k of PERSON_FIELDS) if (storedProfile && storedProfile[k] !== undefined && storedProfile[k] !== null) person[k] = storedProfile[k]
+    result.sources.person = person
+    result.warnings.push(`person: reused the stored PeopleData profile captured ${String(storedProfile?.captured_at)} (fresh within ${PROVIDER_FRESHNESS_DAYS.peopledata_profile} days — no new purchase)`)
+  } else try {
     const { skipTraceWithPeopleData } = await import("@/lib/external/peopledata-client")
     const pdl = await skipTraceWithPeopleData({
       name:  [contact.first_name, contact.last_name].filter(Boolean).join(" ") || undefined,
@@ -159,8 +182,14 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
   // online_presence CAPABILITY (lib/ai-isa/property-lookup-rail.ts runVersiumOnlinePresenceLeg): one
   // Versium full-demographic match, within what is left of this run's cap, budget-gated and booked by the
   // leg; protected characteristics never leave the adapter. A refusal leaves the source null and says why.
+  const { realEstateIndicatorsFromProfile, persistRealEstateIndicators } = await import("@/lib/enrichment/online-presence-store")
+  const storedIndicators = realEstateIndicatorsFromProfile(storedProfile)
+  let boughtIndicators: Record<string, unknown> | null = null
   try {
-    if (contact.brokerage_id && result.cost + versiumCreditsUsd(VERSIUM_CREDIT_WEIGHTS.full_demographic) <= cap) {
+    if (storedIndicators && isFresh(storedIndicators.capturedAt, PROVIDER_FRESHNESS_DAYS.versium_online_presence)) {
+      // Wave 144 (144E): the stored indicators answer the gap — no second purchase of the same three credits.
+      result.sources.onlinePresence = { ...storedIndicators, reused_from_profile: true } as unknown as Record<string, unknown>
+    } else if (contact.brokerage_id && result.cost + versiumCreditsUsd(VERSIUM_CREDIT_WEIGHTS.full_demographic) <= cap) {
       const { runVersiumOnlinePresenceLeg } = await import("@/lib/ai-isa/property-lookup-rail")
       const op = await runVersiumOnlinePresenceLeg({
         brokerageId: contact.brokerage_id,
@@ -176,10 +205,27 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
       result.cost += op.cost
       result.sources.onlinePresence = op.indicators ? ({ ...op.indicators, provenance: op.provenance } as unknown as Record<string, unknown>) : null
       if (!op.answered && op.skipped) result.warnings.push(`online presence: ${op.skipped}`)
+      // Wave 144 (144E): the bought answer is KEPT on the contact (the one writer, tenant-anchored, refresh — it was stale or absent).
+      if (op.indicators) {
+        boughtIndicators = { ...op.indicators }
+        const kept = await persistRealEstateIndicators(svc, { contactId: contact.id, brokerageId: contact.brokerage_id }, op.indicators, op.provenance, { refresh: true })
+        if (!kept.ok) result.warnings.push(`online presence: bought but not stored — ${kept.error}`)
+      }
     } else if (contact.brokerage_id) {
       result.warnings.push("cap reached before online presence — skipped")
     }
   } catch (e) { result.warnings.push(`online presence: ${(e as Error).message}`) }
+
+  // (3c) OBSERVED INTENT / LIFE-CHANGE FACTS (wave 144, 144E) — stored facts only, no call, no spend (intent-signal-sources.ts).
+  // Re-read with the indicators just stored so a fresh purchase is reflected.
+  const { intentSignalsFromContact } = await import("@/lib/enrichment/intent-signal-sources")
+  const signals = intentSignalsFromContact({
+    enrichment_profile: boughtIndicators
+      ? { ...(storedProfile ?? {}), real_estate_indicators: { ...boughtIndicators, captured_at: new Date().toISOString() } }
+      : storedProfile,
+    life_events: contact.life_events, last_life_event_detected: contact.last_life_event_detected, home_anniversary: contact.home_anniversary,
+  }).filter((s) => s.sensitivity !== "age") // the birthday month is a card / education-format input, never a "why now" for a rep
+  result.signals = signals
 
   // (4) Synthesize — one paragraph, AI-ISA-ready, via the Vercel AI Gateway.
   if (!process.env.AI_GATEWAY_API_KEY) {
@@ -199,7 +245,8 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
           `PERSON (PeopleData): ${JSON.stringify(result.sources.person).slice(0, 2000)}\n\n` +
           `MLS (RentCast): ${JSON.stringify(result.sources.mls).slice(0, 1500)}\n\n` +
           `PROPERTY RECORD (RentCast): ${JSON.stringify(result.sources.property).slice(0, 1500)}\n\n` +
-          `REAL-ESTATE INDICATORS (Versium online presence — a research signal, never a reason to treat anyone differently): ${JSON.stringify(result.sources.onlinePresence).slice(0, 800)}`,
+          `REAL-ESTATE INDICATORS (Versium online presence — a research signal, never a reason to treat anyone differently): ${JSON.stringify(result.sources.onlinePresence).slice(0, 800)}\n\n` +
+          `OBSERVED INTENT / LIFE-CHANGE FACTS (provider-observed, each with its source and date — facts, not conclusions; never a protected characteristic): ${JSON.stringify(signals.map((s) => ({ fact: s.key, value: s.value, source: s.provider, months_since: s.monthsSince }))).slice(0, 800)}`,
       }],
     })
     if (llm.ok && llm.content) {

@@ -120,6 +120,7 @@ Per-classification extracted_fields shape:
                             total_closing_costs, owner_title_premium, lender_title_premium,
                             settlement_fee, transfer_taxes, recording_fees,
                             sales_price, earnest_money_deposit, seller_credit_to_buyer,
+                            agent_credit_to_buyer, broker_credit_to_buyer,
                             owner_title_policy_payer, commission_listing_broker,
                             commission_buyer_broker, commission_total }
                           (dollar figures are the BORROWER-paid amounts as stated on the
@@ -143,10 +144,13 @@ Per-classification extracted_fields shape:
   seller_broker_agreement → { seller_name, brokerage_name, commission_rate, effective_date, expires_at }
   preliminary_closing_statement → { closing_date, seller_proceeds, total_seller_costs, title_company,
                             sales_price, earnest_money_deposit, seller_credit_to_buyer,
+                            agent_credit_to_buyer, broker_credit_to_buyer,
                             owner_title_policy_payer, commission_listing_broker,
                             commission_buyer_broker, commission_total }
                           (SETTLEMENT-COMPARISON FIELDS on closing_disclosure and preliminary_closing_statement —
-                           sales_price, earnest_money_deposit, seller_credit_to_buyer, commission_* — are dollar
+                           sales_price, earnest_money_deposit, seller_credit_to_buyer, agent_credit_to_buyer /
+                           broker_credit_to_buyer (a credit the buyer's or listing AGENT / BROKER gives the buyer — NOT the
+                           seller's credit; null when no such line is printed), commission_* — are dollar
                            amounts exactly as the statement prints them; commission_listing_broker and
                            commission_buyer_broker are the real-estate commission lines paid to each side's
                            broker, commission_total the combined figure only if the statement prints one.

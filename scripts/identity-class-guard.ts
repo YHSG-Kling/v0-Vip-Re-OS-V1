@@ -635,6 +635,11 @@ console.log("\n═══ 2. The three verified defects stay fixed ═══")
   // from memory is the over-claiming this guard exists to stop.
   const agentsWrites  = (txk.match(/agent_id:\s+agentRecordId/g) ?? []).length
   const agentsFilters = (txk.match(/\.eq\("agent_id", agentRecordId\)/g) ?? []).length
+  // WAVE 144 (lane 144D) — the RULE, not the waypoint count, for FILTERS too. The one agents-class filter was the
+  // agent_commission_profiles read inside the duplicate commission calculator recalculateCommissionStateCommand carried;
+  // that calculator now delegates to lib/commission/engine.ts (tombstone in lib/kernel/transactions.ts), taking the count
+  // from ONE to ZERO. The rule is "no agent_id filter in the kernel is users-class".
+  const usersFilters  = (txk.match(/\.eq\("agent_id",\s*params\.agentId\)/g) ?? []).length
   const usersWrites   = (txk.match(/agent_id:\s+params\.agentId/g) ?? []).length
   // WAVE 143 (143E) — the RULE, not the waypoint count. The review_requests write LEFT the kernel (closeTransactionCommand no longer
   // inserts it; tombstone in lib/kernel/transactions.ts → lib/reputation/review-ask.ts, whose agents-id handoff identity-fallback-guard
@@ -643,8 +648,9 @@ console.log("\n═══ 2. The three verified defects stay fixed ═══")
   // read zero because the finder went blind — the control below).
   const KERNEL_WRITES_AGENT_ID = /agent_id:\s+agentRecordId/g
   ok("the transactions kernel writes activities / agent_commission_profiles /\n    commission_calculations with the AGENTS id (the review_requests write moved to\n    the review-ask engine) — commission_calculations is money, and it was a foreign-key violation",
-    agentsWrites > 0 && agentsFilters === 1 && !/from\("review_requests"\)/.test(txk),
-    `agentRecordId writes: ${agentsWrites}, filters: ${agentsFilters}`)
+    agentsWrites > 0 && usersFilters === 0 && !/from\("review_requests"\)/.test(txk),
+    `agentRecordId writes: ${agentsWrites}, agents-class filters: ${agentsFilters}, users-class filters: ${usersFilters}`)
+  ok("(control) the filter finder still sees a users-class agent_id filter when one is present", (`.eq("agent_id", params.agentId)`.match(/\.eq\("agent_id",\s*params\.agentId\)/g) ?? []).length === 1)
   ok("(control) the finder still sees an agents-class write when one is present", (`await x.insert({ agent_id: agentRecordId })`.match(KERNEL_WRITES_AGENT_ID) ?? []).length === 1)
   ok("...and NO users-class agent_id write is left — since m366 there is no\n    column in this file for one to be correct in",
     usersWrites === 0, `params.agentId writes left: ${usersWrites}`)

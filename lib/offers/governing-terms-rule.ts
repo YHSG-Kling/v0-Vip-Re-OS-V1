@@ -16,6 +16,9 @@
 //   "the contract said the buyer pays the owner's policy; the executed counter moved it to the seller".
 
 import { CONTRACT_TERM_COLUMNS } from "@/lib/transactions/contract-terms"
+// THE ONE DEFINITION of "fully executed by both buyer and seller" (CLAUDE.md §6) — the predicate every creation gate refuses on.
+// Imported so a row the gates call executed can never be a row whose terms nobody governs (wave 144, lane 144C: see isExecutedOfferRow).
+import { isOfferFullyExecuted } from "@/lib/transactions/offer-execution-state"
 
 /**
  * THE GOVERNING TERM VOCABULARY — one spelling per term. The twelve contract-term columns are IMPORTED (never restated);
@@ -155,6 +158,8 @@ export interface OfferRowForTerms {
   esign_status?: string | null
   buyer_signed_at?: string | null
   seller_signed_at?: string | null
+  seller_response_type?: string | null
+  transaction_id?: string | null
   fully_signed_contract_received_at?: string | null
   esign_completed_at?: string | null
   responded_at?: string | null
@@ -167,8 +172,20 @@ export interface OfferRowForTerms {
  * `countered` counts when the signatures are there: issueCounterOffer flips the PARENT to `countered` even when that parent was
  * already an executed contract (lib/kernel/offers.ts: "the original … stays part of the executed contract"), so the status alone
  * cannot say. A negotiation-stage root that was merely countered has no seller signature on it and is not executed.
+ *
+ * WAVE 144 (lane 144C) — THE TWO READINGS OF "EXECUTED" NOW AGREE. This predicate read only `status` + signatures, while every
+ * creation gate reads the ONE definition (lib/transactions/offer-execution-state.ts isOfferFullyExecuted: buyer_signed_at + the
+ * fully-signed contract on file by an admissible path). They disagreed on a real writer: lib/forms/esign-execution-loop.ts stamps a
+ * completed envelope `fully_signed` with both signatures and the contract on file but never sets `status` — so the gates created a
+ * transaction from a counter whose terms this rule called merely "proposed", the freeze recorded nothing, and closing compliance had
+ * no governing terms. A row the ONE definition calls fully executed is now executed here too (unless it is void). The older
+ * admissions are kept, so nothing that governed before stops governing.
  */
+const VOID_OFFER_STATUSES = new Set(["rejected", "withdrawn", "voided", "expired"])
+const isVoidOfferRow = (row: OfferRowForTerms) => VOID_OFFER_STATUSES.has(String(row.status ?? ""))
 function isExecutedOfferRow(row: OfferRowForTerms): boolean {
+  if (isVoidOfferRow(row)) return false
+  if (isOfferFullyExecuted(row)) return true
   if (row.status !== "accepted" && row.status !== "countered") return false
   if (row.esign_status === "fully_executed") return true
   return !!row.fully_signed_contract_received_at || (!!row.buyer_signed_at && !!row.seller_signed_at)
@@ -206,7 +223,7 @@ function termsFromOfferRow(row: OfferRowForTerms): Record<string, unknown> {
  */
 export function versionsFromOfferChain(rows: OfferRowForTerms[]): TermsVersion[] {
   const byId = new Map(rows.map((r) => [r.id, r]))
-  const void_ = (r: OfferRowForTerms) => r.status === "rejected" || r.status === "withdrawn" || r.status === "voided" || r.status === "expired"
+  const void_ = isVoidOfferRow
   const incorporatedAt = new Map<string, string>() // ancestor id → the earliest executedAt among its executed descendants
   for (const r of rows) {
     if (!isExecutedOfferRow(r)) continue
@@ -253,6 +270,103 @@ export function mergeVersions(recorded: TermsVersion[], derived: TermsVersion[])
     return { ...r, versionNo: twin.versionNo, terms: { ...twin.terms, ...r.terms }, status: twin.status, executedAt: twin.executedAt ?? r.executedAt }
   })
   return [...merged, ...derived.filter((d) => !d.offerId || !recordedOffers.has(d.offerId))]
+}
+
+// ─── THE ACCEPTED SEQUENCE — which instruments ARE the executed contract (wave 144, lane 144C) ─────────────────────────────
+//
+// Owner (wave 144, ruling 2, verbatim essentials): "If a counter is present and accepted, the ORIGINAL OFFER + the ACCEPTED COUNTER
+// (+ required addenda) together are the executed contract; BOTH go through the compliance scan before anything becomes a transaction.
+// Keep every document/version (the counter never replaces the original). Unaccepted counters never become terms. With several
+// counters, the authoritative terms come from the actually accepted sequence, not the latest draft."
+//
+// The TERMS half of that already held (resolveGoverningTerms: proposed never governs; an executed counter incorporates its
+// ancestors). What no code said was WHICH ROWS the compliance scan must read, so the creation gate and the compliance checkpoint read
+// only the one submitted row's paperwork — the original offer's documents (filed against the root) were never scanned when a
+// counter executed, and a rejected sibling counter's paperwork, when it rode in on the contact link, was judged as if it were part
+// of the contract. This is that rule, pure, using the SAME executed / void readings as the terms above — one rule, two consumers.
+
+/** Why a chain row is NOT part of the executed contract. It is kept (every version is kept) — it is just never terms. */
+export type SequenceExclusion = "void" | "not_accepted" | "after_execution"
+
+export interface AcceptedOfferSequence {
+  rootOfferId: string
+  /** The executed instrument the contract resolved to — the row being promoted. */
+  headOfferId: string
+  /** root → … → head in negotiation order: the original offer, each counter it answered, the accepted counter. Void ancestors excluded. */
+  sequence: string[]
+  /** Every other row of the chain and why it is not part of the contract. */
+  excluded: Array<{ offerId: string; reason: SequenceExclusion }>
+  /** Transactions already created from ANY row of the chain (one executed contract → ONE transaction). */
+  transactionIds: string[]
+}
+
+export type AcceptedSequenceRefusal = "unknown_offer" | "not_executed" | "later_execution" | "competing_execution" | "broken_chain"
+
+/** PURE: the path from the chain root down to `offerId` (root first), or null when a parent link leaves the rows given. */
+function chainPathTo(rows: OfferRowForTerms[], offerId: string): string[] | null {
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  const path: string[] = []
+  let cur = byId.get(offerId)
+  for (let i = 0; cur && i < 25; i++) {
+    path.unshift(cur.id)
+    if (!cur.parent_offer_id) return path
+    const next = byId.get(cur.parent_offer_id)
+    if (!next) return null
+    cur = next
+  }
+  return null
+}
+
+/**
+ * PURE: the instruments a head INCORPORATES — its path from the root, minus void ancestors (a withdrawn / rejected / expired row on
+ * the way is not part of the contract; the head itself is always kept). The same reading versionsFromOfferChain applies to terms.
+ * null when the path leaves the rows given.
+ */
+export function sequenceThrough(rows: OfferRowForTerms[], headOfferId: string): string[] | null {
+  const path = chainPathTo(rows, headOfferId)
+  if (!path) return null
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  return path.filter((id) => id === headOfferId || !isVoidOfferRow(byId.get(id)!))
+}
+
+/**
+ * PURE — THE ACCEPTED SEQUENCE for the row being promoted. Refused, by name, when: the row is not in the chain; it is not executed
+ * (same reading as the terms rule); a LATER instrument below it executed (promote that one — it is the contract as it stands);
+ * another branch of the same chain also executed (two contracts cannot both be the deal — a person must say which was accepted);
+ * or a parent link points outside the rows read. Nothing is guessed and nothing is dropped: every non-sequence row is reported.
+ */
+export function acceptedOfferSequence(
+  rows: OfferRowForTerms[],
+  offerId: string,
+): { ok: true; sequence: AcceptedOfferSequence } | { ok: false; code: AcceptedSequenceRefusal; reason: string; offerIds: string[] } {
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  const head = byId.get(offerId)
+  if (!head) return { ok: false, code: "unknown_offer", reason: "the offer is not in the chain that was read", offerIds: [offerId] }
+  if (!isExecutedOfferRow(head)) {
+    return { ok: false, code: "not_executed", reason: isVoidOfferRow(head) ? `the offer is ${head.status} — a void instrument is never the contract` : "the offer is not executed by both buyer and seller", offerIds: [offerId] }
+  }
+  const path = chainPathTo(rows, offerId)
+  if (!path) return { ok: false, code: "broken_chain", reason: "a counter in this chain points at an offer that could not be read — the chain is incomplete", offerIds: [offerId] }
+  const onPath = new Set(path)
+  // descendants of the head (anything whose path runs through it)
+  const below = new Set<string>()
+  for (const r of rows) {
+    if (r.id === offerId) continue
+    const p = chainPathTo(rows, r.id)
+    if (p && p.includes(offerId)) below.add(r.id)
+  }
+  const laterExecuted = [...below].filter((id) => isExecutedOfferRow(byId.get(id)!))
+  if (laterExecuted.length) return { ok: false, code: "later_execution", reason: `a later instrument in this chain executed after it (${laterExecuted.join(", ")}) — that one is the contract as it stands`, offerIds: laterExecuted }
+  const competing = rows.filter((r) => !onPath.has(r.id) && !below.has(r.id) && isExecutedOfferRow(r)).map((r) => r.id)
+  if (competing.length) return { ok: false, code: "competing_execution", reason: `another branch of this chain also reads as executed (${competing.join(", ")}) — a person must say which counter was actually accepted`, offerIds: competing }
+  const sequence = sequenceThrough(rows, offerId) ?? [offerId]
+  const inSequence = new Set(sequence)
+  const excluded = rows.filter((r) => !inSequence.has(r.id)).map((r) => ({
+    offerId: r.id,
+    reason: (isVoidOfferRow(r) ? "void" : below.has(r.id) ? "after_execution" : "not_accepted") as SequenceExclusion,
+  }))
+  const transactionIds = [...new Set(rows.map((r) => r.transaction_id).filter((t): t is string => typeof t === "string" && t.length > 0))]
+  return { ok: true, sequence: { rootOfferId: path[0], headOfferId: offerId, sequence, excluded, transactionIds } }
 }
 
 /** PURE: signatures-only evidence — which of `parties` have a `signed === true` signature on a document's reading. (Initials are the compliance gate's question, not this record's.) */

@@ -21,10 +21,31 @@
 //
 // No simulated launches, no fake external ids — same honesty rule as the rest
 // of the ads domain (lib/ads/launch-assembler.ts: "no fake live state").
+//
+// CONVERGENCE WITH THE TV JUDGE (wave 144, lane 144H; owner ruling 16: "the TV-ad
+// provider was built in the Ads Manager — verify and reuse; do not duplicate;
+// wave 143's lib/video/tv-spot*.ts is the creative spec/judge side"). THIS file
+// stays the ONE streaming-TV provider path; it now READS the judge instead of
+// shipping the social reel:
+//   · a TV ad is a BROADCAST — the creative must pass lib/video/public-video.ts
+//     classifyPublicVideo (approved by a human, compliance passed, a public
+//     marketing class, addressed to nobody, not the MLS-only cut) — the SAME gate
+//     the TV master and YouTube ride; a client's, personal or unapproved video is
+//     refused by name at staging AND at launch;
+//   · the creative uploaded to Vibe is the TV MASTER the judge recorded
+//     (video_metadata.tv_spot — the spec in lib/video/tv-spot.ts TV_SPOT_SPEC), never
+//     the −14 LUFS social master in video_url. A master that FAILED its checks is
+//     refused naming them; with no master yet a draft may still be STAGED (a
+//     draft broadcasts nothing) but the LAUNCH — the authoritative write, both the
+//     executor/action door (launchCtvCampaignOnVibe) and the connector door
+//     (lib/ads/connectors/vibe-ctv.ts) — is refused until a READY master exists
+//     (ensureCtvBroadcastReady). The judge's numbers are not re-spelled here.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { VIBE_HOME_URL, dispatchCtvCampaign, type CtvDispatchResult } from "@/lib/providers/vibe"
 import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
+import { classifyPublicVideo } from "@/lib/video/public-video"
+import { tvSpotOf, TV_SPOT_SPEC } from "@/lib/video/tv-spot"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -45,6 +66,8 @@ export interface StageCtvCampaignInput {
   campaignName?: string
   dailyBudgetCents: number
   targeting: CtvTargeting
+  /** The caller's client (the autonomous staging passes its own; default the service client). */
+  client?: ReturnType<typeof createServiceClient>
 }
 
 export interface CtvLaunchPackage {
@@ -130,6 +153,49 @@ function validateCtvCreative(facts: CreativeFacts): CtvCreativeCheck {
   return { ok: reasons.length === 0, reasons, warnings }
 }
 
+// ─── THE BROADCAST CREATIVE (pure) — the judge's verdict, read, not re-spelled ─
+
+/** The ai_video_projects columns the broadcast verdict reads. */
+const BROADCAST_VIDEO_COLUMNS = "id, title, status, video_url, duration_seconds, format, listing_id, video_type, audience_type, usage_intent, contact_id, learning_module_id, approval_status, compliance_status, video_metadata"
+
+type BroadcastVideoRow = {
+  id: string; title: string | null; status: string | null; video_url: string | null; duration_seconds: number | null; format: string | null; listing_id: string | null
+  video_type?: string | null; audience_type?: string | null; usage_intent?: string | null; contact_id?: string | null; learning_module_id?: string | null
+  approval_status?: string | null; compliance_status?: string | null; video_metadata?: unknown
+}
+
+type CtvBroadcastCreative =
+  | { ok: true; source: "tv_master"; url: string; specVersion: string; warnings: string[] }
+  | { ok: true; source: "social_master_unverified"; url: string; warnings: string[] }
+  | { ok: false; reason: string }
+
+/**
+ * PURE. Which file may go on TV. `requireMaster` is true at LAUNCH (the broadcast) and false at STAGING (a draft):
+ * a staged draft may carry the social master with the gap said; nothing reaches Vibe without a READY TV master.
+ */
+function ctvBroadcastCreative(row: BroadcastVideoRow, opts: { requireMaster: boolean }): CtvBroadcastCreative {
+  const verdict = classifyPublicVideo(row)
+  if (!verdict.public) {
+    return { ok: false, reason: `not an approved public marketing video (${verdict.reason.replace(/_/g, " ")}) — a TV ad is a broadcast, so a client's, personal, unapproved, MLS-only or in-house video never runs on TV` }
+  }
+  const tv = tvSpotOf(row.video_metadata)
+  if (tv && tv.ready) return { ok: true, source: "tv_master", url: tv.url, specVersion: tv.spec_version, warnings: [...tv.warnings] }
+  if (tv && !tv.ready) {
+    const failed = tv.checks.filter((c) => !c.ok)
+    return { ok: false, reason: `the TV master is NOT ready — failed ${failed.map((c) => `${c.id} (needs ${c.required}, measured ${c.measured})`).join("; ")}. Fix the cut and make the TV master again` }
+  }
+  if (opts.requireMaster) {
+    return { ok: false, reason: `no TV master has been made for this video yet — make the TV master (${TV_MASTER_SUMMARY}) and launch once it reads READY; the social reel is never sent to TV` }
+  }
+  return { ok: true, source: "social_master_unverified", url: String(row.video_url ?? ""), warnings: ["No TV master yet — this draft carries the social reel. Make the TV master (Video → TV master) before launch: the launch is refused until a READY master exists."] }
+}
+
+/** What a TV master is, in words — DERIVED from the judge's spec, never re-spelled. */
+const TV_MASTER_SUMMARY = `${TV_SPOT_SPEC.width}×${TV_SPOT_SPEC.height}, ${TV_SPOT_SPEC.loudness.targetLkfs} LKFS, captions`
+
+/** The usage-rights line every TV launch package carries — the platform holds licence links, not their broadcast scope. */
+const CTV_RIGHTS_CHECK = "Usage rights: confirm the music bed, b-roll and any stock footage in this spot are licensed for streaming-TV broadcast (many social licences exclude broadcast). The platform records each music asset's licence link and attribution, not the scope of the licence."
+
 // ─── SUMMARIES (pure) ────────────────────────────────────────────────────────
 
 function normalizeList(list?: string[]): string[] {
@@ -179,12 +245,12 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
     return { success: false, error: "Pick a video (videoProjectId) or a listing to source one from" }
   }
 
-  const supabase = createServiceClient()
+  const supabase = input.client ?? createServiceClient()
 
   // ── Load the creative (explicit pick, or newest eligible for the listing) ──
   let videoQuery = supabase
     .from("ai_video_projects")
-    .select("id, title, status, video_url, duration_seconds, format, listing_id")
+    .select(BROADCAST_VIDEO_COLUMNS)
     .eq("brokerage_id", brokerageId)
   videoQuery = videoProjectId
     ? videoQuery.eq("id", videoProjectId)
@@ -195,9 +261,7 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
   if (videoError) {
     return { success: false, error: `Video lookup failed: ${videoError.message}` }
   }
-  const video = videos?.[0] as
-    | { id: string; title: string | null; status: string | null; video_url: string | null; duration_seconds: number | null; format: string | null; listing_id: string | null }
-    | undefined
+  const video = videos?.[0] as BroadcastVideoRow | undefined
   if (!video) {
     return {
       success: false,
@@ -207,16 +271,24 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
     }
   }
 
+  // ── The broadcast gate + the TV judge's verdict (lib/video/tv-spot.ts) ─────
+  const broadcast = ctvBroadcastCreative(video, { requireMaster: false })
+  if (!broadcast.ok) {
+    return { success: false, error: `Creative is not TV-ready: ${broadcast.reason}` }
+  }
+
   // ── The CTV checks we CAN run ──────────────────────────────────────────────
+  // A READY master is 16:9 by the judge's measurement; the social reel's format is only what was recorded.
   const check = validateCtvCreative({
-    videoUrl: video.video_url,
+    videoUrl: broadcast.url || null,
     durationSeconds: video.duration_seconds,
-    format: video.format,
+    format: broadcast.source === "tv_master" ? "16:9" : video.format,
     status: video.status,
   })
   if (!check.ok) {
     return { success: false, error: `Creative is not TV-ready: ${check.reasons.join("; ")}` }
   }
+  const warnings = [...broadcast.warnings, ...check.warnings]
 
   const targetingSummary = summarizeCtvTargeting({ dmas, cities, zips })
   const budgetSummary = summarizeCtvBudget(dailyBudgetCents)
@@ -240,7 +312,9 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
         dmas,
         cities,
         zips,
-        creative_video_url: video.video_url,
+        creative_video_url: broadcast.url,
+        creative_source: broadcast.source,
+        tv_spot_spec_version: broadcast.source === "tv_master" ? broadcast.specVersion : null,
         creative_duration: video.duration_seconds,
         video_project_id: video.id,
         listing_id: listingId ?? video.listing_id ?? null,
@@ -271,12 +345,15 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
   const durationLabel = video.duration_seconds != null ? `${video.duration_seconds}s` : "15s/30s"
   const checklist = [
     `Sign in at vibe.co with the brokerage's Vibe account (create one if this is the first streaming-TV campaign).`,
-    `Create a new campaign in Vibe and upload the creative video (${durationLabel}, 16:9 MP4): ${video.video_url}`,
+    broadcast.source === "tv_master"
+      ? `Create a new campaign in Vibe and upload the TV MASTER (${durationLabel}, ${TV_MASTER_SUMMARY}; spec ${broadcast.specVersion}): ${broadcast.url}`
+      : `Make the TV master first (Video → TV master) — then upload THAT file, never the social reel. The launch here is refused until it reads READY.`,
     `Set geographic targeting to: ${targetingSummary}.`,
     `Set the daily budget to ${budgetSummary} — confirm it meets Vibe's current platform minimum before launching.`,
     `Real-estate compliance: keep targeting Fair-Housing-safe — geography only, no demographic narrowing.`,
+    CTV_RIGHTS_CHECK,
     `Launch on Vibe, then return to the Ads Manager Streaming TV lane and press "Mark as launched" so this campaign leaves draft.`,
-    ...check.warnings.map((w) => `Verify before upload: ${w}`),
+    ...warnings.map((w) => `Verify before upload: ${w}`),
   ]
 
   return {
@@ -284,12 +361,12 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
     package: {
       campaignId: campaign.id,
       vibeDeepLink: VIBE_HOME_URL,
-      creativeUrl: video.video_url as string,
+      creativeUrl: broadcast.url,
       creativeDurationSeconds: video.duration_seconds,
       targetingSummary,
       budgetSummary,
       checklist,
-      warnings: check.warnings,
+      warnings,
     },
   }
 }
@@ -322,6 +399,9 @@ export async function launchCtvCampaignOnVibe(input: LaunchCtvInput): Promise<Ct
   if (["live", "launching"].includes(String(campaign.status))) {
     return { dispatched: false, reason: `campaign is already ${campaign.status}` }
   }
+  // THE BROADCAST GATE AT THE AUTHORITATIVE WRITE: an approved public video with a READY TV master, or no launch.
+  const broadcast = await ensureCtvBroadcastReady({ campaignId: input.campaignId, brokerageId: input.brokerageId, client: svc })
+  if (!broadcast.ok) return { dispatched: false, reason: `not launched — ${broadcast.reason}` }
 
   const result = await dispatchCtvCampaign(input.campaignId)
   if (!(result.dispatched && result.vibeCampaignId)) return result
@@ -362,6 +442,52 @@ export async function launchCtvCampaignOnVibe(input: LaunchCtvInput): Promise<Ct
   }))
   if (eventError) console.error("[ctv-campaign] launch ledger refused:", eventError.message)
   return result
+}
+
+// ─── THE BROADCAST GATE — shared by both launch doors ────────────────────────
+//
+// launchCtvCampaignOnVibe (the server action + the Ads Manager executor) and the
+// ad-connector registry's publish (lib/ads/connectors/vibe-ctv.ts) both run THIS
+// before lib/providers/vibe.ts dispatchCtvCampaign reads the staged row: it
+// re-reads the campaign's video (tenant-pinned), applies the broadcast verdict
+// with a READY master REQUIRED, and points the row's creative_video_url at the
+// TV master (a COUNTED update, §3) so the provider uploads the master, never the
+// social reel. Fail closed: an unreadable row is a refusal, not a pass.
+
+export async function ensureCtvBroadcastReady(input: {
+  campaignId: string
+  brokerageId: string
+  client?: ReturnType<typeof createServiceClient>
+}): Promise<{ ok: true; creativeUrl: string } | { ok: false; reason: string }> {
+  if (!input.campaignId || !input.brokerageId) return { ok: false, reason: "campaign and tenant required" }
+  const svc = input.client ?? createServiceClient()
+  const { data: c, error } = await svc
+    .from("ad_campaigns").select("id, platform, targeting_config")
+    .eq("id", input.campaignId).eq("brokerage_id", input.brokerageId).maybeSingle()
+  if (error) return { ok: false, reason: `campaign read refused: ${error.message}` }
+  const campaign = c as { id: string; platform: string; targeting_config: Record<string, unknown> | null } | null
+  if (!campaign) return { ok: false, reason: "campaign not found in this brokerage" }
+  if (campaign.platform !== "vibe_ctv") return { ok: false, reason: `campaign platform is '${campaign.platform}', not 'vibe_ctv'` }
+  const cfg = campaign.targeting_config ?? {}
+  const videoId = typeof cfg.video_project_id === "string" ? cfg.video_project_id : null
+  if (!videoId) return { ok: false, reason: "the staged campaign names no video project — stage it again from the video" }
+  const { data: v, error: vErr } = await svc
+    .from("ai_video_projects").select(BROADCAST_VIDEO_COLUMNS)
+    .eq("id", videoId).eq("brokerage_id", input.brokerageId).maybeSingle()
+  if (vErr) return { ok: false, reason: `video read refused: ${vErr.message}` }
+  if (!v) return { ok: false, reason: "the campaign's video is not in this brokerage" }
+  const verdict = ctvBroadcastCreative(v as BroadcastVideoRow, { requireMaster: true })
+  if (!verdict.ok) return { ok: false, reason: verdict.reason }
+  if (cfg.creative_video_url !== verdict.url || cfg.creative_source !== "tv_master") {
+    const specVersion = verdict.source === "tv_master" ? verdict.specVersion : null
+    const { data: moved, error: moveErr } = await svc
+      .from("ad_campaigns")
+      .update({ targeting_config: { ...cfg, creative_video_url: verdict.url, creative_source: verdict.source, tv_spot_spec_version: specVersion }, updated_at: new Date().toISOString() })
+      .eq("id", input.campaignId).eq("brokerage_id", input.brokerageId)
+      .select("id")
+    if (moveErr || !moved?.length) return { ok: false, reason: `the TV master could not be set as the creative: ${moveErr?.message ?? "no row matched"}` }
+  }
+  return { ok: true, creativeUrl: verdict.url }
 }
 
 // ─── AUTONOMOUS STAGING — a finished promotable video becomes a TV draft ─────
@@ -432,6 +558,7 @@ export async function stageCtvCampaignForVideo(input: {
     videoProjectId: video.id,
     dailyBudgetCents: Math.round((input.dailyBudgetUsd ?? CTV_AUTO_DAILY_BUDGET_USD) * 100),
     targeting,
+    client: svc,
   })
   if (!staged.success || !staged.package) return { ok: false, reason: staged.error ?? "stage failed" }
   return { ok: true, campaignId: staged.package.campaignId }

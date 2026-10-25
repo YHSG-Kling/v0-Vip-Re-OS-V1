@@ -392,12 +392,17 @@ async function main() {
 
   // The remaining sections live in the second half of this file (kept in one script so the RESULT line is ONE number).
   await sections4to7({ policyMod, arb, lap, rap, engine, draftMod, moments, lead, REVIEW_REQUEST_DEFAULT_DELAY_DAYS, base, intent })
+  // WAVE 144 (lane 144F) — channels as decisions, the five stances, the fixed send, life-change signals, leadership channels,
+  // the birthday card, the welcome's video follow-up and the education preference rule. Same script so the RESULT is ONE number.
+  await section8Wave144({ policyMod, arb, lap, lead, base, intent })
 
   console.log(`\n RESULT: ${passed} passed, ${failed} failed`)
   console.log(" BLIND SPOTS: live tables not read (columns asserted against scripts/schema-snapshot.ts + check-vocabularies.ts); the model is a FIXTURE (prompt quality, refusal rate, latency NOT measured — only that nothing outside the menu / bounds can pass);")
   console.log("   dispatch / delegation / ledger / emit are recorder seams (the gates are test:autonomy-gate / test:outbound-call-gates); the review-copy screen is a conservative regex (it can false-positive a clean draft into a STAGED one and cannot judge intent it does not match);")
   console.log("   local events have NO feed (inferred from geo-tagged topics only); Zillow / Realtor.com / Facebook / Yelp solicitation terms and state real-estate-commission testimonial rules are NOT verified;")
   console.log("   the census counts literal-digit timing constants in the listed decision modules — a computed window, a timing literal in a module outside the list, or a literal in a string is not seen.")
+  console.log("   WAVE 144: channel checks are PRE-checks (consent / tenant / frequency from the fatigue row / price / budget / provider scan) — the dispatcher's own gates stay authoritative and are not re-proved here; the FCC TCPA citations (ringless voicemail Nov 2022, AI voice Feb 2024) are cited, not re-verified;")
+  console.log("   the birthday sender (texts only) is not rewired — a mailed card needs a tenant-chosen Lob template (CONFIGURATION-ONLY); ads stays an audience action (no online-audience id is read); accessibility needs have no stored field.")
   if (failed > 0) { console.log(` FAILED: ${failures.join(" | ")}`); console.log(" ❌ INTENT_DRIVEN_FOLLOWUP_FAIL"); process.exit(1) }
   console.log(" ✅ INTENT_DRIVEN_FOLLOWUP_PASS — the follow-up is decided from intent inside the tenant's policy; a review is asked once, honestly, at every verified closing")
 }
@@ -434,6 +439,11 @@ async function sections4to7(c: Ctx): Promise<void> {
       agents: [{ id: AG, brokerage_id: B, user_id: "u-1" }],
       lifetime_customer_touchpoints: o.rows ?? [touchRow("t3", "post_close_3_day", dayIso(ago(1)))],
       activities: [],
+      // Wave 144: the arbiter now pre-checks each channel's PROVIDER through the one readiness scan (lib/platform/provider-posture.ts).
+      // This tenant has its email + SMS providers connected — the fixture says so instead of inheriting whatever the sandbox env holds.
+      integration_credentials: [{ id: "ic-1", brokerage_id: B, provider_name: "sendgrid", is_active: true }, { id: "ic-2", brokerage_id: B, provider_name: "twilio", is_active: true }],
+      // …and it is a paying tenant: the arbiter asks the ONE billing answer (mayUseAndAfford, on the same client) before it offers a paid send.
+      subscriptions: [{ id: "sub-1", brokerage_id: B, status: "active", trial_end: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }],
     }, { stampCreatedAt: true, uuidIds: true })
     const rec = { sends: [] as Array<{ ch: string; p: Record<string, any> }>, events: [] as Array<Record<string, any>>, delegations: [] as Array<Record<string, any>>, ledger: [] as Array<Record<string, any>>, decides: 0, messages: 0 }
     const mkDeps = (decideFn: (o: any) => Record<string, unknown> | Promise<Record<string, unknown>>, over: Partial<import("../lib/sphere/followup-moments").ConductDeps> = {}): import("../lib/sphere/followup-moments").ConductDeps => ({
@@ -859,15 +869,40 @@ async function sections4to7(c: Ctx): Promise<void> {
       content_topic_uses: [{ id: "u1", brokerage_id: "b-1", topic_id: "tp1", asset_type: "blog", used_at: ago(5).toISOString() }],
       content_topic_bank: [
         { id: "tp1", brokerage_id: "b-1", topic_title: "Closing costs explained", performance_score: 66, geo_relevance: null, source_url: null, scraped_at: ago(5).toISOString() },
+        // A geo-tagged scraped HEADLINE that names an event — the old EVENT_WORDS inference read this as an event (no date, no verification).
         { id: "tp2", brokerage_id: "b-1", topic_title: "Downtown Farmers Market opens this Saturday", performance_score: null, geo_relevance: { city: "Tampa" }, source_url: "https://example.test/e", scraped_at: ago(1).toISOString() },
         { id: "tp3", brokerage_id: null, topic_title: "Mortgage rates fall again", performance_score: null, geo_relevance: { city: "Tampa" }, source_url: null, scraped_at: ago(1).toISOString() },
+        // VERIFIED local facts, in the shape lib/content-intel/local-intel.ts stores them (categories + raw_data.local_fact).
+        { id: "lf1", brokerage_id: "b-1", topic_title: "Harbor Fest", categories: ["neighborhood", "local_intel"], status: "fresh", expires_at: "2026-10-26T12:00:00.000Z", source_url: "https://city.example.test/harbor-fest", raw_data: { local_fact_key: "k1", local_fact: { kind: "local_event", event_start: "2026-10-22", event_end: "2026-10-25", publisher: "City of Tampa" } } },
+        { id: "lf2", brokerage_id: "b-1", topic_title: "Westshore Art Walk", categories: ["neighborhood", "local_intel"], status: "fresh", expires_at: "2026-11-01T12:00:00.000Z", source_url: "https://arts.example.test/walk", raw_data: { local_fact_key: "k2", local_fact: { kind: "local_event", event_start: "2026-10-31", event_end: null, publisher: "Arts Council" } } },
+        { id: "lf3", brokerage_id: "b-1", topic_title: "Riverwalk Regatta", categories: ["neighborhood", "local_intel"], status: "fresh", expires_at: "2026-10-11T12:00:00.000Z", source_url: "https://example.test/regatta", raw_data: { local_fact_key: "k3", local_fact: { kind: "local_event", event_start: "2026-10-10", event_end: null } } },
+        { id: "lf4", brokerage_id: "b-1", topic_title: "New library branch approved", categories: ["neighborhood", "local_intel"], status: "fresh", expires_at: "2026-11-20T12:00:00.000Z", source_url: "https://news.example.test/library", raw_data: { local_fact_key: "k4", local_fact: { kind: "local_news", event_start: null, published_at: "2026-10-22" } } },
+        { id: "lf5", brokerage_id: "b-1", topic_title: "Rejected Street Party", categories: ["neighborhood", "local_intel"], status: "rejected", expires_at: "2026-11-01T12:00:00.000Z", source_url: "https://example.test/party", raw_data: { local_fact_key: "k5", local_fact: { kind: "local_event", event_start: "2026-10-30", event_end: null } } },
+        { id: "lf6", brokerage_id: "b-2", topic_title: "Other Tenant Parade", categories: ["neighborhood", "local_intel"], status: "fresh", expires_at: "2026-11-01T12:00:00.000Z", source_url: "https://example.test/parade", raw_data: { local_fact_key: "k6", local_fact: { kind: "local_event", event_start: "2026-10-30", event_end: null } } },
       ],
     }
     const sig = await lead.loadMarketLeadershipSignals(memSupabase(seed), "b-1", NOW)
     check("LOADER reads each stream through its survivor, tenant-pinned: AI visibility from THIS tenant's observations only (2 answers, 1 cited), competitor names resolved, only HIGH-performing rival posts, negative mention themes, own scored topic uses",
       sig.aiVisibility?.queriesChecked === 2 && sig.aiVisibility.queriesCited === 1 && sig.aiVisibility.topCompetitors[0].name === "Rival Realty" && sig.competitorMoves.length === 1 && sig.competitorMoves[0].competitor === "Rival Realty"
       && sig.mentions?.negative === 1 && sig.mentions.negativeTopics[0].topic === "communication" && sig.ownPerformance.length === 1 && sig.ownPerformance[0].performance === 66, JSON.stringify(sig).slice(0, 300))
-    check("LOCAL EVENTS are only what a geo-tagged topic actually names (the farmers market — not 'mortgage rates'), and the missing events FEED is published as a blind spot", sig.localEvents.length === 1 && /Farmers Market/.test(sig.localEvents[0].title) && sig.blindSpots.some((b) => /no dedicated events feed/.test(b)))
+    // RE-ASSERTED (wave 144, lane 144F on lane 144G's hand-off): this check pinned the WAYPOINT — EVENT_WORDS matching a scraped
+    // headline, plus a "no dedicated events feed … WAITING_EXTERNAL" blind spot. The feed now exists, so the RULE is asserted:
+    // a local event is a VERIFIED, dated, tenant-pinned local_event fact that has not yet ended — nothing else.
+    const evTitles = sig.localEvents.map((e) => e.title)
+    check("LOCAL EVENTS are only VERIFIED local_event facts that are upcoming or ongoing, ongoing first and dated in the title (Harbor Fest happening now, the Art Walk next week) — never an expired event, a news fact, a rejected fact, another tenant's fact",
+      evTitles.length === 2 && evTitles[0] === "Harbor Fest (2026-10-22)" && evTitles[1] === "Westshore Art Walk (2026-10-31)" && sig.localEvents[0].sourceUrl === "https://city.example.test/harbor-fest"
+      && !evTitles.some((t) => /Regatta|library|Rejected|Other Tenant/.test(t)), JSON.stringify(sig.localEvents))
+    check("POSITIVE CONTROL of the change: the geo-tagged scraped HEADLINE naming a farmers market (what the old keyword inference counted) is NOT an event now, and with verified facts stored no 'no feed' / 'no verified fact' blind spot is published",
+      !evTitles.some((t) => /Farmers Market/.test(t)) && !sig.blindSpots.some((b) => /local events/.test(b)))
+    const noFacts = await lead.loadMarketLeadershipSignals(memSupabase({ ...seed, content_topic_bank: seed.content_topic_bank.filter((r) => !String(r.id).startsWith("lf")) }), "b-1", NOW)
+    check("a tenant whose local-intelligence pass has stored NO verified fact gets ZERO events (the headline is still not inferred into one) and a published blind spot naming what is missing",
+      noFacts.localEvents.length === 0 && noFacts.blindSpots.some((b) => /local-intelligence pass has stored no verified fact/.test(b)), JSON.stringify(noFacts.blindSpots))
+    const factsRefused = await lead.loadMarketLeadershipSignals(memSupabase(seed, { refuse: { content_topic_bank: "RLS" } }), "b-1", NOW)
+    check("a REFUSED local-facts read is a published blind spot ('local events not read'), never an empty event list that reads as 'nothing is happening'",
+      factsRefused.localEvents.length === 0 && factsRefused.blindSpots.some((b) => /local events not read/.test(b)))
+    const llSrc = src("lib/content-intel/market-leadership.ts")
+    check("the leadership loader reads local events through THE local-facts reader (loadLocalFacts) and the keyword inference is gone from live code (stripped source — the tombstone naming EVENT_WORDS does not count)",
+      /loadLocalFacts\(svc, brokerageId/.test(llSrc) && /import\("@\/lib\/content-intel\/local-intel"\)/.test(llSrc) && !/\bEVENT_WORDS\b/.test(llSrc) && !/no dedicated events feed/.test(llSrc))
     const refused = await lead.loadMarketLeadershipSignals(memSupabase(seed, { refuse: { competitor_content: "RLS", brand_mentions: "RLS" } }), "b-1", NOW)
     check("a REFUSED stream is a published blind spot, never an empty stream that reads as 'nothing is happening'; the other streams still load", refused.blindSpots.some((b) => /competitor content not read/.test(b)) && refused.blindSpots.some((b) => /brand mentions not read/.test(b)) && refused.aiVisibility !== null)
     const empty = await lead.loadMarketLeadershipSignals(memSupabase({}), "b-1", NOW)
@@ -908,6 +943,7 @@ async function sections4to7(c: Ctx): Promise<void> {
       "lib/fatigue/fatigue-calculator.ts": { baseline: 3, why: "MEASUREMENT windows of the fatigue SCORE (touches in the last 7d / 14d, missed appointments in 90d) — what is counted, not when to send" },
       "lib/content-intel/performance-aggregator.ts": { baseline: 1, why: "the 30d REPORTING window of content performance" },
       "lib/content-intel/topic-bank.ts": { baseline: 1, why: "OFFICE_CLAIM_WINDOW_DAYS — how long an office's claim on a topic holds" },
+      "lib/content-intel/local-intel.ts": { baseline: 3, why: "local-FACT freshness windows (the 30-day year roll of a year-less date, the 2x stale-news cutoff, the 60-day recap read) — data freshness of verified local facts, not a follow-up timetable" },
       "lib/sphere/lifetime-touchpoint-reaper-policy.ts": { baseline: 1, why: "STALE_TOUCHPOINT_GRACE_DAYS — a MAINTENANCE threshold on a row nobody delivered (asserted by name below)" },
     }
     const others = ["lib/ai-isa/next-best-touch.ts", "lib/ai-isa/lead-nurture.ts", "lib/ai-isa/adaptive-reengagement.ts", "lib/ai-isa/speed-to-lead-policy.ts", "lib/ai-isa/stale-contact-detector.ts", "lib/ai-isa/saved-home-nudge.ts", "lib/ai-isa/ghost-escalation.ts", "lib/sphere/lifetime-touchpoint-reaper.ts"]
@@ -933,6 +969,341 @@ async function sections4to7(c: Ctx): Promise<void> {
       swept.length > 50 && swept.includes("lib/ai-isa/followup-policy.ts") && swept.includes("lib/reputation/review-ask.ts") && swept.includes("lib/content-intel/market-leadership.ts") && count(src("lib/fatigue/fatigue-calculator.ts")) > 0)
     check(`DOMAIN SWEEP: no file under ${DOMAINS.join(" · ")} carries a timing literal that is neither CONVERTED nor RATCHETed with a stated reason — unlisted: ${unlisted.join(", ") || "none"}`, unlisted.length === 0)
     check("the reaper's grace window (3 days past a moment's date) is a MAINTENANCE threshold on a row nobody delivered, not a follow-up timetable: it is a named exported constant, not an inline literal", /export const STALE_TOUCHPOINT_GRACE_DAYS = 3/.test(src("lib/sphere/lifetime-touchpoint-reaper-policy.ts")))
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════
+// WAVE 144 (lane 144F) — owner rulings 10-13: channels are DECISIONS with checks (direct mail, call vs voice drop, the portal,
+// a human task; social / ads considered and explained), format ≠ channel, the five stances, speed-to-lead as the fixed send,
+// life-change signals → governed next-best action, leadership formats vs channels, the birthday card, the welcome's video
+// follow-up, education by preference (never by age stereotype).
+async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead" | "base" | "intent">): Promise<void> {
+  const { policyMod, arb, lap, lead, base, intent } = c
+  const { CAMPAIGN_CHANNELS, VIDEO_DELIVERY_CHANNELS } = await import("../lib/campaigns/channels")
+  const policy = policyMod.platformFollowupPolicy()
+  const B = "B", C = "c-1"
+  // Every arbiter step is MODULE-PRIVATE (the 143E discipline — nothing is exported just for a test): the channel checks, the
+  // signal slice and both loaders are driven THROUGH arbitrateAndRecordExperience, with seeded rows and the readiness seams,
+  // and read back from the ledger row the product writes (detail.arbitration).
+  type Considered = { channel: string; available: boolean; approval: string; spend_tier: string; reasons: string[] }
+  const okPrices = { email: 0.001, sms: 0.0128, phone: 0.014, voice_drop: null, direct_mail: 0.78 }
+  const readyRows = (o: { email?: boolean; voice_sms?: boolean; voicedrop?: boolean; lob?: boolean } = {}) => ({ rows: [
+    { provider: "sendgrid", category: "email", ready: o.email ?? true }, { provider: "twilio", category: "voice_sms", ready: o.voice_sms ?? true },
+    { provider: "voicedrop", category: "other", ready: o.voicedrop ?? true }, { provider: "lob", category: "mail", ready: o.lob ?? true },
+    { provider: "buffer", category: "social", ready: true }, { provider: "meta", category: "leadgen", ready: true },
+  ] })
+  const contactRow = (over: Row = {}): Row => ({ id: C, brokerage_id: B, email: "pat@example.test", email_opt_out: false, email_unsubscribed: false, phone: "+15555550100", tcpa_consent: true, sms_opt_out: false, phone_opt_out: false, call_stop_flag: false, dnc_status: false, direct_mail_opt_out: false, mailing_address: "1 Main St", mailing_address_verified: true, opt_out_channels: [], has_login: true, ...over })
+  type World = { contact?: Row; saturated?: string[] | null; allowed?: string[]; providers?: ReturnType<typeof readyRows> | "throw"; budget?: { allowed?: boolean; reason?: string; remainingBudget: number | null }; signals?: Row[] }
+  const seedOf = (w: World): Record<string, Row[]> => {
+    const seed: Record<string, Row[]> = { contacts: [contactRow(w.contact)], signal_reactivations: w.signals ?? [] }
+    if (w.saturated !== null) seed.buyer_fatigue_scores = [{ id: "f1", brokerage_id: B, contact_id: C, contributing_factors: { saturated_channels: w.saturated ?? [] }, last_calculated_at: NOW.toISOString() }]
+    return seed
+  }
+  const readinessDeps = (w: World) => ({
+    providers: w.providers === "throw" ? async () => { throw new Error("scan down") } : async () => (w.providers as ReturnType<typeof readyRows> | undefined) ?? readyRows(),
+    budget: async () => w.budget ?? { allowed: true, remainingBudget: 100 },
+    prices: async () => okPrices,
+  })
+  type NbeInput = import("../lib/ai-isa/lead-action-plan").NextBestExperienceInput
+  const inputFor = (w: World, over: Partial<NbeInput> = {}): NbeInput =>
+    base({ nba: { intent: intent(80), memoryFacts: [] }, policy: { complianceHardFlag: false, allowedChannels: w.allowed ?? ["email", "sms", "phone", "direct_mail"], autoSendAllowed: true, videoAllowed: true }, ...over })
+  const run = async (o: { world?: World; deliverable?: readonly string[] | null; decide?: () => Promise<Record<string, unknown>>; input?: NbeInput; fixedSend?: "speed_to_lead"; noContact?: boolean }) => {
+    const w = o.world ?? {}
+    const recorded: Array<Record<string, any>> = []
+    let prompt = "", calls = 0
+    const seed = seedOf(w)
+    if (o.noContact) seed.contacts = []
+    const input = o.input ?? inputFor(w)
+    const r = await arb.arbitrateAndRecordExperience(memSupabase(seed), {
+      brokerageId: B, contactId: C, input, plan: lap.planNextBestExperience(input), now: NOW, policy, systemSource: "t",
+      deliverable: (o.deliverable === undefined ? arb.CONTACT_ENGAGEMENT_DELIVERABLE : o.deliverable) as never, fixedSend: o.fixedSend ?? null,
+    }, {
+      decide: async (a) => { calls++; prompt = a.prompt; if (!o.decide) throw new Error("no model here"); return (await o.decide()) as never },
+      record: { ledger: async (ctx: Record<string, any>, f: () => Promise<unknown>) => { recorded.push(ctx); return f() }, emit: async () => ({ inserted: true }), delegate: async () => ({ ok: true, delegation: { id: "d1" } }) },
+      readiness: readinessDeps(w),
+    })
+    const arbitration = recorded[0]?.detail?.arbitration ?? {}
+    return { r, recorded, prompt, calls, arbitration, considered: (arbitration.channels_considered ?? []) as Considered[] }
+  }
+  const ch = (list: Considered[], c: string): Considered => list.find((x) => x.channel === c) ?? { channel: c, available: false, approval: "", spend_tier: "", reasons: ["(absent)"] }
+  const consider = async (w: World) => (await run({ world: w })).considered
+  const why = (list: Considered[], c: string) => ch(list, c).reasons.join(" ")
+  const reply = (over: Record<string, unknown>) => async () => ({ optionId: "communication", channel: "email", format: null, waitHours: null, rationale: "They asked for paper and have not opened email in weeks.", evidence: ["channels", "history"], confidence: 0.8, ...over })
+
+  console.log("\n── 8a. THE CHANNEL VOCABULARY — one with the campaign taxonomy; a video is a format, never a channel ──")
+  {
+    const taxonomy = new Set(CAMPAIGN_CHANNELS.map((x) => x.key as string))
+    const delivery = arb.ARBITER_CHANNELS.filter((x) => x !== "human_task")
+    check("every arbiter delivery channel IS a campaign-taxonomy key (lib/campaigns/channels.ts) — the arbiter keeps no private channel vocabulary", delivery.every((x) => taxonomy.has(x)) && delivery.length === 8, delivery.join(","))
+    check("…the owner's missing channels are present: direct_mail, phone (AI call) AND voice_drop as SEPARATE options, the portal (in_app), social, ads, and a human task",
+      ["direct_mail", "phone", "voice_drop", "in_app", "social", "ads", "human_task"].every((x) => (arb.ARBITER_CHANNELS as readonly string[]).includes(x)))
+    check("'video' is NOT a channel — it is a FORMAT (owner ruling: never conflate a format with a channel)",
+      !(arb.ARBITER_CHANNELS as readonly string[]).includes("video") && (arb.ARBITER_FORMATS as readonly string[]).includes("avatar_video"))
+    check("(control) the taxonomy finder rejects the old spellings: 'video', 'portal', 'voice' are not campaign channels", !taxonomy.has("video") && !taxonomy.has("portal") && !taxonomy.has("voice"))
+    const arbSrc = src("lib/ai-isa/followup-arbiter.ts")
+    check("the dead pre-144 union (email | sms | voice | video | portal) is gone from the stripped source", !/"voice"\s*\|\s*"video"\s*\|\s*"portal"/.test(arbSrc))
+    check("(control) that matcher recognises the old declaration", /"voice"\s*\|\s*"video"\s*\|\s*"portal"/.test(`export type ArbiterChannel = "email" | "sms" | "voice" | "video" | "portal"`))
+    check("the arbiter's steps stay MODULE-PRIVATE (no step exported just for a test): the readiness, the signal slice and both loaders are not exports",
+      !/export (async )?function (evaluateChannelReadiness|planWithLifeChangeSignals|loadChannelReadiness|loadLifeChangeSignals)\b/.test(arbSrc) && /function evaluateChannelReadiness\(/.test(arbSrc))
+  }
+
+  console.log("\n── 8b. EVERY CHANNEL IS A DECISION WITH CHECKS — consent · tenant policy · frequency · cost/budget · provider · approval (read back from the ledger row) ──")
+  {
+    const all = await consider({})
+    check("LAW 5: the ledger row lists EVERY channel considered (9), each with its verdict, approval, spend tier and reasons", all.length === 9 && all.every((x) => typeof x.available === "boolean" && x.reasons.length > 0 && !!x.approval && !!x.spend_tier), String(all.length))
+    check("a fully consented contact with every check clear: email / sms / phone / voice_drop / direct_mail / in_app / human_task are AVAILABLE",
+      ["email", "sms", "phone", "voice_drop", "direct_mail", "in_app", "human_task"].every((x) => ch(all, x).available))
+    const fr = await run({ decide: reply({ channel: "email" }) })
+    const opts = JSON.parse(fr.prompt || "{}").options as Array<{ id: string; formats: Record<string, string[]> }> | undefined
+    const comm = (opts ?? []).find((o) => o.id === "communication")
+    check("a channel carries a video EXACTLY where the taxonomy says one rides — derived from VIDEO_DELIVERY_CHANNELS, not restated (the prompt's per-option formats)",
+      !!comm && Object.entries(comm.formats).every(([k, f]) => f.includes("avatar_video") === (VIDEO_DELIVERY_CHANNELS as readonly string[]).includes(k)) && !!comm.formats.direct_mail?.includes("postcard") && !comm.formats.direct_mail?.includes("avatar_video"), JSON.stringify(comm?.formats))
+    check("social and ads are CONSIDERED and refused for a 1:1 follow-up, each with its own reason — both a person's decision",
+      !ch(all, "social").available && /BROADCAST/.test(why(all, "social")) && !ch(all, "ads").available && /separate governed Ads-Manager action/.test(why(all, "ads")) && ch(all, "ads").approval === "human" && ch(all, "social").approval === "human")
+    const noTcpa = await consider({ contact: { tcpa_consent: false } })
+    check("CONSENT: no TCPA consent → no text, no AI call, no voice drop (a ringless voicemail is a call under the TCPA) — email and mail stay",
+      !ch(noTcpa, "sms").available && !ch(noTcpa, "phone").available && !ch(noTcpa, "voice_drop").available && /ringless voicemail is a call/.test(why(noTcpa, "voice_drop")) && ch(noTcpa, "email").available && ch(noTcpa, "direct_mail").available)
+    const stop = await consider({ contact: { call_stop_flag: true } })
+    check("CONSENT: a call stop flag refuses the call AND the drop but not the text", !ch(stop, "phone").available && !ch(stop, "voice_drop").available && ch(stop, "sms").available)
+    check("CONSENT: a mail opt-out refuses mail; an email opt-out refuses email; opt_out_channels ['sms'] refuses text; no portal login refuses in-app",
+      !ch(await consider({ contact: { direct_mail_opt_out: true } }), "direct_mail").available && !ch(await consider({ contact: { email_opt_out: true } }), "email").available
+      && !ch(await consider({ contact: { opt_out_channels: ["sms"] } }), "sms").available && !ch(await consider({ contact: { has_login: false } }), "in_app").available)
+    const unverified = await consider({ contact: { mailing_address_verified: false } })
+    check("CONSENT: an unverified mailing address rides through WITH a caveat (the send-time CASS gate verifies) — no address refuses",
+      ch(unverified, "direct_mail").available && /CASS/.test(why(unverified, "direct_mail")) && !ch(await consider({ contact: { mailing_address: null } }), "direct_mail").available)
+    const noPhoneBox = await consider({ allowed: ["email", "sms", "direct_mail"] })
+    check("TENANT POLICY: the settings' 'phone' box grants the live call AND the voice drop; without it both are refused; the portal and a human task are not checkbox channels",
+      !ch(noPhoneBox, "phone").available && !ch(noPhoneBox, "voice_drop").available && /not enabled/.test(why(noPhoneBox, "phone")) && ch(noPhoneBox, "in_app").available && ch(noPhoneBox, "human_task").available && ch(all, "voice_drop").available)
+    const unreadable = await consider({ allowed: [] })
+    check("TENANT POLICY: unreadable settings arrive as [] and refuse every governed channel (fail closed)", ["email", "sms", "phone", "voice_drop", "direct_mail"].every((x) => !ch(unreadable, x).available))
+    const satMail = await consider({ saturated: ["mail"] }), satPhone = await consider({ saturated: ["phone"] })
+    check("FREQUENCY: the de-confliction cap's saturated 'mail' refuses direct mail; saturated 'phone' refuses call AND drop (one vocabulary with the dispatcher's cap, read from the fatigue row)",
+      !ch(satMail, "direct_mail").available && /over-touch cap/.test(why(satMail, "direct_mail")) && !ch(satPhone, "phone").available && !ch(satPhone, "voice_drop").available && ch(satPhone, "sms").available)
+    const noFatigue = await consider({ saturated: null })
+    check("FREQUENCY: no fatigue row (counts unread) rides through with a caveat naming the dispatcher's gate — never read as clear", ch(noFatigue, "email").available && /de-confliction gate decides/.test(why(noFatigue, "email")))
+    const poor = await consider({ budget: { allowed: true, remainingBudget: 0.5 } })
+    check("COST / BUDGET: a printed piece over the remaining usage is refused while a 0.1¢ email is not; the spend is a TIER (never a price)",
+      !ch(poor, "direct_mail").available && ch(poor, "email").available && ch(all, "direct_mail").spend_tier === "high" && ch(all, "email").spend_tier === "trivial" && ch(all, "voice_drop").spend_tier === "unknown")
+    const lapsed = await consider({ budget: { allowed: false, reason: "subscription_lapsed", remainingBudget: null } })
+    check("BILLING: a tenant whose subscription does not cover sends (mayUseAndAfford refused comms.send) gets no paid channel — the portal and a person remain",
+      ["email", "sms", "phone", "voice_drop", "direct_mail"].every((x) => !ch(lapsed, x).available && /does not currently cover sends/.test(why(lapsed, x))) && ch(lapsed, "in_app").available && ch(lapsed, "human_task").available)
+    const darkLob = await consider({ providers: readyRows({ lob: false }) }), noScan = await consider({ providers: "throw" })
+    check("PROVIDER: a dark Lob lane refuses direct mail; an unrunnable scan rides through with a caveat (the dispatcher's provider gate decides)",
+      !ch(darkLob, "direct_mail").available && /no provider is connected/.test(why(darkLob, "direct_mail")) && ch(noScan, "direct_mail").available && /provider gate decides/.test(why(noScan, "direct_mail")))
+    check("(control) each refusal above comes from the ONE field changed — the all-clear world has direct mail, the call and the drop available", ch(all, "direct_mail").available && ch(all, "phone").available && ch(all, "voice_drop").available)
+    check("APPROVAL: every 1:1 send rides the dispatcher's gates; social / ads / a human task are a person's decision", all.filter((x) => ["email", "sms", "phone", "voice_drop", "direct_mail", "in_app"].includes(x.channel)).every((x) => x.approval === "dispatch_gate") && ch(all, "human_task").approval === "human")
+    const foreign = await run({ noContact: true, decide: async () => ({ optionId: "communication", channel: "email", format: null, waitHours: null, rationale: "A short personal note fits them today.", evidence: ["history"], confidence: 0.8 }) })
+    check("an unreadable / foreign person row keeps the tenant-list menu and SAYS so on the ledger row (published blind spot), with no channel verdicts claimed",
+      foreign.r.decision?.source === "ai" && foreign.considered.length === 0 && (foreign.arbitration.channel_blind_spots ?? []).some((b: string) => /channel readiness not loaded/.test(b)))
+  }
+
+  console.log("\n── 8c. THE MENU AND THE DECISION — real options, a validated format, the stance ──")
+  {
+    const dm = await run({ decide: reply({ channel: "direct_mail" }) })
+    check("DIRECT MAIL IS A REAL OPTION: with a caller that can deliver it, the model's direct-mail choice is honoured (channel direct_mail, a printed format), source ai",
+      dm.r.decision?.source === "ai" && dm.r.decision.channel === "direct_mail" && ["printed_letter", "postcard", "handwritten_card"].includes(String(dm.r.decision.format)) && /"direct_mail"/.test(dm.prompt), JSON.stringify(dm.r.decision))
+    check("LAW 5: the format and the stance ride the ledger row beside the channels considered", !!dm.arbitration.format && !!dm.arbitration.stance && Array.isArray(dm.arbitration.channels_considered))
+    check("the model is shown every channel and why (consent, cost tier) — and never a price", /"channels":\[/.test(dm.prompt) && /"spendTier"/.test(dm.prompt) && !/0\.78|\$0|usd|cents/i.test(dm.prompt))
+    const notDeliverable = await run({ deliverable: null, decide: reply({ channel: "direct_mail" }) })
+    check("…but a caller that can deliver only email / SMS (the default — the moment conductor) is never offered mail: the same choice is REFUSED, the planner's verdict stands",
+      notDeliverable.r.decision?.source === "deterministic" && /not permitted/.test(notDeliverable.r.decision?.fallbackReason ?? ""))
+    const asVoice = await run({ decide: reply({ channel: "voice" }) })
+    check("a legacy spelling ('voice') reads as the canonical channel (phone) — read-side tolerance only", asVoice.r.decision?.channel === "phone" && asVoice.r.decision.format === "live_call")
+    const asVideo = await run({ decide: reply({ channel: "video" }) })
+    check("naming 'video' as a channel is REFUSED with the reason: it is a creative format, not a channel", asVideo.r.decision?.source === "deterministic" && /creative format, not a channel/.test(asVideo.r.decision?.fallbackReason ?? ""))
+    const badFormat = await run({ decide: reply({ channel: "direct_mail", format: "avatar_video" }) })
+    check("a format the channel cannot carry (an avatar video by mail) is REFUSED", badFormat.r.decision?.source === "deterministic" && /cannot ride direct_mail/.test(badFormat.r.decision?.fallbackReason ?? ""))
+    const drop = await run({ decide: reply({ channel: "voice_drop" }) })
+    check("the voice drop is its own option (voicemail audio) and maps to engage-contact's dispatcher spelling; a deterministic verdict hands no channel over",
+      drop.r.decision?.channel === "voice_drop" && drop.r.decision.format === "voicemail_audio" && arb.touchChannelForDecision(drop.r.decision) === "voicedrop" && arb.touchChannelForDecision({ source: "deterministic", kind: "communication", channel: "email" }) === null)
+    const withLast = (last: string) => inputFor({}, { behavior: { touchpoints7d: 0, lastTouchpointChannel: last, portalEducationViews: 0 } })
+    const stanceOf = async (over: Record<string, unknown>, input = inputFor({})) => (await run({ input, decide: reply(over) })).r.decision?.stance
+    check("STANCES: a wait is WAIT; a touch on the channel used last is ACT NOW; a touch on another permitted channel is CHANGE CHANNEL",
+      (await stanceOf({ optionId: "wait", channel: null, waitHours: 24 })) === "wait" && (await stanceOf({ channel: "email" }, withLast("email"))) === "act_now" && (await stanceOf({ channel: "sms" }, withLast("email"))) === "change_channel")
+    const edu = inputFor({}, { education: { open: 1, completed: 0, nextModule: { id: "m1", title: "Closing costs", milestoneKey: null } } })
+    const noAgent = inputFor({}, { person: { contactType: "buyer", persona: null, hasAssignedAgent: false } })
+    check("STANCES: a lesson is EDUCATE; a human task is NOTIFY HUMAN",
+      (await stanceOf({ optionId: "education", channel: null }, edu)) === "educate" && (await stanceOf({ optionId: "agent_intervention", channel: null }, noAgent)) === "notify_human")
+  }
+
+  console.log("\n── 8d. SPEED-TO-LEAD IS THE EXPLICIT EXCEPTION — the arbiter never defers or swaps the first touch ──")
+  {
+    const waitReply = async () => ({ optionId: "wait", channel: null, waitHours: 48, rationale: "Hold it for two days, they just arrived.", evidence: ["intent"], confidence: 0.9 })
+    const fixed = await run({ fixedSend: "speed_to_lead", decide: waitReply })
+    check("speed-to-lead: the model is NEVER asked; the touch (communication) is the decision, the reason names the fixed send", fixed.calls === 0 && fixed.r.plan.chosen.kind === "communication" && /fixed send/.test(fixed.r.decision?.fallbackReason ?? ""))
+    check("(control) the same plan WITHOUT the exception is arbitrated", (await run({ decide: waitReply })).calls === 1)
+    const dnc = await run({ fixedSend: "speed_to_lead", input: inputFor({}, { nba: { deadEnds: [{ outcome: "do_not_contact", at: null, source: "t" }] } }) })
+    check("…and a fixed send never beats a HARD stop: a do-not-contact person stays locked", (dnc.r.decision?.fallbackReason ?? "").startsWith("locked") && dnc.r.plan.chosen.kind !== "communication")
+    const engRaw = src("app/actions/ai-isa/engage-contact.ts")
+    check("WIRED (the consumer): engage-contact tells the arbiter what it can deliver and that speed-to-lead is fixed, and dispatches the AI's channel ahead of its fallback picker (a human's forced channel still wins)",
+      /deliverable: CONTACT_ENGAGEMENT_DELIVERABLE/.test(engRaw) && /fixedSend: reason === 'speed_to_lead' \? 'speed_to_lead' : null/.test(engRaw) && /arbiterDecision = decision/.test(engRaw)
+      && /const channel = forceChannel \?\? touchChannelForDecision\(arbiterDecision\) \?\? resolvedChannel/.test(engRaw) && engRaw.indexOf("touchChannelForDecision(arbiterDecision)") > engRaw.indexOf("arbitrateAndRecordExperience(supabase"))
+    check("(control) the consumer finder rejects the pre-144 dispatch line", !/touchChannelForDecision\(arbiterDecision\)/.test("const channel = forceChannel ?? resolvedChannel"))
+  }
+
+  console.log("\n── 8e. LIFE-CHANGE / INTENT SIGNALS → a governed evaluation and next-best action (ruling 11) ──")
+  {
+    const ago = (d: number) => new Date(NOW.getTime() - d * DAY).toISOString()
+    const sig = (type: string, days = 1, brokerage = B, extra: Row = {}): Row => ({ id: `s-${type}-${days}-${brokerage}`, brokerage_id: brokerage, contact_id: C, signal_type: type, signal_strength: 70, triggered_at: ago(days), isa_reactivated: false, ...extra })
+    const sellerInput = (over: Partial<NbeInput> = {}) => inputFor({}, { person: { contactType: "seller", persona: null, hasAssignedAgent: true }, nba: { memoryFacts: [] }, ...over })
+    const seller = (signals: Row[]) => run({ world: { signals }, input: sellerInput() })
+    const refi = await seller([sig("refinance_opportunity")])
+    const refiAgent = refi.r.plan.ranked.find((r) => r.kind === "agent_intervention")
+    check("REFINANCE (model down → the deterministic verdict): a PERSON decides — a qualified lender the CLIENT chooses, never an automated referral — plus a refinance lesson; the signal rides the ledger row",
+      refi.r.plan.chosen.kind === "agent_intervention" && !!refiAgent?.reasons.some((x) => /qualified lender/.test(x) && /never an automated referral/.test(x)) && refi.r.plan.ranked.some((r) => r.kind === "education") && refi.r.plan.contributed.includes("signal") && (refi.arbitration.signals ?? []).some((s: any) => s.type === "refinance_opportunity" && s.kind === "refinance"),
+      `${refi.r.plan.chosen.kind} · ${JSON.stringify(refi.arbitration.signals)}`)
+    const moving = await run({ world: { signals: [sig("next_move_intent", 0)] }, input: inputFor({}, { nba: { memoryFacts: [] } }) })
+    check("MOVING (a buyer): matching properties lead, with a personal call ranked behind it", moving.r.plan.chosen.kind === "properties" && moving.r.plan.ranked.some((r) => r.kind === "agent_intervention"), moving.r.plan.chosen.kind)
+    const equity = await seller([sig("equity_milestone", 3)])
+    check("EQUITY (an owner): a market update on their home — its executor from the planner's OWN table (listing_concierge · cma_generate)",
+      equity.r.plan.chosen.kind === "market_update" && equity.r.plan.chosen.manager === lap.EXPERIENCE_EXECUTORS.market_update.manager && equity.r.plan.chosen.capability === lap.EXPERIENCE_EXECUTORS.market_update.capability, equity.r.plan.chosen.kind)
+    const lockedInput = inputFor({}, { nba: { deadEnds: [{ outcome: "do_not_contact", at: null, source: "t" }] } })
+    const locked = await run({ world: { signals: [sig("next_move_intent", 0)] }, input: lockedInput })
+    check("(control) a signal NEVER unlocks a hard verdict: a do-not-contact person stays locked and the signal slice does not contribute", locked.r.plan.chosen.kind === lap.planNextBestExperience(lockedInput).chosen.kind && !locked.r.plan.contributed.includes("signal") && (locked.r.decision?.fallbackReason ?? "").startsWith("locked"))
+    const quiet = await seller([])
+    check("(control) no signals → the planner's own ranking, untouched", !quiet.r.plan.contributed.includes("signal") && JSON.stringify(quiet.r.plan.ranked.map((r) => [r.kind, r.score])) === JSON.stringify(lap.planNextBestExperience(sellerInput()).ranked.map((r) => [r.kind, r.score])))
+    const mixed = await seller([sig("returning_seller_ready", 2, B, { isa_reactivated: true }), sig("made_up_thing", 3), sig("next_move_intent", policy.sphere.lifeEventWindowDays + 2), sig("divorce_filing", 1, "OTHER")])
+    const types = ((mixed.arbitration.signals ?? []) as Array<{ type: string; kind: string }>).map((s) => `${s.type}:${s.kind}`)
+    check("LOADER: this tenant's signals inside the tenant's life-event window — consumed or not (evidence, not a queue); an old one and ANOTHER TENANT's are excluded; kinds derived (returning_seller_* → home_sale, unknown → engagement)",
+      types.includes("returning_seller_ready:home_sale") && types.includes("made_up_thing:engagement") && !types.some((t) => t.startsWith("next_move_intent") || t.startsWith("divorce_filing")), types.join(","))
+    check("the signal vocabulary covers the owner's examples (moving, refinance, home sale, buying, lawful life events, equity)",
+      ["moving", "refinance", "home_sale", "buying", "life_event", "equity"].every((k) => Object.values(arb.LIFE_CHANGE_SIGNAL_KINDS).includes(k as never)) && arb.LIFE_CHANGE_SIGNAL_KINDS.refinance_opportunity === "refinance" && arb.LIFE_CHANGE_SIGNAL_KINDS.equity_milestone === "equity")
+
+    // the responder: who the person is decides the rail
+    const calls = { rec: [] as Array<Record<string, any>>, eng: [] as Array<Record<string, any>> }
+    const seen = new Set<string>()
+    const deps = {
+      recordSignal: async (p: Record<string, any>) => { calls.rec.push(p); return { id: `sig-${calls.rec.length}` } },
+      engage: async (p: Record<string, any>) => { calls.eng.push(p); return { success: true, channel: "voicedrop" } },
+      ledger: (async (ctx: any, f: () => Promise<any>, hooks: any) => { const k = `${ctx.subject.id}:${ctx.cycle}`; if (seen.has(k)) return hooks.replay({ kind: "replay" }); seen.add(k); return f() }) as never,
+    }
+    const world = memSupabase({
+      raw_scraped_leads: [{ id: "rl1", brokerage_id: B }],
+      leads: [{ id: "l1", brokerage_id: B, contact_id: null, is_active: true }, { id: "l2", brokerage_id: B, contact_id: "c-buyer", is_active: false }],
+      contacts: [{ id: "c-buyer", brokerage_id: B, contact_type: "buyer" }, { id: "c-life", brokerage_id: B, contact_type: "lifetime_customer" }, { id: "c-foreign", brokerage_id: "OTHER", contact_type: "buyer" }],
+    })
+    const reset = () => { calls.rec.length = 0; calls.eng.length = 0 }
+    const say = (subject: { type: "raw_lead" | "lead" | "contact"; id: string }, signalType = "next_move_intent") => arb.respondToLifeChangeSignal(world, { brokerageId: B, subject, signalType, source: "proof", now: NOW }, deps)
+    reset(); const r1 = await say({ type: "raw_lead", id: "rl1" })
+    check("RAW LEAD: recorded, NO outreach, no signal row for an outreach loop, no engagement (they consented to nothing)", r1.action === "recorded_no_outreach" && calls.rec.length === 0 && calls.eng.length === 0)
+    reset(); const r2 = await say({ type: "lead", id: "l1" })
+    check("LEAD: the signal joins signal_reactivations (lead_id) for the ISA's lead loops — no engagement call (leads are reached by email / mail inside their own loops)", r2.action === "lead_signal_recorded" && calls.rec[0]?.leadId === "l1" && !calls.rec[0]?.contactId && calls.eng.length === 0)
+    reset(); const r3 = await say({ type: "contact", id: "c-life" }, "refinance_opportunity")
+    check("LIFETIME: the signal joins signal_reactivations (contact_id) for the Sphere's gated returning-customer loop — the ISA does NOT engage a lifetime client directly", r3.action === "sphere_signal_recorded" && r3.subjectClass === "lifetime" && calls.rec[0]?.contactId === "c-life" && calls.eng.length === 0)
+    reset(); const r4 = await say({ type: "contact", id: "c-buyer" })
+    check("CONTACT: the signal is recorded AND the ISA's governed engagement runs now (reason brokerage_rule — NBA hard stops, the planner with the signal, the arbiter, the consent-gated dispatch; here it chose a voice drop)",
+      r4.action === "isa_engagement" && calls.eng.length === 1 && calls.eng[0].reason === "brokerage_rule" && calls.eng[0].contactId === "c-buyer" && r4.engagement?.channel === "voicedrop" && calls.rec.length === 1)
+    reset(); const r5 = await say({ type: "contact", id: "c-buyer" })
+    check("IDEMPOTENT: the same signal for the same person the same day REPLAYS — nothing recorded or engaged twice", r5.action === "replayed" && calls.rec.length === 0 && calls.eng.length === 0)
+    reset(); const r6 = await say({ type: "lead", id: "l2" }, "home_sale_interest")
+    check("CONVERSION IS FINAL: a converted lead's signal is answered as its CONTACT", r6.action === "isa_engagement" && calls.eng[0]?.contactId === "c-buyer")
+    reset(); const r7 = await say({ type: "contact", id: "c-foreign" })
+    check("TENANCY: another brokerage's contact is REFUSED (the brokerage on the query is the pin) — nothing recorded, nothing engaged", r7.action === "refused" && calls.rec.length === 0 && calls.eng.length === 0)
+    const reactor = src("lib/kernel/event-reactor.ts")
+    const at = reactor.indexOf("respondToLifeChangeSignal(svc")
+    check("WIRED: the event reactor answers EQUITY_MILESTONE and REFINANCE_OPPORTUNITY through the ONE responder (they were feed-only visibility until now)",
+      at > -1 && /KernelEvent\.EQUITY_MILESTONE \|\| params\.event === KernelEvent\.REFINANCE_OPPORTUNITY/.test(reactor) && reactor.indexOf('signalType:  "refinance_opportunity"') < at)
+    check("(control) a commented-out call is not read as one", !/respondToLifeChangeSignal\(svc/.test(stripComments("// await respondToLifeChangeSignal(svc, x)\nconst y = 1")))
+
+    // Lane 144E's provider-backed sources (lib/enrichment/intent-signal-sources.ts): STORED facts on the contact row, read through
+    // ITS pure reader on every evaluation. Sensitivity decides: age never; a life event only to a PERSON; property facts are not a change.
+    const dayOf = (d: number) => ago(d).slice(0, 10)
+    const profiled = (over: Row = {}): Row => ({
+      enrichment_profile: {
+        real_estate_indicators: { provider: "versium", captured_at: ago(2), onlinePresenceRealEstate: true, refinanceDate: "2019-04-01", lengthOfResidence: "11-15 years" },
+        birth_year_month: "1980-10", birth_date: "1980-10-25", location_history: ["Tampa, FL", "Austin, TX"], job_start_date: dayOf(5), captured_at: ago(2),
+      },
+      life_events: [{ type: "divorce" }], last_life_event_detected: ago(3), ...over,
+    })
+    const stored = await run({ world: { contact: profiled() }, input: sellerInput() })
+    const st = ((stored.arbitration.signals ?? []) as Array<{ type: string; kind: string }>).map((s) => `${s.type}:${s.kind}`)
+    const stBlind = ((stored.arbitration.channel_blind_spots ?? []) as string[]).join(" | ")
+    check("144E STORED SIGNALS: fresh online real-estate activity (behaviour → its first intent, moving), a job change dated 5 days ago and a public life event detected 3 days ago (both → life_event) reach the planner as evidence on the ledger row",
+      st.includes("versium.online_real_estate_activity:moving") && st.includes("peopledata.job_change:life_event") && st.includes("osint.public_life_event:life_event") && stored.r.plan.contributed.includes("signal"), st.join(","))
+    check("…a LIFE EVENT is a service topic: it reaches only a PERSON (agent_intervention, 'a person's conversation'), and no signal's reason or ledger entry repeats the event itself ('divorce')",
+      !!stored.r.plan.ranked.find((r) => r.kind === "agent_intervention")?.reasons.some((x) => /peopledata\.job_change/.test(x) && /person's conversation/.test(x)) && !/divorce/i.test(JSON.stringify(stored.arbitration.signals ?? [])) && !/divorce/i.test(stored.r.plan.ranked.flatMap((r) => r.reasons).join(" ")))
+    check("…AGE is never a follow-up input: the birthday month / birth date appear in NO signal and NO blind spot (not even as a count) — cards and the education format only",
+      !st.some((t) => /birth/.test(t)) && !/birth/.test(stBlind), `${st.join(",")} · ${stBlind}`)
+    check("…a stored PROPERTY FACT is not a change (a refinance date, a residence length: reading them as intent needs a threshold the equity / refinance triggers own), and a COUNT of past places is history — each is published as a blind spot, none as a signal",
+      !st.some((t) => /refinance_date|length_of_residence|location_history/.test(t)) && /versium\.refinance_date/.test(stBlind) && /versium\.length_of_residence/.test(stBlind) && /peopledata\.location_history \(not dated inside the window\)/.test(stBlind), stBlind)
+    const stale = await run({ world: { contact: profiled({ enrichment_profile: { real_estate_indicators: { provider: "versium", captured_at: ago(policy.sphere.lifeEventWindowDays + 5), onlinePresenceRealEstate: true }, job_start_date: "2019-03", captured_at: ago(1) }, life_events: [], last_life_event_detected: null }) }, input: sellerInput() })
+    const stStale = ((stale.arbitration.signals ?? []) as Array<{ type: string }>).map((s) => s.type)
+    check("(control) an indicator observed OUTSIDE the tenant's life-event window and a job that started in 2019 are NOT recent changes — dated by the fact, never by when the profile was last refreshed",
+      stStale.length === 0 && !stale.r.plan.contributed.includes("signal") && /online_real_estate_activity \(not dated inside the window\)/.test(((stale.arbitration.channel_blind_spots ?? []) as string[]).join(" ")), stStale.join(","))
+    const bare = await run({ world: {}, input: sellerInput() })
+    check("(control) a contact with no stored provider facts yields no stored signal and no stored-fact blind spot (a fact absent from the record yields nothing)",
+      ((bare.arbitration.signals ?? []) as unknown[]).length === 0 && !((bare.arbitration.channel_blind_spots ?? []) as string[]).some((b) => /stored provider fact/.test(b)))
+    const arbSrc = src("lib/ai-isa/followup-arbiter.ts")
+    check("WIRED: the arbiter reads lane 144E's sources through THEIR reader (intentSignalsFromContact), tenant-pinned by the contact PK — no second reader of enrichment_profile",
+      /import\("@\/lib\/enrichment\/intent-signal-sources"\)/.test(arbSrc) && /intentSignalsFromContact\(person, a\.now\)/.test(arbSrc) && /from\("contacts"\)\.select\(STORED_SIGNAL_CONTACT_COLUMNS\)\.eq\("id", a\.contactId\)\.eq\("brokerage_id", a\.brokerageId\)/.test(arbSrc))
+  }
+
+  console.log("\n── 8f. LEADERSHIP: format ≠ channel; direct mail and ads where the ontology fits ──")
+  {
+    const none: import("../lib/content-intel/market-leadership").LeadershipSignals = { aiVisibility: null, competitorMoves: [], mentions: null, ownPerformance: [], localEvents: [], blindSpots: [] }
+    const vis = { queriesChecked: 20, queriesCited: 4, queriesNotChecked: 0, citationRatePct: 20, shareOfVoicePct: 20, ourCitations: 4, competitorCitations: 12, topCompetitors: [{ name: "Rival", citations: 12, sharePct: 60 }], reason: null }
+    const all = lead.rankLeadershipOpportunities({ ...none, aiVisibility: vis as never, competitorMoves: [{ competitor: "A", platform: "x", topics: ["t"], hook: null, engagement: 1 }], mentions: { total: 4, negative: 2, negativeTopics: [{ topic: "price", count: 2 }] }, ownPerformance: [{ assetType: "blog", topic: "T", performance: 30 }], localEvents: [{ title: "Downtown Farmers Market", sourceUrl: null }] })
+    const keys = new Set(CAMPAIGN_CHANNELS.map((x) => x.key as string))
+    check("every opportunity names its CHANNELS from the campaign taxonomy and its FORMATS separately — the two vocabularies never overlap", all.length === 5 && all.every((o) => o.channels.length > 0 && o.channels.every((x) => keys.has(x)) && o.formats.every((f) => !keys.has(f))))
+    const of = (k: string) => all.find((o) => o.kind === k)!
+    check("DIRECT MAIL where a physical community piece fits (the local-event guide, the proven topic) — as a POSTCARD, with the CASS / opt-out / approval gate in the brief",
+      of("local_event").channels.includes("direct_mail") && of("local_event").formats.includes("postcard") && of("double_down").channels.includes("direct_mail") && /CASS/.test(of("local_event").brief))
+    check("ADS where paid reach serves the evidence (an AI-search / competitor visibility gap) — an ad creative, with the housing special-ad-category + human approval in the brief, never a launch",
+      of("ai_search_gap").channels.includes("ads") && of("ai_search_gap").formats.includes("ad_creative") && /special-ad-category/.test(of("ai_search_gap").brief) && /never a launch/.test(of("competitor_gap").brief))
+    check("(control) a reputation theme gets neither ads nor mail — answering a complaint is not a paid or printed play", !of("reputation_theme").channels.includes("ads") && !of("reputation_theme").channels.includes("direct_mail"))
+    check("the planner's kickoff renders both lists, labelled", /make: .* · via: /.test(lead.renderLeadershipBriefForKickoff(none, all)))
+    check("the old 'format' union that was really a channel list is gone from the stripped source", !/"blog"\s*\|\s*"social"\s*\|\s*"newsletter"\s*\|\s*"video"\s*\|\s*"podcast"/.test(src("lib/content-intel/market-leadership.ts")))
+  }
+
+  console.log("\n── 8g. THE ONE FIXED SEND: the welcome goes now; the video FOLLOWS once (ruling 13) ──")
+  {
+    const wav = await import("../lib/contact-promotion/welcome-avatar-video")
+    const cw = await import("../lib/contact-promotion/conversion-welcome")
+    check("the welcome is NEVER held for a render: a render in flight now means 'send now, the video follows'",
+      cw.decideWelcomeTiming({ commissioned: true, reason: "commissioned" }).action === "send_now_video_follows" && cw.decideWelcomeTiming({ commissioned: false, reason: "agent_not_video_ready" }).action === "send_now")
+    const body = src("lib/contact-promotion/conversion-welcome.ts")
+    const entry = body.slice(body.indexOf("export async function deliverConversionWelcome"))
+    const followsAt = entry.indexOf('if (timing.action === "send_now_video_follows")')
+    const block = entry.slice(followsAt, entry.indexOf("ensureClientWelcome"))
+    check("the conversion entry point sends the welcome whatever the timing — the video-follows branch has no early return before the send", followsAt > -1 && block.length > 50 && !/return\b/.test(block) && entry.indexOf("ensureClientWelcome") > entry.indexOf("decideWelcomeTiming("))
+    check("(control) the early-return finder sees the pre-144 shape", /return\b/.test('if (timing.action === "wait_for_video") { warnings.push("x"); return out }'))
+    const sends: Array<Record<string, any>> = []
+    const svc = memSupabase({
+      contacts: [{ id: "c1", brokerage_id: B, first_name: "Pat", email: "pat@example.test", email_opt_out: false, email_unsubscribed: false, contact_type: "buyer", agent_id: "ag1", video_opt_out: false },
+        { id: "c2", brokerage_id: B, first_name: "Sam", email: "sam@example.test", email_opt_out: true, email_unsubscribed: false, contact_type: "buyer", agent_id: "ag1", video_opt_out: false }],
+      agents: [{ id: "ag1", brokerage_id: B, user_id: "u1" }],
+      agent_client_messages: [{ id: "m1", brokerage_id: B, recipient_contact_id: "c1", rationale: "client_welcome_v1 — buyer", status: "sent" }, { id: "m2", brokerage_id: B, recipient_contact_id: "c2", rationale: "client_welcome_v1 — buyer", status: "proposed" }],
+    })
+    const note = async () => ({ subject: "Your video from Alex", body: "Hi Pat — I recorded a quick personal video for you. Reply with any question.", generated: true })
+    const ok = await wav.deliverWelcomeVideoFollowUp(svc, { contactId: "c1", brokerageId: B, videoUrl: "https://cdn.example.test/v.mp4", videoProjectId: "vp1" }, { message: note, dispatchEmail: async (p) => { sends.push(p); return { success: true, messageId: "e1" } } })
+    check("FOLLOW-UP: ONE email through the governed dispatcher, the video embedded, from the agent (users.id via agents.user_id), the OWNING welcome manager's posture, the once-per-contact ledger cycle",
+      ok.state === "sent" && sends.length === 1 && String(sends[0].html).includes("https://cdn.example.test/v.mp4") && sends[0].userId === "u1" && sends[0].managerKey === "shopping_agent" && sends[0].ledger?.cycle === "welcome_video_follow_up" && sends[0].ledger?.reasonCode === "CONTACT_WELCOME")
+    const n0 = sends.length
+    const unwritten = await wav.deliverWelcomeVideoFollowUp(svc, { contactId: "c1", brokerageId: B, videoUrl: "https://cdn.example.test/v.mp4" }, { message: async () => ({ subject: "x", body: "y", generated: false }), dispatchEmail: async (p) => { sends.push(p); return { success: true } } })
+    check("an UNWRITTEN note is retried, never replaced by the neutral fallback", unwritten.state === "retry" && sends.length === n0)
+    const optedOut = await wav.deliverWelcomeVideoFollowUp(svc, { contactId: "c2", brokerageId: B, videoUrl: "https://cdn.example.test/v.mp4" }, { message: note, dispatchEmail: async (p) => { sends.push(p); return { success: true } } })
+    const foreign = await wav.deliverWelcomeVideoFollowUp(svc, { contactId: "c1", brokerageId: "OTHER", videoUrl: "https://cdn.example.test/v.mp4" }, { message: note, dispatchEmail: async (p) => { sends.push(p); return { success: true } } })
+    check("an email opt-out and another tenant's contact are REFUSED — nothing sent", optedOut.state === "refused" && foreign.state === "refused" && sends.length === n0)
+    const held = await wav.deliverWelcomeVideoFollowUp(svc, { contactId: "c1", brokerageId: B, videoUrl: "https://cdn.example.test/v.mp4" }, { message: note, dispatchEmail: async () => ({ success: false, providerKey: "autonomy_gate", error: "held" }) })
+    check("the owning manager's posture can HOLD it for approval (held, not failed)", held.state === "held")
+    const st = await Promise.all([wav.readWelcomeState(svc, { contactId: "c1", brokerageId: B }), wav.readWelcomeState(svc, { contactId: "c2", brokerageId: B }), wav.readWelcomeState(svc, { contactId: "c9", brokerageId: B }), wav.readWelcomeState(memSupabase({}, { refuse: { agent_client_messages: "RLS" } } as never), { contactId: "c1", brokerageId: B })])
+    check("the welcome's own state comes from the survivor's tag: sent / held / none — and a REFUSED read is null (the sweeper then waits, stamps nothing)", st[0] === "sent" && st[1] === "held" && st[2] === "none" && st[3] === null, st.join(","))
+    const cronRaw = src("app/api/cron/intro-video-email-backfill/route.ts")
+    check("WIRED (the sweeper): it reads the welcome's state BEFORE classifying, passes it, sends the follow-up on send_video_follow_up, and stamps 'delivered' only on a provider accept",
+      cronRaw.indexOf("readWelcomeState(svc") > -1 && cronRaw.indexOf("readWelcomeState(svc") < cronRaw.indexOf("classifyPendingWelcome({") && /welcomeState,/.test(cronRaw)
+      && /verdict\.action === "send_video_follow_up"[\s\S]{0,200}deliverWelcomeVideoFollowUp\(svc/.test(cronRaw) && /fu\.state === "sent" \? "delivered" : "failed"/.test(cronRaw))
+    check("(control) the sweeper finder rejects a sweep that never reads the state", !/readWelcomeState\(svc/.test("const verdict = classifyPendingWelcome({ status })"))
+  }
+
+  console.log("\n── 8h. EDUCATION: the person's preference leads; a band never excludes the rail they asked for ──")
+  {
+    const { pickEducationChannel } = await import("../lib/agents/education-delivery-producer")
+    const consent = { tcpa_consent: true, dnc_status: false }
+    const prefSms = pickEducationChannel({ ageSegment: "50-65", moduleChannels: ["article"], consent, preferredChannel: "sms" })
+    check("a 50-65 client who PREFERS texts gets the lesson by text (the band's default order has no SMS — before wave 144 this fell to the portal)", prefSms.channel === "sms", JSON.stringify(prefSms))
+    check("(control) with no stated preference the band's DEFAULT still orders the rails (email first for 50-65)", pickEducationChannel({ ageSegment: "50-65", moduleChannels: ["article"], consent, preferredChannel: null }).channel === "email")
+    check("a stated FORMAT beats the band's adaptation (prefers video → video)", pickEducationChannel({ ageSegment: "65+", moduleChannels: ["article"], consent, preferredChannel: "video" }).preferredFormat === "video")
+    check("consent still decides: a text preference without TCPA consent never texts", pickEducationChannel({ ageSegment: "50-65", moduleChannels: ["article"], consent: { tcpa_consent: false }, preferredChannel: "sms" }).channel !== "sms")
   }
 }
 

@@ -341,3 +341,123 @@ export async function ensureWelcomeAvatarVideo(
     return out
   }
 }
+
+// ─── WAVE 144: THE VIDEO FOLLOWS THE WELCOME (owner ruling 13) ───────────────
+
+export type WelcomeVideoFollowUpState =
+  /** A provider accepted the follow-up. */
+  | "sent"
+  /** The owning manager's posture holds it for approval (it is in the approval queue — not a refusal). */
+  | "held"
+  /** The note could not be written / the gate deferred it — try again on the sweeper's next tick (inside the deadline). */
+  | "retry"
+  /** Not sendable (no email, opted out, foreign contact, no owning manager, the gate refused) — said, never pretended. */
+  | "refused"
+
+export interface WelcomeVideoFollowUpResult {
+  state: WelcomeVideoFollowUpState
+  reason: string
+  messageId?: string | null
+}
+
+const escAttr = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+const escText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+
+/**
+ * THE ONE FOLLOW-UP THAT CARRIES THE AGENT'S PERSONAL VIDEO, sent after the welcome already went (wave 144: "dispatch the
+ * immediately available welcome and follow with the video when the real asset is ready"). Called by the welcome sweeper
+ * (/api/cron/intro-video-email-backfill) for a `send_video_follow_up` verdict — never at conversion.
+ *
+ * NO SECOND RAIL. The note is written by THE client-message writer (lib/agents/generate-client-message.ts — compliance redraft,
+ * brand voice, no figures) and travels through THE governed dispatcher (dispatchEmail: consent, suppression, de-confliction,
+ * the OWNING welcome manager's autonomy posture, the budget pre-flight) from the assigned agent's own sender, with the video
+ * embedded by THE embed helper the welcome itself uses (lib/ai-isa/video-generator.ts embedVideoInEmail). The writer's neutral
+ * fallback is NEVER sent: an unwritten note is `retry`.
+ *
+ * ONCE, EVER: the dispatcher's action-ledger cycle `welcome_video_follow_up` (one per contact) replays a retried tick instead of
+ * mailing twice; the sweeper stamps the agent_intro_videos row terminal only on a provider accept. NEVER THROWS.
+ * @proofSeam the caller is /api/cron/intro-video-email-backfill (wave 144 Outside-lane note); scripts/conversion-welcome-simulator.ts drives every arm with recorder seams.
+ */
+export async function deliverWelcomeVideoFollowUp(
+  svc: { from: (t: string) => any },
+  p: { contactId: string; brokerageId: string; agentId?: string | null; videoUrl: string; videoProjectId?: string | null; posterUrl?: string | null },
+  deps: {
+    message?: (brief: Record<string, unknown>) => Promise<{ subject: string; body: string; generated: boolean }>
+    dispatchEmail?: (params: Record<string, unknown>) => Promise<{ success: boolean; providerKey?: string; messageId?: string; error?: string }>
+  } = {},
+): Promise<WelcomeVideoFollowUpResult> {
+  try {
+    if (!p.contactId || !p.brokerageId || !p.videoUrl) return { state: "refused", reason: "missing contact, brokerage or video" }
+    const { data: c, error } = await svc.from("contacts")
+      .select("id, first_name, email, email_opt_out, email_unsubscribed, contact_type, agent_id, video_opt_out")
+      .eq("id", p.contactId).eq("brokerage_id", p.brokerageId).maybeSingle()
+    if (error) return { state: "retry", reason: `contact read refused: ${error.message}` }
+    if (!c) return { state: "refused", reason: "contact not in this brokerage" }
+    if (!c.email || c.email_opt_out || c.email_unsubscribed) return { state: "refused", reason: "no usable email (missing or opted out) — the video stays on the portal card" }
+    if (c.video_opt_out === true) return { state: "refused", reason: "the contact turned video off" }
+
+    const { resolveWelcomeManagers } = await import("@/lib/kernel/client-welcome")
+    const owningManager = resolveWelcomeManagers(c.contact_type)[0]
+    if (!owningManager) return { state: "refused", reason: `contact_type '${c.contact_type ?? "null"}' is picked up by no welcome manager` }
+
+    // agents.id → users.id only through agents.user_id (the two id spaces are disjoint).
+    const agentId = p.agentId ?? c.agent_id ?? null
+    let agentUserId: string | null = null
+    if (agentId) {
+      const { data: ag, error: agErr } = await svc.from("agents").select("user_id").eq("id", agentId).eq("brokerage_id", p.brokerageId).maybeSingle()
+      if (agErr) return { state: "retry", reason: `agent read refused: ${agErr.message}` }
+      agentUserId = (ag as { user_id?: string | null } | null)?.user_id ?? null
+    }
+
+    const write = deps.message ?? (async (b) => (await import("@/lib/agents/generate-client-message")).generateClientMessage(b as never))
+    const note = await write({
+      brokerageId: p.brokerageId, agentUserId, audience: c.contact_type === "seller" ? "seller" : "buyer", recipientFirstName: c.first_name ?? null,
+      purpose: "Two or three warm sentences that FOLLOW the client's welcome email: their agent recorded a short personal video for them — invite them to watch it below and to reply with any question. No sales pitch, no figures, no promises.",
+      fallback: { subject: "A personal video from your agent", body: "I recorded a short video for you — it is below." },
+    })
+    if (!note.generated || !note.body.trim()) return { state: "retry", reason: "the note could not be written (gateway / compliance redraft failed) — the neutral fallback is never sent" }
+
+    const { embedVideoInEmail } = await import("@/lib/ai-isa/video-generator")
+    const html = await embedVideoInEmail(`<p>${escText(note.body).replace(/\n/g, "<br>")}</p>[Video will be embedded here]`, escAttr(p.videoUrl), p.posterUrl ? escAttr(p.posterUrl) : null)
+    const send = deps.dispatchEmail ?? (async (params) => (await import("@/lib/providers/dispatch")).dispatchEmail(params as never))
+    const r = await send({
+      brokerageId: p.brokerageId, contactId: p.contactId, userId: agentUserId, agentId: agentId ?? undefined, sendAsAgentUserId: agentUserId,
+      to: c.email, subject: note.subject, html, text: `${note.body}\n\n${p.videoUrl}`,
+      channelPurpose: "conversation", systemSource: "client_welcome", managerKey: owningManager,
+      ledger: { reasonCode: "CONTACT_WELCOME", cycle: "welcome_video_follow_up", reasonDetail: "the personal welcome video, following the welcome (wave 144)" },
+      metadata: { welcome_video_follow_up: true, welcome_video_project_id: p.videoProjectId ?? null },
+    })
+    if (r.success) return { state: "sent", reason: "the personal video followed the welcome", messageId: r.messageId ?? null }
+    if (r.providerKey === "autonomy_gate") return { state: "held", reason: r.error ?? "held for approval" }
+    if (r.providerKey && /deconflict/i.test(r.providerKey)) return { state: "retry", reason: r.error ?? "deferred by de-confliction" }
+    return { state: "refused", reason: r.error ?? "the send gate refused" }
+  } catch (e) {
+    return { state: "retry", reason: `threw: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
+// ─── WAVE 144: THE WELCOME'S OWN STATE, FOR THE SWEEPER ──────────────────────
+
+/**
+ * Has this contact's ONE welcome gone out? Read from the survivor's own idempotency tag
+ * (agent_client_messages.rationale `client_welcome_v1…`, lib/kernel/client-welcome.ts WELCOME_RATIONALE_TAG) — the
+ * same row ensureClientWelcome dedupes on, so the sweeper and the composer can never disagree about "already welcomed".
+ * Tenant-pinned (a service client: the brokerage on the query is the only pin). A REFUSED read returns null, and
+ * classifyPendingWelcome then waits and stamps nothing (fail closed — supabase-js resolves a refusal).
+ * @proofSeam the caller is /api/cron/intro-video-email-backfill (wave 144 Outside-lane note in $S/lane144F-notes.md: the sweeper passes this state to classifyPendingWelcome and sends deliverWelcomeVideoFollowUp on `send_video_follow_up`); scripts/conversion-welcome-simulator.ts drives every state.
+ */
+export async function readWelcomeState(
+  svc: { from: (t: string) => any },
+  a: { contactId: string; brokerageId: string },
+): Promise<import("./conversion-welcome").WelcomeMessageState | null> {
+  if (!a.contactId || !a.brokerageId) return null
+  const { WELCOME_RATIONALE_TAG } = await import("@/lib/kernel/client-welcome")
+  const { data, error } = await svc.from("agent_client_messages").select("id, status")
+    .eq("brokerage_id", a.brokerageId).eq("recipient_contact_id", a.contactId).ilike("rationale", `${WELCOME_RATIONALE_TAG}%`).limit(5)
+  if (error) return null
+  const rows = (data ?? []) as Array<{ status: string | null }>
+  if (rows.length === 0) return "none"
+  if (rows.some((r) => r.status === "sent")) return "sent"
+  if (rows.some((r) => r.status === "proposed" || r.status === "approved")) return "held"
+  return "failed"
+}

@@ -39,7 +39,9 @@ async function readTeamCapLedger(
   teamId: string,
   context: WaterfallContext,
 ): Promise<TeamCapLedger | null> {
-  const today = new Date().toISOString().slice(0, 10)
+  // WAVE 144 (lane 144D, owner ruling 9): the window is the one containing the DEAL's date (stage 01's agreement as-of),
+  // not today — a deal closed in last cycle and calculated after the team's anniversary belongs to last cycle.
+  const today = context.agreement?.asOf ?? new Date().toISOString().slice(0, 10)
   const { data, error } = await supabase
     .from('team_cap_tracking')
     // Explicit columns — never select("*"): a column that vanishes should break

@@ -38,6 +38,9 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+// Lane 144D's concession vocabulary (lib/commission/agent-concession.ts, m850) — TYPES only, so a renamed status or treatment
+// breaks the build here instead of silently matching nothing (CLAUDE.md §6).
+import type { AgentConcessionApprovalStatus, ConcessionSettlementTreatment } from "@/lib/commission/agent-concession"
 import { isValidUUID } from "@/lib/validations"
 import { auditTransactionDocuments } from "@/lib/compliance/required-documents"
 import { documentClassificationLabel } from "@/lib/compliance/required-documents"
@@ -217,33 +220,30 @@ function offerInstrument(o: Record<string, any>, isAccepted: boolean, label: str
 
 async function loadOfferInstruments(svc: Svc, tx: TransactionRow): Promise<{ ok: true; instruments: TermsInstrument[]; chainIds: string[] } | { ok: false; error: string }> {
   if (!tx.offer_id || !isValidUUID(tx.offer_id)) return { ok: true, instruments: [], chainIds: [] }
-  const { data: accepted, error: accErr } = await svc
-    .from("offers")
-    .select("id, parent_offer_id, brokerage_id")
-    .eq("id", tx.offer_id)
-    .eq("brokerage_id", tx.brokerage_id)
-    .maybeSingle()
-  if (accErr) return { ok: false, error: `the transaction's offer could not be read: ${accErr.message}` }
-  if (!accepted) return { ok: true, instruments: [], chainIds: [] }
-  const rootId = ((accepted as { parent_offer_id: string | null }).parent_offer_id ?? tx.offer_id) as string
-  if (!isValidUUID(rootId)) return { ok: true, instruments: [], chainIds: [] }
-  const { data: chain, error: chainErr } = await svc
-    .from("offers")
-    .select(OFFER_COLUMNS)
-    .eq("brokerage_id", tx.brokerage_id)
-    .or(`id.eq.${rootId},parent_offer_id.eq.${rootId}`)
-    .order("current_round", { ascending: true })
-  if (chainErr) return { ok: false, error: `the offer / counter chain could not be read: ${chainErr.message}` }
-  const rows = (chain ?? []) as Array<Record<string, any>>
-  // The offer the transaction was created from is executed by definition (the creation gate refuses an offer
-  // that is not fully executed). Every EARLIER round is the paper that executed counter restates and
-  // incorporates: a term the counter does not change is the earlier round's term, so those rounds are
-  // applied as the lower-precedence baseline rather than dropped as "unexecuted".
-  const acceptedIdx = rows.findIndex((o) => o.id === tx.offer_id)
-  const instruments = rows.map((o, i) => {
-    const incorporated = acceptedIdx >= 0 && i < acceptedIdx
+  // THE WHOLE CHAIN, THROUGH THE ONE CHAIN WALK (wave 144, lane 144C — owner ruling 2). This used to read the accepted row's
+  // PARENT as "the root" and then only that root's direct children — so a round-3 counter lost the original offer (its parent is
+  // round 2, not the root) — and it marked EVERY row sorted before the accepted one as "incorporated", which made a REJECTED or
+  // never-accepted sibling counter an executed baseline whose terms could govern a term the accepted counter does not restate.
+  // "Unaccepted counters never become terms … the authoritative terms come from the actually accepted sequence, not the latest
+  // draft." Now: the chain is read root-to-leaves at any depth (lib/offers/governing-terms.ts loadOfferChainRows), and only the
+  // instruments the accepted row INCORPORATES (lib/offers/governing-terms-rule.ts sequenceThrough — its path from the root minus
+  // void ancestors, the same reading the terms record uses) are executed. Every other row is kept and shown, never terms.
+  const { loadOfferChainRows } = await import("@/lib/offers/governing-terms")
+  const { sequenceThrough } = await import("@/lib/offers/governing-terms-rule")
+  const chain = await loadOfferChainRows(svc as any, String(tx.brokerage_id ?? ""), tx.offer_id, OFFER_COLUMNS.split(",").map((c) => c.trim()))
+  if (!chain.ok) return { ok: false, error: `the offer / counter chain could not be read: ${chain.reason}` }
+  if (chain.rows.length === 0) return { ok: true, instruments: [], chainIds: [] }
+  const rows = ([...chain.rows] as Array<Record<string, any>>).sort((a, b) =>
+    (Number(a.current_round ?? 1) - Number(b.current_round ?? 1)) || String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")))
+  // The offer the transaction was created from is executed by definition (the creation gate refuses an offer that is not fully
+  // executed); the instruments it incorporates are the lower-precedence baseline under it.
+  const incorporates = new Set(sequenceThrough(chain.rows, tx.offer_id) ?? [tx.offer_id])
+  const instruments = rows.map((o) => {
+    const accepted = o.id === tx.offer_id
+    const incorporated = !accepted && incorporates.has(String(o.id))
     const base = o.parent_offer_id ? `counter, round ${o.current_round ?? "?"}` : "original offer"
-    return offerInstrument(o, o.id === tx.offer_id || incorporated, incorporated ? `${base} (incorporated by the executed counter)` : `${base}${o.id === tx.offer_id ? " (accepted)" : ""}`)
+    const label = accepted ? `${base} (accepted)` : incorporated ? `${base} (incorporated by the executed counter)` : `${base} (not part of the accepted sequence — kept, never governs)`
+    return offerInstrument(o, accepted || incorporated, label)
   })
   return { ok: true, instruments, chainIds: rows.map((o) => String(o.id)) }
 }
@@ -306,6 +306,43 @@ async function loadListingSideInstrument(svc: Svc, tx: TransactionRow): Promise<
   } }
 }
 
+/**
+ * THE APPROVED AGENT CONCESSIONS on the deal (wave 144, lane 144C — handed over by lane 144D Outside-lane 5; owner ruling 4: an agent
+ * concession is a credit the AGENT gives, subtracted from THAT agent's gross commission, approved by the broker where the brokerage
+ * requires it). Read from lane 144D's ONE record — commission_adjustments (applies_to 'gross', direction 'credit', m850's
+ * settlement_treatment / approval_status) — and stated as ONE instrument carrying the governing `agent_credit`: the sum of the
+ * ACTIVE, broker-APPROVED (or no-approval-required) FLAT credits to the BUYER that settle as a closing-statement credit. Never the
+ * seller credit; never a requested, denied or withdrawn concession (a statement showing one is a finding, not a match).
+ * A PERCENT concession's dollar figure is the commission engine's (it depends on the gross), so it is not restated here: when one
+ * exists the term is NOT stated at all rather than half-stated (a partial sum would accuse a correct statement). A refused read
+ * is an error (fail closed), never "no concessions".
+ */
+const CONCESSION_APPLIES: ReadonlySet<AgentConcessionApprovalStatus> = new Set<AgentConcessionApprovalStatus>(["approved", "not_required"])
+const STATEMENT_CREDIT: ConcessionSettlementTreatment = "closing_statement_credit"
+async function loadApprovedAgentConcessionInstrument(svc: Svc, tx: TransactionRow): Promise<{ ok: true; instrument: TermsInstrument | null } | { ok: false; error: string }> {
+  const { data, error } = await svc
+    .from("commission_adjustments")
+    .select("*")
+    .eq("brokerage_id", tx.brokerage_id)
+    .eq("transaction_id", tx.id)
+    .eq("applies_to", "gross")
+    .eq("direction", "credit")
+  if (error) return { ok: false, error: `the deal's agent concessions could not be read: ${error.message}` }
+  const credits = ((data ?? []) as Array<Record<string, any>>).filter((r) =>
+    r.is_active !== false && r.settlement_treatment === STATEMENT_CREDIT && r.recipient_type === "buyer"
+    && CONCESSION_APPLIES.has(String(r.approval_status ?? "not_required") as AgentConcessionApprovalStatus))
+  if (credits.length === 0) return { ok: true, instrument: null }
+  if (credits.some((r) => r.value_type !== "flat")) return { ok: true, instrument: null }
+  const total = Math.round(credits.reduce((s, r) => s + Number(r.value ?? 0), 0) * 100) / 100
+  if (!(total > 0)) return { ok: true, instrument: null }
+  const decided = credits.map((r) => (r.approval_decided_at as string | null) ?? null).filter((d): d is string => !!d).sort()
+  return { ok: true, instrument: {
+    id: `concessions:${tx.id}`, kind: "approved_concession", label: "approved agent concession(s) — credit to the buyer off the agent's gross commission",
+    executed: true, executedAt: decided.length ? decided[decided.length - 1] : null, round: null,
+    terms: { agent_credit: { unit: "usd", value: total, confidence: "record", source: `commission_adjustments ${credits.map((r) => r.id).join(", ")} (broker-approved agent concession)` } },
+  } }
+}
+
 /** DEFAULT READER — superimposes the offer chain, the executed documents and the listing-side commission. */
 /** lane A's term key → this file's closing term (+ unit). Both spellings of a usd amount are admitted; the first hit wins. */
 const RECORD_KEY_MAP: ReadonlyArray<readonly [string, ClosingTermKey, "usd" | "pct" | "date" | "party"]> = [
@@ -361,8 +398,12 @@ const readGoverningTermsFromRecords: GoverningTermsReader = async (svc, tx) => {
   const listing = await loadListingSideInstrument(svc, tx)
   if (!listing.ok) return listing
 
+  const concessions = await loadApprovedAgentConcessionInstrument(svc, tx)
+  if (!concessions.ok) return concessions
+
   const instruments: TermsInstrument[] = [...offers.instruments, ...docs.instruments]
   if (listing.instrument) instruments.push(listing.instrument)
+  if (concessions.instrument) instruments.push(concessions.instrument)
   // Wave 143 integration (one canonical path, CLAUDE.md law 2): lane A's VERSIONED record — contract_term_versions
   // plus the offer chain (lib/offers/governing-terms.ts governingContractTerms) — is the authoritative terms record;
   // an executed counter / addendum recorded there supersedes what the instruments above say. It rides in as ONE

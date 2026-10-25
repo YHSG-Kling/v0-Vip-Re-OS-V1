@@ -208,6 +208,35 @@ export async function promoteLeadToContactService(
       warnings.push(`promotion activity NOT logged: ${promotionLog.error ?? "unknown error"}`)
     }
 
+    // Step 7b: THE CONVERSION IS AN EVENT ON EVERY DOOR (wave 144, lane 144B). The other two lead → contact doors
+    // record the fact as KernelEvent.LEAD_CONVERTED_TO_CONTACT — lib/kernel/crm.ts convertLeadToContact (audit row)
+    // and lib/kernel/lead-acquisition-handlers.ts handleLeadAssigned (row + fan-out). This door — the one the AI ISA's
+    // booking path (lib/ai-isa/book-seller-appointment.ts) and the qualified-lead desk use — wrote none, so the tenant's
+    // `lead.converted` webhook (lib/platform/tenant-webhooks-core.ts), the journey-conformance audit and every
+    // lifecycle_events reader missed its conversions. Same shape as the CRM door: auditOnly (the welcome is delivered
+    // IN-PROCESS below — a fan-out here would not add one, and must not), keyed per lead so a retry cannot double it.
+    // Best effort: the contact exists; a lost row is ledgered by the sentinel, never a rollback.
+    {
+      const contactId = contactResult.contactId
+      const brokerageForEvent = promotionBrokerageId
+      if (brokerageForEvent) {
+        const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+        const { KernelEvent } = await import("@/lib/kernel/events")
+        await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+          entityType:  "lead",
+          entityId:    leadId,
+          event:       KernelEvent.LEAD_CONVERTED_TO_CONTACT,
+          brokerageId: brokerageForEvent,
+          metadata:    { contact_id: contactId, via: "promote_lead_to_contact" },
+          dedupeKey:   `lead_converted:${leadId}`,
+          dedupeWindowSec: 7 * 86_400,
+          auditOnly:   true,
+        }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", brokerageId: brokerageForEvent, reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client), never silently dropped" })
+      } else {
+        warnings.push("LEAD_CONVERTED_TO_CONTACT not recorded: the lead carries no brokerage_id")
+      }
+    }
+
     // Step 8: THE WELCOME — PORTAL ACCESS, THE PERSONAL VIDEO, AND THE ONE EMAIL.
     //
     // OWNER RULING: "the welcome email is the first on conversion that has the

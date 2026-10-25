@@ -23,6 +23,9 @@ const TERM_LABELS: Record<string, string> = {
   referral_value: "Referral term",
   residual_value: "Residual term",
   royalty_value: "Royalty term",
+  // Wave 144 (144D, owner ruling 9): the cap cycle and what counts toward it come from the agreement (m850).
+  cap_anniversary_date: "Cap anniversary",
+  cap_eligible_contributions: "Counts toward the cap",
   structure_type: "Structure",
   is_active: "Active",
 }

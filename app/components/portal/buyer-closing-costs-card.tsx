@@ -85,14 +85,14 @@ export function BuyerClosingCostsCard({ contactId, transactionId }: { contactId:
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
           >
             <Sparkles className="h-3 w-3" />
-            {refining ? "Sharpening…" : "Sharpen this estimate with AI"}
+            {refining ? "Explaining…" : "Explain this estimate with AI"}
           </button>
         )}
       </div>
       {est.aiRefined && est.aiRefineSummary && (
         <p className="mt-2 text-xs text-muted-foreground">
           <Sparkles className="mr-1 inline h-3 w-3" />
-          AI accuracy pass (bounded by the regional model): {est.aiRefineSummary}
+          AI explanation (the figures are the regional model&apos;s; your lender&apos;s Loan Estimate is the authority): {est.aiRefineSummary}
         </p>
       )}
       {open && (

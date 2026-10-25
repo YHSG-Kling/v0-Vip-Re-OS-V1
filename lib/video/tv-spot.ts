@@ -134,6 +134,31 @@ export function evaluateTvSpot(f: TvSpotFacts, spec: typeof TV_SPOT_SPEC = TV_SP
   return { ready: failed.length === 0, checks, failed, warnings, specVersion: spec.version }
 }
 
+// ── The recorded result (ai_video_projects.video_metadata.tv_spot) ─────────────────────────────────
+// Moved here from lib/video/tv-spot-produce.ts (wave 144, lane 144H) so the BROADCAST side — lib/ads/ctv-campaign.ts, the
+// streaming-TV provider path — reads the judge's verdict without loading ffmpeg; tv-spot-produce.ts re-exports both
+// unchanged. No behaviour changed.
+
+export interface TvSpotRecord {
+  url: string
+  spec_version: string
+  ready: boolean
+  checks: Array<{ id: string; ok: boolean; required: string; measured: string }>
+  warnings: string[]
+  mastered_at: string
+  trim_db: number | null
+  captions: { timing: "alignment" | "even" | "none"; srt: string; vtt: string }
+  authority: string
+}
+
+/** The recorded TV result on a project's video_metadata (null when none). PURE. */
+export function tvSpotOf(videoMetadata: unknown): TvSpotRecord | null {
+  const t = (videoMetadata as { tv_spot?: unknown } | null | undefined)?.tv_spot
+  if (!t || typeof t !== "object") return null
+  const r = t as Partial<TvSpotRecord>
+  return typeof r.url === "string" && typeof r.ready === "boolean" && Array.isArray(r.checks) ? (r as TvSpotRecord) : null
+}
+
 // ── Captions as a sidecar ────────────────────────────────────────────────────────────────────────
 
 function pad(n: number, w = 2): string { return String(Math.floor(n)).padStart(w, "0") }

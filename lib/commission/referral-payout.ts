@@ -19,17 +19,32 @@
 // vocabulary stage 03 uses for gross-level movements). One deal consumes one referral: referrals.transaction_id (m812) is
 // the link, set compare-and-swap by stage 11, so a referral can never pay on two closings.
 //
-// NOT BUILT, said plainly (never guessed): an EXTERNAL referral partner / outside brokerage fee. Who may lawfully receive
-// a referral fee varies by state and by licensure (RESPA §8 for settlement services; state real-estate licensing laws for
-// brokerage referral fees); that needs a counsel-approved recipient rule before any code pays a non-agent. Those referrals
-// (partner_id without referring_agent_id) are left untouched — they keep their existing thank-you / lifetime-value loop.
+// WAVE 144 (lane 144D, owner ruling 5, 2026-10-25): "Referral is to another agent — inside the brokerage, or outside it (an
+// outside agent/brokerage kept in the canonical PARTNER bucket). Linked to transaction, agreement and waterfall; correct payee
+// authorization; no double payment." The recipient rule the 143C note asked for is now the owner's: an OUTSIDE payee is a
+// real-estate agent / brokerage in referral_partners (partner_type 'real_estate_agent' — the one licensed-real-estate type in
+// lib/referrals/partner-vocabulary.ts). Every other partner type (lender, title, inspector, attorney, contractor, insurance,
+// property manager, other) is NEVER paid a referral fee here: a fee for referring settlement-service business is what RESPA
+// §8(a) prohibits (12 U.S.C. 2607; the cooperative-brokerage exception, 12 CFR 1024.14(g)(1)(v), covers payments between real
+// estate agents and brokers only) — VERIFIED FROM the mortgage-broker-mortgage-lending skill (RESPA: "prohibition on kickbacks
+// and referral fees") and the regulation it names. The fee is payable to the partner's BROKERAGE of record (company_name):
+// state license laws generally route a licensee's compensation through their own broker — the brokerage is the payee title is
+// told, the individual agent is named beside it; a partner with no brokerage of record HOLDS the final calculation (a human
+// records it) rather than paying an individual on a guess. State-by-state variation beyond that is a compliance review item
+// (lane notes, "Still open"), never invented here.
+//
+// THE FEE TERMS, in order (never fabricated): the referral record's own agreed percent (referrals.referral_fee_pct — the
+// agreement made for this referral), else the partner's standing percent (referral_partners.commission_split_percentage), else
+// the partner's standing flat fee (referral_partners.referral_fee_flat). None → no fee, a finding.
 
 export interface ReferralCandidate {
   id: string
   /** The RECEIVING agent (referrals.agent_id, NOT NULL). */
   agent_id?: string | null
-  /** The REFERRING agent — the payee. Null for an external partner / contact referral (not handled here). */
+  /** The REFERRING agent — the payee of an INSIDE referral. Null for an outside partner / contact referral. */
   referring_agent_id?: string | null
+  /** WAVE 144: the OUTSIDE referring party (referrals.partner_id → referral_partners). */
+  partner_id?: string | null
   referral_fee_pct?: unknown
   status?: string | null
   /** The deal this referral was consumed by (m812). undefined = the column is not applied yet. */
@@ -37,13 +52,72 @@ export interface ReferralCandidate {
   created_at?: string | null
 }
 
+/** A referral_partners row, as the payee rule reads it. */
+export interface PartnerCandidate {
+  id: string
+  partner_type?: string | null
+  partner_name?: string | null
+  company_name?: string | null
+  active?: boolean | null
+  agreement_end_date?: string | null
+  commission_split_percentage?: unknown
+  referral_fee_flat?: unknown
+}
+
+export type ReferralPayee =
+  | { kind: "agent"; agentId: string }
+  | { kind: "partner"; partnerId: string; brokerageName: string; agentName: string | null }
+
 export interface ReferralPick {
   referral: ReferralCandidate | null
-  /** The agreed percent (0 < pct <= 100) when a fee applies. */
+  /** The agreed percent (0 < pct <= 100) when a percent fee applies. */
   feePct: number | null
+  /** WAVE 144: the partner's standing FLAT fee in cents, when that is the agreed term (feePct is then null). */
+  feeFlatCents?: number | null
+  /** WAVE 144: who is paid — an inside agent, or an outside partner's brokerage. */
+  payee?: ReferralPayee | null
   /** True when the referral was already linked to THIS deal (a re-run) — nothing to link. */
   alreadyLinked: boolean
+  /** WAVE 144: a referral the deal owes but cannot lawfully / clearly pay yet — a FINAL calculation refuses by name. */
+  hold?: string | null
   findings: string[]
+}
+
+/** PURE — a positive flat fee in cents from a numeric column, or null (never fabricated). */
+function agreedFlatCents(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : null
+}
+
+/**
+ * PURE — may this outside partner be paid a referral fee on a deal dated `asOf`, and on what terms?
+ * Refusals are SKIPS with a finding (the partner keeps the thank-you / lifetime-value loop); a missing brokerage of record is
+ * a HOLD (the fee is owed, the payee is not yet authorizable). Module-private: reached through pickReferralForDeal.
+ */
+function partnerReferralTerms(
+  referral: ReferralCandidate,
+  partner: PartnerCandidate | null | undefined,
+  asOf: string,
+): { ok: true; feePct: number | null; feeFlatCents: number | null; payee: ReferralPayee; basis: string } | { ok: false; skip: string } | { ok: false; hold: string } {
+  if (!partner) return { ok: false, skip: `referral ${referral.id}: its partner (${referral.partner_id}) is not a partner of record in this brokerage — no fee` }
+  if (partner.active === false) return { ok: false, skip: `referral ${referral.id}: partner ${partner.id} is inactive — no fee` }
+  if (partner.partner_type !== "real_estate_agent") {
+    return { ok: false, skip: `referral ${referral.id}: partner ${partner.id} is a ${partner.partner_type ?? "partner of unknown type"} — a referral fee is paid only to a real-estate agent / brokerage (RESPA §8 forbids paying for settlement-service referrals); no fee` }
+  }
+  const end = typeof partner.agreement_end_date === "string" ? partner.agreement_end_date.slice(0, 10) : null
+  if (end && end < asOf) return { ok: false, skip: `referral ${referral.id}: partner ${partner.id}'s referral agreement ended ${end}, before the deal's date ${asOf} — no fee` }
+  const pct = agreedReferralPct(referral.referral_fee_pct) ?? agreedReferralPct(partner.commission_split_percentage)
+  const flat = pct === null ? agreedFlatCents(partner.referral_fee_flat) : null
+  if (pct === null && flat === null) {
+    return { ok: false, skip: `referral ${referral.id}: no agreed fee (the referral's percent, the partner's percent or flat fee) is recorded for partner ${partner.id} — no fee booked (never fabricated)` }
+  }
+  const brokerageName = String(partner.company_name ?? "").trim()
+  if (!brokerageName) {
+    return { ok: false, hold: `referral ${referral.id}: a fee is owed to outside partner ${partner.partner_name ?? partner.id}, but no brokerage of record is on the partner — the fee is payable broker-to-broker; record the partner's brokerage, then recalculate` }
+  }
+  const basis = agreedReferralPct(referral.referral_fee_pct) !== null ? "the referral's agreed percent" : pct !== null ? "the partner's standing percent" : "the partner's standing flat fee"
+  return { ok: true, feePct: pct, feeFlatCents: flat, payee: { kind: "partner", partnerId: partner.id, brokerageName, agentName: partner.partner_name ?? null }, basis }
 }
 
 /** PURE — the agreed fee percent from the referral record, or null when absent / out of range (never fabricated). */
@@ -70,33 +144,57 @@ export function referralFeeCents(baseCents: number, pct: number): number {
  */
 export function pickReferralForDeal(
   rows: ReadonlyArray<ReferralCandidate>,
-  ctx: { transactionId: string; producingAgentId: string },
+  ctx: {
+    transactionId: string
+    producingAgentId: string
+    /** WAVE 144: the deal's date (partner agreement windows are judged on it). Defaults to today. */
+    asOf?: string
+    /** WAVE 144: the referral_partners rows behind partner referrals (tenant-pinned by the caller). */
+    partners?: ReadonlyMap<string, PartnerCandidate>
+  },
 ): ReferralPick {
   const findings: string[] = []
-  const none = (): ReferralPick => ({ referral: null, feePct: null, alreadyLinked: false, findings })
-  const agentToAgent = rows.filter((r) => !!r.referring_agent_id)
-  const linked = agentToAgent
+  const none = (): ReferralPick => ({ referral: null, feePct: null, feeFlatCents: null, payee: null, alreadyLinked: false, hold: null, findings })
+  // ONE referral pays on ONE deal, inside or outside (no double payment): both kinds compete for the same slot.
+  const payable = rows.filter((r) => !!r.referring_agent_id || !!r.partner_id)
+  const linked = payable
     .filter((r) => r.transaction_id === ctx.transactionId)
     .sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")))
-  const unlinked = agentToAgent
+  const unlinked = payable
     .filter((r) => (r.transaction_id ?? null) === null && (r.status ?? "") !== "lost")
     .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))
   if (linked.length > 1) findings.push(`${linked.length} referrals are linked to this deal — the oldest (${linked[0].id}) applies; a finance admin should review the others`)
   const chosen = linked[0] ?? unlinked[0]
   if (!chosen) return none()
   const alreadyLinked = linked.length > 0
-  if (chosen.referring_agent_id === ctx.producingAgentId) {
-    findings.push(`referral ${chosen.id}: the referring agent is the producing agent — no fee`)
-    return none()
-  }
   if (chosen.agent_id && chosen.agent_id !== ctx.producingAgentId) {
     findings.push(`referral ${chosen.id}: assigned to a different receiving agent (${chosen.agent_id}) than the one closing (${ctx.producingAgentId}) — no fee booked until a human reassigns it`)
     return none()
   }
-  const pct = agreedReferralPct(chosen.referral_fee_pct)
-  if (pct === null) {
-    findings.push(`referral ${chosen.id}: no agreed fee percent (0–100) is recorded — no fee booked (never fabricated)`)
+
+  // INSIDE: an agent of this brokerage referred it.
+  if (chosen.referring_agent_id) {
+    if (chosen.referring_agent_id === ctx.producingAgentId) {
+      findings.push(`referral ${chosen.id}: the referring agent is the producing agent — no fee`)
+      return none()
+    }
+    const pct = agreedReferralPct(chosen.referral_fee_pct)
+    if (pct === null) {
+      findings.push(`referral ${chosen.id}: no agreed fee percent (0–100) is recorded — no fee booked (never fabricated)`)
+      return none()
+    }
+    return { referral: chosen, feePct: pct, feeFlatCents: null, payee: { kind: "agent", agentId: chosen.referring_agent_id }, alreadyLinked, hold: null, findings }
+  }
+
+  // OUTSIDE: a partner of record referred it (see the header for the payee rule).
+  const terms = partnerReferralTerms(chosen, ctx.partners?.get(String(chosen.partner_id)), ctx.asOf ?? new Date().toISOString().slice(0, 10))
+  if (!terms.ok) {
+    if ("hold" in terms) {
+      findings.push(terms.hold)
+      return { ...none(), referral: chosen, alreadyLinked, hold: terms.hold }
+    }
+    findings.push(terms.skip)
     return none()
   }
-  return { referral: chosen, feePct: pct, alreadyLinked, findings }
+  return { referral: chosen, feePct: terms.feePct, feeFlatCents: terms.feeFlatCents, payee: terms.payee, alreadyLinked, hold: null, findings: [...findings, `referral ${chosen.id}: outside partner fee on ${terms.basis}`] }
 }

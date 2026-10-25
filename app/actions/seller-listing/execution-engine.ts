@@ -1635,11 +1635,17 @@ export async function activateComingSoon(params: {
     return { success: false, error: "Only agent or team leader can activate coming soon" }
   }
 
+  // Gate (wave 144, lane 144B outside-lane item): the listing must actually be in the stage
+  // COMING_SOON_ACTIVE is entered from — a listing whose agreement never passed compliance could
+  // otherwise be announced as coming soon. Same pattern as the sibling transitions in this file.
+  const stageGate = await requireListingStage(supabase, listingId, "COMING_SOON_ACTIVE")
+  if (!stageGate.ok) return { success: false, error: stageGate.error }
+
   // Stage transition: COMING_SOON_PREP → COMING_SOON_ACTIVE
   const transitionResult = await transitionLifecycle({
     entityType:  "listing_stage_machine",
     entityId:    listingId,
-    fromState:   "COMING_SOON_PREP",
+    fromState:   stageGate.from,
     toState:     "COMING_SOON_ACTIVE",
     eventType:   KernelEvent.COMING_SOON_SENT,
     actorUserId: userId,

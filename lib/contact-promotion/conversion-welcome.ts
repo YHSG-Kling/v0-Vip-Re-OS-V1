@@ -113,6 +113,28 @@
  *
  * NEVER THROWS. The conversion tail is best-effort by construction: the contact
  * exists and the lead is deactivated before any of this runs.
+ *
+ * ── WAVE 144 (lane 144F) — THE WELCOME NO LONGER WAITS; THE VIDEO FOLLOWS ────
+ *
+ * OWNER RULING 13 (wave 144), which supersedes the 2026-08-25 "the email waits
+ * for the video" reading above for the TIMING (the one-welcome rule stands):
+ * "the moment a lead / new form input becomes a CONTACT, it gets its portal
+ * invitation (welcome email with a valid activation path, correct tenant/agent
+ * identity) plus the agent's personal welcome video when ready and authorized;
+ * dispatch the immediately available welcome and follow with the video when the
+ * real asset is ready; raw leads never get the portal invite; no duplicate
+ * invite/first-touch on retried events."
+ *
+ * So the welcome goes NOW, always — with the portal door, from the assigned
+ * agent — and a render in flight no longer holds it for up to two hours. When
+ * the real asset lands, the sweeper sends ONE short follow-up carrying it
+ * (lib/contact-promotion/welcome-avatar-video.ts deliverWelcomeVideoFollowUp),
+ * never a second welcome. `decideWelcomeTiming` now answers whether a video
+ * FOLLOWS; `classifyPendingWelcome` takes the welcome's own state so it can
+ * tell a row whose welcome already went (follow up with the video, or close it)
+ * from a pre-wave-144 row whose welcome is still held (release it as before).
+ * Live on 2026-10-25: agent_intro_videos = 0 rows, agent_voice_profiles = 0 —
+ * no held welcome exists to migrate.
  */
 
 import { COMPOSITE_WAIT_MS } from "@/lib/video/avatar-render-orchestrator"
@@ -138,8 +160,8 @@ export const WELCOME_VIDEO_WAIT_MS = COMPOSITE_WAIT_MS
 export type WelcomeTimingAction =
   /** Nothing is in flight and nothing will be. Send the welcome now, no video. */
   | "send_now"
-  /** A render exists. The sweeper releases the welcome when it lands or times out. */
-  | "wait_for_video"
+  /** Wave 144: a render is in flight. The welcome goes NOW; the sweeper sends the video as ONE follow-up when it lands. */
+  | "send_now_video_follows"
 
 export interface WelcomeTiming {
   action: WelcomeTimingAction
@@ -163,12 +185,12 @@ export function decideWelcomeTiming(video: {
   reason: WelcomeAvatarVideoReason | string
 }): WelcomeTiming {
   if (video.reason === "commissioned" && video.commissioned) {
-    return { action: "wait_for_video", reason: "a personal video render is in flight — the welcome waits for it" }
+    return { action: "send_now_video_follows", reason: "a personal video render is in flight — the welcome goes now and the video follows when the real asset lands" }
   }
   if (video.reason === "already_commissioned") {
     return {
-      action: "wait_for_video",
-      reason: "a personal video for this contact was already commissioned — the welcome waits for that one",
+      action: "send_now_video_follows",
+      reason: "a personal video for this contact was already commissioned — the welcome goes now and that video follows when it lands",
     }
   }
   if (video.reason === "video_opt_out") {
@@ -187,7 +209,7 @@ export function decideWelcomeTiming(video: {
   }
   return {
     action: "send_now",
-    reason: `no video render is in flight (${video.reason || "unknown"}) — waiting would be waiting forever`,
+    reason: `no video render is in flight (${video.reason || "unknown"}) — no video will follow`,
   }
 }
 
@@ -196,12 +218,26 @@ export function decideWelcomeTiming(video: {
 export type PendingWelcomeAction =
   /** The render is still coming and the deadline has not passed. Leave it. */
   | "wait"
-  /** Release the welcome WITH the finished video embedded. */
+  /** Release the welcome WITH the finished video embedded (a pre-wave-144 row whose welcome is still held). */
   | "send_with_video"
-  /** Release the welcome WITHOUT a video — it is not coming, or it ran out of time. */
+  /** Release the welcome WITHOUT a video — it is not coming, or it ran out of time (a held welcome). */
   | "send_without_video"
+  /** Wave 144: the welcome already went — send the ONE follow-up carrying the finished video. */
+  | "send_video_follow_up"
+  /** Wave 144: the welcome already went and the video will not follow (opt-out, no email, deadline) — stamp, send nothing. */
+  | "close_video_follow_up"
   /** Nothing to do: this ledger row is already terminal. */
   | "skip"
+
+/**
+ * Wave 144: the welcome's OWN state, read from the survivor's idempotency tag (agent_client_messages, rationale
+ * `client_welcome_v1…` — lib/kernel/client-welcome.ts WELCOME_RATIONALE_TAG):
+ *   sent    a provider accepted it → the video FOLLOWS it
+ *   held    proposed / approved, not yet sent → the video waits behind it (never precedes it)
+ *   failed  failed / rejected → no video mail without a welcome; the agent was told
+ *   none    no welcome row → a pre-144 row whose welcome is still held: release it as before
+ */
+export type WelcomeMessageState = "sent" | "held" | "failed" | "none"
 
 export interface PendingWelcomeVerdict {
   action: PendingWelcomeAction
@@ -246,6 +282,12 @@ export function classifyPendingWelcome(input: {
   hasRenderedUrl: boolean
   videoOptOut: boolean
   hasEmail: boolean
+  /**
+   * Wave 144: the welcome's own state (readWelcomeState). UNDEFINED / NULL — a caller that did not (or could not) say — WAITS and
+   * stamps nothing: under the immediate-welcome rule a released "send_with_video" against a welcome that already went would be
+   * deduped by the survivor and the row stamped 'delivered' for a video nobody sent. Fail closed: nobody checked ≠ checked and fine.
+   */
+  welcomeState?: WelcomeMessageState | null
   /** Override for the simulator. Production always uses WELCOME_VIDEO_WAIT_MS. */
   waitMs?: number
 }): PendingWelcomeVerdict {
@@ -257,6 +299,46 @@ export function classifyPendingWelcome(input: {
       ledgerStatus: null,
       reason: `agent_intro_videos.status '${input.status ?? "null"}' is terminal — this welcome already resolved`,
     }
+  }
+
+  if (input.welcomeState === undefined || input.welcomeState === null) {
+    // Past the deadline the row is CLOSED 'failed' (the video was never delivered — true whatever the welcome did), so nothing
+    // hangs even for a sweeper that never learns to say; a 'delivered' is never stamped without the state.
+    if (input.ageMs !== null && input.ageMs > waitMs) {
+      return { action: "close_video_follow_up", ledgerStatus: "failed", reason: `the personal video did not follow within ${Math.round(waitMs / 60000)} minutes and the welcome's state was not read — closed, never stamped delivered` }
+    }
+    return {
+      action: "wait",
+      ledgerStatus: null,
+      reason: "the welcome's own state was not read — nothing is released or stamped until the sweeper says whether the welcome already went (wave 144)",
+    }
+  }
+
+  // ── WAVE 144: THE WELCOME WENT FIRST; THE VIDEO FOLLOWS IT (or is closed) ──
+  if (input.welcomeState !== "none") {
+    const overdue144 = input.ageMs !== null && input.ageMs > waitMs
+    if (input.welcomeState === "failed") {
+      return { action: "close_video_follow_up", ledgerStatus: "failed", reason: "the welcome itself failed or was rejected (the agent was told) — a video never goes out without its welcome" }
+    }
+    if (input.welcomeState === "held") {
+      return overdue144
+        ? { action: "close_video_follow_up", ledgerStatus: "failed", reason: `the welcome is still awaiting approval past ${Math.round(waitMs / 60000)} minutes — the video stays on the portal card; no mail goes ahead of the welcome` }
+        : { action: "wait", ledgerStatus: null, reason: "the welcome is awaiting brokerage approval — the video follows it, never precedes it" }
+    }
+    if (!input.hasEmail) {
+      return { action: "close_video_follow_up", ledgerStatus: "failed", reason: "contact has no email — the video stays on the portal card; no follow-up mail" }
+    }
+    if (input.videoOptOut) {
+      return { action: "close_video_follow_up", ledgerStatus: "suppressed", reason: "the contact turned video off — the welcome already went; no video follows" }
+    }
+    if (overdue144) {
+      return { action: "close_video_follow_up", ledgerStatus: "failed", reason: `the personal video has not landed within ${Math.round(waitMs / 60000)} minutes of conversion — the welcome already went; no late video mail` }
+    }
+    if (input.composite === "pending") {
+      return { action: "wait", ledgerStatus: null, reason: "the Remotion assembly has not landed — mailing the bare avatar track is the defect it exists to fix" }
+    }
+    if (!input.hasRenderedUrl) return { action: "wait", ledgerStatus: null, reason: "the render is still in flight" }
+    return { action: "send_video_follow_up", ledgerStatus: "delivered", reason: "the finished personal video is ready — it follows the welcome as one short note" }
   }
 
   if (!input.hasEmail) {
@@ -435,20 +517,19 @@ export async function deliverConversionWelcome(
     return out
   }
 
-  if (timing.action === "wait_for_video") {
+  if (timing.action === "send_now_video_follows") {
+    // WAVE 144: the welcome is NOT held. What waits is only the VIDEO's follow-up — recorded once per conversion (the
+    // cycle) as the decision it is, so the Command Center can see a video is owed and by when. Never a send.
     warnings.push(
-      `the ${welcomeJourney} welcome email for contact ${params.contactId} (picked up by ` +
-        `${welcomeManagers.join(" + ")}) is WAITING for the personal video ` +
-        `(${timing.reason}). /api/cron/intro-video-email-backfill releases it when the render lands, ` +
-        `or without the video after ${Math.round(WELCOME_VIDEO_WAIT_MS / 60000)} minutes.`,
+      `the ${welcomeJourney} welcome email for contact ${params.contactId} goes NOW; the personal video FOLLOWS ` +
+        `(${timing.reason}). /api/cron/intro-video-email-backfill sends it as one follow-up when the render lands, ` +
+        `or closes it after ${Math.round(WELCOME_VIDEO_WAIT_MS / 60000)} minutes.`,
     )
-    // "WAIT" IS AN ACTION (wave 97, lib/kernel/action-ledger.ts): the automation decided not to
-    // send yet, and why — recorded once per conversion (the cycle), never a send.
     try {
       const { recordNonAction } = await import("@/lib/kernel/action-ledger")
       const rec = await recordNonAction({
         brokerageId: params.brokerageId,
-        domain: "welcome",
+        domain: "welcome_video",
         decision: "wait",
         actor: { type: "system" },
         subject: { type: "contact", id: params.contactId },
@@ -457,14 +538,13 @@ export async function deliverConversionWelcome(
         cycle: "conversion",
         until: new Date(Date.now() + WELCOME_VIDEO_WAIT_MS).toISOString(),
       })
-      if (!rec.recorded && rec.error) warnings.push(`welcome wait not ledgered: ${rec.error}`)
+      if (!rec.recorded && rec.error) warnings.push(`welcome video follow-up not ledgered: ${rec.error}`)
     } catch (e) {
-      warnings.push(`welcome wait not ledgered: ${(e as Error).message}`)
+      warnings.push(`welcome video follow-up not ledgered: ${(e as Error).message}`)
     }
-    return out
   }
 
-  // ── STEP 4: SEND IT NOW. ──────────────────────────────────────────────────
+  // ── STEP 4: SEND IT NOW — ALWAYS (wave 144). ──────────────────────────────
   // Dynamic import: client-welcome pulls the governed egress rail, and a static
   // import would drag it into every module graph reaching the converters —
   // including the plain `tsx` simulators. Same reason portal-access defers the
@@ -495,3 +575,4 @@ export async function deliverConversionWelcome(
 
   return out
 }
+

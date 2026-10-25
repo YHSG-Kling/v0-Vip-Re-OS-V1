@@ -120,8 +120,10 @@ export function sourceFromUrl(url: string): string {
   return "web"
 }
 
-/** Dedup key: scheme-less host + path, tracking params and fragment dropped. Null = not a web URL. */
-function normalizeMentionUrl(url: string | null | undefined): string | null {
+/** Dedup key: scheme-less host + path, tracking params and fragment dropped. Null = not a web URL.
+ *  Exported (wave 144, lane 144G): lib/content-intel/local-intel.ts keys its local facts with this
+ *  same rule — one URL-key spelling, not a second normalizer. */
+export function normalizeMentionUrl(url: string | null | undefined): string | null {
   const raw = clean(url)
   if (!/^https?:\/\//i.test(raw)) return null
   try {
@@ -716,15 +718,27 @@ export async function runBrandListeningPass(brokerageId: string, deps: BrandList
     // 4 — discussion topics → the existing content topic bank (idempotent per topic while fresh).
     const recentRows = afterRows.filter((r) => at(r) > now.getTime() - 7 * DAY_MS)
     const candidates = topicCounts(recentRows).filter((t) => t.mentions >= TOPIC_MIN_MENTIONS).slice(0, TOPICS_PER_PASS)
-    if (candidates.length) {
-      const { data: bank, error: bankErr } = await db.from("content_topic_bank").select("id, raw_data").eq("brokerage_id", brokerageId).gte("expires_at", now.toISOString())
+    // content_topic_bank.source_id is NOT NULL live (m128) — the insert below carried none and was
+    // refused on every live write. It now files under this tenant's own system source row
+    // (lib/content-intel/system-topic-source.ts); a tenant that switched that row off is not fed.
+    const { resolveSystemTopicSource } = await import("@/lib/content-intel/system-topic-source")
+    const topicSource = candidates.length ? await resolveSystemTopicSource(db, brokerageId, "brand_listening") : null
+    if (topicSource && !topicSource.ok) out.errors.push(`topic source unavailable — topics not fed: ${topicSource.error}`)
+    else if (topicSource && !topicSource.active) out.errors.push("topics not fed: the tenant switched the brand-listening topic source off")
+    if (candidates.length && topicSource?.ok && topicSource.active) {
+      const { data: bank, error: bankErr } = await db.from("content_topic_bank").select("id, raw_data, source_id, source_url").eq("brokerage_id", brokerageId).gte("expires_at", now.toISOString())
       if (bankErr) out.errors.push(`content_topic_bank read refused — topics not fed: ${bankErr.message ?? "unknown"}`)
       else {
-        const have = new Set(((bank ?? []) as Array<{ raw_data: Record<string, unknown> | null }>).map((r) => r.raw_data?.listening_topic_key).filter(Boolean))
+        const bankRows = (bank ?? []) as Array<{ raw_data: Record<string, unknown> | null; source_id: string | null; source_url: string | null }>
+        const have = new Set(bankRows.map((r) => r.raw_data?.listening_topic_key).filter(Boolean))
+        // (source_id, source_url) is UNIQUE (m128): two themes of one mention must not both claim its URL.
+        const urlsTaken = new Set(bankRows.filter((r) => r.source_id === topicSource.id && r.source_url).map((r) => r.source_url as string))
         for (const t of candidates) {
           if (have.has(t.topic)) continue
-          const urlOf = recentRows.find((r) => r.id === t.ids[0])?.url ?? null
+          const urlOf = t.ids.map((id) => recentRows.find((r) => r.id === id)?.url ?? null).find((u): u is string => !!u && !urlsTaken.has(u)) ?? null
+          if (urlOf) urlsTaken.add(urlOf)
           const { error } = await db.from("content_topic_bank").insert({
+            source_id: topicSource.id,
             brokerage_id: brokerageId,
             topic_title: t.topic.slice(0, 120),
             value_angle: `${t.mentions} public mentions in the last 7 days discussed this${t.negative ? ` (${t.negative} negative)` : ""} — answer the question the conversation is asking.`,

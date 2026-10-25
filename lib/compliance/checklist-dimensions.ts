@@ -41,6 +41,22 @@
  * dimension here — `listings.property_type` already carries it and no checklist row has asked for
  * it yet; `representation` is almost never KNOWN today (no column on transactions records it), so
  * a row that sets it applies as a warning until a caller supplies it.
+ *
+ * WAVE 144 (lane 144A, owner ruling 1 — "contract subtype, financing and representation must be
+ * SELF-HEALING"): the platform lists below are the BASELINE, not the whole vocabulary. A brokerage
+ * may add its own terms (a Texas "intermediary" representation, an "FHA 203(k)" financing type)
+ * through the approved adaptive-vocabulary path (lib/compliance/adaptive-vocabulary.ts — tenant
+ * policy key `adaptive_vocabulary`). Every tenant term ROLLS UP to exactly one platform key below,
+ * so a reader that only knows the platform list keeps working. This module stays pure and
+ * client-safe: rowApplicability takes a `ChecklistVocabulary` (default PLATFORM_CHECKLIST_VOCABULARY)
+ * instead of importing the tenant overlay, so the dependency points one way.
+ *
+ *   · A row value the vocabulary cannot interpret is UNRESOLVED (applies as a WARNING naming the
+ *     dimension) — it was a silent wildcard before, which was harmless only while the m806 CHECK
+ *     made such a row impossible.
+ *   · Lineage: a rule naming a PLATFORM parent (new_construction) applies to a deal whose term rolls
+ *     up to it (a tenant "new home — incomplete"); a rule naming the CHILD on a deal that only states
+ *     the PARENT applies as a warning (the deal may or may not be that kind).
  */
 
 // ── Vocabularies (MIRROR the m806 CHECKs; scripts/closing-compliance-guard.ts holds them equal) ──
@@ -59,6 +75,51 @@ export const FINANCING_KINDS = ["cash", "financed"] as const
 export type FinancingKind = (typeof FINANCING_KINDS)[number]
 
 export const FINANCING_KIND_LABEL: Record<FinancingKind, string> = { cash: "Cash", financed: "Financed" }
+
+/**
+ * THE FINANCING-TYPE VOCABULARY (wave 144A) — what `offers.financing_type` / `transactions.financing_type`
+ * hold. There was no canonical constant: the same six values were retyped in the offer wizard, the
+ * intake questions, the voice intake, the extractor prompt and the state form-field enum. This is the
+ * ONE list; the scattered copies are named in lane 144A's notes (Outside-lane) to import it. No live
+ * CHECK pins the column, so a brokerage term is WRITTEN AS ITS PLATFORM ROLL-UP (see
+ * adaptive-vocabulary.ts vocabularyWriteValue) and every reader that compares against these six
+ * (offer strength, the government-loan amendatory addendum, financingKindFor) keeps working.
+ */
+export const FINANCING_TYPES = ["cash", "conventional", "fha", "va", "usda", "other"] as const
+export type FinancingType = (typeof FINANCING_TYPES)[number]
+
+export const FINANCING_TYPE_LABEL: Record<FinancingType, string> = {
+  cash: "Cash", conventional: "Conventional loan", fha: "FHA", va: "VA", usda: "USDA", other: "Other",
+}
+
+/** The government-backed loans that carry their own amendatory clauses (the offer wizard's addendum rule). */
+export const GOVERNMENT_BACKED_FINANCING_TYPES: readonly FinancingType[] = ["fha", "va", "usda"]
+
+/**
+ * Historical / imported SPELLINGS of the six — an alias resolves forever and is never deleted (owner
+ * ruling 1: "never silently delete historical values"). Keys are normalized (lower case, single
+ * spaces, no trailing punctuation). Seller-carried notes are financing ('other'), as the kind map says.
+ */
+const FINANCING_TYPE_ALIASES: Readonly<Record<string, FinancingType>> = {
+  "all cash": "cash", "cash offer": "cash", "cash buyer": "cash", "cash purchase": "cash", "no financing": "cash",
+  "conventional loan": "conventional", "conventional mortgage": "conventional", "conv": "conventional",
+  "fha loan": "fha", "va loan": "va", "usda loan": "usda", "rural development": "usda",
+  "seller financing": "other", "owner financing": "other", "owner will carry": "other", "seller carry": "other",
+}
+
+/** trim, lower case, collapse whitespace, strip trailing punctuation — the ONE normalizer for a vocabulary value. */
+export function normalizeVocabularyValue(raw: unknown): string {
+  return typeof raw === "string" ? raw.trim().toLowerCase().replace(/[!.]+$/g, "").replace(/\s+/g, " ").trim() : ""
+}
+
+/** A raw financing value → its PLATFORM type (exact, separator-tolerant, or a platform alias), or null. */
+export function platformFinancingType(raw: unknown): FinancingType | null {
+  const c = normalizeVocabularyValue(raw)
+  if (!c) return null
+  const underscored = c.replace(/[\s-]+/g, "_")
+  if ((FINANCING_TYPES as readonly string[]).includes(underscored)) return underscored as FinancingType
+  return FINANCING_TYPE_ALIASES[c] ?? null
+}
 
 export const CONTRACT_SUBTYPES = [
   "standard", "new_construction", "short_sale", "reo_bank_owned", "probate_estate", "lease_option",
@@ -104,12 +165,52 @@ export const asRepresentation = (v: unknown): Representation | null => oneOf(REP
  * `offers.financing_type` / `transactions.financing_type` → the checklist's two-valued kind.
  * The wizard writes cash | conventional | fha | va | usda | other; 'other' is financed (a seller-
  * carried note is still financing). An empty or absent value is UNKNOWN (null), never 'cash'.
+ *
+ * Wave 144A: the value is first resolved to its PLATFORM type — an alias ("All Cash") or a brokerage
+ * term that rolls up to `cash` is cash; before this, "all cash" read as FINANCED, so a cash-only rule
+ * (proof of funds) did not apply to it. `platformTypeOf` defaults to the platform list; a caller that
+ * holds the tenant vocabulary passes adaptive-vocabulary.ts's resolver. An unrecognised non-empty
+ * label keeps the historical rule (anything that is not cash is financing) — never loosened to unknown.
  */
-export function financingKindFor(financingType: unknown): FinancingKind | null {
+export function financingKindFor(
+  financingType: unknown,
+  platformTypeOf: (raw: string) => string | null = platformFinancingType,
+): FinancingKind | null {
   if (typeof financingType !== "string") return null
   const t = financingType.trim().toLowerCase()
   if (!t) return null
+  const platform = platformTypeOf(t)
+  if (platform) return platform === "cash" ? "cash" : "financed"
   return t === "cash" ? "cash" : "financed"
+}
+
+// ── The vocabulary a match reads (platform baseline by default) ────────────────────────
+
+export type ResolvableDimension = "financing_kind" | "contract_subtype" | "representation"
+
+/**
+ * What rowApplicability needs from a vocabulary: a stored or asked value's LINEAGE — its canonical
+ * key first, then each ancestor it rolls up to — or null when the vocabulary cannot interpret it.
+ * PLATFORM_CHECKLIST_VOCABULARY knows the platform lists only; lib/compliance/adaptive-vocabulary.ts
+ * checklistVocabularyFor adds a brokerage's approved terms and aliases.
+ */
+export interface ChecklistVocabulary {
+  lineage(column: ResolvableDimension, value: string): readonly string[] | null
+  /** Display label for a stored value; null = not in the vocabulary. */
+  label(column: ResolvableDimension, value: string): string | null
+}
+
+const PLATFORM_DIMENSION_LIST: Readonly<Record<ResolvableDimension, readonly string[]>> = {
+  financing_kind: FINANCING_KINDS, contract_subtype: CONTRACT_SUBTYPES, representation: REPRESENTATIONS,
+}
+const PLATFORM_DIMENSION_LABEL: Readonly<Record<ResolvableDimension, Readonly<Record<string, string>>>> = {
+  financing_kind: FINANCING_KIND_LABEL, contract_subtype: CONTRACT_SUBTYPE_LABEL, representation: REPRESENTATION_LABEL,
+}
+
+/** The platform baseline as a ChecklistVocabulary — exact values only, every lineage of length one. */
+export const PLATFORM_CHECKLIST_VOCABULARY: ChecklistVocabulary = {
+  lineage: (column, value) => (PLATFORM_DIMENSION_LIST[column]?.includes(value) ? [value] : null),
+  label: (column, value) => PLATFORM_DIMENSION_LABEL[column]?.[value] ?? null,
 }
 
 // ── The caller's side of the match ─────────────────────────────────────────────────────
@@ -118,8 +219,10 @@ export interface ChecklistContext {
   /** WHEN the caller is asking. Undefined = a pre-m806 caller: only stage-NULL rows apply. */
   stage?:           ChecklistStage | null
   financing?:       FinancingKind | null
-  contractSubtype?: ContractSubtype | null
-  representation?:  Representation | null
+  /** A platform ContractSubtype or a brokerage's approved term (wave 144A). */
+  contractSubtype?: string | null
+  /** A platform Representation or a brokerage's approved term (wave 144A). */
+  representation?:  string | null
 }
 
 /** The dimension columns of a stored row (all optional: a row read before m806 carries none). */
@@ -140,7 +243,11 @@ export interface RowApplicability {
  * PURE. Does a stored rule apply to the question being asked, and is the answer certain?
  * See the module header for the rule; this is its one implementation.
  */
-export function rowApplicability(row: ChecklistRowDimensions, ctx: ChecklistContext): RowApplicability {
+export function rowApplicability(
+  row: ChecklistRowDimensions,
+  ctx: ChecklistContext,
+  vocabulary: ChecklistVocabulary = PLATFORM_CHECKLIST_VOCABULARY,
+): RowApplicability {
   const unresolved: ChecklistDimensionColumn[] = []
 
   // STAGE — cumulative "due by". A row with a stage the caller did not state is NOT applied: it
@@ -152,37 +259,57 @@ export function rowApplicability(row: ChecklistRowDimensions, ctx: ChecklistCont
     if (STAGE_RANK[rowStage] > STAGE_RANK[askedStage]) return { applies: false, unresolved }
   }
 
-  const exact: Array<[ChecklistDimensionColumn, string | null, string | null]> = [
-    ["financing_kind",   asFinancingKind(row.financing_kind),     asFinancingKind(ctx.financing)],
-    ["contract_subtype", asContractSubtype(row.contract_subtype), asContractSubtype(ctx.contractSubtype)],
-    ["representation",   asRepresentation(row.representation),    asRepresentation(ctx.representation)],
+  const exact: Array<[ResolvableDimension, unknown, unknown]> = [
+    ["financing_kind",   row.financing_kind,   ctx.financing],
+    ["contract_subtype", row.contract_subtype, ctx.contractSubtype],
+    ["representation",   row.representation,   ctx.representation],
   ]
-  for (const [column, rowValue, askedValue] of exact) {
-    if (!rowValue) continue                       // row says ANY
-    if (!askedValue) { unresolved.push(column); continue } // row names a value the caller cannot confirm
-    if (rowValue !== askedValue) return { applies: false, unresolved: [] }
+  for (const [column, rowRaw, askedRaw] of exact) {
+    if (typeof rowRaw !== "string" || !rowRaw.trim()) continue                  // row says ANY
+    const rowLine = vocabulary.lineage(column, rowRaw.trim())
+    // A stored value the vocabulary cannot interpret is never a wildcard: the rule applies, as a warning.
+    if (!rowLine) { unresolved.push(column); continue }
+    const askedLine = typeof askedRaw === "string" && askedRaw.trim() ? vocabulary.lineage(column, askedRaw.trim()) : null
+    if (!askedLine) { unresolved.push(column); continue }                        // the caller cannot confirm it
+    if (askedLine.includes(rowLine[0])) continue                                 // the asked value IS the rule's, or rolls up to it
+    if (rowLine.includes(askedLine[0])) { unresolved.push(column); continue }    // the rule is more specific than what was asked
+    return { applies: false, unresolved: [] }
   }
   return { applies: true, unresolved }
 }
 
-/** How many dimensions a row pins down — the tie-break between two rows at the same scope. */
-export function rowSpecificity(row: ChecklistRowDimensions & { state_code?: string | null }): number {
+/**
+ * How specific a row is — the tie-break between two rows at the same scope. Each pinned dimension
+ * counts its lineage depth, so a brokerage term ("new home — incomplete") beats its platform parent
+ * (new_construction); every platform value has depth one, exactly the old count.
+ */
+export function rowSpecificity(
+  row: ChecklistRowDimensions & { state_code?: string | null },
+  vocabulary: ChecklistVocabulary = PLATFORM_CHECKLIST_VOCABULARY,
+): number {
   let n = row.state_code ? 1 : 0
   if (asChecklistStage(row.required_stage)) n++
-  if (asFinancingKind(row.financing_kind)) n++
-  if (asContractSubtype(row.contract_subtype)) n++
-  if (asRepresentation(row.representation)) n++
+  for (const column of ["financing_kind", "contract_subtype", "representation"] as const) {
+    const raw = row[column]
+    if (typeof raw === "string" && raw.trim()) n += vocabulary.lineage(column, raw.trim())?.length ?? 0
+  }
   return n
 }
 
 /** A one-line, human description of what a rule is scoped to — the settings list and the notices read it. */
-export function describeRowScope(row: ChecklistRowDimensions & { state_code?: string | null; deal_type?: string | null }): string {
+export function describeRowScope(
+  row: ChecklistRowDimensions & { state_code?: string | null; deal_type?: string | null },
+  vocabulary: ChecklistVocabulary = PLATFORM_CHECKLIST_VOCABULARY,
+): string {
   const parts: string[] = []
   if (row.deal_type) parts.push(row.deal_type === "dual" ? "both sides" : `${row.deal_type} side`)
   if (row.state_code) parts.push(row.state_code)
   const stage = asChecklistStage(row.required_stage); if (stage) parts.push(`due by ${stage}`)
-  const fin = asFinancingKind(row.financing_kind); if (fin) parts.push(FINANCING_KIND_LABEL[fin].toLowerCase())
-  const sub = asContractSubtype(row.contract_subtype); if (sub) parts.push(CONTRACT_SUBTYPE_LABEL[sub].toLowerCase())
-  const rep = asRepresentation(row.representation); if (rep) parts.push(REPRESENTATION_LABEL[rep].toLowerCase())
+  for (const column of ["financing_kind", "contract_subtype", "representation"] as const) {
+    const raw = row[column]
+    if (typeof raw !== "string" || !raw.trim()) continue
+    // An uninterpretable stored value is shown AS STORED, flagged — never hidden.
+    parts.push((vocabulary.label(column, raw.trim()) ?? `${raw.trim()} (unrecognised)`).toLowerCase())
+  }
   return parts.join(" · ")
 }

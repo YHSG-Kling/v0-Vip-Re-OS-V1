@@ -89,8 +89,13 @@ const MATCHERS: Array<(n: string, raw: string) => Match> = [
   (n) => has(n, "referral")
     ? { source: "waterfall", source_key: "referral", field_type: "currency", confidence: 0.8, reason: "a referral fee/payout line" } : null,
 
-  // Fees (franchise/E&O/admin/royalty/processing or a generic 'fee').
-  (n) => has(n, "franchise fee", "transaction fee", "admin fee", "compliance fee", "processing fee", "royalty", "e&o", "e o ", " eo ") || has(n, "fee")
+  // Royalty (wave 144, 144D — owner ruling 7: a brokerage fee of its own) — BEFORE the generic 'fee' rule, which would
+  // otherwise claim "Royalty Fee" as an ordinary fee line.
+  (n) => has(n, "royalty")
+    ? { source: "waterfall", source_key: "royalty", field_type: "currency", confidence: 0.78, reason: "a royalty fee line (its own line, never ordinary fees)" } : null,
+
+  // Fees (franchise/E&O/admin/processing or a generic 'fee').
+  (n) => has(n, "franchise fee", "transaction fee", "admin fee", "compliance fee", "processing fee", "e&o", "e o ", " eo ") || has(n, "fee")
     ? { source: "waterfall", source_key: "fees", field_type: "currency", confidence: 0.65, reason: "a fee line" } : null,
 
   (n) => has(n, "team")

@@ -1,62 +1,53 @@
 /**
- * lib/forms/platform-form-packets.ts — LICENSED FORM PACKETS HELD IN PLATFORM MEDIA.
+ * lib/forms/platform-form-packets.ts — THE PLATFORM-PROVIDED FORM CATALOGUE (a source brokerages add FROM — never an owner of
+ * what agents fill).
  *
- * Closes wave 142's pending hook "142B SOURCE (a)": a licensed form PACKET from PLATFORM Media rendered
- * INSIDE VIPAgents — fillable, with verified-data prefill, autosave / resume, PDF persistence, versions
- * and download — on the existing pdf-lib / forms survivors.
+ * WAVE 144 (lane 144C) — OWNERSHIP CONVERGED. Owner ruling 3, verbatim essentials: "Form packets are NOT platform-owned. The
+ * brokerage or team uploads approved form packets … into THEIR OWN tenant/team bucket and shares them with their agents as
+ * templates … Do not move ownership to the platform because packets render inside VIPAgents." Wave 143 built this file as a
+ * platform OWNER that handed packets straight to every tenant's agents (a `platform/{id}/…` path the wizard filled directly).
+ * That door is closed:
+ *   · the registry (m807 `platform_form_packets`) and its licence / approval record are KEPT, unchanged, as a clearly labelled
+ *     CATALOGUE of genuinely platform-provided packets — no m807 row is dropped or rewritten;
+ *   · an agent never sees or fills a `platform/…` path any more (lib/forms/form-path-scope.ts refuses it for a tenant actor);
+ *   · a BROKERAGE (or a team lead, for their team) ADDS a catalogue packet to its OWN library — addPlatformPacketToLibrary below
+ *     copies the master into the tenant's own folder and writes a `brokerage_form_library` row carrying
+ *     `source_platform_packet_id` and the licence it came under — and its agents see it there, through their memberships, like
+ *     any packet the brokerage uploaded itself (lib/forms/tenant-form-packets.ts).
+ * READERS RE-POINTED, NOT REMOVED: `listPlatformPacketsForTenant` is now read by the TENANT's library page
+ * (app/api/admin/transaction-forms/route.ts — what a brokerage admin may add), not by the agent's wizard; `usablePlatformPaths` now
+ * guards the COPY (only a master usable right now is added to a library), not a tenant fill. The survivor for "may this agent fill
+ * this packet" is lib/forms/tenant-form-packets.ts:usableTenantPacketPaths.
  *
- * WHAT ALREADY EXISTED, AND IS REUSED UNCHANGED
- *   · the fill engine: lib/forms/pdf-form-fill.ts + lib/forms/prefill-property-into-pdf.ts, driven by
- *     app/actions/buyer-offer/prefill-storage-form.ts (verified property facts → party names → the agent's
- *     typed values, legal description from the record / RentCast or the form is INCOMPLETE and the send
- *     refuses). It reads a form from the private `brokerage-forms` bucket after ONE scope check,
- *     lib/forms/form-path-scope.ts:checkFormPathsInScope.
- *   · autosave / resume: lib/kernel/forms.ts saveFormDraft / loadFormDraft (the wizard's draft).
- *   · the PDF persisted + versioned: every fill writes a NEW object `filled/{offerId|userId}/{name}-{stamp}.pdf`
- *     (never overwritten — each fill is a version) and the wizard downloads from its signed URL.
+ * THE CATALOGUE RULES (each is a CHECK in m807 AND a test in scripts/closing-compliance-guard.ts section F)
+ *   · A packet is offered to a brokerage ONLY when status = 'approved' by a named platform human, with a recorded LICENSE basis,
+ *     a licence not past its expiry, and at least one fillable form field. A scanned (field-less) PDF cannot be approved.
+ *   · The blank master is previewed only through a short-lived signed URL, never a public URL.
+ *   · Human approval: nothing reaches a brokerage on upload. Draft → approved is an explicit act by superadmin
+ *     (app/actions/superadmin/platform-form-packets.ts), recorded with approver and time.
  *
- * WHAT WAS MISSING — and is this file: packets were BROKERAGE-scoped only (`brokerage_form_library`, the
- * `brokerage/…`, `teams/…`, `agents/…` prefixes). Nothing let the PLATFORM hold one licensed packet for
- * every subscriber. This adds the platform as one more OWNER in the same bucket and the same scope check:
- *
- *       platform/{packetId}/{file}.pdf      listed by the registry table `platform_form_packets` (m807)
- *
- * The wizard sees these as ordinary "My Forms" entries with scope `platform` (the wizard's source
- * vocabulary stays `my_forms | legal_forms_provider` — one spelling per idea, CLAUDE.md §6).
- *
- * THE RULES (each is a CHECK in m807 AND a test in scripts/closing-compliance-guard.ts section F)
- *   · A packet reaches a tenant ONLY when status = 'approved' by a named platform human, with a recorded
- *     LICENSE basis, a licence not past its expiry, and at least one fillable form field. A scanned
- *     (field-less) PDF cannot be approved: "fillable" is verified from the file, not claimed.
- *   · The scope check admits `platform/{id}/…` only when the registry row is usable RIGHT NOW (approved,
- *     in licence, the path equal to the row's storage_path) — a retired or expired packet stops being
- *     fillable the moment it changes, even for a wizard that already listed it. It FAILS CLOSED: a refused
- *     registry read refuses the path.
- *   · A tenant NEVER gets the blank master except as a short-lived signed URL for preview, never a public
- *     URL; what they fill is their own `filled/…` copy.
- *   · Human approval: nothing publishes to tenants on upload. Draft → approved is an explicit act by
- *     superadmin (app/actions/superadmin/platform-form-packets.ts), recorded with approver and time.
- *
- * NOT DECIDED HERE (owner questions, listed in the lane notes): which packets the platform may hold under
- * which association licence; whether use is metered per fill; entitlement by plan.
+ * NOT DECIDED HERE (owner questions, in the lane notes): which packets the platform may hold under which association licence;
+ * whether a licence revoked upstream must retire the brokerages' copies (today a copy carries the licence expiry it was added
+ * under, and stops being offered when it passes).
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { listPdfFields } from "./pdf-form-fill"
+import { FORM_PACKET_TYPES, registerCopiedPacket, type FormPacketType, type PacketActor, type TenantPacketRow } from "./tenant-form-packets"
 
 type Svc = SupabaseClient<any, any, any>
 
-/** The ONE bucket forms live in. Platform packets are a prefix of it, not a new bucket. */
+/** The ONE bucket forms live in. Catalogue masters are a prefix of it, not a new bucket. */
 export const PLATFORM_PACKET_BUCKET = "brokerage-forms"
 export const PLATFORM_PACKET_ROOT = "platform"
 /** Largest PDF a packet may be. */
 export const PLATFORM_PACKET_MAX_BYTES = 25 * 1024 * 1024
-/** How long a tenant's preview link for a blank master lives. */
+/** How long a brokerage admin's preview link for a catalogue master lives. */
 export const PLATFORM_PACKET_PREVIEW_TTL_SECONDS = 15 * 60
 
-/** MIRRORS brokerage_form_library.packet_type (scripts/check-vocabularies.ts) — one vocabulary for "what kind of packet". */
-export const PLATFORM_PACKET_TYPES = ["listing", "offer", "transaction", "disclosure", "custom"] as const
-export type PlatformPacketType = (typeof PLATFORM_PACKET_TYPES)[number]
+/** THE SAME vocabulary as brokerage_form_library.packet_type — imported, never restated (one vocabulary for "what kind of packet"). */
+export const PLATFORM_PACKET_TYPES = FORM_PACKET_TYPES
+export type PlatformPacketType = FormPacketType
 
 /** MIRRORS the m807 CHECK. */
 export const PLATFORM_PACKET_STATUSES = ["draft", "approved", "retired"] as const
@@ -110,7 +101,7 @@ export interface PacketQuestion {
 }
 
 /**
- * PURE. May this packet be handed to a tenant for THIS question, right now?
+ * PURE. May this catalogue packet be offered to a brokerage for THIS question (or added to its library), right now?
  * Unapproved, retired, out of licence, or not fillable → never. A packet pinned to a state is offered only
  * for that state; an unknown deal state sees only the state-neutral packets (never "all states").
  */
@@ -129,7 +120,7 @@ function packetUsable(row: Pick<PlatformPacketRow, "status" | "state" | "packet_
 
 const todayIso = (now: Date = new Date()) => now.toISOString().slice(0, 10)
 
-// ── TENANT READ ──────────────────────────────────────────────────────────────
+// ── THE CATALOGUE READ (a brokerage admin choosing what to add to their OWN library) ───────────────────────────────────────────
 
 export interface PlatformPacketView {
   packetId: string
@@ -138,12 +129,17 @@ export interface PlatformPacketView {
   state: string | null
   packetType: PlatformPacketType
   version: number
-  /** The `platform/{id}/{file}` path the wizard hands to the fill action. */
+  /** The `platform/{id}/{file}` master — previewed by a signed link; copied into the brokerage's folder when added. */
   path: string
   description: string | null
+  licenseNote: string | null
+  licenseExpiresAt: string | null
 }
 
-/** The approved packets a tenant may use for this question. A refused read is an error, never "no packets". */
+/**
+ * The approved, in-licence catalogue packets offered to a TENANT for this question — read by the tenant's library page (what a
+ * brokerage admin may add to its own library), never by an agent's wizard. A refused read is an error, never "no packets".
+ */
 export async function listPlatformPacketsForTenant(
   svc: Svc,
   q: Omit<PacketQuestion, "today"> & { now?: Date },
@@ -154,14 +150,15 @@ export async function listPlatformPacketsForTenant(
   const packets: PlatformPacketView[] = []
   for (const row of (data ?? []) as PlatformPacketRow[]) {
     if (!packetUsable(row, { stateCode: q.stateCode, purpose: q.purpose, today }).usable) continue
-    packets.push({ packetId: row.id, name: row.name, formCode: row.form_code, state: row.state, packetType: row.packet_type, version: row.version, path: row.storage_path, description: row.description })
+    packets.push({ packetId: row.id, name: row.name, formCode: row.form_code, state: row.state, packetType: row.packet_type, version: row.version, path: row.storage_path, description: row.description, licenseNote: row.license_note, licenseExpiresAt: row.license_expires_at })
   }
   return { ok: true, packets }
 }
 
 /**
- * The scope check's registry half: for these `platform/…` paths, which are usable NOW? A refused read
- * REFUSES every path (fail closed). Called by lib/forms/form-path-scope.ts.
+ * The registry's admission for these `platform/…` paths: which are usable NOW (exactly the registered object, approved, in licence,
+ * fillable)? A refused read REFUSES every path (fail closed). Wave 144: it guards the COPY into a brokerage's library
+ * (addPlatformPacketToLibrary) — a tenant no longer fills a `platform/…` path (lib/forms/form-path-scope.ts refuses it).
  */
 export async function usablePlatformPaths(svc: Svc, paths: string[], now: Date = new Date()): Promise<{ ok: true; usable: Set<string> } | { ok: false; error: string }> {
   const ids = paths.map((p) => parsePlatformPacketPath(p)?.packetId).filter((x): x is string => !!x)
@@ -171,11 +168,44 @@ export async function usablePlatformPaths(svc: Svc, paths: string[], now: Date =
   const today = todayIso(now)
   const usable = new Set<string>()
   for (const row of (data ?? []) as PlatformPacketRow[]) {
-    // A path is admitted only if it is EXACTLY the registered object and the row is usable now. The state of
-    // the deal is a listing filter (what is OFFERED); the fill itself works on any approved, in-licence packet.
-    if (packetUsable({ ...row, state: null }, { today }).usable) usable.add(row.storage_path)
+    // A path is admitted only if it is EXACTLY the registered object and the row is usable now; the deal's state is a listing filter.
+    if (paths.includes(row.storage_path) && packetUsable({ ...row, state: null }, { today }).usable) usable.add(row.storage_path)
   }
   return { ok: true, usable }
+}
+
+/**
+ * ADD a catalogue packet to a brokerage's (or one team's) OWN library: the master is COPIED into the owner's folder and registered
+ * in brokerage_form_library with `source_platform_packet_id` and the licence it was approved under. From then on it is the
+ * brokerage's packet — offered to its agents through their memberships, retired by the brokerage, not by the platform.
+ * Refused, by name: a packet that is not usable right now (draft, retired, out of licence, not fillable), an actor without the
+ * authority for that scope, a state-neutral packet with no state chosen. Idempotent per (brokerage, scope, packet).
+ */
+export async function addPlatformPacketToLibrary(
+  svc: Svc,
+  actor: PacketActor,
+  input: { packetId: string; teamId?: string | null; state?: string | null; now?: Date },
+): Promise<{ ok: true; packet: TenantPacketRow; existing: boolean } | { ok: false; error: string }> {
+  if (!parsePlatformPacketPath(`${PLATFORM_PACKET_ROOT}/${input.packetId}/x.pdf`)) return { ok: false, error: "That is not a catalogue packet id." }
+  const { data: row, error } = await svc.from("platform_form_packets").select(PACKET_COLUMNS).eq("id", input.packetId).maybeSingle()
+  if (error) return { ok: false, error: `The catalogue packet could not be read: ${error.message}` }
+  if (!row) return { ok: false, error: "No such catalogue packet." }
+  const packet = row as PlatformPacketRow
+  // ONLY A MASTER USABLE RIGHT NOW IS COPIED — the registry's own admission (exactly the registered object; approved, in licence,
+  // fillable), the same rule that once admitted a tenant fill and now admits the copy.
+  const gate = await usablePlatformPaths(svc, [packet.storage_path], input.now)
+  if (!gate.ok) return { ok: false, error: gate.error }
+  if (!gate.usable.has(packet.storage_path)) {
+    return { ok: false, error: `That catalogue packet cannot be added: ${packetUsable({ ...packet, state: null }, { today: todayIso(input.now) }).reason ?? "it is not usable right now"}.` }
+  }
+  const state = (packet.state ?? input.state ?? "").trim().toUpperCase()
+  if (!state) return { ok: false, error: "This catalogue packet is state-neutral — choose the state your brokerage will use it for." }
+  if (packet.state && input.state && input.state.trim().toUpperCase() !== packet.state) return { ok: false, error: `This catalogue packet is for ${packet.state}.` }
+  return registerCopiedPacket(svc, actor, {
+    teamId: input.teamId || null, sourcePlatformPacketId: packet.id, sourcePath: packet.storage_path, fileName: packet.file_name,
+    name: packet.name, state, packetType: packet.packet_type, formCode: packet.form_code, description: packet.description,
+    fieldCount: packet.field_count, version: packet.version, licenseNote: packet.license_note, licenseExpiresAt: packet.license_expires_at,
+  })
 }
 
 // ── STAFF WRITES (the gate — requireSuperadmin — lives in the server action; these take the verified actor) ──

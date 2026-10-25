@@ -291,7 +291,9 @@ const PROMOTION_WRITERS = [
   // lib/kernel/lifetime-conversion.ts promoteDealContactsToLifetime (shared with the payout release) —
   // the promotion write lives there now; closeTransactionCommand calls it.
   "lib/kernel/lifetime-conversion.ts",
-  "lib/transactions/stage-progression.ts",
+  // 2026-10-25 (wave 144, lane 144B): the stage machine's CLOSED promotion (seller only, inline) MOVED onto the
+  // same ONE writer — lib/transactions/stage-progression.ts advanceStage now calls promoteDealContactsToLifetime /
+  // holdLifetimeConversionPendingPayout. It is held to the DELEGATION rule below instead of the inline-writer rule.
   // 2026-09-09 (wave 46): handleSellerToLifetimeTransition MOVED from
   // app/actions/listing-lifecycle-core.ts onto the surviving stage writer's module when the
   // listing two-writer hazard was merged (§1) — the promotion write lives here now.
@@ -306,6 +308,17 @@ for (const rel of PROMOTION_WRITERS) {
   check(`${rel} sets lifecycle_state in EVERY lifetime promotion it makes`,
     promotions.length > 0 && promotions.every((p) => /\blifecycle_state\s*:/.test(p)),
     `${promotions.filter((p) => !/\blifecycle_state\s*:/.test(p)).length} promotion(s) without it`)
+}
+// THE DELEGATING CLOSE PATHS (the rule, not the waypoint): a close path that converts its deal's contacts does it
+// THROUGH the one writer (which sets both columns, counted) — never with an inline promotion of its own.
+const DELEGATING_CLOSE_PATHS = ["lib/kernel/transactions.ts", "lib/transactions/stage-progression.ts"]
+for (const rel of DELEGATING_CLOSE_PATHS) {
+  let src = ""
+  try { src = stripComments(readFileSync(join(ROOT, rel), "utf8")) } catch { /* reported below */ }
+  const inline = [...src.matchAll(/\.update\s*\(\s*\{([\s\S]{0,700}?)\}\s*\)/g)].map((m) => m[1])
+    .filter((p) => /\bcontact_type\s*:\s*(?:LIFETIME_CUSTOMER_TYPE|["']lifetime_customer["'])/.test(p))
+  check(`${rel} converts through the ONE writer (promoteDealContactsToLifetime) and carries NO inline lifetime promotion`,
+    /promoteDealContactsToLifetime\(/.test(src) && inline.length === 0, `${inline.length} inline promotion(s)`)
 }
 check("POSITIVE CONTROL — that promotion scanner sees a promotion that FORGETS lifecycle_state",
   (() => {

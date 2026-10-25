@@ -65,18 +65,25 @@ export default async function MarketingStudioPage({
     .maybeSingle()
 
   return (
-    <Suspense fallback={<MarketingStudioSkeleton />}>
-      <MarketingStudioClient
-        userId={user.id}
-        agentId={agentRow?.id ?? ""}
-        brokerageId={userRow?.brokerage_id ?? ""}
-        userRole={userRow?.user_type ?? "agent"}
-        // A campaign deep-link lands on the campaigns tab whatever ?tab= says —
-        // the dialog it opens lives there.
-        initialTab={initialCampaignId ? "campaigns" : normalizeTab(params.tab)}
-        initialCampaignId={initialCampaignId}
-      />
-    </Suspense>
+    <>
+      <Suspense fallback={<MarketingStudioSkeleton />}>
+        <MarketingStudioClient
+          userId={user.id}
+          agentId={agentRow?.id ?? ""}
+          brokerageId={userRow?.brokerage_id ?? ""}
+          userRole={userRow?.user_type ?? "agent"}
+          // A campaign deep-link lands on the campaigns tab whatever ?tab= says —
+          // the dialog it opens lives there.
+          initialTab={initialCampaignId ? "campaigns" : normalizeTab(params.tab)}
+          initialCampaignId={initialCampaignId}
+        />
+      </Suspense>
+      {/* Wave 144 (lane 144H, owner ruling 18): the platform's rights notice is DISPLAYED where creative is made. */}
+      <footer className="max-w-[1600px] mx-auto px-6 lg:px-8 pb-6 text-xs text-muted-foreground">
+        This platform is protected by copyright; copying, scraping, reverse engineering or reselling any part of it without written permission is prohibited.{" "}
+        <a href="/legal" className="underline">Copyright and licensing notice</a>
+      </footer>
+    </>
   )
 }
 

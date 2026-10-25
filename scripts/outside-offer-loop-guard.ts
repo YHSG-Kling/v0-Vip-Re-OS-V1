@@ -22,6 +22,10 @@
  *   D. CONTRACT PRECEDENCE — resolveGoverningTerms (executed counter/addendum supersedes; proposed never governs; originals kept;
  *      conflicts reported; a strike governs as null) and governingContractTerms LIVE on a chain + the frozen snapshot.
  *   E. WIRING + MIGRATIONS — source scans (stripped; every absence has its positive control) and m797/m798 vs the code's vocabularies.
+ *   F. THE GOVERNING PACKET (wave 144, lane 144C — owner ruling 2): the two readings of "executed" agree; the ACCEPTED sequence
+ *      (original + accepted counter) is the contract, a rejected counter and a later unsigned draft are kept and never terms; a
+ *      later execution / two executed branches / a second transaction are refused by name; the ONE packet reader; BOTH instruments
+ *      (+ executed addenda) are scanned by the checkpoint and the creation gate; closing compliance incorporates only the sequence.
  * BLIND SPOTS are printed beside the result (CLAUDE.md §2).
  */
 import { readFileSync, existsSync } from "node:fs"
@@ -197,13 +201,16 @@ async function main() {
 
   // ═══ B..E follow ══════════════════════════════════════════════════════════════════════════════════════════════════════
   await sectionsBtoE(L, T, R, M)
+  await sectionF(T, R)
 
   console.log("\nBLIND SPOTS: the model, the egress (dispatchEmail), RentCast, the signed-URL minter and the three survivors (recordSellerResponse / recordSellerSignedCounter /")
   console.log("  respondToCounter) are INJECTED recorders — what they would DO live (a real email leaving, a real model reading a real PDF, the survivors' own writes) is theirs to prove")
   console.log("  (their proofs exist) and is not driven here; the in-memory client has no RLS and no CHECK, so m797/m798's constraints are asserted from their TEXT against the code's")
   console.log("  vocabularies until the integrator applies them; sender authentication is parsed from header text the providers' parsers hand over — whether a given provider payload")
   console.log("  carries Authentication-Results at all is the provider's (Resend and Outlook's default payload carry none, and read 'unknown'); the governed egress carries no file")
-  console.log("  attachments, so documents travel as expiring secure links.")
+  console.log("  attachments, so documents travel as expiring secure links. Section F: the field-level PACKET walk (scanOfferPacketCompleteness) runs on")
+  console.log("  the submitted row only — run on an ancestor it would stamp open flags no gate reads; the ORIGINAL offer is covered at the document")
+  console.log("  level (presence + signatures + initials per required classification), which is what the brokerage's checklist asks of it.")
   console.log(`\nRESULT: ${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`)
   if (failures.length) { console.log("FAILURES:"); failures.forEach((f) => console.log("  - " + f)) }
   process.exit(failed === 0 ? 0 : 1)
@@ -665,6 +672,228 @@ async function sectionsBtoE(L: any, T: any, R: any, M: any) {
     && /\(brokerage_id, COALESCE\(root_offer_id, transaction_id\), source, version_no\)/.test(m797) && /contract_term_versions_anchor_check/.test(m797) && /contract_term_versions_executed_has_instant_check/.test(m797) && /ENABLE ROW LEVEL SECURITY/.test(m797))
   check("THE GOVERNING VOCABULARY is the existing contract-term vocabulary EXTENDED, not restated: every CONTRACT_TERM_COLUMNS term is a governing key, plus offer_price / closing_date / earnest money / contingencies / the commission terms / title_policy_payer / title_company",
     (await import("../lib/transactions/contract-terms")).CONTRACT_TERM_COLUMNS.every((c: string) => (R.GOVERNING_TERM_KEYS as readonly string[]).includes(c)) && ["offer_price", "closing_date", "title_policy_payer", "commission_payer", "buyer_agent_commission_pct"].every((k) => (R.GOVERNING_TERM_KEYS as readonly string[]).includes(k)) && /\.\.\.CONTRACT_TERM_COLUMNS/.test(code("lib/offers/governing-terms-rule.ts")))
+}
+
+// ═══ F · THE GOVERNING PACKET (wave 144, lane 144C — owner ruling 2) ═════════════════════════════════════════════════════════════
+// "If a counter is present and accepted, the ORIGINAL OFFER + the ACCEPTED COUNTER (+ required addenda) together are the executed
+// contract; BOTH go through the compliance scan before anything becomes a transaction. Keep every document/version. Unaccepted
+// counters never become terms. With several counters, the authoritative terms come from the actually accepted sequence, not the
+// latest draft." Proved as RULES on the pure sequence, the ONE packet reader, the deal-file widening and the creation gate itself.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function sectionF(T: any, R: any) {
+  console.log("\n[F · the governing packet: original + ACCEPTED counter + executed addenda are ONE contract, scanned together, ONE transaction; unaccepted counters are kept and never terms]")
+  const G = await import("../lib/transactions/transaction-creation-gate")
+  const X = await import("../lib/transactions/offer-execution-state")
+  const RO = "a1000000-0000-4000-8000-000000000001", C1 = "a1000000-0000-4000-8000-000000000002", C2 = "a1000000-0000-4000-8000-000000000003", C3 = "a1000000-0000-4000-8000-000000000004"
+  const BUYER_C = "c0000000-0000-4000-8000-0000000000c1"
+  const signedBoth = { buyer_signed_at: "2026-02-06T00:00:00Z", seller_signed_at: "2026-02-05T00:00:00Z", fully_signed_contract_received_at: "2026-02-06T00:00:00Z" }
+  const chain = (over: Record<string, any> = {}) => [
+    // the buyer's original offer — signed by the buyer, then countered by the seller (no seller signature on it)
+    { id: RO, brokerage_id: BRK, contact_id: BUYER_C, parent_offer_id: null, offer_type: "standard", current_round: 1, status: "countered", buyer_signed_at: "2026-02-01T00:00:00Z", offer_price: 400000, closing_date: "2026-12-01", disclosed_buyer_commission_pct: 2.5, created_at: "2026-02-01T00:00:00Z", ...(over[RO] ?? {}) },
+    // the seller's FIRST counter — the buyer rejected it
+    { id: C1, brokerage_id: BRK, contact_id: BUYER_C, parent_offer_id: RO, offer_type: "counter", current_round: 2, status: "rejected", seller_signed_at: "2026-02-02T00:00:00Z", offer_price: 410000, created_at: "2026-02-02T00:00:00Z", ...(over[C1] ?? {}) },
+    // the seller's SECOND counter — the buyer signed it: the ACCEPTED counter (the e-sign loop's shape: status never set to accepted)
+    { id: C2, brokerage_id: BRK, contact_id: BUYER_C, parent_offer_id: RO, offer_type: "counter", current_round: 2, status: "submitted", esign_status: "fully_signed", ...signedBoth, offer_price: 405000, closing_date: "2026-12-10", created_at: "2026-02-04T00:00:00Z", ...(over[C2] ?? {}) },
+    // a LATER DRAFT counter-back nobody signed — the latest draft, never the terms
+    { id: C3, brokerage_id: BRK, contact_id: BUYER_C, parent_offer_id: C2, offer_type: "counter", current_round: 3, status: "submitted", offer_price: 399000, created_at: "2026-02-08T00:00:00Z", ...(over[C3] ?? {}) },
+  ]
+
+  // ── PURE: the two readings of "executed" agree ──
+  const c2 = chain()[2]
+  const termsExecuted = (row: any) => R.versionsFromOfferChain([row])[0].status === "executed"
+  // the wave-143 reading, restated ONLY as the mutant the positive control needs (status + signatures; the ONE definition ignored)
+  const wave143Reading = (row: any) => (row.status === "accepted" || row.status === "countered") && (row.esign_status === "fully_executed" || !!row.fully_signed_contract_received_at || (!!row.buyer_signed_at && !!row.seller_signed_at))
+  check("THE TWO READINGS OF 'EXECUTED' AGREE: a counter the e-sign loop stamped fully_signed (both signatures, contract on file, status never set to accepted) is fully executed by the ONE definition the gates refuse on AND executed for the terms — POSITIVE CONTROL: the wave-143 reading called it merely proposed (a transaction whose terms nobody governed)",
+    X.isOfferFullyExecuted(c2) && termsExecuted(c2) && !wave143Reading(c2))
+  check("…and never wider than void allows: a WITHDRAWN row with both signatures is executed for neither the terms nor the sequence",
+    !termsExecuted({ ...c2, status: "withdrawn" }) && R.acceptedOfferSequence([...chain().slice(0, 2), { ...c2, status: "withdrawn" }], C2).ok === false)
+  {
+    // census over every shape in this proof: a row the ONE definition calls fully executed is executed for the terms (unless void)
+    const shapes = [c2, { ...c2, status: "accepted" }, { ...c2, seller_signed_at: null, seller_response_type: "accepted" }, chain()[0], chain()[1], chain()[3]]
+    const disagree = shapes.filter((s) => X.isOfferFullyExecuted(s) && !(["rejected", "withdrawn", "voided", "expired"].includes(s.status)) && !termsExecuted(s))
+    check(`…census: of ${shapes.length} chain shapes, ${disagree.length} the gates call executed while the terms call it proposed (must be 0)`, disagree.length === 0)
+  }
+
+  // ── PURE: the accepted sequence ──
+  const seq = R.acceptedOfferSequence(chain(), C2)
+  check("THE ACCEPTED SEQUENCE of the accepted counter is [original offer, accepted counter] — the rejected first counter is excluded as void, the later unsigned counter-back as after-execution; nothing is dropped from the chain",
+    seq.ok && seq.sequence.rootOfferId === RO && seq.sequence.headOfferId === C2 && seq.sequence.sequence.join() === [RO, C2].join()
+    && seq.sequence.excluded.length === 2 && seq.sequence.excluded.some((e: any) => e.offerId === C1 && e.reason === "void") && seq.sequence.excluded.some((e: any) => e.offerId === C3 && e.reason === "after_execution")
+    && seq.sequence.transactionIds.length === 0, JSON.stringify(seq))
+  const gov = R.resolveGoverningTerms(R.versionsFromOfferChain(chain()))
+  check("THE TERMS COME FROM THE ACCEPTED SEQUENCE, NOT THE LATEST DRAFT: price 405,000 (the accepted counter) — not 399,000 (the newest draft), not 410,000 (the rejected counter); the original's commission disclosure survives under the counter; both unaccepted counters are KEPT in the versions",
+    gov.values.offer_price === 405000 && gov.values.closing_date === "2026-12-10" && gov.values.buyer_agent_commission_pct === 2.5 && gov.versions.length === 4 && gov.pending.some((p: any) => p.offerId === C3) && gov.versions.some((p: any) => p.offerId === C1 && p.status === "void"))
+  const later = R.acceptedOfferSequence(chain({ [C3]: { ...signedBoth, buyer_signed_at: "2026-02-09T00:00:00Z", fully_signed_contract_received_at: "2026-02-09T00:00:00Z", seller_signed_at: "2026-02-08T00:00:00Z" } }), C2)
+  const laterHead = R.acceptedOfferSequence(chain({ [C3]: { ...signedBoth, buyer_signed_at: "2026-02-09T00:00:00Z", fully_signed_contract_received_at: "2026-02-09T00:00:00Z", seller_signed_at: "2026-02-08T00:00:00Z" } }), C3)
+  check("…once the counter-back IS signed it is the contract: promoting the earlier counter is REFUSED by name (later_execution), and the counter-back's sequence is [original, counter, counter-back]",
+    !later.ok && later.code === "later_execution" && later.offerIds.join() === C3 && laterHead.ok && laterHead.sequence.sequence.join() === [RO, C2, C3].join())
+  const competing = R.acceptedOfferSequence(chain({ [C1]: { status: "accepted", ...signedBoth } }), C2)
+  check("TWO EXECUTED BRANCHES are never resolved by a guess: if the rejected counter also reads as executed, the promotion is refused (competing_execution) and a person must say which was accepted",
+    !competing.ok && competing.code === "competing_execution" && competing.offerIds.join() === C1)
+  check("…an unexecuted row is never a contract (not_executed); a chain whose parent link leaves the rows read is refused (broken_chain); an unknown row is refused (unknown_offer)",
+    (R.acceptedOfferSequence(chain(), C3) as any).code === "not_executed" && (R.acceptedOfferSequence(chain().slice(1), C2) as any).code === "broken_chain" && (R.acceptedOfferSequence(chain(), "a1000000-0000-4000-8000-0000000000ff") as any).code === "unknown_offer")
+  const withTxn = R.acceptedOfferSequence(chain({ [RO]: { transaction_id: "e1000000-0000-4000-8000-000000000001" } }), C2)
+  check("ONE CONTRACT → ONE TRANSACTION: a transaction already created from ANY row of the chain is reported on the sequence", withTxn.ok && withTxn.sequence.transactionIds.join() === "e1000000-0000-4000-8000-000000000001")
+  check("a VOID ancestor on the path is not part of the contract (the same reading the terms use): sequenceThrough drops it, the head is always kept",
+    R.sequenceThrough(chain({ [RO]: { status: "withdrawn" } }), C2).join() === C2 && R.sequenceThrough(chain(), C2).join() === [RO, C2].join() && R.sequenceThrough(chain().slice(1), C2) === null)
+
+  // ── LIVE: the ONE packet reader and the deal-file widening ──
+  const DOC_ORIG = "d1000000-0000-4000-8000-000000000001", DOC_C2 = "d1000000-0000-4000-8000-000000000002", DOC_C1 = "d1000000-0000-4000-8000-000000000003", DOC_ADD = "d1000000-0000-4000-8000-000000000004"
+  const both = { signatures: [{ signer_role: "buyer", signed: true }, { signer_role: "seller", signed: true }], initials: [{ signer_role: "buyer", all_required_initials_present: true }, { signer_role: "seller", all_required_initials_present: true }] }
+  const buyerOnly = { signatures: [{ signer_role: "buyer", signed: true }], initials: [{ signer_role: "buyer", all_required_initials_present: true }] }
+  const docs = (origSc: any = both) => [
+    // the original offer's contract — filed against the ROOT only (no contact link): invisible to a head-only scan
+    { id: DOC_ORIG, brokerage_id: BRK, contact_id: null, classification: "signed_contract", signature_completeness: origSc, status: "complete", metadata: { linked_offer_id: RO } },
+    { id: DOC_C2, brokerage_id: BRK, contact_id: null, classification: "counter_offer", signature_completeness: both, status: "complete", metadata: { linked_offer_id: C2 } },
+    // the REJECTED counter's paper — it rides in on the buyer's CONTACT link; it is not the contract
+    { id: DOC_C1, brokerage_id: BRK, contact_id: BUYER_C, classification: "counter_offer", signature_completeness: { signatures: [{ signer_role: "seller", signed: true }], initials: [] }, status: "complete", metadata: { linked_offer_id: C1 } },
+    // an executed addendum recorded against the contract (contract_term_versions.document_id)
+    { id: DOC_ADD, brokerage_id: BRK, contact_id: null, classification: "addendum", signature_completeness: both, status: "complete", metadata: {} },
+  ]
+  const world = (o: { chainOver?: Record<string, any>; origSc?: any; refuse?: Record<string, string>; extraVersions?: any[] } = {}) => memSupabase({
+    offers: chain(o.chainOver).map((r) => ({ ...r, financing_type: "conventional", compliance_passed_at: r.id === C2 ? "2026-02-07T00:00:00Z" : null, agent_id: AG })),
+    documents: docs(o.origSc),
+    contract_term_versions: [{ id: "v-add", brokerage_id: BRK, root_offer_id: RO, transaction_id: null, offer_id: null, document_id: DOC_ADD, version_no: 1, source: "addendum", status: "executed", executed_at: "2026-02-07T23:59:59Z", terms: { title_policy_payer: "seller" } }, ...(o.extraVersions ?? [])],
+    activities: [{ id: "act-pass", brokerage_id: BRK, entity_type: "offer", entity_id: C2, activity_type: "buyer.offer.compliance.passed", status: "completed", created_at: "2026-02-07T00:00:00Z" }],
+    brokerage_required_documents: [
+      { id: "rq1", brokerage_id: BRK, is_required: true, deal_type: "buyer", classification: "signed_contract", scope_type: "brokerage", scope_id: BRK, block_on_missing: true, state_code: null },
+      { id: "rq2", brokerage_id: BRK, is_required: true, deal_type: "buyer", classification: "counter_offer", scope_type: "brokerage", scope_id: BRK, block_on_missing: true, state_code: null },
+      { id: "rq3", brokerage_id: BRK, is_required: true, deal_type: "buyer", classification: "addendum", scope_type: "brokerage", scope_id: BRK, block_on_missing: true, state_code: null },
+    ],
+  }, { refuse: o.refuse }) as any
+  const pk = await T.governingOfferPacket(world(), BRK, C2)
+  check("THE ONE PACKET READER (governingOfferPacket): the accepted sequence plus the EXECUTED addendum's document, every excluded row named",
+    pk.ok && pk.packet.sequence.join() === [RO, C2].join() && pk.packet.addendumDocumentIds.join() === DOC_ADD && pk.packet.excluded.length === 2, JSON.stringify(pk))
+  const pkForeign = await T.governingOfferPacket(world(), BRK2, C2)
+  const pkRefused = await T.governingOfferPacket(world({ refuse: { contract_term_versions: "permission denied for table contract_term_versions" } }), BRK, C2)
+  check("…another brokerage's session reads NO packet (refused: unknown_offer); a refused read is `unreadable` — nothing verified — never an empty packet",
+    !pkForeign.ok && pkForeign.kind === "refused" && pkForeign.code === "unknown_offer" && !pkRefused.ok && pkRefused.kind === "unreadable" && /permission denied/.test(pkRefused.reason))
+  if (pk.ok) {
+    const db = world()
+    const { auditOfferDocuments } = await import("../lib/compliance/required-documents")
+    const head = await auditOfferDocuments(db, { offerId: C2, brokerageId: BRK, contactId: BUYER_C, dealType: "buyer", stage: "contract" as any })
+    const req = head.required_breakdown.map((r: any) => r.classification)
+    const headUnexec = G.findUnexecutedDocuments(head.deal_file, req)
+    const widened = await G.widenAuditToGoverningPacket(db, BRK, head, pk.packet)
+    check("POSITIVE CONTROL — the HEAD-ONLY scan (what both checkpoints ran before) misses the original contract and the addendum, and judges the REJECTED counter's paper as if it were the contract",
+      head.unavailable_reason === null && head.missing_blocking.includes("signed_contract") && head.missing_blocking.includes("addendum") && headUnexec.some((u: any) => u.documentId === DOC_C1), JSON.stringify({ missing: head.missing_blocking, unexec: headUnexec.map((u: any) => u.documentId) }))
+    check("BOTH INSTRUMENTS ARE SCANNED: the widened file holds the original contract, the accepted counter and the executed addendum — and nothing of the rejected counter (kept on the deal, not the contract)",
+      widened.ok && widened.audit.deal_file.map((d: any) => d.id).sort().join() === [DOC_ORIG, DOC_C2, DOC_ADD].sort().join() && widened.audit.missing_blocking.length === 0 && widened.added === 2 && widened.dropped === 1
+      && G.findUnexecutedDocuments(widened.audit.deal_file, req).length === 0, JSON.stringify(widened))
+    const unsignedOriginal = world({ origSc: buyerOnly })
+    const head2 = await auditOfferDocuments(unsignedOriginal, { offerId: C2, brokerageId: BRK, contactId: BUYER_C, dealType: "buyer", stage: "contract" as any })
+    const w2 = await G.widenAuditToGoverningPacket(unsignedOriginal, BRK, head2, pk.packet)
+    check("…so a required document of the ORIGINAL offer that lacks a signature now BLOCKS (it used to be invisible when the counter was submitted) — the brokerage's checklist decides which documents are required, nothing here invents one",
+      w2.ok && G.findUnexecutedDocuments(w2.audit.deal_file, req).some((u: any) => u.documentId === DOC_ORIG && u.missingSignatures.includes("seller signature")))
+    const w3 = await G.widenAuditToGoverningPacket(world({ refuse: { documents: "permission denied for table documents" } }), BRK, head, pk.packet)
+    check("…a refused paperwork read FAILS CLOSED (ok:false) — never a narrower file that reads as clean", !w3.ok && /permission denied/.test(w3.error))
+  }
+
+  // ── LIVE: the creation gate — the authoritative WRITE refuses what the chain says is not the contract ──
+  const gate = (db: any, offerId: string) => G.assertTransactionCreationAllowed(db, { brokerageId: BRK, offerId, contactIds: [BUYER_C], dealType: "buyer", door: "lane 144C proof" })
+  const ok = await gate(world(), C2)
+  check("THE GATE ALLOWS the accepted counter when the WHOLE packet is present and executed, and says so: the governing packet is on the verdict (2 instruments + 1 addendum, 2 chain rows kept and not judged)",
+    ok.allowed && ok.detail.governingPacket?.sequence.join() === [RO, C2].join() && /governing packet was scanned as one contract: 2 instrument\(s\)/.test(ok.reason), ok.reason)
+  const blockedOrig = await gate(world({ origSc: buyerOnly }), C2)
+  check("…and REFUSES it when the ORIGINAL offer's required contract lacks the seller's signature (documents_fully_signed names that document)",
+    !blockedOrig.allowed && blockedOrig.refusals.some((r: any) => r.requirement === "documents_fully_signed" && /Signed contract|signed contract/i.test(r.message)), blockedOrig.reason)
+  const laterGate = await gate(world({ chainOver: { [C3]: { ...signedBoth, buyer_signed_at: "2026-02-09T00:00:00Z", fully_signed_contract_received_at: "2026-02-09T00:00:00Z" } } }), C2)
+  check("…REFUSES the earlier counter once a later one executed (governing_packet), at the WRITE, whatever the UI showed", !laterGate.allowed && laterGate.refusals.some((r: any) => r.requirement === "governing_packet" && /later instrument/.test(r.message)))
+  const twice = await gate(world({ chainOver: { [RO]: { transaction_id: "e1000000-0000-4000-8000-000000000001" } } }), C2)
+  check("…REFUSES a SECOND transaction for one contract (a transaction already exists on the original offer's row)", !twice.allowed && twice.refusals.some((r: any) => r.requirement === "governing_packet" && /ONE transaction/.test(r.message)))
+  const cannotRun = await gate(world({ refuse: { contract_term_versions: "permission denied for table contract_term_versions" } }), C2)
+  check("…and a chain it cannot read is gate_could_not_run — nothing verified, nothing created", !cannotRun.allowed && cannotRun.refusals.every((r: any) => r.requirement === "gate_could_not_run"))
+
+  // ── THE DEAL'S OWN SUBTYPE / REPRESENTATION reach the checklist (lane 144A Outside-lane 3) — read off the offer row, never inferred ──
+  check("offerChecklistDimensions reads the deal's contract subtype / representation off the offer record through the ONE vocabulary; an unknown or absent value is null (never guessed)",
+    JSON.stringify(G.offerChecklistDimensions({ metadata: { contract_subtype: "short_sale", representation: "dual_agency" } })) === JSON.stringify({ contractSubtype: "short_sale", representation: "dual_agency" })
+    && G.offerChecklistDimensions({ metadata: { contract_subtype: "bogus", representation: 7 } }).contractSubtype === null && G.offerChecklistDimensions({ metadata: { representation: 7 } }).representation === null
+    && G.offerChecklistDimensions(null).contractSubtype === null && G.offerChecklistDimensions({ metadata: [] }).representation === null)
+  {
+    // a brokerage rule that applies ONLY to short sales: a short-sale disclosure, blocking
+    const withRule = (subtype: string | null) => {
+      const db = world({ chainOver: { [C2]: subtype ? { metadata: { contract_subtype: subtype } } : {} } })
+      db.tables.brokerage_required_documents.push({ id: "rq4", brokerage_id: BRK, is_required: true, deal_type: "buyer", classification: "disclosure", scope_type: "brokerage", scope_id: BRK, block_on_missing: true, state_code: null, contract_subtype: "short_sale" })
+      return db
+    }
+    const shortSale = await gate(withRule("short_sale"), C2), standard = await gate(withRule("standard"), C2), unstated = await gate(withRule(null), C2)
+    check("AT THE WRITE: a deal the offer says is a SHORT SALE is held to the short-sale rule (blocked, the disclosure named); a STANDARD deal is not; a deal that states nothing keeps the rule as a WARNING (allowed, named) — the resolver's fail-safe, unchanged",
+      !shortSale.allowed && shortSale.refusals.some((r: any) => r.requirement === "required_documents_present" && /disclosure/i.test(r.message))
+      && standard.allowed && !standard.detail.missingWarning.some((w: string) => /disclosure/i.test(w))
+      && unstated.allowed && unstated.detail.missingWarning.some((w: string) => /disclosure/i.test(w)),
+      JSON.stringify({ short: shortSale.reason, std: standard.detail.missingWarning, un: unstated.detail.missingWarning }))
+  }
+
+  // ── WIRING (stripped source; every absence has its positive control) ──
+  const submit = code("app/actions/buyer-offer/submit-to-compliance.ts"), gateSrc = code("lib/transactions/transaction-creation-gate.ts"), closing = code("lib/transactions/closing-compliance.ts")
+  check("THE COMPLIANCE CHECKPOINT reads the governing packet BEFORE it stamps anything, widens its scan with the gate's OWN widening, and records the packet on the gate event",
+    submit.indexOf("governingOfferPacket(") > 0 && submit.indexOf("governingOfferPacket(") < submit.indexOf("compliance_passed_at:    now") && /widenAuditToGoverningPacket\(/.test(submit) && /governing_packet:/.test(submit))
+  check("THE CREATION GATE (every transactions writer runs it) reads the packet and widens the deal file itself", /governingOfferPacket\(/.test(gateSrc) && /widenAuditToGoverningPacket\(supabase, params\.brokerageId, audit, governingPacket\)/.test(gateSrc))
+  const depthOneChain = (s: string) => /\.or\(`id\.eq\.\$\{rootId\},parent_offer_id\.eq\.\$\{rootId\}`\)/.test(s)
+  check("CLOSING COMPLIANCE reads the WHOLE chain through the ONE chain walk and incorporates only the accepted sequence (no depth-one root+children read, no 'every earlier round' incorporation left)",
+    /loadOfferChainRows\(/.test(closing) && /sequenceThrough\(/.test(closing) && !depthOneChain(closing) && !/i < acceptedIdx/.test(closing))
+  check("POSITIVE CONTROL — the depth-one finder catches the wave-143 chain read", depthOneChain("const { data } = await svc.from(\"offers\").select(C).or(`id.eq.${rootId},parent_offer_id.eq.${rootId}`)"))
+
+  // ── LIVE: closing compliance compares the settlement against the ACCEPTED sequence, never a rejected sibling counter ──
+  {
+    const { runClosingCompliance } = await import("../lib/transactions/closing-compliance")
+    const TX = "e2000000-0000-4000-8000-000000000001", ROOT = "a2000000-0000-4000-8000-000000000001", SIB = "a2000000-0000-4000-8000-000000000002", ACC = "a2000000-0000-4000-8000-000000000003"
+    const SET = "d2000000-0000-4000-8000-000000000001"
+    const both2 = { signatures: [{ signer_role: "buyer", signed: true }, { signer_role: "seller", signed: true }], initials: [{ signer_role: "buyer", all_required_initials_present: true }, { signer_role: "seller", all_required_initials_present: true }] }
+    const db = memSupabase({
+      transactions: [{ id: TX, brokerage_id: BRK, offer_id: ACC, listing_id: null, deal_type: "buyer", agent_id: null, buyer_agent_id: null, seller_agent_id: null, property_state: "TX", financing_type: "conventional", purchase_price: 405000, close_date: "2026-12-10", earnest_money: 10000, closing_cost_contribution: 0, contract_date: "2026-02-06" }],
+      offers: [
+        { id: ROOT, brokerage_id: BRK, parent_offer_id: null, current_round: 1, status: "countered", offer_price: 400000, earnest_money: 10000, closing_date: "2026-12-01", closing_cost_contribution: 0, buyer_signed_at: "2026-02-01T00:00:00Z", created_at: "2026-02-01T00:00:00Z" },
+        // the REJECTED sibling counter offered the buyer a $5,000 seller credit; the buyer rejected it
+        { id: SIB, brokerage_id: BRK, parent_offer_id: ROOT, current_round: 2, status: "rejected", offer_price: 400000, earnest_money: 10000, closing_date: "2026-12-01", closing_cost_contribution: 5000, seller_signed_at: "2026-02-02T00:00:00Z", created_at: "2026-02-02T00:00:00Z" },
+        // the ACCEPTED counter (a later round off the same original) carries no credit
+        { id: ACC, brokerage_id: BRK, parent_offer_id: ROOT, current_round: 3, status: "accepted", offer_price: 405000, earnest_money: 10000, closing_date: "2026-12-10", closing_cost_contribution: 0, buyer_signed_at: "2026-02-06T00:00:00Z", seller_signed_at: "2026-02-05T00:00:00Z", fully_signed_contract_received_at: "2026-02-06T00:00:00Z", esign_status: "fully_executed", created_at: "2026-02-04T00:00:00Z" },
+      ],
+      documents: [
+        { id: SET, brokerage_id: BRK, transaction_id: TX, classification: "closing_disclosure", classification_confidence: "high", extracted_fields: { sales_price: 405000, earnest_money_deposit: 10000, closing_date: "2026-12-10", seller_credit_to_buyer: 0 }, signature_completeness: null, created_at: "2026-11-20T12:00:00Z" },
+        { id: "d2000000-0000-4000-8000-000000000002", brokerage_id: BRK, transaction_id: TX, classification: "signed_contract", classification_confidence: "high", extracted_fields: {}, signature_completeness: both2, created_at: "2026-02-07T12:00:00Z" },
+      ],
+      document_field_extractions: [], contract_term_versions: [], listings: [], transaction_participants: [], brokerage_required_documents: [], transaction_compliance_log: [],
+      closing_disclosure_agreement: [{ id: "cda-1", brokerage_id: BRK, transaction_id: TX, preliminary_cd_document_id: SET, final_cd_document_id: null, updated_at: "2026-11-20T12:00:00Z" }],
+    }) as any
+    const deps = { notify: async () => 0, audit: async () => {}, closingEntity: async () => "title_company" as string | null }
+    const run = await runClosingCompliance(db, { transactionId: TX, brokerageId: BRK, trigger: "settlement_scanned" }, deps as any)
+    const credit = run.comparison?.findings.find((x: any) => x.term === "seller_credit")
+    const price = run.comparison?.findings.find((x: any) => x.term === "purchase_price")
+    check("CLOSING COMPLIANCE never takes a term from a REJECTED sibling counter: the accepted counter's price governs ($405,000), and the rejected counter's $5,000 seller credit is NOT a governing term the settlement is accused of missing",
+      run.ran && price?.governing === "$405,000.00" && !(credit && /5,000/.test(String(credit.governing ?? ""))) && !(run.summary ?? []).some((s: string) => /5,000/.test(s)),
+      JSON.stringify({ ran: run.ran, reason: run.reason, findings: run.comparison?.findings.map((x: any) => `${x.term}:${x.verdict}:${x.governing}|${x.settlement}`) }))
+
+    // ── APPROVED AGENT CONCESSIONS are a governing term of their own (lane 144D Outside-lane 5 — owner ruling 4) ──
+    const adj = (o: Record<string, unknown>) => ({ id: `ca-${Math.random().toString(16).slice(2, 10)}`, brokerage_id: BRK, transaction_id: TX, applies_to: "gross", direction: "credit", recipient_type: "buyer", value_type: "flat", is_active: true, settlement_treatment: "closing_statement_credit", approval_status: "approved", ...o })
+    const withConcessions = (stmt: Record<string, unknown>, rows: Array<Record<string, unknown>>) => {
+      const d2 = memSupabase(JSON.parse(JSON.stringify((db as any).tables))) as any
+      d2.tables.transaction_compliance_log = []
+      d2.tables.documents.find((x: any) => x.id === SET).extracted_fields = { sales_price: 405000, earnest_money_deposit: 10000, closing_date: "2026-12-10", seller_credit_to_buyer: 0, ...stmt }
+      d2.tables.commission_adjustments = rows
+      return d2
+    }
+    const term = async (d: any, t: string) => (await runClosingCompliance(d, { transactionId: TX, brokerageId: BRK, trigger: "settlement_scanned" }, deps as any)).comparison?.findings.find((x: any) => x.term === t)
+    const rows = [
+      adj({ value: 2500 }),                                                                 // approved — counts
+      adj({ value: 1000, approval_status: "requested" }),                                   // awaiting the broker — never a term
+      adj({ value: 500, approval_status: "denied", is_active: false }),                     // denied — never a term
+      adj({ value: 3000, recipient_type: "seller", settlement_treatment: "reduced_commission_rate" }), // the listing agreement's reduced rate — not a statement credit
+    ]
+    const matched = await term(withConcessions({ agent_credit_to_buyer: 2500 }, rows), "agent_credit")
+    const wrong = await term(withConcessions({ agent_credit_to_buyer: 3500 }, rows), "agent_credit")
+    const unapproved = await term(withConcessions({ broker_credit_to_buyer: 1000 }, [adj({ value: 1000, approval_status: "requested" })]), "agent_credit")
+    const sellerUntouched = await term(withConcessions({ agent_credit_to_buyer: 2500 }, rows), "seller_credit")
+    check("AN APPROVED AGENT CONCESSION GOVERNS `agent_credit`: the broker-approved $2,500 credit to the buyer matches the statement's agent-credit line; a requested, a denied and a reduced-rate row never count",
+      matched?.verdict === "match" && matched?.governing === "$2,500.00", JSON.stringify(matched))
+    check("…a statement that credits a different amount is a BLOCKING mismatch; a credit the broker has NOT approved is never a governing term (the statement line stands alone and is flagged); the SELLER credit is a different term and is untouched",
+      wrong?.verdict === "mismatch" && wrong?.blocking === true && unapproved?.verdict !== "match" && !unapproved?.governing && sellerUntouched?.governing !== "$2,500.00",
+      JSON.stringify({ wrong, unapproved, sellerUntouched }))
+    const pct = await term(withConcessions({ agent_credit_to_buyer: 2500 }, [adj({ value: 1, value_type: "percent" })]), "agent_credit")
+    const refused = await runClosingCompliance((() => { const d = withConcessions({}, rows); return memSupabase(d.tables, { refuse: { commission_adjustments: "permission denied for table commission_adjustments" } }) })() as any, { transactionId: TX, brokerageId: BRK, trigger: "settlement_scanned" }, deps as any)
+    check("…a PERCENT concession is not restated as dollars here (the engine owns that figure — the term is not half-stated); a REFUSED concession read is not 'no concessions' (the run does not report a clean comparison)",
+      !pct?.governing && !(refused.ran && refused.comparison && refused.comparison.counts.blocking === 0 && refused.openBlocking === 0), JSON.stringify({ pct, refused: { ran: refused.ran, reason: refused.reason, ob: refused.openBlocking } }))
+  }
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

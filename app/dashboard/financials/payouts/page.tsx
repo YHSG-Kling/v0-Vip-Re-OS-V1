@@ -13,6 +13,7 @@ import {
 } from '../components/os'
 import { loadCommissionQueueAction } from '@/app/actions/financial-kernel'
 import { CommissionDisputeQueue } from '../components/commission-dispute-queue'
+import { PayoutPolicyCard } from './payout-policy-card'
 import { ApproveCommissionButton } from '@/app/components/features/financial/ApproveCommissionButton'
 import { PayoutButton } from '@/app/components/features/financial/PayoutButton'
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
@@ -199,6 +200,9 @@ export default async function PayoutsPage() {
           totalBlocked: sum(blockedFiles),
         }}
       />
+
+      {/* WAVE 144 (lane 144D, owner rulings 8 + 4): WHEN agents are paid, and whether a concession needs approval first. */}
+      <PayoutPolicyCard />
 
       {/* Disputed commissions awaiting broker resolution (uphold / correct / reopen). */}
       <CommissionDisputeQueue brokerageId={profile.brokerage_id} />

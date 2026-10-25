@@ -317,13 +317,29 @@ export async function authorNewsletterContent(input: AuthorNewsletterContentInpu
   const allTopicIds = new Set(topics.map((t) => t.id))
   for (const list of personaTopicMap.values()) for (const t of list) allTopicIds.add(t.id)
 
+  // Wave 144 (lane 144G) — VERIFIED LOCAL FACTS. The local_event / local_news sections and the
+  // Insider "Curated Events" / "Development Watch" / "Community & Eats" directions asked the model
+  // for "2-3 LOCAL events happening this week" with NOTHING to ground them: every named event,
+  // date, venue and restaurant was invented. They now ground on the tenant's stored local facts
+  // (lib/content-intel/local-intel.ts — sourced, dated, located, expired vs upcoming), and the
+  // block is also the rule: nothing local may be named that is not on it. A refused read renders
+  // as "none verified" (fail closed: name nothing), never as an empty week.
+  const localIntel = await import("@/lib/content-intel/local-intel")
+  const localRead = await localIntel.loadLocalFacts(supabase, brokerageId, { includeExpired: true, limit: 8 })
+  if (localRead.error) console.warn("[content-creators] local facts unreadable — the issue names no local event:", localRead.error)
+  const localFactsBlock = localIntel.renderLocalFactsForPrompt(localRead.error ? [] : localRead.facts)
+
   const isInsiderTemplate = template.id === "insider"
   const insiderBlock = isInsiderTemplate
     ? `\n═══ THE INSIDER EDIT — SECTION DIRECTION ═══
 This issue is a curated "deal of the week" newsletter, NOT a property blast.
 Author exactly these sections, in this order, with these titles:
 ${template.sections.map((s) => `• ${s} — titled "${insider.INSIDER_SECTION_TITLES[s] ?? s}": ${insider.INSIDER_SECTION_PROMPTS[s] ?? ""}`).join("\n")}
-Each section is 150-200 words, specific, and free of hard-sell language.\n`
+Each section is 150-200 words, specific, and free of hard-sell language.
+GROUNDING OVERRIDE: "Curated Events", "Development Watch" and "Community & Eats" may name an event,
+date, civic decision or business ONLY from VERIFIED LOCAL FACTS above. With fewer verified items
+than the direction asks for, write fewer — and with none, write the section without naming any
+(invite readers to ask the agent what is coming up). Never invent one.\n`
     : ""
 
   // COMPLIANCE-FIRST: the rules are an INPUT to the writer (§5), read for THIS tenant through
@@ -382,6 +398,9 @@ target_personas on the section to lock the row to that segment.
 
 ${[...personaTopicMap.entries()].map(([persona, list]) => `── For persona='${persona}' ──\n${topicBank.renderTopicsForPrompt(list)}`).join("\n\n")}
 ` : ""}
+
+${localFactsBlock}
+The local_event and local_news sections are built ONLY from the verified local facts above.
 
 ═══ AUDIENCE SHAPE ═══
 ${audienceIsSegmentable

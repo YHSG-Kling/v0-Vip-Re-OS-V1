@@ -25,22 +25,14 @@
 import "server-only"
 import { classifyPublicVideo } from "./public-video"
 import { buildCaptionPlan } from "./caption-plan"
-import { captionCuesToSrt, captionCuesToWebVtt, evaluateTvSpot, TV_SPOT_SPEC, type TvSpotEvaluation, type TvSpotFacts } from "./tv-spot"
+import { captionCuesToSrt, captionCuesToWebVtt, evaluateTvSpot, TV_SPOT_SPEC, type TvSpotEvaluation, type TvSpotFacts, type TvSpotRecord } from "./tv-spot"
 import { masterForTv, type TvMasterOutcome } from "./tv-spot-master"
 
 type Svc = { from: (t: string) => any; storage?: unknown }
 
-export interface TvSpotRecord {
-  url: string
-  spec_version: string
-  ready: boolean
-  checks: Array<{ id: string; ok: boolean; required: string; measured: string }>
-  warnings: string[]
-  mastered_at: string
-  trim_db: number | null
-  captions: { timing: "alignment" | "even" | "none"; srt: string; vtt: string }
-  authority: string
-}
+// TvSpotRecord + tvSpotOf moved to lib/video/tv-spot.ts (the pure judge) so the CTV provider path reads them without
+// ffmpeg; re-exported here unchanged for this file's callers (app/actions/tv-spot.ts, scripts/tv-spot-guard.ts).
+export { tvSpotOf, type TvSpotRecord } from "./tv-spot"
 
 export interface ProduceTvSpotDeps {
   fetchBytes?: (url: string) => Promise<Buffer>
@@ -67,14 +59,6 @@ async function defaultFetch(url: string): Promise<Buffer> {
 export type ProduceTvSpotResult =
   | { ok: true; ready: boolean; url: string; evaluation: TvSpotEvaluation; record: TvSpotRecord }
   | { ok: false; error: string }
-
-/** The recorded TV result on a project's video_metadata (null when none). PURE. */
-export function tvSpotOf(videoMetadata: unknown): TvSpotRecord | null {
-  const t = (videoMetadata as { tv_spot?: unknown } | null | undefined)?.tv_spot
-  if (!t || typeof t !== "object") return null
-  const r = t as Partial<TvSpotRecord>
-  return typeof r.url === "string" && typeof r.ready === "boolean" && Array.isArray(r.checks) ? (r as TvSpotRecord) : null
-}
 
 export async function produceTvSpotMaster(
   svc: Svc,

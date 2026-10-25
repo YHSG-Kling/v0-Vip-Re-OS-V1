@@ -93,9 +93,12 @@ const caps = Object.keys(CONTACT_PROVIDER_ROUTES) as Capability[]
 // Wave 142 (lane 142D): + business_identity (the Versium B2B2C crosswalk) + online_presence (Versium's
 // full-demographic real-estate indicators) — one provider each, on the SAME rail, no second route table.
 // Wave 143 (lane 143D): + audience_estimate (Versium's FREE B2C ListGen estimate — a documented-free row, FREE_CAPABILITIES).
+// Wave 144 (lane 144E): + online_audience_match (Versium's Online Audience Append — a MATCH + APPEND of hashed identifiers onto
+// the record, owner ruling 10; a PAID row at the same credit constant). The named list stays explicit ON PURPOSE (an unannounced
+// capability must turn this red); the count in the label is derived.
 // The label states the DERIVED count (a hard-coded "eleven" was a waypoint: it went false the moment a capability was added).
-check(`${caps.length} capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list, property_valuation, map_render, business_identity, online_presence, audience_estimate)`,
-  caps.sort().join(",") === "audience_estimate,business_identity,dnc_tcpa,email_validation,map_render,motivated_seller_list,online_presence,owner_contact,person_profile,property_facts,property_valuation,reverse_contact")
+check(`${caps.length} capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list, property_valuation, map_render, business_identity, online_presence, audience_estimate, online_audience_match)`,
+  caps.sort().join(",") === "audience_estimate,business_identity,dnc_tcpa,email_validation,map_render,motivated_seller_list,online_audience_match,online_presence,owner_contact,person_profile,property_facts,property_valuation,reverse_contact")
 const rc = CONTACT_PROVIDER_ROUTES.reverse_contact
 // Re-anchored (wave 93, lane 93B2 — owner cost decision: "Versium first for owner/person email+phone
 // append, People Data Labs only when Versium misses"): Versium (an EXISTING vendor) leads both overlap

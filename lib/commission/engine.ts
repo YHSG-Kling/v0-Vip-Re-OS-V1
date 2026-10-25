@@ -43,11 +43,12 @@ export async function calculateCommission(
     // Step 2: Calculate gross commission
     context = calculateGrossCommission(context)
 
-    // Step 3: Apply gross adjustments
-    context = await applyGrossAdjustments(context)
+    // Step 3: Apply gross adjustments — the AGENT concessions (wave 144, lane 144D: a held concession refuses a FINAL)
+    context = await applyGrossAdjustments(context, calculationMode)
 
-    // Step 3b: Referral deduction (wave 143) — the agreed agent-to-agent fee comes off the top, before the split
-    context = await applyReferralDeduction(context)
+    // Step 3b: Referral deduction (wave 143) — the agreed referral fee (inside agent, or outside partner — wave 144) comes
+    // off the top, before the split; an owed partner fee with no authorizable payee holds a FINAL
+    context = await applyReferralDeduction(context, calculationMode)
 
     // Step 4: Split agent/brokerage
     context = splitAgentBrokerage(context)

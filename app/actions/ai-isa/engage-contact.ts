@@ -183,6 +183,10 @@ export async function engageContact(
       return { success: false, reason: 'stop:max_touches' }
     }
 
+    // WAVE 144 (lane 144F): the arbiter's AI channel pick (below, 4c) reaches the dispatch in step 5 — before this the decision's
+    // channel was recorded on the ledger and then ignored, and the dispatch fell back to the age-cohort table.
+    let arbiterDecision: import('@/lib/ai-isa/followup-arbiter').ArbiterDecision | null = null
+
     // ── 4b. NEXT-BEST-ACTION (wave 100, lane 100B) — the SAME NBA the lead sweep runs
     //    (lib/ai-isa/lead-action-plan.ts planNextContactTouch — no second engine), fed the
     //    contact's dead ends (ISA outcomes, call dispositions, represented, postponed-until),
@@ -239,7 +243,7 @@ export async function engageContact(
         // WAVE 143 (143E): the planner above names what is POSSIBLE (its hard verdicts stay deterministic); the arbiter
         // (lib/ai-isa/followup-arbiter.ts) picks what is BEST among the permitted options and, for a wait, for how long.
         // arbitrateAndRecordExperience records the pick (rationale, evidence, policy ref) on the same ledger row as before.
-        const { arbitrateAndRecordExperience } = await import('@/lib/ai-isa/followup-arbiter')
+        const { arbitrateAndRecordExperience, CONTACT_ENGAGEMENT_DELIVERABLE } = await import('@/lib/ai-isa/followup-arbiter')
         const inputs = await loadNextBestExperienceInputs(supabase, {
           brokerageId, contact: contact as Parameters<typeof loadNextBestExperienceInputs>[1]['contact'], humanInitiated, now: nbaNow,
           preloaded: { nba: nbaCtx.context },
@@ -251,7 +255,12 @@ export async function engageContact(
         const planned = planNextBestExperience(inputs.input)
         const { plan, decision, recorded: rec } = await arbitrateAndRecordExperience(supabase, {
           brokerageId, contactId, input: inputs.input, plan: planned, now: nbaNow, humanInitiated, missionId: missionId ?? null, systemSource: 'engage_contact',
+          // WAVE 144 (owner ruling 12): this path delivers email / SMS / direct mail / AI call / voice drop (dispatchContactChannel), so
+          // every one of them is a real option; and speed-to-lead is the FIXED first touch — the arbiter never defers or swaps it.
+          deliverable: CONTACT_ENGAGEMENT_DELIVERABLE,
+          fixedSend: reason === 'speed_to_lead' ? 'speed_to_lead' : null,
         })
+        arbiterDecision = decision
         for (const w of rec.warnings) console.warn(`[engageContact] experience ${plan.chosen.kind}: ${w}`)
         // "Route to the agent" must produce something a person SEES: when the arbiter judged this needs a human (a decision the
         // planner did not already force), the agent gets a task — the ledger row alone is a record, not a bell.
@@ -382,7 +391,10 @@ export async function engageContact(
       })
       if (nba.channel !== 'no_channel') resolvedChannel = nba.channel
     } catch (e) { console.error('[engageContact] next-best-channel failed; using preference:', e) }
-    const channel = forceChannel ?? resolvedChannel
+    // WAVE 144: an AI decision's channel (consent / tenant / frequency / cost / provider pre-checked by the arbiter) wins over the
+    // fallback picker; a human's forced channel still wins over both, and the consent guard below still applies.
+    const { touchChannelForDecision } = await import('@/lib/ai-isa/followup-arbiter')
+    const channel = forceChannel ?? touchChannelForDecision(arbiterDecision) ?? resolvedChannel
 
     // ── NEWSLETTER = the nurture downshift → HAND OFF to the Campaign Orchestrator (its owner).
     //    The manager decided the next best touch is the passive, value-first newsletter (not

@@ -98,6 +98,8 @@ function makeClient(db: FakeDb) {
         order:  () => b,
         limit:  (n: number) => { rows = rows.slice(0, n); return b },
         eq: (col: string, val: any) => { rows = rows.filter(r => r[col] === val); return b },
+        // wave 144 (lane 144C): the gate now walks the offer / counter chain (lib/offers/governing-terms.ts), which reads children with `.in`.
+        in: (col: string, vals: any[]) => { rows = rows.filter(r => vals.includes(r[col])); return b },
         is: (col: string, val: any) => { rows = rows.filter(r => (r[col] ?? null) === val); return b },
         not: (col: string, _op: string, val: any) => {
           rows = rows.filter(r => (r[col] ?? null) !== val); return b
@@ -658,8 +660,16 @@ async function main() {
   const submitSrc = src("app/actions/buyer-offer/submit-to-compliance.ts") // src() already strips comments
   check("POSITIVE CONTROL — submitOfferToCompliance's source is visible to this scan",
     submitSrc.length > 0 && /auditOfferDocuments\(/.test(submitSrc))
+  // RE-ASSERTED AS THE RULE (wave 144, lane 144C): this pinned the import clause byte-for-byte (`{ findUnexecutedDocuments }`), a
+  // waypoint — the checkpoint now also imports the gate's governing-packet widening from the SAME module. The rule is that the
+  // reader comes from the gate module, whatever else the clause names.
   check("the checkpoint imports the gate's OWN reader rather than re-spelling the loop",
-    /import \{ findUnexecutedDocuments \}\s+from "@\/lib\/transactions\/transaction-creation-gate"/.test(submitSrc))
+    /import \{[^}]*\bfindUnexecutedDocuments\b[^}]*\}\s+from "@\/lib\/transactions\/transaction-creation-gate"/.test(submitSrc))
+  check("…and the gate's OWN governing-packet widening, so both checkpoints scan the same original + accepted counter + addenda",
+    /import \{[^}]*\bwidenAuditToGoverningPacket\b[^}]*\}\s+from "@\/lib\/transactions\/transaction-creation-gate"/.test(submitSrc)
+    && /widenAuditToGoverningPacket\(/.test(src("lib/transactions/transaction-creation-gate.ts").replace(/export async function widenAuditToGoverningPacket/, "")))
+  check("  ↳ POSITIVE CONTROL: the import finder rejects a checkpoint that re-spells the reader locally",
+    !/import \{[^}]*\bfindUnexecutedDocuments\b[^}]*\}\s+from "@\/lib\/transactions\/transaction-creation-gate"/.test(`function findUnexecutedDocuments() {}\nimport { auditOfferDocuments } from "@/lib/compliance/required-documents"`))
   check("…and actually calls it over the audited deal file + the settings checklist",
     /findUnexecutedDocuments\(\s*audit\.deal_file,\s*audit\.required_breakdown\.map\(\(r\) => r\.classification\),\s*\)/.test(submitSrc))
   check("…and the un-executed miss REACHES somebody — it is on the warning condition, not merely computed",

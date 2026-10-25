@@ -25,6 +25,10 @@ export interface PacketListRow {
   retired_at: string | null
   retired_reason: string | null
   created_at: string
+  /** storage_path of the master — the page asks the registry's own admission whether it is offered to brokerages right now. */
+  storage_path?: string
+  /** True when brokerages can add it to their library NOW (approved, in licence, fillable) — wave 144. */
+  offered_now?: boolean
 }
 
 export function PlatformPacketsClient({ packets, packetTypes }: { packets: PacketListRow[]; packetTypes: string[] }) {
@@ -101,6 +105,7 @@ export function PlatformPacketsClient({ packets, packetTypes }: { packets: Packe
                       <Badge variant="secondary" className="text-xs">{p.state ?? "all states"}</Badge>
                       {p.form_code && <Badge variant="outline" className="text-xs">{p.form_code}</Badge>}
                       <Badge className={p.status === "approved" ? "bg-green-100 text-green-900 text-xs" : p.status === "draft" ? "bg-amber-100 text-amber-900 text-xs" : "bg-slate-200 text-slate-800 text-xs"}>{p.status}</Badge>
+                      {p.status === "approved" && <Badge variant="outline" className="text-xs">{p.offered_now ? "offered to brokerages now" : "not offered (licence or fields)"}</Badge>}
                       <span className="text-xs text-muted-foreground">{p.field_count} fillable fields · v{p.version} · {p.file_name}</span>
                     </div>
                     {p.description && <p className="text-xs text-muted-foreground">{p.description}</p>}
@@ -120,7 +125,7 @@ export function PlatformPacketsClient({ packets, packetTypes }: { packets: Packe
                         />
                         <Button size="sm" disabled={pending || draft.note.trim().length < 20}
                           onClick={() => run(() => approvePlatformPacketAction({ packetId: p.id, licenseNote: draft.note, licenseExpiresAt: draft.expires || null }))}>
-                          Approve for all subscribers
+                          Approve for the catalogue
                         </Button>
                       </div>
                     )}

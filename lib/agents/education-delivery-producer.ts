@@ -133,6 +133,26 @@ const CHANNEL_ORDER_BY_BAND: Record<AgeSegment, readonly EducationChannel[]> = {
  *  rather than being routed as if they were 30-50. */
 const CHANNEL_ORDER_UNBANDED: readonly EducationChannel[] = ["portal"]
 
+/** PURE (wave 144). The education RAIL a stated preference names (contacts.preferred_channel / the channel_preference memory
+ *  fact), or null. Phone / voice / mail name no lesson rail (a lesson is a link) — they leave the default order alone. */
+function statedEducationChannel(pref: string | null | undefined): EducationChannel | null {
+  const p = String(pref ?? "").trim().toLowerCase()
+  if (p === "email") return "email"
+  if (p === "sms" || p === "text" || p === "texts") return "sms"
+  if (p === "portal" || p === "in_app" || p === "app") return "portal"
+  if (p === "portal_push" || p === "push") return "portal_push"
+  return null
+}
+
+/** PURE (wave 144). The education FORMAT a stated preference names, or null. */
+function statedEducationFormat(pref: string | null | undefined): EducationFormat | null {
+  const p = String(pref ?? "").trim().toLowerCase()
+  if (p === "video") return "video"
+  if (p === "guide" || p === "article" || p === "reading") return "guide"
+  if (p === "checklist") return "checklist"
+  return null
+}
+
 /** `learning_modules.channels` (article|blog|video|podcast|newsletter|email|
  *  social|quiz|portal_lesson) is a PUBLICATION vocabulary; `EducationChannel` is
  *  a DELIVERY vocabulary. They are two different ideas with one word, so the
@@ -180,7 +200,14 @@ export function pickEducationChannel(input: {
   consent: ContactConsentState
   preferredChannel: string | null
 }): EducationChannelChoice {
-  const order = input.ageSegment ? CHANNEL_ORDER_BY_BAND[input.ageSegment] : CHANNEL_ORDER_UNBANDED
+  // WAVE 144 (lane 144F, owner ruling 10/12): the education channel / format follows the person's PREFERENCE (and accessibility,
+  // when stated) — "never age stereotyping". A band's order is only the DEFAULT when the person has said nothing, and it can
+  // never EXCLUDE the rail they asked for: before this, a 50-65 client who prefers texts was never texted a lesson (the band's
+  // order has no `sms`, and the preference gate then refused every rail the band did offer → portal). The stated rail now leads;
+  // consent, the module's publication and the preference gate still decide whether it is usable.
+  const stated = statedEducationChannel(input.preferredChannel)
+  const bandOrder = input.ageSegment ? CHANNEL_ORDER_BY_BAND[input.ageSegment] : CHANNEL_ORDER_UNBANDED
+  const order: readonly EducationChannel[] = stated ? [stated, ...bandOrder.filter((c) => c !== stated)] : bandOrder
   const rejected: string[] = []
   // ONE spelling of "what format does this cohort get" (§6). This used to read
   // the band's primary format straight off DELIVERY_MATRIX, which ignores the
@@ -191,9 +218,10 @@ export function pickEducationChannel(input: {
   // only when it does not; unknown band → the material's own format.
   const materialFormat: EducationFormat = (input.moduleChannels ?? []).includes("video") ? "video" : "guide"
   const materialIsVideo = isVideoFormat(materialFormat)
-  const preferredFormat = input.ageSegment
-    ? resolveContactDeliveryFormat(input.ageSegment, materialFormat)
-    : null
+  // A FORMAT the person stated ("I'd rather watch a video", a checklist …) beats the band's adaptation (wave 144).
+  const statedFormat = statedEducationFormat(input.preferredChannel)
+  const preferredFormat = statedFormat
+    ?? (input.ageSegment ? resolveContactDeliveryFormat(input.ageSegment, materialFormat) : null)
 
   for (const channel of order) {
     if (!moduleAllowsChannel(input.moduleChannels, channel)) {

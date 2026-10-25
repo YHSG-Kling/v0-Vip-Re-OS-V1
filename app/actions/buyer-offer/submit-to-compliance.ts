@@ -45,7 +45,8 @@ import { auditOfferDocuments }       from "@/lib/compliance/required-documents"
 // THE SAME PURE READING THE TRANSACTION-CREATION GATE MAKES, made HERE too.
 // Imported, never re-spelled: this checkpoint and the gate that later refuses on
 // the identical fact must not be able to disagree (CLAUDE.md §6).
-import { findUnexecutedDocuments }   from "@/lib/transactions/transaction-creation-gate"
+import { findUnexecutedDocuments, offerChecklistDimensions, widenAuditToGoverningPacket } from "@/lib/transactions/transaction-creation-gate"
+import { governingOfferPacket }      from "@/lib/offers/governing-terms"
 // THE ONE DEFINITION of "fully executed by both buyer and seller" (§6). This
 // checkpoint refuses on it, the offer bridge refuses on it, and the
 // transaction-creation gate now refuses on it as a NAMED obligation — one
@@ -178,6 +179,23 @@ export async function submitOfferToCompliance(
     return { success: false, error: "Executed contract not on file yet — seller hasn't accepted (record seller response) or signed counter (record seller-signed counter)" }
   }
 
+  // THE GOVERNING PACKET (wave 144, lane 144C — owner ruling 2): "the ORIGINAL OFFER + the ACCEPTED COUNTER (+ required addenda)
+  // together are the executed contract; BOTH go through the compliance scan before anything becomes a transaction." This checkpoint
+  // used to scan only the submitted row's paperwork — when a counter executed, the original offer's documents (filed on the root)
+  // were never read. The same reader the creation gate uses decides which instruments are the contract; a chain that says this
+  // row is not it (a later counter executed, two branches executed, the contract already became a transaction) refuses here,
+  // before anything is stamped, with the same words the gate would use.
+  const governing = await governingOfferPacket(supabase as any, offer.brokerage_id as string, offerId)
+  if (!governing.ok) {
+    return { success: false, error: governing.kind === "unreadable"
+      ? `Cannot submit to compliance — the offer / counter chain could not be read (${governing.reason}). Nothing was verified, so nothing was submitted.`
+      : `Cannot submit to compliance — ${governing.reason}.` }
+  }
+  const governingPacket = governing.packet
+  if (governingPacket.transactionIds.length > 0) {
+    return { success: false, error: `Cannot submit to compliance — this contract already became transaction ${governingPacket.transactionIds.join(", ")}. One executed contract (the original offer with its accepted counter and addenda) creates ONE transaction.` }
+  }
+
   const now = new Date().toISOString()
   const finalContractDate = contractDate ?? now.slice(0, 10)
 
@@ -209,7 +227,7 @@ export async function submitOfferToCompliance(
     stateCode = m ? m[1].toUpperCase() : null
   }
 
-  const audit = await auditOfferDocuments(supabase as any, {
+  const headAudit = await auditOfferDocuments(supabase as any, {
     offerId,
     brokerageId:  offer.brokerage_id as string,
     contactId:    offer.contact_id as string | null,
@@ -217,7 +235,20 @@ export async function submitOfferToCompliance(
     teamId,
     dealType:     "buyer",
     stateCode,
+    // The deal's own subtype / representation (wave 144 — lane 144A Outside-lane 3), off the offer row this checkpoint already
+    // read — the SAME reading the creation gate makes (offerChecklistDimensions), so the two checkpoints judge one checklist.
+    ...offerChecklistDimensions(offer as { metadata?: unknown }),
   })
+  // BOTH instruments are scanned: the head's file widened to the whole governing packet (the original offer's paperwork, every
+  // executed addendum; minus the paperwork of counters outside the contract). The SAME widening the creation gate applies.
+  let audit = headAudit
+  if (!headAudit.unavailable_reason) {
+    const widened = await widenAuditToGoverningPacket(supabase as any, offer.brokerage_id as string, headAudit, governingPacket)
+    if (!widened.ok) {
+      return { success: false, error: `Cannot submit to compliance — the governing packet's paperwork could not be read (${widened.error}). Nothing was verified, so nothing was submitted.` }
+    }
+    audit = widened.audit
+  }
 
   // THE AUDIT ITSELF CAN FAIL TO RUN, and that is not a pass.
   //
@@ -725,6 +756,16 @@ export async function submitOfferToCompliance(
         },
       },
       both_sides:       bothSidesRecord,
+      // WHICH INSTRUMENTS were scanned as the contract (owner ruling 2) — the durable answer to "was the original offer read
+      // alongside the accepted counter?". Every chain row outside the contract is named with why (kept, never terms).
+      governing_packet: {
+        root_offer_id:         governingPacket.rootOfferId,
+        head_offer_id:         governingPacket.headOfferId,
+        sequence:              governingPacket.sequence,
+        addendum_document_ids: governingPacket.addendumDocumentIds,
+        excluded:              governingPacket.excluded,
+        documents_scanned:     audit.deal_file.map((d) => d.id),
+      },
     },
   })
   if (!gateEmit.success) {

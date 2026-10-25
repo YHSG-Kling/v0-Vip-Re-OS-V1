@@ -24,18 +24,69 @@
 // content and publishes nothing: the planner's managers write original pieces through their existing rails (brand voice,
 // fair-housing gate, approval before any external publication).
 //
-// WHAT IT DOES NOT HAVE, SAID PLAINLY: no dedicated local-EVENTS source exists in the repo (no events provider, no events
-// table). Local events are inferred ONLY from geo-tagged topic-bank rows whose text names an event; the blind spot is
-// published beside the opportunities. A real events feed is WAITING_EXTERNAL (provider choice + credentials — owner).
+// LOCAL EVENTS (superseded in wave 144): this header used to say no local-events source existed and that events were
+// inferred from geo-tagged topic-bank headlines naming one (WAITING_EXTERNAL). Lane 144G built the source — the
+// local-intelligence pass stores verified, dated, source-attributed local facts — and the loader now reads ONLY those
+// (lib/content-intel/local-intel.ts loadLocalFacts). A tenant with no stored fact gets a published blind spot, never
+// an inferred event.
 //
 // Not server-only: scripts/intent-driven-followup-guard.ts drives the PURE half. The loader takes an injected client.
 
+//
+// ── WAVE 144 (lane 144F, owner ruling 12) — FORMAT ≠ CHANNEL, AND THE TWO THAT WERE MISSING ────────────────────────────────
+// "Leadership/campaign format is missing direct mail and possibly ads. Never conflate a creative format with a delivery channel."
+// The old `LeadershipFormat = blog | social | newsletter | video | podcast` was FOUR channels and ONE format in one list (blog /
+// social / newsletter / podcast are CampaignChannelKeys in lib/campaigns/channels.ts; a video is a payload those channels carry).
+// Each opportunity now names BOTH, separately: `formats` (WHAT is made — an article, a short video, a printed postcard …) and
+// `channels` (HOW it travels — the campaign taxonomy's own keys). DIRECT MAIL joins where the ontology fits (a local, physical,
+// community piece: the local-event guide and the proven-topic piece, mailed to the brokerage's own farm), and ADS joins only where
+// paid reach serves the evidence (an AI-search / competitor visibility gap) — each with the gate it rides named in the brief:
+// a mailed piece goes through the CASS / opt-out gate and the approval step; an ad goes through the Ads Manager's housing
+// special-ad-category rules and a human's approval before any spend. Nothing here sends, spends or publishes.
+
 import { citationShare, type CitationShare, type ShareObservationRow } from "@/lib/geo/citation-share"
 import type { CitationOutcome } from "@/lib/kernel/ai-search-citation-monitor"
+import { CAMPAIGN_CHANNELS, type CampaignChannelKey } from "@/lib/campaigns/channels"
 
 type Svc = { from: (table: string) => any }
 
-export type LeadershipFormat = "blog" | "social" | "newsletter" | "video" | "podcast"
+/** WHAT the writing managers make — a creative format, never a delivery channel. */
+export type LeadershipFormat = "article" | "short_video" | "avatar_video" | "audio_episode" | "social_post" | "newsletter_issue" | "postcard" | "letter" | "ad_creative"
+
+/** HOW it travels — the campaign taxonomy's own keys (lib/campaigns/channels.ts), never a second spelling. */
+export type LeadershipChannel = Extract<CampaignChannelKey, "blog" | "social" | "newsletter" | "podcast" | "direct_mail" | "ads" | "email">
+
+/** The formats each channel can carry (a format with no carrier on the opportunity is refused by leadershipPlacement). */
+const CHANNEL_CARRIES: Readonly<Record<LeadershipChannel, readonly LeadershipFormat[]>> = Object.freeze({
+  blog: ["article", "short_video", "avatar_video"],
+  social: ["social_post", "short_video", "avatar_video"],
+  newsletter: ["newsletter_issue", "article", "short_video", "avatar_video"],
+  podcast: ["audio_episode"],
+  direct_mail: ["postcard", "letter"],
+  ads: ["ad_creative", "short_video"],
+  email: ["newsletter_issue", "article", "short_video", "avatar_video"],
+})
+
+/** The gate each channel rides before anything leaves (shown in the brief so the planner never skips one). */
+const CHANNEL_GATE: Readonly<Partial<Record<LeadershipChannel, string>>> = Object.freeze({
+  direct_mail: "Direct mail: to the brokerage's own consented farm / sphere list only — the CASS address check, mail opt-outs and the approval step run before print (lib/providers/dispatch.ts dispatchDirectMail).",
+  ads: "Ads: the Ads Manager's housing special-ad-category rules (no age / ZIP / gender targeting for housing), a budget, and a human's approval before any spend — an ad is a proposal here, never a launch.",
+})
+
+/**
+ * PURE. An opportunity's formats and channels, checked against each other and against the taxonomy: every channel is a real
+ * CampaignChannelKey, every format rides at least one of the opportunity's channels. Throws on a drift (a programming error, caught
+ * by the proof), never on data.
+ */
+function leadershipPlacement(formats: LeadershipFormat[], channels: LeadershipChannel[]): { formats: LeadershipFormat[]; channels: LeadershipChannel[] } {
+  const known = new Set(CAMPAIGN_CHANNELS.map((c) => c.key as string))
+  for (const ch of channels) if (!known.has(ch)) throw new Error(`market-leadership: "${ch}" is not a campaign channel`)
+  for (const f of formats) if (!channels.some((ch) => CHANNEL_CARRIES[ch].includes(f))) throw new Error(`market-leadership: format "${f}" rides none of ${channels.join("/")}`)
+  return { formats, channels }
+}
+
+/** The gates the opportunity's channels ride, as brief sentences. */
+const gatesFor = (channels: readonly LeadershipChannel[]): string => channels.map((c) => CHANNEL_GATE[c]).filter(Boolean).join(" ")
 
 export interface CompetitorMove { competitor: string | null; platform: string | null; topics: string[]; hook: string | null; engagement: number | null }
 
@@ -60,7 +111,10 @@ export interface LeadershipOpportunity {
   evidence: string[]
   /** The evidence's own magnitude, 0..100 — the sort key (ties: LEADERSHIP_KIND_ORDER). */
   strength: number
+  /** WHAT to make (creative formats). */
   formats: LeadershipFormat[]
+  /** HOW it travels (campaign-taxonomy channels) — a separate list from the formats, by ruling. */
+  channels: LeadershipChannel[]
   /** An instruction to the writing managers — original, local, brand-voiced; never copy. */
   brief: string
 }
@@ -68,7 +122,9 @@ export interface LeadershipOpportunity {
 export const LEADERSHIP_KIND_ORDER: readonly LeadershipKind[] = ["ai_search_gap", "competitor_gap", "reputation_theme", "double_down", "local_event"]
 
 const ORIGINALITY = "Make it ORIGINAL and local: draw on this brokerage's own listings, closings and market knowledge; never copy or paraphrase a competitor's material; run it through the normal brand-voice and fair-housing gates and the approval step before anything is published."
-const EVENT_WORDS = /\b(festival|fair|parade|concert|market day|farmers market|marathon|open house tour|street party|block party|fundraiser|expo|tour of homes|parade of homes|ribbon cutting|grand opening)\b/i
+// Tombstone (wave 144, lane 144F on lane 144G's hand-off): EVENT_WORDS — the keyword list that guessed an event from a scraped
+// headline — is deleted; local events are read from verified local facts in loadMarketLeadershipSignals below
+// (lib/content-intel/local-intel.ts loadLocalFacts). Nothing else read it.
 
 const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)))
 
@@ -94,8 +150,8 @@ export function rankLeadershipOpportunities(sig: LeadershipSignals): LeadershipO
           ...(v.queriesNotChecked > 0 ? [`${v.queriesNotChecked} answers could not be read — a monitoring gap, not a miss`] : []),
         ],
         strength: clamp(top.sharePct - ours),
-        formats: ["blog", "video", "newsletter"],
-        brief: `Publish direct, citable answers (clear question → specific local answer, with sources and the agent's own data) to the buyer and seller questions where ${top.name} is being cited and we are not. ${ORIGINALITY}`,
+        ...leadershipPlacement(["article", "short_video", "newsletter_issue", "ad_creative"], ["blog", "newsletter", "ads"]),
+        brief: `Publish direct, citable answers (clear question → specific local answer, with sources and the agent's own data) to the buyer and seller questions where ${top.name} is being cited and we are not. ${ORIGINALITY} ${gatesFor(["ads"])}`,
       })
     }
   }
@@ -118,8 +174,8 @@ export function rankLeadershipOpportunities(sig: LeadershipSignals): LeadershipO
       title: `Competitors are winning attention on "${topic}"`,
       evidence: [`${e.moves.length} high-performing competitor post(s)${rivals.length ? ` from ${rivals.slice(0, 3).join(", ")}` : ""}`, ...[...new Set(e.moves.map((m) => m.hook).filter((h): h is string => !!h))].slice(0, 2).map((h) => `hook style seen: ${h}`)],
       strength: clamp(e.moves.length * 20),
-      formats: ["social", "video", "blog"],
-      brief: `Create your own take on "${topic}" with a point of view only this brokerage can offer. ${ORIGINALITY}`,
+      ...leadershipPlacement(["social_post", "short_video", "article", "ad_creative"], ["social", "blog", "ads"]),
+      brief: `Create your own take on "${topic}" with a point of view only this brokerage can offer. ${ORIGINALITY} ${gatesFor(["ads"])}`,
     })
   }
 
@@ -132,7 +188,7 @@ export function rankLeadershipOpportunities(sig: LeadershipSignals): LeadershipO
       title: `A recurring public concern: "${t.topic}"`,
       evidence: [`${m.negative} of ${m.total} recent public mentions were negative; "${t.topic}" appears in ${t.count}`],
       strength: clamp((m.negative / Math.max(1, m.total)) * 100),
-      formats: ["blog", "newsletter"],
+      ...leadershipPlacement(["article", "newsletter_issue"], ["blog", "newsletter"]),
       brief: `Address "${t.topic}" honestly and helpfully for the people searching it — explain how this brokerage handles it. Do not respond to or name any reviewer. ${ORIGINALITY}`,
     })
   }
@@ -145,8 +201,8 @@ export function rankLeadershipOpportunities(sig: LeadershipSignals): LeadershipO
       title: `"${best.topic}" performs for us as ${best.assetType}`,
       evidence: [`measured performance ${best.performance} on ${best.assetType}`],
       strength: clamp(best.performance),
-      formats: ["social", "video", "podcast"],
-      brief: `Build on what is already working: a fresh, different angle on "${best.topic}" in another format — not a repeat. ${ORIGINALITY}`,
+      ...leadershipPlacement(["social_post", "short_video", "audio_episode", "postcard"], ["social", "podcast", "direct_mail"]),
+      brief: `Build on what is already working: a fresh, different angle on "${best.topic}" in another format — not a repeat. ${ORIGINALITY} ${gatesFor(["direct_mail"])}`,
     })
   }
 
@@ -157,8 +213,8 @@ export function rankLeadershipOpportunities(sig: LeadershipSignals): LeadershipO
       title: `${sig.localEvents.length} local event topic(s) in the market`,
       evidence: sig.localEvents.slice(0, 4).map((e) => e.title),
       strength: clamp(sig.localEvents.length * 15),
-      formats: ["social", "newsletter", "video"],
-      brief: `Be present in the community moment: a genuinely useful local guide or recap tied to these events. ${ORIGINALITY}`,
+      ...leadershipPlacement(["social_post", "newsletter_issue", "short_video", "postcard"], ["social", "newsletter", "direct_mail"]),
+      brief: `Be present in the community moment: a genuinely useful local guide or recap tied to these events. ${ORIGINALITY} ${gatesFor(["direct_mail"])}`,
     })
   }
 
@@ -174,7 +230,7 @@ export function renderLeadershipBriefForKickoff(sig: LeadershipSignals, opps: Le
   ]
   if (opps.length === 0) lines.push("(no leadership signal this week — use the topic bank and the brokerage's own listings and closings)")
   opps.slice(0, 5).forEach((o, i) => {
-    lines.push(`  ${i + 1}. [${o.strength}] ${o.title} — formats: ${o.formats.join(", ")}`)
+    lines.push(`  ${i + 1}. [${o.strength}] ${o.title} — make: ${o.formats.join(", ")} · via: ${o.channels.join(", ")}`)
     for (const e of o.evidence) lines.push(`       · ${e}`)
     lines.push(`       → ${o.brief}`)
   })
@@ -266,13 +322,21 @@ export async function loadMarketLeadershipSignals(svc: Svc, brokerageId: string,
     }
   }
 
-  // Local events — the only evidence: geo-tagged scraped topics that name an event.
+  // Local events — VERIFIED local facts only (wave 144, lane 144G hand-off): THE reader of the local-intelligence pass's stored
+  // facts (lib/content-intel/local-intel.ts loadLocalFacts — tenant-pinned, source-attributed, dated). Upcoming / ongoing
+  // local_event facts only; a news item, an expired event or an undated "current" fact is not an event to plan around.
+  // Survivor note: this replaces the EVENT_WORDS keyword inference over geo-tagged scraped topics (a headline that NAMED a
+  // festival was read as an event, with no date and no verification) and its "no dedicated events feed … WAITING_EXTERNAL"
+  // blind spot — the feed now exists; its absence for a tenant is the blind spot below.
   {
-    const { data, error } = await svc.from("content_topic_bank").select("topic_title, source_url, geo_relevance, brokerage_id")
-      .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`).not("geo_relevance", "is", null).gte("scraped_at", since).limit(300)
-    if (error) sig.blindSpots.push(`local topics not read (${error.message})`)
-    else sig.localEvents = (data as Array<{ topic_title: string; source_url: string | null }>).filter((r) => EVENT_WORDS.test(r.topic_title)).map((r) => ({ title: r.topic_title, sourceUrl: r.source_url }))
+    const { loadLocalFacts } = await import("@/lib/content-intel/local-intel")
+    const local = await loadLocalFacts(svc, brokerageId, { now, limit: 20 })
+    if (local.error) sig.blindSpots.push(`local events not read (${local.error})`)
+    else {
+      sig.localEvents = local.facts.filter((f) => f.kind === "local_event" && (f.temporal === "upcoming" || f.temporal === "ongoing"))
+        .map((f) => ({ title: f.eventStart ? `${f.title} (${f.eventStart})` : f.title, sourceUrl: f.url }))
+      if (!local.facts.length) sig.blindSpots.push("local events: the local-intelligence pass has stored no verified fact for this tenant's territories yet (needs an active territory and a web-search / news key, or a configured calendar feed)")
+    }
   }
-  sig.blindSpots.push("local events: no dedicated events feed is connected (WAITING_EXTERNAL — provider + credentials); events are inferred only from geo-tagged scraped topics")
   return sig
 }

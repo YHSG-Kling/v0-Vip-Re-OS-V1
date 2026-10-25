@@ -22,6 +22,9 @@
  * that makes the finder demonstrate it can still see the defect it was written
  * for, CLAUDE.md §2):
  *
+ *   (WAVE 144, owner ruling 13: the welcome no longer waits — it goes NOW and the
+ *   personal video FOLLOWS as one note when the real asset lands. Layers 1-2 assert
+ *   that rule; the held-welcome branch stays for a pre-144 row, welcomeState 'none'.)
  *   Layer 1  THE WAIT RULE. Only a render actually in flight arms the wait; an
  *            agent with no voice profile (live: 0 rows — the DEFAULT case today)
  *            sends immediately. An unknown reason must NOT wait.
@@ -106,13 +109,16 @@ const HOUR = 60 * 60 * 1000
 // ─── LAYER 1 — THE WAIT RULE ─────────────────────────────────────────────────
 
 function layer1_waitRule() {
-  console.log("\nLayer 1 — the email waits ONLY for a render that is actually in flight")
+  console.log("\nLayer 1 — the welcome goes NOW; only a render actually in flight arms the video FOLLOW-UP (owner ruling 13, wave 144)")
 
-  check("a freshly commissioned render ARMS the wait",
-    decideWelcomeTiming({ commissioned: true, reason: "commissioned" }).action === "wait_for_video")
+  // WAVE 144 (lane 144F) — the RULE re-asserted, not the waypoint: owner ruling 13 ("dispatch the immediately available welcome
+  // and follow with the video when the real asset is ready") replaced "the email waits for the video". A render in flight no
+  // longer HOLDS the welcome; it arms ONE follow-up the sweeper sends when the asset lands.
+  check("a freshly commissioned render arms the video FOLLOW-UP — and the welcome still goes now",
+    decideWelcomeTiming({ commissioned: true, reason: "commissioned" }).action === "send_now_video_follows")
 
-  check("a render already commissioned on an earlier attempt ARMS the wait too\n    (a retried conversion must not race the sweeper with a second send)",
-    decideWelcomeTiming({ commissioned: true, reason: "already_commissioned" }).action === "wait_for_video")
+  check("a render already commissioned on an earlier attempt arms the follow-up too\n    (a retried conversion must not race the sweeper with a second send)",
+    decideWelcomeTiming({ commissioned: true, reason: "already_commissioned" }).action === "send_now_video_follows")
 
   // THE DEFAULT CASE ON THIS PLATFORM. agent_voice_profiles holds ZERO rows, so
   // the reactor's honest refusal is what every conversion hits right now.
@@ -142,9 +148,11 @@ function layer1_waitRule() {
     "commissioned", "already_commissioned", "video_opt_out", "agent_not_video_ready",
     "excluded_contact_type", "unavailable", "refused",
   ] as const
-  const waiters = everyReason.filter((r) => decideWelcomeTiming({ commissioned: r === "commissioned", reason: r }).action === "wait_for_video")
-  check("CONTROL: EXACTLY TWO of the seven reasons arm the wait — not all, not none",
+  const waiters = everyReason.filter((r) => decideWelcomeTiming({ commissioned: r === "commissioned", reason: r }).action === "send_now_video_follows")
+  check("CONTROL: EXACTLY TWO of the seven reasons arm the video follow-up — not all, not none",
     waiters.length === 2, `armed: ${waiters.join(", ") || "none"}`)
+  check("NO outcome holds the welcome (wave 144): every one of the seven reasons — and an unknown one — sends it NOW",
+    [...everyReason, "a_reason_invented_next_year"].every((r) => decideWelcomeTiming({ commissioned: r === "commissioned", reason: r }).action.startsWith("send_now")))
 
   // A `commissioned` reason that did NOT actually commission cannot arm the wait:
   // there would be no agent_intro_videos row for the sweeper to find.
@@ -157,6 +165,7 @@ function layer1_waitRule() {
 function layer2_sweeper() {
   console.log("\nLayer 2 — the sweeper releases the welcome, and NOTHING waits forever")
 
+  // The HELD-welcome branch (welcomeState 'none' — a pre-wave-144 row whose welcome never went): released exactly as before.
   const base = {
     status: "rendering" as string | null,
     ageMs: 5 * 60 * 1000,
@@ -164,6 +173,7 @@ function layer2_sweeper() {
     hasRenderedUrl: true,
     videoOptOut: false,
     hasEmail: true,
+    welcomeState: "none" as "sent" | "held" | "failed" | "none" | null | undefined,
   }
 
   check("a landed assembly with a rendered URL releases the welcome WITH the video",
@@ -225,6 +235,31 @@ function layer2_sweeper() {
   check("every terminal status derived from the live vocabulary is SKIPPED by the\n    classifier — the rule is asserted, the list is derived (§2: no waypoints)",
     terminalByRule.every((s) => classifyPendingWelcome({ ...base, status: s }).action === "skip"),
     `terminal by rule: ${terminalByRule.join(",")}`)
+
+  // ── WAVE 144: THE WELCOME ALREADY WENT — THE VIDEO FOLLOWS IT, OR IS CLOSED ──
+  const sent = { ...base, welcomeState: "sent" as const }
+  check("W144 welcome SENT + a landed assembly → ONE video FOLLOW-UP (never a second welcome), stamped 'delivered' on a real send",
+    classifyPendingWelcome(sent).action === "send_video_follow_up" && classifyPendingWelcome(sent).ledgerStatus === "delivered")
+  check("W144 …still in flight / assembly pending → wait (the bare avatar track is never mailed)",
+    classifyPendingWelcome({ ...sent, hasRenderedUrl: false, composite: null }).action === "wait" && classifyPendingWelcome({ ...sent, composite: "pending" }).action === "wait")
+  check("W144 …past the deadline → CLOSED, 'failed', and NO mail (the welcome already went; no late video email)",
+    classifyPendingWelcome({ ...sent, composite: "pending", ageMs: WELCOME_VIDEO_WAIT_MS + 1 }).action === "close_video_follow_up" && classifyPendingWelcome({ ...sent, ageMs: WELCOME_VIDEO_WAIT_MS + 1 }).ledgerStatus === "failed")
+  check("W144 …a late video opt-out → closed 'suppressed'; no email on file → closed 'failed' (the video stays on the portal card)",
+    classifyPendingWelcome({ ...sent, videoOptOut: true }).ledgerStatus === "suppressed" && classifyPendingWelcome({ ...sent, videoOptOut: true }).action === "close_video_follow_up"
+    && classifyPendingWelcome({ ...sent, hasEmail: false }).action === "close_video_follow_up")
+  check("W144 a welcome HELD for approval → the video waits BEHIND it (never precedes it), and is closed past the deadline",
+    classifyPendingWelcome({ ...base, welcomeState: "held" }).action === "wait" && classifyPendingWelcome({ ...base, welcomeState: "held", ageMs: WELCOME_VIDEO_WAIT_MS + 1 }).action === "close_video_follow_up")
+  check("W144 a FAILED / rejected welcome → closed: a video never goes out without its welcome",
+    classifyPendingWelcome({ ...base, welcomeState: "failed" }).action === "close_video_follow_up")
+  check("W144 FAIL CLOSED: a caller that does not say (undefined) or could not read (null) the welcome's state RELEASES NOTHING and stamps nothing — a deduped welcome must never read as a delivered video",
+    classifyPendingWelcome({ ...base, welcomeState: undefined }).action === "wait" && classifyPendingWelcome({ ...base, welcomeState: undefined }).ledgerStatus === null
+    && classifyPendingWelcome({ ...base, welcomeState: null }).action === "wait")
+  check("W144 …and an unstated state past the deadline CLOSES the row 'failed' (the video was never delivered) — nothing hangs, and 'delivered' is never stamped without the state",
+    classifyPendingWelcome({ ...base, welcomeState: undefined, ageMs: WELCOME_VIDEO_WAIT_MS + 1 }).action === "close_video_follow_up" && classifyPendingWelcome({ ...base, welcomeState: undefined, ageMs: WELCOME_VIDEO_WAIT_MS + 1 }).ledgerStatus === "failed")
+  check("W144 CONTROL: the same row with the state stated DOES release — the fail-closed arm is not a classifier that always waits",
+    classifyPendingWelcome({ ...base, welcomeState: "none" }).action === "send_with_video" && classifyPendingWelcome(sent).action === "send_video_follow_up")
+  check("W144 a terminal row is skipped whatever the welcome's state",
+    (["sent", "held", "failed", "none", undefined] as const).every((w) => classifyPendingWelcome({ ...base, status: "delivered", welcomeState: w }).action === "skip"))
 
   // THE BOUND IS NOT A SECOND NUMBER (§6).
   check("the welcome's wait bound IS the video pipeline's existing bound — one\n    vocabulary per function, not a second timeout constant",
@@ -1058,7 +1093,7 @@ async function main() {
   // So this line makes the failure and success verdicts findable in a 700-script
   // sweep log; it does not make the proof any more or less enforced.
   console.log(" ✅ CONVERSION_WELCOME_PASS — ONE welcome email: the portal grant is immediate,")
-  console.log("    the email waits for the personal video only while one is really coming,")
-  console.log("    and never forever.")
+  console.log("    the welcome goes NOW and the personal video follows it as one note when it")
+  console.log("    really lands (wave 144) — never a second welcome, never a video before it.")
 }
 main().catch((e) => { console.error(e); process.exit(1) })

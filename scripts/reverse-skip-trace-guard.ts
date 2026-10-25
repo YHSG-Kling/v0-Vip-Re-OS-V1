@@ -128,8 +128,11 @@ const iPdl = orch.indexOf("skipTraceWithPeopleData(")
 check("gate → reverse wrapper → (else) V3 → PeopleData, in source order", iGate > 0 && iRev > iGate && iV3 > iRev && iPdl > iV3, `gate@${iGate} rev@${iRev} v3@${iV3} pdl@${iPdl}`)
 check("the reverse leg runs only for route.capability === 'reverse_contact', reuses the gate verdict, and leaves PeopleData to Step 5b",
   /skipTraceAccess\?\.allowed && route\.capability === 'reverse_contact'/.test(orch) && /access: skipTraceAccess, peopleData: null/.test(orch))
+// Wave 144 (lane 144E): the RULE, not the waypoint — the orchestrator generalised the reverse-only refusal to EVERY leg
+// (`batchDataFallback.emails[0] && !entity.email`: a provider e-mail fills a gap and never replaces the row's own), which
+// implies the reverse case; either spelling holds the rule.
 check("a reverse match is written with its own provider label and never replaces the row's own email",
-  /'batchdata_reverse_skip_trace'/.test(orch) && /!\(batchDataFallback\.via === 'reverse' && entity\.email\)/.test(orch))
+  /'batchdata_reverse_skip_trace'/.test(orch) && (/!\(batchDataFallback\.via === 'reverse' && entity\.email\)/.test(orch) || /batchDataFallback\.emails\[0\] && !entity\.email && \{ email: batchDataFallback\.emails\[0\] \}/.test(orch)))
 const wrap = code("lib/enrichment/reverse-skip-trace.ts")
 const wrapStr = stripped("lib/enrichment/reverse-skip-trace.ts")
 check("wrapper order: resolveContactProviderRoute → resolveBatchDataAccess → reverseSkipTraceBatchData → skipTraceWithPeopleData",

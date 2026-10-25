@@ -68,6 +68,9 @@ export interface PeopleDataEnrichment {
   ageRange?: string
   /** Lane 83A — PDL birth_year (the source of age / ageRange). */
   birthYear?: number
+  /** Wave 144 (lane 144E) — PDL birth_date as PDL states it ("YYYY-MM-DD", sometimes "YYYY-MM"); kept only when it is one of
+   *  those shapes. The birthday-card / education-format signal for lane F (docs.peopledatalabs.com person schema). */
+  birthDate?: string
   gender?: string
   /** Lane 83A — PDL inferred_salary (the person's salary band, NOT household income). */
   inferredSalary?: string
@@ -268,6 +271,7 @@ export function mapPeopleDataPerson(person: any, params: { name?: string; likeli
     age: typeof person.age === 'number' ? person.age : (age ?? undefined),
     ageRange: person.age_range ?? ageRangeForAge(typeof person.age === 'number' ? person.age : age),
     birthYear: typeof person.birth_year === 'number' ? person.birth_year : undefined,
+    birthDate: typeof person.birth_date === 'string' && /^\d{4}-\d{2}(-\d{2})?$/.test(person.birth_date.trim()) ? person.birth_date.trim() : undefined,
     gender: person.sex ?? person.gender,
     city: person.location_locality ?? person.location_city,
     state: person.location_region ?? person.location_state,

@@ -529,7 +529,9 @@ export async function enrichContactRecord(params: {
   try {
     const { data: contact, error: readError } = await supabase
       .from("contacts")
-      .select("id, brokerage_id, first_name, last_name, email, phone, address, city, state, zip_code, enriched_at, enrichment_profile")
+      // Wave 144 (lane 144E): + the provider-written profile columns (PROVIDER_WRITTEN_PROFILE_COLUMNS), so the write below can
+      // tell a GAP from a value a human stated (provider-dedup.ts protectStatedValues — no silent overwrite).
+      .select("id, brokerage_id, first_name, last_name, email, phone, address, city, state, zip_code, enriched_at, enrichment_profile, age_range, gender, occupation, education_level, home_owner_status, home_value_estimate, marital_status, household_income, net_worth_range, linkedin_url, facebook_url, twitter_url")
       .eq("id", contactId)
       .eq("brokerage_id", brokerageId)
       .maybeSingle()
@@ -792,9 +794,21 @@ export async function enrichContactRecord(params: {
       ...(enrichmentProvider && { enrichment_source: enrichmentProvider }),
       last_life_change_check: new Date().toISOString(),
     }
+    // NO SILENT OVERWRITE (wave 144, lane 144E — owner ruling 10's dedup rule): a value a human STATED (staff edit, the
+    // person's own portal edit, an AI-conversation statement) is never replaced by a provider's different value. The
+    // provider's offer is RECORDED (enrichment_profile.provider_conflicts) and the stated value's provenance stamp is kept —
+    // a gap is still filled and a provider-written value is still refreshed. lib/enrichment/provider-dedup.ts.
+    const { protectStatedValues, withProviderConflicts, keepPriorStamps } = await import("@/lib/enrichment/provider-dedup")
+    const guarded = protectStatedValues(contact as Record<string, unknown>, enrichmentUpdate as Record<string, unknown>, enrichmentProvider ?? "osint")
+    const guardedUpdate: Record<string, unknown> = guarded.patch
+    if (guarded.conflicts.length > 0) {
+      const base = (guardedUpdate.enrichment_profile as Record<string, unknown> | undefined) ?? { ...priorProfile }
+      guardedUpdate.enrichment_profile = withProviderConflicts(keepPriorStamps(base, priorProfile, guarded.conflicts.map((c) => c.field)), guarded.conflicts)
+      console.info(`[enrichment] ${guarded.conflicts.length} stated value(s) kept over a provider offer on ${contactId}: ${guarded.conflicts.map((c) => c.field).join(", ")}`)
+    }
     const { error: updateError } = await supabase
       .from("contacts")
-      .update(enrichmentUpdate)
+      .update(guardedUpdate)
       .eq("brokerage_id", brokerageId)
       .eq("id", contactId)
 
@@ -807,7 +821,7 @@ export async function enrichContactRecord(params: {
     // marital status (or a mailing address) on this contact — derive the household edges against the
     // tenant's other contacts at the same address (lib/kernel/relationship-graph.ts). Additive: the
     // enrichment write is already saved; a lost edge is logged, never reported as a failed enrichment.
-    if ("marital_status" in enrichmentUpdate || "mailing_address" in enrichmentUpdate || "address" in enrichmentUpdate) {
+    if ("marital_status" in guardedUpdate || "mailing_address" in guardedUpdate || "address" in guardedUpdate) {
       try {
         const { deriveHouseholdEdges } = await import("@/lib/kernel/relationship-graph")
         const edges = await deriveHouseholdEdges(supabase, { brokerageId, contactId })
@@ -819,7 +833,7 @@ export async function enrichContactRecord(params: {
     // RELATIONSHIP GRAPH (wave 102.1, lane 102F): an address or a residence signal (home_owner_status)
     // landing on the contact — when that address IS a listing this tenant holds, the contact
     // `occupies` it (lib/kernel/relationship-graph.ts deriveOccupancyEdges). Additive, never a failed enrichment.
-    if ("home_owner_status" in enrichmentUpdate || "mailing_address" in enrichmentUpdate || "address" in enrichmentUpdate) {
+    if ("home_owner_status" in guardedUpdate || "mailing_address" in guardedUpdate || "address" in guardedUpdate) {
       try {
         const { deriveOccupancyEdges } = await import("@/lib/kernel/relationship-graph")
         const occ = await deriveOccupancyEdges(supabase, { brokerageId, contactId, source: "contact_enrichment" })
@@ -827,6 +841,19 @@ export async function enrichContactRecord(params: {
       } catch (e) {
         console.error("[enrichment] occupancy edge derivation failed (non-blocking)", e)
       }
+    }
+
+    // ONLINE AUDIENCE APPEND (wave 144, lane 144E — owner ruling 10: a MATCH + APPEND of the person's hashed online
+    // identifiers onto the record, NOT targeting). REQUIRED GAP ONLY: the rung asks Versium only when this tenant runs a
+    // governed customer-list audience on a platform Versium serves, only for those platforms, and only when the contact's
+    // block is absent or stale; it pre-flights the budget and books its own ledger row (online-audience-store.ts). Additive:
+    // the enrichment write is already saved — a refused append is logged, never a failed enrichment.
+    try {
+      const { appendOnlineAudienceForContact } = await import("@/lib/enrichment/online-audience-store")
+      const oa = await appendOnlineAudienceForContact(supabase, { contactId, brokerageId })
+      if (!oa.ok) console.error(`[enrichment] online-audience append for ${contactId} (non-blocking): ${oa.error ?? oa.skipped ?? "refused"}`)
+    } catch (e) {
+      console.error("[enrichment] online-audience append failed (non-blocking)", e)
     }
 
     return { success: true, enriched: true }

@@ -20,6 +20,17 @@
  *      fair-housing gate (and a 55+ claim needs the verified exemption); the result is recorded on video_metadata.tv_spot — the social
  *      master in video_url is untouched — under ledger evidence, tenant-pinned and counted.
  *   F. SOURCE RULES: the action is a tenant-from-session door; the master never trims (no -t / -ss / trim filter); no provider key.
+ *
+ * WAVE 144 (lane 144H, owner ruling 16 — "the TV-ad provider was built in the Ads Manager (lib/ads/ctv-campaign.ts) — verify and
+ * reuse; do not duplicate; wave 143's tv-spot* is the creative spec/judge side"; ruling 18 — approved creative keeps its approval):
+ *   G. CONVERGENCE, on an in-memory database with a TV master made by THIS judge from REAL bytes: the ONE streaming-TV path
+ *      (stageCtvCampaign / ensureCtvBroadcastReady / launchCtvCampaignOnVibe / the vibe_ctv connector) refuses a client's, personal or
+ *      unapproved video, refuses a master that FAILED its checks (naming them), stages a draft with no master but never LAUNCHES one,
+ *      and uploads the TV master — never the social reel; it re-spells none of the judge's numbers and no second TV provider exists.
+ *   H. THE CREATIVE CENSUS: every publication door of the approved creative workflows (avatar, listing/social, YouTube, landing-page
+ *      video, education, podcast, books, TV master, TV ad, paid ads) holds a human-approval gate, and the usage-rights evidence the
+ *      platform keeps (likeness consent, licensed music, stock licence, KDP rights attestation, broadcast-rights line) is still wired —
+ *      each with a positive control (the gate removed from the source is caught) and the doors not found published as blind spots.
  */
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
@@ -34,6 +45,11 @@ import { measureTvSpotFile } from "../lib/video/tv-spot-measure"
 import { produceTvSpotMaster, tvSpotOf } from "../lib/video/tv-spot-produce"
 import { buildCaptionPlan } from "../lib/video/caption-plan"
 import { MASTER_LOUDNESS } from "../lib/remotion/music-filter-graph"
+// Wave 144 (lane 144H, owner ruling 16): the TV-AD PROVIDER path (the Ads Manager's streaming-TV lane) reads THIS judge.
+import { stageCtvCampaign, ensureCtvBroadcastReady, launchCtvCampaignOnVibe } from "../lib/ads/ctv-campaign"
+import { vibeCtvConnector } from "../lib/ads/connectors/vibe-ctv"
+import { blankStrings } from "./strip-comments"
+import { existsSync } from "node:fs"
 
 const ROOT = process.cwd()
 const code = (p: string) => stripComments(readFileSync(join(ROOT, p), "utf8"))
@@ -203,6 +219,123 @@ async function main() {
   check("the producer pins every read and write to the tenant (eq brokerage_id) and COUNTS the write", (produce.match(/\.eq\("brokerage_id", args\.brokerageId\)/g) ?? []).length >= 2 && /\(data \?\? \[\]\)\.length !== 1/.test(produce))
   check("the producer does not write video_url (the social master stays the asset's file)", !/update\(\{[^}]*video_url/.test(produce))
   check("no provider key / network call beyond the project's own https file", !/(api[_-]?key|secret|token)/i.test(produce + master))
+
+  // ═══════════════════ G · the TV-ad provider path reads the judge ═══════════════════
+  section("G · lib/ads/ctv-campaign.ts (the ONE streaming-TV provider path) uploads the judge's TV master — never the social reel")
+  // Two REAL masters from THIS judge: a 15 s spot (READY) and a 17 s reel (NOT READY on duration).
+  const masterOf = async (bytes: Buffer, url: string) => {
+    const db = seed({ video_url: url })
+    const r = await produceTvSpotMaster(db as never, { brokerageId: B1, videoId: VID, actorUserId: U1 }, deps({ fetchBytes: async () => bytes }) as never)
+    return { r, meta: db.tables.ai_video_projects[0].video_metadata as Record<string, unknown> }
+  }
+  const ready = await masterOf(src15, "https://cdn.example/12-oak.mp4"), notReady = await masterOf(src17, "https://cdn.example/17.mp4")
+  check("fixtures: the judge made a READY master (15 s) and a NOT READY one (17 s, duration) from real bytes", ready.r.ok && ready.r.ready && notReady.r.ok && !notReady.r.ready)
+  const masterUrl = tvSpotOf(ready.meta)?.url ?? ""
+  const CAMP = "33333333-3333-4333-8333-333333333333"
+  const vrow = (over: Record<string, unknown> = {}) => ({ ...row({ video_url: "https://cdn.example/12-oak.mp4", duration_seconds: 15, format: "16:9", listing_id: null, video_metadata: ready.meta }), ...over })
+  const adWorld = (over: Record<string, unknown> = {}, o: { refuse?: Record<string, string>; campaign?: Record<string, unknown> | null } = {}) => memSupabase({
+    ai_video_projects: [vrow(over)],
+    ad_campaigns: o.campaign === null ? [] : [{ id: CAMP, brokerage_id: B1, platform: "vibe_ctv", status: "draft", daily_budget: 25, targeting_config: { play: "ctv", zips: ["33602"], video_project_id: VID, creative_video_url: "https://cdn.example/12-oak.mp4" }, ...(o.campaign ?? {}) }],
+    agent_action_ledger: [],
+  }, { uuidIds: true, refuse: o.refuse })
+  const stage = (db: ReturnType<typeof adWorld>) => stageCtvCampaign({ brokerageId: B1, agentUserId: U1, videoProjectId: VID, dailyBudgetCents: 2500, targeting: { zips: ["33602"] }, client: db as never })
+  {
+    const db = adWorld({}, { campaign: null })
+    const r = await stage(db)
+    const cfg = (db.tables.ad_campaigns[0]?.targeting_config ?? {}) as Record<string, unknown>
+    check("STAGE with a READY master: the staged creative IS the TV master (creative_source tv_master, spec version recorded); the social reel is not the creative", r.success && cfg.creative_video_url === masterUrl && masterUrl !== "https://cdn.example/12-oak.mp4" && cfg.creative_source === "tv_master" && cfg.tv_spot_spec_version === TV_SPOT_SPEC.version && r.package?.creativeUrl === masterUrl, JSON.stringify(r).slice(0, 300))
+    check("…the launch package names the TV master and carries the USAGE-RIGHTS line (broadcast licences) — the spec words are derived from the judge", !!r.package?.checklist.some((l) => /TV MASTER/.test(l) && l.includes(`${TV_SPOT_SPEC.width}×${TV_SPOT_SPEC.height}`) && l.includes(`${TV_SPOT_SPEC.loudness.targetLkfs} LKFS`)) && !!r.package?.checklist.some((l) => /Usage rights/.test(l) && /broadcast/.test(l)))
+  }
+  const stageRefused = async (label: string, over: Record<string, unknown>, re: RegExp) => {
+    const db = adWorld(over, { campaign: null })
+    const r = await stage(db)
+    check(label, !r.success && re.test(r.error ?? "") && db.tables.ad_campaigns.length === 0, r.success ? "staged" : r.error)
+  }
+  await stageRefused("STAGE refuses an UNAPPROVED video (a TV ad is a broadcast) — no draft row", { approval_status: "pending_review" }, /not an approved public marketing video \(not approved\)/)
+  await stageRefused("STAGE refuses a client's video (addressed to a contact) — no draft row", { contact_id: "22222222-2222-4222-8222-222222222222" }, /addressed to a contact/)
+  await stageRefused("STAGE refuses a PERSONAL kind (welcome)", { video_type: "welcome" }, /personal or client kind/)
+  await stageRefused("STAGE refuses the unbranded MLS-only cut", { usage_intent: "mls" }, /mls only cut/)
+  await stageRefused("STAGE refuses a master that FAILED the judge, naming the failed check and its numbers", { video_metadata: notReady.meta }, /TV master is NOT ready — failed duration \(needs 15 \/ 30 \/ 60 s/)
+  {
+    const db = adWorld({ video_metadata: {} }, { campaign: null })
+    const r = await stage(db)
+    const cfg = (db.tables.ad_campaigns[0]?.targeting_config ?? {}) as Record<string, unknown>
+    check("STAGE with NO master yet: a DRAFT may carry the social reel, SAID (creative_source social_master_unverified, a warning, 'make the TV master first' in the checklist) — a draft broadcasts nothing", r.success && cfg.creative_source === "social_master_unverified" && !!r.package?.warnings.some((w) => /No TV master yet/.test(w)) && !!r.package?.checklist.some((l) => /Make the TV master first/.test(l)))
+  }
+  {
+    const db = adWorld({ video_metadata: {} })
+    const r = await ensureCtvBroadcastReady({ campaignId: CAMP, brokerageId: B1, client: db as never })
+    const l = await launchCtvCampaignOnVibe({ campaignId: CAMP, brokerageId: B1, actorUserId: U1, launchedVia: "vibe_api", client: db as never })
+    check("LAUNCH (the authoritative write) with no master is REFUSED — by the gate and through the launch door (dispatched false, 'not launched'), the row still draft and still pointing at nothing new", !r.ok && /no TV master/.test(r.reason) && !l.dispatched && /^not launched — no TV master/.test(l.reason ?? "") && db.tables.ad_campaigns[0].status === "draft" && db.writes.filter((w) => w.table === "ad_campaigns" && w.op === "update").length === 0)
+  }
+  for (const [label, over, re] of [
+    ["an approval REVOKED after staging", { approval_status: "rejected" }, /not approved/],
+    ["a master that failed its checks", { video_metadata: notReady.meta }, /TV master is NOT ready/],
+  ] as Array<[string, Record<string, unknown>, RegExp]>) {
+    const db = adWorld(over)
+    const l = await launchCtvCampaignOnVibe({ campaignId: CAMP, brokerageId: B1, actorUserId: U1, launchedVia: "ads_manager", client: db as never })
+    check(`LAUNCH re-reads the video at the write: ${label} is refused (dispatched false)`, !l.dispatched && re.test(l.reason ?? ""), l.reason)
+  }
+  {
+    const db = adWorld()
+    const r = await ensureCtvBroadcastReady({ campaignId: CAMP, brokerageId: B1, client: db as never })
+    const cfg = db.tables.ad_campaigns[0].targeting_config as Record<string, unknown>
+    const upd = db.writes.filter((w) => w.table === "ad_campaigns" && w.op === "update")
+    check("with a READY master the gate POINTS the staged row at the master (one counted update) so the provider uploads it, never the social reel", r.ok && r.creativeUrl === masterUrl && cfg.creative_video_url === masterUrl && cfg.creative_source === "tv_master" && upd.length === 1 && upd[0].matched === 1)
+    const again = await ensureCtvBroadcastReady({ campaignId: CAMP, brokerageId: B1, client: db as never })
+    check("…idempotent: a second pass finds the master already set and writes nothing", again.ok && db.writes.filter((w) => w.table === "ad_campaigns" && w.op === "update").length === 1)
+    check("another tenant's campaign is not found (tenant-pinned)", !(await ensureCtvBroadcastReady({ campaignId: CAMP, brokerageId: B2, client: db as never })).ok)
+    const refusedRead = await ensureCtvBroadcastReady({ campaignId: CAMP, brokerageId: B1, client: adWorld({}, { refuse: { ad_campaigns: "permission denied for table ad_campaigns" } }) as never })
+    check("FAIL CLOSED: a refused read is a refusal with its reason, never a pass", !refusedRead.ok && /campaign read refused: permission denied/.test(refusedRead.reason))
+  }
+  {
+    const pub = await vibeCtvConnector.publishCampaign({ structure: { campaign_id: CAMP }, cred: { accessToken: "x", accountId: null, config: {}, brokerageId: null } } as never)
+    check("the CONNECTOR door (ad-connector registry) runs the same gate: with no tenant on the credential nothing is published", !pub.ok && /names no tenant/.test((pub as { error?: string }).error ?? ""))
+  }
+  {
+    const ctv = code("lib/ads/ctv-campaign.ts"), conn = code("lib/ads/connectors/vibe-ctv.ts"), tv = code("lib/video/tv-spot.ts")
+    const launchBody = ctv.slice(ctv.indexOf("export async function launchCtvCampaignOnVibe"), ctv.indexOf("export async function ensureCtvBroadcastReady"))
+    check("ORDER at both doors: the gate runs BEFORE the provider dispatch (launch: ensureCtvBroadcastReady before dispatchCtvCampaign; connector: the same)", launchBody.indexOf("ensureCtvBroadcastReady(") > 0 && launchBody.indexOf("ensureCtvBroadcastReady(") < launchBody.indexOf("dispatchCtvCampaign(") && conn.indexOf("ensureCtvBroadcastReady(") > 0 && conn.indexOf("ensureCtvBroadcastReady(") < conn.indexOf("dispatchCtvCampaign(campaignId)"))
+    const NUMS = /−24|-24\b|1920|1080|dBTP|LKFS ±/
+    check("the provider path RE-SPELLS none of the judge's numbers (derived from TV_SPOT_SPEC) — positive control: the judge itself carries them", !NUMS.test(blankStrings(ctv)) && !NUMS.test(ctv.replace(/\$\{[^}]*\}/g, "")) && NUMS.test(tv))
+    const others = ["lib/ads", "lib/providers", "lib/video"].flatMap((d) => (spawnSync("grep", ["-rlE", "dispatchCtvCampaign|api\\.vibe\\.co", d, "--include=*.ts"], { encoding: "utf8" }).stdout ?? "").split("\n").filter(Boolean))
+    check(`ONE TV-ad provider: only lib/providers/vibe.ts speaks Vibe; the dispatch is called only from the ctv lane and its connector (${others.length} file(s) found)`, others.every((f) => ["lib/providers/vibe.ts", "lib/ads/ctv-campaign.ts", "lib/ads/connectors/vibe-ctv.ts"].includes(f)) && others.includes("lib/providers/vibe.ts"), others.join(", "))
+    check("tvSpotOf has ONE definition (lib/video/tv-spot.ts); tv-spot-produce re-exports it unchanged", /export function tvSpotOf\(/.test(tv) && !/export function tvSpotOf\(/.test(produce) && /export \{ tvSpotOf, type TvSpotRecord \} from "\.\/tv-spot"/.test(produce))
+  }
+
+  // ═══════════════════ H · the creative census ═══════════════════
+  section("H · every approved creative workflow keeps its human approval and its usage-rights evidence (owner ruling 18)")
+  type Door = { workflow: string; file: string; re: RegExp; what: string }
+  const doors: Door[] = [
+    { workflow: "avatar / explainer video", file: "lib/video/avatar-explainer.ts", re: /approval_status:\s*"pending_review"/, what: "lands in the unified approval queue, never auto-approved" },
+    { workflow: "listing + social posts", file: "app/api/cron/publish-social-posts/route.ts", re: /\.eq\("approval_status", "approved"\)/, what: "the publisher sends approved posts only" },
+    { workflow: "YouTube", file: "lib/video/youtube-publish.ts", re: /classifyPublicVideo\(/, what: "approved + compliance-passed public classes only" },
+    { workflow: "landing-page video (/v/[slug])", file: "lib/geo/video-landing.ts", re: /approvalStatus !== "approved"/, what: "broker sign-off gate" },
+    { workflow: "education video", file: "lib/video/public-video.ts", re: /reason: "education_module_video"/, what: "an education-OS module video is never broadcast as marketing" },
+    { workflow: "podcast distribution", file: "app/api/cron/distribute-podcast-episodes/route.ts", re: /\.eq\("approval_status", "approved"\)/, what: "the distributor sends approved episodes only" },
+    { workflow: "podcast preset publish", file: "lib/podcast/orchestrate-podcast-preset-publish.ts", re: /ep\.approval_status !== "approved"/, what: "a preset stages channels for an approved episode only (wave 144)" },
+    { workflow: "book (lead magnet)", file: "lib/kernel/lead-magnets.ts", re: /humanizedReviewState\(book\.chapters\)/, what: "the human's publish + the humanized review" },
+    { workflow: "book (KDP)", file: "lib/lead-magnets/book-publishing-produce.ts", re: /KDP_ATTESTATIONS\.filter\(\(a\) => !args\.attested\.includes\(a\.id\)\)/, what: "every attestation by a session user" },
+    { workflow: "TV master", file: "lib/video/tv-spot-produce.ts", re: /classifyPublicVideo\(p as never\)/, what: "a broadcast: approved public classes only" },
+    { workflow: "TV ad (streaming)", file: "lib/ads/ctv-campaign.ts", re: /classifyPublicVideo\(row\)/, what: "staging + both launch doors (wave 144)" },
+    { workflow: "paid ads (Meta / Google)", file: "lib/ads/launch-assembler.ts", re: /\.eq\("approval_status", "approved"\)/, what: "only an approved creative is assembled" },
+  ]
+  const rights: Door[] = [
+    { workflow: "avatar likeness", file: "lib/did/avatar-consent-gate.ts", re: /consent/i, what: "the presenter's likeness consent gate" },
+    { workflow: "licensed music bed", file: "lib/remotion/render-coordinator.ts", re: /used_music_asset_id:\s*musicAssetId/, what: "the render records WHICH licensed track it used (video_assets.license_url / license_attribution)" },
+    { workflow: "stock imagery", file: "lib/marketing/image-library.ts", re: /stock license covers each user's own use/, what: "stock is never shared platform-wide" },
+    { workflow: "book rights", file: "lib/lead-magnets/book-publishing.ts", re: /id: "i_hold_rights"/, what: "the KDP rights-holder attestation" },
+    { workflow: "TV broadcast rights", file: "lib/ads/ctv-campaign.ts", re: /CTV_RIGHTS_CHECK,/, what: "the launch package's broadcast-licence line (wave 144)" },
+  ]
+  for (const d of [...doors, ...rights]) {
+    if (!existsSync(join(ROOT, d.file))) { check(`${d.workflow}: ${d.file} exists`, false); continue }
+    const src = code(d.file)
+    const defanged = src.replace(new RegExp(d.re.source, d.re.flags.includes("g") ? d.re.flags : `${d.re.flags}g`), "/*gate removed*/")
+    check(`${d.workflow} — ${d.what} (${d.file}); CONTROL: with the gate removed the census catches it`, d.re.test(src) && !d.re.test(defanged))
+  }
+  check("music licence columns exist on the live schema cache (video_assets.license_url + license_attribution)", /video_assets: \[[^\]]*"license_attribution"[^\]]*"license_url"/.test(readFileSync(join(ROOT, "scripts/schema-snapshot.ts"), "utf8")))
+  blind.push(`the creative census is a SOURCE census of ${doors.length} approval doors + ${rights.length} rights records (stripped source, each with a removal control) — it proves the gate is still written at the door, not every runtime path; community/event (topic) videos have NO separate publication door — they reach the public only through the YouTube, landing-page and TV doors above (unresolved: a direct social post of a topic video rides the social approval queue)`)
+  blind.push("BROADCAST licence scope is not machine-checkable: the platform keeps each music asset's licence link and attribution, not whether that licence covers streaming TV — the launch package says so and a human confirms (WAITING_EXTERNAL per buy)")
   finish()
 
   function finish() {

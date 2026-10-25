@@ -12,7 +12,8 @@
  *      the legacy live read is shown to price it wrongly (the control). The agreement used — version, date, source, the
  *      signed record of the period — is frozen in commission_calculations.engine_inputs and one ledger row.
  *   B. THE TEAM'S TERMS AND MEMBERS FOR THE PERIOD — judged on the deal's date, not the wall clock.
- *   C. THE WATERFALL CONSERVES — a seller concession (gross adjustment) no longer breaks the identity or persists a
+ *   C. THE WATERFALL CONSERVES — an AGENT concession (a gross adjustment: the listing agreement's agreed commission credit to
+ *      the seller — owner ruling 4, wave 144; a SELLER concession never touches commission) no longer breaks the identity or persists a
  *      refused row; the gross of record foots to the distributions.
  *   D. REFERRAL PAYOUTS ARE DEDUCTIONS — the agreed fee comes off the top before the split, conserved, linked to ONE
  *      deal (compare-and-swap), idempotent on a re-run; the free-standing post-close booking is gone.
@@ -227,8 +228,8 @@ async function main() {
   check("the OCTOBER deal: 30 % = $2,520.00", r2.r.success && leadCut(r2, t2.LEAD_A) === 252_000, JSON.stringify(r2.r).slice(0, 220))
 
   // ══ C · the waterfall conserves ══════════════════════════════════════════════════════════════
-  console.log("\n[C · a seller concession no longer breaks the identity]")
-  const cr = newDeal({ close: "2026-08-15", liveSplit: 70, versions: [{ effective_from: "2026-01-01", split: 70 }], adjustments: [{ applies_to: "gross", value_type: "flat", value: 500, direction: "credit", notes: "seller concession" }] })
+  console.log("\n[C · an agent concession (the listing agreement's commission credit to the seller) no longer breaks the identity]")
+  const cr = newDeal({ close: "2026-08-15", liveSplit: 70, versions: [{ effective_from: "2026-01-01", split: 70 }], adjustments: [{ applies_to: "gross", value_type: "flat", value: 500, direction: "credit", notes: "listing-agreement commission concession" }] })
   const credit = await runEngine(seedDeal(cr), cr)
   const dist = rows(credit.svc, "commission_distributions")
   const sumRows = dist.reduce((s, r) => s + cents(r.calculated_amount), 0)
@@ -399,11 +400,13 @@ async function main() {
     !["lib", "app"].some((d) => walk(d).some((f) => /from\(\s*["']agent_commission_profile_versions["']\s*\)\s*\.(insert|update|upsert|delete)\(/.test(stripComments(readFileSync(f, "utf8")))))
     && /from\(\s*["']agent_commission_profile_versions["']\s*\)\s*\.(insert|update|upsert|delete)\(/.test(`svc.from("agent_commission_profile_versions").insert({})`))
   check("the table has a steward in the manager registry (TABLE_MANAGER)", /agent_commission_profile_versions:\s*"finance_manager"/.test(code("lib/kernel/manager-registry.ts")))
-  check("the engine wires stage 03b between 03 and 04, in that order", (() => { const e = code("lib/commission/engine.ts"); const a = e.indexOf("applyGrossAdjustments(context)"), b = e.indexOf("applyReferralDeduction(context)"), c = e.indexOf("splitAgentBrokerage(context)"); return a > 0 && b > a && c > b })())
+  // WAVE 144 (lane 144D): stages 03 and 03b now take the calculation mode (a held concession / partner fee refuses a FINAL),
+  // so the order is asserted on the CALL, not on a literal argument list (the rule, not the waypoint).
+  check("the engine wires stage 03b between 03 and 04, in that order", (() => { const e = code("lib/commission/engine.ts"); const a = e.search(/applyGrossAdjustments\(context\b/), b = e.search(/applyReferralDeduction\(context\b/), c = e.indexOf("splitAgentBrokerage(context)"); return a > 0 && b > a && c > b })())
 
   console.log("\nBLIND SPOTS: the engine ran against the in-memory client (no RLS, no triggers, no CHECK constraints — the negative-row CHECK is emulated by assertion); m812's SQL was proved on a")
   console.log("  scratch PostgreSQL 16 against stub tables by the lane (backfill, no-op save, same-day replace, re-dating, team flat/percent, null-tenant guard, FK cascade, idempotent re-run),")
-  console.log("  not by this script; cap-window attribution (stage 07/08/11 pick the window containing TODAY), the brokerage default gross rate (commission_structures has no effective dates) and the")
+  console.log("  not by this script; cap-window attribution is now the DEAL's cycle (wave 144 — proved by scripts/cap-cycle-guard.ts, not here), the brokerage default gross rate (commission_structures has no effective dates) and the")
   console.log("  team-lead anchor (teams.team_lead_id is current-only) are NOT effective-dated here; QuickBooks / Stripe / bank events are not exercised (no credentials).")
   console.log(`\nRESULT: ${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`)
   if (failures.length) { console.log("FAILURES:"); failures.forEach((f) => console.log("  - " + f)) }

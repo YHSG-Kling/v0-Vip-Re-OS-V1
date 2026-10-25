@@ -55,9 +55,16 @@
 // write a window that does not contain today rather than writing a row that
 // cannot be found.
 //
-// `agents.start_date` DOES NOT EXIST on this schema. Only `created_at` does.
-// Anchoring on a phantom column would make this module an instance of the exact
-// defect class it exists to clean up.
+// `agents.start_date` DOES NOT EXIST on this schema. Anchoring on a phantom column
+// would make this module an instance of the exact defect class it exists to clean
+// up. CORRECTED (wave 144, lane 144D): `agents.anniversary_date` DOES exist — the
+// seat's start date every provisioning path stamps (app/actions/agents.ts,
+// lib/kernel/users.ts) — and is now the anchor, with created_at the fallback; an
+// agreement that states its own cap anniversary (m850) outranks both.
+//
+// THE WINDOW A DEAL USES IS THE ONE CONTAINING THE DEAL'S DATE (wave 144): see
+// resolveCapCycleForDeal below. "Today" remains the seeder's default only for the
+// settings surfaces that open the current window.
 //
 // ══ WINDOW ENDS ARE INCLUSIVE AND NON-OVERLAPPING ════════════════════════════
 //
@@ -210,6 +217,13 @@ export function resolveAnniversaryWindow(input: {
   today: string
   /** `agents.created_at`. There is no `agents.start_date` on this schema. */
   agentCreatedAt?: string | null
+  /** WAVE 144 (lane 144D): `agents.anniversary_date` — the seat's start date, stamped at creation by every provisioning
+   *  path (app/actions/agents.ts, lib/kernel/users.ts). Preferred over created_at for the agent's own anniversary. */
+  agentAnniversaryDate?: string | null
+  /** WAVE 144 (lane 144D, owner ruling 9: "cycle/anniversary … come from the agreement"): the agreement's own cap
+   *  anniversary (agent_commission_profiles.cap_anniversary_date, m850). When stated it OUTRANKS every basis — the
+   *  brokerage default only speaks for an agreement that is silent. */
+  agreementAnniversaryDate?: string | null
   /** `brokerages.created_at` — the brokerage's own year has no other anchor:
    *  there is no fiscal-year-start column on `brokerages`, and inventing one
    *  here would be a phantom. */
@@ -219,7 +233,10 @@ export function resolveAnniversaryWindow(input: {
   if (!today) return { ok: false, error: `"${String(input.today)}" is not a calendar date.` }
 
   let anchorIso: string | null
-  if (input.basis === "calendar_year") {
+  const agreementAnchor = parseCapDate(input.agreementAnniversaryDate)
+  if (agreementAnchor) {
+    anchorIso = agreementAnchor
+  } else if (input.basis === "calendar_year") {
     anchorIso = `${today.slice(0, 4)}-01-01`
   } else if (input.basis === "brokerage_fiscal_year") {
     anchorIso = parseCapDate(input.brokerageCreatedAt)
@@ -231,12 +248,12 @@ export function resolveAnniversaryWindow(input: {
       }
     }
   } else {
-    anchorIso = parseCapDate(input.agentCreatedAt)
+    anchorIso = parseCapDate(input.agentAnniversaryDate) ?? parseCapDate(input.agentCreatedAt)
     if (!anchorIso) {
       return {
         ok: false,
         error:
-          "The agent's anniversary is the cap basis, but the agent record has no readable created_at to anchor it on.",
+          "The agent's anniversary is the cap basis, but the agent record has no readable anniversary_date or created_at to anchor it on.",
       }
     }
   }
@@ -438,10 +455,14 @@ export async function ensureAgentCapWindow(
   args: {
     agentId: string
     brokerageId: string
-    /** YYYY-MM-DD. Defaults to today — injectable so the arithmetic is testable. */
+    /** YYYY-MM-DD. Defaults to today — injectable so the arithmetic is testable. WAVE 144 (lane 144D): the commission
+     *  engine passes the DEAL's date, so the window materialised is the cycle the deal belongs to (anniversary rollover). */
     today?: string
     /** A cap named by the caller in this act; outranks the resolver. */
     explicitCapAmount?: number | null
+    /** WAVE 144 (lane 144D): the cap anniversary the AGREEMENT IN FORCE states (m850 cap_anniversary_date) — outranks the
+     *  brokerage basis when present. */
+    agreementAnniversaryDate?: string | null
   },
 ): Promise<{ ok: true; result: CapSeedResult } | { ok: false; error: string }> {
   const today = parseCapDate(args.today ?? new Date().toISOString().slice(0, 10))
@@ -472,7 +493,7 @@ export async function ensureAgentCapWindow(
   const [agentRes, brokerageRes, profileRes] = await Promise.all([
     db
       .from("agents")
-      .select("id, created_at")
+      .select("id, created_at, anniversary_date")
       .eq("brokerage_id", args.brokerageId)
       .eq("id", args.agentId)
       .maybeSingle(),
@@ -543,6 +564,8 @@ export async function ensureAgentCapWindow(
     basis,
     today,
     agentCreatedAt: (agentRes.data as unknown as { created_at: string | null }).created_at,
+    agentAnniversaryDate: (agentRes.data as unknown as { anniversary_date?: string | null }).anniversary_date ?? null,
+    agreementAnniversaryDate: args.agreementAnniversaryDate ?? null,
     brokerageCreatedAt: brokerage.created_at,
   })
   if (!win.ok) return { ok: false, error: win.error }
@@ -597,6 +620,263 @@ export async function ensureAgentCapWindow(
       trackingId: (written[0] as { id: string }).id,
     },
   }
+}
+
+// ── THE CAP CYCLE A DEAL IS JUDGED IN (wave 144, lane 144D — owner ruling 9) ──
+//
+// Owner (2026-10-25): "Cap paid to date tallies what the agent/team has paid the brokerage; once it equals the cap in the
+// agent/team agreement, the brokerage stops taking that fee until the agent/team ANNIVERSARY cap date, when the total restarts.
+// Cap-eligible contribution types, cycle/anniversary, exceptions and effective agreement version come from the agreement; never
+// reset on January 1 unless the agreement says so; never apply the cap to unrelated royalties/fees."
+//
+// WHAT WAS WRONG AT HEAD (measured, 967a4866): stage 07 and stage 11 found the ledger window containing TODAY — a deal that
+// closed before the anniversary and was calculated after it was charged against the NEW cycle; once a window expired nothing
+// opened the next one, so the engine silently stopped capping a capped agent (the brokerage collected its full split for ever);
+// the anchor was agents.created_at though agents.anniversary_date exists; the cap amount was the ledger copy even when the
+// agreement in force on the deal's date stated another; and stage 11 advanced the counter fetch-add-update in dollar floats,
+// so two deals priced against the same remaining cap could both cross it.
+//
+// THE RULE NOW: the cycle is the one containing the DEAL's date (stage 01's agreement as-of date). Its cap amount is the
+// agreement in force on that date (else the ledger window's, else the brokerage default); its anniversary is the agreement's
+// own date (else the brokerage basis anchored on agents.anniversary_date, else created_at); its eligible contributions are the
+// agreement's (else the brokerage split alone). A cycle with no ledger row is a NEW cycle at $0 that stage 11 opens through
+// ensureAgentCapWindow; stage 11 advances it by compare-and-swap on the paid-to-date the deal was priced on.
+
+/** What may count toward (and stop at) the cap — m850 agent_commission_profiles_cap_eligible_contributions_check. */
+export const CAP_CONTRIBUTION_TYPES = ["brokerage_split", "transaction_fee", "desk_fee", "technology_fee", "eo_fee", "royalty"] as const
+export type CapContributionType = (typeof CAP_CONTRIBUTION_TYPES)[number]
+
+/** An agreement that is silent: the brokerage's split alone counts — the engine's behaviour before m850, never widened silently. */
+const DEFAULT_CAP_ELIGIBLE_CONTRIBUTIONS: readonly CapContributionType[] = ["brokerage_split"]
+
+interface CapTerms {
+  /** Dollars; null = the agreement states no cap. */
+  capAmount: number | null
+  anniversaryDate: string | null
+  eligible: CapContributionType[]
+  findings: string[]
+}
+
+/** PURE — the cap terms an agreement (profile-shaped terms, stage 01's resolution) states. Module-private: reached through
+ *  resolveCapCycleForDeal, which is what stage 07 and the proofs call (no export exists only for a proof). */
+function capTermsFromAgreement(terms: Record<string, unknown> | null | undefined): CapTerms {
+  const findings: string[] = []
+  const capAmount = numOrNull(terms?.cap_amount)
+  const rawDate = terms?.cap_anniversary_date
+  const anniversaryDate = parseCapDate(rawDate)
+  if (rawDate !== null && rawDate !== undefined && rawDate !== "" && !anniversaryDate) {
+    findings.push(`the agreement's cap anniversary "${String(rawDate)}" is not a calendar date — the brokerage basis applies`)
+  }
+  const raw = terms?.cap_eligible_contributions
+  let eligible: CapContributionType[]
+  if (raw === null || raw === undefined) {
+    eligible = [...DEFAULT_CAP_ELIGIBLE_CONTRIBUTIONS]
+  } else if (Array.isArray(raw)) {
+    const known = raw.filter((x): x is CapContributionType => (CAP_CONTRIBUTION_TYPES as readonly unknown[]).includes(x))
+    const unknown = raw.filter((x) => !(CAP_CONTRIBUTION_TYPES as readonly unknown[]).includes(x))
+    if (unknown.length > 0) findings.push(`the agreement names cap contributions this engine does not know (${unknown.map(String).join(", ")}) — ignored, never guessed`)
+    eligible = Array.from(new Set(known))
+    if (eligible.length === 0) findings.push("the agreement lists no cap-eligible contribution — nothing counts toward the cap")
+  } else {
+    findings.push("the agreement's cap-eligible contributions are unreadable — the brokerage split alone counts")
+    eligible = [...DEFAULT_CAP_ELIGIBLE_CONTRIBUTIONS]
+  }
+  return { capAmount, anniversaryDate, eligible, findings }
+}
+
+export interface ResolvedCapCycle {
+  trackingId: string | null
+  start: string
+  end: string
+  capAmountCents: number
+  paidToDateCents: number
+  paidToDateRaw: number | string | null
+  capSource: "agreement" | "ledger" | "brokerage_default"
+  eligible: CapContributionType[]
+  asOf: string
+  /** The agreement's own anniversary when it stated one (stage 11 seeds the window with it). */
+  agreementAnniversaryDate: string | null
+  findings: string[]
+}
+
+export type CapCycleResolution =
+  | { ok: true; cycle: ResolvedCapCycle | null; findings: string[] }
+  | { ok: false; error: string }
+
+const toCentsSafe = (v: unknown): number => {
+  const n = numOrNull(v)
+  return n === null ? 0 : Math.round(n * 100)
+}
+
+/**
+ * The cap cycle containing the deal's date (see the section header). READS ONLY — stage 11 is the only writer.
+ * FAIL CLOSED: a refused read, overlapping windows, or a configured cap whose window cannot be placed is an ERROR, never
+ * "uncapped" — an unreadable cap would otherwise let the brokerage over-collect from a capped agent.
+ */
+export async function resolveCapCycleForDeal(
+  db: SupabaseClient,
+  args: { agentId: string; brokerageId: string; asOf: string; terms: Record<string, unknown> | null | undefined },
+): Promise<CapCycleResolution> {
+  const asOf = parseCapDate(args.asOf)
+  if (!asOf) return { ok: false, error: `"${String(args.asOf)}" is not a calendar date.` }
+  const capTerms = capTermsFromAgreement(args.terms ?? null)
+
+  const { data: rows, error } = await db
+    .from("agent_cap_tracking")
+    .select("id, cap_amount, cap_paid_to_date, anniversary_start, anniversary_end")
+    .eq("brokerage_id", args.brokerageId)
+    .eq("agent_id", args.agentId)
+    .lte("anniversary_start", asOf)
+    .gte("anniversary_end", asOf)
+  if (error) return { ok: false, error: `the agent's cap ledger could not be read: ${error.message}` }
+  const windows = (rows ?? []) as Array<{ id: string; cap_amount: unknown; cap_paid_to_date: unknown; anniversary_start: string; anniversary_end: string }>
+  if (windows.length > 1) {
+    return { ok: false, error: `${windows.length} cap ledger windows cover ${asOf} for this agent (${windows.map((w) => w.id).join(", ")}) — a finance admin must resolve the overlap; the cap is not guessed` }
+  }
+
+  const findings = [...capTerms.findings]
+  const w = windows[0]
+  if (w) {
+    const ledgerCap = numOrNull(w.cap_amount)
+    const capAmount = capTerms.capAmount ?? ledgerCap
+    if (capAmount === null) return { ok: true, cycle: null, findings }
+    if (capAmount < 0) return { ok: false, error: `a cap cannot be negative — ${capAmount} applies on ${asOf}` }
+    if (capTerms.capAmount !== null && ledgerCap !== null && Math.abs(capTerms.capAmount - ledgerCap) > 0.005) {
+      findings.push(`the ledger window states a $${ledgerCap} cap; the agreement in force on ${asOf} states $${capTerms.capAmount} — the agreement applies`)
+    }
+    return {
+      ok: true,
+      findings,
+      cycle: {
+        trackingId: w.id,
+        start: String(w.anniversary_start).slice(0, 10),
+        end: String(w.anniversary_end).slice(0, 10),
+        capAmountCents: Math.round(capAmount * 100),
+        paidToDateCents: toCentsSafe(w.cap_paid_to_date),
+        paidToDateRaw: (w.cap_paid_to_date as number | string | null) ?? null,
+        capSource: capTerms.capAmount !== null ? "agreement" : "ledger",
+        eligible: capTerms.eligible,
+        asOf,
+        agreementAnniversaryDate: capTerms.anniversaryDate,
+        findings,
+      },
+    }
+  }
+
+  // No ledger window covers the deal's date. Is a cap configured at all? The agreement in force first, then the brokerage default.
+  const [brkRes, agentRes] = await Promise.all([
+    db.from("brokerages").select("id, created_at, default_cap_amount, default_cap_anniversary_basis").eq("id", args.brokerageId).maybeSingle(),
+    db.from("agents").select("id, created_at, anniversary_date").eq("id", args.agentId).eq("brokerage_id", args.brokerageId).maybeSingle(),
+  ])
+  if (brkRes.error) return { ok: false, error: `the brokerage's cap settings could not be read: ${brkRes.error.message}` }
+  if (agentRes.error) return { ok: false, error: `the agent record could not be read: ${agentRes.error.message}` }
+  const brk = (brkRes.data ?? null) as { created_at?: string | null; default_cap_amount?: unknown; default_cap_anniversary_basis?: unknown } | null
+  const brokerageDefault = numOrNull(brk?.default_cap_amount)
+  const capAmount = capTerms.capAmount ?? brokerageDefault
+  if (capAmount === null) return { ok: true, cycle: null, findings }
+  if (capAmount < 0) return { ok: false, error: `a cap cannot be negative — ${capAmount} applies on ${asOf}` }
+  const agent = (agentRes.data ?? null) as { created_at?: string | null; anniversary_date?: string | null } | null
+  const win = resolveAnniversaryWindow({
+    basis: normalizeCapAnniversaryBasis(brk?.default_cap_anniversary_basis),
+    today: asOf,
+    agentCreatedAt: agent?.created_at ?? null,
+    agentAnniversaryDate: agent?.anniversary_date ?? null,
+    agreementAnniversaryDate: capTerms.anniversaryDate,
+    brokerageCreatedAt: brk?.created_at ?? null,
+  })
+  if (!win.ok) return { ok: false, error: `a $${capAmount} cap applies on ${asOf} but its cycle cannot be placed: ${win.error}` }
+  findings.push(`no ledger window covered ${asOf}: the cycle ${win.window.start} → ${win.window.end} starts at $0 (the anniversary restart); the final calculation opens it`)
+  return {
+    ok: true,
+    findings,
+    cycle: {
+      trackingId: null,
+      start: win.window.start,
+      end: win.window.end,
+      capAmountCents: Math.round(capAmount * 100),
+      paidToDateCents: 0,
+      paidToDateRaw: null,
+      capSource: capTerms.capAmount !== null ? "agreement" : "brokerage_default",
+      eligible: capTerms.eligible,
+      asOf,
+      agreementAnniversaryDate: capTerms.anniversaryDate,
+      findings,
+    },
+  }
+}
+
+export interface SplitCapPlan {
+  brokerageFinalCents: number
+  agentBonusCents: number
+  capApplied: boolean
+  capStatus: "pre_cap" | "hit_cap" | "post_cap" | "n/a"
+  amountTowardsCap: number
+  remainingAfterSplitCents: number
+}
+
+/**
+ * PURE — stage 07's split against the cycle (the branch order stage 07 always had: remaining <= 0 → post_cap; portion <=
+ * remaining → pre_cap; otherwise hit_cap — the deal CROSSES the cap mid-transaction, the brokerage takes the remainder and the
+ * agent keeps the rest). When the agreement does not count the split toward the cap, the brokerage keeps its whole portion.
+ */
+export function planSplitAgainstCap(input: {
+  brokeragePortionCents: number
+  cycle: { capAmountCents: number; paidToDateCents: number; eligible: readonly string[] } | null
+}): SplitCapPlan {
+  const portion = input.brokeragePortionCents
+  if (!input.cycle) {
+    return { brokerageFinalCents: portion, agentBonusCents: 0, capApplied: false, capStatus: "n/a", amountTowardsCap: 0, remainingAfterSplitCents: 0 }
+  }
+  const remaining = input.cycle.capAmountCents - input.cycle.paidToDateCents
+  if (!input.cycle.eligible.includes("brokerage_split")) {
+    return { brokerageFinalCents: portion, agentBonusCents: 0, capApplied: false, capStatus: remaining <= 0 ? "post_cap" : "pre_cap", amountTowardsCap: 0, remainingAfterSplitCents: Math.max(0, remaining) }
+  }
+  if (remaining <= 0) {
+    return { brokerageFinalCents: 0, agentBonusCents: portion, capApplied: true, capStatus: "post_cap", amountTowardsCap: 0, remainingAfterSplitCents: 0 }
+  }
+  if (portion <= remaining) {
+    return { brokerageFinalCents: portion, agentBonusCents: 0, capApplied: false, capStatus: "pre_cap", amountTowardsCap: portion, remainingAfterSplitCents: remaining - portion }
+  }
+  return { brokerageFinalCents: remaining, agentBonusCents: portion - remaining, capApplied: true, capStatus: "hit_cap", amountTowardsCap: remaining, remainingAfterSplitCents: 0 }
+}
+
+/**
+ * PURE — one fee / royalty against the cap room the split left. Not eligible → charged in full and counted for nothing
+ * ("never apply the cap to unrelated royalties/fees"). Eligible → charged up to the room, the rest waived (the brokerage stops
+ * taking THAT fee at the cap), and what was charged counts toward the cap.
+ */
+export function chargeAgainstCap(amountCents: number, remainingCents: number, eligible: boolean): { chargedCents: number; waivedCents: number; countedCents: number; remainingCents: number } {
+  if (!eligible || amountCents <= 0) return { chargedCents: amountCents, waivedCents: 0, countedCents: 0, remainingCents }
+  const room = Math.max(0, remainingCents)
+  const charged = Math.min(amountCents, room)
+  return { chargedCents: charged, waivedCents: amountCents - charged, countedCents: charged, remainingCents: room - charged }
+}
+
+/**
+ * PURE — a REFUND / CORRECTION of a posted cap-contributing entry moves the cap ledger by what the deal's contribution
+ * actually changed (wave 144, lane 144D). Derived from the rows, never incremented blind:
+ *   contribution = what the calculation counted (engine_inputs.cap) + (the entry's live net − its original amount), floored at 0;
+ *   the ledger moves by contribution_after − contribution_before; a raise never passes the cap (the excess is REPORTED — the
+ *   agent is owed it, a finance admin corrects the agent's entry), a refund never takes paid-to-date below 0.
+ */
+export function planCapContributionCorrection(input: {
+  contributedCents: number
+  originalEntryCents: number
+  netBeforeCents: number
+  netAfterCents: number
+  capAmountCents: number
+  paidToDateCents: number
+}): { capDeltaCents: number; excessCents: number } {
+  const before = Math.max(0, input.contributedCents + (input.netBeforeCents - input.originalEntryCents))
+  const after = Math.max(0, input.contributedCents + (input.netAfterCents - input.originalEntryCents))
+  const delta = after - before
+  if (delta > 0) {
+    const room = Math.max(0, input.capAmountCents - input.paidToDateCents)
+    const applied = Math.min(delta, room)
+    return { capDeltaCents: applied, excessCents: delta - applied }
+  }
+  if (delta < 0) return { capDeltaCents: Math.max(delta, -Math.max(0, input.paidToDateCents)), excessCents: 0 }
+  return { capDeltaCents: 0, excessCents: 0 }
 }
 
 // ── The TEAM seeder ──────────────────────────────────────────────────────────

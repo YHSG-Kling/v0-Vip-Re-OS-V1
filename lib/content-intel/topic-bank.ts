@@ -315,6 +315,9 @@ export function renderTopicsForPrompt(topics: TopicCandidate[]): string {
     `${i + 1}. ${t.topic_title}` +
     (t.value_angle ? `\n   Angle: ${t.value_angle}` : "") +
     (t.categories.length > 0 ? `\n   Tags: ${t.categories.join(", ")}` : "") +
-    (t.is_brokerage_local ? `\n   (LOCAL TO THIS BROKERAGE)` : "")
+    (t.is_brokerage_local ? `\n   (LOCAL TO THIS BROKERAGE)` : "") +
+    // Wave 144 (lane 144G): a VERIFIED LOCAL FACT (lib/content-intel/local-intel.ts) carries its
+    // source — the writer credits and links it and never copies the publisher's text.
+    (t.categories.includes("local_intel") && t.source_url ? `\n   Source (credit + link, never copy): ${t.source_url}` : "")
   ).join("\n\n")
 }

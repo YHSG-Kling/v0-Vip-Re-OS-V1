@@ -63,6 +63,45 @@ export function resolveCdaMode(input: { offersCda: boolean | null | undefined; n
   }
 }
 
+// ─── 1b. THE PAYOUT GATE — a brokerage SETTING (wave 144, lane 144D; owner ruling 8) ─────────────────
+//
+// Owner (2026-10-25): "Payout gate is a brokerage SETTING: either pay out at closing (CDA authorizes the permitted
+// closing-time distribution) or pay out when the brokerage receives the final commission and then pays the agent/team.
+// Approval, payout initiation and verified receipt are separate states … no fabricated paid status."
+// The setting is brokerages.commission_payout_timing (m850), beside offers_cda — the brokerage's other closing-money switch.
+// UNDECLARED (NULL / pre-m850) IS "AFTER RECEIPT": the funds-received gate (lib/commission/ledger-sync.ts payoutFundsGate) is
+// the fail-closed default, and a closing-time release is never inferred from offers_cda alone (a CDA brokerage may still
+// have title pay the brokerage the whole commission). AT CLOSING needs a CDA brokerage: without offers_cda the setting is
+// reported and the receipt gate applies.
+
+export const COMMISSION_PAYOUT_TIMINGS = ["at_closing_per_cda", "after_brokerage_receipt"] as const
+export type CommissionPayoutTiming = (typeof COMMISSION_PAYOUT_TIMINGS)[number]
+
+export const COMMISSION_PAYOUT_TIMING_LABEL: Record<CommissionPayoutTiming, string> = {
+  at_closing_per_cda: "At closing — title disburses the agent's share as the broker-signed CDA authorizes",
+  after_brokerage_receipt: "After the brokerage receives the commission — then the brokerage pays the agent / team",
+}
+
+export interface PayoutTimingVerdict {
+  timing: CommissionPayoutTiming
+  declared: boolean
+  finding: string | null
+}
+
+/** PURE — which payout gate this brokerage runs. */
+export function resolvePayoutTiming(input: { offersCda: boolean | null | undefined; payoutTiming: unknown }): PayoutTimingVerdict {
+  if (input.payoutTiming === "at_closing_per_cda") {
+    if (input.offersCda === true) return { timing: "at_closing_per_cda", declared: true, finding: null }
+    return {
+      timing: "after_brokerage_receipt",
+      declared: true,
+      finding: "the brokerage chose closing-time payout but does not use a CDA (offers_cda is not true) — nothing authorizes a closing-time distribution, so the brokerage-receipt gate applies",
+    }
+  }
+  if (input.payoutTiming === "after_brokerage_receipt") return { timing: "after_brokerage_receipt", declared: true, finding: null }
+  return { timing: "after_brokerage_receipt", declared: false, finding: null }
+}
+
 // ─── 2. THE PRELIMINARY STATEMENT (HUD / ALTA / CD) — versions, comparison, review state ──────────
 
 /**

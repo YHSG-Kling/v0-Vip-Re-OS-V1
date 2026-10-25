@@ -40,6 +40,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { runDealAutopsy } from "@/lib/kernel/deal-autopsy"
 import { resolveMilestoneIdentity } from "./milestone-identity"
 import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
+import { resolveCdaMode } from "./cda-closing-policy"
 import {
   readHazardInsurance,
   hazardSeverity,
@@ -82,6 +83,12 @@ interface TransactionContext {
   earnestMoneyDueAt:   string | null
   /** transactions.deal_type — 'buyer' | 'seller' | 'dual' | null on legacy rows. */
   dealType:            string | null
+  /**
+   * WAVE 144 (lane 144D, owner ruling 8 — the payout gate is a brokerage SETTING): does this brokerage use a CDA at all?
+   * resolveCdaMode({ offersCda: brokerages.offers_cda }).cdaRequired, read once per brokerage by the runner. null = the
+   * setting could not be read — the CDA detector ABSTAINS (an alarm off an unread setting would be fabricated).
+   */
+  cdaRequired:         boolean | null
 }
 
 interface TransactionEvidence {
@@ -271,7 +278,14 @@ function detectWireInstructionsMissing(ctx: TransactionContext, ev: TransactionE
   }
 }
 
+/**
+ * WAVE 144 (lane 144D; lane 144B outside-lane item 3) — ONLY FOR A CDA BROKERAGE. A brokerage that does not use a CDA
+ * (offers_cda false / never declared — lib/transactions/cda-closing-policy.ts resolveCdaMode) pays out after it receives the
+ * commission; there is no CDA to deliver, and this used to open an urgent "the brokerage doesn't get paid" action on every
+ * one of its deals inside 7 days of closing. An already-open row on such a deal is superseded by the runner (not detected).
+ */
 function detectCDAMissing(ctx: TransactionContext, ev: TransactionEvidence): DetectedAction | null {
+  if (ctx.cdaRequired !== true) return null
   if (!ctx.closeDate) return null
   const daysToClose = daysBetween(today(), ctx.closeDate)
   if (daysToClose > 7 || daysToClose < 0) return null
@@ -497,6 +511,24 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
   let reseeded = 0
   let skipped = 0
 
+  // WAVE 144 (lane 144D): the brokerage's CDA setting, read ONCE per brokerage (the runner spans tenants on the service
+  // client). A refused read is named and makes only the CDA detector abstain for that brokerage's deals.
+  const cdaRequiredByBrokerage = new Map<string, boolean | null>()
+  const cdaRequiredFor = async (brokerageId: string): Promise<boolean | null> => {
+    if (cdaRequiredByBrokerage.has(brokerageId)) return cdaRequiredByBrokerage.get(brokerageId) ?? null
+    const { data: brk, error: brkErr } = await svc.from("brokerages").select("id, offers_cda").eq("id", brokerageId).maybeSingle()
+    let value: boolean | null
+    if (brkErr) {
+      console.error(`[closing-orchestration] brokerages.offers_cda read refused for ${brokerageId}: ${brkErr.message}`)
+      refusals.push({ transactionId: null, read: "brokerages.offers_cda", error: brkErr.message })
+      value = null
+    } else {
+      value = resolveCdaMode({ offersCda: (brk as { offers_cda?: boolean | null } | null)?.offers_cda ?? null }).cdaRequired
+    }
+    cdaRequiredByBrokerage.set(brokerageId, value)
+    return value
+  }
+
   for (const t of txns as any[]) {
     // Pull evidence in parallel
     const [inspectionsRes, lenderRes, titleRes, milestonesRes, insuranceRes] = await Promise.all([
@@ -614,6 +646,7 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
       propertyAddress:   t.property_address,
       earnestMoneyDueAt: emMile?.target_date ?? null,
       dealType:          t.deal_type ?? null,
+      cdaRequired:       await cdaRequiredFor(t.brokerage_id),
     }
 
     // Run all detectors

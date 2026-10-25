@@ -105,8 +105,17 @@ function openProviderPopup(url: string) {
   else window.open(url, "_blank", "noopener")
 }
 
-/** Where a "My Forms" entry lives. `platform` = a licensed packet the PLATFORM holds for every subscriber (platform Media, m807). */
-type LibraryScope = "brokerage" | "team" | "agent" | "platform"
+/**
+ * Who SHARED a "My Forms" entry with this agent — their brokerage, their own team, or themselves (wave 144, owner ruling 3: form
+ * packets are the brokerage's and the team's, never the platform's). TOMBSTONE: the `platform` scope (wave 143, a packet the
+ * platform handed every subscriber directly) is gone — a VIPAgents catalogue packet reaches an agent only after the brokerage adds
+ * it to its own library, and then it is a `brokerage` or `team` entry whose `origin` says where it came from. Survivor:
+ * lib/forms/tenant-form-packets.ts listFormPacketsForActor via app/api/form-wizard/form-packets/route.ts.
+ */
+type LibraryScope = "brokerage" | "team" | "agent"
+/** Where a shared entry came from: the brokerage's / team's own upload, the VIPAgents catalogue (added by the brokerage), or a loose file. */
+type LibraryOrigin = "library" | "platform_catalogue" | "file"
+type LibraryEntry = { name: string; url: string; scope: LibraryScope; path: string; origin?: LibraryOrigin }
 
 interface FormRef {
   source: "my_forms" | "legal_forms_provider"
@@ -245,7 +254,7 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
   const [draftChecked, setDraftChecked] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [myForms, setMyForms] = useState<{ name: string; url: string; scope: LibraryScope; path: string }[]>([])
+  const [myForms, setMyForms] = useState<LibraryEntry[]>([])
   const [formsLoaded, setFormsLoaded] = useState(false)
   const [providerInfo, setProviderInfo] = useState<ProviderWindow | null | "loading">("loading")
   // How the e-sign step runs (lane 88C): "google_drive_handoff" (the default — popup),
@@ -492,10 +501,10 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
 
     const supabase = createClient()
 
-    // Load "My Forms" from Storage at brokerage, team, agent scope
-    const paths: { prefix: string; scope: "brokerage" | "team" | "agent" }[] = [
-      { prefix: `brokerage/${brokerageId}/`, scope: "brokerage" },
-      ...(teamId ? [{ prefix: `teams/${teamId}/`, scope: "team" as const }] : []),
+    // "My Forms" (wave 144, owner ruling 3). The AGENT's own folder is listed here, on the browser session (the bucket policy
+    // admits only the caller's own agents/{id}/ prefix). What the BROKERAGE and the agent's own TEAM share comes from the
+    // session-gated route below, which resolves the agent's ACTUAL membership — never a prop, never another team's or tenant's.
+    const paths: { prefix: string; scope: "agent" }[] = [
       { prefix: `agents/${agentUserId}/`, scope: "agent" },
       // The Upload tab writes to agents/{id}/uploads/ — list is NOT recursive, so without
       // this prefix an uploaded form vanished from "My Forms" the next time the wizard opened.
@@ -525,20 +534,20 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
         }
       })
     )
-    // PLATFORM MEDIA (m807, wave 143): the licensed fillable packets the platform holds for every subscriber,
-    // for THIS deal's state and purpose. Read through a session-gated route (the catalogue is platform content,
-    // not storage the tenant may list); each entry carries the `platform/{id}/…` path the same fill action
-    // takes, admitted by form-path-scope only while the packet is approved and in licence. A refusal is shown
-    // as the absence of the platform group, never as an error that blocks the tenant's own forms.
+    // THE BROKERAGE'S AND THE TEAM'S PACKETS — their own library (lib/forms/tenant-form-packets.ts), for THIS deal's state and
+    // purpose, each with the path the same fill action takes (lib/forms/form-path-scope.ts admits a registered packet only while
+    // its library row is active, in licence and shared with this agent). A catalogue packet the brokerage added carries
+    // origin "platform_catalogue". A refusal is shown as the absence of the shared group, never as an error that blocks the
+    // agent's own forms.
     try {
       const qs = new URLSearchParams({ purpose: purpose })
       if (state.propertyState) qs.set("state", state.propertyState)
-      const res = await fetch(`/api/form-wizard/platform-packets?${qs.toString()}`)
+      const res = await fetch(`/api/form-wizard/form-packets?${qs.toString()}`)
       if (res.ok) {
-        const body = await res.json() as { packets?: Array<{ name: string; url: string; path: string }> }
-        for (const p of body.packets ?? []) collected.push({ name: p.name, url: p.url, scope: "platform", path: p.path })
+        const body = await res.json() as { packets?: Array<{ name: string; url: string; path: string; scope: "brokerage" | "team"; origin?: LibraryOrigin }> }
+        for (const p of body.packets ?? []) collected.push({ name: p.name, url: p.url, scope: p.scope === "team" ? "team" : "brokerage", path: p.path, origin: p.origin })
       }
-    } catch { /* the platform group is an addition; the tenant's own library already loaded */ }
+    } catch { /* the shared group is an addition; the agent's own library already loaded */ }
     setMyForms(collected)
 
     // Load provider info via API. The route reads the tenant from the SESSION (lane 88C) —
@@ -1377,9 +1386,9 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
   mode: "offer" | "listing"
   state: WizardState
   update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void
-  myForms: { name: string; url: string; scope: LibraryScope; path: string }[]
+  myForms: LibraryEntry[]
   agentUserId: string
-  onUploaded: (f: { name: string; url: string; scope: LibraryScope; path: string }) => void
+  onUploaded: (f: LibraryEntry) => void
   providerInfo: ProviderWindow | null | "loading"
   providerForms: ProviderFormItem[] | null
   providerFormsLoading: boolean
@@ -1455,7 +1464,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
   }
 
   const scopeIcon = (scope: LibraryScope) =>
-    scope === "platform" ? <ShieldCheck className="h-3 w-3" /> : scope === "brokerage" ? <Building2 className="h-3 w-3" /> : scope === "team" ? <Users className="h-3 w-3" /> : <User className="h-3 w-3" />
+    scope === "brokerage" ? <Building2 className="h-3 w-3" /> : scope === "team" ? <Users className="h-3 w-3" /> : <User className="h-3 w-3" />
 
   // THE RECOMMENDATION (wave 142): the state's verified package joined to what is ACTUALLY available
   // (library + legal-forms provider), filtered by the Terms answers. Pure; nothing invented.
@@ -1535,7 +1544,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
             <div className="text-center py-8 text-muted-foreground text-sm">
               No forms found in your brokerage, team, or agent library.
               <br />
-              <span className="text-xs">Upload forms via Settings → Forms Library.</span>
+              <span className="text-xs">Your brokerage or team shares packets from Admin → Transaction Form Library.</span>
             </div>
           ) : (
             <div className="space-y-2">
@@ -1551,6 +1560,12 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
                       {scopeIcon(f.scope)}
                       {f.scope}
                     </Badge>
+                    {f.origin === "platform_catalogue" && (
+                      <Badge variant="secondary" className="flex items-center gap-1 text-xs shrink-0" title="Added to your brokerage's library from the VIPAgents form catalogue">
+                        <ShieldCheck className="h-3 w-3" />
+                        catalogue
+                      </Badge>
+                    )}
                   </label>
                 )
               })}
@@ -1690,7 +1705,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
 // them so "pull the listing-agreement package" is one click, and anything the library is
 // missing is NAMED instead of silently absent.
 
-type LibraryForm = { name: string; url: string; scope: LibraryScope; path: string }
+type LibraryForm = LibraryEntry
 
 function StatePackagePanel({ mode, stateCode, myForms, selected, onSelect }: {
   mode: "offer" | "listing"

@@ -35,6 +35,12 @@ import type { ContentTopic } from "@/lib/marketing/content-topics"
 // housing-for-older-persons exemption (42 U.S.C. § 3607(b)); a held claim is rewritten around, then a human decides.
 import { OLDER_PERSONS_WRITING_DIRECTIVE } from "@/lib/compliance/fair-housing-older-persons"
 import { loadOlderPersonsVerifications } from "@/lib/compliance/fair-housing-older-persons-store"
+// Wave 144 (lane 144H, owner ruling 15): WHOSE book (publication context), WHY this topic (demand evidence), and the
+// mandatory HUMANIZED review — the pure rules live in lib/lead-magnets/book-editorial.ts.
+import {
+  bookContextAllowed, conceptSpecifics, defaultBookContext, isBookPublicationContext, publicationRecord, scanAiTells, scoreBookTopicEvidence,
+  type BookPublication, type BookPublicationContext, type BookTopicEvidence, type HumanizedReviewRecord,
+} from "./book-editorial"
 
 // ── The project record (lead_capture_forms.settings.book) ─────────────────────────────────────────
 
@@ -48,8 +54,9 @@ interface BookChapter {
   body: string
   words: number
   written_at: string
-  /** Set by the edit pass: fact findings resolved, fair-housing rewrites run, escalated to a human? */
-  edited?: { fact_findings: number; fair_housing_rewrites: number; escalated: boolean; findings: string[]; human_revised_at?: string }
+  /** Set by the edit pass: fact findings resolved, fair-housing rewrites run, escalated to a human? `ai_tells` are the
+   *  machine-written phrases the HUMANIZED review must rewrite (none once the human revised the chapter). */
+  edited?: { fact_findings: number; fair_housing_rewrites: number; escalated: boolean; findings: string[]; human_revised_at?: string; ai_tells?: string[] }
 }
 
 interface BookFactFinding {
@@ -72,7 +79,9 @@ export interface BookProject {
   tagline: string | null
   introduction: string | null
   closing: string | null
-  research: { topics: string[]; bank_topics: string[]; fetched_at: string | null } | null
+  /** `evidence` (wave 144): demand, audience problem, competitor positioning, gaps, originality, conversion and the verdict
+   *  the outline gate reads — absent on projects researched before it existed (scored from the stored topics then). */
+  research: { topics: string[]; bank_topics: string[]; fetched_at: string | null; evidence?: BookTopicEvidence | null } | null
   outline: Array<{ heading: string; summary: string; key_points: string[] }> | null
   chapters: BookChapter[]
   fact_check: { findings: BookFactFinding[]; checked_at: string } | null
@@ -87,6 +96,11 @@ export interface BookProject {
   started_at: string
   updated_at: string
   log: Array<{ stage: BookStage; at: string; note: string }>
+  /** WHOSE book and where it publishes (lead magnet / tenant KDP / platform KDP) — absent on pre-144 projects (= lead_magnet). */
+  publication?: BookPublication
+  /** The human's sign-off after reading the draft as a reader (set by the lead-magnet publish or the KDP attestation;
+   *  cleared by any revision). */
+  humanized_review?: HumanizedReviewRecord | null
 }
 
 /** Public-facing surface text the book's landing page carries once the title exists. */
@@ -153,13 +167,14 @@ function allowedCorpus(p: BookProject): string {
   return [p.concept, ...(p.research?.topics ?? []), ...(p.research?.bank_topics ?? []), ...(p.outline ?? []).flatMap((o) => [o.heading, o.summary, ...o.key_points])].join("\n")
 }
 
-function newProject(input: { concept: string; audience: BookAudience; area: string | null; brand: string | null; startedBy: string; now: string }): BookProject {
+function newProject(input: { concept: string; audience: BookAudience; area: string | null; brand: string | null; startedBy: string; now: string; publication: BookPublication }): BookProject {
   return {
     stage: "research", concept: input.concept, audience: input.audience, area: input.area, brand: input.brand,
     title: workingTitle(input.concept), subtitle: null, tagline: null, introduction: null, closing: null,
     research: null, outline: null, chapters: [], fact_check: null, pdf_url: null, document_id: null, page_count: null,
     cost: { tokens: 0, model_calls: 0 }, needs_human_review: [], started_by: input.startedBy, started_at: input.now, updated_at: input.now,
-    log: [{ stage: "research", at: input.now, note: "book project started" }],
+    log: [{ stage: "research", at: input.now, note: `book project started (${input.publication.context}, owned by the ${input.publication.owner})` }],
+    publication: input.publication, humanized_review: null,
   }
 }
 
@@ -193,6 +208,13 @@ export interface BookDeps {
   researcher?: (audience: BookAudience, area: string | null, brokerageId: string) => Promise<ContentTopic[]>
   /** The tenant's own topic bank (default pickTopics on the same client). */
   topicReader?: (brokerageId: string, svc: Svc) => Promise<string[]>
+  /** COMPETITOR POSITIONING — books already on the topic (default: the same gated search rail, titles + snippets kept as
+   *  facts, never copied into the manuscript). null = not researched (no provider result). */
+  positioningResearcher?: (q: { concept: string; audience: BookAudience; area: string | null; brokerageId: string }) => Promise<{ titles: string[]; snippets: string[] } | null>
+  /** CONVERSION — this tenant's magnets of the same type and their captures (default: lead_capture_forms + form_submissions). */
+  conversionReader?: (svc: Svc, q: { brokerageId: string; magnetType: string; excludeMagnetId: string }) => Promise<{ magnets: number; captures: number } | null>
+  /** Is this the platform's HOUSE tenant (brokerages.is_demo)? Default reads it; an unreadable row is NOT the house tenant. */
+  tenantReader?: (svc: Svc, brokerageId: string) => Promise<{ isHouseTenant: boolean; readable: boolean }>
   manuscriptWriter?: BookWriter
   factCheckWriter?: BookWriter
   entitlement?: (ask: { brokerageId: string; estTokens: number; actor?: { platformRole?: string | null; userType?: string | null } | null }) => Promise<{ allowed: boolean; reason: string; message?: string }>
@@ -236,6 +258,36 @@ const defaultTopicReader: NonNullable<BookDeps["topicReader"]> = async (brokerag
   return topics.map((t) => (t.value_angle ? `${t.topic_title} — ${t.value_angle}` : t.topic_title))
 }
 
+const defaultPositioningResearcher: NonNullable<BookDeps["positioningResearcher"]> = async (q) => {
+  try {
+    const { webSearch } = await import("@/lib/ai/web-search")
+    const audience = q.audience === "buyer" ? "home buyers" : q.audience === "seller" ? "home sellers" : "real estate"
+    const res = await webSearch({ query: `books for ${audience} about ${q.concept.slice(0, 120)}${q.area ? ` ${q.area}` : ""} kindle`, mode: "research", maxResults: 8, spend: { brokerageId: q.brokerageId, systemSource: "content_topics" } })
+    const titles = (res.hits ?? []).map((h) => (h.title ?? "").trim()).filter(Boolean)
+    const snippets = [res.answer ?? "", ...(res.hits ?? []).map((h) => h.snippet ?? "")].map((s) => s.trim()).filter(Boolean)
+    return titles.length || snippets.length ? { titles, snippets } : null
+  } catch {
+    return null
+  }
+}
+
+// The tenant's PUBLISHED magnets of the type (a draft — another book still being written — has captured nothing yet).
+const defaultConversionReader: NonNullable<BookDeps["conversionReader"]> = async (svc, q) => {
+  const { data: forms, error } = await svc.from("lead_capture_forms").select("id").eq("brokerage_id", q.brokerageId).eq("magnet_type", q.magnetType).eq("is_active", true).limit(200)
+  if (error) return null
+  const ids = ((forms ?? []) as Array<{ id: string }>).map((f) => f.id).filter((id) => id !== q.excludeMagnetId)
+  if (ids.length === 0) return { magnets: 0, captures: 0 }
+  const { data: subs, error: subErr } = await svc.from("form_submissions").select("id").eq("brokerage_id", q.brokerageId).in("form_id", ids).limit(5000)
+  if (subErr) return null
+  return { magnets: ids.length, captures: (subs ?? []).length }
+}
+
+const defaultTenantReader: NonNullable<BookDeps["tenantReader"]> = async (svc, brokerageId) => {
+  const { data, error } = await svc.from("brokerages").select("is_demo").eq("id", brokerageId).maybeSingle()
+  if (error) return { isHouseTenant: false, readable: false }
+  return { isHouseTenant: (data as { is_demo?: boolean | null } | null)?.is_demo === true, readable: true }
+}
+
 const defaultEntitlement: NonNullable<BookDeps["entitlement"]> = async (ask) => {
   const { mayUseAndAfford } = await import("@/lib/billing/billing-access")
   const d = await mayUseAndAfford({ brokerageId: ask.brokerageId, capability: "ai.generate", estTokens: ask.estTokens, actor: ask.actor ?? null })
@@ -265,12 +317,17 @@ function manuscriptSystem(p: BookProject): string {
   )
 }
 
-function outlinePrompt(p: BookProject): string {
+function outlinePrompt(p: BookProject, evidence?: BookTopicEvidence | null): string {
   const asked = (p.research?.topics ?? []).slice(0, 10)
   const bank = (p.research?.bank_topics ?? []).slice(0, 6)
+  const gaps = (evidence?.gaps ?? []).slice(0, 6)
+  const rivals = (evidence?.positioning.competitor_titles ?? []).slice(0, 6)
   return (
     `Concept from the agent: ${p.concept}\n` +
+    (evidence?.audience_problem ? `The problem this book exists to solve (the most-asked question): ${evidence.audience_problem}\n` : "") +
     (asked.length ? `What ${p.audience}s are actually asking right now:\n${asked.map((t) => `- ${t}`).join("\n")}\n` : "") +
+    (gaps.length ? `UNMET questions — existing books do not answer these well; the outline must own them:\n${gaps.map((t) => `- ${t}`).join("\n")}\n` : "") +
+    (rivals.length ? `Books already on this topic — position AGAINST them; never reuse their titles, structure or wording:\n${rivals.map((t) => `- ${t}`).join("\n")}\n` : "") +
     (bank.length ? `Topics the brokerage is already seeing traction on (inspiration only, never copy):\n${bank.map((t) => `- ${t}`).join("\n")}\n` : "") +
     `Plan a ${BOOK_MIN_CHAPTERS}-${BOOK_MAX_CHAPTERS} chapter book. Return ONLY JSON: {"title": "≤60 chars", "subtitle": "≤90 chars", "tagline": "one line for the cover", "introduction": "two short paragraphs", "closing": "one short closing paragraph inviting the reader to talk to the agent", "chapters": [{"heading": "Chapter title", "summary": "2 sentences", "key_points": ["3-5 points the chapter must cover"]}]}`
   )
@@ -299,10 +356,13 @@ function factCheckPrompt(p: BookProject, chapters: Array<{ i: number; body: stri
 }
 
 function editPrompt(p: BookProject, i: number, factFindings: BookFactFinding[], fh: CopyFinding[]): string {
+  // The edit already being made also strips the machine-written tells it can see (the human review still reads every chapter).
+  const tells = scanAiTells(p.chapters[i].body)
   return (
     `Book: "${p.title}". Chapter ${i + 1}: "${p.chapters[i].heading}".\n\nCURRENT TEXT:\n${p.chapters[i].body}\n\n` +
     (factFindings.length ? `FACT-CHECK FINDINGS (remove each unsupported figure or claim, or restate it without the number — never invent a replacement):\n${factFindings.map((f) => `- "${f.claim}" — ${f.verdict}: ${f.note}`).join("\n")}\n\n` : "") +
     (fh.length ? `FAIR-HOUSING FINDINGS (resolve every one):\n${renderFindingsForRewrite(fh)}\n\n` : "") +
+    (tells.length ? `MACHINE-WRITTEN PHRASES (rewrite each as the agent would say it out loud):\n${tells.map((t) => `- "${t.phrase}" — ${t.rule}`).join("\n")}\n\n` : "") +
     `Rewrite the chapter resolving every finding, keeping its length, structure and voice. Return ONLY the chapter text.`
   )
 }
@@ -321,9 +381,11 @@ interface StartBookInput {
   area?: string | null
   brand?: string | null
   actor?: { platformRole?: string | null; userType?: string | null } | null
+  /** Where the book publishes. Omitted = the tenant's default (lead_magnet; platform_kdp in the platform's house tenant). */
+  context?: BookPublicationContext | null
 }
 
-interface StartBookOutput { success: boolean; magnetId?: string; slug?: string; title?: string; error?: string }
+interface StartBookOutput { success: boolean; magnetId?: string; slug?: string; title?: string; context?: BookPublicationContext; error?: string }
 
 /**
  * Concept → a DRAFT lead magnet carrying a NEW book project at stage "research". Entitlement first (a refusal
@@ -335,12 +397,25 @@ export async function startBookProject(input: StartBookInput, deps: BookDeps = {
   if (!input.brokerageId || !input.agentId || !input.createdBy) return { success: false, error: "Missing required fields: brokerageId, agentId, createdBy" }
   if (concept.length < 12) return { success: false, error: "Describe the book in a sentence or two first." }
   if (input.audience !== "buyer" && input.audience !== "seller") return { success: false, error: "The book's audience must be buyer or seller." }
+  if (input.context != null && !isBookPublicationContext(input.context)) return { success: false, error: "The book's publication context must be lead_magnet, tenant_kdp or platform_kdp." }
+  // NOT GENERIC (owner ruling 15): a concept that names no niche is refused before anything is spent or written.
+  if (conceptSpecifics(concept).length === 0) return { success: false, error: "That concept names no niche — every real-estate book could carry it. Say who the book is for, the one problem it solves, and where (a neighbourhood, a situation, a kind of move)." }
   const gate = deps.entitlement ?? defaultEntitlement
   const verdict = await gate({ brokerageId: input.brokerageId, estTokens: BOOK_ADVANCE_EST_TOKENS, actor: input.actor ?? null }).catch((e): { allowed: boolean; reason: string; message?: string } => ({ allowed: false, reason: `entitlement_threw: ${(e as Error)?.message ?? String(e)}` }))
   if (!verdict.allowed) return { success: false, error: verdict.message ?? `AI book writing is not available right now (${verdict.reason}).` }
 
+  // WHOSE BOOK: the platform's house tenant makes PLATFORM books; every other tenant its own. An unreadable tenant row is
+  // read as NOT the house tenant (the less-privileged answer) and a platform book is then refused, never assumed.
+  const svc = (deps.client ?? (await import("@/lib/supabase/service")).createServiceClient()) as Svc
+  const tenant = await (deps.tenantReader ?? defaultTenantReader)(svc, input.brokerageId).catch(() => ({ isHouseTenant: false, readable: false }))
+  if (input.context === "platform_kdp" && !tenant.readable) return { success: false, error: "Could not verify this is the platform's house tenant — a platform book was not started." }
+  const context = defaultBookContext(input.context ?? null, tenant)
+  const allowed = bookContextAllowed(context, tenant)
+  if (!allowed.ok) return { success: false, error: allowed.error }
+
   const now = (deps.now ?? new Date()).toISOString()
-  const project = newProject({ concept, audience: input.audience, area: input.area ?? null, brand: input.brand ?? null, startedBy: input.createdBy, now })
+  const publication = publicationRecord({ context, agentId: input.agentId, isHouseTenant: tenant.isHouseTenant, by: input.createdBy, at: now, why: input.context ? "chosen at start" : "tenant default at start" })
+  const project = newProject({ concept, audience: input.audience, area: input.area ?? null, brand: input.brand ?? null, startedBy: input.createdBy, now, publication })
   const magnetType: CreateLeadMagnetInput["magnetType"] = input.audience === "buyer" ? "buyer_guide" : "seller_guide"
   const createInput: CreateLeadMagnetInput = {
     title: project.title,
@@ -362,8 +437,8 @@ export async function startBookProject(input: StartBookInput, deps: BookDeps = {
       {
         brokerageId: input.brokerageId, action: "marketing.lead_magnet.book_start", actor: { type: "user", userId: input.createdBy },
         subject: { type: "lead_capture_form", ref: concept.slice(0, 120) }, reasonCode: "HUMAN_REQUESTED",
-        reasonDetail: `AI book project (${input.audience}) started from the agent's concept`, riskClass: "LOW_RISK_WRITE", systemSource: "lead_magnets",
-        detail: { audience: input.audience, magnetType, feature: "book_manuscript" },
+        reasonDetail: `AI book project (${input.audience}, ${context}) started from the agent's concept`, riskClass: "LOW_RISK_WRITE", systemSource: "lead_magnets",
+        detail: { audience: input.audience, magnetType, feature: "book_manuscript", context, owner: publication.owner, brand_source: publication.brand_source },
       },
       () => createLeadMagnet(createInput, { client: deps.client }),
       {
@@ -373,7 +448,7 @@ export async function startBookProject(input: StartBookInput, deps: BookDeps = {
       { client: deps.client as any },
     )
     if (!result.success || !result.magnetId) return { success: false, error: result.error ?? "The book project was not created." }
-    return { success: true, magnetId: result.magnetId, slug: result.slug, title: project.title }
+    return { success: true, magnetId: result.magnetId, slug: result.slug, title: project.title, context }
   } catch (e) {
     return { success: false, error: (e as Error)?.message ?? String(e) }
   }
@@ -450,13 +525,22 @@ export async function advanceBookProject(input: AdvanceBookInput, deps: BookDeps
       case "research": {
         const topics = await (deps.researcher ?? defaultResearcher)(p.audience, p.area, input.brokerageId).catch(() => [] as ContentTopic[])
         const bank = await (deps.topicReader ?? defaultTopicReader)(input.brokerageId, svc).catch(() => [] as string[])
-        p.research = { topics: topics.map((t) => t.topic), bank_topics: bank, fetched_at: now }
+        // THE EVIDENCE (owner ruling 15): demand + the audience problem + who already wrote on it + what they leave
+        // unanswered + whether the concept is original + what this tenant's magnets of the type already converted.
+        const positioning = await (deps.positioningResearcher ?? defaultPositioningResearcher)({ concept: p.concept, audience: p.audience, area: p.area, brokerageId: input.brokerageId }).catch(() => null)
+        const magnetType = p.audience === "buyer" ? "buyer_guide" : "seller_guide"
+        const conversion = await (deps.conversionReader ?? defaultConversionReader)(svc, { brokerageId: input.brokerageId, magnetType, excludeMagnetId: input.magnetId }).catch(() => null)
+        const evidence = scoreBookTopicEvidence({ concept: p.concept, workingTitle: p.title, demand: topics, bank, positioning, conversion, now })
+        p.research = { topics: topics.map((t) => t.topic), bank_topics: bank, fetched_at: now, evidence }
         p.stage = "outline"
-        note = `research: ${topics.length} demand topic(s), ${bank.length} topic-bank topic(s)`
+        note = `research: ${topics.length} demand topic(s), ${bank.length} topic-bank topic(s); evidence ${evidence.verdict} (${evidence.gaps.length} unmet question(s), positioning ${evidence.positioning.researched ? `${evidence.positioning.competitor_titles.length} competing title(s)` : "not researched"})`
         break
       }
       case "outline": {
-        const r = await book({ system: manuscriptSystem(p), prompt: outlinePrompt(p), maxTokens: 1400 }, writer)
+        // THE EVIDENCE GATE — before any model spend: a generic, demand-less or crowded topic does not get an outline.
+        const evidence = p.research?.evidence ?? scoreBookTopicEvidence({ concept: p.concept, workingTitle: p.title, demand: (p.research?.topics ?? []).map((topic) => ({ topic })), bank: p.research?.bank_topics ?? [], positioning: null, conversion: null, now })
+        if (evidence.verdict !== "evidenced") return { success: false, stage: p.stage, error: `Topic evidence: ${evidence.verdict.replace(/_/g, " ")} — ${evidence.reasons.join(" ")} Start the book again with a sharper concept${evidence.gaps[0] ? ` (an unmet question to build on: "${evidence.gaps[0]}")` : ""}.`, project: p }
+        const r = await book({ system: manuscriptSystem(p), prompt: outlinePrompt(p, evidence), maxTokens: 1400 }, writer)
         const o = r ? parseJsonObject<{ title?: string; subtitle?: string; tagline?: string; introduction?: string; closing?: string; chapters?: Array<{ heading?: string; summary?: string; key_points?: string[] }> }>(r.text) : null
         const chapters = (o?.chapters ?? []).map((c) => ({ heading: String(c?.heading ?? "").trim().slice(0, 90), summary: String(c?.summary ?? "").trim().slice(0, 400), key_points: Array.isArray(c?.key_points) ? c.key_points.map((k) => String(k).trim()).filter(Boolean).slice(0, 6) : [] })).filter((c) => c.heading)
         if (!o || chapters.length < BOOK_MIN_CHAPTERS || chapters.length > BOOK_MAX_CHAPTERS) return { success: false, stage: p.stage, error: `The outline did not land (${chapters.length} chapter(s); needs ${BOOK_MIN_CHAPTERS}-${BOOK_MAX_CHAPTERS}) — try again.`, project: p }
@@ -529,12 +613,13 @@ export async function advanceBookProject(input: AdvanceBookInput, deps: BookDeps
               return r && wordCount(next) >= BOOK_MIN_CHAPTER_WORDS ? next : null
             },
           })
-          p.chapters[i] = { ...p.chapters[i], body: loop.text, words: wordCount(loop.text), edited: { fact_findings: factFindings.length, fair_housing_rewrites: loop.rewrites, escalated: loop.escalated, findings: loop.findings.map((f) => f.phrase) } }
+          p.chapters[i] = { ...p.chapters[i], body: loop.text, words: wordCount(loop.text), edited: { fact_findings: factFindings.length, fair_housing_rewrites: loop.rewrites, escalated: loop.escalated, findings: loop.findings.map((f) => f.phrase), ai_tells: scanAiTells(loop.text).map((t) => t.phrase) } }
           if (loop.escalated && !p.needs_human_review.includes(i + 1)) p.needs_human_review.push(i + 1)
           edited++
         }
         if (p.chapters.every((c) => c.edited)) p.stage = "layout"
-        note = `edit: ${p.chapters.filter((c) => c.edited).length}/${p.chapters.length} chapters edited${p.needs_human_review.length ? `; ${p.needs_human_review.length} escalated to the reviewer` : ""}`
+        const tellChapters = p.chapters.filter((c) => (c.edited?.ai_tells ?? []).length > 0).length
+        note = `edit: ${p.chapters.filter((c) => c.edited).length}/${p.chapters.length} chapters edited${p.needs_human_review.length ? `; ${p.needs_human_review.length} escalated to the reviewer` : ""}${tellChapters ? `; ${tellChapters} chapter(s) still read machine-written — the humanized review rewrites them` : ""}`
         break
       }
       case "layout": {
@@ -631,8 +716,11 @@ export async function reviseBookChapter(input: ReviseBookChapterInput, deps: Boo
   const now = (deps.now ?? new Date()).toISOString()
   const stageBefore = p.stage
   const prior = p.chapters[i].edited
-  p.chapters[i] = { ...p.chapters[i], body: text, words: wordCount(text), edited: { fact_findings: prior?.fact_findings ?? 0, fair_housing_rewrites: prior?.fair_housing_rewrites ?? 0, escalated: false, findings: [], human_revised_at: now } }
+  // The reviewer's own words ARE the humanized review of this chapter: never re-flagged (ai_tells empty). Any revision
+  // changes the manuscript, so a recorded sign-off is cleared and given again on the next publish / KDP approval.
+  p.chapters[i] = { ...p.chapters[i], body: text, words: wordCount(text), edited: { fact_findings: prior?.fact_findings ?? 0, fair_housing_rewrites: prior?.fair_housing_rewrites ?? 0, escalated: false, findings: [], human_revised_at: now, ai_tells: [] } }
   p.needs_human_review = p.needs_human_review.filter((n) => n !== input.chapter)
+  p.humanized_review = null
   if (p.stage === "ready_for_review") { p.stage = "layout"; p.pdf_url = null; p.document_id = null; p.page_count = null }
   p.updated_at = now
   const note = `chapter ${input.chapter} revised by the reviewer${stageBefore === "ready_for_review" ? "; back to layout for a fresh PDF" : ""}`

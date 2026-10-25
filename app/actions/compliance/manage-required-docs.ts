@@ -20,6 +20,9 @@ import { revalidatePath } from "next/cache"
 import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
 import type { DocumentClassification } from "@/lib/compliance/required-documents"
 import { asChecklistStage, asContractSubtype, asFinancingKind, asRepresentation } from "@/lib/compliance/checklist-dimensions"
+import { loadTenantVocabulary, vocabularyWriteValue, type TenantVocabulary } from "@/lib/compliance/adaptive-vocabulary"
+import { isPrimarySourceUrl } from "@/lib/compliance-rules/law-rule-registry"
+import { VOCABULARY_COMPLIANCE_APPROVER_USER_TYPES } from "@/lib/compliance/vocabulary-healing"
 
 /**
  * WHO ADMINISTERS THE REQUIRED-DOCUMENT LIST.
@@ -133,6 +136,16 @@ export interface AddRequiredDocInput {
   financingKind?:   string | null
   contractSubtype?: string | null
   representation?:  string | null
+  /**
+   * Wave 144A (owner ruling 1: "state-specific regulatory document rules need human compliance approval and
+   * verified official sources — AI never invents binding legal requirements"). 'state_requirement' = this rule
+   * says the STATE requires the document: it must name the state, cite an official (.gov / .us) source, and be
+   * written by a compliance approver. Omitted / 'brokerage_policy' = the brokerage's own rule, written exactly
+   * as before (no new columns named — m847 is WRITTEN, NOT APPLIED until the integrator applies it).
+   */
+  legalBasis?:      "brokerage_policy" | "state_requirement" | null
+  sourceUrl?:       string | null
+  sourceTitle?:     string | null
 }
 
 /**
@@ -140,8 +153,17 @@ export interface AddRequiredDocInput {
  * included ONLY when set: m806 is WRITTEN, NOT APPLIED until the integrator applies it, and an insert
  * that names an absent column is refused WHOLE (PGRST204) — so a rule without dimensions must write
  * byte-for-byte what it wrote before.
+ *
+ * Wave 144A: a contract type / representation is validated against the brokerage's ADAPTIVE VOCABULARY
+ * (platform values first — asContractSubtype / asRepresentation — then the brokerage's approved terms and
+ * aliases). An alias is stored as its canonical key; a term retired for new work, or a state-scoped term a
+ * compliance approver has not attested, is refused for a NEW rule (rules already naming it keep applying);
+ * a state-scoped term on a rule for another state is refused.
  */
-function ruleDimensions(input: Pick<AddRequiredDocInput, "requiredStage" | "financingKind" | "contractSubtype" | "representation">):
+function ruleDimensions(
+  input: Pick<AddRequiredDocInput, "requiredStage" | "financingKind" | "contractSubtype" | "representation" | "stateCode">,
+  vocabulary: TenantVocabulary | null,
+):
   | { ok: true; columns: Record<string, string> }
   | { ok: false; error: string } {
   const columns: Record<string, string> = {}
@@ -151,12 +173,52 @@ function ruleDimensions(input: Pick<AddRequiredDocInput, "requiredStage" | "fina
     ["contract_subtype", input.contractSubtype, asContractSubtype,  "contract type"],
     ["representation",   input.representation,  asRepresentation,   "representation"],
   ]
+  const ruleState = input.stateCode ? input.stateCode.toUpperCase() : null
   for (const [column, raw, narrow, label] of checks) {
     if (raw === null || raw === undefined || raw === "") continue
-    if (!narrow(raw)) return { ok: false, error: `"${raw}" is not a valid ${label}` }
-    columns[column] = raw
+    if (narrow(raw)) { columns[column] = raw; continue }
+    if (column !== "contract_subtype" && column !== "representation") return { ok: false, error: `"${raw}" is not a valid ${label}` }
+    if (!vocabulary) return { ok: false, error: `"${raw}" is not a platform ${label}, and this brokerage's vocabulary could not be read — nothing was written` }
+    const w = vocabularyWriteValue(column, raw, vocabulary)
+    if (!w.value || !w.resolved) return { ok: false, error: `"${raw}" is not a ${label} here — report it as missing from Required documents → Vocabulary` }
+    if (!w.resolved.usable) {
+      return { ok: false, error: w.resolved.pendingAttestation
+        ? `"${w.resolved.label}" waits for a compliance approver to attest its official source`
+        : `"${w.resolved.label}" is retired for new rules (rules that already name it keep applying)` }
+    }
+    if (ruleState && w.resolved.stateCodes && !w.resolved.stateCodes.includes(ruleState)) {
+      return { ok: false, error: `"${w.resolved.label}" applies in ${w.resolved.stateCodes.join(", ")}, not ${ruleState}` }
+    }
+    columns[column] = w.value
   }
   return { ok: true, columns }
+}
+
+/** The m847 citation columns for a STATE-REQUIREMENT rule, validated — or nothing for a brokerage-policy rule. */
+function ruleLegalBasis(
+  input: Pick<AddRequiredDocInput, "legalBasis" | "sourceUrl" | "sourceTitle" | "stateCode">,
+  actor: Actor,
+): { ok: true; columns: Record<string, string> } | { ok: false; error: string } {
+  if (input.legalBasis !== "state_requirement") return { ok: true, columns: {} }
+  if (!input.stateCode) return { ok: false, error: "A state requirement names its state." }
+  if (!isPrimarySourceUrl(input.sourceUrl ?? null)) {
+    return { ok: false, error: "A state requirement cites the official source that says so (a .gov / .us page). A commentary, vendor or association page is not one — save it as brokerage policy instead." }
+  }
+  if (!VOCABULARY_COMPLIANCE_APPROVER_USER_TYPES.has(actor.userType)) {
+    return { ok: false, error: `A state requirement is approved by a compliance approver (${[...VOCABULARY_COMPLIANCE_APPROVER_USER_TYPES].join(", ")}). Save it as brokerage policy, or ask one of them to add it.` }
+  }
+  const now = new Date().toISOString()
+  return {
+    ok: true,
+    columns: {
+      legal_basis: "state_requirement",
+      source_url: String(input.sourceUrl).trim(),
+      ...(input.sourceTitle?.trim() ? { source_title: input.sourceTitle.trim().slice(0, 200) } : {}),
+      source_verified_on: now.slice(0, 10),
+      approved_by: actor.userId,
+      approved_at: now,
+    },
+  }
 }
 
 /** The next policy_version for a row read with select('*'); undefined while m806 is unapplied (the column is absent). */
@@ -173,10 +235,15 @@ export async function addRequiredDocument(
   if (!canManage(actor, input.scope, input.scopeId)) return { ok: false, error: "Forbidden for your role/scope" }
   if (!input.classification) return { ok: false, error: "Pick a document classification" }
 
-  const dims = ruleDimensions(input)
-  if (!dims.ok) return { ok: false, error: dims.error }
-
   const svc = createServiceClient()
+  // The brokerage's vocabulary is read only when a value is not a platform one (the common case writes as before).
+  const needsVocabulary = (!!input.contractSubtype && !asContractSubtype(input.contractSubtype)) || (!!input.representation && !asRepresentation(input.representation))
+  const vocab = needsVocabulary ? await loadTenantVocabulary(svc, actor.brokerageId) : null
+  const dims = ruleDimensions(input, vocab?.ok ? vocab.vocabulary : null)
+  if (!dims.ok) return { ok: false, error: dims.error }
+  const basis = ruleLegalBasis(input, actor)
+  if (!basis.ok) return { ok: false, error: basis.error }
+
   const stateCode = input.stateCode ? input.stateCode.toUpperCase() : null
 
   // Idempotent per (brokerage, scope, scopeId, classification, deal_type, state, and — wave 143 —
@@ -217,10 +284,17 @@ export async function addRequiredDocument(
       description:      input.description?.trim() || null,
       created_by:       actor.userId,
       ...dims.columns,
+      ...basis.columns,
     })
     .select("id")
     .single()
-  if (error || !inserted) return { ok: false, error: error?.message ?? "Insert failed" }
+  if (error || !inserted) {
+    // PGRST204 on a state-requirement write = the m847 citation columns are not applied yet — say so, never retry it uncited.
+    if (Object.keys(basis.columns).length && String((error as { code?: string } | null)?.code ?? "") === "PGRST204") {
+      return { ok: false, error: "State-requirement citations are not available yet (migration m847 is not applied) — nothing was written." }
+    }
+    return { ok: false, error: error?.message ?? "Insert failed" }
+  }
 
   revalidatePath("/dashboard/settings/required-documents")
   return { ok: true, id: inserted.id as string }

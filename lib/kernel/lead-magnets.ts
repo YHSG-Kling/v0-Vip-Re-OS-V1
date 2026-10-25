@@ -12,6 +12,8 @@ import type { LandingContent } from "@/lib/marketing/lead-magnet-copy"
 import { sanitizeLeadMagnetAttribution, sourceChannelFor, touchpointChannelFor, type LeadMagnetAttribution } from "@/lib/lead-magnets/attribution"
 // Wave 142 (lane 142E): the ONE "who fills this form" roster (pure module shared with the builder / review surfaces).
 import { FORM_DECLARABLE_CONTACT_TYPES, declarableContactType } from "@/lib/lead-magnets/form-contact-types"
+// Wave 144 (lane 144H, owner ruling 15 — "ALWAYS a humanized review after the draft"): the pure rule the book publish reads.
+import { humanizedReviewState, humanizedReviewRefusal, type HumanizedReviewRecord } from "@/lib/lead-magnets/book-editorial"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -573,8 +575,9 @@ export async function publishLeadMagnet(
 
   // A BOOK MAGNET PUBLISHES ONLY WITH ITS FINISHED, REVIEWABLE BOOK (wave 142): a half-written manuscript has
   // no deliverable, so the page would promise a book the capture cannot send. Fail closed, name the stage.
+  let bookSignOff: HumanizedReviewRecord | null = null
   {
-    const book = (curSettings.book ?? null) as { stage?: string; needs_human_review?: number[] } | null
+    const book = (curSettings.book ?? null) as { stage?: string; needs_human_review?: number[]; chapters?: Array<{ body?: string; edited?: { human_revised_at?: string } }> } | null
     if (book && typeof book === "object" && book.stage && book.stage !== "ready_for_review") {
       return { success: false, error: `The book is still being written (stage: ${book.stage.replace(/_/g, " ")}) — finish it before publishing this lead magnet.` }
     }
@@ -583,6 +586,14 @@ export async function publishLeadMagnet(
     if (book && typeof book === "object" && Array.isArray(book.needs_human_review) && book.needs_human_review.length > 0) {
       const n = book.needs_human_review.length
       return { success: false, error: `Fair-housing review: chapter${n === 1 ? "" : "s"} ${book.needs_human_review.join(", ")} of the book still need${n === 1 ? "s" : ""} your rewrite (the AI reached its cap) — revise ${n === 1 ? "it" : "them"} before publishing.` }
+    }
+    // THE HUMANIZED REVIEW (wave 144): an AI-drafted chapter that still reads machine-written is the HUMAN's to rewrite in
+    // their own voice before the book goes out; the reviewer's publish is then the sign-off, recorded on the book in the
+    // same counted write below (settings.book.humanized_review — any later revision clears it).
+    if (book && typeof book === "object" && Array.isArray(book.chapters)) {
+      const review = humanizedReviewState(book.chapters)
+      if (!review.ready) return { success: false, error: humanizedReviewRefusal(review) }
+      bookSignOff = { by: input.actorUserId, at: publishedAt, basis: "lead_magnet_publish", chapters_human_revised: review.humanRevised, ai_tells_open: 0 }
     }
   }
   const prevLifecycle = (curSettings.lifecycle ?? {}) as Partial<LeadMagnetLifecycle>
@@ -609,7 +620,7 @@ export async function publishLeadMagnet(
       // Activate the form + record the approval on ONE row (a COUNTED update — CLAUDE.md §3).
       const { data: activated, error: activateErr } = await supabase
         .from("lead_capture_forms")
-        .update({ is_active: true, settings: { ...curSettings, lifecycle }, updated_at: publishedAt })
+        .update({ is_active: true, settings: { ...curSettings, lifecycle, ...(bookSignOff ? { book: { ...(curSettings.book as Record<string, unknown>), humanized_review: bookSignOff } } : {}) }, updated_at: publishedAt })
         .eq("brokerage_id", input.brokerageId)
         .eq("id", input.magnetId)
         .select("id")

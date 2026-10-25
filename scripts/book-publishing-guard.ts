@@ -25,6 +25,21 @@
  *      every attestation by a session user and a rebuild clears it, another tenant's magnet is not found.
  *   H. SOURCE RULES: the actions take the tenant from the session; KDP is never "published" by the platform (no login, no
  *      credential, no upload call); no "bestseller" template exists anywhere in the package.
+ *
+ * WAVE 144 (lane 144H, owner ruling 15 — "publishing serves the PLATFORM's KDP book AND tenant/agent lead magnets AND tenant
+ * KDP books … never generic … ALWAYS a humanized review after the draft"; ruling 18 — the rights notice DISPLAYED):
+ *   I. PUBLICATION CONTEXT: lead_magnet / tenant_kdp / platform_kdp, owner + brand source recorded at start; the house tenant
+ *      (brokerages.is_demo) makes PLATFORM books, no other tenant can; a KDP build moves a lead magnet into tenant_kdp with the
+ *      history; a platform book is packaged and approved by platform staff only (users.platform_role) under the product brand.
+ *   J. TOPIC EVIDENCE: a concept that names no niche is refused before any spend; demand, audience problem, competitor
+ *      positioning, gaps, originality and conversion are scored; a crowded / demand-less topic gets NO outline (no model call);
+ *      an evidenced one hands the outline its unmet questions and the titles to position against.
+ *   K. THE HUMANIZED REVIEW: machine-written tells are caught (positive controls + a clean control); an AI-drafted chapter that
+ *      still carries one blocks the KDP package AND the lead-magnet publish; the human's own revision is never re-flagged; the
+ *      sign-off is recorded (publish / KDP attestation); a package older than the manuscript cannot be approved.
+ *   L. THE BRAND ON THE BOOK: logo (the brand's own file, fetched only from the platform's own storage host), accent colour and
+ *      the APPROVED tagline (a claiming tagline is left off) reach the cover and the EPUB.
+ *   M. THE RIGHTS NOTICE is displayed at /legal (public route), linked from the Marketing Studio, standard language only.
  */
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs"
 import { join } from "node:path"
@@ -40,8 +55,17 @@ import {
 } from "../lib/lead-magnets/book-publishing"
 import { kdpInsideMarginInches, kdpTrimAllowed, estimateTrimPages } from "../lib/lead-magnets/kdp-print-math"
 import { zipEntries } from "../lib/lead-magnets/zip-writer"
-import { composeBookCover, coverArtPrompt, COVER_WIDTH, COVER_HEIGHT } from "../lib/lead-magnets/book-cover"
+import { composeBookCover, coverArtPrompt, COVER_WIDTH, COVER_HEIGHT, COVER_LOGO_BOX } from "../lib/lead-magnets/book-cover"
 import { buildKdpPackage, approveKdpPackage, kdpPackageOf } from "../lib/lead-magnets/book-publishing-produce"
+// Wave 144 (lane 144H, owner ruling 15/18): whose book, why this topic, the humanized review, the brand, the displayed notice.
+import { startBookProject, advanceBookProject, type BookDeps } from "../lib/lead-magnets/book-creator"
+import {
+  BOOK_PUBLICATION_CONTEXTS, BOOK_EVIDENCE_RULES, bookContextAllowed, defaultBookContext, kdpContextFor, publicationRecord, scoreBookTopicEvidence,
+  conceptSpecifics, scanAiTells, humanizedReviewState,
+} from "../lib/lead-magnets/book-editorial"
+import { publishLeadMagnet } from "../lib/kernel/lead-magnets"
+import { platformRightsNotice } from "../lib/branding/platform-rights-notice"
+import { classifyProxyPath } from "../app/constants/auth"
 
 const ROOT = process.cwd()
 const raw = (p: string) => readFileSync(join(ROOT, p), "utf8")
@@ -132,7 +156,10 @@ async function main() {
   const withArt = composeRightsRecord({ authorName: "Dana Reyes", year: 2026, coverArt: "image_rail" }), noArt = composeRightsRecord({ authorName: "Dana Reyes", year: 2026, coverArt: "typographic_only" })
   check("the TEXT is always disclosed as AI-generated (KDP: even when substantially edited afterwards)", withArt.aiDisclosure.text === "ai_generated" && noArt.aiDisclosure.text === "ai_generated" && /even when substantially edited/.test(withArt.aiDisclosure.explanation))
   check("images are disclosed as AI-generated ONLY when the cover art came from the image rail (a typographic cover claims no image)", withArt.aiDisclosure.images === "ai_generated" && noArt.aiDisclosure.images === "none")
-  check("five attestations, by id, none optional; the copyright line names the author and year", KDP_ATTESTATIONS.map((a) => a.id).join() === "i_hold_rights,ai_disclosure_confirmed,content_guidelines_reviewed,no_rank_claims,facts_reviewed" && withArt.copyrightLine === "© 2026 Dana Reyes. All rights reserved.")
+  // Wave 144 (lane 144H): the count is DERIVED, never pinned — the waypoint "five" became six when the humanized review joined.
+  // The RULE: the wave-143 five are all still required, the humanized review is required, no id is listed twice.
+  const attestIds = KDP_ATTESTATIONS.map((a) => a.id) as string[]
+  check(`every attestation, by id, none optional (${attestIds.length}: the wave-143 five + humanized_review, no duplicate); the copyright line names the author and year`, ["i_hold_rights", "ai_disclosure_confirmed", "content_guidelines_reviewed", "no_rank_claims", "facts_reviewed", "humanized_review"].every((id) => attestIds.includes(id)) && new Set(attestIds).size === attestIds.length && withArt.copyrightLine === "© 2026 Dana Reyes. All rights reserved.")
 
   // ═══════════════════ E · the EPUB ═══════════════════
   section("E · the EPUB is a structurally valid EPUB 3")
@@ -184,7 +211,19 @@ async function main() {
     check(`${label}: ${COVER_WIDTH}×${COVER_HEIGHT} JPEG, RGB, under 50 MB, passes validateEbookCover`, m.format === "jpeg" && m.width === COVER_WIDTH && m.height === COVER_HEIGHT && m.space === "srgb" && validateEbookCover({ width: m.width!, height: m.height!, bytes: c.bytes, format: m.format! }).length === 0 && c.usedArt === (label === "over art"))
   }
   const blank = await composeBookCover({ title: " ", subtitle: null, authorName: " ", primaryColor: "#14532D", art: null })
-  const centre = async (b: Buffer) => (await sharp(b).extract({ left: 100, top: 400, width: 1400, height: 1200 }).stats()).channels.map((c) => c.stdev).reduce((a, x) => a + x, 0)
+  // Wave 144 (lane 144H): MEASURED — sharp's stats() reports the whole INPUT image, not the extract, so this check used to
+  // compare whole covers. It now reads the RAW pixels of the centre region itself (the claim is about the centre).
+  const centre = async (b: Buffer) => {
+    const { data, info } = await sharp(b).extract({ left: 100, top: 400, width: 1400, height: 1200 }).removeAlpha().raw().toBuffer({ resolveWithObject: true })
+    const n = data.length / info.channels
+    let total = 0
+    for (let c = 0; c < 3; c++) {
+      let s = 0, s2 = 0
+      for (let i = c; i < data.length; i += info.channels) { s += data[i]; s2 += data[i] * data[i] }
+      total += Math.sqrt(Math.max(0, s2 / n - (s / n) ** 2))
+    }
+    return total
+  }
   check("the TITLE is really drawn: the typographic cover's centre has far more variation than a cover with no text (the text layer is not silently empty)", (await centre(typo.jpeg)) > (await centre(blank.jpeg)) * 5 + 5, `${(await centre(typo.jpeg)).toFixed(1)} vs ${(await centre(blank.jpeg)).toFixed(1)}`)
   const garbage = await composeBookCover({ title: "T", subtitle: null, authorName: "A", art: Buffer.from("not an image") })
   check("an unreadable art buffer falls back to typography (usedArt false) — never throws, never a broken cover", garbage.usedArt === false && garbage.width === COVER_WIDTH)
@@ -265,12 +304,217 @@ async function main() {
   check("no 'bestseller' TEMPLATE: the only rank words in the package modules are inside the claim guard's patterns and the prose that forbids them", (() => { const noPatterns = pubMod.replace(/const RANK_PATTERNS[\s\S]*?\n\]\n/, ""); const lines = (noPatterns + produce + coverMod).split("\n").filter((l) => /best[\s-]?sell|#\s?1\b|number[\s-]?one/i.test(l)); return lines.every((l) => /(never|no |not |refus|prohibit|guarantee|imply|claim)/i.test(l)) })())
   check("the producer reads the tenant's older-persons exemption and runs the PUBLIC-COPY fair-housing gate on the retail text (surface 'book')", /scanPublicCopy\([\s\S]{0,300}"book", \{ brokerageName, olderPersons \}/.test(produce))
   check("the panel is mounted in the book panel only when the book is DONE and nothing awaits the human", /\{done && book\.needsHumanReview\.length === 0 && <KdpPublishingPanel magnetId=\{magnetId\} \/>\}/.test(code("app/components/features/lead-magnets/BookProjectPanel.tsx")))
+
+  // ═══════════════════ shared world for I–L (wave 144) ═══════════════════
+  const BH = "00000000-0000-4000-8000-0000000000c1", US = "00000000-0000-4000-8000-0000000000a9", AG1 = "00000000-0000-4000-8000-0000000000d1", AGH = "00000000-0000-4000-8000-0000000000d9"
+  const NOW144 = new Date("2026-10-25T12:00:00Z")
+  const world = (o: { refuse?: Record<string, string>; forms?: Array<Record<string, unknown>>; subs?: Array<Record<string, unknown>> } = {}) => {
+    const db = memSupabase({
+      brokerages: [{ id: B1, name: "Harbor Realty", is_demo: false }, { id: B2, name: "Other Realty", is_demo: false }, { id: BH, name: "Platform House", is_demo: true }],
+      users: [{ id: U1, brokerage_id: B1, first_name: "Dana", last_name: "Reyes", platform_role: null }, { id: US, brokerage_id: BH, first_name: "Sam", last_name: "Staff", platform_role: "platform_admin" }],
+      agents: [{ id: AG1, user_id: U1, brokerage_id: B1 }, { id: AGH, user_id: US, brokerage_id: BH }],
+      platform_settings: [{ id: "ps-1", product_brand: { name: "VIP Agents", tagline: "The AI team that runs the whole business", primaryColor: "#0F172A", accentColor: "#F59E0B" } }],
+      lead_capture_forms: o.forms ?? [], form_submissions: o.subs ?? [], agent_action_ledger: [], lifecycle_events: [], qr_codes: [], contacts: [], activities: [],
+      generated_documents: [], manager_signals: [], notifications: [], brokerage_settings: [],
+    }, { uuidIds: true, stampCreatedAt: true, refuse: o.refuse })
+    ;(db as unknown as { rpc: unknown }).rpc = async () => ({ data: null, error: null })
+    return db
+  }
+  const allow: NonNullable<BookDeps["entitlement"]> = async () => ({ allowed: true, reason: "ok" })
+  const formWith = (tenant: string, p: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ id: MAGNET, brokerage_id: tenant, name: "Calm Home Seller", slug: "calm-home-seller", agent_id: tenant === B1 ? AG1 : null, is_active: false, magnet_type: "seller_guide", thank_you_message: "Thanks!", settings: { book: p }, landing_content: { headline: "The Calm Home Seller", subhead: "Sell with a plan", cta: "Send me the book", bullets: ["Pricing"] }, ...extra })
+  const startPub = (ctx: "lead_magnet" | "platform_kdp", house: boolean, agentId: string | null) => publicationRecord({ context: ctx, agentId, isHouseTenant: house, by: U1, at: "2026-10-01T00:00:00.000Z", why: "tenant default at start" })
+
+  // ═══════════════════ I · publication context ═══════════════════
+  section("I · whose book — lead magnet, tenant KDP, platform KDP (owner ruling 15)")
+  check("the three contexts, one vocabulary", BOOK_PUBLICATION_CONTEXTS.join() === "lead_magnet,tenant_kdp,platform_kdp")
+  check("defaults: an ordinary tenant starts a lead magnet; the platform's house tenant starts a PLATFORM book", defaultBookContext(null, { isHouseTenant: false }) === "lead_magnet" && defaultBookContext(null, { isHouseTenant: true }) === "platform_kdp" && defaultBookContext("tenant_kdp", { isHouseTenant: false }) === "tenant_kdp")
+  check("a platform book is refused outside the house tenant; a tenant KDP book is refused inside it", !bookContextAllowed("platform_kdp", { isHouseTenant: false }).ok && !bookContextAllowed("tenant_kdp", { isHouseTenant: true }).ok && bookContextAllowed("lead_magnet", { isHouseTenant: false }).ok && bookContextAllowed("platform_kdp", { isHouseTenant: true }).ok)
+  check("a KDP build moves a lead magnet into the tenant's (or the platform's) retail context; a retail context stays", kdpContextFor("lead_magnet", { isHouseTenant: false }) === "tenant_kdp" && kdpContextFor("lead_magnet", { isHouseTenant: true }) === "platform_kdp" && kdpContextFor("tenant_kdp", { isHouseTenant: false }) === "tenant_kdp")
+  {
+    const p0 = startPub("lead_magnet", false, AG1)
+    const p1 = publicationRecord({ context: "tenant_kdp", agentId: AG1, isHouseTenant: false, by: U1, at: "2026-10-02T00:00:00.000Z", why: "KDP package requested", prev: p0 })
+    const p2 = publicationRecord({ context: "tenant_kdp", agentId: AG1, isHouseTenant: false, by: U1, at: "2026-10-03T00:00:00.000Z", why: "KDP package requested", prev: p1 })
+    check("the publication record: owner agent / brokerage / platform; the history appends only on a CHANGE of context", p0.owner === "agent" && startPub("lead_magnet", false, null).owner === "brokerage" && startPub("platform_kdp", true, null).owner === "platform" && startPub("platform_kdp", true, null).brand_source === "platform" && p1.history.length === 2 && p2.history.length === 2 && p1.history[1].context === "tenant_kdp")
+  }
+  {
+    const db = world()
+    let asked = 0
+    const counting: NonNullable<BookDeps["entitlement"]> = async () => { asked++; return { allowed: true, reason: "ok" } }
+    const ok = await startBookProject({ brokerageId: B1, agentId: AG1, createdBy: U1, concept: "A seller's book on pricing a fixer-upper in Tampa Bay", audience: "seller" }, { client: db as never, entitlement: counting, now: NOW144 })
+    const row = db.tables.lead_capture_forms.find((r) => r.id === ok.magnetId)
+    const pub = (row?.settings as { book?: { publication?: { context: string; owner: string; brand_source: string } } } | undefined)?.book?.publication
+    check("an ordinary tenant's book starts as a LEAD MAGNET owned by its agent, tenant-branded; the ledger names the context", ok.success && ok.context === "lead_magnet" && pub?.context === "lead_magnet" && pub.owner === "agent" && pub.brand_source === "tenant" && db.tables.agent_action_ledger.some((l) => l.action === "marketing.lead_magnet.book_start" && (l.detail as { context?: string } | null)?.context === "lead_magnet"), JSON.stringify({ ok, pub }))
+    const house = await startBookProject({ brokerageId: BH, agentId: AGH, createdBy: US, concept: "An agent's field guide to AI-assisted listing launches in Florida", audience: "seller" }, { client: db as never, entitlement: allow, now: NOW144 })
+    const hp = (db.tables.lead_capture_forms.find((r) => r.id === house.magnetId)?.settings as { book?: { publication?: { context: string; owner: string; brand_source: string } } } | undefined)?.book?.publication
+    check("the platform's HOUSE tenant (brokerages.is_demo) starts a PLATFORM book: owner platform, platform-branded", house.success && house.context === "platform_kdp" && hp?.owner === "platform" && hp.brand_source === "platform", JSON.stringify({ house, hp }))
+    const before = db.tables.lead_capture_forms.length
+    const stolen = await startBookProject({ brokerageId: B1, agentId: AG1, createdBy: U1, concept: "A seller's book on pricing a fixer-upper in Tampa Bay", audience: "seller", context: "platform_kdp" }, { client: db as never, entitlement: allow, now: NOW144 })
+    const junk = await startBookProject({ brokerageId: B1, agentId: AG1, createdBy: U1, concept: "A seller's book on pricing a fixer-upper in Tampa Bay", audience: "seller", context: "amazon_store" as never }, { client: db as never, entitlement: allow, now: NOW144 })
+    check("a tenant cannot start a PLATFORM book, and an unknown context is refused — nothing written", !stolen.success && /house tenant/.test(stolen.error ?? "") && !junk.success && /lead_magnet, tenant_kdp or platform_kdp/.test(junk.error ?? "") && db.tables.lead_capture_forms.length === before)
+    asked = 0
+    const generic = await startBookProject({ brokerageId: B1, agentId: AG1, createdBy: U1, concept: "A complete guide to buying a home", audience: "buyer" }, { client: db as never, entitlement: counting, now: NOW144 })
+    check("a GENERIC concept ('a complete guide to buying a home') is refused BEFORE the entitlement is even asked — nothing written, nothing spent", !generic.success && /names no niche/.test(generic.error ?? "") && asked === 0 && db.tables.lead_capture_forms.length === before)
+    const blindDb = world({ refuse: { brokerages: "permission denied for table brokerages" } })
+    const blindPlat = await startBookProject({ brokerageId: BH, agentId: AGH, createdBy: US, concept: "An agent's field guide to AI-assisted listing launches in Florida", audience: "seller", context: "platform_kdp" }, { client: blindDb as never, entitlement: allow, now: NOW144 })
+    const blindDefault = await startBookProject({ brokerageId: BH, agentId: AGH, createdBy: US, concept: "An agent's field guide to AI-assisted listing launches in Florida", audience: "seller" }, { client: blindDb as never, entitlement: allow, now: NOW144 })
+    check("FAIL CLOSED: an unreadable tenant row never yields a platform book — asked for one it is refused; by default the book is the tenant's", !blindPlat.success && /Could not verify/.test(blindPlat.error ?? "") && blindDefault.success && blindDefault.context === "lead_magnet")
+  }
+
+  // ═══════════════════ J · topic evidence ═══════════════════
+  section("J · topic evidence — demand, problem, positioning, gaps, originality, conversion; generic topics get no outline")
+  check("niche words: 'a complete guide to buying a home' names none; 'first-time sellers in Pensacola' does (positive control)", conceptSpecifics("A complete guide to buying a home").length === 0 && conceptSpecifics("A seller's book for first-time sellers in Pensacola").includes("pensacola"))
+  {
+    const ev = scoreBookTopicEvidence({ concept: "Selling a fixer-upper in Tampa without losing equity", demand: [{ topic: "Should I fix the roof before listing a fixer upper?", score: 6 }, { topic: "How do buyers finance a home that needs repairs?", score: 4 }], bank: ["Repairs worth doing before you list"], positioning: { titles: ["How to price a fixer upper home"], snippets: ["pricing tips"] }, conversion: { magnets: 2, captures: 9 }, now: "t" })
+    check("EVIDENCED: 3 demand signals, the most-asked question is the audience problem, unmet questions found against the competing title, original, conversion carried", ev.verdict === "evidenced" && ev.demand.total === 3 && ev.audience_problem === "Should I fix the roof before listing a fixer upper?" && ev.gaps.length === 2 && ev.positioning.researched && ev.originality.original && ev.conversion?.captures === 9, JSON.stringify(ev))
+    const crowdedTitle = scoreBookTopicEvidence({ concept: "Pricing a fixer-upper for sale in Tampa", demand: [{ topic: "When is the best month to list?" }], bank: [], positioning: { titles: ["Pricing a Fixer-Upper for Sale in Tampa"], snippets: [] }, conversion: null, now: "t" })
+    const crowdedGaps = scoreBookTopicEvidence({ concept: "Selling a fixer-upper in Tampa without losing equity", demand: [{ topic: "How do I price a fixer upper?" }], bank: [], positioning: { titles: ["How to price a fixer upper home"], snippets: [] }, conversion: null, now: "t" })
+    check(`CROWDED: a re-titling of an existing book (similarity ≥ ${BOOK_EVIDENCE_RULES.maxTitleSimilarity}) and a topic whose every question the competition answers`, crowdedTitle.verdict === "crowded" && !crowdedTitle.originality.original && crowdedGaps.verdict === "crowded" && crowdedGaps.gaps.length === 0, JSON.stringify({ a: crowdedTitle.originality, b: crowdedGaps.gaps }))
+    const none = scoreBookTopicEvidence({ concept: "Selling a fixer-upper in Tampa", demand: [], bank: [], positioning: null, conversion: null, now: "t" })
+    const blindPos = scoreBookTopicEvidence({ concept: "Selling a fixer-upper in Tampa", demand: [{ topic: "How do I price a fixer upper?" }], bank: [], positioning: null, conversion: null, now: "t" })
+    check("NO DEMAND is its own verdict; positioning NOT researched is SAID (every question an unverified gap) — never read as 'no competition'", none.verdict === "no_demand" && blindPos.verdict === "evidenced" && !blindPos.positioning.researched && /NOT researched|unverified/.test(blindPos.reasons.join(" ") + (blindPos.positioning.note ?? "")) && blindPos.gaps.length === 1)
+  }
+  {
+    const db = world({ forms: [{ id: "prior-1", brokerage_id: B1, name: "Old guide", slug: "old", magnet_type: "seller_guide", is_active: true, settings: {} }], subs: [{ id: "s1", brokerage_id: B1, form_id: "prior-1" }, { id: "s2", brokerage_id: B1, form_id: "prior-1" }, { id: "s3", brokerage_id: B2, form_id: "prior-1" }] })
+    const prompts: string[] = []
+    const outlineJson = JSON.stringify({ title: "Fixer-Upper, Sold", subtitle: "Repairs, pricing and offers", tagline: "Fix what matters", introduction: "Intro.", closing: "Talk to me.", chapters: ["Roof first", "Financing repairs", "Pricing as-is", "Offers"].map((heading) => ({ heading, summary: "s", key_points: ["a", "b", "c"] })) })
+    const writer: NonNullable<BookDeps["manuscriptWriter"]> = async (req) => { prompts.push(req.prompt); return { text: outlineJson, tokens: 100, model: "stub" } }
+    const base: BookDeps = { client: db as never, entitlement: allow, topicReader: async () => [], manuscriptWriter: writer, now: NOW144 }
+    const crowded = await startBookProject({ brokerageId: B1, agentId: AG1, createdBy: U1, concept: "Selling a fixer-upper in Tampa without losing equity", audience: "seller" }, base)
+    const cDeps: BookDeps = { ...base, researcher: async () => [{ topic: "How do I price a fixer upper?", score: 5 }], positioningResearcher: async () => ({ titles: ["How to price a fixer upper home"], snippets: [] }) }
+    const r1 = await advanceBookProject({ brokerageId: B1, magnetId: crowded.magnetId!, actorUserId: U1 }, cDeps)
+    const ledgerBefore = db.tables.agent_action_ledger.filter((l) => l.action === "marketing.lead_magnet.book_stage").length
+    const r2 = await advanceBookProject({ brokerageId: B1, magnetId: crowded.magnetId!, actorUserId: U1 }, cDeps)
+    check("a CROWDED topic: research records the evidence (verdict crowded) and the OUTLINE is refused before any model call — no write, no ledger row, the reason names the verdict", r1.success && /evidence crowded/.test(r1.note ?? "") && !r2.success && /Topic evidence: crowded/.test(r2.error ?? "") && prompts.length === 0 && r2.stage === "outline" && db.tables.agent_action_ledger.filter((l) => l.action === "marketing.lead_magnet.book_stage").length === ledgerBefore, JSON.stringify({ r1: r1.note, r2: r2.error }))
+    const good = await startBookProject({ brokerageId: B1, agentId: AG1, createdBy: U1, concept: "Selling a fixer-upper in Tampa without losing equity", audience: "seller" }, base)
+    const gDeps: BookDeps = { ...base, researcher: async () => [{ topic: "Should I fix the roof before listing a fixer upper?", score: 6 }, { topic: "How do buyers finance a home that needs repairs?", score: 4 }], positioningResearcher: async () => ({ titles: ["How to price a fixer upper home"], snippets: [] }) }
+    const g1 = await advanceBookProject({ brokerageId: B1, magnetId: good.magnetId!, actorUserId: U1 }, gDeps)
+    const ev = (db.tables.lead_capture_forms.find((r) => r.id === good.magnetId)?.settings as { book?: { research?: { evidence?: { verdict: string; conversion: { magnets: number; captures: number } | null } } } } | undefined)?.book?.research?.evidence
+    const g2 = await advanceBookProject({ brokerageId: B1, magnetId: good.magnetId!, actorUserId: U1 }, gDeps)
+    check("an EVIDENCED topic: the CONVERSION is read from this tenant's own magnets of the type (1 prior magnet, its 2 captures — the other tenant's capture and this book itself excluded)", g1.success && ev?.verdict === "evidenced" && ev.conversion?.magnets === 1 && ev.conversion.captures === 2, JSON.stringify(ev))
+    check("…and the outline lane is handed the audience problem, the UNMET questions to own and the titles to position against (never to copy)", g2.success && g2.stage === "chapters" && prompts.length === 1 && /The problem this book exists to solve/.test(prompts[0]) && /UNMET questions/.test(prompts[0]) && prompts[0].includes("Should I fix the roof before listing a fixer upper?") && /Books already on this topic/.test(prompts[0]) && prompts[0].includes("How to price a fixer upper home") && /never reuse their titles/.test(prompts[0]) && /Return ONLY JSON: \{"title"/.test(prompts[0]))
+  }
+
+  // ═══════════════════ K · the humanized review ═══════════════════
+  section("K · the humanized review — machine-written chapters go back to the human (owner ruling 15)")
+  const TELLS = ["In today's fast-paced market, pricing matters.", "It's important to note that offers vary.", "Let's delve into the paperwork.", "We will navigate the complexities of escrow.", "Embark on a journey home.", "This guide will walk you through closing.", "As an AI, I suggest this.", "In conclusion, plan ahead."]
+  for (const t of TELLS) check(`CAUGHT: "${t}"`, scanAiTells(t).length > 0)
+  const HUMAN = [para(6), "Walk through each step with your agent and keep a folder of every document.", "Selling a home is a sequence of decisions, not a single event."]
+  check("CLEAN controls pass: the guard's own chapter prose, the wave-142 proofs' filler and an opening line read as human", HUMAN.every((t) => scanAiTells(t).length === 0))
+  const tellChapters = chapters.map((c, i) => ({ ...c, body: i === 1 ? `In today's fast-paced market, the first price decides the sale. ${c.body}` : c.body, words: c.body.split(/\s+/).length, written_at: "2026-10-01", edited: { fact_findings: 0, fair_housing_rewrites: 0, escalated: false, findings: [] } }))
+  const revisedChapters = tellChapters.map((c, i) => (i === 1 ? { ...c, edited: { ...c.edited, human_revised_at: "2026-10-02T00:00:00.000Z" } } : c))
+  check("the state: an AI-drafted chapter with a tell is OPEN (named, with the phrase); the human's own revision of the same words is never re-flagged", (() => { const a = humanizedReviewState(tellChapters), b = humanizedReviewState(revisedChapters); return !a.ready && a.open.length === 1 && a.open[0].chapter === 2 && /fast-paced/.test(a.open[0].phrases[0]) && b.ready && b.humanRevised.join() === "2" })())
+  await blocked("the KDP package is NOT built while an AI-drafted chapter still reads machine-written — the blocker names the chapter", seed(project({ chapters: tellChapters })), (r) => !r.ok && /Humanized review: chapter 2/.test(r.error) && r.blockers?.humanize?.[0]?.chapter === 2)
+  {
+    const db = world({ forms: [formWith(B1, project({ chapters: tellChapters, publication: startPub("lead_magnet", false, AG1) }))] })
+    const refused = await publishLeadMagnet({ magnetId: MAGNET, brokerageId: B1, channels: ["landing_page"], actorUserId: U1, baseUrl: "https://app.example.com" }, { client: db as never })
+    check("the LEAD-MAGNET publish is refused too (the same rule, the same words) — the page stays a draft", !refused.success && /Humanized review: chapter 2/.test(refused.error ?? "") && db.tables.lead_capture_forms[0].is_active === false, JSON.stringify(refused))
+    const db2 = world({ forms: [formWith(B1, project({ chapters: revisedChapters, publication: startPub("lead_magnet", false, AG1) }))] })
+    const ok = await publishLeadMagnet({ magnetId: MAGNET, brokerageId: B1, channels: ["landing_page"], actorUserId: U1, baseUrl: "https://app.example.com" }, { client: db2 as never })
+    const hr = ((db2.tables.lead_capture_forms[0].settings as { book?: { humanized_review?: { by: string; basis: string; chapters_human_revised: number[]; ai_tells_open: number } } }).book?.humanized_review)
+    check("once the human rewrote it, the publish lands and RECORDS the sign-off on the book (who, basis lead_magnet_publish, the chapters they rewrote, 0 open tells)", ok.success && db2.tables.lead_capture_forms[0].is_active === true && hr?.by === U1 && hr.basis === "lead_magnet_publish" && hr.chapters_human_revised.join() === "2" && hr.ai_tells_open === 0, JSON.stringify({ ok, hr }))
+  }
+  {
+    hosted.length = 0
+    const db = seed()
+    const built = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: db as never, ...deps({ now: new Date("2026-10-23T12:00:00Z") }) } as never)
+    const five = await approveKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1, attested: ["i_hold_rights", "ai_disclosure_confirmed", "content_guidelines_reviewed", "no_rank_claims", "facts_reviewed"] }, { client: db as never })
+    check("KDP approval WITHOUT the humanized_review attestation is refused and names it", built.ok && !five.ok && /humanized_review/.test((five as { error: string }).error))
+    const all = await approveKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1, attested: KDP_ATTESTATIONS.map((a) => a.id) }, { client: db as never, now: new Date("2026-10-23T13:00:00Z") })
+    const hr = (db.tables.lead_capture_forms[0].settings as { book?: { humanized_review?: { basis: string; by: string } } }).book?.humanized_review
+    check("…with every attestation the sign-off is recorded on the BOOK (basis kdp_attestation, by the session user)", all.ok && hr?.basis === "kdp_attestation" && hr.by === U1)
+    ;(db.tables.lead_capture_forms[0].settings as { book: { updated_at: string } }).book.updated_at = "2026-10-24T00:00:00.000Z"
+    const stale = await approveKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1, attested: KDP_ATTESTATIONS.map((a) => a.id) }, { client: db as never })
+    check("a package OLDER than the manuscript cannot be approved (the files no longer match the book — rebuild)", !stale.ok && /changed after this package was built/.test((stale as { error: string }).error))
+    const old = seed()
+    ;(old.tables.lead_capture_forms[0].settings as Record<string, unknown>).book_publishing = { ...kdpPackageOf(db.tables.lead_capture_forms[0].settings)!, approval: null, rights: { ...kdpPackageOf(db.tables.lead_capture_forms[0].settings)!.rights, attestations: KDP_ATTESTATIONS.filter((a) => a.id !== "humanized_review") } }
+    const legacy = await approveKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1, attested: KDP_ATTESTATIONS.map((a) => a.id) }, { client: old as never })
+    check("a wave-143 package (built before the humanized review existed) is refused with 'rebuild it' — never silently approved", !legacy.ok && /rebuild it/.test((legacy as { error: string }).error))
+  }
+
+  // ═══════════════════ L · the brand on the book + I (KDP context) ═══════════════════
+  section("L · logo, colours and the APPROVED tagline reach the cover and the EPUB; I · the KDP context moves and is gated")
+  const files = new Map<string, Buffer>()
+  const keep = async (_s: unknown, path: string, bytes: Buffer) => { files.set(path, bytes) }
+  const logoPng = await sharp({ create: { width: 400, height: 120, channels: 3, background: { r: 200, g: 20, b: 20 } } }).png().toBuffer()
+  const LOGO_URL = "https://proj.supabase.co/storage/v1/object/public/brand/logo.png"
+  function tenantBrand(tagline: string | null, logoUrl: string | null = LOGO_URL) {
+    const brand = { brokerageName: "Harbor Realty", agentName: "Dana Reyes", primaryColor: "#14532D", accentColor: "#F59E0B", logoUrl, tagline }
+    return async () => brand
+  }
+  {
+    files.clear()
+    const db = seed(project({ publication: startPub("lead_magnet", false, AG1) }))
+    const r = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: db as never, ...deps({ brandResolver: tenantBrand("Calm advice, local roots"), fetchLogo: async () => logoPng, host: keep, tenantReader: async () => ({ isHouseTenant: false, readable: true }) }) } as never)
+    const rec = kdpPackageOf(db.tables.lead_capture_forms[0].settings)
+    const about = unzip(files.get(`client-docs/${B1}/kdp/${MAGNET}/book.epub`)!).find((e) => e.name === "OEBPS/about.xhtml")?.data.toString("utf8") ?? ""
+    check("the brand's LOGO is embedded, the APPROVED tagline kept, the colours recorded; the EPUB's about page carries the tagline", r.ok && rec?.brand?.logo === "embedded" && rec.brand.tagline === "Calm advice, local roots" && rec.brand.accent_color === "#F59E0B" && rec.brand.source === "tenant" && /Calm advice, local roots/.test(about), JSON.stringify(rec?.brand))
+    // Pixel means from the RAW extracted region (sharp's stats() reads the whole input, not the extract — measured, so not used here).
+    const band = async (b: Buffer) => {
+      const { data, info } = await sharp(b).extract({ left: Math.round((COVER_WIDTH - 560) / 2), top: COVER_LOGO_BOX.top, width: 560, height: COVER_LOGO_BOX.maxHeight }).removeAlpha().raw().toBuffer({ resolveWithObject: true })
+      const sums = [0, 0, 0]
+      for (let i = 0; i < data.length; i += info.channels) for (let c = 0; c < 3; c++) sums[c] += data[i + c]
+      return sums.map((s) => s / (data.length / info.channels))
+    }
+    const withLogo = await band(files.get(`client-docs/${B1}/kdp/${MAGNET}/cover.jpg`)!)
+    files.clear()
+    await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: seed() as never, ...deps({ brandResolver: tenantBrand(null, null), host: keep, tenantReader: async () => ({ isHouseTenant: false, readable: true }) }) } as never)
+    const noLogo = await band(files.get(`client-docs/${B1}/kdp/${MAGNET}/cover.jpg`)!)
+    check("…the logo is really ON the cover: the logo band differs from the same cover without one (pixel means, R/G/B)", withLogo.reduce((s, v, i) => s + Math.abs(v - noLogo[i]), 0) > 60, `${withLogo.map((v) => v.toFixed(0))} vs ${noLogo.map((v) => v.toFixed(0))}`)
+    const pub = (db.tables.lead_capture_forms[0].settings as { book?: { publication?: { context: string; history: unknown[] } } }).book?.publication
+    check("I · the KDP build moved the lead magnet into the TENANT's retail context, recorded on the book with its history, and the rights record names the rights holder", rec?.publication?.context === "tenant_kdp" && pub?.context === "tenant_kdp" && pub.history.length === 2 && rec?.rights.publication?.context === "tenant_kdp" && rec.rights.publication.rightsHolder === "Dana Reyes")
+  }
+  {
+    const r = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: seed() as never, ...deps({ brandResolver: tenantBrand("The #1 team in Tampa Bay"), fetchLogo: async () => logoPng, tenantReader: async () => ({ isHouseTenant: false, readable: true }) }) } as never)
+    check("a tagline that CLAIMS rank is LEFT OFF (approved taglines only) with the reason — the book is still packaged", r.ok && r.record.brand?.tagline === null && r.record.warnings.some((w) => /left off the book/.test(w)))
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "https://proj.supabase.co"
+    const foreign = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: seed() as never, ...deps({ brandResolver: tenantBrand(null, "https://evil.example/logo.png"), fetchLogo: undefined, tenantReader: async () => ({ isHouseTenant: false, readable: true }) }) } as never)
+    check("the DEFAULT logo fetch only reads the platform's OWN storage host: a tenant-typed foreign URL is never fetched — no logo, the warning says why (no network was used)", foreign.ok && foreign.record.brand?.logo === "unreadable" && foreign.record.warnings.some((w) => /platform's own storage/.test(w)))
+  }
+  {
+    hosted.length = 0
+    const plat = () => world({ forms: [formWith(BH, project({ publication: startPub("platform_kdp", true, null) }))] })
+    const dbA = plat()
+    const notStaff = await buildKdpPackage({ brokerageId: BH, magnetId: MAGNET, actorUserId: U1 }, { client: dbA as never, ...deps({ brandResolver: undefined }) } as never)
+    check("I · a PLATFORM book is not packaged by a non-staff user (users.platform_role empty) — nothing hosted", !notStaff.ok && /only platform staff/.test(notStaff.error) && hosted.length === 0 && kdpPackageOf(dbA.tables.lead_capture_forms[0].settings) === null)
+    const ok = await buildKdpPackage({ brokerageId: BH, magnetId: MAGNET, actorUserId: US }, { client: dbA as never, ...deps({ brandResolver: undefined }) } as never)
+    const rec = ok.ok ? ok.record : null
+    check("…by platform staff it IS: context platform_kdp, owner platform, the PRODUCT brand (platform_settings.product_brand) as author and rights holder", ok.ok && rec?.publication?.context === "platform_kdp" && rec.publication.owner === "platform" && rec.brand?.source === "platform" && rec.metadata.authorName === "VIP Agents" && rec.rights.copyrightLine === "© 2026 VIP Agents. All rights reserved." && rec.brand.tagline === "The AI team that runs the whole business", JSON.stringify(ok).slice(0, 300))
+    const byTenant = await approveKdpPackage({ brokerageId: BH, magnetId: MAGNET, actorUserId: U1, attested: KDP_ATTESTATIONS.map((a) => a.id) }, { client: dbA as never })
+    const byStaff = await approveKdpPackage({ brokerageId: BH, magnetId: MAGNET, actorUserId: US, attested: KDP_ATTESTATIONS.map((a) => a.id) }, { client: dbA as never, now: new Date("2026-10-23T13:00:00Z") })
+    check("…and approved by platform staff only", !byTenant.ok && /only platform staff/.test((byTenant as { error: string }).error) && byStaff.ok)
+    const blindStaff = world({ forms: [formWith(BH, project({ publication: startPub("platform_kdp", true, null) }))], refuse: { users: "permission denied for table users" } })
+    const failClosed = await buildKdpPackage({ brokerageId: BH, magnetId: MAGNET, actorUserId: US }, { client: blindStaff as never, ...deps({ brandResolver: undefined }) } as never)
+    check("FAIL CLOSED: an unreadable staff record never packages a platform book", !failClosed.ok && /Could not verify platform staff/.test(failClosed.error))
+    const moved = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: world({ forms: [formWith(B1, project({ publication: startPub("platform_kdp", true, null) }))] }) as never, ...deps({ brandResolver: undefined }) } as never)
+    check("a platform book found in an ordinary tenant (moved data) is refused, never packaged as the tenant's", !moved.ok && /house tenant/.test(moved.error))
+  }
+
+  // ═══════════════════ M · the displayed rights notice ═══════════════════
+  section("M · the platform's copyright + licensing notice is DISPLAYED (owner ruling 18)")
+  {
+    const n = platformRightsNotice({ holder: "VIP Agents", year: 2026 })
+    const text = [n.title, n.copyrightLine, ...n.intro, ...n.prohibited, ...n.closing, n.footerLine].join(" ")
+    check("standard rights language: the copyright line, licensed-not-sold, and the prohibition (copy, derivative works, reverse engineer, scrape, frame, resell, build a competitor)", n.copyrightLine === "© 2026 VIP Agents. All rights reserved." && /licensed, not sold/.test(text) && [/copy, reproduce/, /derivative works/, /reverse engineer/, /scrape, crawl/, /frame or mirror/, /resell, sublicense/, /competing product/].every((re) => re.test(text)) && n.footerLine.includes("/legal"))
+    const INVENTED = /\bpatent|\bregistered\b|®|™|\bDMCA\b|\bdamages\b|\bpenalt|\bcriminal\b|\bstatutory\b|designated agent/i
+    check("NO invented legal claim (no patent, registration, ®/™, DMCA agent, damages or penalties) — positive control: the same scan catches 'patent pending'", !INVENTED.test(text) && INVENTED.test("Patent pending. Violators face statutory damages."))
+    check("the notice does not claim the customer's uploads (form packets / listings / brand assets are theirs under their agreement)", /not claimed by this notice/.test(text) && /form packets/.test(text))
+    check("/legal is reachable WITHOUT a session (the proxy classifies it as not protected)", classifyProxyPath("/legal") !== "protected")
+    const page = code("app/legal/page.tsx")
+    check("the page renders THE notice (platformRightsNotice) under the platform's product brand (loadProductBrand — the name is a setting, never hardcoded)", /platformRightsNotice\(\{ holder: name/.test(page) && /loadProductBrand\(/.test(page) && /notice\.prohibited\.map/.test(page))
+    check("it is DISPLAYED where creative is made: the Marketing Studio links it (href=\"/legal\")", /href="\/legal"/.test(code("app/dashboard/marketing/studio/page.tsx")))
+  }
   rmSync(tmp, { recursive: true, force: true })
 
   console.log("\n──────────────────────────────────────────────────")
-  console.log(` Denominators: ${margin.length} margin boundaries; ${dirty.length} rank phrases / ${clean.length} clean; ${entries.length} EPUB entries (${xmlParts.length} XML parts); 2 covers; 7 producer scenarios`)
+  console.log(` Denominators: ${margin.length} margin boundaries; ${dirty.length} rank phrases / ${clean.length} clean; ${entries.length} EPUB entries (${xmlParts.length} XML parts); 2 covers; 7 producer scenarios; ${BOOK_PUBLICATION_CONTEXTS.length} publication contexts; ${TELLS.length} machine-written tells / ${HUMAN.length} clean; 4 evidence verdicts`)
   console.log(" Blind spots:")
   for (const b of [
+    "TOPIC EVIDENCE is a signal from the search rail, not a market study: demand = questions the search answer surfaced + the tenant's topic bank; competitor positioning = titles/snippets the same rail returned (no bookstore sales data, no rank data — and none is promised); a topic the rail cannot see reads 'positioning not researched', never 'no competition'",
+    "the machine-written TELL list is short on purpose (phrases readers notice); a draft that reads machine-made without using a listed phrase passes the scan — the human's sign-off (the publish / the humanized_review attestation) is the real review, the scan only points",
+    "the house tenant is brokerages.is_demo (the tenant platform renders are filed under — lib/did/platform-live-agent.ts uses the same flag); the platform's own LOGO is not yet a product-brand field, so a platform book carries the product name, colours and tagline but no logo (owner input)",
+    "the logo is fetched server-side ONLY from the platform's own storage host (NEXT_PUBLIC_SUPABASE_URL); a logo kept anywhere else is reported unreadable, never fetched — the in-storage fetch itself is not exercised here (no network)",
+    "the rights notice is standard rights language for display; the legal entity name defaults to the product brand name until the owner records it, and a lawyer's review of the final wording is the owner's (WAITING_EXTERNAL)",
+    "the lead-magnet PDF (lib/documents/client-pdf.ts bookPdfSpec, outside this lane) still carries only the brand colour + names — the logo and tagline reach the KDP cover and EPUB, not yet the PDF",
     "KDP has no publishing API and the author's KDP account is WAITING_EXTERNAL: nothing here proves KDP ACCEPTS the files — KDP's own upload checks and review do",
     "the PAPERBACK interior PDF is NOT produced (KDP requires embedded fonts; the repo ships no font file or embedder) — only the plan, margins and the named blocker exist",
     "the claim guard is a pattern list: a rank claim worded in a way it does not list is not caught; the human attestation (no_rank_claims) and KDP's own review are the backstops",

@@ -90,6 +90,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { evaluateExecution } from "@/lib/compliance/signature-completeness"
+import { asContractSubtype, asRepresentation, type ContractSubtype, type Representation } from "@/lib/compliance/checklist-dimensions"
 import {
   auditOfferDocuments,
   loadDealFileDocuments,
@@ -113,6 +114,11 @@ import {
 // The flag ledger's own names — imported, never re-spelled, so this gate and the
 // resolver that closes those flags can never disagree about what "open" means.
 import { OFFER_COMPLIANCE_FLAG_EVENT, FLAG_STATUS_OPEN } from "@/lib/compliance/offer-flag-resolution"
+// THE GOVERNING PACKET (wave 144, lane 144C — owner ruling 2): the original offer + the accepted counter (+ executed addenda) ARE the
+// executed contract, and BOTH go through the compliance scan. The accepted-sequence rule is the SAME one the terms reader uses
+// (lib/offers/governing-terms-rule.ts acceptedOfferSequence), so the paperwork this gate scans and the terms closing compliance
+// compares can never be two different contracts.
+import { governingOfferPacket, type GoverningOfferPacket } from "@/lib/offers/governing-terms"
 
 /**
  * The parties whose signature AND initials a purchase contract requires. The
@@ -134,6 +140,12 @@ export type GateRequirement =
   | "required_documents_present"
   | "documents_fully_signed"
   | "initials_complete"
+  /**
+   * WHICH instruments are the contract (wave 144, owner ruling 2): the row being promoted must be the head of the ACCEPTED sequence —
+   * not superseded by a later executed counter, not one of two executed branches — and the contract must not already have become a
+   * transaction from another row of its chain (one executed contract → ONE transaction).
+   */
+  | "governing_packet"
   /** The gate itself could not run — refuse, never pass. */
   | "gate_could_not_run"
 
@@ -184,6 +196,11 @@ export interface TransactionCreationGateResult {
     missingWarning:   string[]
     /** What established compliance, when it did. */
     complianceEvidence: string[]
+    /**
+     * The instruments the documents above were read from (wave 144): the accepted sequence root → head, the executed addenda,
+     * and every chain row that is NOT part of the contract with why. Null when there is no offer, or the chain refused.
+     */
+    governingPacket?: GoverningOfferPacket | null
     checkedAt:        string
   }
 }
@@ -286,6 +303,77 @@ export function findUnexecutedDocuments(
 }
 
 /**
+ * PURE. Presence re-read over a deal file: a required classification is present when ANY row of the file carries it. This is the
+ * presence half of lib/compliance/required-documents.ts (auditAgainst) applied to a file the gate assembled itself — the
+ * no-offer branch below and the governing-packet widening both use THIS one function, so the gate holds one presence reading.
+ * Everything else on the audit (the checklist, its version and fingerprint) is carried through unchanged.
+ */
+function auditOverDealFile(audit: AuditResult, file: DealFileDocument[]): AuditResult {
+  const presentSet = new Set<DocumentClassification>()
+  for (const d of file) if (d.classification) presentSet.add(d.classification)
+  return {
+    ...audit,
+    present:          Array.from(presentSet),
+    missing_blocking: audit.required_breakdown.filter((r) => r.block_on_missing && !presentSet.has(r.classification)).map((r) => r.classification),
+    missing_warning:  audit.required_breakdown.filter((r) => !r.block_on_missing && !presentSet.has(r.classification)).map((r) => r.classification),
+    deal_file:        file,
+  }
+}
+
+/**
+ * THE COMPLETE GOVERNING PACKET'S DEAL FILE (wave 144, lane 144C — owner ruling 2: "the ORIGINAL OFFER + the ACCEPTED COUNTER (+
+ * required addenda) together are the executed contract; BOTH go through the compliance scan").
+ *
+ * `audit` is the checklist audit of the HEAD (the row being promoted). The file is widened to:
+ *   + the documents filed against EVERY offer of the accepted sequence (the original offer's paperwork lives on the root);
+ *   + the documents behind every EXECUTED addendum / amendment recorded on the contract;
+ *   − the documents filed against a chain row that is NOT part of the contract (a rejected or unaccepted counter, a draft after
+ *     execution) — they are KEPT on the deal (every version is kept) but they are not the contract, so they neither satisfy a
+ *     required document nor block on a missing signature.
+ * Presence is then re-read over the widened file. FAILS CLOSED: any refused read is `ok:false` — nothing verified, nothing passes.
+ */
+export async function widenAuditToGoverningPacket(
+  supabase: SupabaseClient,
+  brokerageId: string,
+  audit: AuditResult,
+  packet: GoverningOfferPacket,
+): Promise<{ ok: true; audit: AuditResult; added: number; dropped: number } | { ok: false; error: string }> {
+  const byId = new Map(audit.deal_file.map((d) => [d.id, d]))
+  const before = new Set(byId.keys())
+  for (const offerId of packet.sequence) {
+    if (offerId === packet.headOfferId) continue
+    const file = await loadDealFileDocuments(supabase, { brokerageId, offerId })
+    if (!file.ok) return { ok: false, error: file.error }
+    for (const d of file.rows) byId.set(d.id, d)
+  }
+  if (packet.addendumDocumentIds.length > 0) {
+    const { data, error } = await supabase
+      .from("documents")
+      .select("id, classification, signature_completeness, status")
+      .eq("brokerage_id", brokerageId)
+      .in("id", packet.addendumDocumentIds)
+    if (error) return { ok: false, error: `the executed addenda could not be read: ${error.message}` }
+    for (const d of (data ?? []) as Array<Record<string, unknown>>) {
+      byId.set(String(d.id), { id: String(d.id), classification: (d.classification ?? null) as DocumentClassification | null, signature_completeness: d.signature_completeness ?? null, status: (d.status ?? null) as string | null })
+    }
+  }
+  const drop = new Set<string>()
+  for (const ex of packet.excluded) {
+    const { data, error } = await supabase
+      .from("documents")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .filter("metadata->>linked_offer_id", "eq", ex.offerId)
+    if (error) return { ok: false, error: `the paperwork of a counter outside the contract could not be read: ${error.message}` }
+    for (const d of (data ?? []) as Array<{ id: string }>) drop.add(String(d.id))
+  }
+  // A document carries ONE linked_offer_id, so a document filed against a sequence offer can never be in `drop`; what is dropped is
+  // only paperwork filed against a row outside the contract that rode in on the contact link.
+  const file = [...byId.values()].filter((d) => !drop.has(d.id))
+  return { ok: true, audit: auditOverDealFile(audit, file), added: file.filter((d) => !before.has(d.id)).length, dropped: [...before].filter((id) => drop.has(id)).length }
+}
+
+/**
  * The columns this gate reads off the offer. Hoisted OUT of the query chain for
  * the same reason offer-bridge hoists its own: scripts/tenant-scope-guard.ts
  * examines the 500 characters that follow `.from("<table>")` looking for scoping
@@ -301,7 +389,23 @@ const GATE_OFFER_COLUMNS = [
   "id", "brokerage_id", "transaction_id", "compliance_passed_at",
   "buyer_signed_at", "seller_signed_at", "seller_response_type",
   "fully_signed_contract_received_at",
+  // wave 144 (lane 144C, lane 144A Outside-lane 3): the deal's contract subtype / representation, read off the SAME row
+  "metadata",
 ].join(", ")
+
+/**
+ * PURE. The checklist dimensions the DEAL itself states, read off the offer record a gate already loaded (wave 144 — lane 144A's
+ * Outside-lane 3: "callers that know the deal's subtype / representation should pass them"). No column on offers or transactions
+ * records either at HEAD (measured: schema snapshot; 0 writers in app/ lib/), so the only place a deal can carry them is the
+ * offer's metadata (`contract_subtype`, `representation`). Each value is narrowed through the ONE vocabulary
+ * (lib/compliance/checklist-dimensions.ts) — an unrecognised or absent value is UNKNOWN (null), never guessed, and an unknown
+ * dimension keeps a rule that needs it applying as a WARNING (the resolver's fail-safe), exactly as before. Nothing is inferred:
+ * `transactions.deal_type = 'dual'` is NOT dual agency (a state may call it designated agency or transaction brokerage).
+ */
+export function offerChecklistDimensions(offer: { metadata?: unknown } | null | undefined): { contractSubtype: ContractSubtype | null; representation: Representation | null } {
+  const m = offer?.metadata && typeof offer.metadata === "object" && !Array.isArray(offer.metadata) ? (offer.metadata as Record<string, unknown>) : {}
+  return { contractSubtype: asContractSubtype(m.contract_subtype), representation: asRepresentation(m.representation) }
+}
 
 /** Compliance AND execution evidence for one offer — read fail-closed. */
 async function readOfferCompliance(
@@ -316,6 +420,8 @@ async function readOfferCompliance(
       executionWhy: string | null
       /** What established each side, for the refusal text and the detail block. */
       executionEvidence: string[]
+      /** The deal's own checklist dimensions, off the same row (null = not stated). */
+      dimensions: ReturnType<typeof offerChecklistDimensions>
     }
   | { ok: false; error: string }
 > {
@@ -393,7 +499,7 @@ async function readOfferCompliance(
       passed: false,
       evidence,
       why: `${openFlags.length} compliance flag(s) still open on this offer${titles ? `: ${titles}` : ""}`,
-      fullyExecuted, executionWhy, executionEvidence,
+      fullyExecuted, executionWhy, executionEvidence, dimensions: offerChecklistDimensions(offer as any),
     }
   }
 
@@ -403,10 +509,10 @@ async function readOfferCompliance(
       : !compliancePassedAt
         ? "the compliance-passed event exists but offers.compliance_passed_at was never stamped"
         : "offers.compliance_passed_at is stamped but the compliance-passed audit event is missing"
-    return { ok: true, passed: false, evidence, why: half, fullyExecuted, executionWhy, executionEvidence }
+    return { ok: true, passed: false, evidence, why: half, fullyExecuted, executionWhy, executionEvidence, dimensions: offerChecklistDimensions(offer as any) }
   }
 
-  return { ok: true, passed: true, evidence, why: null, fullyExecuted, executionWhy, executionEvidence }
+  return { ok: true, passed: true, evidence, why: null, fullyExecuted, executionWhy, executionEvidence, dimensions: offerChecklistDimensions(offer as any) }
 }
 
 /**
@@ -455,6 +561,8 @@ export async function assertTransactionCreationAllowed(
   // hold both. Same discipline as requiredTotal (null ≠ 0).
   let fullyExecuted: boolean | null = null
   let executionEvidence: string[] = []
+  let governingPacket: GoverningOfferPacket | null = null
+  let dealDimensions: ReturnType<typeof offerChecklistDimensions> = { contractSubtype: null, representation: null }
 
   if (!params.offerId) {
     // No offer means no compliance evidence exists for this deal. The owner's
@@ -476,6 +584,7 @@ export async function assertTransactionCreationAllowed(
     }
     complianceEvidence = compliance.evidence
     complianceState = compliance.passed ? "passed" : "not_passed"
+    dealDimensions = compliance.dimensions
     fullyExecuted = compliance.fullyExecuted
     executionEvidence = compliance.executionEvidence
     // OBLIGATION 0 REFUSES FIRST, and it refuses under its OWN name. The owner
@@ -494,6 +603,31 @@ export async function assertTransactionCreationAllowed(
         message: `Transaction creation refused${door}: ${compliance.why}.`,
       })
     }
+
+    // ── THE GOVERNING PACKET (wave 144, owner ruling 2) ──────────────────────
+    // Which instruments ARE the contract: the accepted sequence ending at this row, plus the executed addenda. A refused chain
+    // read is the gate failing to run; a chain that says this row is not the contract is a refusal under its own name.
+    const gp = await governingOfferPacket(supabase as any, params.brokerageId, params.offerId)
+    if (!gp.ok && gp.kind === "unreadable") {
+      return refuse([{
+        requirement: "gate_could_not_run",
+        message: `Transaction creation refused${door}: the offer / counter chain could not be read (${gp.reason}). Nothing was verified, so nothing may be created.`,
+      }], { ...baseDetail, fullyExecuted, executionEvidence, complianceState, complianceEvidence })
+    }
+    if (!gp.ok && gp.kind === "refused") {
+      // "not executed" is obligation 0's refusal already, said once — unless the columns say executed and the chain says void.
+      if (!(gp.code === "not_executed" && !compliance.fullyExecuted)) {
+        refusals.push({ requirement: "governing_packet", message: `Transaction creation refused${door}: ${gp.reason}.` })
+      }
+    } else if (gp.ok) {
+      governingPacket = gp.packet
+      if (gp.packet.transactionIds.length > 0) {
+        refusals.push({
+          requirement: "governing_packet",
+          message: `Transaction creation refused${door}: this contract already became transaction ${gp.packet.transactionIds.join(", ")} — one executed contract (the original offer with its accepted counter and addenda) creates ONE transaction.`,
+        })
+      }
+    }
   }
 
   // ── 2. Every required document present (from SETTINGS) ───────────────────
@@ -508,7 +642,21 @@ export async function assertTransactionCreationAllowed(
       teamId:      params.teamId ?? null,
       dealType:    params.dealType,
       stateCode:   params.stateCode ?? null,
+      // the deal's own subtype / representation, off the offer row read above (null = not stated → the resolver's warning arm)
+      contractSubtype: dealDimensions.contractSubtype,
+      representation:  dealDimensions.representation,
     })
+    // BOTH instruments go through the scan (owner ruling 2): widen the head's file to the whole governing packet.
+    if (governingPacket && !audit.unavailable_reason) {
+      const widened = await widenAuditToGoverningPacket(supabase, params.brokerageId, audit, governingPacket)
+      if (!widened.ok) {
+        return refuse([{
+          requirement: "gate_could_not_run",
+          message: `Transaction creation refused${door}: the governing packet's paperwork could not be read (${widened.error}). Nothing was verified, so nothing may be created.`,
+        }], { ...baseDetail, fullyExecuted, executionEvidence, complianceState, complianceEvidence, governingPacket })
+      }
+      audit = widened.audit
+    }
   } else {
     // No offer: still resolve the checklist + the deal file so the refusal can
     // name the outstanding paperwork rather than only the missing offer.
@@ -533,17 +681,11 @@ export async function assertTransactionCreationAllowed(
         deal_file: [],
       }
     } else {
-      const presentSet = new Set<DocumentClassification>()
-      for (const d of file.rows) if (d.classification) presentSet.add(d.classification)
-      audit = {
-        required_total:   required.docs.length,
-        present:          Array.from(presentSet),
-        missing_blocking: required.docs.filter(r => r.block_on_missing && !presentSet.has(r.classification)).map(r => r.classification),
-        missing_warning:  required.docs.filter(r => !r.block_on_missing && !presentSet.has(r.classification)).map(r => r.classification),
-        required_breakdown: required.docs,
-        unavailable_reason: null,
-        deal_file: file.rows,
-      }
+      // The ONE presence reading in this file (auditOverDealFile) — the governing-packet widening above uses it too.
+      audit = auditOverDealFile({
+        required_total: required.docs.length, present: [], missing_blocking: [], missing_warning: [],
+        required_breakdown: required.docs, unavailable_reason: null, deal_file: [],
+      }, file.rows)
     }
   }
 
@@ -600,15 +742,19 @@ export async function assertTransactionCreationAllowed(
     unexecuted,
     missingWarning:  audit.missing_warning.map(documentClassificationLabel),
     complianceEvidence,
+    governingPacket,
     checkedAt,
   }
 
   if (refusals.length > 0) return refuse(refusals, detail)
 
+  const packetLine = governingPacket && governingPacket.sequence.length + governingPacket.addendumDocumentIds.length > 1
+    ? ` The governing packet was scanned as one contract: ${governingPacket.sequence.length} instrument(s) of the accepted sequence${governingPacket.addendumDocumentIds.length ? ` and ${governingPacket.addendumDocumentIds.length} executed addend(a/um)` : ""}${governingPacket.excluded.length ? `; ${governingPacket.excluded.length} chain row(s) outside the contract were kept and not judged` : ""}.`
+    : ""
   return {
     allowed: true,
     refusals: [],
-    reason: `Compliance gate passed at ${checkedAt} — offer fully executed by both buyer and seller, compliance good, all ${audit.required_total} required document(s) present, every signature and every initial complete.`,
+    reason: `Compliance gate passed at ${checkedAt} — offer fully executed by both buyer and seller, compliance good, all ${audit.required_total} required document(s) present, every signature and every initial complete.${packetLine}`,
     detail,
   }
 }

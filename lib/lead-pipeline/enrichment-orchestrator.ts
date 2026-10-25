@@ -108,7 +108,9 @@ function personAttribution(entityType: EntityType, entityId: string): { leadId?:
  */
 const ENTITY_COLUMNS: Record<EntityType, string> = {
   lead: 'id, first_name, last_name, email, phone, enrichment_profile, address, city, state, zip_code, property_zip_code, mailing_address, mailing_city, mailing_state, mailing_zip, lat, lng, source, source_channel',
-  contact: 'id, first_name, last_name, email, phone, enrichment_profile, address, city, state, zip_code, mailing_address, mailing_city, mailing_state, mailing_zip, source, source_channel, property_records',
+  // Wave 144 (lane 144E): + the provider-written profile columns (provider-dedup.ts PROVIDER_WRITTEN_PROFILE_COLUMNS) so the
+  // PeopleData write can tell a GAP from a value a human stated — protectStatedValues (no silent overwrite).
+  contact: 'id, first_name, last_name, email, phone, enrichment_profile, address, city, state, zip_code, mailing_address, mailing_city, mailing_state, mailing_zip, source, source_channel, property_records, age_range, gender, occupation, education_level, home_owner_status, home_value_estimate, marital_status, household_income, net_worth_range, linkedin_url, facebook_url, twitter_url',
 }
 
 /** PURE — does this row trace back to a BatchData source? Gates the property-enrichment
@@ -843,6 +845,14 @@ export async function processEnrichmentQueue(
         // vendor-budget pre-flighted and booked on the platform ledger inside appendModeledCredit.
         // Both through the ONE mapper (enrichment-column-map.ts HOUSEHOLD FINANCIALS).
         Object.assign(profile, carryForwardHouseholdFinancials(profile, entity.enrichment_profile as Record<string, any> | null))
+        // Wave 144 (lane 144E): the SAME replacement used to ERASE every block another writer owns — the Versium real-estate
+        // indicators (online-presence-store.ts), the online-audience identifiers (online-audience-store.ts), the deal-
+        // investigator summary and the provider-conflict record. Carried forward when this pass does not itself carry them
+        // (lib/enrichment/provider-dedup.ts CARRIED_PROFILE_BLOCKS — each named with its writer).
+        {
+          const { carryForwardProfileBlocks } = await import('@/lib/enrichment/provider-dedup')
+          Object.assign(profile, carryForwardProfileBlocks(profile, entity.enrichment_profile as Record<string, any> | null))
+        }
         {
           const { appendModeledCredit } = await import('@/lib/enrichment/household-financials')
           const credit = await appendModeledCredit({
@@ -896,7 +906,9 @@ export async function processEnrichmentQueue(
           const { error: leadWriteError } = await supabase
             .from('leads')
             .update({
-              ...(primaryEmail && { email: primaryEmail }),
+              // Wave 144 (lane 144E — no silent overwrite): a GAP is filled; an e-mail the lead already holds is never
+              // replaced by PeopleData's first address (PDL's list order is its own; the extras stay in enrichment_profile.emails).
+              ...(primaryEmail && !entity.email && { email: primaryEmail }),
               ...leadPhonePatch,
               // NAME BACKFILL (wave 66) — see the namePatch note above.
               ...namePatch,
@@ -979,9 +991,7 @@ export async function processEnrichmentQueue(
           // queue entry is marked done immediately below either way, so a refusal
           // (one PGRST204 phantom column refuses the WHOLE row, not part of it) meant
           // money spent, queue drained, and nothing written.
-          const { error: enrichmentWriteError } = await supabase
-            .from('contacts')
-            .update({
+          const contactPatch: Record<string, unknown> = {
               ...(primaryEmail && { email: primaryEmail }),
               ...contactPhonePatch,
               // NAME BACKFILL (wave 66) — see the namePatch note above.
@@ -1008,7 +1018,22 @@ export async function processEnrichmentQueue(
               }),
               enrichment_profile: profile,
               ...(matChange.changed && { last_life_event_detected: enrichedAt }),
-            })
+          }
+          // NO SILENT OVERWRITE (wave 144, lane 144E — owner ruling 10's dedup rule; lib/enrichment/provider-dedup.ts): the
+          // e-mail the contact already holds, and any profile column a human STATED (staff edit / the person's own portal edit /
+          // what they said to the AI), is never replaced by PeopleData's different value; the offer is recorded in
+          // enrichment_profile.provider_conflicts and the stated value keeps its own provenance stamp. A gap is still filled.
+          const { protectStatedValues, withProviderConflicts, keepPriorStamps } = await import('@/lib/enrichment/provider-dedup')
+          const guardedContact = protectStatedValues(entity, contactPatch, 'peopledata')
+          if (guardedContact.conflicts.length > 0) {
+            guardedContact.patch.enrichment_profile = withProviderConflicts(
+              keepPriorStamps(profile, entity.enrichment_profile as Record<string, unknown> | null, guardedContact.conflicts.map((c) => c.field)),
+              guardedContact.conflicts,
+            )
+          }
+          const { error: enrichmentWriteError } = await supabase
+            .from('contacts')
+            .update(guardedContact.patch)
             .eq('id', entityId)
           if (enrichmentWriteError) {
             entityWriteRefusal = `contacts write refused: ${enrichmentWriteError.message}`
@@ -1314,7 +1339,9 @@ export async function processEnrichmentQueue(
             ...(provenanceProfile ? { enrichment_profile: provenanceProfile } : {}),
             ...phonePatch,
             // The reverse leg was ASKED with the row's own email — never replace it with another.
-            ...(batchDataFallback.emails[0] && !(batchDataFallback.via === 'reverse' && entity.email) && { email: batchDataFallback.emails[0] }),
+            // Wave 144 (lane 144E — no silent overwrite): generalised from the reverse leg to EVERY leg — a provider e-mail
+            // fills a gap and never replaces the address the row already holds.
+            ...(batchDataFallback.emails[0] && !entity.email && { email: batchDataFallback.emails[0] }),
             ...reverseNamePatch,
             last_enriched_at: new Date().toISOString(),
             // 'batchdata_skip_trace' (was 'batchdata_skip_trace_fallback' — it is the

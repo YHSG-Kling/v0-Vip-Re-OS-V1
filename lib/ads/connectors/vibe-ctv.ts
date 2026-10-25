@@ -45,6 +45,12 @@ export const vibeCtvConnector: AdConnector = {
   async publishCampaign(args: PublishArgs): Promise<PublishResult> {
     const campaignId = String(args.structure.campaign_id ?? "")
     if (!campaignId) return { ok: false, error: "structure.campaign_id required — a CTV publish reads the staged ad_campaigns row" }
+    // The SAME broadcast gate the executor/action door runs (wave 144, lane 144H): an approved public video with a READY
+    // TV master, set as the creative — or no publish. No tenant on the credential = no publish (fail closed).
+    if (!args.cred.brokerageId) return { ok: false, error: "vibe_ctv: the credential names no tenant — the broadcast gate cannot run, so nothing is published" }
+    const { ensureCtvBroadcastReady } = await import("@/lib/ads/ctv-campaign")
+    const gate = await ensureCtvBroadcastReady({ campaignId, brokerageId: args.cred.brokerageId })
+    if (!gate.ok) return { ok: false, error: `vibe_ctv: not published — ${gate.reason}` }
     const { dispatchCtvCampaign } = await import("@/lib/providers/vibe")
     const r = await dispatchCtvCampaign(campaignId)
     return r.dispatched && r.vibeCampaignId

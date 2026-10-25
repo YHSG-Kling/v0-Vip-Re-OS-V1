@@ -8,6 +8,16 @@ import { getSupportedPresetStates } from "@/lib/compliance/required-doc-presets"
 import { documentClassificationLabel } from "@/lib/compliance/document-classifications"
 import { describeRowScope } from "@/lib/compliance/checklist-dimensions"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { createServiceClient } from "@/lib/supabase/service"
+import {
+  EMPTY_TENANT_VOCABULARY, VOCABULARY_DIMENSIONS, checklistVocabularyFor, loadTenantVocabulary, resolveVocabularyValue, vocabularyOptions,
+  type VocabularyDimension,
+} from "@/lib/compliance/adaptive-vocabulary"
+import { VOCABULARY_COMPLIANCE_APPROVER_USER_TYPES, listVocabularyProposals } from "@/lib/compliance/vocabulary-healing"
+import { isTenantAdminGrantRole } from "@/lib/auth/resolve-user-role"
+import { VocabularyPanel, type VocabularyPanelDimension } from "./vocabulary-panel"
+import { ALL_US_STATES } from "@/lib/state-forms/registry"
+import { loadComingSoonPolicy } from "@/lib/compliance/coming-soon-policy"
 
 export const dynamic = "force-dynamic"
 
@@ -72,6 +82,37 @@ export default async function RequiredDocsSettingsPage() {
       .limit(200),
   ])
 
+  // THE ADAPTIVE VOCABULARY (wave 144A). Read through the service client AFTER the gate above, for the
+  // SESSION's brokerage only (brokerage_settings is admin-only under RLS; the vocabulary is not). A refused
+  // read is SHOWN, and the pickers fall back to the platform lists — never to an empty list.
+  const svc = createServiceClient()
+  const [vocabRead, proposalRead, comingSoonRead] = await Promise.all([
+    loadTenantVocabulary(svc, profile.brokerage_id as string),
+    listVocabularyProposals(svc, profile.brokerage_id as string),
+    loadComingSoonPolicy(svc, profile.brokerage_id as string),
+  ])
+  const comingSoonRules = comingSoonRead.ok
+    ? Object.values(comingSoonRead.policy.entries).map((e) => ({
+        mlsName: e.mls_name, states: e.state_codes, attested: !!e.attestation, sourceUrl: e.source.url, ruleRef: e.source.rule_ref,
+        summary: `${e.permitted ? "permitted" : "not permitted"}${e.max_days !== null ? `, max ${e.max_days} days` : ""}, showings ${e.showings_permitted ? "permitted" : "not permitted"}${e.mls_submission_within_business_days !== null ? `, MLS within ${e.mls_submission_within_business_days} business day(s) of public marketing` : ""}`,
+      }))
+    : []
+  const vocabulary = vocabRead.ok ? vocabRead.vocabulary : EMPTY_TENANT_VOCABULARY
+  const checklistVocabulary = checklistVocabularyFor(vocabulary)
+  const dimensionOptions = vocabRead.ok
+    ? { contract_subtype: vocabularyOptions("contract_subtype", vocabulary), representation: vocabularyOptions("representation", vocabulary) }
+    : null
+  const panelDimensions: VocabularyPanelDimension[] = (Object.keys(VOCABULARY_DIMENSIONS) as VocabularyDimension[])
+    .filter((k) => VOCABULARY_DIMENSIONS[k].mode !== "platform_only")
+    .map((k) => ({
+      key: k, label: VOCABULARY_DIMENSIONS[k].label, mode: VOCABULARY_DIMENSIONS[k].mode as "extensible" | "label_alias_only",
+      jurisdictional: VOCABULARY_DIMENSIONS[k].jurisdictional,
+      terms: vocabularyOptions(k, vocabulary).map((o) => ({ value: o.value, label: o.label, origin: o.origin })),
+    }))
+  const pendingAttestation = Object.values(vocabulary.terms)
+    .filter((t) => resolveVocabularyValue(t.dimension, t.key, vocabulary)?.pendingAttestation)
+    .map((t) => ({ dimension: t.dimension, key: t.key, label: t.label, states: t.state_codes ?? [], sourceUrl: t.source?.url ?? null }))
+
   const formOptions = (libraryForms ?? []).map((f: any) => ({
     id: f.id as string,
     name: f.name as string,
@@ -112,7 +153,12 @@ export default async function RequiredDocsSettingsPage() {
                       <Badge variant="secondary" className="text-xs">{r.deal_type}</Badge>
                       {r.state_code && <Badge variant="secondary" className="text-xs">{r.state_code}</Badge>}
                       {(r.required_stage || r.financing_kind || r.contract_subtype || r.representation) && (
-                        <Badge variant="outline" className="text-xs">{describeRowScope({ ...r, deal_type: null, state_code: null })}</Badge>
+                        <Badge variant="outline" className="text-xs">{describeRowScope({ ...r, deal_type: null, state_code: null }, checklistVocabulary)}</Badge>
+                      )}
+                      {r.legal_basis === "state_requirement" && (
+                        r.source_url
+                          ? <a href={r.source_url as string} target="_blank" rel="noreferrer"><Badge className="bg-blue-100 text-blue-900 text-xs">state requirement · cited</Badge></a>
+                          : <Badge className="bg-blue-100 text-blue-900 text-xs">state requirement</Badge>
                       )}
                       {r.block_on_missing
                         ? <Badge className="bg-red-100 text-red-900 text-xs">blocking</Badge>
@@ -154,6 +200,19 @@ export default async function RequiredDocsSettingsPage() {
         userId={user.id}
         userType={profile.user_type as string}
         supportedStates={getSupportedPresetStates()}
+        dimensionOptions={dimensionOptions}
+        canCiteStateRequirement={VOCABULARY_COMPLIANCE_APPROVER_USER_TYPES.has(profile.user_type as string)}
+      />
+
+      <VocabularyPanel
+        dimensions={panelDimensions}
+        proposals={proposalRead.ok ? proposalRead.rows.map((p) => ({ id: p.id, status: p.status, summary: p.summary, requiresCompliance: p.requiresCompliance, warnings: p.warnings, createdAt: p.createdAt })) : []}
+        pendingAttestation={pendingAttestation}
+        canApprove={isTenantAdminGrantRole(profile.user_type as string)}
+        canAttest={VOCABULARY_COMPLIANCE_APPROVER_USER_TYPES.has(profile.user_type as string)}
+        supportedStates={[...ALL_US_STATES].map(String).sort()}
+        readError={vocabRead.ok ? (proposalRead.ok ? (comingSoonRead.ok ? null : comingSoonRead.error) : proposalRead.error) : vocabRead.error}
+        comingSoonRules={comingSoonRules}
       />
     </div>
   )

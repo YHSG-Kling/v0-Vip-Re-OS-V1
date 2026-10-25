@@ -2,11 +2,12 @@
 
 // app/actions/superadmin/platform-form-packets.ts
 // ───────────────────────────────────────────────────────────────────────────
-// Platform staff load, approve and retire the licensed FILLABLE form packets the platform holds for every
-// subscriber (wave 143, lane 143B — closes wave 142's "142B SOURCE (a)"; core: lib/forms/platform-form-packets.ts).
+// Platform staff load, approve and retire the licensed FILLABLE form packets of the VIPAgents CATALOGUE (wave 143, lane
+// 143B; wave 144, lane 144C — owner ruling 3: packets are the brokerage's and the team's, so an approved catalogue packet is
+// offered to brokerages to ADD to their own library, never handed to agents directly; core: lib/forms/platform-form-packets.ts).
 //
 // GATE FIRST (CLAUDE.md §4): every export is a public endpoint, so each one opens with requireSuperadmin() — the
-// highest platform authority, because approving a packet publishes licensed content to EVERY tenant — and only
+// highest platform authority, because approving a packet offers licensed content to EVERY tenant — and only
 // then touches the service client. The actor recorded is the SESSION's, never a body value. Each act is written to
 // superadmin_audit_log (who, what, which packet, the licence basis), read-error checked.
 //
@@ -74,10 +75,10 @@ export async function approvePlatformPacketAction(input: { packetId: string; lic
   if (!result.ok) return result
   const auditError = await audit(gate.userId, gate.email, "platform_form_packet.approved", input.packetId, { license_note: input.licenseNote, license_expires_at: input.licenseExpiresAt ?? null, retired_older: result.retiredOlder })
   revalidatePath("/dashboard/superadmin/form-packets")
-  return { ok: true, message: `Approved — subscribers can now fill it.${result.retiredOlder ? ` ${result.retiredOlder} older version(s) retired.` : ""}${auditError ? ` (Audit row not written: ${auditError})` : ""}` }
+  return { ok: true, message: `Approved — brokerages can now add it to their own library.${result.retiredOlder ? ` ${result.retiredOlder} older version(s) retired.` : ""}${auditError ? ` (Audit row not written: ${auditError})` : ""}` }
 }
 
-/** Retire a packet: subscribers stop being offered it and the fill action refuses it immediately. */
+/** Retire a catalogue packet: brokerages can no longer add it (copies already in a brokerage's library are the brokerage's). */
 export async function retirePlatformPacketAction(input: { packetId: string; reason: string }): Promise<Result> {
   const gate = await requireSuperadmin()
   if (!gate.ok) return { ok: false, error: gate.error }

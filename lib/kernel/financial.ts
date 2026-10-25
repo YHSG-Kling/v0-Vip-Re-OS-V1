@@ -44,6 +44,8 @@ import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 import { syncAgentLedgerToStamp, payoutFundsGate } from "@/lib/commission/ledger-sync"
+import { resolvePayoutTiming } from "@/lib/transactions/cda-closing-policy"
+import { planCapContributionCorrection } from "@/lib/commission/cap-resolver"
 import { resolveUserOffice, pickUserOffice } from "./resolve-user-office"
 import { resolveLedTeamId } from "./resolve-user-team"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
@@ -1069,9 +1071,13 @@ export async function markCommissionPaid(
 
     // THE FUNDS-RECEIVED GATE (wave 143, lane 143C): a payout already INITIATED passed this gate when it was
     // initiated; a one-step record (initiation and record coincide) must pass it here. Fail closed, by name.
+    // WAVE 144 (lane 144D, owner ruling 8): under the brokerage's PAYOUT SETTING — after receipt (the default) or at
+    // closing as the broker-signed, delivered CDA authorizes (payoutReleaseGate).
     let advance: string | null = null
     if (!(commission as { payment_initiated_at?: string | null }).payment_initiated_at) {
-      const gate = payoutFundsGate(commission as { deposit_received_at?: string | null }, input.advanceReason)
+      const inputs = await loadPayoutGateInputs(supabase, brokerageId, commission as Record<string, unknown>)
+      if (!inputs.ok) return { success: false, error: inputs.error }
+      const gate = payoutReleaseGate({ timing: inputs.timing, commission: commission as { deposit_received_at?: string | null }, cda: inputs.cda, closedVerified: inputs.closedVerified, advanceReason: input.advanceReason })
       if (!gate.ok) return { success: false, error: gate.error }
       advance = gate.advance ? gate.reason : null
     }
@@ -1193,6 +1199,75 @@ async function readAgentCommissionRow(supabase: ReturnType<typeof createServiceC
   return { row: data as Record<string, unknown>, error: null }
 }
 
+/**
+ * THE PAYOUT RELEASE GATE (wave 144, lane 144D; owner ruling 8) — lib/commission/ledger-sync.ts payoutFundsGate, under the
+ * brokerage's payout SETTING (lib/transactions/cda-closing-policy.ts resolvePayoutTiming).
+ *   after_brokerage_receipt (the default, and every undeclared brokerage): payoutFundsGate, unchanged — received, or an
+ *     advance with a stated reason kept as evidence.
+ *   at_closing_per_cda: title disburses the agent's share AT CLOSING as the CDA authorizes, so the brokerage's own receipt is
+ *     not the trigger — the authorization is: the closing must be VERIFIED (the transaction closed / funded), the CDA
+ *     broker-signed (status approved + broker_approved_at) AND delivered to title (sent_to_title_at). Missing any → refused by
+ *     name. No advance exists in this mode: a closing-time payout without the CDA is not a closing-time payout.
+ * Approval, initiation and verified receipt stay separate states (ledger-sync.ts deriveCommissionPaymentState); this decides
+ * only whether a payout may be initiated / recorded. Proved through markCommissionPaid / initiateCommissionPayout
+ * (scripts/concession-ledger-guard.ts), so no export exists only for a proof.
+ */
+function payoutReleaseGate(input: {
+  timing: "at_closing_per_cda" | "after_brokerage_receipt"
+  commission: { deposit_received_at?: string | null }
+  cda?: { status?: string | null; broker_approved_at?: string | null; sent_to_title_at?: string | null } | null
+  closedVerified?: boolean
+  advanceReason?: string | null
+}): { ok: true; advance: boolean; reason: string | null } | { ok: false; error: string } {
+  if (input.timing === "at_closing_per_cda") {
+    if (!input.closedVerified) {
+      return { ok: false, error: "closing_not_verified: this brokerage pays out at closing — the payout follows the VERIFIED closing, which is not recorded on this transaction yet" }
+    }
+    const cda = input.cda ?? null
+    if (!cda || (cda.status ?? "") !== "approved" || !cda.broker_approved_at) {
+      return { ok: false, error: "cda_not_authorized: this brokerage pays out at closing as the CDA authorizes — the CDA is not broker-signed yet" }
+    }
+    if (!cda.sent_to_title_at) {
+      return { ok: false, error: "cda_not_delivered: the broker-signed CDA has not been delivered to title, so title has no authorization to disburse at closing" }
+    }
+    return { ok: true, advance: false, reason: null }
+  }
+  return payoutFundsGate(input.commission, input.advanceReason)
+}
+
+/**
+ * The inputs of the payout release gate (wave 144, lane 144D): the brokerage's payout setting and — only for a closing-time
+ * brokerage — the deal's CDA and whether its closing is verified. Every read is tenant-pinned and a refusal is a refusal
+ * (never "after receipt" by accident, never "authorized" by accident). select("*") on brokerages so the m850 column is read
+ * once applied without naming it before (a 42703 would refuse every payout).
+ */
+async function loadPayoutGateInputs(
+  supabase: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  commission: Record<string, unknown>,
+): Promise<
+  | { ok: true; timing: "at_closing_per_cda" | "after_brokerage_receipt"; cda: { status?: string | null; broker_approved_at?: string | null; sent_to_title_at?: string | null } | null; closedVerified: boolean }
+  | { ok: false; error: string }
+> {
+  const { data: brk, error: brkErr } = await supabase.from("brokerages").select("*").eq("id", brokerageId).maybeSingle()
+  if (brkErr) return { ok: false, error: `payout_policy_read_refused: ${brkErr.message}` }
+  const b = (brk ?? {}) as { offers_cda?: boolean | null; commission_payout_timing?: unknown }
+  const verdict = resolvePayoutTiming({ offersCda: b.offers_cda ?? null, payoutTiming: b.commission_payout_timing })
+  if (verdict.finding) console.warn(`[financial] payout gate for brokerage ${brokerageId}: ${verdict.finding}`)
+  if (verdict.timing !== "at_closing_per_cda") return { ok: true, timing: verdict.timing, cda: null, closedVerified: false }
+  const transactionId = (commission.transaction_id as string | null | undefined) ?? null
+  if (!transactionId) return { ok: false, error: "payout_unlinked: a closing-time payout needs the commission's transaction (and its CDA) — this commission has none" }
+  const [txRes, cdaRes] = await Promise.all([
+    supabase.from("transactions").select("id, status, stage").eq("id", transactionId).eq("brokerage_id", brokerageId).maybeSingle(),
+    supabase.from("closing_disclosure_agreement").select("status, broker_approved_at, sent_to_title_at").eq("transaction_id", transactionId).eq("brokerage_id", brokerageId).maybeSingle(),
+  ])
+  if (txRes.error) return { ok: false, error: `payout_transaction_read_refused: ${txRes.error.message}` }
+  if (cdaRes.error) return { ok: false, error: `payout_cda_read_refused: ${cdaRes.error.message}` }
+  const tx = (txRes.data ?? null) as { status?: string | null; stage?: string | null } | null
+  const closedVerified = !!tx && (tx.status === "closed" || tx.status === "funded" || tx.stage === "CLOSED")
+  return { ok: true, timing: verdict.timing, cda: (cdaRes.data ?? null) as { status?: string | null; broker_approved_at?: string | null; sent_to_title_at?: string | null } | null, closedVerified }
+}
+
 /** Evidence that a payout went ahead of the recorded funds: WHO stated WHY (an activity on the deal, never silent). */
 async function recordPayoutAdvance(
   supabase: ReturnType<typeof createServiceClient>,
@@ -1248,7 +1323,11 @@ export async function initiateCommissionPayout(
     }
     if (row.status !== "approved") return { success: false, error: `A payout is initiated only on an APPROVED commission (status: ${String(row.status)})` }
     // THE FUNDS-RECEIVED GATE (wave 143, lane 143C): the brokerage pays the agent from funds it has RECEIVED, or states why not.
-    const gate = payoutFundsGate(row as { deposit_received_at?: string | null }, input.advanceReason)
+    // WAVE 144 (lane 144D, owner ruling 8): or — when the brokerage's setting is closing-time payout — as the broker-signed,
+    // delivered CDA authorizes at the verified closing (payoutReleaseGate).
+    const inputs = await loadPayoutGateInputs(supabase, brokerageId, row)
+    if (!inputs.ok) return { success: false, error: inputs.error }
+    const gate = payoutReleaseGate({ timing: inputs.timing, commission: row as { deposit_received_at?: string | null }, cda: inputs.cda, closedVerified: inputs.closedVerified, advanceReason: input.advanceReason })
     if (!gate.ok) return { success: false, error: gate.error }
     const initiatedAt = input.initiatedAt ?? new Date().toISOString()
     const { data: stamped, error: stampErr } = await supabase
@@ -2237,7 +2316,7 @@ export interface CorrectCommissionDistributionInput {
 
 export async function correctCommissionDistribution(
   input: CorrectCommissionDistributionInput,
-): Promise<KernelFinancialResult<{ correctionId: string; amount: number; netAfter: number; summaries: CommissionSummaryRestamp }>> {
+): Promise<KernelFinancialResult<{ correctionId: string; amount: number; netAfter: number; summaries: CommissionSummaryRestamp; capLedger?: CapLedgerMove }>> {
   const { ctx, distributionId, kind } = input
   if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
     return { success: false, error: "Only the brokerage's finance admins can correct a posted commission entry." }
@@ -2310,6 +2389,20 @@ export async function correctCommissionDistribution(
       distributionType: (o.distribution_type as string | null) ?? null,
     })
     if (restamp.error) console.error("[financial] commission correction posted; summary re-stamp incomplete:", restamp.error)
+    // WAVE 144 (lane 144D, owner ruling 9 — refunds / corrections): a correction of a CAP-CONTRIBUTING entry moves the deal's
+    // cap cycle by what the contribution actually changed. The correction is posted (append-only), so a refused cap move is
+    // REPORTED beside the success, never rolled into a failure.
+    const capLedger = await applyCapLedgerForEntryChange(supabase, ctx, {
+      distributionId,
+      transactionId: (o.transaction_id as string | null) ?? null,
+      agentId: (o.agent_id as string | null) ?? null,
+      distributionType: (o.distribution_type as string | null) ?? null,
+      originalCents: Math.round(Number(o.calculated_amount ?? 0) * 100),
+      netBeforeCents: Math.round(plan.netBefore * 100),
+      netAfterCents: Math.round(plan.netAfter * 100),
+      reason: input.reason.trim(),
+    })
+    if (capLedger.error) console.error("[financial] commission correction posted; cap ledger not moved:", capLedger.error)
     // WAVE 107 (107A): REVERSING the producing agent's SOURCE entry reverses every residual it funded.
     // (An adjustment changes the amount, not the event — residuals are re-judged by finance, not auto-scaled.)
     if (kind === "reversal" && o.distribution_type === "agent" && o.transaction_id) {
@@ -2321,7 +2414,7 @@ export async function correctCommissionDistribution(
     }
     return {
       success: true,
-      data: { correctionId: (inserted[0] as { id: string }).id, amount: plan.amount, netAfter: plan.netAfter, summaries: restamp },
+      data: { correctionId: (inserted[0] as { id: string }).id, amount: plan.amount, netAfter: plan.netAfter, summaries: restamp, capLedger },
     }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }
@@ -2344,6 +2437,128 @@ export interface VoidCommissionDistributionResult {
   /** reconcileSummariesAgainstLedger over the tenant's ledger after the void — drift is REPORTED, never
    *  rolled into a failure (the void is done; a projection that still disagrees is the reaper's finding). */
   reconciliation: { checked: number; drifts: number; measured: boolean; warnings: string[] } | null
+  /** WAVE 144 (lane 144D): what the void moved on the deal's cap cycle (absent = not a cap-contributing entry). */
+  capLedger?: CapLedgerMove
+}
+
+/** What a correction / void moved on the deal's cap cycle (wave 144, lane 144D — owner ruling 9: refunds / corrections). */
+export interface CapLedgerMove {
+  /** Cents the cap ledger moved (negative = a refund took the contribution back). 0 = nothing to move. */
+  capDeltaCents: number
+  /** Cents a raise could not add because the cap was already reached — the AGENT is owed it; reported, never absorbed. */
+  excessCents: number
+  trackingId: string | null
+  finding: string | null
+  error: string | null
+}
+
+/** Which cap contribution type a distribution row is (the agreement's vocabulary, m850). A 'fee' row does not record its kind. */
+const CAP_CONTRIBUTION_OF_DISTRIBUTION: Record<string, string> = { brokerage: "brokerage_split", royalty: "royalty" }
+
+/**
+ * Move the deal's cap cycle by what a correction / void changed in a CAP-CONTRIBUTING entry (wave 144, lane 144D).
+ * Reads the calculation's own record of what it counted (commission_calculations.engine_inputs.cap — written by stage 11)
+ * and the cycle row it advanced; the delta is the pure rule lib/commission/cap-resolver.ts planCapContributionCorrection;
+ * the write is a COMPARE-AND-SWAP on the paid-to-date read (a concurrent move refuses, by name). Ledgered (LAW 5).
+ * Never throws: the entry change is already posted, so every refusal is returned as `error` and logged by the caller.
+ */
+async function applyCapLedgerForEntryChange(
+  supabase: ReturnType<typeof createServiceClient>,
+  ctx: FinancialActorContext,
+  change: {
+    distributionId: string
+    transactionId: string | null
+    agentId: string | null
+    distributionType: string | null
+    originalCents: number
+    netBeforeCents: number
+    netAfterCents: number
+    reason: string
+  },
+): Promise<CapLedgerMove> {
+  const none = (finding: string | null = null): CapLedgerMove => ({ capDeltaCents: 0, excessCents: 0, trackingId: null, finding, error: null })
+  const fail = (error: string): CapLedgerMove => ({ capDeltaCents: 0, excessCents: 0, trackingId: null, finding: null, error })
+  try {
+    if (!change.transactionId || change.netAfterCents === change.netBeforeCents) return none()
+    const { data: calc, error: calcErr } = await supabase
+      .from("commission_calculations")
+      .select("engine_inputs, calculated_at")
+      .eq("transaction_id", change.transactionId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .order("calculated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (calcErr) return fail(`the calculation's cap record could not be read: ${calcErr.message}`)
+    const cap = ((calc as { engine_inputs?: Record<string, unknown> | null } | null)?.engine_inputs?.cap ?? null) as
+      | { tracking_id?: string | null; contributed_by_type_cents?: Record<string, number> | null; eligible?: string[] | null }
+      | null
+    if (!cap || !cap.tracking_id) return none()
+    const type = CAP_CONTRIBUTION_OF_DISTRIBUTION[String(change.distributionType ?? "")]
+    if (!type) {
+      const feeCounted = Object.keys(cap.contributed_by_type_cents ?? {}).some((k) => k.endsWith("_fee"))
+      return none(change.distributionType === "fee" && feeCounted
+        ? "a cap-eligible FEE was corrected; fee rows do not record which fee they are, so the cap ledger was NOT moved — a finance admin adjusts it by hand"
+        : null)
+    }
+    const contributedCents = Number(cap.contributed_by_type_cents?.[type] ?? 0)
+    if (!(contributedCents > 0) && change.netAfterCents <= change.netBeforeCents) return none()
+    const { data: row, error: rowErr } = await supabase
+      .from("agent_cap_tracking")
+      .select("id, cap_amount, cap_paid_to_date")
+      .eq("id", cap.tracking_id)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (rowErr) return fail(`the cap ledger row could not be read: ${rowErr.message}`)
+    if (!row) return fail(`the cap ledger row ${cap.tracking_id} the calculation advanced no longer exists`)
+    const r = row as { id: string; cap_amount: number | string; cap_paid_to_date: number | string | null }
+    const paidCents = Math.round(Number(r.cap_paid_to_date ?? 0) * 100)
+    const plan = planCapContributionCorrection({
+      contributedCents,
+      originalEntryCents: change.originalCents,
+      netBeforeCents: change.netBeforeCents,
+      netAfterCents: change.netAfterCents,
+      capAmountCents: Math.round(Number(r.cap_amount) * 100),
+      paidToDateCents: paidCents,
+    })
+    const excessFinding = plan.excessCents > 0
+      ? `the correction raises the brokerage's take by $${(plan.excessCents / 100).toFixed(2)} past the cap — the agent is owed it; correct the agent's entry`
+      : null
+    if (plan.capDeltaCents === 0) return { capDeltaCents: 0, excessCents: plan.excessCents, trackingId: r.id, finding: excessFinding, error: null }
+    const after = paidCents + plan.capDeltaCents
+    const capCents = Math.round(Number(r.cap_amount) * 100)
+    let swapError: string | null = null
+    await withActionLedger<{ ok: boolean }>(
+      {
+        brokerageId: ctx.brokerageId,
+        action: "finance.cap_ledger.corrected",
+        actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null },
+        subject: { type: "agent_cap_tracking", id: r.id, ref: change.transactionId },
+        reasonCode: "HUMAN_REQUESTED",
+        reasonDetail: `cap cycle moved ${plan.capDeltaCents / 100} by a correction of ${change.distributionType} entry ${change.distributionId}: ${change.reason}`.slice(0, 500),
+        riskClass: "FINANCIAL",
+        systemSource: "commission_correction_screen",
+        detail: { distribution_id: change.distributionId, contribution_type: type, contributed_cents: contributedCents, net_before_cents: change.netBeforeCents, net_after_cents: change.netAfterCents, paid_before_cents: paidCents, paid_after_cents: after, excess_cents: plan.excessCents },
+      },
+      async () => {
+        const base = supabase
+          .from("agent_cap_tracking")
+          .update({ cap_paid_to_date: after / 100, is_capped: after >= capCents })
+          .eq("id", r.id)
+          .eq("brokerage_id", ctx.brokerageId)
+        const swap = r.cap_paid_to_date === null ? base.is("cap_paid_to_date", null) : base.eq("cap_paid_to_date", r.cap_paid_to_date)
+        const { data: moved, error } = await swap.select("id")
+        if (error) { swapError = `the cap ledger refused the move: ${error.message}`; return { ok: false } }
+        if (!moved || moved.length !== 1) { swapError = "the cap ledger moved underneath this correction — re-run the correction's cap move"; return { ok: false } }
+        return { ok: true }
+      },
+      { settle: (x) => (x.ok ? { status: "executed", outcome: "cap_moved" } : { status: "failed", outcome: "refused", error: swapError }), replay: () => ({ ok: false }) },
+      { client: supabase },
+    )
+    if (swapError) return { capDeltaCents: 0, excessCents: plan.excessCents, trackingId: r.id, finding: excessFinding, error: swapError }
+    return { capDeltaCents: plan.capDeltaCents, excessCents: plan.excessCents, trackingId: r.id, finding: excessFinding, error: null }
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e))
+  }
 }
 
 /**
@@ -2452,6 +2667,20 @@ export async function voidCommissionDistribution(
     })
     if (restamp.error) console.error("[financial] commission entry voided; summary re-stamp incomplete:", restamp.error)
 
+    // WAVE 144 (lane 144D, owner ruling 9): a voided cap-contributing entry no longer counts toward the cap (an unpaid entry
+    // has no posted corrections — planDistributionVoid — so its live net was its own amount and is now zero).
+    const capLedger = await applyCapLedgerForEntryChange(supabase, ctx, {
+      distributionId,
+      transactionId: (e.transaction_id as string | null) ?? null,
+      agentId: (e.agent_id as string | null) ?? null,
+      distributionType: (e.distribution_type as string | null) ?? null,
+      originalCents: Math.round(Number(e.calculated_amount ?? 0) * 100),
+      netBeforeCents: Math.round(Number(e.calculated_amount ?? 0) * 100),
+      netAfterCents: 0,
+      reason: plan.reason,
+    })
+    if (capLedger.error) console.error("[financial] commission entry voided; cap ledger not moved:", capLedger.error)
+
     // WAVE 107 (107A): voiding the producing agent's SOURCE entry takes every residual it funded with it.
     if (e.distribution_type === "agent" && e.transaction_id) {
       const cascade = await reverseDerivedResiduals(supabase, {
@@ -2498,7 +2727,7 @@ export async function voidCommissionDistribution(
       reconciliation = { checked: 0, drifts: 0, measured: false, warnings: [`reconciler threw: ${recErr instanceof Error ? recErr.message : String(recErr)}`] }
     }
 
-    return { success: true, data: { distributionId, voidedAt: outcome.voidedAt, summaries: restamp, reconciliation } }
+    return { success: true, data: { distributionId, voidedAt: outcome.voidedAt, summaries: restamp, reconciliation, capLedger } }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }
   }

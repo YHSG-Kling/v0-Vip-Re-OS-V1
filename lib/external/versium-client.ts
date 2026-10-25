@@ -76,6 +76,9 @@ import { householdFinancialsFromVersium, buildVersiumDemographicProfile, fieldPr
 type VersiumCapability =
   | "person.enrich_contact" | "person.enrich_demographics" | "person.enrich_financial" | "property.enrich_facts"
   | "person.enrich_business_identity" | "person.enrich_online_presence"
+  // Wave 144 (lane 144E): the Online Audience MATCH + APPEND (hashed ad-platform identifiers onto the record) and the
+  // ListGen ESTIMATE (a count — its provenance names this capability).
+  | "person.enrich_online_audience" | "audience.estimate"
 
 /** Provenance for a value this adapter returned — written beside the value where it is stored.
  *  Wave 100 (lane 100C): this shape is the SURVIVOR every provider now writes — it is THE
@@ -599,7 +602,8 @@ export const VERSIUM_REACH_MCP = Object.freeze({
   transport: "streamable_http",
   auth: "oauth_dynamic_client_registration",
   wired: false,
-  excludedByVendor: ["online_audience_append", "abm_list_generation", "lookalike_list_generation"] as const,
+  // 144E (2026-10-25): + data_prep — the same FAQ lists "Data Prep tools (Cleanse/Dedupe)" first among the exclusions.
+  excludedByVendor: ["online_audience_append", "abm_list_generation", "lookalike_list_generation", "data_prep"] as const,
   verdict: "every append it exposes is the REST contract this adapter already calls through the connector gateway; the OAuth-DCR handshake is interactive, so it is not a server credential — not wired, no second rail",
   verifiedAt: "2026-10-19",
   source: "https://versium.com/versium-reach-mcp/",
@@ -642,7 +646,53 @@ export const VERSIUM_REACH_MCP = Object.freeze({
   /** The vendor's own prompt library names look-alike RESEARCH as a supported use: "Based on these 10 best-performing
    *  customer profiles, use Versium to find the common demographic denominators." (versium.com/versium-reach-mcp, 2026-10-23) */
   vendorLookalikeResearchUse: "common demographic denominators of a customer list — research, not a targeting model",
-  reverifiedAt: "2026-10-23",
+  // ── WAVE 144 (lane 144E): RE-PROVED 2026-10-25, AND THE ACTUAL TOOL LIST ─────────────────────────────────────────────
+  // The same three unauthenticated probes were re-run on 2026-10-25 and answered identically (protected-resource metadata
+  // scopes ["mcp:use"]; authorization-server grant_types ["authorization_code","refresh_token"], PKCE S256, registration
+  // endpoint /oauth/register; POST initialize → 401 `Bearer realm="mcp"`). Transport re-confirmed by the vendor
+  // (reach-help.versium.com/docs/mcp-overview: "The agent must support the Streamable HTTP transport method and OAuth dynamic
+  // client registration") and by the Glama registry's authenticated inspection ("Streamable HTTP · MCP 2025-11-25").
+  reverifiedAt: "2026-10-25",
+  /**
+   * THE ACTUAL TOOL LIST. `tools/list` needs the Bearer token this platform cannot mint (above), so it is read from the two
+   * published sources that DO hold an authenticated session: the vendor's MCP Server Overview ("Available Tools": Contact /
+   * Demographic / Firmographic / C2B / IP-to-Domain Append, CAB + B2B List Generation Estimates, Email Validation, Search
+   * Documentation — reach-help.versium.com/docs/mcp-overview, read 2026-10-25) and the Glama MCP registry's OAuth-authenticated
+   * inspection, which enumerates "20 tools" with their annotations (glama.ai/mcp/connectors/com.versium.app/versium-reach,
+   * last tested 2026-10-25). Every tool is mapped to the REST product of VERSIUM_PRODUCT_MATRIX that performs the same
+   * operation, with the verdict that decides whether the MCP would add anything:
+   *   REST_SURVIVOR      — the same operation is already WIRED over REST with the platform key (LAW 2: no second rail)
+   *   SURVIVOR_ELSEWHERE — a cheaper provider already serves the capability (PeopleData validates e-mail)
+   *   OWNER_DECISION     — spends credits on a purchased list (create_job bills "on completion") — a human approves money
+   *   NO_CALLER          — available, no flow of this OS needs it (the matrix row names the trigger)
+   *   NOT_APPLICABLE     — cannot serve a flow of this OS
+   * None is NOT reachable by REST — so not wiring the MCP loses NO capability. The vendor's exclusions are VERIFIED ABSENT
+   * from the list (no online-audience, look-alike-list, ABM-list or cleanse/dedupe tool); the guard asserts that by name.
+   */
+  tools: Object.freeze([
+    { name: "contact_append", readOnly: true, product: "contact_append", verdict: "REST_SURVIVOR" },
+    { name: "demographic_append", readOnly: true, product: "demographic_append", verdict: "REST_SURVIVOR" },
+    { name: "b2b2c_append", readOnly: true, product: "b2b2c_append", verdict: "REST_SURVIVOR" },
+    { name: "b2c_listgen_estimate", readOnly: true, product: "b2c_listgen_estimate", verdict: "REST_SURVIVOR" },
+    { name: "b2c_listgen_options", readOnly: true, product: "b2c_listgen_estimate", verdict: "NO_CALLER" },
+    { name: "b2b_listgen_estimate", readOnly: true, product: "abm_persona_listgen", verdict: "NO_CALLER" },
+    { name: "b2b_listgen_options", readOnly: true, product: "abm_persona_listgen", verdict: "NO_CALLER" },
+    { name: "c2b_append", readOnly: true, product: "b2b_append_family", verdict: "NO_CALLER" },
+    { name: "firmographic_append", readOnly: true, product: "b2b_append_family", verdict: "NO_CALLER" },
+    { name: "ip_to_domain_append", readOnly: true, product: "visitor_to_company", verdict: "NOT_APPLICABLE" },
+    { name: "email_validation", readOnly: true, product: "email_validation", verdict: "SURVIVOR_ELSEWHERE" },
+    { name: "create_job", readOnly: false, product: "b2c_listgen_job", verdict: "OWNER_DECISION" },
+    { name: "job_status", readOnly: true, product: "b2c_listgen_job", verdict: "OWNER_DECISION" },
+    { name: "create_project", readOnly: false, product: "b2c_listgen_job", verdict: "OWNER_DECISION" },
+    { name: "list_projects", readOnly: true, product: "b2c_listgen_job", verdict: "OWNER_DECISION" },
+    { name: "show_project", readOnly: true, product: "b2c_listgen_job", verdict: "OWNER_DECISION" },
+    { name: "list_lists", readOnly: true, product: "b2c_listgen_job", verdict: "OWNER_DECISION" },
+    { name: "show_list", readOnly: true, product: "b2c_listgen_job", verdict: "OWNER_DECISION" },
+    { name: "preview_list", readOnly: true, product: "b2c_listgen_job", verdict: "OWNER_DECISION" },
+    { name: "docs_search", readOnly: true, product: null, verdict: "NOT_APPLICABLE" },
+  ] as const),
+  toolListSources: ["https://reach-help.versium.com/docs/mcp-overview", "https://glama.ai/mcp/connectors/com.versium.app/versium-reach"] as const,
+  toolListVerifiedAt: "2026-10-25",
 })
 
 // ─── B2B2C CROSSWALK APPEND — business identity ↔ consumer identity ───────────────────────────
@@ -1015,6 +1065,203 @@ export async function appendVersiumRealEstateIndicators(
   }
 }
 
+// ─── ONLINE AUDIENCE APPEND — a MATCH, then an APPEND of hashed ad-platform identifiers (wave 144, lane 144E) ──────────
+// OWNER (wave 144, ruling 10): "`online_audience_append` is NOT targeting: it matches contacts' online profiles (if any) and
+// appends matched online contact identifiers (hashed/alternate IDs per the real schema) to the platform record; downstream ad
+// targeting is a separate governed action; appended ad-tech identifiers are never fed to email/SMS as permissioned addresses."
+// Wave 143 (143D) filed this product POLICY_GATED as "TARGETING plumbing, not research" and built no client. That was the
+// misreading this section corrects: the call targets nobody — it answers "which online identifiers belong to a person we
+// already hold", and the record keeps the answer. Targeting stays where it always was: lib/kernel/ads.ts syncAudience, behind
+// the audience's consent basis, the fair-housing refusal and the persona basis.
+//
+// VERIFIED 2026-10-25 (Exa fetch of the vendor's own pages):
+//   · api-documentation.versium.com/reference/online-audience-append-api-new — GET https://api.versium.com/v2/onlineAudience;
+//     CONSUMER inputs: email | phone | address+city+state+zip | first+last+city+state | first+last+zip (the shapes
+//     versiumQueryFor already builds); cfg_maxrecs (1 default → 100), rcfg_max_time, rcfg_oa_services[] (facebook · google ·
+//     linkedin · generic · adroll · original; liveramp / stackadapt "requires permission"; default "every service"). "The API
+//     will first transform the string to lowercase and then perform the hashing" — SHA-256 everywhere except AdRoll (MD5).
+//     Legacy endpoints b2cOnlineAudience / b2bOnlineAudience "will continue to work" — not used (one endpoint, §6).
+//   · /reference/output-sample-new — `match_counts: { online_audience: 1 }`; results[0] = { adroll:[{email:[md5…]}],
+//     facebook:[{email, phone, fn, ln, fi, ct, st, country, zip}], generic:[{email}, …], google:[{Email, Phone, "First Name",
+//     "Last Name", Zip, Country}], linkedin:[{email, firstname, lastname, jobtitle, employeecompany, country, appleidfa,
+//     googleaid}], tiktok:[{email, phone}], original:[{email}] } — every leaf an ARRAY of strings; "output fields with no value
+//     do not show up". In the vendor's own sample Google's Zip / Country and LinkedIn's names / title / company / country come
+//     back in PLAINTEXT.
+//   · reach-help.versium.com/docs/create-an-online-audience — the identifiers are "alternate and online emails that have been
+//     linked to the person online, and may include historical contact points … useful in display-ad targeting … They are not
+//     appropriate for direct email campaigns." Hence the firewall below.
+//   · reach-help.versium.com/docs/match-value-conversion-table — "Online Audience Append · Digital Audience = 1" match credit
+//     (VERSIUM_CREDIT_WEIGHTS.online_audience), billed per matched record; a no-match is free.
+//   · versium.com/versium-reach-mcp + reach-help.versium.com/docs/mcp-overview — EXCLUDED from the REACH MCP, so this REST call
+//     is the only supported interface (VERSIUM_REACH_MCP.excludedByVendor).
+//
+// WHAT THIS ADAPTER KEEPS — the hash identifiers ONLY, by (service, field) and by SHAPE: a 64-hex SHA-256 (32-hex MD5 for
+// AdRoll) or, for LinkedIn's two mobile-advertising-ID slots, a UUID. Every plaintext value (Google Zip / Country, LinkedIn
+// names / title / employer / country), every value of an undocumented field and every malformed value is DROPPED and COUNTED
+// (`dropped`) — the record gains match identifiers, never an invented plaintext profile or behaviour. No result field is an
+// e-mail address or a phone number, so nothing returned here can be mailed or dialled (lib/enrichment/online-audience-store.ts
+// keeps the stored block away from every channel resolver; scripts/versium-capability-matrix-guard.ts section J proves both).
+
+/** The ad-platform sections of the documented response, as the vendor names them. */
+export const VERSIUM_ONLINE_AUDIENCE_SERVICES = ["facebook", "google", "linkedin", "tiktok", "adroll", "generic", "original"] as const
+export type VersiumOnlineAudienceService = (typeof VERSIUM_ONLINE_AUDIENCE_SERVICES)[number]
+
+/** OUR identifier vocabulary (one spelling per kind across every service — §6). */
+export type OnlineAudienceIdKind =
+  | "email_sha256" | "phone_sha256" | "email_md5"
+  | "first_name_sha256" | "last_name_sha256" | "first_initial_sha256" | "city_sha256" | "state_sha256" | "zip_sha256" | "country_sha256"
+  | "maid_idfa" | "maid_gaid"
+
+type OnlineAudienceShape = "sha256" | "md5" | "uuid"
+/** (service, vendor field) → our kind + the shape the value must have. A vendor field absent from this map is NEVER kept. */
+const ONLINE_AUDIENCE_FIELD_MAP: Readonly<Record<VersiumOnlineAudienceService, Readonly<Record<string, { kind: OnlineAudienceIdKind; shape: OnlineAudienceShape }>>>> = Object.freeze({
+  facebook: {
+    email: { kind: "email_sha256", shape: "sha256" }, phone: { kind: "phone_sha256", shape: "sha256" },
+    fn: { kind: "first_name_sha256", shape: "sha256" }, ln: { kind: "last_name_sha256", shape: "sha256" }, fi: { kind: "first_initial_sha256", shape: "sha256" },
+    ct: { kind: "city_sha256", shape: "sha256" }, st: { kind: "state_sha256", shape: "sha256" }, zip: { kind: "zip_sha256", shape: "sha256" }, country: { kind: "country_sha256", shape: "sha256" },
+  },
+  // Zip / Country arrive in plaintext in the vendor's sample — not in the map, so dropped.
+  google: { Email: { kind: "email_sha256", shape: "sha256" }, Phone: { kind: "phone_sha256", shape: "sha256" }, "First Name": { kind: "first_name_sha256", shape: "sha256" }, "Last Name": { kind: "last_name_sha256", shape: "sha256" } },
+  // firstname / lastname / jobtitle / employeecompany / country arrive in plaintext — dropped; the mobile ad IDs keep only a UUID.
+  linkedin: { email: { kind: "email_sha256", shape: "sha256" }, appleidfa: { kind: "maid_idfa", shape: "uuid" }, googleaid: { kind: "maid_gaid", shape: "uuid" } },
+  tiktok: { email: { kind: "email_sha256", shape: "sha256" }, phone: { kind: "phone_sha256", shape: "sha256" } },
+  adroll: { email: { kind: "email_md5", shape: "md5" } },
+  generic: { email: { kind: "email_sha256", shape: "sha256" } },
+  original: { email: { kind: "email_sha256", shape: "sha256" } },
+})
+
+const SHAPE_RE: Readonly<Record<OnlineAudienceShape, RegExp>> = Object.freeze({
+  sha256: /^[a-f0-9]{64}$/,
+  md5: /^[a-f0-9]{32}$/,
+  uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+})
+
+/** PURE — is this string an online-audience identifier SHAPE (a hash or a mobile ad ID)? The channel-side firewall asks this:
+ *  such a value is never an e-mail address or a phone number, and must never be treated as one. */
+export function isOnlineAudienceIdentifier(value: unknown): boolean {
+  if (typeof value !== "string") return false
+  const v = value.trim().toLowerCase()
+  return SHAPE_RE.sha256.test(v) || SHAPE_RE.md5.test(v) || (SHAPE_RE.uuid.test(v) && !/^0{8}-0{4}-0{4}-0{4}-0{12}$/.test(v))
+}
+
+/** OUR shape of one append: service → kind → distinct identifiers (hash values only). */
+export interface VersiumOnlineAudienceIdentifiers {
+  services: Partial<Record<VersiumOnlineAudienceService, Partial<Record<OnlineAudienceIdKind, string[]>>>>
+  identifierCount: number
+}
+
+export interface VersiumOnlineAudienceResult {
+  /** True when the vendor matched the person AND at least one documented-shape identifier survived the mapper. */
+  matched: boolean
+  identifiers: VersiumOnlineAudienceIdentifiers | null
+  /** What the vendor sent that was NOT kept — published so the drop is a number, never invisible. */
+  dropped: { plaintext: number; malformed: number; unknownService: number }
+  credits: number
+  cost: number
+  provenance: VersiumProvenance | null
+  /** The vendor's query_id (the audit join to the Versium usage report). */
+  queryId: string | null
+  skipped?: "unconfigured" | "no_identity"
+  error?: string
+}
+
+/** One onlineAudience request (injectable so the proof runs with zero network). */
+export type VersiumOnlineAudienceCall = (path: string, query: Record<string, string>) =>
+  Promise<{ ok: boolean; status: number | null; data: unknown; error?: string | null }>
+
+/** PURE — the documented response → OUR identifiers + what was dropped + the credits billed. */
+function parseVersiumOnlineAudienceResponse(body: unknown): Pick<VersiumOnlineAudienceResult, "identifiers" | "dropped" | "credits" | "queryId"> & { rowMatched: boolean } {
+  const v = (body && typeof body === "object" ? (body as Record<string, any>).versium : null) ?? {}
+  const dropped = { plaintext: 0, malformed: 0, unknownService: 0 }
+  const queryId = typeof v.query_id === "string" ? v.query_id : null
+  const row = Array.isArray(v.results) ? v.results.find((x: unknown) => !!x && typeof x === "object") : null
+  if (!row) return { identifiers: null, dropped, credits: 0, queryId, rowMatched: false }
+  const counted = Number(v.match_counts?.online_audience)
+  const credits = (Number.isFinite(counted) && counted >= 0 ? counted : 1) * VERSIUM_CREDIT_WEIGHTS.online_audience
+  const services: VersiumOnlineAudienceIdentifiers["services"] = {}
+  let identifierCount = 0
+  for (const [serviceKey, entries] of Object.entries(row as Record<string, unknown>)) {
+    const service = (VERSIUM_ONLINE_AUDIENCE_SERVICES as readonly string[]).includes(serviceKey) ? (serviceKey as VersiumOnlineAudienceService) : null
+    const list = Array.isArray(entries) ? entries : [entries]
+    for (const entry of list) {
+      if (!entry || typeof entry !== "object") continue
+      for (const [field, raw] of Object.entries(entry as Record<string, unknown>)) {
+        const values = (Array.isArray(raw) ? raw : [raw]).filter((x): x is string | number => typeof x === "string" || typeof x === "number").map((x) => String(x).trim()).filter(Boolean)
+        if (!service) { dropped.unknownService += values.length; continue }
+        const spec = ONLINE_AUDIENCE_FIELD_MAP[service][field]
+        if (!spec) { dropped.plaintext += values.length; continue }
+        for (const value of values) {
+          const lower = value.toLowerCase()
+          if (!SHAPE_RE[spec.shape].test(lower) || (spec.shape === "uuid" && !isOnlineAudienceIdentifier(lower))) { dropped.malformed++; continue }
+          const bucket = ((services[service] ??= {})[spec.kind] ??= [])
+          if (!bucket.includes(lower)) { bucket.push(lower); identifierCount++ }
+        }
+      }
+    }
+  }
+  return { identifiers: identifierCount > 0 ? { services, identifierCount } : null, dropped, credits, queryId, rowMatched: true }
+}
+
+/** PURE — the onlineAudience PATH: `rcfg_oa_services[]` repeated on the path (the gateway query map carries one value per key),
+ *  restricted to the documented public services (liveramp / stackadapt "require permission" and are never asked). */
+function versiumOnlineAudiencePath(services: readonly VersiumOnlineAudienceService[] | undefined): string {
+  const asked = [...new Set((services ?? []).filter((s) => (VERSIUM_ONLINE_AUDIENCE_SERVICES as readonly string[]).includes(s)))]
+  return asked.length ? `onlineAudience?${asked.map((s) => `rcfg_oa_services[]=${encodeURIComponent(s)}`).join("&")}` : "onlineAudience"
+}
+
+/** The worst case one request can bill (the budget pre-flight's number): one matched record × the published weight. */
+export const VERSIUM_ONLINE_AUDIENCE_WORST_CASE_CREDITS = VERSIUM_CREDIT_WEIGHTS.online_audience
+
+/**
+ * One Online Audience MATCH + APPEND for ONE person. Never throws; no raw row and no plaintext value leaves this function.
+ * `services` narrows the sections asked for (data minimisation — the tenant's governed audiences name the platforms in use).
+ */
+export async function appendVersiumOnlineAudience(
+  id: VersiumIdentity,
+  opts: { services?: readonly VersiumOnlineAudienceService[] } = {},
+  deps: { call?: VersiumOnlineAudienceCall; brokerageId?: string | null } = {},
+): Promise<VersiumOnlineAudienceResult> {
+  const none: VersiumOnlineAudienceResult = { matched: false, identifiers: null, dropped: { plaintext: 0, malformed: 0, unknownService: 0 }, credits: 0, cost: 0, provenance: null, queryId: null }
+  const apiKey = process.env.VERSIUM_API_KEY
+  if (!apiKey && !deps.call) return { ...none, skipped: "unconfigured" }
+  const query = versiumQueryFor(id)
+  if (!query) return { ...none, skipped: "no_identity" }
+  const call: VersiumOnlineAudienceCall = deps.call ?? (async (path, q) => {
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    return callConnector<any>({
+      connector: "versium",
+      baseUrl: VERSIUM_API_BASE,
+      path,
+      method: "GET",
+      query: q,
+      auth: { style: "header", name: "x-versium-api-key", value: apiKey as string },
+      timeoutMs: 15_000,
+      ...(deps.brokerageId ? { brokerageId: deps.brokerageId } : {}),
+    })
+  })
+  try {
+    const res = await call(versiumOnlineAudiencePath(opts.services), { ...query, cfg_maxrecs: "1", rcfg_max_time: VERSIUM_MAX_TIME_SECONDS })
+    if (!res.ok) return { ...none, error: `${versiumStatusProblem(res.status)}${res.error ? ` — ${res.error}` : ""}` }
+    const parsed = parseVersiumOnlineAudienceResponse(res.data)
+    const cost = versiumCreditsUsd(parsed.credits)
+    // A BILLED match whose row carried none of the documented hash fields is schema drift — still booked (it was billed),
+    // never read as "no match" and never as free (the B2B2C adapter's rule, same reason).
+    const drift = parsed.rowMatched && parsed.credits > 0 && !parsed.identifiers
+    return {
+      matched: !!parsed.identifiers,
+      identifiers: parsed.identifiers,
+      dropped: parsed.dropped,
+      credits: parsed.credits,
+      cost,
+      provenance: parsed.identifiers ? provenance("person.enrich_online_audience", new Date().toISOString(), null) : null,
+      queryId: parsed.queryId,
+      ...(drift ? { error: `online_audience_schema_drift: a billed match carried no documented hash field (dropped ${parsed.dropped.plaintext} plaintext, ${parsed.dropped.malformed} malformed, ${parsed.dropped.unknownService} unknown-service values)` } : {}),
+    }
+  } catch (e) {
+    return { ...none, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // WAVE 143 (lane 143D) — THE VERSIUM PRODUCT MATRIX: EVERY PRODUCT REACHABLE THROUGH A PUBLISHED INTERFACE,
 // WHAT IT BILLS, WHICH CAPABILITY SERVES IT, AND WHAT STANDS BETWEEN US AND CALLING IT.
@@ -1040,6 +1287,7 @@ export async function appendVersiumRealEstateIndicators(
 export type VersiumProductStatus =
   | "WIRED"                 // capability + client + caller + booking exist at the base commit
   | "WIRED_143D"            // wired by this lane (a caller reads the result)
+  | "WIRED_144E"            // wired by wave 144, lane 144E (the Online Audience match + append — 143D had misfiled it as targeting)
   | "POLICY_GATED"          // reachable, but its use is ad targeting / outbound — it stays behind the legal / privacy / platform checks and no research path calls it
   | "OWNER_DECISION"        // irreversible spend or a purchased list — a human approves money (owner ruling), nothing is built to spend it unattended
   | "WAITING_EXTERNAL"      // blocked on a credential, a published price or a person — the dependency is named exactly
@@ -1124,7 +1372,7 @@ export const VERSIUM_PRODUCT_MATRIX: readonly VersiumProduct[] = Object.freeze([
     creditKeys: null,
     capability: "audience_estimate", status: "WIRED_143D", contract: "VERIFIED",
     caller: { file: "lib/kernel/lookalike-audience.ts", symbol: "runVersiumAudienceEstimateLeg" },
-    note: "FREE ('can be called as many times as requested without incurring in any charge') — the 'CAB estimate REST endpoint' the 142D note was waiting for. Sizes the in-market population of a research-derived territory. Filters are ALLOW-LISTED to geography + housing / property facts: the same API also filters on gender, ethnicity, religion, language, children, seniors, marital status and veterans — those are refused here (versiumEstimateQueryFor), research ≠ targeting.",
+    note: "A NUMBER, NOTHING ELSE (owner, wave 144 ruling 10: 'the Estimate API just returns a NUMBER (estimated matching contacts for lead-gen criteria) — no contacts purchased/imported/enriched'). FREE ('can be called as many times as requested without incurring in any charge'). The vendor's own framing is the pre-purchase step: 'useful and recommended to be used before the Job Creation API' — so the result carries the count, the records available, what the LIST JOB would bill (estimated_match_credits, shown before any purchase) and its provenance (query_id, the applied criteria, retrieved-at); the masked preview rows are never requested and never returned. 144E corrects 143D's framing of it as a look-alike-only research size: it sizes ANY lawful lead-gen criteria (geography + housing / property / mortgage facts). Filters are ALLOW-LISTED: the same API also filters on gender, ethnicity, religion, language, children, seniors, marital status and veterans — those are refused by name (versiumEstimateQueryFor). The purchase it precedes (b2c_listgen_job) stays OWNER_DECISION.",
   },
   {
     id: "b2c_listgen_job", name: "B2C ListGen — list-generation job + status + download", interface: "rest_async_job", endpoint: "POST /v2/jobs · GET /v2/jobs/{id} · GET /v2/lists/{id}/download",
@@ -1149,9 +1397,9 @@ export const VERSIUM_PRODUCT_MATRIX: readonly VersiumProduct[] = Object.freeze([
     docs: `${VERSIUM_DOCS}/online-audience-append-api-new`,
     outputs: ["adroll", "facebook", "google", "linkedin", "tiktok", "generic", "original (SHA-256 / MD5 hashed email, phone, name, zip)"],
     creditKeys: ["online_audience"],
-    capability: null, status: "POLICY_GATED", contract: "PARTIAL",
-    caller: null,
-    note: "Ad-platform matching identifiers — TARGETING plumbing, not research. Housing is a Special Ad Category (no look-alike model, no protected-class targeting) and a customer-list upload needs the audience's consent basis (facebook_custom_audiences.consent_basis) and lib/ads audience-eligibility. It is deliberately not reachable from the look-alike research path and no client is built; the REACH MCP excludes it as well.",
+    capability: "online_audience_match", status: "WIRED_144E", contract: "VERIFIED",
+    caller: { file: "lib/enrichment/online-audience-store.ts", symbol: "runVersiumOnlineAudienceLeg" },
+    note: "A MATCH + APPEND, NOT TARGETING (owner, wave 144 ruling 10 — 143D misfiled it POLICY_GATED as 'targeting plumbing'). It matches a person we already hold to their online profiles (if any) and appends the matched HASHED identifiers (SHA-256; MD5 for AdRoll; LinkedIn mobile-ad IDs only when UUID-shaped) to the contact: enrichment_profile.online_audience (lib/enrichment/online-audience-store.ts), with provenance and the vendor query_id. Plaintext values the vendor returns (Google Zip/Country, LinkedIn names/title/employer) are DROPPED and counted. 1 match credit per matched record (published), budget pre-flighted, booked usage 'online_audience_append'. REQUIRED GAP only: asked when the tenant runs a governed customer-list audience (facebook_custom_audiences with a consent basis) on a platform Versium serves, and only for those platforms' sections. The identifiers are 'not appropriate for direct email campaigns' (vendor) and are never an e-mail/SMS address here; DOWNSTREAM TARGETING is the separate governed act (lib/kernel/ads.ts syncAudience: consent basis, fair-housing refusal, persona basis) that may read them through online-audience-store.ts onlineAudienceMatchKeysFor (module-private until that read is wired — outside lane 144E's files). Only the asked sections are stored. Excluded from the REACH MCP, so REST is the only interface.",
   },
   {
     id: "predictive_scores", name: "Predictive Scores (wealth, DIY, online shopper, new-tech, green, travel, auto-finance, donor)", interface: "rest", endpoint: "GET /v2/predictiveScores",
@@ -1223,7 +1471,7 @@ export const VERSIUM_PRODUCT_MATRIX: readonly VersiumProduct[] = Object.freeze([
     creditKeys: null,
     capability: null, status: "WAITING_EXTERNAL", contract: "NOT_REQUIRED",
     caller: null,
-    note: "No server-side credential model: OAuth authorization-code + PKCE only, no client_credentials grant, an unauthenticated initialize is a 401 Bearer challenge (VERSIUM_REACH_MCP.oauth — probed 2026-10-23). Everything it exposes is reachable over REST with the platform key, so nothing is lost. See VERSIUM_REACH_MCP.waitingOn for the three exact dependencies.",
+    note: "No server-side credential model: OAuth authorization-code + PKCE only, no client_credentials grant, an unauthenticated initialize is a 401 Bearer challenge (VERSIUM_REACH_MCP.oauth — probed 2026-10-23, re-probed 2026-10-25 with identical answers). THE ACTUAL TOOL LIST (VERSIUM_REACH_MCP.tools, 20 tools, 2026-10-25): every one maps to a REST product of this matrix — four are already WIRED over REST (contact, demographic, b2b2c, b2c estimate), list-job and project/list tools spend on a purchased list (OWNER_DECISION), the rest have no caller or do not apply — and the vendor's exclusions (Online Audience Append, look-alike / ABM list generation, Data Prep) are verified ABSENT. Everything it exposes is reachable over REST with the platform key, so nothing is lost. See VERSIUM_REACH_MCP.waitingOn for the three exact dependencies.",
   },
   {
     id: "sdk", name: "Official SDK", interface: "sdk", endpoint: "—",
@@ -1242,7 +1490,12 @@ export function versiumProductsByStatus(status: VersiumProductStatus): readonly 
 }
 
 // ─── B2C LISTGEN ESTIMATES — a FREE audience-size read, geography + housing facts only ───────────────────────
-// VERIFIED 2026-10-23: GET https://api.versium.com/v2/b2cListGen/estimate (api-documentation.versium.com/reference/
+// WHAT IT IS (owner, wave 144 ruling 10 — the correction of 143D's look-alike-only framing): "The Estimate API just returns a
+// NUMBER (estimated matching contacts for lead-gen criteria) — no contacts purchased/imported/enriched." The vendor's own words
+// agree: "estimates of [how] many records will be returned … useful and recommended to be used before the Job Creation API".
+// So the result is typed `kind: "count"`, carries `contactsReturned: 0` and the provenance of the count (query_id, the decoded
+// criteria, retrieved-at), and the purchase it precedes (the ListGen JOB) is a different, OWNER_DECISION product.
+// VERIFIED 2026-10-23 (re-read 2026-10-25): GET https://api.versium.com/v2/b2cListGen/estimate (api-documentation.versium.com/reference/
 // estimates-api + b2c-listgen-configuration-parameters + b2c-listgen-demographic-filter-parameters). Response
 // `versium.results` = { estimated_record_count, estimated_records_available, estimated_match_credits,
 // estimated_time(_in_seconds), preview? }. `required_fields[]` (address | email | phone | phone_mobile | …) is a
@@ -1282,6 +1535,11 @@ export interface VersiumAudienceFilters {
   loanToValuePct?: { min: number; max: number }
   /** d_soho=Y: small office / home office households. */
   smallOfficeHome?: boolean
+  /** d_refi_date: a refinance-date RANGE ("Use eight digit dates YYYYMMDD", e.g. 20160101-20170101 — the filter page,
+   *  read 2026-10-25). A mortgage fact on the PROPERTY — the refinance lead-gen criterion (wave 144, lane 144E). ISO or YYYYMMDD in. */
+  refinanceDateRange?: { from: string; to: string }
+  /** d_dwellingtype: S = Single Family Dwelling Unit, M = Multi Family Dwelling Unit (a property fact). */
+  dwellingType?: "S" | "M"
   /** required_fields[]: the contact points a counted record must carry (default ["address"] — the direct-mail channel leads are allowed). */
   requiredFields?: ReadonlyArray<"address" | "email" | "phone" | "phone_mobile">
 }
@@ -1290,6 +1548,7 @@ export interface VersiumAudienceFilters {
 const VERSIUM_ESTIMATE_ALLOWED_KEYS: readonly (keyof VersiumAudienceFilters)[] = Object.freeze([
   "zips", "cityStates", "states", "counties", "zipRadiusMiles", "ownRent", "householdIncomeBand", "homeValueBand",
   "lengthOfResidenceYears", "homeBuiltYears", "loanToValuePct", "smallOfficeHome", "requiredFields",
+  "refinanceDateRange", "dwellingType",
 ] as const)
 
 // The vendor parameters that are NOT in the allow-list above, named so a reader sees what the refusal covers
@@ -1341,16 +1600,57 @@ function versiumEstimateQueryFor(filters: VersiumAudienceFilters): VersiumEstima
   const built = RANGE(filters.homeBuiltYears, 1600, 2100); if (built) query.d_home_year = built
   const ltv = RANGE(filters.loanToValuePct, 0, 100); if (ltv) query.d_loantovalue = ltv
   if (filters.smallOfficeHome === true) query.d_soho = "Y"
+  const ymd = (s: string | undefined): string | null => {
+    const d = String(s ?? "").trim().replace(/-/g, "")
+    return /^\d{8}$/.test(d) && Number(d.slice(4, 6)) >= 1 && Number(d.slice(4, 6)) <= 12 && Number(d.slice(6, 8)) >= 1 && Number(d.slice(6, 8)) <= 31 ? d : null
+  }
+  const refiFrom = ymd(filters.refinanceDateRange?.from), refiTo = ymd(filters.refinanceDateRange?.to)
+  if (refiFrom && refiTo && refiFrom <= refiTo) query.d_refi_date = `${refiFrom}-${refiTo}`
+  if (filters.dwellingType === "S" || filters.dwellingType === "M") query.d_dwellingtype = filters.dwellingType
   return { path: `b2cListGen/estimate?${pairs.join("&")}`, query, refused }
 }
 
+/** PURE — the criteria an estimate was ASKED with (the path's repeated pairs + the flat config), decoded — the provenance a
+ *  count carries so a reader can tell WHICH population the number describes. */
+function versiumEstimateCriteria(req: VersiumEstimateRequest): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {}
+  const qs = req.path.includes("?") ? req.path.slice(req.path.indexOf("?") + 1) : ""
+  for (const [k, v] of new URLSearchParams(qs)) {
+    const prior = out[k]
+    out[k] = prior === undefined ? [v] : Array.isArray(prior) ? [...prior, v] : [prior, v]
+  }
+  for (const [k, v] of Object.entries(req.query)) out[k] = v
+  return out
+}
+
+/** Where a count came from (wave 144, lane 144E — owner: "audience_estimate returns a COUNT with provenance"). */
+export interface VersiumEstimateProvenance {
+  source: "versium"
+  capability: "audience.estimate"
+  endpoint: "GET /v2/b2cListGen/estimate"
+  docs: string
+  /** The vendor's query_id — the audit join to the Versium usage report. */
+  queryId: string | null
+  retrievedAt: string
+  /** The criteria the count describes (decoded request parameters — geography + housing / property facts only). */
+  criteria: Record<string, string | string[]>
+}
+
 export interface VersiumAudienceEstimate {
+  /** What this result IS: a count. Never a person, never a list, never a purchase (owner, wave 144 ruling 10). */
+  kind: "count"
   estimatedRecords: number | null
   availableRecords: number | null
   /** What the LIST JOB (not this estimate) would bill in match credits — shown to the human before any purchase. */
   estimatedMatchCredits: number | null
+  /** The vendor's estimate of the LIST JOB's run time (seconds) — informational, for the human deciding on a purchase. */
+  estimatedTimeSeconds: number | null
+  /** Always 0: an estimate imports, enriches and buys no contact. */
+  contactsReturned: 0
   /** An estimate is free; this is always 0 and exists so every Versium result carries its cost. */
   cost: 0
+  /** Set on an answered count (null on a refusal / skip). */
+  provenance: VersiumEstimateProvenance | null
   refused: string[]
   skipped?: "unconfigured" | "no_geography" | "refused_filter"
   error?: string
@@ -1360,11 +1660,17 @@ export interface VersiumAudienceEstimate {
 export type VersiumEstimateCall = (path: string, query: Record<string, string>) =>
   Promise<{ ok: boolean; status: number | null; data: unknown; error?: string | null }>
 
-/** PURE — the three counts out of one estimate response (the masked preview, if the vendor sent one, is dropped). */
-function parseVersiumEstimateResponse(body: unknown): { estimatedRecords: number | null; availableRecords: number | null; estimatedMatchCredits: number | null } {
-  const r = (body && typeof body === "object" ? (body as Record<string, any>).versium?.results : null) ?? {}
-  const n = (v: unknown): number | null => { const x = Number(v); return Number.isFinite(x) && x >= 0 ? x : null }
-  return { estimatedRecords: n(r.estimated_record_count), availableRecords: n(r.estimated_records_available), estimatedMatchCredits: n(r.estimated_match_credits) }
+/** PURE — the counts out of one estimate response (the masked preview, if the vendor sent one, is dropped). */
+function parseVersiumEstimateResponse(body: unknown): { estimatedRecords: number | null; availableRecords: number | null; estimatedMatchCredits: number | null; estimatedTimeSeconds: number | null; queryId: string | null } {
+  const v = (body && typeof body === "object" ? (body as Record<string, any>).versium : null) ?? {}
+  const r = (v && typeof v === "object" ? v.results : null) ?? {}
+  const n = (x: unknown): number | null => { const y = typeof x === "string" && x.trim() === "" ? NaN : Number(x); return Number.isFinite(y) && y >= 0 ? y : null }
+  // A non-numeric field is null, never 0 (Number(null) is 0 — "the vendor said nothing" must not read as "zero people").
+  const num = (x: unknown): number | null => (x === null || x === undefined || typeof x === "boolean" ? null : n(x))
+  return {
+    estimatedRecords: num(r.estimated_record_count), availableRecords: num(r.estimated_records_available), estimatedMatchCredits: num(r.estimated_match_credits),
+    estimatedTimeSeconds: num(r.estimated_time_in_seconds), queryId: typeof v.query_id === "string" ? v.query_id : null,
+  }
 }
 
 /** Versium audience-size estimate for a geography + housing-fact filter set. Free; never throws; no person data leaves. */
@@ -1373,7 +1679,7 @@ export async function estimateVersiumAudience(
   /** `brokerageId` — the tenant this read is made FOR (api_response_logs attribution; wave 139 tenant scope) — never a spend. */
   deps: { call?: VersiumEstimateCall; brokerageId?: string | null } = {},
 ): Promise<VersiumAudienceEstimate> {
-  const none: VersiumAudienceEstimate = { estimatedRecords: null, availableRecords: null, estimatedMatchCredits: null, cost: 0, refused: [] }
+  const none: VersiumAudienceEstimate = { kind: "count", estimatedRecords: null, availableRecords: null, estimatedMatchCredits: null, estimatedTimeSeconds: null, contactsReturned: 0, cost: 0, provenance: null, refused: [] }
   const req = versiumEstimateQueryFor(filters)
   if (!req) return { ...none, skipped: "no_geography" }
   if (req.refused.length > 0) return { ...none, refused: req.refused, skipped: "refused_filter" }
@@ -1395,7 +1701,15 @@ export async function estimateVersiumAudience(
   try {
     const res = await call(req.path, req.query)
     if (!res.ok) return { ...none, error: `${versiumStatusProblem(res.status)}${res.error ? ` — ${res.error}` : ""}` }
-    return { ...none, ...parseVersiumEstimateResponse(res.data) }
+    const { queryId, ...counts } = parseVersiumEstimateResponse(res.data)
+    return {
+      ...none,
+      ...counts,
+      provenance: counts.estimatedRecords === null ? null : {
+        source: "versium", capability: "audience.estimate", endpoint: "GET /v2/b2cListGen/estimate", docs: `${VERSIUM_DOCS}/estimates-api`,
+        queryId, retrievedAt: new Date().toISOString(), criteria: versiumEstimateCriteria(req),
+      },
+    }
   } catch (e) {
     return { ...none, error: e instanceof Error ? e.message : String(e) }
   }

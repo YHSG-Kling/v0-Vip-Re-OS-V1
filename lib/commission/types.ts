@@ -3,6 +3,7 @@ import type { TeamCapStatus } from './team-lead-split'
 // walker (test:proxy-graph-budget), so these are declared as `import type` where the walker can see it.
 import type { ResidualEvaluation } from './revenue-share-model'
 import type { AgentTermsResolution } from './agreement-terms'
+import type { ConcessionSettlementTreatment } from './agent-concession'
 
 export const CURRENT_ENGINE_VERSION = 1
 
@@ -15,6 +16,11 @@ export interface CommissionStructureResolved {
   technologyFeeValue: number
   eoFeeType: 'flat' | 'percent'
   eoFeeValue: number
+  /** WAVE 144 (lane 144D, owner ruling 7): the agreement's royalty term (agent_commission_profiles.royalty_type /
+   *  royalty_value) — a brokerage fee of its own, never an ordinary fee, referral, residual or concession. Optional so a
+   *  structure that predates it reads as "no royalty". */
+  royaltyType?: 'flat' | 'percent'
+  royaltyValue?: number
 }
 
 export interface CalculateCommissionParams {
@@ -54,10 +60,16 @@ export interface DistributionRecord {
   distribution_type: 'agent' | 'brokerage' | 'team_member' | 'referral' | 'residual' | 'royalty' | 'fee'
   agent_id?: string
   team_id?: string
+  /** WAVE 144 (lane 144D, owner ruling 5): the OUTSIDE referral payee — a referral_partners row (the canonical PARTNER
+   *  bucket), never an agents row. Set only on a 'referral' row whose agent_id is empty (m850 CHECK partner_payee). */
+  referral_partner_id?: string
   calculation_type: 'percent' | 'flat'
   calculation_value?: number
   calculated_amount: number
-  source_of_funds: 'brokerage' | 'agent' | 'buyer' | 'seller_concession'
+  /** WAVE 144 (lane 144D, owner ruling 4): 'seller_concession' is no longer a source of commission funds. A seller
+   *  concession is the SELLER's money to the BUYER out of the seller's net — it never funds a commission line
+   *  (m850 narrows the live CHECK to these three). */
+  source_of_funds: 'brokerage' | 'agent' | 'buyer'
   cap_applied?: boolean
   cap_status?: string
   rule_id?: string
@@ -101,6 +113,49 @@ export interface CompanyObligationRecord {
   notes?: string
   /** IN-MEMORY ONLY (wave 107, 107A) — the agent_relationships.id a residual obligation was evaluated from. */
   relationship_id?: string
+}
+
+/** One gross-level adjustment as stage 03 judged it (wave 144, lane 144D). Cents are POSITIVE magnitudes; `signedCents`
+ *  is what moved the gross (a credit is negative). */
+export interface ConcessionEvidence {
+  adjustmentId: string
+  /** 'agent_concession' = a credit the agent gives the buyer / seller off that agent's gross commission (ruling 4);
+   *  'surcharge' = an increase of the gross (direction surcharge) — not a concession. */
+  kind: 'agent_concession' | 'surcharge'
+  verdict: 'applied' | 'skipped' | 'held'
+  concessionAgentId: string | null
+  beneficiary: string | null
+  beneficiaryName: string | null
+  reason: string | null
+  approvalStatus: string
+  /** One vocabulary (§6): lib/commission/agent-concession.ts CONCESSION_SETTLEMENT_TREATMENTS (m850 CHECK). */
+  settlementTreatment: ConcessionSettlementTreatment | null
+  signedCents: number
+  /** What the money did — 'reduces_gross_before_split' for an applied credit. */
+  ledgerEffect: 'reduces_gross_before_split' | 'increases_gross_before_split' | 'none'
+  finding: string | null
+}
+
+/** The cap cycle a deal is judged in (wave 144, lane 144D). Cents throughout. */
+export interface CapCycleContext {
+  /** agent_cap_tracking.id when a ledger window covers the deal's date; null = a NEW cycle stage 11 materialises. */
+  trackingId: string | null
+  start: string
+  end: string
+  capAmountCents: number
+  paidToDateCents: number
+  /** The cap_paid_to_date value exactly as read — stage 11's compare-and-swap predicate. */
+  paidToDateRaw: number | string | null
+  capSource: 'agreement' | 'ledger' | 'brokerage_default'
+  eligible: string[]
+  asOf: string
+  /** The agreement's own cap anniversary when it states one — stage 11 opens a new cycle's window on it. */
+  agreementAnniversaryDate: string | null
+  findings: string[]
+  /** Cents of cap room left after the split (stage 07) — stage 10 spends it on cap-eligible fees / royalty. */
+  remainingAfterSplitCents: number
+  /** Cents contributed toward the cap, by contribution type (brokerage_split | <fee kind> | royalty). */
+  contributedByType: Record<string, number>
 }
 
 export interface WaterfallContext {
@@ -183,8 +238,23 @@ export interface WaterfallContext {
   /** Cents the referral deduction takes off the top of the adjusted gross BEFORE the brokerage/agent split (stage 04 splits the remainder). */
   referralDeductionCents?: number
   /** referrals.id + the referring agent behind referralDistributions[0] — stage 11 links the referral to the deal. */
-  referralLink?: { referralId: string; referringAgentId: string; alreadyLinked: boolean } | null
+  referralLink?: { referralId: string; referringAgentId: string | null; partnerId?: string | null; alreadyLinked: boolean } | null
   referralFindings?: string[]
+
+  // AGENT CONCESSIONS (stage 03, wave 144 lane 144D — owner ruling 4). OPTIONAL — only stage 03 sets them. Every
+  // gross-level commission_adjustments row the stage saw, with what it did and why (applied / skipped / held), so the
+  // calculation's evidence names the agent, beneficiary, amount, reason, approval, settlement treatment and ledger effect.
+  concessions?: ConcessionEvidence[]
+
+  // THE CAP CYCLE the deal was priced in (stage 07, wave 144 lane 144D — owner ruling 9). OPTIONAL — only stage 07 sets
+  // it. null = no cap configured anywhere for this agent (the 'n/a' answer). Stage 10 spends the cap room the split left
+  // on CAP-ELIGIBLE fees / royalty; stage 11 materialises the window (anniversary rollover) and advances it once.
+  capCycle?: CapCycleContext | null
+
+  // ROYALTY (stage 10, wave 144 lane 144D — owner ruling 7). OPTIONAL — only stage 10 sets them. A separate brokerage fee
+  // under the agreement, never an ordinary fee, a referral, a residual or a concession.
+  royaltyDistributions?: DistributionRecord[]
+  royaltyCents?: number
 
   // Distribution collections
   grossAdjustments: DistributionRecord[]

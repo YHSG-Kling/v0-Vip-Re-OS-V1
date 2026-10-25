@@ -214,6 +214,9 @@ import {
   // business_identity, online_presence, audience_estimate).
   VERSIUM_CREDIT_WEIGHTS, versiumCreditsUsd, versiumB2B2CWorstCaseCredits,
   type VersiumAudienceFilters, type VersiumAudienceEstimate, type VersiumEstimateCall,
+  // Wave 144 (lane 144E): the Online Audience MATCH + APPEND — the seventh Versium capability on this rail (online_audience_match).
+  VERSIUM_ONLINE_AUDIENCE_WORST_CASE_CREDITS,
+  type VersiumOnlineAudienceCall, type VersiumOnlineAudienceIdentifiers, type VersiumOnlineAudienceService,
 } from "@/lib/external/versium-client"
 import { BATCHDATA_BILLED_PULL_OPT_IN } from "@/lib/buyer-search/listing-source-order"
 import { MAPBOX_SKU_USD, GOOGLE_MAPS_SKU_USD } from "@/lib/vendor-governance/cost-normalizer"
@@ -305,7 +308,8 @@ export type ProviderCapability =
   | "map_render"             // a map of coordinates — static image or browser tiles (wave 140, lane 140I)
   | "business_identity"      // a BUSINESS identity (LinkedIn URL / name + city + state) ↔ its consumer contact points — the B2B2C crosswalk (wave 142, lane 142D)
   | "online_presence"        // observed online real-estate activity + property/behaviour indicators for a known person (wave 142, lane 142D)
-  | "audience_estimate"      // HOW MANY people match a geography + housing-fact filter — a FREE size read for look-alike RESEARCH, never a targeting list (wave 143, lane 143D)
+  | "audience_estimate"      // HOW MANY people match a geography + housing-fact lead-gen filter — a FREE COUNT with provenance, never a contact, never a purchase (wave 143, lane 143D; 144E: a count for any lawful lead-gen criteria, not look-alike research only)
+  | "online_audience_match"  // WHICH online (ad-platform) identifiers belong to a person we already hold — hashed IDs APPENDED to the record; NOT targeting, never an e-mail/SMS address (wave 144, lane 144E)
 
 export interface ProviderRouteEntry {
   provider: ContactDataProvider
@@ -409,6 +413,13 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
   audience_estimate: [
     { provider: "versium", unitCostUsd: 0, keyedBy: "geography" },
   ],
+  // Wave 144 (lane 144E; owner ruling 10: "online_audience_append is NOT targeting: it matches contacts' online profiles (if
+  // any) and appends matched online contact identifiers … to the platform record"). ONE provider sells it — Versium's Online
+  // Audience Append, 1 match credit per matched record (VERSIUM_CREDIT_WEIGHTS.online_audience, the published table), a
+  // no-match is free; the SAME credit constant every Versium leg books. Walked by runVersiumOnlineAudienceLeg below.
+  online_audience_match: [
+    { provider: "versium", unitCostUsd: VERSIUM_MATCH_CREDIT_USD, keyedBy: "person_identifier" },
+  ],
 }
 
 /**
@@ -418,7 +429,9 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
  * (lib/kernel/os-health.ts): a sole-provider COMPLIANCE capability (dnc_tcpa) still sends the incident to a human,
  * a sole-provider research capability never blocks the failover of the provider's other capabilities.
  */
-export const DEGRADABLE_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set<ProviderCapability>(["online_presence", "business_identity", "audience_estimate"])
+// Wave 144 (lane 144E): + online_audience_match — an append the record does without when Versium is down (the next enrichment
+// pass re-asks the gap); it never blocks the failover of Versium's other capabilities.
+export const DEGRADABLE_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set<ProviderCapability>(["online_presence", "business_identity", "audience_estimate", "online_audience_match"])
 
 /**
  * Capabilities whose route row is FREE (unit 0) — each carries the vendor statement that makes it free. Every OTHER
@@ -912,6 +925,61 @@ export async function runVersiumAudienceEstimateLeg(
     const estimate = await estimateVersiumAudience(req.filters, { call: deps.call, brokerageId: req.brokerageId })
     if (estimate.skipped) return { ...none, estimate, skipped: estimate.skipped === "refused_filter" ? `refused_filter: ${estimate.refused.join(", ")}` : estimate.skipped }
     return { answered: estimate.estimatedRecords !== null, estimate, cost: 0, skipped: estimate.error && estimate.estimatedRecords === null ? `error: ${estimate.error}` : null }
+  } catch (e) {
+    return { ...none, skipped: `error: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
+export interface VersiumOnlineAudienceLegResult {
+  answered: boolean
+  /** OUR shape: service → identifier kind → hash values. Never an e-mail address, never a phone number. */
+  identifiers: VersiumOnlineAudienceIdentifiers | null
+  dropped: { plaintext: number; malformed: number; unknownService: number }
+  cost: number
+  skipped: string | null
+  provenance: VersiumProvenance | null
+  queryId: string | null
+}
+
+/**
+ * THE ONLINE-AUDIENCE LEG (wave 144, lane 144E) — the MATCH + APPEND of a person's hashed online identifiers. The contact
+ * leg's shape: routeCapability('online_audience_match') (a Versium in cool-down is routed around, an unconfigured one is
+ * skipped), THE SAME budget pre-flight with the published worst case (1 match credit) BEFORE a credit can be spent, ONE
+ * booking per paid call (vendor "versium", usage "online_audience_append", capability person.enrich_online_audience), the
+ * tenant on the gateway log row. It TARGETS NOBODY: the answer is appended to the record by lib/enrichment/online-audience-
+ * store.ts; an ad audience is the separate governed act (lib/kernel/ads.ts syncAudience). Tenant-attributed only. Never throws.
+ */
+export async function runVersiumOnlineAudienceLeg(
+  req: {
+    brokerageId: string | null
+    identity: VersiumIdentity
+    /** The ad-platform sections to ask for — the platforms the tenant's governed audiences use (data minimisation). */
+    services?: readonly VersiumOnlineAudienceService[]
+    systemSource: string
+    metadata?: Record<string, unknown>
+    attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null }
+  },
+  deps: VersiumLegDeps & { call?: VersiumOnlineAudienceCall } = {},
+): Promise<VersiumOnlineAudienceLegResult> {
+  const none: VersiumOnlineAudienceLegResult = { answered: false, identifiers: null, dropped: { plaintext: 0, malformed: 0, unknownService: 0 }, cost: 0, skipped: null, provenance: null, queryId: null }
+  const pre = await versiumLegPreflight({ capability: "online_audience_match", brokerageId: req.brokerageId, worstCaseUsd: versiumCreditsUsd(VERSIUM_ONLINE_AUDIENCE_WORST_CASE_CREDITS), injectedCall: !!deps.call, deps })
+  if (!pre.ok) return { ...none, skipped: pre.skipped }
+  try {
+    const { appendVersiumOnlineAudience } = await import("@/lib/external/versium-client")
+    const r = await appendVersiumOnlineAudience(req.identity, { services: req.services }, { call: deps.call, brokerageId: req.brokerageId })
+    if (r.skipped) return { ...none, skipped: r.skipped }
+    if (r.cost > 0) {
+      await bookVersiumLeg(deps.meter, {
+        vendorName: "versium",
+        usageType: "online_audience_append",
+        cost: r.cost,
+        brokerageId: req.brokerageId,
+        systemSource: req.systemSource,
+        metadata: { ...(req.metadata ?? {}), capability: "person.enrich_online_audience", answered_by: r.matched ? "versium" : null, credits: r.credits, services: req.services ?? "all", query_id: r.queryId, identifiers: r.identifiers?.identifierCount ?? 0, dropped: r.dropped },
+        attribution: req.attribution,
+      })
+    }
+    return { answered: r.matched, identifiers: r.identifiers, dropped: r.dropped, cost: r.cost, skipped: r.error && !r.matched ? `error: ${r.error}` : null, provenance: r.provenance, queryId: r.queryId }
   } catch (e) {
     return { ...none, skipped: `error: ${e instanceof Error ? e.message : String(e)}` }
   }

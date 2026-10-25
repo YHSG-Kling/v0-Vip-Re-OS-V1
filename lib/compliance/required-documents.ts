@@ -46,13 +46,32 @@ export type { DocumentClassification } from "./document-classifications"
 
 import type { DocumentClassification } from "./document-classifications"
 import {
+  PLATFORM_CHECKLIST_VOCABULARY,
   financingKindFor,
+  platformFinancingType,
   rowApplicability,
   rowSpecificity,
   type ChecklistContext,
   type ChecklistDimensionColumn,
   type ChecklistStage,
+  type ChecklistVocabulary,
 } from "./checklist-dimensions"
+import { checklistVocabularyFor, financingTypeResolver, loadTenantVocabulary } from "./adaptive-vocabulary"
+
+/**
+ * Wave 144A — the brokerage's ADAPTIVE VOCABULARY, read only when it can matter: a stored rule or the
+ * question names a contract type / representation that is not a platform value (a brokerage term, an
+ * alias). Every other call reads exactly what it read before, with no extra query. A refused read leaves
+ * the platform vocabulary in force, under which a brokerage term is UNINTERPRETABLE — the rule then
+ * applies as a WARNING naming the dimension, never silently as "not required" and never as a wildcard.
+ */
+async function checklistVocabularyForCall(supabase: SupabaseClient, brokerageId: string, values: unknown[]): Promise<ChecklistVocabulary> {
+  const foreign = values.some((v) => typeof v === "string" && v.trim()
+    && !PLATFORM_CHECKLIST_VOCABULARY.lineage("contract_subtype", v.trim()) && !PLATFORM_CHECKLIST_VOCABULARY.lineage("representation", v.trim()))
+  if (!foreign) return PLATFORM_CHECKLIST_VOCABULARY
+  const v = await loadTenantVocabulary(supabase, brokerageId)
+  return v.ok ? checklistVocabularyFor(v.vocabulary) : PLATFORM_CHECKLIST_VOCABULARY
+}
 
 export interface ResolvedRequiredDoc {
   classification:    DocumentClassification
@@ -73,6 +92,14 @@ export interface ResolvedRequiredDoc {
    * deal falls in the rule's scope, and "could not tell" must not read as "not required".
    */
   unresolved?:       ChecklistDimensionColumn[]
+  /**
+   * Wave 144A (m847): 'state_requirement' = the rule says a STATE requires the document, cited to an official
+   * (.gov / .us) source and approved by a compliance approver (app/actions/compliance/manage-required-docs.ts);
+   * null = the brokerage's own policy (every row before m847). A notice may cite `source_url`; it never
+   * claims a legal requirement for a row that carries none.
+   */
+  legal_basis?:      string | null
+  source_url?:       string | null
 }
 
 export interface ResolveContext extends ChecklistContext {
@@ -150,6 +177,10 @@ export async function resolveRequiredDocuments(
 
   // Filter to rows applicable to this actor's scopes AND to the question being asked (state,
   // stage, financing, contract subtype, representation — lib/compliance/checklist-dimensions.ts).
+  const vocabulary = await checklistVocabularyForCall(supabase, ctx.brokerageId, [
+    ctx.contractSubtype, ctx.representation,
+    ...(rows as any[]).flatMap((r) => [r.contract_subtype, r.representation]),
+  ])
   const applicable: Array<{ row: any; unresolved: ChecklistDimensionColumn[] }> = []
   for (const r of rows as any[]) {
     if (r.state_code && ctx.stateCode && r.state_code !== ctx.stateCode) continue
@@ -159,7 +190,7 @@ export async function resolveRequiredDocuments(
       : r.scope_type === "agent"   ? !!ctx.agentUserId && r.scope_id === ctx.agentUserId
       : false
     if (!inScope) continue
-    const fit = rowApplicability(r, ctx)
+    const fit = rowApplicability(r, ctx, vocabulary)
     if (!fit.applies) continue
     applicable.push({ row: r, unresolved: fit.unresolved })
   }
@@ -172,7 +203,7 @@ export async function resolveRequiredDocuments(
   const beats = (a: { row: any }, b: { row: any }): boolean => {
     const sa = SCOPE_RANK[a.row.scope_type] ?? -1, sb = SCOPE_RANK[b.row.scope_type] ?? -1
     if (sa !== sb) return sa > sb
-    const pa = rowSpecificity(a.row), pb = rowSpecificity(b.row)
+    const pa = rowSpecificity(a.row, vocabulary), pb = rowSpecificity(b.row, vocabulary)
     if (pa !== pb) return pa > pb
     return !!a.row.block_on_missing && !b.row.block_on_missing
   }
@@ -193,6 +224,8 @@ export async function resolveRequiredDocuments(
     required_stage:   (r.required_stage as string | null | undefined) ?? null,
     policy_version:   typeof r.policy_version === "number" ? r.policy_version : null,
     unresolved,
+    legal_basis:      (r.legal_basis as string | null | undefined) ?? null,
+    source_url:       (r.source_url as string | null | undefined) ?? null,
   }))
   return { ok: true, docs, ...checklistEvidence(docs) }
 }
@@ -445,7 +478,13 @@ export async function auditOfferDocuments(
       .eq("id", params.offerId)
       .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
-    if (!offerErr) financing = financingKindFor((offerRow as { financing_type?: unknown } | null)?.financing_type)
+    if (!offerErr) {
+      const raw = (offerRow as { financing_type?: unknown } | null)?.financing_type
+      // Wave 144A: a value that is not a platform financing type (a brokerage term written raw by an older
+      // writer) is read through the brokerage's vocabulary, so a term that rolls up to `cash` stays cash.
+      const tenant = typeof raw === "string" && raw.trim() && !platformFinancingType(raw) ? await loadTenantVocabulary(supabase, params.brokerageId) : null
+      financing = financingKindFor(raw, tenant?.ok ? financingTypeResolver(tenant.vocabulary) : undefined)
+    }
   }
 
   const required = await resolveRequiredDocuments(supabase, {

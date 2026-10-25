@@ -70,6 +70,7 @@ import {
   PENDING_WELCOME_STATUSES,
   WELCOME_VIDEO_WAIT_MS,
 } from "@/lib/contact-promotion/conversion-welcome"
+import { readWelcomeState, deliverWelcomeVideoFollowUp } from "@/lib/contact-promotion/welcome-avatar-video"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const dynamic = "force-dynamic"
@@ -153,6 +154,11 @@ export async function GET(req: NextRequest) {
 
     const ageMs = r.created_at ? now - new Date(r.created_at).getTime() : null
 
+    // WAVE 144 (lane 144F, owner ruling 13): the welcome no longer waits — it went at conversion. The welcome's OWN state (the
+    // survivor's tag) tells the classifier whether this row owes a video FOLLOW-UP (welcome sent), must wait behind a welcome held
+    // for approval, or is a pre-144 row whose welcome is still held. A refused read is null → the row waits, nothing is stamped.
+    const welcomeState = await readWelcomeState(svc, { contactId: r.contact_id, brokerageId: r.brokerage_id })
+
     const verdict = classifyPendingWelcome({
       status:         r.status,
       ageMs,
@@ -160,6 +166,7 @@ export async function GET(req: NextRequest) {
       hasRenderedUrl: !!r.project?.video_url,
       videoOptOut:    r.contact?.video_opt_out === true,
       hasEmail:       !!r.contact?.email,
+      welcomeState,
       waitMs:         WELCOME_VIDEO_WAIT_MS,
     })
 
@@ -169,6 +176,44 @@ export async function GET(req: NextRequest) {
     }
     if (verdict.action === "skip") {
       results.push({ id: r.id, outcome: "skipped", reason: verdict.reason })
+      continue
+    }
+
+    // ── WAVE 144: THE VIDEO FOLLOWS THE WELCOME (or the follow-up is closed) ──
+    // ONE short note carrying the finished video (lib/contact-promotion/welcome-avatar-video.ts deliverWelcomeVideoFollowUp — the
+    // client-message writer, the governed dispatcher, once per contact on the ledger). The row is stamped 'delivered' ONLY on a
+    // provider accept; a hold for approval or an unwritten note leaves it pending (the deadline closes it), anything else 'failed'.
+    if (verdict.action === "send_video_follow_up" || verdict.action === "close_video_follow_up") {
+      const fu = verdict.action === "send_video_follow_up"
+        ? await deliverWelcomeVideoFollowUp(svc, {
+            contactId: r.contact_id, brokerageId: r.brokerage_id, agentId: r.agent_id,
+            videoUrl: compositeUrl ?? (r.project?.video_url as string), videoProjectId: r.video_project_id,
+          })
+        : null
+      if (fu && (fu.state === "retry" || fu.state === "held")) {
+        results.push({ id: r.id, outcome: fu.state === "held" ? "video_follow_up_held" : "video_follow_up_retry", reason: fu.reason })
+        continue
+      }
+      const followStatus = !fu ? verdict.ledgerStatus : fu.state === "sent" ? "delivered" : "failed"
+      if (followStatus) {
+        const { data: stamped, error: stampError } = await svc
+          .from("agent_intro_videos")
+          .update({
+            status:        followStatus,
+            error_message: fu?.state === "sent" ? null : (fu?.reason ?? verdict.reason),
+            ...(followStatus === "delivered" ? { delivered_at: new Date().toISOString() } : {}),
+          })
+          .eq("id", r.id)
+          .select("id")
+        if (stampError || (stamped ?? []).length === 0) {
+          console.error(`[intro-video-email-backfill] follow-up stamp did not land for ${r.id}: ${stampError?.message ?? "0 rows matched"}`)
+        }
+      }
+      results.push({
+        id: r.id,
+        outcome: fu ? (fu.state === "sent" ? "video_followed" : "video_follow_up_refused") : "video_follow_up_closed",
+        reason: fu?.reason ?? verdict.reason,
+      })
       continue
     }
 

@@ -31,15 +31,28 @@ const CLASSIFICATIONS = ALL_DOCUMENT_CLASSIFICATIONS.map((value) => ({
   seller: SELLER_SIDE_CLASSIFICATIONS.includes(value),
 }))
 
+/** A dimension's picker options (lib/compliance/adaptive-vocabulary.ts vocabularyOptions — platform + the brokerage's approved terms). */
+type DimensionOption = { value: string; label: string }
+
 interface Props {
   brokerageId:     string
   teamId:          string | null
   userId:          string
   userType:        string
   supportedStates: string[]
+  /**
+   * Wave 144A — the ADAPTIVE VOCABULARY's options for the two extensible dimensions, or null when the
+   * brokerage's vocabulary could not be read (the pickers then offer the platform lists below — never an
+   * empty list). No alternate labels are typed here: every option comes from the one vocabulary.
+   */
+  dimensionOptions?: { contract_subtype: DimensionOption[]; representation: DimensionOption[] } | null
+  /** The session's seat may record a STATE REQUIREMENT (a compliance approver — checked again server-side). */
+  canCiteStateRequirement?: boolean
 }
 
-export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userType, supportedStates }: Props) {
+export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userType, supportedStates, dimensionOptions, canCiteStateRequirement }: Props) {
+  const subtypeOptions: DimensionOption[] = dimensionOptions?.contract_subtype ?? CONTRACT_SUBTYPES.map((k) => ({ value: k, label: CONTRACT_SUBTYPE_LABEL[k] }))
+  const representationOptions: DimensionOption[] = dimensionOptions?.representation ?? REPRESENTATIONS.map((k) => ({ value: k, label: REPRESENTATION_LABEL[k] }))
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [stateCode, setStateCode] = useState<string>("")
@@ -63,6 +76,9 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
   const [addFinancing, setAddFinancing] = useState<string>("")
   const [addSubtype, setAddSubtype] = useState<string>("")
   const [addRepresentation, setAddRepresentation] = useState<string>("")
+  // Wave 144A: a rule that says the STATE requires the document cites the official source (compliance approver only).
+  const [addStateRequirement, setAddStateRequirement] = useState<boolean>(false)
+  const [addSourceUrl, setAddSourceUrl] = useState<string>("")
   const [addResult, setAddResult] = useState<string | null>(null)
 
   // Scope choices depend on the user's role.
@@ -123,6 +139,8 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
         financingKind: addFinancing || null,
         contractSubtype: addSubtype || null,
         representation: addRepresentation || null,
+        legalBasis: addStateRequirement ? "state_requirement" : null,
+        sourceUrl: addStateRequirement ? addSourceUrl || null : null,
       })
       if (r.ok) {
         setAddResult(r.duplicate ? "That rule already exists at this scope." : "Added.")
@@ -193,16 +211,27 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
             <span className="block text-xs font-medium mb-1">Contract type (optional)</span>
             <select className="w-full border rounded px-2 py-1.5 text-sm" value={addSubtype} onChange={e => setAddSubtype(e.target.value)}>
               <option value="">Any contract type</option>
-              {CONTRACT_SUBTYPES.map(k => <option key={k} value={k}>{CONTRACT_SUBTYPE_LABEL[k]}</option>)}
+              {subtypeOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </label>
           <label className="text-sm">
             <span className="block text-xs font-medium mb-1">Representation (optional)</span>
             <select className="w-full border rounded px-2 py-1.5 text-sm" value={addRepresentation} onChange={e => setAddRepresentation(e.target.value)}>
               <option value="">Any</option>
-              {REPRESENTATIONS.map(k => <option key={k} value={k}>{REPRESENTATION_LABEL[k]}</option>)}
+              {representationOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </label>
+          {canCiteStateRequirement && (
+            <label className="text-sm md:col-span-3">
+              <span className="flex items-center gap-2 text-xs font-medium mb-1">
+                <input type="checkbox" checked={addStateRequirement} onChange={e => setAddStateRequirement(e.target.checked)} />
+                The state requires this document (cite the official source — otherwise it is saved as brokerage policy)
+              </span>
+              {addStateRequirement && (
+                <input className="w-full border rounded px-2 py-1.5 text-sm" value={addSourceUrl} onChange={e => setAddSourceUrl(e.target.value)} placeholder="Official source (.gov / .us)" />
+              )}
+            </label>
+          )}
           <label className="text-sm md:col-span-2">
             <span className="block text-xs font-medium mb-1">Description (optional)</span>
             <input className="w-full border rounded px-2 py-1.5 text-sm" value={addDesc} onChange={e => setAddDesc(e.target.value)} placeholder="Why this is required / where it comes from" />
@@ -229,6 +258,11 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
           Loads the baseline for the side of the deal you pick, plus the state-specific stack
           (TX, CA, FL, NY, IL, GA, AZ, CO, WA, NC). Existing rules at the same scope are
           skipped — your customizations are preserved.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          The state stacks are a starting point of common practice, not legal citations: each seeded rule is saved as
+          your brokerage&apos;s policy. To mark a rule as a state requirement, a compliance approver adds it above with the
+          official (.gov / .us) source.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <label className="text-sm">

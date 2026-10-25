@@ -274,6 +274,10 @@ export async function loadAvailableTransactionForms(input: {
       .select("id, name, description, state, packet_type, pdf_url, is_active")
       .eq("brokerage_id", input.brokerage_id)
       .eq("is_active", true)
+      // BROKERAGE-WIDE packets only (wave 144, lane 144C — m853 gave the library a team owner). This loader runs on the service
+      // client with a brokerage and no person, so a team packet would reach every team's agents; team packets reach their own
+      // agents through the FormWizard (lib/forms/tenant-form-packets.ts listFormPacketsForActor).
+      .is("team_id", null)
       .in("packet_type", contextCategories[input.context_type])
       .order("name")
       .limit(50)
