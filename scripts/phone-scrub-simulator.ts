@@ -97,6 +97,28 @@ async function main() {
   check("single clean number → secondary explicitly cleared (no stale fallback)", electionToColumnPatch(single).phone_secondary === null)
   check("empty input → empty election", electScrubbedPhones([]).primary === null)
 
+  // THE STATED LINE IS PINNED (wave 144 — lane 144E Still open #2): the record's own number keeps the PRIMARY slot
+  // whatever a provider line scrubs as, and its gate columns are ITS OWN verdict (slot and verdict never come apart).
+  const statedDnc = [
+    { number: "(800) 555-0011", dnc: true, reachable: true },                     // the person's own line, DNC-registered
+    { number: "8005550012", dnc: false, tcpaLitigator: false, reachable: true },   // a clean provider line nobody consented on
+  ]
+  const pinnedE = electScrubbedPhones(statedDnc, { pinnedPrimary: "1-800-555-0011" })
+  const pinnedPatch = electionToColumnPatch(pinnedE)
+  check("a pinned stated line stays PRIMARY over a cleaner provider line (matched across formats)",
+    pinnedE.primary?.number === "(800) 555-0011" && pinnedE.secondary?.number === "8005550012" && pinnedE.reordered === false)
+  check("…and the primary slot carries the stated line's OWN verdict (dnc_status true → the gates suppress it), the secondary its own",
+    pinnedPatch.phone === "(800) 555-0011" && pinnedPatch.dnc_status === true && pinnedPatch.phone_status === "dnc"
+      && pinnedPatch.phone_secondary === "8005550012" && pinnedPatch.phone_secondary_dnc_status === false)
+  check("POSITIVE CONTROL: the SAME candidates unpinned still promote the clean line (the election is unchanged without a pin)",
+    electScrubbedPhones(statedDnc).primary?.number === "8005550012")
+  check("a pin naming no candidate changes nothing (never invents a line)",
+    electScrubbedPhones(statedDnc, { pinnedPrimary: "8005559999" }).primary?.number === "8005550012"
+      && electScrubbedPhones(statedDnc, { pinnedPrimary: null }).primary?.number === "8005550012")
+  const orchSrc = code("lib/lead-pipeline/enrichment-orchestrator.ts")
+  check("BOTH enrichment-orchestrator scrub sites pin the record's stated line",
+    (orchSrc.match(/scrubPhonesForPatch\([^)]*\{\s*pinnedPrimary:\s*statedPhone\s*\}\)/g) ?? []).length === 2)
+
   console.log("\n[Layer 2 · live: real BatchData connector, provider-gated]")
   check("toTenDigits strips a leading US 1", toTenDigits("1-800-555-0123") === "8005550123")
   check("toTenDigits rejects junk", toTenDigits("12") === null)

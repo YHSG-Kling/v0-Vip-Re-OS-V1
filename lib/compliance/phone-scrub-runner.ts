@@ -45,7 +45,7 @@ export interface PhoneScrubResult {
  * (no columns written) the moment the provider is unconfigured. Best-effort per number — a failed
  * single check leaves that number's signals unknown, never throwing.
  */
-export async function scrubAndElectPhones(numbers: Array<string | null | undefined>): Promise<PhoneScrubResult> {
+export async function scrubAndElectPhones(numbers: Array<string | null | undefined>, opts?: { pinnedPrimary?: string | null }): Promise<PhoneScrubResult> {
   const tens = numbers.map((n) => ({ raw: n, ten: toTenDigits(n) })).filter((x) => !!x.raw && !!x.ten) as Array<{ raw: string; ten: string }>
   if (tens.length === 0) return { deferred: false, election: null, scrubbed: 0, dispositions: [] }
   const access = await resolveBatchDataAccess({ purpose: "dnc" })
@@ -65,17 +65,19 @@ export async function scrubAndElectPhones(numbers: Array<string | null | undefin
   // The same pure classifier the election ranks by — reported per number so a
   // caller (or a log line) can say WHY a line was demoted, not just that it was.
   const dispositions = candidates.map((c) => ({ number: c.number, disposition: dispositionOf(c) }))
-  return { deferred: false, election: electScrubbedPhones(candidates), scrubbed, dispositions }
+  // pinnedPrimary: the record's own stated line keeps the primary slot (phone-scrub.ts electScrubbedPhones) — scrubbed
+  // like every other candidate, so the gate columns written for that slot are its own verdict.
+  return { deferred: false, election: electScrubbedPhones(candidates, opts), scrubbed, dispositions }
 }
 
 /** Convenience: the column patch to merge into a contacts/leads update, or {} when deferred/empty. */
-export async function scrubPhonesForPatch(numbers: Array<string | null | undefined>): Promise<{
+export async function scrubPhonesForPatch(numbers: Array<string | null | undefined>, opts?: { pinnedPrimary?: string | null }): Promise<{
   patch: Record<string, unknown>
   deferred: boolean
   reordered: boolean
   dispositions: PhoneScrubResult["dispositions"]
 }> {
-  const r = await scrubAndElectPhones(numbers)
+  const r = await scrubAndElectPhones(numbers, opts)
   if (r.deferred || !r.election) return { patch: {}, deferred: r.deferred, reordered: false, dispositions: r.dispositions }
   const patch = electionToColumnPatch(r.election)
   // FRESH-SCRUB STAMP (m641, applied live 2026-09-16; wave 69C carry b). A live DNC/TCPA

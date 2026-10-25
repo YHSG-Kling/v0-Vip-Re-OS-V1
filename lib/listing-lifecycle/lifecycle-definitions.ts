@@ -60,6 +60,9 @@ export type ReadinessCheckType =
   | "appraisal_completed"
   | "financing_approved"
   | "closing_docs_ready"
+  // wave 144 (lane 144A Outside-lane 5): the MLS coming-soon rule, attested by compliance
+  // (lib/compliance/coming-soon-policy.ts) — unknown / unattested BLOCKS (the closed default)
+  | "coming_soon_policy"
 
 export type RequiredRole = "agent" | "team_lead" | "broker" | "admin"
 
@@ -271,7 +274,8 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     label: "Coming Soon Active",
     description: "Coming soon marketing active",
     allowedFrom: ["COMING_SOON_PREP", "REPAIRS_IN_PROGRESS"],
-    readinessChecks: ["repairs_completed"],
+    // coming_soon_policy: the listing's MLS permits coming soon under its compliance-attested rule (wave 144)
+    readinessChecks: ["repairs_completed", "coming_soon_policy"],
     requiredRoles: ["agent", "team_lead", "broker", "admin"],
     enablesSystemGates: ["marketing_execution"],
     isMilestone: true,

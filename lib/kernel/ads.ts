@@ -911,6 +911,8 @@ interface AudienceContactRow {
   phone: string | null
   first_name: string | null
   last_name: string | null
+  /** The Versium online-audience append lives here (lib/enrichment/online-audience-store.ts) — read for MATCH KEYS only. */
+  enrichment_profile?: Record<string, unknown> | null
 }
 
 type AudiencePopulation =
@@ -980,7 +982,9 @@ async function resolveAudiencePopulation(args: {
 
   let contactsQuery = supabase
     .from("contacts")
-    .select("id, email, phone, first_name, last_name")
+    // enrichment_profile: the appended online-audience identifiers (wave 144, lane 144E Outside-lane 1) — read by the
+    // custom-audience upload for match keys only; the gates that decide WHO is in the audience are unchanged.
+    .select("id, email, phone, first_name, last_name, enrichment_profile")
     .eq("brokerage_id", brokerageId)
     .not("email", "is", null)
     // CONSENT GATE: an ad-platform custom audience may only contain contacts who
@@ -1317,7 +1321,14 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
         // video_viewers, persona_segment, custom, …) is a CRM segment, uploaded as
         // hashed consented contacts.
         const { hashed, rejected } = hashAudienceMembers((contacts ?? []).map((c: any) => ({ email: c.email, phone: c.phone })))
-        const res = await connector.pushCustomAudience({ audienceName: audience.audience_name, externalAudienceId, members: hashed, cred })
+        // THE VERSIUM ONLINE-AUDIENCE MATCH KEYS (wave 144 — lane 144E Outside-lane 1, owner ruling 10): the identifiers the
+        // append stored for THIS platform, already SHA-256 HashedMatchKeys, for contacts the gates above already admitted
+        // (consent basis, fair-housing refusal, persona basis, the consent floor) — they raise the match rate and never add
+        // a person. They are ad-tech identifiers only: never an e-mail / SMS address (owner ruling 10).
+        const { onlineAudienceMatchKeysFor } = await import("@/lib/enrichment/online-audience-store")
+        const appended = (contacts ?? []).flatMap((c) => onlineAudienceMatchKeysFor(c.enrichment_profile ?? null, platform))
+        const members = [...hashed, ...appended]
+        const res = await connector.pushCustomAudience({ audienceName: audience.audience_name, externalAudienceId, members, cred })
         syncStatus = res.ok ? "completed" : "failed"
         recordsSynced = res.recordsSynced
         recordsRejected = res.recordsRejected + rejected

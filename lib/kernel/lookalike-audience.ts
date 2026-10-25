@@ -215,17 +215,29 @@ async function stageBriefs(svc: Svc, brokerageId: string, briefs: ResearchBrief[
   if (readError) return { staged: 0, existing: 0, error: `topic bank read: ${readError.message}` }
   const have = new Set<string>()
   for (const r of (live ?? []) as Array<{ raw_data: Record<string, unknown> | null }>) { const k = r.raw_data?.lookalike_research_key; if (typeof k === "string") have.add(k) }
+  // content_topic_bank.source_id is NOT NULL (wave 144 — lane 144G Outside-lane 7): the briefs file under THIS tenant's
+  // look-alike system source row, and a tenant who switched that source off gets none.
+  const { resolveSystemTopicSource } = await import("@/lib/content-intel/system-topic-source")
+  const src = await resolveSystemTopicSource(svc, brokerageId, "lookalike_research")
+  if (!src.ok || !src.active) return { staged: 0, existing: have.size, error: src.ok ? "look-alike topic source switched off by the tenant" : src.error }
   let staged = 0
   for (const b of briefs) {
     if (have.has(b.key)) continue
     const { error } = await svc.from("content_topic_bank").insert({
+      source_id: src.id,
       brokerage_id: brokerageId, topic_title: b.title, value_angle: b.valueAngle, source_url: null,
       categories: ["customer_lookalike_research"], engagement_score: b.engagement, topic_posted_at: nowIso, scraped_at: nowIso,
       expires_at: new Date(ctx.now.getTime() + 30 * 86_400_000).toISOString(), status: "fresh", geo_relevance: null,
       raw_data: {
         lookalike_research_key: b.key, generated_at: nowIso, seed_count: ctx.seedCount, attributes: b.attributes,
         fair_housing: "describes the home and the moment — never the person; the Fair Housing gate still runs on the written copy",
-        audience_estimate: ctx.estimate && ctx.estimate.estimatedRecords !== null ? { estimated_records: ctx.estimate.estimatedRecords, source: "versium_b2c_listgen_estimate" } : null,
+        // The count carries its provenance (wave 144 — lane 144E Outside-lane 2): the vendor's query id (the audit join to the
+        // Versium usage report), the criteria the number describes, and when it was read. A count, never a person.
+        audience_estimate: ctx.estimate && ctx.estimate.estimatedRecords !== null ? {
+          estimated_records: ctx.estimate.estimatedRecords, source: "versium_b2c_listgen_estimate",
+          query_id: ctx.estimate.provenance?.queryId ?? null, criteria: ctx.estimate.provenance?.criteria ?? null,
+          retrieved_at: ctx.estimate.provenance?.retrievedAt ?? null,
+        } : null,
       },
     })
     if (error) return { staged, existing: have.size, error: `topic bank insert: ${error.message}` }

@@ -31,6 +31,9 @@ import {
   markCtvCampaignLaunchedAction,
   dispatchCtvCampaignAction,
 } from "@/app/actions/ctv-ads"
+// The TV-ready master (wave 143 lane 143F; surfaced here in wave 144 — lane 144H Outside-lane 6): launch is refused until
+// a READY master exists, so the lane offers to make it beside the launch button.
+import { makeTvSpotAction } from "@/app/actions/tv-spot"
 import type { CtvLaunchPackage } from "@/lib/ads/ctv-campaign"
 
 export interface CtvEligibleVideo {
@@ -78,8 +81,30 @@ export function CtvLane({ vibeConnected, eligibleVideos, ctvCampaigns }: CtvLane
   const [isStaging, setIsStaging] = useState(false)
   const [launchPackage, setLaunchPackage] = useState<CtvLaunchPackage | null>(null)
   const [busyCampaignId, setBusyCampaignId] = useState<string | null>(null)
+  // The last refusal per campaign (launch or TV master), shown under its row — not only a toast that vanishes.
+  const [refusals, setRefusals] = useState<Record<string, string>>({})
 
   const selectedVideo = eligibleVideos.find((v) => v.id === videoId)
+
+  const handleMakeTvMaster = async (campaignId: string, videoProjectId: string) => {
+    setBusyCampaignId(campaignId)
+    const result = await makeTvSpotAction(videoProjectId)
+    setBusyCampaignId(null)
+    if (!result.success) {
+      setRefusals((r) => ({ ...r, [campaignId]: `TV master not made: ${result.error}` }))
+      toast.error(result.error || "The TV master was not made")
+      return
+    }
+    if (!result.ready) {
+      const why = result.failed.map((f) => `${f.id} (needs ${f.required}, measured ${f.measured})`).join("; ")
+      setRefusals((r) => ({ ...r, [campaignId]: `TV master made but not broadcast-ready: ${why || "see the TV master record"}` }))
+      toast.error("The TV master is not broadcast-ready yet")
+      return
+    }
+    setRefusals((r) => { const next = { ...r }; delete next[campaignId]; return next })
+    toast.success("TV master ready — the launch will carry it")
+    router.refresh()
+  }
 
   const handleStage = async () => {
     const budgetCents = Math.round(parseFloat(dailyBudget) * 100)
@@ -134,6 +159,7 @@ export function CtvLane({ vibeConnected, eligibleVideos, ctvCampaigns }: CtvLane
     } else {
       // Real Vibe error (or not connected) — surfaced honestly; the manual
       // vibe.co + Mark-as-launched path remains available.
+      setRefusals((r) => ({ ...r, [campaignId]: `Launch refused: ${result.reason}` }))
       toast.error(`Launch failed: ${result.reason}`)
     }
   }
@@ -338,6 +364,10 @@ export function CtvLane({ vibeConnected, eligibleVideos, ctvCampaigns }: CtvLane
             ctvCampaigns.map((c) => {
               const tc = (c.targeting_config ?? {}) as Record<string, unknown>
               const creativeUrl = typeof tc.creative_video_url === "string" ? tc.creative_video_url : null
+              // creative_source (lib/ads/ctv-campaign.ts): "tv_master" = the broadcast-ready master; "social_master_unverified" =
+              // the social reel, which launch refuses until a READY master exists.
+              const creativeSource = typeof tc.creative_source === "string" ? tc.creative_source : null
+              const videoProjectId = typeof tc.video_project_id === "string" ? tc.video_project_id : null
               const geo = [
                 Array.isArray(tc.dmas) && tc.dmas.length ? `DMAs: ${(tc.dmas as string[]).join(", ")}` : null,
                 Array.isArray(tc.cities) && tc.cities.length ? `Cities: ${(tc.cities as string[]).join(", ")}` : null,
@@ -364,13 +394,19 @@ export function CtvLane({ vibeConnected, eligibleVideos, ctvCampaigns }: CtvLane
                         )}
                         {c.status === "draft" ? "draft (staged)" : c.status}
                       </Badge>
+                      {creativeSource && (
+                        <Badge variant="outline" className={creativeSource === "tv_master" ? "text-green-700" : "text-amber-700"}>
+                          {creativeSource === "tv_master" ? "TV master" : "Social cut — needs a TV master"}
+                        </Badge>
+                      )}
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
                       {geo || "No geography recorded"}
                       {c.daily_budget != null && ` · $${Number(c.daily_budget).toLocaleString()}/day`}
                     </p>
+                    {refusals[c.id] && <p className="text-xs text-destructive mt-1" role="alert">{refusals[c.id]}</p>}
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     {creativeUrl && (
                       <Button variant="outline" size="sm" asChild>
                         <a href={creativeUrl} target="_blank" rel="noopener noreferrer">
@@ -380,6 +416,18 @@ export function CtvLane({ vibeConnected, eligibleVideos, ctvCampaigns }: CtvLane
                     )}
                     {c.status === "draft" && (
                       <>
+                        {creativeSource !== "tv_master" && videoProjectId && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleMakeTvMaster(c.id, videoProjectId)}
+                            disabled={busyCampaignId === c.id}
+                            title="Make the broadcast-ready TV master of this video — the launch is refused until a READY master exists"
+                          >
+                            <Tv className="h-4 w-4 mr-1" />
+                            Make TV master
+                          </Button>
+                        )}
                         <Button
                           variant={vibeConnected ? "default" : "outline"}
                           size="sm"

@@ -104,6 +104,14 @@ export async function generateAIForecast(params: {
     const avgMonthlyGCI =
       params.monthsElapsed > 0 ? params.ytdGCI / params.monthsElapsed : 0
     const projectedYTD = avgMonthlyGCI * 12
+    // The RANGE is computed here, deterministically, beside the linear projection (wave 144 — lane 144D Outside-lane 4:
+    // "AI explains; deterministic services calculate"). The model is handed the numbers and narrates them; it is no
+    // longer asked to produce a dollar range of its own.
+    const range = yearEndGciRange({
+      ytdGCI: params.ytdGCI,
+      monthsElapsed: params.monthsElapsed,
+      monthlyHistory: history.slice(0, 12).map((h: any) => h.gross_commission),
+    })
 
     const historySummary =
       history && history.length > 0
@@ -133,15 +141,16 @@ Active pipeline value: $${params.pipelineValue.toLocaleString()}
 Months elapsed: ${params.monthsElapsed}/12
 Average monthly GCI: $${Math.round(avgMonthlyGCI).toLocaleString()}
 Simple linear projection to year end: $${Math.round(projectedYTD).toLocaleString()}
+Computed year-end GCI range: $${range.low.toLocaleString()} – $${range.high.toLocaleString()} (${range.basis})
 
 Historical monthly commissions (last 12): ${historySummary}
 
 Provide a 3-4 sentence forecast covering:
-1. Projected year-end GCI range (low/high)
+1. What the computed year-end GCI range above means and why it is that wide (do NOT compute, adjust or invent any other dollar figure — use only the dollar amounts given above)
 2. Key factors that will influence actual outcome
 3. One actionable recommendation to maximize year-end earnings
 
-Keep it professional, specific, and data-driven. Use dollar amounts.`,
+Keep it professional, specific, and data-driven.`,
         },
       ],
     })
@@ -151,9 +160,42 @@ Keep it professional, specific, and data-driven. Use dollar amounts.`,
       forecast: text,
       projectedYearEnd: projectedYTD,
       avgMonthlyGCI,
+      projectedRange: range,
     }
   } catch (err: any) {
     return { success: false, error: err.message ?? "Forecast generation failed" }
+  }
+}
+
+/**
+ * PURE, module-private (a "use server" file's exports are public endpoints) — the year-end GCI range the forecast
+ * narrates. Earned to date + the remaining months at two run-rates: the LOWER and the HIGHER of (a) this year's
+ * average month and (b) the agent's own trailing months (the 25th / 75th percentile of up to 12 recorded months,
+ * at least 3 needed). No other factor is applied and nothing is guessed: with fewer than 3 recorded months the range
+ * is the linear projection alone and the basis says so. Months whose gross is not a number are skipped, never 0.
+ */
+function yearEndGciRange(input: { ytdGCI: number; monthsElapsed: number; monthlyHistory: unknown[] }): { low: number; high: number; basis: string } {
+  const months = Math.min(12, Math.max(0, Math.floor(Number(input.monthsElapsed) || 0)))
+  const ytd = Number(input.ytdGCI) || 0
+  const remaining = 12 - months
+  const runRate = months > 0 ? ytd / months : 0
+  const recorded = input.monthlyHistory
+    .map((v) => (v === null || v === undefined || v === "" ? NaN : Number(v)))
+    .filter((v) => Number.isFinite(v))
+    .sort((a, b) => a - b)
+  const pct = (p: number) => {
+    const i = (recorded.length - 1) * p, lo = Math.floor(i), hi = Math.ceil(i)
+    return recorded[lo] + (recorded[hi] - recorded[lo]) * (i - lo)
+  }
+  if (recorded.length < 3) {
+    const point = Math.round(ytd + remaining * runRate)
+    return { low: point, high: point, basis: `this year's average month carried over the remaining ${remaining} month(s); fewer than 3 recorded months, so no history widens it` }
+  }
+  const p25 = pct(0.25), p75 = pct(0.75)
+  return {
+    low: Math.round(ytd + remaining * Math.min(runRate, p25)),
+    high: Math.round(ytd + remaining * Math.max(runRate, p75)),
+    basis: `earned to date plus the remaining ${remaining} month(s) at the lower / higher of this year's average month and the 25th / 75th percentile of the last ${recorded.length} recorded months`,
   }
 }
 

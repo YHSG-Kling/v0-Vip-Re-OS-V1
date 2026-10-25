@@ -372,6 +372,18 @@ async function main() {
   const colWriters = (cols.match(/^export async function save\w+\(/gm) ?? []).length - (cols.match(/mergeBrokerageSettings\(/g) ?? []).length
   check(`every policy-column writer appends a version (${colWriters} column writer(s))`, colWriters >= 2 && (cols.match(/await versionColumn\(/g) ?? []).length === colWriters && /appendTenantPolicyVersion\(/.test(cols))
   check(`managed_agents authority/autonomy is set only in manager-evals.ts (${uniq(maWriters).join(", ")})`, uniq(maWriters).join() === "app/actions/admin/manager-evals.ts")
+  // wave 144 integration (lane 144D Outside-lane 1 registered commission_payout_policy): every registered COLUMN key is
+  // reverted through ITS OWN survivor writer, and an unnamed key REFUSES — before this, every column key revertPolicy did not
+  // name fell through to saveLiveFaceProviderOrder (a payout-policy revert would have written the face-provider column).
+  {
+    const revertSrc = src("app/actions/admin/tenant-policy.ts")
+    const namedIn = (s: string, k: string) => s.includes(`parsed.key === "${k}"`)
+    const colKeys = Object.keys((await import("../lib/kernel/tenant-policy")).TENANT_POLICY_COLUMN_KEYS)
+    const unnamed = colKeys.filter((k) => !namedIn(revertSrc, k))
+    check(`revertPolicy names every registered column key (${colKeys.length}: ${colKeys.join(", ")}; unnamed: ${unnamed.join(", ") || "0"}) and refuses one it does not name`,
+      unnamed.length === 0 && /No survivor writer is registered to revert/.test(revertSrc))
+    check("POSITIVE CONTROL — a registered column key with no revert branch is found", [...colKeys, "zz_unbranched_column_key"].filter((k) => !namedIn(revertSrc, k)).join() === "zz_unbranched_column_key")
+  }
   const me = src("app/actions/admin/manager-evals.ts")
   const fnBody = (s: string, name: string) => { const i = s.indexOf(`export async function ${name}(`); const j = s.indexOf("\nexport ", i + 10); return s.slice(i, j < 0 ? undefined : j) }
   check("setManagerAuthorityLevel + setManagerAutonomy each append a version", /appendTenantPolicyVersion\(/.test(fnBody(me, "setManagerAuthorityLevel")) && /appendTenantPolicyVersion\(/.test(fnBody(me, "setManagerAutonomy")))

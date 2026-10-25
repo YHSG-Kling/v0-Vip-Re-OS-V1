@@ -223,6 +223,10 @@ export function AppShell({ children }: AppShellProps) {
 
           <main className="flex-1 overflow-auto pb-20 lg:pb-0 bg-white">
             <div className="h-full">{children}</div>
+            {/* The platform's DISPLAYED rights notice (wave 144 — owner ruling 18; lane 144H Outside-lane 5). */}
+            <footer className="border-t border-gray-200 px-4 py-3 text-xs text-gray-500">
+              <a href="/legal" className="underline underline-offset-2 hover:text-gray-700">Copyright and licensing notice</a>
+            </footer>
           </main>
 
           {!hideBottomNav && (

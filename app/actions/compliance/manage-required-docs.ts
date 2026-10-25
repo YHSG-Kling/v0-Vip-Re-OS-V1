@@ -326,13 +326,18 @@ export async function setRequiredDocTemplate(
   if (!canManage(actor, row.scope_type as Scope, row.scope_id as string)) return { ok: false, error: "Forbidden for your role/scope" }
 
   if (input.formId) {
-    const { data: form } = await svc
+    // team_id (m853, wave 144 — lane 144C Outside-lane 2): a TEAM packet is shared with that one team only (owner ruling 3),
+    // so it may be the template of THAT team's rule and of no brokerage-wide / other-team rule. The read error is READ: a
+    // refused read is not "no such form".
+    const { data: form, error: formErr } = await svc
       .from("brokerage_form_library")
-      .select("id, brokerage_id, is_active")
+      .select("id, brokerage_id, is_active, team_id")
       .eq("id", input.formId)
       .maybeSingle()
+    if (formErr) return { ok: false, error: `Could not read the form: ${formErr.message}` }
     if (!form || form.brokerage_id !== actor.brokerageId) return { ok: false, error: "Form not found in your library" }
     if (!form.is_active) return { ok: false, error: "That form is inactive — reactivate it in Legal Forms first" }
+    if (form.team_id && !(row.scope_type === "team" && row.scope_id === form.team_id)) return { ok: false, error: "That packet is shared with one team only — attach it to that team's rule" }
   }
 
   const { error } = await svc

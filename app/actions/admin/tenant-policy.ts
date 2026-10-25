@@ -106,12 +106,32 @@ export async function revertPolicy(
         const fm = (value ?? {}) as { farm_mail_enabled?: boolean; farm_mail_max_per_week?: number | null; lob_fallback_template_id?: string | null }
         const w = await saveFarmMailConfig({ farm_mail_enabled: fm.farm_mail_enabled === true, farm_mail_max_per_week: fm.farm_mail_max_per_week ?? null, lob_fallback_template_id: fm.lob_fallback_template_id ?? null })
         wrote = { ok: w.success, error: w.error }
-      } else {
+      } else if (parsed.key === "commission_payout_policy") {
+        // Wave 144 (144D) — through the survivor writer: its own finance-admin gate (a tenant admin who may not keep
+        // the books is refused there), its validation (closing-time payout needs a CDA), its ledger row and version append.
+        const v = (value ?? null) as { payout_timing?: string; agent_concession_approval?: string } | null
+        if (!v?.payout_timing || !v?.agent_concession_approval) {
+          wrote = { ok: false, error: `Version ${version} of commission_payout_policy carries no complete value to re-apply.` }
+        } else {
+          const { setCommissionPayoutPolicyAction } = await import("@/app/actions/commission-policy/commission-policy")
+          type PayoutInput = Parameters<typeof setCommissionPayoutPolicyAction>[0]
+          const w = await setCommissionPayoutPolicyAction({
+            payoutTiming: v.payout_timing as PayoutInput["payoutTiming"],
+            agentConcessionApproval: v.agent_concession_approval as PayoutInput["agentConcessionApproval"],
+            reason,
+          })
+          wrote = w.success ? { ok: true } : { ok: false, error: w.error }
+        }
+      } else if (parsed.key === "review_request_delay_days" || parsed.key === "live_agent_face_provider_order") {
         const cols = await import("@/lib/settings/brokerage-settings-columns")
         const w = parsed.key === "review_request_delay_days"
           ? await cols.saveReviewRequestDelayDays(svc, gate.brokerageId, (value as number | null) ?? null, actor)
           : await cols.saveLiveFaceProviderOrder(svc, gate.brokerageId, value ?? ["did", "simli"], actor)
         wrote = w.ok ? { ok: true } : { ok: false, error: w.error }
+      } else {
+        // FAIL CLOSED: a registered column key with no survivor writer here is refused — it must never fall through to
+        // another key's writer (before wave 144 every unnamed column key landed in saveLiveFaceProviderOrder).
+        wrote = { ok: false, error: `No survivor writer is registered to revert ${parsed.key}.` }
       }
       break
     }

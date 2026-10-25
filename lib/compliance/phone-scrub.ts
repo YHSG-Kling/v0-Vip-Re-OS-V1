@@ -91,8 +91,15 @@ function toLine(c: ScrubCandidate): ElectedLine {
  * Elect a clean-first ordering across candidate numbers. Pure + stable: equal-quality lines keep
  * their input order, so a clean line is only promoted ahead of another clean line if it was already
  * first. De-dupes by normalized digits (PeopleData often repeats a number across slots).
+ *
+ * THE PINNED PRIMARY (wave 144 — lane 144E Still open #2 / Outside-lane 5, applied at integration). The number the
+ * PERSON stated (the record's own `phone` — the line their consent attaches to) is never displaced by a provider line:
+ * when `pinnedPrimary` is among the candidates it holds the PRIMARY slot whatever its rank, and the election runs over
+ * the rest for the secondary. Its gate columns are still ITS OWN scrub verdict (a DNC'd stated line stays primary WITH
+ * dnc_status true, so the outbound gates suppress it) — the slot and the verdict that describes it never come apart.
+ * Electing an unconsented provider line over it would put a number nobody consented on into the slot the dialer reads.
  */
-export function electScrubbedPhones(candidates: ScrubCandidate[]): PhoneElection {
+export function electScrubbedPhones(candidates: ScrubCandidate[], opts?: { pinnedPrimary?: string | null }): PhoneElection {
   const seen = new Set<string>()
   const deduped: ScrubCandidate[] = []
   for (const c of candidates ?? []) {
@@ -103,10 +110,14 @@ export function electScrubbedPhones(candidates: ScrubCandidate[]): PhoneElection
   }
 
   const indexed = deduped.map((c, i) => ({ line: toLine(c), i }))
-  const ordered = [...indexed].sort((a, b) => {
+  const keyOf = (n: string | null | undefined) => toTenDigits(n) ?? normalize(n ?? "")
+  const pinKey = opts?.pinnedPrimary ? keyOf(opts.pinnedPrimary) : ""
+  const pinned = pinKey ? indexed.find((o) => keyOf(o.line.number) === pinKey) ?? null : null
+  const ranked = [...indexed.filter((o) => o !== pinned)].sort((a, b) => {
     const r = RANK[a.line.disposition] - RANK[b.line.disposition]
     return r !== 0 ? r : a.i - b.i // stable within a rank
   })
+  const ordered = pinned ? [pinned, ...ranked] : ranked
 
   const lines = ordered.map((o) => o.line)
   const primary = lines[0] ?? null

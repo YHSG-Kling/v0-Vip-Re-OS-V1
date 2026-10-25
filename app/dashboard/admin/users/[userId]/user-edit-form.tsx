@@ -8,6 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
+import { CAP_CONTRIBUTION_TYPES, CAP_CONTRIBUTION_LABEL } from "@/lib/commission/cap-resolver"
 import {
   Select,
   SelectContent,
@@ -101,7 +103,12 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, 
     // varchar) and are sent as an array.
     team_id: agentProfile?.teamId ?? NO_TEAM,
     specializations: (agentProfile?.specializations ?? []).join(", "),
+    // The agreement's cap cycle (m850, wave 144D): blank = the brokerage's anniversary basis.
+    cap_anniversary_date: agentProfile?.capAnniversaryDate ?? "",
   })
+  // What counts toward the cap (m850): none ticked = the agreement is silent → the brokerage split alone counts.
+  const initialCapEligible = [...(agentProfile?.capEligibleContributions ?? [])].sort()
+  const [capEligible, setCapEligible] = useState<string[]>(initialCapEligible)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -172,6 +179,13 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, 
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean),
+        // The cap terms are sent ONLY when they changed (as the team is): an untouched cap never names the columns.
+        ...(agent.cap_anniversary_date !== (agentProfile.capAnniversaryDate ?? "")
+          ? { capAnniversaryDate: agent.cap_anniversary_date || null }
+          : {}),
+        ...([...capEligible].sort().join(",") !== initialCapEligible.join(",")
+          ? { capEligibleContributions: capEligible.length > 0 ? capEligible : null }
+          : {}),
       })
       if (!agentRes.ok) {
         setSaving(false)
@@ -381,6 +395,54 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, 
                   : agent.team_override_percent === ""
                     ? "Blank: this agent pays their team's standard percentage."
                     : "This agent's own agreement. It overrides the team's standard percentage on every deal."}
+              </p>
+            </div>
+            {/*
+              THE AGREEMENT'S CAP CYCLE (wave 144 — owner ruling 9; m850). Until these fields existed the two terms were
+              settable only by SQL and the engine used its defaults. The engine reads them through capTermsFromAgreement
+              (lib/commission/cap-resolver.ts): the cycle restarts on the anniversary, and only the ticked contributions
+              count toward (and stop at) the cap.
+            */}
+            <div className="space-y-1.5">
+              <Label htmlFor="capAnniversaryDate">Cap Anniversary</Label>
+              <Input
+                id="capAnniversaryDate"
+                type="date"
+                value={agent.cap_anniversary_date}
+                disabled={agentProfile?.capTermsUnavailable}
+                onChange={(e) => setAgentField("cap_anniversary_date", e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {agentProfile?.capTermsUnavailable
+                  ? "This agent's cap terms could not be read — they cannot be edited here until they can."
+                  : agent.cap_anniversary_date === ""
+                    ? "Blank: the cap cycle follows the brokerage's anniversary basis."
+                    : "The cap paid to date restarts on this date every year."}
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Counts Toward the Cap</Label>
+              <div className="flex flex-wrap gap-x-4 gap-y-2">
+                {CAP_CONTRIBUTION_TYPES.map((t) => (
+                  <label key={t} className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={capEligible.includes(t)}
+                      disabled={agentProfile?.capTermsUnavailable}
+                      onCheckedChange={(v) => {
+                        setCapEligible((cur) => (v === true ? [...new Set([...cur, t])] : cur.filter((x) => x !== t)))
+                        setSaved(false)
+                        setError(null)
+                        setSaveNote(null)
+                      }}
+                    />
+                    {CAP_CONTRIBUTION_LABEL[t]}
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {capEligible.length === 0
+                  ? "None ticked: the agreement is silent, so the brokerage split alone counts toward the cap."
+                  : "Only these brokerage contributions count toward the cap; once it is reached they stop until the anniversary."}
               </p>
             </div>
             <div className="space-y-1.5">

@@ -97,6 +97,16 @@ export interface AgentProfile {
    * comma-separated in the database, an array at this boundary.
    */
   specializations: string[]
+  /**
+   * THE CAP CYCLE THE AGREEMENT STATES (wave 144 — lane 144D Outside-lane 8, owner ruling 9; m850):
+   * `agent_commission_profiles.cap_anniversary_date` (null = the brokerage's anniversary basis) and
+   * `cap_eligible_contributions` (a subset of CAP_CONTRIBUTION_TYPES, lib/commission/cap-resolver.ts; null = the
+   * brokerage split alone counts toward the cap). Read by the commission engine through capTermsFromAgreement.
+   */
+  capAnniversaryDate: string | null
+  capEligibleContributions: string[] | null
+  /** True when the cap terms could NOT be read (e.g. m850 not yet applied) — never rendered as "the agreement is silent". */
+  capTermsUnavailable: boolean
 }
 
 export interface OfficeOption {
@@ -172,6 +182,28 @@ export async function getAgentProfileForUserAction(
     }
   }
 
+  // The CAP CYCLE terms (m850) — a SEPARATE read, so a refusal (the columns absent before m850 is applied) cannot take the
+  // negotiated team term down with it, and is reported as unreadable rather than as "the agreement is silent".
+  let capAnniversaryDate: string | null = null
+  let capEligibleContributions: string[] | null = null
+  let capTermsUnavailable = false
+  if (agent) {
+    const { data: capRow, error: capErr } = await svc
+      .from("agent_commission_profiles")
+      .select("cap_anniversary_date, cap_eligible_contributions")
+      .eq("agent_id", (agent as { id: string }).id)
+      .eq("brokerage_id", auth.brokerageId)
+      .eq("is_active", true)
+      .maybeSingle()
+    if (capErr) {
+      capTermsUnavailable = true
+    } else {
+      const c = capRow as { cap_anniversary_date?: string | null; cap_eligible_contributions?: unknown } | null
+      capAnniversaryDate = c?.cap_anniversary_date ?? null
+      capEligibleContributions = Array.isArray(c?.cap_eligible_contributions) ? (c!.cap_eligible_contributions as unknown[]).map(String) : null
+    }
+  }
+
   // The RESOLVED team — the ONE precedence rule, not a raw column read (a team
   // membership lives in four places; showing one column would lie whenever the
   // sources disagree, which they do on live data).
@@ -197,6 +229,9 @@ export async function getAgentProfileForUserAction(
           teamOverridePercent,
           /** True when the negotiated term could NOT be read — not the same as "none". */
           teamOverrideUnavailable,
+          capAnniversaryDate,
+          capEligibleContributions,
+          capTermsUnavailable,
           locationId: (agent as any).location_id ?? null,
           teamId,
           teamSource,
@@ -258,6 +293,18 @@ export interface UpdateAgentProfileInput {
    * updateAgent typed this string[] and wrote it raw at a varchar column).
    */
   specializations?: string[] | null
+  /**
+   * THE AGREEMENT'S CAP CYCLE (wave 144 — lane 144D Outside-lane 8; m850). `undefined` LEAVES IT ALONE; `null` CLEARS it
+   * back to the brokerage's anniversary basis. A calendar date YYYY-MM-DD — the cycle restarts on it every year; never
+   * a January 1 reset unless this date (or the brokerage basis) says so.
+   */
+  capAnniversaryDate?: string | null
+  /**
+   * Which brokerage contributions count toward (and stop at) the cap — a subset of CAP_CONTRIBUTION_TYPES
+   * (lib/commission/cap-resolver.ts; the m850 CHECK). `undefined` leaves it alone; `null` clears it (the brokerage split
+   * alone counts — the engine's default). An unknown type is REFUSED, never dropped silently.
+   */
+  capEligibleContributions?: string[] | null
 }
 
 export async function updateAgentProfileAction(
@@ -467,8 +514,37 @@ export async function updateAgentProfileAction(
     }
   }
 
+  // THE CAP CYCLE TERMS (m850), validated before they can reach a money column. Refused, never coerced.
+  let capAnniversary: string | null | undefined
+  if (input.capAnniversaryDate !== undefined) {
+    if (input.capAnniversaryDate === null || input.capAnniversaryDate === "") {
+      capAnniversary = null
+    } else {
+      const d = String(input.capAnniversaryDate).trim()
+      const parsed = /^\d{4}-\d{2}-\d{2}$/.test(d) ? new Date(`${d}T00:00:00Z`) : null
+      if (!parsed || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== d) {
+        return { ok: false, error: "The cap anniversary must be a calendar date (YYYY-MM-DD)." }
+      }
+      capAnniversary = d
+    }
+  }
+  let capEligible: string[] | null | undefined
+  if (input.capEligibleContributions !== undefined) {
+    if (input.capEligibleContributions === null) {
+      capEligible = null
+    } else {
+      const { CAP_CONTRIBUTION_TYPES } = await import("@/lib/commission/cap-resolver")
+      const asked = [...new Set((input.capEligibleContributions ?? []).map((x) => String(x).trim()).filter(Boolean))]
+      const unknown = asked.filter((x) => !(CAP_CONTRIBUTION_TYPES as readonly string[]).includes(x))
+      if (unknown.length > 0) {
+        return { ok: false, error: `Unknown cap contribution type(s): ${unknown.join(", ")}.` }
+      }
+      capEligible = asked
+    }
+  }
+
   const writesSplit = input.commissionSplit !== undefined && input.commissionSplit !== null
-  if (writesSplit || teamOverride !== undefined) {
+  if (writesSplit || teamOverride !== undefined || capAnniversary !== undefined || capEligible !== undefined) {
     // ONE upsert for both, on the unique agent_id. Only the keys actually being
     // set are included, so saving a split never blanks a negotiated team term and
     // saving a team term never blanks the split.
@@ -481,6 +557,9 @@ export async function updateAgentProfileAction(
     // `teamOverride === null` is a DELIBERATE clear (back to the team default) and
     // must be written; `undefined` means the caller did not touch the field.
     if (teamOverride !== undefined) profilePatch.team_override_percent = teamOverride
+    // m850 — only the cap keys actually being set (a save that does not touch them never names the columns).
+    if (capAnniversary !== undefined) profilePatch.cap_anniversary_date = capAnniversary
+    if (capEligible !== undefined) profilePatch.cap_eligible_contributions = capEligible
 
     const { data: profileRows, error: profileErr } = await svc
       .from("agent_commission_profiles")

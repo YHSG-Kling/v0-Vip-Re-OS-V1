@@ -471,6 +471,22 @@ async function main() {
     check("the DEFAULT logo fetch only reads the platform's OWN storage host: a tenant-typed foreign URL is never fetched — no logo, the warning says why (no network was used)", foreign.ok && foreign.record.brand?.logo === "unreadable" && foreign.record.warnings.some((w) => /platform's own storage/.test(w)))
   }
   {
+    // THE LEAD-MAGNET PDF carries the brand too (wave 144 integration — lane 144H Outside-lane 4): the SAME vetting helper
+    // the cover uses, and the PDF engine embeds the logo bytes. POSITIVE CONTROL: the same spec without a logo has no image.
+    const { approvedBookBrandAssets } = await import("../lib/lead-magnets/book-publishing-produce")
+    const { bookPdfSpec, renderClientPdf } = await import("../lib/documents/client-pdf")
+    const kept = await approvedBookBrandAssets({ tagline: "Calm advice, local roots", logoUrl: LOGO_URL }, { brokerageName: "Harbor Realty", olderPersons: [] as never, fetchLogo: async () => logoPng })
+    const claimed = await approvedBookBrandAssets({ tagline: "The #1 team in Tampa Bay", logoUrl: null }, { brokerageName: "Harbor Realty", olderPersons: [] as never })
+    check("approvedBookBrandAssets keeps a clean tagline + the logo file, and leaves a claiming tagline off with a warning (one vetting for the cover and the PDF)",
+      kept.tagline === "Calm advice, local roots" && !!kept.logo && !kept.logoUnreadable && claimed.tagline === null && claimed.warnings.some((w) => /left off/.test(w)))
+    const pdfData = { title: "Selling a Seaside Bungalow in Tampa Bay", chapters: [{ heading: "One", body: "Plain words." }] }
+    const base = { brokerageName: "Harbor Realty", agentName: "Dana Reyes", primaryColor: "#14532D" }
+    const withLogo = Buffer.from(await renderClientPdf(bookPdfSpec(pdfData, { ...base, accentColor: "#F59E0B", tagline: kept.tagline, logo: new Uint8Array(kept.logo!) }, "October 2026"))).toString("latin1")
+    const noLogo = Buffer.from(await renderClientPdf(bookPdfSpec(pdfData, base, "October 2026"))).toString("latin1")
+    check("the lead-magnet PDF embeds the brand's logo (an image XObject) — POSITIVE CONTROL: the same book without a logo carries none",
+      /\/Subtype\s*\/Image/.test(withLogo) && !/\/Subtype\s*\/Image/.test(noLogo))
+  }
+  {
     hosted.length = 0
     const plat = () => world({ forms: [formWith(BH, project({ publication: startPub("platform_kdp", true, null) }))] })
     const dbA = plat()
@@ -511,10 +527,10 @@ async function main() {
   for (const b of [
     "TOPIC EVIDENCE is a signal from the search rail, not a market study: demand = questions the search answer surfaced + the tenant's topic bank; competitor positioning = titles/snippets the same rail returned (no bookstore sales data, no rank data — and none is promised); a topic the rail cannot see reads 'positioning not researched', never 'no competition'",
     "the machine-written TELL list is short on purpose (phrases readers notice); a draft that reads machine-made without using a listed phrase passes the scan — the human's sign-off (the publish / the humanized_review attestation) is the real review, the scan only points",
-    "the house tenant is brokerages.is_demo (the tenant platform renders are filed under — lib/did/platform-live-agent.ts uses the same flag); the platform's own LOGO is not yet a product-brand field, so a platform book carries the product name, colours and tagline but no logo (owner input)",
+    "the house tenant is brokerages.is_demo (the tenant platform renders are filed under — lib/did/platform-live-agent.ts uses the same flag); the platform's own LOGO is a product-brand field since wave 144 integration (ProductBrand.logoUrl, set by platform staff in the brand kit) — with none recorded a platform book carries the product name, colours and tagline but no logo",
     "the logo is fetched server-side ONLY from the platform's own storage host (NEXT_PUBLIC_SUPABASE_URL); a logo kept anywhere else is reported unreadable, never fetched — the in-storage fetch itself is not exercised here (no network)",
     "the rights notice is standard rights language for display; the legal entity name defaults to the product brand name until the owner records it, and a lawyer's review of the final wording is the owner's (WAITING_EXTERNAL)",
-    "the lead-magnet PDF (lib/documents/client-pdf.ts bookPdfSpec, outside this lane) still carries only the brand colour + names — the logo and tagline reach the KDP cover and EPUB, not yet the PDF",
+    "the lead-magnet PDF (lib/documents/client-pdf.ts bookPdfSpec) carries the logo, accent colour and APPROVED tagline since wave 144 integration (book-creator.ts defaultBrandResolver → approvedBookBrandAssets, the same vetting as the KDP cover); the PDF render of the logo is not asserted here (no network; the default resolver is not driven)",
     "KDP has no publishing API and the author's KDP account is WAITING_EXTERNAL: nothing here proves KDP ACCEPTS the files — KDP's own upload checks and review do",
     "the PAPERBACK interior PDF is NOT produced (KDP requires embedded fonts; the repo ships no font file or embedder) — only the plan, margins and the named blocker exist",
     "the claim guard is a pattern list: a rank claim worded in a way it does not list is not caught; the human attestation (no_rank_claims) and KDP's own review are the backstops",

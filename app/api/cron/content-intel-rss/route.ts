@@ -21,7 +21,8 @@ export const runtime = "nodejs"
 
 interface SourceRow {
   id:            string
-  source_config: { feed_url?: string; source_trust?: number }
+  // local_intel: a local-intelligence feed (wave 144G) — owned by lib/content-intel/local-intel.ts, skipped here
+  source_config: { feed_url?: string; source_trust?: number; local_intel?: unknown }
   brokerage_id:  string | null
   label:         string | null
 }
@@ -40,6 +41,9 @@ export async function GET(req: NextRequest) {
   const results: Array<{ source_id: string; feed: string; fetched: number; inserted: number; updated: number }> = []
 
   for (const s of (sources ?? []) as SourceRow[]) {
+    // A local-intelligence feed is NOT also a generic topic (wave 144 — lane 144G Outside-lane 6): ingesting it here too would
+    // ping-pong categories / raw_data with the local pass on an RSS-format feed.
+    if (s.source_config?.local_intel) continue // lib/content-intel/local-intel.ts owns it
     const feedUrl = s.source_config?.feed_url
     if (!feedUrl) continue
     let fetched = 0, inserted = 0, updated = 0

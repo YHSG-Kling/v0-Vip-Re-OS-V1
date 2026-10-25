@@ -645,6 +645,11 @@ export async function ensureAgentCapWindow(
 /** What may count toward (and stop at) the cap — m850 agent_commission_profiles_cap_eligible_contributions_check. */
 export const CAP_CONTRIBUTION_TYPES = ["brokerage_split", "transaction_fee", "desk_fee", "technology_fee", "eo_fee", "royalty"] as const
 export type CapContributionType = (typeof CAP_CONTRIBUTION_TYPES)[number]
+/** Display labels, beside the ONE list (the agent-profile form renders the agreement's cap terms from these). */
+export const CAP_CONTRIBUTION_LABEL: Record<CapContributionType, string> = {
+  brokerage_split: "Brokerage split", transaction_fee: "Transaction fee", desk_fee: "Desk fee",
+  technology_fee: "Technology fee", eo_fee: "E&O fee", royalty: "Royalty",
+}
 
 /** An agreement that is silent: the brokerage's split alone counts — the engine's behaviour before m850, never widened silently. */
 const DEFAULT_CAP_ELIGIBLE_CONTRIBUTIONS: readonly CapContributionType[] = ["brokerage_split"]

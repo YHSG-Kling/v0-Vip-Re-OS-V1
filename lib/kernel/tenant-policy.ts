@@ -176,6 +176,10 @@ export const TENANT_POLICY_COLUMN_KEYS: Record<string, TenantPolicyDefinition> =
   // 102D: brokerages.farm_mail_enabled / farm_mail_max_per_week / lob_fallback_template_id as ONE value
   // (app/actions/direct-mail-settings.ts saveFarmMailConfig is the only writer).
   farm_mail:                      { label: "Farm mail (enabled, weekly cap, Lob fallback template)", store: "brokerages.column", defaultNote: "farm mail off" },
+  // Wave 144 (144D, owner rulings 4 + 8): brokerages.commission_payout_timing + agent_concession_approval (m850) as ONE value
+  // { payout_timing, agent_concession_approval } — app/actions/commission-policy/commission-policy.ts
+  // setCommissionPayoutPolicyAction is the only writer (finance admin, session tenant, ledgered) and the revert path.
+  commission_payout_policy:       { label: "Commission payout policy (pay at closing per the CDA vs after receipt; agent concession approval)", store: "brokerages.column", defaultNote: "after the brokerage receives the commission; agent concessions need broker approval" },
 }
 
 /** 102D — policies that are ROWS in their own table, one version stream per row: `assignment_rule:<id>`,

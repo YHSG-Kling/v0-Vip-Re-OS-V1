@@ -7,7 +7,14 @@ import { createServiceClient } from '@/lib/supabase/service'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { skipTraceWithPeopleData } from '@/lib/external/peopledata-client'
-import { scrubPhonesForPatch } from '@/lib/compliance/phone-scrub-runner'
+import { scrubPhonesForPatch, toTenDigits } from '@/lib/compliance/phone-scrub-runner'
+
+/** PURE — are two strings the same phone line (10-digit form, else raw digits)? Null never matches. */
+function samePhoneLine(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false
+  const k = (n: string) => toTenDigits(n) ?? n.replace(/[^\d]/g, '')
+  return k(a) === k(b)
+}
 import {
   peopleDataProfileToContactColumns, peopleDataProfileToLeadColumns, buildPeopleDataProfile,
   batchDataPropertyEnrichmentToLeadColumns, batchDataPropertyEnrichmentToContactColumns,
@@ -766,13 +773,24 @@ export async function processEnrichmentQueue(
         // the primary so the first number the system reaches for is contactable, with dnc_status/
         // phone_status populated for the outbound gates. Provider-gated: when BatchData is
         // unconfigured/out-of-balance it DEFERS and we keep the naive ordering (no fabricated flags).
-        const phoneCandidates = [primaryPhone, secondaryPhone].filter(Boolean) as string[]
-        const scrub = await scrubPhonesForPatch(phoneCandidates)
+        //
+        // THE STATED LINE IS PINNED (wave 144 — lane 144E Still open #2, applied at integration). The record's own
+        // `phone` — the number the person gave, the line their consent attaches to — is a candidate too, scrubbed like
+        // the rest, and holds the PRIMARY slot (scrubPhonesForPatch pinnedPrimary): a provider line can become the
+        // secondary, never displace it. The slot and its DNC/TCPA gate columns stay one verdict: the election writes
+        // the stated line's OWN scrub result beside it. Deferred (no scrub): the stated line is left untouched — its
+        // existing gate columns still describe it — and only the secondary slot takes the first provider line.
+        const statedPhone = (entity.phone as string | null) ?? null
+        const phoneCandidates = [statedPhone, primaryPhone, secondaryPhone].filter(Boolean) as string[]
+        const scrub = await scrubPhonesForPatch(phoneCandidates, { pinnedPrimary: statedPhone })
         const useScrub = !scrub.deferred && Object.keys(scrub.patch).length > 0
-        const naivePhonePatch = {
-          ...(primaryPhone && { phone: primaryPhone }),
-          ...(secondaryPhone && { phone_secondary: secondaryPhone }),
-        }
+        const providerOnlyLines = [primaryPhone, secondaryPhone].filter((p): p is string => !!p && !samePhoneLine(p, statedPhone))
+        const naivePhonePatch = statedPhone
+          ? { ...(providerOnlyLines[0] && { phone_secondary: providerOnlyLines[0] }) }
+          : {
+              ...(primaryPhone && { phone: primaryPhone }),
+              ...(secondaryPhone && { phone_secondary: secondaryPhone }),
+            }
         // Contacts carry the full gate columns; leads only have phone / phone_secondary, so leads
         // take the elected ORDERING without the gate fields (writing absent columns would crash).
         const contactPhonePatch = useScrub ? scrub.patch : naivePhonePatch
@@ -883,7 +901,12 @@ export async function processEnrichmentQueue(
         {
           const pdlLanded: string[] = []
           if (primaryEmail) pdlLanded.push('email')
-          if (primaryPhone) pdlLanded.push('phone')
+          // 'phone' is stamped as PeopleData's only when the write puts a PROVIDER line in the slot — a pinned stated
+          // line keeps its own provenance (wave 144, the stated-line pin above).
+          {
+            const landedPhone = (contactPhonePatch as Record<string, unknown>).phone as string | undefined
+            if (landedPhone && !samePhoneLine(landedPhone, statedPhone)) pdlLanded.push('phone')
+          }
           if (namePatch.first_name) pdlLanded.push('first_name', ...(namePatch.last_name ? ['last_name'] : []))
           if (hasMailingData) pdlLanded.push('mailing_address')
           profile.field_provenance = withFieldProvenance(
@@ -1286,7 +1309,9 @@ export async function processEnrichmentQueue(
         if (batchDataFallback) {
           // Same phone-scrub discipline as the PeopleData matched path — DNC/TCPA
           // scrubbed and the clean line elected primary, never a naive first-found.
-          const scrub = await scrubPhonesForPatch(batchDataFallback.phones)
+          // The record's own stated line is pinned here too (wave 144 — same rule as the PeopleData path).
+          const statedPhone = (entity.phone as string | null) ?? null
+          const scrub = await scrubPhonesForPatch([statedPhone, ...batchDataFallback.phones], { pinnedPrimary: statedPhone })
           const useScrub = !scrub.deferred && Object.keys(scrub.patch).length > 0
           // Same contacts/leads column split as the PeopleData-matched path above (~505):
           // `leads` carries phone/phone_secondary only, never the gate columns
@@ -1297,7 +1322,8 @@ export async function processEnrichmentQueue(
             ? (entityType === 'lead'
                 ? { ...(scrub.patch.phone !== undefined && { phone: scrub.patch.phone }), phone_secondary: scrub.patch.phone_secondary ?? null }
                 : scrub.patch)
-            : (batchDataFallback.phones[0] ? { phone: batchDataFallback.phones[0] } : {})
+            // Deferred: a stated line is left untouched (its gate columns still describe it); else the first match fills it.
+            : (!statedPhone && batchDataFallback.phones[0] ? { phone: batchDataFallback.phones[0] } : {})
           // NAME BACKFILL on the REVERSE leg (same rule as the PeopleData path's namePatch: fill
           // a gap, never overwrite). The wrapper already refused a person whose last name
           // disagrees with the record's, so a backfilled name is the person the phone/email names.

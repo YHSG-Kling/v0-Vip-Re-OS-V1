@@ -125,6 +125,26 @@ export function BookProjectPanel({ magnetId, onStage }: Props) {
         ))}
       </ol>
 
+      {/* WHY THIS TOPIC (wave 144 — owner ruling 15): the demand evidence research recorded, so the human sees the case
+          for the book — never a bestseller promise. */}
+      {book.evidence && (
+        <div className="rounded border p-2 text-xs space-y-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium">Topic evidence</span>
+            <Badge variant={book.evidence.verdict === "evidenced" ? "default" : "outline"}>{book.evidence.verdict.replace(/_/g, " ")}</Badge>
+          </div>
+          {book.evidence.audienceProblem && <p><span className="font-medium">The problem it solves:</span> {book.evidence.audienceProblem}</p>}
+          {book.evidence.gaps.length > 0 && <p><span className="font-medium">Unmet questions:</span> {book.evidence.gaps.join(" · ")}</p>}
+          <p className="text-muted-foreground">
+            {book.evidence.positioningResearched
+              ? (book.evidence.competitorTitles.length > 0 ? `Competing titles: ${book.evidence.competitorTitles.join(" · ")}` : "No competing title found.")
+              : `Competitor positioning was not researched${book.evidence.positioningNote ? ` (${book.evidence.positioningNote})` : ""} — every question above is an unverified gap.`}
+            {book.evidence.conversion ? ` · This brokerage's ${book.evidence.conversion.magnets} similar magnet(s) captured ${book.evidence.conversion.captures} lead(s).` : ""}
+          </p>
+          {book.evidence.verdict !== "evidenced" && book.evidence.reasons.length > 0 && <p className="text-destructive">{book.evidence.reasons.join(" ")}</p>}
+        </div>
+      )}
+
       {book.outline.length > 0 && (
         <ul className="space-y-1">
           {book.outline.map((heading, i) => {
@@ -136,13 +156,22 @@ export function BookProjectPanel({ magnetId, onStage }: Props) {
                   <span className="font-medium">{heading}</span>
                   {ch ? <span className="text-muted-foreground"> — {ch.words} words{ch.edited ? ", edited" : ""}</span> : <span className="text-muted-foreground"> — not written yet</span>}
                   {ch?.escalated && <p className="text-destructive">Fair-housing review needed: the AI rewrote this chapter twice and it still mentions {ch.findings.join(", ")} — rewrite it below before publishing.</p>}
-                  {ch?.escalated ? (
+                  {/* THE HUMANIZED REVIEW (wave 144 — owner ruling 15): a chapter that still reads machine-written is the human's to revise. */}
+                  {ch && !ch.escalated && ch.aiTells.length > 0 && (
+                    <p className="text-amber-700">Humanized review: this chapter still reads machine-written (&ldquo;{ch.aiTells.slice(0, 3).join("”, “")}&rdquo;) — revise it in your own words before publishing.</p>
+                  )}
+                  {ch?.escalated || (ch && ch.aiTells.length > 0 && revising[i + 1] !== undefined) ? (
                     <div className="mt-1 space-y-1">
                       <Textarea rows={8} aria-label={`Rewrite chapter ${i + 1}`} value={revising[i + 1] ?? ch.body ?? ""} onChange={(e) => setRevising((prev) => ({ ...prev, [i + 1]: e.target.value }))} />
                       <Button type="button" size="sm" variant="secondary" disabled={saving === i + 1 || busy} onClick={() => void handleReviseChapter(i + 1)}>
                         {saving === i + 1 ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
-                        Save corrected chapter
+                        {ch.escalated ? "Save corrected chapter" : "Save revised chapter"}
                       </Button>
+                    </div>
+                  ) : ch && ch.aiTells.length > 0 ? (
+                    <div className="mt-1 space-y-1">
+                      {ch.preview ? <p className="text-muted-foreground line-clamp-2">{ch.preview}</p> : null}
+                      <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => setRevising((prev) => ({ ...prev, [i + 1]: ch.body ?? "" }))}>Revise chapter</Button>
                     </div>
                   ) : ch?.preview ? <p className="text-muted-foreground line-clamp-2">{ch.preview}</p> : null}
                 </div>
@@ -157,6 +186,17 @@ export function BookProjectPanel({ magnetId, onStage }: Props) {
         <span>{book.factFindings} fact-check finding(s)</span>
         <span>{book.cost.model_calls} model call(s), {book.cost.tokens.toLocaleString()} tokens</span>
         {book.pageCount ? <span>{book.pageCount} pages</span> : null}
+        {book.chapters.length > 0 && (
+          <span>
+            {(() => {
+              // "Not scanned yet" is never rendered as "clean": the tells are read by the edit pass.
+              const scanned = book.chapters.filter((c) => c.edited).length
+              const open = book.chapters.filter((c) => c.aiTells.length > 0).length
+              if (scanned === 0) return "Humanized review: after the edit pass"
+              return open > 0 ? `Humanized review: ${open} chapter(s) to revise` : `Humanized review: no machine-written tells in ${scanned} edited chapter(s)`
+            })()}
+          </span>
+        )}
       </div>
 
       {done && pdfUrl && (

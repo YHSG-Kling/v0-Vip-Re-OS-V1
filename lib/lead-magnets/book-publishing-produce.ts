@@ -112,7 +112,9 @@ const defaultBrandResolver: NonNullable<KdpBuildDeps["brandResolver"]> = async (
 const defaultPlatformBrandResolver: NonNullable<KdpBuildDeps["platformBrandResolver"]> = async (svc) => {
   const { loadProductBrand } = await import("@/lib/platform/product-brand")
   const b = await loadProductBrand(svc)
-  return { brokerageName: b.name, agentName: null, primaryColor: b.primaryColor, accentColor: b.accentColor, logoUrl: null, tagline: b.tagline }
+  // logoUrl (wave 144 — lane 144H Outside-lane 7): the platform's own logo, a product-brand field now; fetched only from
+  // the platform's own storage host like every brand logo (defaultFetchLogo).
+  return { brokerageName: b.name, agentName: null, primaryColor: b.primaryColor, accentColor: b.accentColor, logoUrl: b.logoUrl, tagline: b.tagline }
 }
 const defaultTenantReader: NonNullable<KdpBuildDeps["tenantReader"]> = async (svc, brokerageId) => {
   const { data, error } = await svc.from("brokerages").select("is_demo").eq("id", brokerageId).maybeSingle()
@@ -140,6 +142,35 @@ const defaultFetchLogo: NonNullable<KdpBuildDeps["fetchLogo"]> = async (url) => 
   if (!res.ok) return null
   const buf = Buffer.from(await res.arrayBuffer())
   return buf.length > 0 && buf.length <= MAX_LOGO_BYTES ? buf : null
+}
+
+/**
+ * THE BRAND ON A BOOK — the APPROVED tagline and the brand's OWN logo file: the ONE vetting the KDP cover and the
+ * lead-magnet PDF (book-creator.ts layout, through lib/documents/client-pdf.ts) share (wave 144 — lane 144H Outside-lane 4).
+ * A tagline the claim guard or the public-copy fair-housing gate flags is left off (the book is not held for it); the logo
+ * is fetched only from the platform's own storage host (defaultFetchLogo), never AI-made. Each omission is a warning.
+ */
+export async function approvedBookBrandAssets(
+  brand: { tagline?: string | null; logoUrl?: string | null } | null | undefined,
+  ctx: { brokerageName: string; olderPersons: Awaited<ReturnType<typeof loadOlderPersonsVerifications>>; fetchLogo?: KdpBuildDeps["fetchLogo"] },
+): Promise<{ tagline: string | null; logo: Buffer | null; logoUnreadable: boolean; warnings: string[] }> {
+  const warnings: string[] = []
+  let tagline: string | null = (brand?.tagline ?? "").trim() || null
+  if (tagline) {
+    const tagClaims = scanBookClaims({ brand_tagline: tagline })
+    const tagFh = await scanPublicCopy(tagline, "book", { brokerageName: ctx.brokerageName, olderPersons: ctx.olderPersons })
+    if (tagClaims.length > 0 || !tagFh.ok) {
+      warnings.push(`The brand tagline "${tagline}" was left off the book — ${tagClaims.length ? tagClaims.map((c) => c.rule).join("; ") : tagFh.findings.map((f) => f.fix).join("; ")}. Approve a clean tagline in brand settings to carry it.`)
+      tagline = null
+    }
+  }
+  let logo: Buffer | null = null
+  let logoUnreadable = false
+  if (brand?.logoUrl) {
+    logo = await (ctx.fetchLogo ?? defaultFetchLogo)(brand.logoUrl).catch(() => null)
+    if (!logo) { logoUnreadable = true; warnings.push("The brand logo could not be used (not a readable file in the platform's own storage) — the cover carries no logo; upload the logo file in brand settings.") }
+  }
+  return { tagline, logo, logoUnreadable, warnings }
 }
 
 /** PLATFORM BOOKS ARE STAFF WORK: a platform_kdp package is built and approved by platform staff only (fail closed). */
@@ -235,22 +266,12 @@ export async function buildKdpPackage(args: { brokerageId: string; magnetId: str
 
   // THE BRAND ON THE BOOK — the APPROVED tagline only: a tagline the claim guard or the public-copy fair-housing gate flags
   // is left off (the book is not held for it); the logo is the brand's own file, never AI-made.
-  const warnings: string[] = []
-  let brandTagline: string | null = (brand?.tagline ?? "").trim() || null
-  if (brandTagline) {
-    const tagClaims = scanBookClaims({ brand_tagline: brandTagline })
-    const tagFh = await scanPublicCopy(brandTagline, "book", { brokerageName, olderPersons })
-    if (tagClaims.length > 0 || !tagFh.ok) {
-      warnings.push(`The brand tagline "${brandTagline}" was left off the book — ${tagClaims.length ? tagClaims.map((c) => c.rule).join("; ") : tagFh.findings.map((f) => f.fix).join("; ")}. Approve a clean tagline in brand settings to carry it.`)
-      brandTagline = null
-    }
-  }
-  let logo: Buffer | null = null
-  let logoState: NonNullable<KdpPackageRecord["brand"]>["logo"] = "none"
-  if (brand?.logoUrl) {
-    logo = await (deps.fetchLogo ?? defaultFetchLogo)(brand.logoUrl).catch(() => null)
-    if (!logo) { logoState = "unreadable"; warnings.push("The brand logo could not be used (not a readable file in the platform's own storage) — the cover carries no logo; upload the logo file in brand settings.") }
-  }
+  // Through the ONE vetting the lead-magnet PDF shares (approvedBookBrandAssets above).
+  const assets = await approvedBookBrandAssets(brand, { brokerageName, olderPersons, fetchLogo: deps.fetchLogo })
+  const warnings: string[] = [...assets.warnings]
+  const brandTagline: string | null = assets.tagline
+  const logo: Buffer | null = assets.logo
+  let logoState: NonNullable<KdpPackageRecord["brand"]>["logo"] = assets.logoUnreadable ? "unreadable" : "none"
 
   // THE COVER — art from the image rail when the tenant may spend on it, else typography.
   let art: Buffer | null = null

@@ -734,9 +734,13 @@ export async function markAgreementSigned(params: {
   // the listing-LAUNCH checkpoint, not to executing the agreement.
   const { data: listingRow } = await supabase
     .from("listings")
-    .select("state, agent_id, seller_contact_id, contact_id")
+    // metadata: the listing's own contract subtype / representation (wave 144, lane 144A Outside-lane 3)
+    .select("state, agent_id, seller_contact_id, contact_id, metadata")
     .eq("id", listingId)
     .maybeSingle()
+  // The SAME narrowing the activation gate and the readiness check apply, so the three listing checkpoints judge one checklist.
+  const { offerChecklistDimensions } = await import("@/lib/transactions/transaction-creation-gate")
+  const listingDims = offerChecklistDimensions(listingRow as { metadata?: unknown } | null)
 
   const { data: actingUser } = await supabase
     .from("users").select("team_id").eq("id", userId).maybeSingle()
@@ -766,6 +770,8 @@ export async function markAgreementSigned(params: {
     teamId:          (actingUser?.team_id as string | null) ?? null,
     stateCode:       (listingRow?.state as string | null) ?? null,
     listingId,
+    contractSubtype: listingDims.contractSubtype,
+    representation:  listingDims.representation,
   })
 
   const packetScan = await scanListingPacketCompleteness({
@@ -1002,6 +1008,13 @@ export async function markAgreementSigned(params: {
           direction:             "credit",
           is_active:             true,
           effective_date:        new Date().toISOString().slice(0, 10),
+          // m850 (wave 144, lane 144D Outside-lane 2 — owner ruling 4): this listing-agreement concession IS an agent
+          // concession — it comes off THE LISTING AGENT's gross commission (listings.agent_id is agents.id, the FK's
+          // target), and it settles as the lower commission rate the seller signed. approval_status keeps its
+          // 'not_required' default: the seller signed the agreement that states it. DEPLOY ORDER: m850 before this code
+          // (pre-m850 the two columns are absent and PGRST204 refuses the whole insert — reported in adjustmentWarning).
+          concession_agent_id:   (listingRow?.agent_id as string | null) ?? null,
+          settlement_treatment:  "reduced_commission_rate",
         })
 
       if (adjustmentError) {
@@ -1640,6 +1653,22 @@ export async function activateComingSoon(params: {
   // otherwise be announced as coming soon. Same pattern as the sibling transitions in this file.
   const stageGate = await requireListingStage(supabase, listingId, "COMING_SOON_ACTIVE")
   if (!stageGate.ok) return { success: false, error: stageGate.error }
+
+  // Readiness (wave 144, lane 144A Outside-lane 5): the checks COMING_SOON_ACTIVE itself declares
+  // (lifecycle-definitions.ts — repairs_completed + coming_soon_policy), DERIVED from the stage table so this
+  // door and the validator doors (lib/application/listing-lifecycle.ts, app/actions/listing-lifecycle-core.ts)
+  // judge one rule. coming_soon_policy is the MLS's compliance-attested coming-soon rule: an unknown or
+  // unattested policy BLOCKS — the closed default — and the refusal names why.
+  {
+    const { evaluateReadinessChecks } = await import("@/lib/listing-lifecycle/readiness-checker")
+    const readiness = await evaluateReadinessChecks(
+      supabase as any, listingId, getStageDefinition("COMING_SOON_ACTIVE")?.readinessChecks ?? ["coming_soon_policy"],
+    )
+    if (!readiness.allPassed) {
+      const why = readiness.results.filter((r) => !r.passed).map((r) => r.reason ?? r.check).join("; ")
+      return { success: false, error: `Coming soon cannot be activated: ${why}` }
+    }
+  }
 
   // Stage transition: COMING_SOON_PREP → COMING_SOON_ACTIVE
   const transitionResult = await transitionLifecycle({

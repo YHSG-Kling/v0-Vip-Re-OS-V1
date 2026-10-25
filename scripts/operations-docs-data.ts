@@ -243,7 +243,7 @@ add("ai", "config", [
   ["ANTHROPIC_DEFAULT_ENVIRONMENT_ID", "Default managed-agent environment id (lib/agents/spawn-helper.ts:140).", "OPTIONAL"],
   ["AI_GATEWAY_DEFAULT_MODEL", "Gateway slug override for ISA outreach personalization (default resolveModel('claude-haiku'), lib/ai-isa/personalize-outreach.ts:220).", "OPTIONAL"],
   ["AI_GATEWAY_EXTRACTION_MODEL", "Gateway slug for callback-task extraction; code default openai/gpt-4o-mini (lib/ai-isa/callback-task.ts:260).", "OPTIONAL"],
-  ["DEAL_INVESTIGATOR_MODEL", "Gateway slug for the deal investigator; code default anthropic/claude-haiku-4-5-20251001 (lib/agentic-os/deal-investigator.ts:49).", "OPTIONAL"],
+  ["DEAL_INVESTIGATOR_MODEL", "Gateway slug for the deal investigator; code default anthropic/claude-haiku-4-5-20251001 (lib/agentic-os/deal-investigator.ts:60).", "OPTIONAL"],
   ["HEALER_MODEL", "Gateway slug for the connector healer; code default anthropic/claude-haiku-4-5-20251001 (lib/agentic-os/connector-healer.ts:65).", "OPTIONAL"],
   ["PHOTO_INTEL_MODEL", "Gateway slug for listing photo intelligence; code default anthropic/claude-haiku-4-5-20251001 (lib/listings/photo-intelligence.ts:39).", "OPTIONAL"],
   ["DOCUMENT_AUDIT_VISION_MODEL", "Gateway slug for document-compliance vision audit; code default openai/gpt-4o (lib/kernel/document-compliance-audit.ts:281).", "OPTIONAL"],

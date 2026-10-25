@@ -322,6 +322,12 @@ export default async function TenantSitePage({ params }: PageProps) {
               Privacy request (CCPA / GDPR)
             </Link>
           </div>
+          {/* The platform software's DISPLAYED rights notice (wave 144 — owner ruling 18; lane 144H Outside-lane 5). */}
+          <div>
+            <Link href="/legal" className="underline underline-offset-2 hover:text-foreground">
+              Site software: copyright and licensing notice
+            </Link>
+          </div>
         </div>
       </footer>
     </div>

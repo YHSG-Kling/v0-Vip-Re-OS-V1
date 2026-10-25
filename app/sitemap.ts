@@ -20,6 +20,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     // Platform marketing surface — DB-driven pricing + the assisted-sale demo form.
     { url: `${base}/pricing`, changeFrequency: "weekly", priority: 0.8 },
     { url: `${base}/demo`, changeFrequency: "monthly", priority: 0.7 },
+    // The DISPLAYED copyright + licensing notice (wave 144 — owner ruling 18).
+    { url: `${base}/legal`, changeFrequency: "yearly", priority: 0.3 },
   ]
 
   try {

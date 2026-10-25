@@ -662,8 +662,23 @@ const viaCall = (doc: unknown) => appendVersiumOnlineAudience({ email: "pat@exam
   // THE FIREWALL — over STRIPPED source: who may import the store, and no channel module reads the block
   const IMPORT_RE = /from\s+["'][^"']*enrichment\/online-audience-store["']|import\(\s*["'][^"']*enrichment\/online-audience-store["']\s*\)/
   const ALLOWED_IMPORTERS = new Set(["lib/enrichment/contact-enrichment-core.ts", "lib/enrichment/intent-signal-sources.ts", "lib/enrichment/online-audience-store.ts"])
+  // THE ONE GOVERNED TARGETING READER (wave 144 integration — lane 144E Outside-lane 1; owner ruling 10: "downstream ad
+  // targeting is a separate governed action"): lib/kernel/ads.ts syncAudience reads the match keys for contacts its gates
+  // already admitted. Admitted BY NAME and pinned below — inside syncAudience only, AFTER every gate — so the firewall still
+  // keeps every channel / dispatch / outreach module away from an ad-tech identifier.
+  const GOVERNED_SYNC = "lib/kernel/ads.ts"
   const importers = [...walkTs("lib"), ...walkTs("app")].filter((f) => IMPORT_RE.test(strippedSrc(f)))
-  ok(importers.length >= 2 && importers.every((f) => ALLOWED_IMPORTERS.has(f)), `the store is imported ONLY by the enrichment pass and the signal reader (${importers.join(", ")}) — no channel / dispatch / outreach module can read an ad-tech identifier`, importers.filter((f) => !ALLOWED_IMPORTERS.has(f)).join(","))
+  ok(importers.length >= 2 && importers.every((f) => ALLOWED_IMPORTERS.has(f) || f === GOVERNED_SYNC), `the store is imported ONLY by the enrichment pass, the signal reader and the governed ad-audience sync (${importers.join(", ")}) — no channel / dispatch / outreach module can read an ad-tech identifier`, importers.filter((f) => !ALLOWED_IMPORTERS.has(f) && f !== GOVERNED_SYNC).join(","))
+  {
+    const fnBodyOf = (s: string, fn: string) => { const i = s.indexOf(`export async function ${fn}(`); if (i < 0) return ""; const j = s.indexOf("\nexport ", i + 10); return s.slice(i, j < 0 ? undefined : j) }
+    const afterGates = (s: string) => {
+      const all = (s.match(new RegExp(IMPORT_RE.source, "g")) ?? []).length
+      const body = fnBodyOf(s, "syncAudience"), at = body.search(IMPORT_RE)
+      return all === 1 && at > 0 && ["!audience.consent_basis", "assertAudienceSegmentationAllowed(", "assertAudiencePersonaBasis(", "resolveAudiencePopulation(", "hashAudienceMembers("].every((g) => { const k = body.indexOf(g); return k >= 0 && k < at })
+    }
+    ok(afterGates(strippedSrc(GOVERNED_SYNC)), "…and in the governed sync the store is reached ONCE, inside syncAudience, AFTER the consent-basis, fair-housing, persona-basis and population gates (match keys for admitted contacts — never membership)")
+    ok(!afterGates('export async function syncAudience() {\n  const m = await import("@/lib/enrichment/online-audience-store")\n  if (!audience.consent_basis) return\n  assertAudienceSegmentationAllowed(r)\n  assertAudiencePersonaBasis(r)\n  resolveAudiencePopulation({})\n  hashAudienceMembers([])\n}\n'), "POSITIVE CONTROL: a sync that reads the store BEFORE its gates is refused")
+  }
   ok(IMPORT_RE.test(`import { onlineAudienceMatchKeysFor } from "@/lib/enrichment/online-audience-store"`) && IMPORT_RE.test(`const m = await import("@/lib/enrichment/online-audience-store")`) && !IMPORT_RE.test(strippedSrc("lib/providers/dispatch.ts")),
     "POSITIVE CONTROL: the importer finder sees a static AND a dynamic import of the store (and the dispatcher has neither)")
   // A bracket read needs its string literal (stripped source); a dot read is matched with strings BLANKED, so a path written in

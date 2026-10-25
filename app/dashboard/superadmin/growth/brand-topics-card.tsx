@@ -17,7 +17,8 @@ import { setProductBrandAction, addTopicAction, dismissTopicAction, listTopicsAc
 // greeting, and the pre-rendered sample clip the agent may play on "show me".
 // Never a tenant's twin. didAgentId is server-written (cache) — read-only here.
 interface LiveAgent { presenterId: string | null; voiceId: string | null; name: string; greeting: string; personality: string | null; demoClipUrl: string | null; didAgentId: string | null }
-interface Brand { name: string; tagline: string; primaryColor: string; accentColor: string; ctaUrl: string; liveAgent: LiveAgent }
+// logoUrl (wave 144): the platform's own logo file — a platform book's cover carries it (fetched only from platform storage).
+interface Brand { name: string; tagline: string; primaryColor: string; accentColor: string; logoUrl?: string | null; ctaUrl: string; liveAgent: LiveAgent }
 interface Topic { id: string; source: string; topic: string; url: string | null; status: string }
 
 export function BrandTopicsCard({ initialBrand, initialTopics }: { initialBrand: Brand; initialTopics: Topic[] }) {
@@ -55,6 +56,7 @@ export function BrandTopicsCard({ initialBrand, initialTopics }: { initialBrand:
             <div><Label className="text-xs">CTA domain</Label><Input className="h-8 text-xs" value={brand.ctaUrl} onChange={(e) => setBrand({ ...brand, ctaUrl: e.target.value })} /></div>
           </div>
           <div><Label className="text-xs">Tagline</Label><Input className="h-8 text-xs" value={brand.tagline} onChange={(e) => setBrand({ ...brand, tagline: e.target.value })} /></div>
+          <div><Label className="text-xs">Logo URL (https, a file in the platform&rsquo;s own storage — platform books carry it)</Label><Input className="h-8 text-xs" value={brand.logoUrl ?? ''} onChange={(e) => setBrand({ ...brand, logoUrl: e.target.value || null })} /></div>
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1.5"><Label className="text-xs">Primary</Label><input type="color" value={brand.primaryColor} onChange={(e) => setBrand({ ...brand, primaryColor: e.target.value })} /></div>
             <div className="flex items-center gap-1.5"><Label className="text-xs">Accent</Label><input type="color" value={brand.accentColor} onChange={(e) => setBrand({ ...brand, accentColor: e.target.value })} /></div>

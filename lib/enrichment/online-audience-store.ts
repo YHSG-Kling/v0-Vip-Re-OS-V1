@@ -113,11 +113,11 @@ export function onlineAudienceSummary(profile: Record<string, unknown> | null | 
  * lib/ads/connectors/pii.ts HashedMatchKey uses ({ email_sha256?, phone_sha256? }), ready to sit BESIDE the keys a governed
  * sync hashes from the contact's own e-mail/phone. Only SHA-256 e-mail / phone keys (the shape every connector accepts); the
  * caller is the targeting act — consent basis, fair-housing refusal and persona basis are ITS gates (lib/kernel/ads.ts).
- * MODULE-PRIVATE until its production reader exists: the governed sync (lib/kernel/ads.ts syncAudience) is outside lane 144E's
- * files, so the wire that EXPORTS this and reads it there is written in the lane-144E notes (Outside-lane) — an export with no
- * caller would be an orphan (scripts/orphan-export-guard.ts). Today it feeds onlineAudienceSummary's per-platform key counts.
+ * Its production reader is the governed sync, lib/kernel/ads.ts syncAudience (custom / Customer-Match branch, wired at
+ * integration from lane 144E's Outside-lane 1): it ADDS match keys for contacts already admitted by those gates — match rate,
+ * never audience membership. It also feeds onlineAudienceSummary's per-platform key counts.
  */
-function onlineAudienceMatchKeysFor(profile: Record<string, unknown> | null | undefined, targetPlatform: string): Array<{ email_sha256?: string; phone_sha256?: string }> {
+export function onlineAudienceMatchKeysFor(profile: Record<string, unknown> | null | undefined, targetPlatform: string): Array<{ email_sha256?: string; phone_sha256?: string }> {
   const s = onlineAudienceIdentifiersFromProfile(profile)
   const service = PLATFORM_SERVICE[targetPlatform]
   if (!s || !service) return []

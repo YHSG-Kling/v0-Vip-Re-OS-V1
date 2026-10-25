@@ -43,6 +43,12 @@ export interface ProductBrand {
   tagline: string
   primaryColor: string
   accentColor: string
+  /**
+   * The platform's own LOGO file (wave 144 — lane 144H Outside-lane 7): an https URL in the platform's OWN storage, so a
+   * platform book's cover carries it (lib/lead-magnets/book-publishing-produce.ts fetches a logo ONLY from that storage
+   * host — any other address is reported unreadable, never fetched). null = no logo on file.
+   */
+  logoUrl: string | null
   /** Marketing site origin for CTAs (no trailing slash). */
   ctaUrl: string
   /** What the AI receptionist SAYS the product is (owner rule: no hardcoded
@@ -70,6 +76,7 @@ export const DEFAULT_PRODUCT_BRAND: ProductBrand = {
   tagline: "The AI team that runs the whole business",
   primaryColor: "#0F172A",
   accentColor: "#F59E0B",
+  logoUrl: null,
   ctaUrl: "https://vipagents.ai",
   voicePitch: "an AI-powered operating system for real-estate brokerages, teams, and agents — an accountable AI team that handles reception, follow-up, marketing, and operations in one command center",
   receptionGreeting: "Are you calling to learn about the platform, or are you already a customer who needs support?",
@@ -105,6 +112,8 @@ export function resolveProductBrand(raw: any): ProductBrand {
     tagline: (typeof r.tagline === "string" && r.tagline.trim()) ? r.tagline.trim().slice(0, 140) : DEFAULT_PRODUCT_BRAND.tagline,
     primaryColor: HEX.test(r.primaryColor ?? "") ? r.primaryColor : DEFAULT_PRODUCT_BRAND.primaryColor,
     accentColor: HEX.test(r.accentColor ?? "") ? r.accentColor : DEFAULT_PRODUCT_BRAND.accentColor,
+    // https only, bounded; anything else falls back to no logo (never a guessed URL)
+    logoUrl: (typeof r.logoUrl === "string" && /^https:\/\/\S+$/.test(r.logoUrl.trim()) && r.logoUrl.trim().length <= 500) ? r.logoUrl.trim() : DEFAULT_PRODUCT_BRAND.logoUrl,
     ctaUrl: (typeof r.ctaUrl === "string" && /^https?:\/\//.test(r.ctaUrl)) ? r.ctaUrl.replace(/\/$/, "") : DEFAULT_PRODUCT_BRAND.ctaUrl,
     voicePitch: (typeof r.voicePitch === "string" && r.voicePitch.trim()) ? r.voicePitch.trim().slice(0, 600) : DEFAULT_PRODUCT_BRAND.voicePitch,
     receptionGreeting: (typeof r.receptionGreeting === "string" && r.receptionGreeting.trim()) ? r.receptionGreeting.trim().slice(0, 300) : DEFAULT_PRODUCT_BRAND.receptionGreeting,

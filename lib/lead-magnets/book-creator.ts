@@ -296,7 +296,29 @@ const defaultEntitlement: NonNullable<BookDeps["entitlement"]> = async (ask) => 
 
 const defaultBrandResolver: NonNullable<BookDeps["brandResolver"]> = async (svc, brokerageId, agentUserId) => {
   const { resolvePdfBrand } = await import("@/lib/documents/client-document-producer")
-  return resolvePdfBrand(svc, { brokerageId, agentUserId })
+  // The compliance block (names, licence line, EHO) stays resolvePdfBrand's — every client PDF carries it.
+  const base = await resolvePdfBrand(svc, { brokerageId, agentUserId })
+  // + THE BRAND CASCADE (wave 144 — lane 144H Outside-lane 4, owner ruling 15): the lead-magnet PDF carries the logo, the
+  // brand colours and the APPROVED tagline too, vetted by the SAME helper the KDP cover uses (approvedBookBrandAssets). Any
+  // failure leaves the PDF on the names + colour it always carried — the book is never held for its brand.
+  try {
+    const { resolveBrandContext } = await import("@/lib/branding/resolve-brand-context")
+    const b = await resolveBrandContext({ brokerageId, agentUserId })
+    const { approvedBookBrandAssets } = await import("@/lib/lead-magnets/book-publishing-produce")
+    const olderPersons = await loadOlderPersonsVerifications(svc as never, brokerageId)
+    const assets = await approvedBookBrandAssets({ tagline: b.display.tagline, logoUrl: b.visual.logoUrl }, { brokerageName: base.brokerageName, olderPersons })
+    for (const w of assets.warnings) console.warn(`[book-creator] lead-magnet PDF brand: ${w}`)
+    return {
+      ...base,
+      primaryColor: b.visual.primaryColor ?? base.primaryColor ?? null,
+      accentColor: b.visual.accentColor ?? null,
+      tagline: assets.tagline,
+      logo: assets.logo ? new Uint8Array(assets.logo) : null,
+    }
+  } catch (e) {
+    console.warn("[book-creator] brand cascade unavailable for the lead-magnet PDF (names + colour only):", (e as Error)?.message ?? String(e))
+    return base
+  }
 }
 
 const defaultProducer: NonNullable<BookDeps["producer"]> = async (svc, args) => {

@@ -469,10 +469,17 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
       )}
 
       <div className="flex flex-col md:flex-row md:items-center md:justify-end gap-3">
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <input type="checkbox" required checked={tosAccepted} onChange={(e) => setTosAccepted(e.target.checked)} />
-          I agree to the Terms of Service and Privacy Policy (acceptance is recorded with the current terms version).
-        </label>
+        <div className="flex flex-col gap-1">
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <input type="checkbox" required checked={tosAccepted} onChange={(e) => setTosAccepted(e.target.checked)} />
+            I agree to the Terms of Service and Privacy Policy (acceptance is recorded with the current terms version).
+          </label>
+          {/* Something to READ beside the checkbox (wave 144 — owner ruling 18; lane 144H Outside-lane 5). Outside the label so
+              opening it never ticks the box. */}
+          <a href="/legal" target="_blank" rel="noreferrer" className="text-xs text-muted-foreground underline underline-offset-2">
+            Read the copyright and licensing notice
+          </a>
+        </div>
         <Button type="submit" size="lg" disabled={isPending || !tosAccepted}>
           {isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />{salesAssisted ? "Sending…" : "Provisioning…"}</> : salesAssisted ? "Get my quote" : activation === "paid" ? "Activate now" : "Start free trial"}
         </Button>

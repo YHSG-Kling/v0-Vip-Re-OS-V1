@@ -28,18 +28,25 @@ export interface ReadinessEvaluation {
   failedChecks: string[]
 }
 
+/** Optional seams (wave 144). Production passes none; the proof (scripts/adaptive-vocabulary-guard.ts F4) injects the policy client. */
+interface ReadinessDeps {
+  /** The client the coming-soon POLICY is read through (default: the service client — see checkComingSoonPolicy). */
+  comingSoonPolicyClient?: { from: (table: string) => any }
+}
+
 /**
  * Evaluate all readiness checks for a listing
  */
 export async function evaluateReadinessChecks(
   supabase: SupabaseClient,
   listingId: string,
-  requiredChecks: ReadinessCheckType[]
+  requiredChecks: ReadinessCheckType[],
+  deps?: ReadinessDeps,
 ): Promise<ReadinessEvaluation> {
   const results: ReadinessCheckResult[] = []
-  
+
   for (const check of requiredChecks) {
-    const result = await evaluateSingleCheck(supabase, listingId, check)
+    const result = await evaluateSingleCheck(supabase, listingId, check, deps)
     results.push(result)
   }
   
@@ -60,7 +67,8 @@ export async function evaluateReadinessChecks(
 async function evaluateSingleCheck(
   supabase: SupabaseClient,
   listingId: string,
-  check: ReadinessCheckType
+  check: ReadinessCheckType,
+  deps?: ReadinessDeps,
 ): Promise<ReadinessCheckResult> {
   switch (check) {
     case "documents_verified":
@@ -102,6 +110,9 @@ async function evaluateSingleCheck(
     
     case "closing_docs_ready":
       return await checkClosingDocsReady(supabase, listingId)
+
+    case "coming_soon_policy":
+      return await checkComingSoonPolicy(supabase, listingId, deps)
     
     default:
       return {
@@ -167,7 +178,8 @@ async function checkDocumentsVerified(
   // "required" means for this listing.
   const { data: listing, error: listingError } = await supabase
     .from("listings")
-    .select("brokerage_id, agent_id, seller_contact_id, contact_id, state")
+    // metadata: the listing's own contract subtype / representation (wave 144, lane 144A Outside-lane 3)
+    .select("brokerage_id, agent_id, seller_contact_id, contact_id, state, metadata")
     .eq("id", listingId)
     .maybeSingle()
 
@@ -190,6 +202,10 @@ async function checkDocumentsVerified(
   }
 
   const { auditListingDocuments } = await import("@/lib/compliance/required-documents")
+  // The listing's own checklist dimensions, through the SAME narrowing the activation gate and the offer-side gates use
+  // (wave 144 — lane 144A Outside-lane 3), so the three listing checkpoints keep judging one checklist.
+  const { offerChecklistDimensions } = await import("@/lib/transactions/transaction-creation-gate")
+  const dims = offerChecklistDimensions(listing as { metadata?: unknown })
 
   // listings.agent_id is agents.id. auditListingDocuments wants users.id, so it
   // is RESOLVED — never substituted. A wrong id here would silently resolve the
@@ -218,6 +234,8 @@ async function checkDocumentsVerified(
     agentUserId:     listingAgentUserId,
     teamId,
     stateCode:       (listing.state as string | null) ?? null,
+    contractSubtype: dims.contractSubtype,
+    representation:  dims.representation,
   })
 
   // ─── The EXECUTION half ───────────────────────────────────────────────────
@@ -674,5 +692,89 @@ async function checkClosingDocsReady(
     check: "closing_docs_ready",
     passed: docsReady,
     reason: docsReady ? undefined : "Closing disclosure not created",
+  }
+}
+
+/**
+ * Check: coming_soon_policy (wave 144 — lane 144A Outside-lane 5, handed over by lane 144B Outside-lane 4)
+ *
+ * May this listing be announced COMING SOON under its MLS's attested rule? The rule is the brokerage's
+ * `coming_soon_policy` key (lib/compliance/coming-soon-policy.ts — recorded only through the vocabulary-healing
+ * proposal path with a compliance approver's attestation and the MLS's published rule cited). This is the reader
+ * at the COMING_SOON_ACTIVE door; it is declared on that stage (lifecycle-definitions.ts readinessChecks), so every
+ * door that validates the stage table runs it.
+ *
+ * CLOSED BY DEFAULT. No entry, an unattested entry, two MLSs covering the state with none named, an unreadable
+ * policy, an unreadable listing or showing count → NOT passed, with the reason. "Nobody recorded the MLS's rule"
+ * never renders as "coming soon is allowed" (CLAUDE.md §4).
+ *
+ * WHY THE SERVICE CLIENT FOR ONE READ. brokerage_settings' SELECT policy admits brokerage admins only (live
+ * pg_policies, 2026-10-25), and the doors that reach this check are agent / team-lead doors — a user-client read
+ * comes back successfully EMPTY and every listing would read "no rule on file". The GATE is the listing read
+ * through the CALLER's client (RLS-scoped); the brokerage id comes from that row, never from a parameter, and only
+ * the policy is read with the service client.
+ *
+ * Inputs at the door: the listing records no MLS today (no column, no writer), so the policy is chosen by the
+ * listing's STATE (the one attested entry covering it). daysInComingSoon is 0 on entry (or the days since
+ * stage_entered_at when the listing already sits in COMING_SOON_ACTIVE); showingsScheduled counts every showing of the
+ * listing the ONE showing-status fold does not call completed or cancelled (pending / unknown count); public marketing before coming soon
+ * is not recorded, so that window is not measured here (blind spot).
+ */
+async function checkComingSoonPolicy(
+  supabase: SupabaseClient,
+  listingId: string,
+  deps?: ReadinessDeps,
+): Promise<ReadinessCheckResult> {
+  const { data: listing, error: listingError } = await supabase
+    .from("listings")
+    .select("brokerage_id, state, lifecycle_stage, stage_entered_at")
+    .eq("id", listingId)
+    .maybeSingle()
+  if (listingError) {
+    return { check: "coming_soon_policy", passed: false, reason: `Error reading the listing: ${listingError.message}` }
+  }
+  if (!listing?.brokerage_id) {
+    return { check: "coming_soon_policy", passed: false, reason: "Listing has no brokerage on file, so its MLS coming-soon rule cannot be resolved" }
+  }
+
+  const { data: showings, error: showingsError } = await supabase
+    .from("showings")
+    .select("status, completed_at")
+    .eq("listing_id", listingId)
+  if (showingsError) {
+    return { check: "coming_soon_policy", passed: false, reason: `Error reading the listing's showings: ${showingsError.message}` }
+  }
+  const { foldShowingStatus } = await import("@/lib/portal/portal-showing-feed")
+  // A showing counts unless it is known to be OVER or CANCELLED — a pending / unrecognised status is a planned showing
+  // (the closed answer: an unknown status never reads as "no showing").
+  const showingsScheduled = (showings ?? []).filter((s: { status?: string | null; completed_at?: string | null }) => {
+    const folded = foldShowingStatus(null, s.status ?? null, !!s.completed_at)
+    return folded !== "completed" && folded !== "cancelled"
+  }).length
+
+  const enteredAt = listing.lifecycle_stage === "COMING_SOON_ACTIVE" && listing.stage_entered_at
+    ? Date.parse(listing.stage_entered_at as string) : NaN
+  const daysInComingSoon = Number.isFinite(enteredAt) ? Math.max(0, Math.floor((Date.now() - enteredAt) / 86_400_000)) : 0
+
+  const { loadComingSoonPolicy, evaluateComingSoonReadiness } = await import("@/lib/compliance/coming-soon-policy")
+  let loaded: Awaited<ReturnType<typeof loadComingSoonPolicy>>
+  try {
+    const policyClient = deps?.comingSoonPolicyClient ?? (await import("@/lib/supabase/service")).createServiceClient()
+    loaded = await loadComingSoonPolicy(policyClient, listing.brokerage_id as string)
+  } catch (err) {
+    loaded = { ok: false, error: `the coming-soon policy could not be read: ${err instanceof Error ? err.message : String(err)}` }
+  }
+  const verdict = evaluateComingSoonReadiness(loaded.ok ? loaded.policy : null, {
+    mlsSlug: null,
+    stateCode: (listing.state as string | null) ?? null,
+    daysInComingSoon,
+    showingsScheduled,
+    businessDaysSincePublicMarketing: null,
+  })
+  return {
+    check: "coming_soon_policy",
+    passed: verdict.ready,
+    reason: verdict.ready ? undefined : [loaded.ok ? null : loaded.error, ...verdict.blockers].filter(Boolean).join("; "),
+    details: { status: verdict.status, blockers: verdict.blockers, source: verdict.source, showingsScheduled, daysInComingSoon },
   }
 }

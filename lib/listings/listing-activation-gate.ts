@@ -95,6 +95,7 @@ import {
 import {
   findUnexecutedDocuments,
   buildGateRefusal,
+  offerChecklistDimensions,
   type GateRefusal,
   type GateRequirement,
   type UnexecutedDocument,
@@ -214,12 +215,13 @@ async function readListingAnchors(
   supabase: SupabaseClient,
   params: { listingId: string; brokerageId: string },
 ): Promise<
-  | { ok: true; sellerContactId: string | null; agentUserId: string | null; teamId: string | null; stateCode: string | null }
+  | { ok: true; sellerContactId: string | null; agentUserId: string | null; teamId: string | null; stateCode: string | null } & ReturnType<typeof offerChecklistDimensions>
   | { ok: false; error: string }
 > {
   const { data: listing, error } = await supabase
     .from("listings")
-    .select("id, brokerage_id, agent_id, seller_contact_id, contact_id, state")
+    // metadata: the listing's own contract subtype / representation (wave 144, lane 144A Outside-lane 3) — see below
+    .select("id, brokerage_id, agent_id, seller_contact_id, contact_id, state, metadata")
     .eq("id", params.listingId)
     .maybeSingle()
   if (error) return { ok: false, error: `listing could not be read: ${error.message}` }
@@ -265,6 +267,12 @@ async function readListingAnchors(
     agentUserId,
     teamId,
     stateCode: ((listing as any).state as string | null) ?? null,
+    // The checklist dimensions the LISTING itself states (wave 144 — lane 144A Outside-lane 3, "callers that know the deal's
+    // subtype / representation should pass them"), read through the SAME narrowing the offer-side gates use
+    // (transaction-creation-gate.ts offerChecklistDimensions: metadata.contract_subtype / metadata.representation through the
+    // ONE vocabulary). Unrecognised or absent = null = unknown, and a rule that needs it keeps applying as a WARNING (the
+    // resolver's fail-safe) — nothing is guessed from property_type or sub_category.
+    ...offerChecklistDimensions(listing as { metadata?: unknown }),
   }
 }
 
@@ -486,6 +494,9 @@ export async function assertListingActivationAllowed(
     agentUserId: anchors.agentUserId,
     teamId: anchors.teamId,
     stateCode: anchors.stateCode,
+    // the listing's own subtype / representation, off the anchors read above (null = not stated → the resolver's warning arm)
+    contractSubtype: anchors.contractSubtype,
+    representation: anchors.representation,
   })
 
   if (audit.unavailable_reason) {

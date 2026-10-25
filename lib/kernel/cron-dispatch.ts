@@ -197,6 +197,9 @@ export const CRON_REGISTRY: CronEntry[] = [
   // Brand listening (wave 139H) — four ticks a day; each tenant listens ONCE per UTC day (the action
   // ledger replays later ticks for free), so the ticks only spread the fleet across the bounded budget.
   { path: "/api/cron/brand-listening"                     , schedule: "23 9,13,17,21 * * *" },
+  // Local intelligence (wave 144G) — two ticks a day; each tenant gathers ONCE per UTC day (the action
+  // ledger replays the second tick for free), so the ticks only spread the fleet across the bounded budget.
+  { path: "/api/cron/local-intel"                         , schedule: "37 7,15 * * *" },
   { path: "/api/cron/stale-contact-monitor"               , schedule: "15 11 * * *" }, // (staggered r43)
   { path: "/api/cron/long-term-nurture"                   , schedule: "0 11 * * 1" },
   { path: "/api/cron/recruit-outreach"                    , schedule: "12 11 * * 1" }, // (staggered r43)

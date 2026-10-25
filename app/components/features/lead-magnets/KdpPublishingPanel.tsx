@@ -16,6 +16,13 @@ import { Download, Loader2, Package } from "lucide-react"
 
 type Kdp = NonNullable<Extract<Awaited<ReturnType<typeof getKdpPackageAction>>, { success: true }>["kdp"]>
 
+/** Whose book this package publishes (wave 144 — owner ruling 15: platform KDP, tenant KDP, or a lead magnet). */
+const PUBLICATION_LABEL: Record<string, string> = {
+  lead_magnet: "a lead magnet",
+  tenant_kdp: "your brokerage's KDP book",
+  platform_kdp: "the platform's KDP book",
+}
+
 export function KdpPublishingPanel({ magnetId }: { magnetId: string }) {
   const [kdp, setKdp] = useState<Kdp | null>(null)
   const [busy, setBusy] = useState(false)
@@ -71,6 +78,12 @@ export function KdpPublishingPanel({ magnetId }: { magnetId: string }) {
       {kdp && (
         <div className="space-y-3 text-sm">
           <div><span className="font-medium">{kdp.title}</span>{kdp.subtitle ? ` — ${kdp.subtitle}` : ""} · {kdp.words.toLocaleString()} words · cover: {kdp.coverArt === "image_rail" ? "AI art + typography" : "typography only"}</div>
+          {(kdp.publication || kdp.brand) && (
+            <div className="text-xs text-muted-foreground">
+              {kdp.publication ? <>Published as {PUBLICATION_LABEL[kdp.publication.context] ?? kdp.publication.context} (owner: {kdp.publication.owner}).</> : null}
+              {kdp.brand ? <> Brand on the cover: {kdp.brand.source === "platform" ? "the platform's" : "your brokerage's"} — logo {kdp.brand.logo === "embedded" ? "on the cover" : kdp.brand.logo === "unreadable" ? "could not be read, so it was left off" : "none on file"}; {kdp.brand.tagline ? `tagline “${kdp.brand.tagline}”` : "no approved tagline"}.</> : null}
+            </div>
+          )}
           <div><span className="font-medium">Keywords (up to 7):</span> {kdp.keywords.join(" · ")}</div>
           <div><span className="font-medium">Suggested categories</span> (confirm in KDP&rsquo;s picker): {kdp.categorySuggestions.join(" | ")}</div>
           <div className="rounded border p-2 text-xs" dangerouslySetInnerHTML={{ __html: kdp.descriptionHtml }} />

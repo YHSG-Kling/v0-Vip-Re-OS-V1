@@ -73,7 +73,10 @@ export const WEBHOOK_EVENT_CATALOG: WebhookEventDef[] = [
   {
     event: "lead.converted",
     description: "A lead was converted into a CRM contact.",
-    // lib/kernel/lead-acquisition-handlers.ts (both conversion paths).
+    // The three lead → contact doors, each writing LEAD_CONVERTED_TO_CONTACT (wave 144B): the automatic lane
+    // lib/kernel/lead-acquisition-handlers.ts handleLeadAssigned, the CRM door lib/kernel/crm.ts convertLeadToContact
+    // (auditOnly), and the AI-ISA booking door lib/contact-promotion/promote-lead-to-contact.ts promoteLeadToContactService
+    // (auditOnly, deduped per lead).
     internalTypes: [KernelEvent.LEAD_CONVERTED_TO_CONTACT],
     payloadFields: ["contactId"],
   },

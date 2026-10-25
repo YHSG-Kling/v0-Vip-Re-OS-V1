@@ -390,6 +390,36 @@ async function main() {
   } } } }] }) as any, B)
   check("a rule written without a compliance attestation is NOT in force (unknown, closed)", unattested.ok && evaluateComingSoonReadiness(unattested.policy, { mlsSlug: "example_coast_mls" }).status === "unknown")
 
+  // ═══ F4 (wave 144 integration — lane 144A Outside-lane 5): THE DOOR READS IT ═════════════════════════════════════
+  section("F4 THE DOOR: COMING_SOON_ACTIVE declares coming_soon_policy; the readiness rail runs the attested rule, closed by default")
+  const { getStageDefinition } = await import("../lib/listing-lifecycle/lifecycle-definitions")
+  const { evaluateReadinessChecks } = await import("../lib/listing-lifecycle/readiness-checker")
+  check("the stage table declares coming_soon_policy on COMING_SOON_ACTIVE (every door that validates the table runs it)", !!getStageDefinition("COMING_SOON_ACTIVE")?.readinessChecks.includes("coming_soon_policy" as never))
+  const LST = "11111111-2222-4333-8444-555555555555"
+  const door = (state: string, showings: Array<Record<string, unknown>> = []) => memSupabase({
+    listings: [{ id: LST, brokerage_id: B, state, lifecycle_stage: "COMING_SOON_PREP", stage_entered_at: null }],
+    showings: showings.map((s, i) => ({ id: `sh${i}`, listing_id: LST, ...s })),
+  }) as any
+  const runDoor = async (client: any, policyClient: any) => (await evaluateReadinessChecks(client, LST, ["coming_soon_policy"], { comingSoonPolicyClient: policyClient })).results[0]
+  const flOk = await runDoor(door("FL"), csMem)
+  check("an FL listing under the attested FL rule, no showings → the door PASSES (the positive control for every refusal below)", flOk?.passed === true, JSON.stringify(flOk))
+  const txDoor = await runDoor(door("TX"), csMem)
+  check("a TX listing (no rule covers TX) → REFUSED, and the reason says coming soon stays closed", !txDoor.passed && /stays closed/.test(txDoor.reason ?? ""), JSON.stringify(txDoor))
+  const shownDoor = await runDoor(door("FL", [{ status: "scheduled", completed_at: null }]), csMem)
+  check("the FL rule permits no showings while coming soon: a scheduled showing → REFUSED, citing the rule", !shownDoor.passed && /showings are not permitted/.test(shownDoor.reason ?? ""), JSON.stringify(shownDoor))
+  const cancelledDoor = await runDoor(door("FL", [{ status: "cancelled", completed_at: null }]), csMem)
+  check("…a CANCELLED showing is not a scheduled one (read through the ONE showing-status fold)", cancelledDoor.passed === true, JSON.stringify(cancelledDoor))
+  const oddDoor = await runDoor(door("FL", [{ status: "some_new_status", completed_at: null }]), csMem)
+  check("…an UNRECOGNISED showing status counts as a planned showing (closed), never as none", oddDoor.passed === false, JSON.stringify(oddDoor))
+  const blindDoor = await runDoor(door("FL"), memSupabase({}, { refuse: { brokerage_settings: "permission denied" } }))
+  check("an unreadable policy → REFUSED (fail closed), the read error named", !blindDoor.passed && /could not be read/.test(blindDoor.reason ?? ""), JSON.stringify(blindDoor))
+  const unanchored = await runDoor(memSupabase({ listings: [{ id: LST, brokerage_id: null, state: "FL" }], showings: [] }) as any, csMem)
+  check("a listing with no brokerage anchor → REFUSED", unanchored.passed === false)
+  const bodyOf = (s: string, fn: string) => { const i = s.indexOf(`export async function ${fn}(`); if (i < 0) return ""; const j = s.indexOf("\nexport async function ", i + 10); return s.slice(i, j < 0 ? undefined : j) }
+  const readsBeforeMoving = (s: string) => { const b = bodyOf(s, "activateComingSoon"); const r = b.indexOf("evaluateReadinessChecks("), t = b.indexOf("transitionLifecycle("); return r >= 0 && t >= 0 && r < t && /getStageDefinition\("COMING_SOON_ACTIVE"\)/.test(b) }
+  check("activateComingSoon (the coming-soon command card + voice door) evaluates the stage's DECLARED readiness before it moves the stage", readsBeforeMoving(codeWithStrings("app/actions/seller-listing/execution-engine.ts")))
+  control("the order finder refuses a door that transitions first", (s) => !readsBeforeMoving(s), 'export async function activateComingSoon() {\n  await transitionLifecycle({})\n  await evaluateReadinessChecks(s, id, getStageDefinition("COMING_SOON_ACTIVE")?.readinessChecks)\n}\nexport async function next() {}')
+
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)

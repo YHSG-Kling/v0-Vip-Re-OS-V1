@@ -453,12 +453,15 @@ async function main() {
   }
   const censusFiles = files.filter((f) => /content_topic_bank/.test(read(f)))
   const sites = censusFiles.map((f) => ({ f, n: unsourced(read(f)) })).filter((x) => x.n > 0)
-  const KNOWN_OUTSIDE_LANE = new Set(["lib/kernel/lookalike-audience.ts"])
+  // wave 144 integration: the ONE known outside-lane writer (lib/kernel/lookalike-audience.ts stageBriefs) now files under
+  // resolveSystemTopicSource("lookalike_research") — its entry is removed, as J1r demanded. The list stays (empty) so a
+  // future cross-lane hand-off is LISTED here, never hidden.
+  const KNOWN_OUTSIDE_LANE = new Set<string>()
   const inserters = censusFiles.filter((f) => /\.from\(\s*["'`]content_topic_bank["'`]\s*\)\s*\.insert\s*\(/.test(stripComments(read(f))))
   console.log(`    insert sites census: ${inserters.length} files insert into content_topic_bank; unsourced: ${sites.map((x) => `${x.f} ×${x.n}`).join(", ") || "none"}`)
-  check("J1 every content_topic_bank insert names source_id, except the ONE known outside-lane writer (listed in the notes, not hidden)", sites.every((x) => KNOWN_OUTSIDE_LANE.has(x.f)), sites.map((x) => x.f).join(", "))
-  check("J1r ratchet: the known outside-lane entry is still a real offender (remove it from the list once fixed)", [...KNOWN_OUTSIDE_LANE].every((f) => sites.some((x) => x.f === f)))
-  check("J2 brand-listening, the competitor promoter and local-intel all insert with source_id now", ["lib/competitive-intel/brand-listening.ts", "lib/competitive-intel/promote-to-topic-bank.ts", "lib/content-intel/local-intel.ts"].every((f) => inserters.includes(f) && !sites.some((x) => x.f === f)))
+  check(`J1 every content_topic_bank insert names source_id (known outside-lane writers listed: ${KNOWN_OUTSIDE_LANE.size})`, sites.every((x) => KNOWN_OUTSIDE_LANE.has(x.f)), sites.map((x) => x.f).join(", "))
+  check("J1r ratchet: every known outside-lane entry is still a real offender (remove it from the list once fixed)", [...KNOWN_OUTSIDE_LANE].every((f) => sites.some((x) => x.f === f)))
+  check("J2 brand-listening, the competitor promoter, local-intel and the look-alike briefs all insert with source_id now", ["lib/competitive-intel/brand-listening.ts", "lib/competitive-intel/promote-to-topic-bank.ts", "lib/content-intel/local-intel.ts", "lib/kernel/lookalike-audience.ts"].every((f) => inserters.includes(f) && !sites.some((x) => x.f === f)))
   check("J3 POSITIVE CONTROL: a planted insert without source_id is found; one with it (literal, const, builder fn) is not",
     unsourced(`await db.from("content_topic_bank").insert({ brokerage_id: b, topic_title: "t" })`) === 1
       && unsourced(`await db.from("content_topic_bank").insert({ source_id: s, topic_title: "t" })`) === 0

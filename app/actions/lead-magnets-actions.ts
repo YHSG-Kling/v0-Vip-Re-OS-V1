@@ -369,12 +369,18 @@ export async function publishLeadMagnetAction(
 // ── THE BOOK (wave 142, lane 142E) — lib/lead-magnets/book-creator.ts on the booklet / PDF / delivery survivors ──
 
 /** Concept + audience → a DRAFT lead magnet carrying a NEW book project (stage research). Tenant + actor from the session. */
-export async function startBookProjectAction(input: { concept: string; audience: "buyer" | "seller"; area?: string | null; brand?: string | null }) {
+export async function startBookProjectAction(input: { concept: string; audience: "buyer" | "seller"; area?: string | null; brand?: string | null; context?: "lead_magnet" | "tenant_kdp" | "platform_kdp" | null }) {
   try {
     const ctx = await getAgentContext()
     if (!ctx.brokerageId || !ctx.agentId) return { success: false as const, error: "Not authenticated" }
+    // The SESSION user's platform role (wave 144 — lane 144H Outside-lane 2), read off their own users row — never a
+    // parameter. Under impersonation ctx.userId is the tenant user, so the grant never exceeds the account. An unreadable
+    // row is read as no platform role (the less-privileged answer).
+    const { data: me } = await createServiceClient().from("users").select("platform_role").eq("id", ctx.userId).maybeSingle()
+    const platformRole = ((me as { platform_role?: string | null } | null)?.platform_role ?? null) || null
     const { startBookProject } = await import("@/lib/lead-magnets/book-creator")
-    const r = await startBookProject({ brokerageId: ctx.brokerageId, agentId: ctx.agentId, createdBy: ctx.userId, concept: input.concept, audience: input.audience, area: input.area ?? null, brand: input.brand ?? null, actor: { userType: ctx.role ?? null } })
+    // context: the lib validates it and refuses a context this tenant may not use (platform_kdp is the house tenant's only).
+    const r = await startBookProject({ brokerageId: ctx.brokerageId, agentId: ctx.agentId, createdBy: ctx.userId, concept: input.concept, audience: input.audience, area: input.area ?? null, brand: input.brand ?? null, context: input.context ?? null, actor: { userType: ctx.role ?? null, platformRole } })
     if (!r.success || !r.magnetId) return { success: false as const, error: r.error ?? "The book project was not created." }
     return { success: true as const, magnetId: r.magnetId, slug: r.slug ?? "", title: r.title ?? "" }
   } catch (err: any) {
@@ -437,6 +443,9 @@ type KdpSummary = {
   attestations: Array<{ id: string; text: string }>
   paperback: { estimatedPages: number; insideMarginIn: number | null; blockers: string[] }
   warnings: string[]; approval: { by: string; at: string } | null
+  // wave 144 (lane 144H Outside-lane 1): the package's publication context and the brand state its cover carries
+  publication: import("@/lib/lead-magnets/book-publishing-produce").KdpPackageRecord["publication"] | null
+  brand: import("@/lib/lead-magnets/book-publishing-produce").KdpPackageRecord["brand"] | null
 }
 
 function kdpSummaryOf(r: import("@/lib/lead-magnets/book-publishing-produce").KdpPackageRecord): KdpSummary {
@@ -447,6 +456,7 @@ function kdpSummaryOf(r: import("@/lib/lead-magnets/book-publishing-produce").Kd
     attestations: r.rights.attestations.map((a) => ({ id: a.id, text: a.text })),
     paperback: { estimatedPages: r.paperback.estimatedPages, insideMarginIn: r.paperback.insideMarginIn, blockers: r.paperback.blockers },
     warnings: r.warnings, approval: r.approval ? { by: r.approval.by, at: r.approval.at } : null,
+    publication: r.publication ?? null, brand: r.brand ?? null,
   }
 }
 
@@ -487,6 +497,8 @@ export async function buildKdpPackageAction(magnetId: string) {
           ...(b.fairHousing ?? []).map((f) => `fair housing: ${f}`),
           ...(b.metadata ?? []).map((m) => `${m.field}: ${m.problem}`),
           ...(b.cover ?? []).map((c) => `cover: ${c}`),
+          // the humanized review after the draft (owner ruling 15): each chapter still carrying machine-written tells
+          ...(b.humanize ?? []).map((h) => `humanized review: chapter ${h.chapter} ("${h.phrases.join('", "')}")`),
         ] : [],
       }
     }
@@ -529,7 +541,18 @@ function bookSummaryOf(p: import("@/lib/lead-magnets/book-creator").BookProject 
   return {
     stage: p.stage, title: p.title, subtitle: p.subtitle, tagline: p.tagline, audience: p.audience,
     outline: (p.outline ?? []).map((o) => o.heading),
-    chapters: p.chapters.map((c, i) => ({ n: i + 1, heading: c.heading, words: c.words, edited: !!c.edited, escalated: !!c.edited?.escalated, findings: c.edited?.findings ?? [], preview: c.body.slice(0, 280), body: c.edited?.escalated ? c.body : null })),
+    // aiTells (wave 144 — lane 144H Outside-lane 3): the machine-written tells the edit pass found — the HUMANIZED REVIEW
+    // (owner ruling 15) is open on that chapter until a person revises it; the body is carried so they can.
+    chapters: p.chapters.map((c, i) => {
+      const aiTells = c.edited?.ai_tells ?? []
+      return { n: i + 1, heading: c.heading, words: c.words, edited: !!c.edited, escalated: !!c.edited?.escalated, findings: c.edited?.findings ?? [], aiTells, humanRevised: !!c.edited?.human_revised_at, preview: c.body.slice(0, 280), body: c.edited?.escalated || aiTells.length > 0 ? c.body : null }
+    }),
+    // WHY THIS TOPIC (owner ruling 15): the demand evidence the research pass recorded (null before research ran)
+    evidence: p.research?.evidence ? {
+      verdict: p.research.evidence.verdict, reasons: p.research.evidence.reasons, audienceProblem: p.research.evidence.audience_problem,
+      gaps: p.research.evidence.gaps.slice(0, 6), positioningResearched: p.research.evidence.positioning.researched, positioningNote: p.research.evidence.positioning.note,
+      competitorTitles: p.research.evidence.positioning.competitor_titles.slice(0, 6), conversion: p.research.evidence.conversion,
+    } : null,
     factFindings: p.fact_check?.findings.length ?? 0,
     needsHumanReview: p.needs_human_review ?? [],
     pdfUrl: p.pdf_url, documentId: p.document_id, pageCount: p.page_count,

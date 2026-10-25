@@ -101,7 +101,7 @@ export interface ConvertBuyerLeadOnIntentParams {
   propertyRef?: ShowingPropertyRef
   /** Pre-approval seed (reason === 'preapproval_request'). */
   preapproval?: {
-    financeType?: "conventional" | "fha" | "va" | "cash" | "other"
+    financeType?: (typeof import("@/lib/compliance/checklist-dimensions").FINANCING_TYPES)[number]
     isCashBuyer?: boolean
     estimatedMonthlyBudget?: number | null
   }
