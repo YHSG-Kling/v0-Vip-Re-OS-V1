@@ -1859,7 +1859,12 @@ export async function advanceLeadActionPlans(input: {
  */
 export const EXPERIENCE_KINDS = Object.freeze([
   "communication", "education", "video", "properties", "appointment",
-  "agent_intervention", "market_update", "portal_task", "document_explanation", "wait",
+  "agent_intervention", "market_update", "portal_task", "document_explanation",
+  // WAVE 144 (lane 144Z — owner ruling 11: "message, education, human task, property review, REFERRAL TO A QUALIFIED
+  // PROFESSIONAL"): its own kind, never a message that pretends to be advice. Executed by the ISA's introduction rail below
+  // (prepareProfessionalIntroduction): ONE agent task carrying the brokerage's qualified bench — the client chooses (RESPA §8).
+  "professional_referral",
+  "wait",
 ] as const)
 export type ExperienceKind = (typeof EXPERIENCE_KINDS)[number]
 export function isExperienceKind(v: unknown): v is ExperienceKind {
@@ -1889,6 +1894,9 @@ export const EXPERIENCE_EXECUTORS: Readonly<Record<ExperienceKind, ExperienceExe
   market_update:        { manager: "listing_concierge",     capability: "cma_generate",         rail: "cma_generate (the seller's market update)" },
   portal_task:          { manager: "deal_coordinator",      capability: "transaction_advance",  rail: "transaction_milestones.is_client_visible (lib/transactions/milestone-service.ts)" },
   document_explanation: { manager: "deal_coordinator",      capability: null,                   rail: "lib/kernel/client-story-drafts.ts (the deal coordinator explains its own documents)" },
+  // WAVE 144 (lane 144Z): the ISA executes it ITSELF (recordAndExecuteExperience → prepareProfessionalIntroduction) — it never
+  // delegates a referral to an automated hand-off: a lender introduction is the consumer's choice, made through their agent.
+  professional_referral: { manager: "ai_isa",              capability: null,                   rail: "prepareProfessionalIntroduction (this file) → ONE agent task (lib/ai-isa/followup-arbiter.ts routeToAgent) naming the brokerage's lender bench (vendors.category ∈ LENDER_BENCH_CATEGORIES, lib/kernel/lender-linkage.ts) — the agent offers, the client chooses, nothing is sent to a lender" },
   wait:                 { manager: "ai_isa",               capability: null,                   rail: "nothing — the decision row is the act" },
 })
 
@@ -2239,6 +2247,8 @@ export type ExperienceExecutionResult =
   | { mode: "unexecuted"; manager: ExperienceExecutor; reason: string }
 
 export interface ExperienceRecordDeps {
+  /** WAVE 144 (lane 144Z): the professional-referral rail's seam (default prepareProfessionalIntroduction). */
+  introduce?: (a: { brokerageId: string; contactId: string; reasons: readonly string[]; now: Date }, client: any) => Promise<ProfessionalIntroductionResult>
   ledger?: typeof import("@/lib/kernel/action-ledger").withActionLedger
   emit?: (input: Record<string, unknown>) => Promise<unknown>
   delegate?: (input: { brokerageId: string; missionId: string | null; requestingManager: ManagerKey; assignedManager: ManagerKey; capability: AppCapability; objective: string; inputEntities: Record<string, unknown>; actor: { type: "manager"; id: string } }, client: any) => Promise<{ ok: true; delegation: { id: string } } | { ok: false; reason: string }>
@@ -2249,6 +2259,47 @@ export interface RecordedExperience {
   ledgered: boolean
   eventEmitted: boolean
   warnings: string[]
+}
+
+export type ProfessionalIntroductionResult = { ok: true; bench: number } | { ok: false; reason: string }
+
+/**
+ * THE PROFESSIONAL-REFERRAL RAIL (wave 144, lane 144Z — owner ruling 11: a life change "TRIGGERS … a governed evaluation and
+ * next-best action … (message, education, human task, property review, referral to a qualified professional)").
+ * A referral is a PERSON's introduction the consumer chooses — RESPA §8 forbids a fee or a thing of value for referring
+ * settlement business, so nothing here hands the person to a lender, books a lender, or sends them anything. It writes ONE agent
+ * task (the arbiter's routeToAgent surface — activities, idempotent per contact per UTC day) that names the brokerage's QUALIFIED
+ * bench (vendors pinned to the brokerage, category ∈ LENDER_BENCH_CATEGORIES — a lender is a vendor category, never a user
+ * type) and the remedy when the bench is empty; the agent records an accepted introduction through the ONE referral writer
+ * (lib/kernel/lender-linkage.ts recordLenderReferral, from the buyer financing panel). Every read is tenant-pinned and read for
+ * its error; a refused read or a missing agent of record is `ok:false` with the reason — never a pretended introduction.
+ */
+export async function prepareProfessionalIntroduction(
+  svc: any,
+  a: { brokerageId: string; contactId: string; reasons: readonly string[]; now: Date },
+): Promise<ProfessionalIntroductionResult> {
+  if (!a.brokerageId || !a.contactId) return { ok: false, reason: "brokerage and contact are required" }
+  const { data: contact, error: cErr } = await svc.from("contacts").select("id, first_name, last_name, agent_id").eq("id", a.contactId).eq("brokerage_id", a.brokerageId).maybeSingle()
+  if (cErr) return { ok: false, reason: `contact read refused: ${cErr.message}` }
+  if (!contact) return { ok: false, reason: "contact not in this brokerage" }
+  if (!contact.agent_id) return { ok: false, reason: "no agent of record to offer the introduction — a referral is a person's introduction, never automated" }
+  const { LENDER_BENCH_CATEGORIES, isLenderVendorCategory } = await import("@/lib/kernel/lender-linkage")
+  const { data: bench, error: bErr } = await svc.from("vendors").select("id, name, category").eq("brokerage_id", a.brokerageId).in("category", [...LENDER_BENCH_CATEGORIES]).limit(10)
+  if (bErr) return { ok: false, reason: `vendor bench read refused: ${bErr.message}` }
+  const lenders = ((bench ?? []) as Array<{ id: string; name: string | null; category: string | null }>).filter((v) => isLenderVendorCategory(v.category))
+  const names = lenders.map((v) => v.name).filter((n): n is string => !!n).slice(0, 5)
+  const who = [contact.first_name, contact.last_name].filter(Boolean).join(" ").trim() || "this client"
+  const { routeToAgent } = await import("./followup-arbiter")
+  const tasked = await routeToAgent(svc, {
+    brokerageId: a.brokerageId, contactId: a.contactId, agentId: contact.agent_id as string, now: a.now,
+    title: `Offer ${who} an introduction to a qualified lender`,
+    description: [
+      a.reasons[0] ?? "A life change suggests a financing question.",
+      names.length ? `Your brokerage's lender bench: ${names.join(", ")}.` : "Your brokerage has no lender on its vendor bench yet — add one, or introduce one of your own partners.",
+      "The client chooses whether and whom to talk to; no referral fee may be paid or received for it (RESPA §8). Record an accepted introduction from the financing panel.",
+    ].join(" "),
+  })
+  return tasked ? { ok: true, bench: lenders.length } : { ok: false, reason: "the agent's introduction task was not written (no agent to give it to, or the write was refused)" }
 }
 
 /**
@@ -2279,6 +2330,15 @@ export async function recordAndExecuteExperience(
 
   const run = async (): Promise<ExperienceExecutionResult> => {
     if (chosen.kind === "wait") return { mode: "none" }
+    // WAVE 144 (lane 144Z): a referral to a qualified professional is executed HERE, on the ISA's own rail, for every caller alike
+    // (the engage path, the moment conductor, the sequence enroller): the agent's task with the bench is the act; nothing is sent.
+    if (chosen.kind === "professional_referral") {
+      const introduce: NonNullable<ExperienceRecordDeps["introduce"]> = deps.introduce ?? ((a, client) => prepareProfessionalIntroduction(client, a))
+      const t = await introduce({ brokerageId, contactId, reasons: chosen.reasons, now }, svc)
+      return t.ok
+        ? { mode: "caller", manager: exec.manager, rail: `${exec.rail} — the agent's introduction task is written (${t.bench} lender(s) on the bench)` }
+        : { mode: "unexecuted", manager: exec.manager, reason: t.reason }
+    }
     if (exec.manager === "ai_isa") return { mode: "caller", manager: exec.manager, rail: exec.rail }
     if (!exec.capability) return { mode: "unexecuted", manager: exec.manager, reason: `no catalogue capability — ${exec.manager} executes on its own rail (${exec.rail}); the request is on the ledger` }
     try {

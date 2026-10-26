@@ -54,8 +54,14 @@ const intent = (score: number, trend: "rising" | "stable" | "falling" = "rising"
   ({ score, trend, velocityPerDay: 2, accelerationPerDay2: 0, confidence: "high", independentSources: 3, momentumRank: score, evidence: [] }) as any
 
 console.log("\n── 1. THE VOCABULARY (§6) ──")
-check("EXPERIENCE_KINDS is the owner's ten, spelled once", EXPERIENCE_KINDS.length === 10 && new Set(EXPERIENCE_KINDS).size === 10
-  && ["communication", "education", "video", "properties", "appointment", "agent_intervention", "market_update", "portal_task", "document_explanation", "wait"].every((k) => (EXPERIENCE_KINDS as readonly string[]).includes(k)))
+// RE-ASSERTED (wave 144, lane 144Z): this pinned a COUNT (10). Owner ruling 11 (wave 144) names a further kind — "referral to a
+// qualified professional" (professional_referral). The RULE is unchanged: the owner's kinds, each spelled once, nothing else — the
+// owner's original ten plus the kinds a later ruling named, derived from these two lists rather than a hard-coded total.
+const OWNER_TEN = ["communication", "education", "video", "properties", "appointment", "agent_intervention", "market_update", "portal_task", "document_explanation", "wait"]
+const LATER_RULINGS = ["professional_referral"] // wave 144, owner ruling 11
+check("EXPERIENCE_KINDS is the owner's kinds (the original ten + the wave-144 ruling-11 professional referral), spelled once — nothing unruled",
+  new Set(EXPERIENCE_KINDS).size === EXPERIENCE_KINDS.length && EXPERIENCE_KINDS.length === OWNER_TEN.length + LATER_RULINGS.length
+  && [...OWNER_TEN, ...LATER_RULINGS].every((k) => (EXPERIENCE_KINDS as readonly string[]).includes(k)))
 check("EXPERIENCE_KINDS is a frozen const (Object.isFrozen — a second spelling cannot be pushed in at runtime)", Object.isFrozen(EXPERIENCE_KINDS))
 check("isExperienceKind accepts every kind", EXPERIENCE_KINDS.every(isExperienceKind))
 check("isExperienceKind REFUSES a second spelling (positive control)", !isExperienceKind("agent intervention") && !isExperienceKind("nothing") && !isExperienceKind(null))

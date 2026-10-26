@@ -34,6 +34,10 @@
  */
 
 import { matchStatePackage } from "./state-package-match"
+// The ONE financing-type list (wave 144A) — the offer intake's picker is derived from it, never retyped (owner ruling 1:
+// "no hard-coded alternate labels scattered in dropdowns"). checklist-dimensions.ts imports nothing, so the client wizard
+// can carry it.
+import { FINANCING_TYPES, FINANCING_TYPE_LABEL } from "@/lib/compliance/checklist-dimensions"
 
 // ── Purpose + sequence ───────────────────────────────────────────────────────────────────────────
 
@@ -122,10 +126,7 @@ export const OFFER_INTAKE: readonly IntakeQuestion[] = [
   { key: "offer_price", prompt: "What is the offer price?", kind: "number", required: true,
     coach: "The purchase price is the buyer's decision. The coach can explain how a price compares to the list price when you ask, but never proposes a number into the form." },
   { key: "financing_type", prompt: "How is the purchase financed?", kind: "select", required: true,
-    options: [
-      { value: "cash", label: "Cash" }, { value: "conventional", label: "Conventional loan" }, { value: "fha", label: "FHA" },
-      { value: "va", label: "VA" }, { value: "usda", label: "USDA" }, { value: "other", label: "Other" },
-    ],
+    options: FINANCING_TYPES.map((value) => ({ value, label: FINANCING_TYPE_LABEL[value] })),
     coach: "Financing decides which contingency and addendum forms belong in the packet: a financed purchase usually carries a financing contingency, and government-backed loans carry their own required amendatory clauses." },
   { key: "earnest_money", prompt: "What earnest money deposit is offered?", kind: "number", required: true,
     coach: "Earnest money is the buyer's good-faith deposit held in escrow and credited at closing. The amount and when it is due are the buyer's terms; the form states both." },

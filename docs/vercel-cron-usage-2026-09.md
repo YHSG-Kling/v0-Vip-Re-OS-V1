@@ -288,3 +288,8 @@ report).
   was the smallest correct change. Each tenant listens ONCE per UTC day — the action ledger replays later
   ticks for free — so the four ticks only spread the fleet across the bounded daily budget; owner
   campaign_orchestrator (lib/kernel/cron-dispatch.ts). Raised with `--write-baseline` by the integrator.
+- **2026-10-25, wave 144 (lane 144G) — `/api/cron/local-intel`, `37 7,15 * * *` (+2 invocations/day).** Owner ruling 14:
+  local news and events from providers we already use. No existing cron owns local facts: content-intel-* ingest platform
+  topics with no geo or date model, and brand-listening listens for mentions. A new route was the smallest correct change.
+  Each tenant gathers once per UTC day (ledger replay). Owner campaign_orchestrator. Raised with `--write-baseline` by the
+  convergence lane (144Z).

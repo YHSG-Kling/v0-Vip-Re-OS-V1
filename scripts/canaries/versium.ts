@@ -15,7 +15,8 @@
  * exists — 144E.
  */
 import { LIVE, canary, landedModule, uuid } from "./_harness"
-import { findLanded, listFiles, strippedRepo } from "./_registry"
+import { findLanded, fnBody, listFiles, strippedRepo } from "./_registry"
+import { blankStrings } from "../strip-comments"
 import { memSupabase } from "../in-memory-supabase"
 
 export async function run() {
@@ -62,12 +63,25 @@ export async function run() {
     // No module outside lib/enrichment imports the store (a channel / dispatch / outreach module cannot read an ad-tech id).
     const IMPORT_RE = /from\s+["'][^"']*enrichment\/online-audience-store["']|import\(\s*["'][^"']*enrichment\/online-audience-store["']\s*\)/
     const importers = [...listFiles("lib", (f) => /\.tsx?$/.test(f)), ...listFiles("app", (f) => /\.tsx?$/.test(f))].filter((f) => IMPORT_RE.test(strippedRepo(f) ?? ""))
+    // The ONE governed downstream act that may read the store: lib/kernel/ads.ts syncAudience, after its consent-basis refusal.
+    const adsSyncBody = fnBody(strippedRepo("lib/kernel/ads.ts") ?? "", "syncAudience")
+    const consentBeforeRead = (body: string) => { const gate = body.search(/if\s*\(!audience\.consent_basis\)/), read = body.search(IMPORT_RE); return gate >= 0 && read > gate }
+    const importCount = (src: string) => (src.match(new RegExp(IMPORT_RE.source, "g")) ?? []).length
+    // Every import of the store in ads.ts sits INSIDE syncAudience (a second read elsewhere in the file would not be the governed act).
+    const adsOnlyInSync = importCount(adsSyncBody) > 0 && importCount(strippedRepo("lib/kernel/ads.ts") ?? "") === importCount(adsSyncBody)
+    const governedOnly = (files: string[]) => files.every((f) => f.startsWith("lib/enrichment/") || (f === "lib/kernel/ads.ts" && adsOnlyInSync && consentBeforeRead(adsSyncBody)))
     return {
       appended: !!r.ok && !!r.wrote && (r.identifierCount ?? 0) > 0,
       addressesUntouched: row.email === "pat@example.test" && row.phone === "5551234567",
       onlyTheProfileBlockWritten: updates.length >= 1 && updates.every((u: any) => Object.keys(u.payload ?? {}).join() === "enrichment_profile"),
       plaintextIsNotAnIdentifier: !isId("pat@example.test") && !isId("+15551234567") && isId(HEX("a")),
-      noChannelImportsTheStore: importers.every((f) => f.startsWith("lib/enrichment/")) && IMPORT_RE.test(`import { x } from "@/lib/enrichment/online-audience-store"`),
+      // RE-ASSERTED (lane 144Z): this pinned a WAYPOINT ("nothing outside lib/enrichment imports the store") that was true only until
+      // the governed ad read landed (lane 144X item E1: lib/kernel/ads.ts syncAudience appends the platform's hashed match keys).
+      // The RULE (ruling 10) is: an appended ad-tech id is never a send address, and downstream TARGETING is its own governed act.
+      // So: every importer outside lib/enrichment must be the governed ad-audience sync — and there the consent-basis refusal must
+      // run BEFORE the store is read — and no channel / dispatch / outreach module imports it. Positive control: the same predicate
+      // refuses a dispatch module importing the store, and refuses the ad sync if the consent refusal were moved after the read.
+      noChannelImportsTheStore: governedOnly(importers) && !governedOnly([...importers, "lib/providers/dispatch.ts"]) && !consentBeforeRead(adsSyncBody.replace(/if\s*\(!audience\.consent_basis\)/, "if (false)")) && IMPORT_RE.test(`import { x } from "@/lib/enrichment/online-audience-store"`),
     }
   })() : null
   c.rule("144E", "APPENDED AD-TECH IDS ARE NEVER SEND ADDRESSES (ruling 10): an online identifier appended to a contact is stored apart from the permissioned email / phone columns and no email / SMS recipient resolver reads it; using it for an ad audience is its own consent-gated action", !!firewall && Object.values(firewall).every(Boolean), firewall ? `landed rung: ${JSON.stringify(firewall)}` : appendFn ? `landed at ${appendFn}, but lib/enrichment/online-audience-store.ts is absent` : "HEAD: nothing appends online identifiers, so the separation has no subject yet")
@@ -89,10 +103,28 @@ export async function run() {
   const { ARBITER_MEMORY_KEYS } = await import("../../lib/ai-isa/followup-arbiter")
   const PROTECTED = ["gender", "age_range", "marital_status", "religion", "ethnicity", "race", "children_count", "household_size", "national_origin", "disability", "birthday", "age"]
   c.rule("144E", "PROTECTED ATTRIBUTES NEVER REACH A DECISION (green — preserve): the follow-up arbiter's model sees only preference / timing memory keys — no gender, age, marital status, household composition or any protected characteristic", !ARBITER_MEMORY_KEYS.some((k) => PROTECTED.includes(k)), ARBITER_MEMORY_KEYS.join(","))
-  const adsHits = ["lib/ads/ad-manager.ts", "lib/ads/ctv-campaign.ts", "lib/ads/audience-eligibility.ts"].filter((f) => /\b(gender|age_range|marital_status|ethnicity|religion|children_count)\b/.test(strippedRepo(f) ?? ""))
+  // THE DECIDABLE HALF, HARD (lane 144Z): no ads / targeting module READS a protected column. Widened from three named files to every
+  // module under lib/ads plus the kernel's ad-audience and look-alike doors, and made precise: a READ is a `.select(` list naming
+  // the column or a property access `.gender` on code with strings blanked — a fair-housing REFUSAL message that names the word
+  // ("HOUSING ads cannot target by gender") is not a read (CLAUDE.md §2: a guard must not accuse live code). Positive control: the
+  // same reader flags a synthetic select and a property access.
+  const PROTECTED_COL = "gender|age_range|marital_status|ethnicity|religion|children_count|household_size|birthday|date_of_birth"
+  const SELECT_READ = new RegExp(`\\.select\\(\\s*["'\u0060][^"'\u0060]*\\b(${PROTECTED_COL})\\b`)
+  const PROP_READ = new RegExp(`\\.(${PROTECTED_COL})\\b`)
+  const readsProtected = (stripped: string) => SELECT_READ.test(stripped) || PROP_READ.test(blankStrings(stripped))
+  const targetingFiles = [...listFiles("lib/ads", (f) => /\.tsx?$/.test(f)), "lib/kernel/ads.ts", "lib/kernel/lookalike-audience.ts"]
+  const adsHits = targetingFiles.filter((f) => readsProtected(strippedRepo(f) ?? ""))
+  const readerControl = readsProtected(`await svc.from("contacts").select("id, gender")`) && readsProtected("const g = contact.age_range") && !readsProtected(`violations.push("HOUSING ads cannot target by gender")`)
+  c.rule("144E", "NO ADS / TARGETING MODULE READS A PROTECTED COLUMN (ruling 10: protected / demographic fields are never used for ad targeting, steering or eligibility): no module under lib/ads, nor the kernel's ad-audience (lib/kernel/ads.ts) or look-alike (lib/kernel/lookalike-audience.ts) door, selects or reads gender, age range, marital status, ethnicity, religion, household composition or a birth date", readerControl && targetingFiles.length > 2 && adsHits.length === 0, `scanned ${targetingFiles.length} targeting modules; reading a protected column: ${adsHits.join(", ") || "none"}; reader control ${readerControl}`)
+  // PENDING OWNER DECISION (lane 144Z): WHERE protected fields live for authorized research (a separate restricted table / schema, a
+  // column-level role grant on contacts, or the existing contacts columns behind a research role) is a data-governance decision with
+  // retention and access consequences — no lane may take it, and the canary must not fake it. Green only once a research-only home
+  // has landed AND its role-restricted read is asserted here.
   // WAVE144 WIRE (integrator): 144E — the access-restricted research home (RLS / role) + provenance / retention for protected fields.
   const research = findLanded(["supabase/migrations", "lib/enrichment", "lib/external", "lib/kernel/lookalike-research.ts"], /\b(sensitive_research\w*|research_only\w*|protected_attribute\w*|demographic_research\w*|research_access\w*|SENSITIVE_RESEARCH\w*)\b/)
-  c.rule("144E", "PROTECTED / DEMOGRAPHIC FIELDS ARE STORED FOR AUTHORIZED RESEARCH ONLY (ruling 10: lawful research; access-restricted; provenance + retention; never ad targeting, steering or eligibility; add a field only where there is a GAP): the research home is access-restricted by role / RLS and separated from operational and ad features — and no ads module reads a protected column", research !== null && UNWIRED && adsHits.length === 0, `${research ? `landed at ${research} — wire the role-restricted read assertion here` : "HEAD: contacts carries age_range / gender / marital_status / household_income … readable like any contact column; no research-only home or role restriction under supabase/migrations / lib/enrichment"}; ads modules naming a protected column: ${adsHits.join(", ") || "none"}`)
+  c.pendingOwner("144E", "PROTECTED / DEMOGRAPHIC FIELDS ARE STORED FOR AUTHORIZED RESEARCH ONLY (ruling 10: lawful research; access-restricted; provenance + retention; never ad targeting, steering or eligibility; add a field only where there is a GAP): the research home is access-restricted by role / RLS and separated from operational and ad features", research !== null && UNWIRED,
+    "DATA GOVERNANCE: choose the research-only home for protected / demographic fields — a separate access-restricted table (or schema) with provenance + retention, or a role-restricted read of the existing contacts columns (age_range, gender, marital_status, household_income, …) — and which role may read it; then the migration + RLS are written and this step asserts the restricted read",
+    `${research ? `landed at ${research} — wire the role-restricted read assertion here` : "HEAD: contacts carries age_range / gender / marital_status / household_income … readable like any contact column; no research-only home or role restriction under supabase/migrations / lib/enrichment"}`)
 
   c.blind("No Versium endpoint is called (an injected estimate call). The MCP verdict is the declared object (lane 143D re-proved it against the live server on 2026-10-23); this canary does not open a socket. Intent / life-change signal SOURCES (moving, refinance, home-sale interest) are the ai-journeys canary's.")
   return c.report([], 0)

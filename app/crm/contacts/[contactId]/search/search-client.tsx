@@ -8,7 +8,7 @@ import { Button }    from "@/components/ui/button"
 import { Input }     from "@/components/ui/input"
 import { Badge }     from "@/components/ui/badge"
 import { cn }        from "@/lib/utils"
-import { searchProperties, smartSearch } from "@/app/actions/idx-search"
+import { searchProperties, smartSearch, getSavedProperties } from "@/app/actions/idx-search"
 // The gate runs on the SERVER. Importing gating-helpers directly into this client
 // component pulled the kernel (and the service-role client) into the browser bundle and
 // broke the production build; canBuyerScheduleTours is the server action that already
@@ -816,18 +816,21 @@ export function SearchClient({
   }) {
   const [saved, setSaved]     = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  // A REFUSED READ IS NOT AN EMPTY LIST (wave 144, lane 144Z): the read now goes through the module that owns saving
+  // (app/actions/idx-search.ts getSavedProperties) and its error is shown, never rendered as "No saved properties yet".
+  const [loadError, setLoadError] = useState<string | null>(null)
   const { toast }             = useToast()
   const router                = useRouter()
 
   useEffect(() => {
-    const supabase = createClient()
-    supabase
-      .from("saved_properties")
-      .select("id, listing_id, property_address, mls_number, list_price, bedrooms, bathrooms, sqft, city, state, primary_photo_url, saved_at")
-      .eq("contact_id", buyerId)
-      .eq("dismissed", false)
-      .order("saved_at", { ascending: false })
-      .then(({ data }: { data: any[] | null }) => { setSaved(data ?? []); setLoading(false) })
+    let cancelled = false
+    getSavedProperties(buyerId).then((r) => {
+      if (cancelled) return
+      setLoadError(r.success ? null : (r.error ?? "could not be read"))
+      setSaved(r.properties ?? [])
+      setLoading(false)
+    })
+    return () => { cancelled = true }
   }, [buyerId])
 
   async function handleRemove(id: string) {
@@ -838,6 +841,7 @@ export function SearchClient({
   }
 
   if (loading) return <div className="text-xs text-muted-foreground p-4">Loading saved properties...</div>
+  if (loadError) return <div className="text-xs text-destructive p-4">Saved properties could not be loaded: {loadError}</div>
   if (saved.length === 0) return <div className="text-xs text-muted-foreground p-4">No saved properties yet</div>
 
   return (

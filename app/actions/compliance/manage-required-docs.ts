@@ -23,6 +23,7 @@ import { asChecklistStage, asContractSubtype, asFinancingKind, asRepresentation 
 import { loadTenantVocabulary, vocabularyWriteValue, type TenantVocabulary } from "@/lib/compliance/adaptive-vocabulary"
 import { isPrimarySourceUrl } from "@/lib/compliance-rules/law-rule-registry"
 import { VOCABULARY_COMPLIANCE_APPROVER_USER_TYPES } from "@/lib/compliance/vocabulary-healing"
+import { appendTenantPolicyVersion, requiredDocumentPolicyKey, requiredDocumentPolicyValue } from "@/lib/kernel/tenant-policy"
 
 /**
  * WHO ADMINISTERS THE REQUIRED-DOCUMENT LIST.
@@ -221,6 +222,20 @@ function ruleLegalBasis(
   }
 }
 
+/**
+ * Wave 144 (lane 144Z — 143B Outside-lane 5): every checklist edit appends ONE version of the rule's policy
+ * (`required_document:<rule_id>`, lib/kernel/tenant-policy.ts) — history + revert on the tenant-policy rail. Module-private (not an
+ * endpoint). The rule write has already landed: a version that cannot be recorded is LOGGED, never reported as a failed edit.
+ */
+async function recordRuleVersion(svc: ReturnType<typeof createServiceClient>, a: { brokerageId: string; ruleId: string; value: Record<string, unknown> | null; previous: Record<string, unknown> | null; userId: string; reason: string }): Promise<void> {
+  const v = await appendTenantPolicyVersion(svc, {
+    brokerageId: a.brokerageId, policyKey: requiredDocumentPolicyKey(a.ruleId),
+    value: requiredDocumentPolicyValue(a.value), previous: requiredDocumentPolicyValue(a.previous),
+    actor: { type: "user", userId: a.userId, reason: a.reason },
+  })
+  if (!v.ok) console.error(`[manage-required-docs] policy version not recorded for rule ${a.ruleId}: ${v.error}`)
+}
+
 /** The next policy_version for a row read with select('*'); undefined while m806 is unapplied (the column is absent). */
 function nextPolicyVersion(row: Record<string, unknown>): { policy_version: number } | Record<string, never> {
   return typeof row.policy_version === "number" ? { policy_version: row.policy_version + 1 } : {}
@@ -286,7 +301,7 @@ export async function addRequiredDocument(
       ...dims.columns,
       ...basis.columns,
     })
-    .select("id")
+    .select("*")
     .single()
   if (error || !inserted) {
     // PGRST204 on a state-requirement write = the m847 citation columns are not applied yet — say so, never retry it uncited.
@@ -296,6 +311,7 @@ export async function addRequiredDocument(
     return { ok: false, error: error?.message ?? "Insert failed" }
   }
 
+  await recordRuleVersion(svc, { brokerageId: actor.brokerageId, ruleId: inserted.id as string, value: inserted as Record<string, unknown>, previous: null, userId: actor.userId, reason: "required-document rule added" })
   revalidatePath("/dashboard/settings/required-documents")
   return { ok: true, id: inserted.id as string }
 }
@@ -346,6 +362,7 @@ export async function setRequiredDocTemplate(
     .eq("id", input.id)
     .eq("brokerage_id", actor.brokerageId)
   if (error) return { ok: false, error: error.message }
+  await recordRuleVersion(svc, { brokerageId: actor.brokerageId, ruleId: input.id, value: { ...row, template_form_id: input.formId }, previous: row, userId: actor.userId, reason: input.formId ? "template form attached" : "template form detached" })
 
   revalidatePath("/dashboard/settings/required-documents")
   return { ok: true }
@@ -392,6 +409,7 @@ export async function setRequiredDocBlocking(
     .eq("id", input.id)
     .eq("brokerage_id", actor.brokerageId)
   if (error) return { ok: false, error: error.message }
+  await recordRuleVersion(svc, { brokerageId: actor.brokerageId, ruleId: input.id, value: { ...row, block_on_missing: input.blockOnMissing }, previous: row, userId: actor.userId, reason: input.blockOnMissing ? "rule set to BLOCK when missing" : "rule set to WARN when missing" })
 
   revalidatePath("/dashboard/settings/required-documents")
   return { ok: true }
@@ -407,9 +425,10 @@ export async function removeRequiredDoc(
   if (!isValidUUID(input.id)) return { ok: false, error: "Invalid id" }
 
   const svc = createServiceClient()
+  // select('*'): the removed rule's policy value is the history's `previous` (wave 144, lane 144Z).
   const { data: row } = await svc
     .from("brokerage_required_documents")
-    .select("id, brokerage_id, scope_type, scope_id")
+    .select("*")
     .eq("id", input.id)
     .maybeSingle()
   if (!row || row.brokerage_id !== actor.brokerageId) return { ok: false, error: "Not found in your brokerage" }
@@ -425,6 +444,7 @@ export async function removeRequiredDoc(
     .select("id")
   if (error) return { ok: false, error: error.message }
   if (!removed || removed.length === 0) return { ok: false, error: "That rule was not removed — it no longer exists in your brokerage" }
+  await recordRuleVersion(svc, { brokerageId: actor.brokerageId, ruleId: input.id, value: null, previous: row as Record<string, unknown>, userId: actor.userId, reason: "required-document rule removed" })
 
   revalidatePath("/dashboard/settings/required-documents")
   return { ok: true }

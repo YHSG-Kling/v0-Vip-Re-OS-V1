@@ -817,6 +817,17 @@ export async function enrichContactRecord(params: {
       return { success: false, enriched: false, error: updateError.message }
     }
 
+    // WAVE 144 (lane 144Z): a NEW dated behaviour fact on the profile (PeopleData job change / location history, Versium
+    // indicators) is PUSHED to the AI ISA (online_intent_detected) — the profile is diffed BEFORE vs AFTER, so an unchanged fact
+    // re-captured on a re-run is not "new". Life events are pushed by runLifeChangeCheck, which reads both sides of them. Never
+    // fails the enrichment it follows.
+    if (guardedUpdate.enrichment_profile) {
+      try {
+        const { publishNewIntentFacts } = await import("@/lib/enrichment/intent-signal-sources")
+        await publishNewIntentFacts(supabase, { brokerageId, contactId }, { enrichment_profile: priorProfile }, { enrichment_profile: guardedUpdate.enrichment_profile as Record<string, unknown> })
+      } catch (e) { console.warn("[enrichment] intent push skipped (non-blocking):", e instanceof Error ? e.message : e) }
+    }
+
     // RELATIONSHIP GRAPH (wave 102, lane 102B): the Versium/BatchData household rung just landed a
     // marital status (or a mailing address) on this contact — derive the household edges against the
     // tenant's other contacts at the same address (lib/kernel/relationship-graph.ts). Additive: the
@@ -995,6 +1006,17 @@ export async function runLifeChangeCheck(params: {
       .eq("brokerage_id", brokerageId)
 
     if (writeError) return { success: false, changesFound: 0, error: writeError.message }
+
+    // WAVE 144 (lane 144Z): a NEW public life event is PUSHED to the AI ISA (online_intent_detected → the ONE responder, which
+    // answers a life event only through a PERSON — a service topic, never a message about the event). Never fails the check.
+    if (changesFound > 0) {
+      try {
+        const { publishNewIntentFacts } = await import("@/lib/enrichment/intent-signal-sources")
+        await publishNewIntentFacts(supabase, { brokerageId, contactId },
+          { life_events: contact.life_events, last_life_event_detected: (contact as { last_life_event_detected?: string | null }).last_life_event_detected ?? null },
+          { life_events: merged, last_life_event_detected: update.last_life_event_detected as string })
+      } catch (e) { console.warn("[enrichment] life-event push skipped (non-blocking):", e instanceof Error ? e.message : e) }
+    }
 
     return { success: true, changesFound }
   } catch (error) {

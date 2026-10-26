@@ -25,6 +25,7 @@ import {
 // (/offers, /offers/new and the contact page), so the action and the UI cannot
 // disagree about whether this buyer may be making offers at all.
 import { checkBuyerOfferEligibility } from "@/app/actions/buyer-lifecycle-core"
+import { requireActiveBBA } from "@/lib/buyer-broker/gate"
 import { MAX_PENDING_OFFERS } from "@/lib/offers/multi-offer-rules"
 import { closeStrategyLoopForOffer } from "@/lib/strategy-learning/close-strategy-loop"
 
@@ -674,6 +675,28 @@ export async function createOffer(
       success: false,
       error: "Buyer is not financially verified. Complete the verification gate (proof of funds for cash, or pre-approval for financed) before submitting an offer.",
     }
+  }
+
+  // ── REPRESENTATION gate — the ONE buyer-broker-agreement gate (lib/buyer-broker/gate.ts requireActiveBBA). NAR's 2024
+  //    settlement practice (the gate's own header): a SIGNED buyer agreement must exist before a home is shown AND before an
+  //    offer is drafted. The showing doors (showings.ts, self-book.ts, the AI-ISA converter) already bound it; the offer WRITER
+  //    did not, so an offer could be written for an unrepresented buyer (owner ruling 19: "never skip … representation";
+  //    every promotion is guarded at its authoritative write). The agreement is the one the buyer signed with their AGENT OF
+  //    RECORD (contacts.agent_id — agents.id, the same id buyer_broker_agreements.agent_id carries); a contact with no agent of
+  //    record is checked against the drafting agent. With neither there is nobody the buyer can be represented by, and with a
+  //    refused read nothing was checked — both refuse (fail closed). No override is invented here: the remedy is a signed BBA.
+  const { data: repContact, error: repContactErr } = await supabase
+    .from("contacts").select("agent_id").eq("id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (repContactErr) {
+    return { success: false, error: "Could not verify the buyer's representation (contact read refused), so no offer was created. Retry." }
+  }
+  const representingAgentId = ((repContact?.agent_id as string | null | undefined) ?? agentId) || null
+  if (!representingAgentId) {
+    return { success: false, error: "No agent represents this buyer, so no signed buyer broker agreement can be verified. Assign the buyer's agent and have the buyer sign the agreement before an offer is drafted." }
+  }
+  const bba = await requireActiveBBA({ buyerContactId: contactId, agentId: representingAgentId, brokerageId })
+  if (!bba.allowed) {
+    return { success: false, error: `${bba.reason ?? "A signed buyer broker agreement is required before an offer is drafted."} Have the buyer sign the agreement (Buyer tab → Buyer Broker Agreement), then submit the offer.` }
   }
 
   // listing_id is nullable on offers. It points to a seller-owned `listings`

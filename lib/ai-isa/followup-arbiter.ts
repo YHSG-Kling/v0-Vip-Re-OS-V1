@@ -144,7 +144,8 @@ const COSTED: ReadonlySet<ArbiterChannel> = new Set(["email", "sms", "phone", "v
 export type SpendTier = "none" | "trivial" | "low" | "high" | "unknown"
 
 /** What every channel check needs about the person (the contact / lead columns, as the live schema spells them). */
-export interface ChannelConsent {
+// Module scope (wave 144, lane 144Z): read only by the module-private channel checks (see ChannelReadinessInput).
+interface ChannelConsent {
   email?: string | null
   email_opt_out?: boolean | null
   email_unsubscribed?: boolean | null
@@ -163,8 +164,10 @@ export interface ChannelConsent {
 }
 
 /** The checks are for a CONTACT (the only subject the experience paths arbitrate). A lead's channels are lib/ai-isa/lead-channel-policy.ts
- *  (email + mail only) and a raw lead gets none — respondToLifeChangeSignal routes those deterministically, never through this menu. */
-export interface ChannelReadinessInput {
+ *  (email + mail only) and a raw lead gets none — respondToLifeChangeSignal routes those deterministically, never through this menu.
+ *  Module scope (wave 144, lane 144Z — test:opposite-missing category 3): the input of the module-private evaluateChannelReadiness /
+ *  loadChannelReadiness; no importer and no exported signature carries it. */
+interface ChannelReadinessInput {
   consent: ChannelConsent
   /** The tenant's ISA channel settings, in the settings vocabulary (an unreadable settings row arrives as [] — fail closed). */
   tenantAllowed: readonly string[]
@@ -289,11 +292,13 @@ const KIND_CHANNELS: Readonly<Record<ExperienceKind, readonly ArbiterChannel[]>>
   portal_task: ["in_app"],
   document_explanation: ["in_app"],
   agent_intervention: ["human_task"],
+  // WAVE 144 (lane 144Z): a referral to a qualified professional is a person's introduction — it rides the agent's task only.
+  professional_referral: ["human_task"],
   appointment: [],
   wait: [],
 })
 /** The format an experience fixes (a video experience is an avatar video, whatever carries it). */
-const KIND_FORMAT: Readonly<Partial<Record<ExperienceKind, ArbiterFormat>>> = Object.freeze({ video: "avatar_video", agent_intervention: "task" })
+const KIND_FORMAT: Readonly<Partial<Record<ExperienceKind, ArbiterFormat>>> = Object.freeze({ video: "avatar_video", agent_intervention: "task", professional_referral: "task" })
 
 /** What the experience paths' CALLERS can deliver themselves for `communication` (lib/sphere/followup-moments.ts and the ISA engage
  *  path both send email / SMS today). A caller that can deliver more passes its own list (CONTACT_ENGAGEMENT_DELIVERABLE). */
@@ -320,7 +325,7 @@ export type ArbiterStance = (typeof ARBITER_STANCES)[number]
 function arbiterStance(d: { kind: ExperienceKind; channel: ArbiterChannel | null }, lastChannel: string | null): ArbiterStance {
   if (d.kind === "wait") return "wait"
   if (d.kind === "education") return "educate"
-  if (d.kind === "agent_intervention" || d.channel === "human_task") return "notify_human"
+  if (d.kind === "agent_intervention" || d.kind === "professional_referral" || d.channel === "human_task") return "notify_human"
   const last = canonicalArbiterChannel(lastChannel)
   if (d.channel && last && d.channel !== last) return "change_channel"
   return "act_now"
@@ -344,6 +349,20 @@ export const LIFE_CHANGE_SIGNAL_KINDS: Readonly<Record<string, LifeChangeKind>> 
   buying_intent: "buying", search_portal_activity: "buying", portal_activity_resumed: "buying",
   divorce_filing: "life_event", probate_filing: "life_event", life_event: "life_event",
 })
+
+/**
+ * PURE (wave 144, lane 144Z). The signal_type a NEW stored provider fact is answered under (lane 144E's intent sources →
+ * LIFE_CHANGE_SIGNAL_KINDS, so the responder files it under the kind its source declares — never "engagement" by default). A
+ * `life_event` fact is a service topic answered only by a person; an `age` or a stored property fact is not a change and maps to
+ * null (the caller publishes nothing for it). Used by the AI ISA's `online_intent_detected` handler (lib/kernel/manager-signals.ts).
+ */
+export function intentFactSignalType(fact: { intents: readonly string[]; sensitivity: string }): string | null {
+  if (fact.sensitivity === "life_event") return "life_event"
+  if (fact.sensitivity !== "behaviour") return null
+  const first = fact.intents[0] ?? ""
+  const byIntent: Readonly<Record<string, string>> = { moving: "moving_intent", home_sale: "home_sale_interest", home_purchase: "buying_intent", refinance: "refinance_opportunity" }
+  return byIntent[first] ?? (INTENT_TO_LIFE_CHANGE[first] === "engagement" ? "property_engagement" : null)
+}
 
 /** PURE. A stored signal_type → its kind. */
 function lifeChangeKindOf(signalType: string | null | undefined): LifeChangeKind {
@@ -385,11 +404,15 @@ function planWithLifeChangeSignals(
     switch (s.kind) {
       case "refinance":
         push("agent_intervention", 55, `signal: ${when} — a refinance question needs a person: offer an introduction to a qualified lender the client chooses (never an automated referral)`)
+        // WAVE 144 (lane 144Z, ruling 11): the introduction itself is its own option — the ISA writes the agent's task with the
+        // brokerage's lender bench (lead-action-plan.ts prepareProfessionalIntroduction); the client chooses, nothing is sent.
+        push("professional_referral", 50, `signal: ${when} — a referral to a qualified professional: the agent offers an introduction to a lender on the brokerage's bench; the client chooses (RESPA §8 — no fee, never automated)`)
         push("education", 40, `signal: ${when} — a plain-language refinance lesson (costs, break-even, what changes)`)
         break
       case "equity":
         if (ownerish) push("market_update", 50, `signal: ${when} — an equity milestone: a market update on their home`)
         push("agent_intervention", 25, `signal: ${when} — the agent may want to talk options (stay, sell, borrow) in person`)
+        if (ownerish) push("professional_referral", 20, `signal: ${when} — if borrowing against the equity is on the table, the agent can offer an introduction to a qualified lender the client chooses`)
         break
       case "moving":
         if (ownerish) push("market_update", 50, `signal: ${when} — thinking of moving: what their home could sell for now`)

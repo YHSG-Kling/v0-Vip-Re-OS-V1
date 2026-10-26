@@ -12,6 +12,7 @@ import { ListingHealthRadarPanel } from "@/app/components/features/listings/list
 import { RESOLVED_HISTORY_LIMIT, RESOLVED_HISTORY_WINDOW_DAYS } from "@/lib/listing-health/resolved-history-bounds"
 import { getListingMedia, getVideoProjects } from "@/app/actions/listing-media"
 import { getListingTasks } from "@/app/actions/listing-lifecycle"
+import { getListingTimeline } from "@/app/actions/listings"
 import { getOpenHouseDashboard, getPostEventIntelligence } from "@/app/actions/seller-open-house"
 import {
   LaunchReadinessChecklist,
@@ -107,6 +108,15 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
         .eq("id", listing.seller_contact_id)
         .maybeSingle()
         .then(r => r.data)
+    : null
+
+  // TIME IN EACH STAGE (wave 144, lane 144Z): listing_stage_history is written on every stage advance
+  // (lib/application/listing-lifecycle.ts) and was read by NOTHING on a screen — getListingTimeline (app/actions/listings.ts,
+  // the survivor lane 144I kept, tenant-pinned in its service) is that reader. A refused read is said, never shown as "none".
+  const stageTimeline = (await getListingTimeline(listingId)) as { success: boolean; timeline?: any[]; error?: string }
+  if (!stageTimeline.success) console.error("[listing-lifecycle] stage-duration read failed:", stageTimeline.error)
+  const stageDurations = stageTimeline.success
+    ? (stageTimeline.timeline ?? []).map((h: any) => ({ stage: String(h.stage_name ?? ""), enteredAt: h.entered_at ?? null, exitedAt: h.exited_at ?? null, days: typeof h.duration_days === "number" ? h.duration_days : null, isOverride: h.is_override === true }))
     : null
 
   // Load lifecycle events for completed stages + timeline
@@ -993,6 +1003,7 @@ const { data: listingVendorBookings } = await supabase
           lifecycleEvents={lifecycleEvents ?? []}
           agreement={listingAgreement ? { esign_status: (listingAgreement as any).esign_status ?? null, fully_executed_at: (listingAgreement as any).fully_executed_at ?? null } : null}
           lifecycleStage={currentStage}
+          stageDurations={stageDurations}
         />
       </aside>
     </div>

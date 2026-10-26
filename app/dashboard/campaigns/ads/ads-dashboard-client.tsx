@@ -398,6 +398,8 @@ export function AdsDashboardClient({
 
   // Audience state
   const [audiences, setAudiences] = useState(initialAudiences)
+  // Wave 144 (lane 144Z): the synced audience a LOOKALIKE is modelled on (the kernel verifies it is this brokerage's own, non-lookalike).
+  const [lookalikeSeedId, setLookalikeSeedId] = useState<string>("")
   const [isCreateAudienceOpen, setIsCreateAudienceOpen] = useState(false)
   const [newAudience, setNewAudience] = useState({
     audienceName: "",
@@ -717,11 +719,13 @@ export function AdsDashboardClient({
       audienceType: templateOverride ? templateOverride.audienceType : newAudience.audienceType,
       sourceRule,
       consentBasis: newAudience.consentBasis,
+      lookalikeSeedAudienceId: (templateOverride ? templateOverride.audienceType : newAudience.audienceType) === "lookalike" ? (lookalikeSeedId || null) : null,
     })
 
     if (result.success) {
       setIsCreateAudienceOpen(false)
       setTemplateOverride(null)
+      setLookalikeSeedId("")
       setNewAudience({
         audienceName: "",
         audienceType: "custom",
@@ -2262,6 +2266,27 @@ export function AdsDashboardClient({
                   This field is legally required. Audiences cannot be created without a valid consent basis.
                 </p>
               </div>
+              {(templateOverride ? templateOverride.audienceType : newAudience.audienceType) === "lookalike" && (
+                <div>
+                  <Label>Seed audience</Label>
+                  <Select value={lookalikeSeedId} onValueChange={setLookalikeSeedId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Choose the audience to model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {audiences.filter((a) => a.audience_type !== "lookalike").map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.audience_name}{a.last_synced_at ? "" : " (not synced yet)"}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    A lookalike is built by the ad platform from one of your own synced customer-list audiences. Sync the seed
+                    first — a seed that has not synced yet is refused at sync, never guessed.
+                  </p>
+                </div>
+              )}
             </div>
 
             <DialogFooter>

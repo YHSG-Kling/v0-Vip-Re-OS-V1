@@ -1101,12 +1101,21 @@ export async function distributeVideoAsset(params: {
           contactIds:     (campaign.audience_contact_ids    as string[] | null) ?? undefined,
         })
         if (audience.contactIds.length > 0) {
+          // WHAT reached the contact (wave 144, lane 144Z — 144I Outside-lane 6): the LIBRARY copy of this file when one exists
+          // (marketing_assets with the same asset_url in this tenant — the rule lib/video/youtube-publish.ts stamps library copies
+          // by), else the video project itself. A refused read is logged and the touch records the project, never a guess.
+          let ref: { externalTable: string; externalId: string } = { externalTable: "ai_video_projects", externalId: params.projectId }
+          const { data: libraryCopy, error: libraryErr } = await supabase.from("marketing_assets").select("id")
+            .eq("brokerage_id", params.brokerageId).eq("asset_url", project.video_url as string).order("created_at", { ascending: true }).limit(1)
+          if (libraryErr) console.error(`[distributeVideoAsset] library-asset read refused: ${libraryErr.message}`)
+          else if (libraryCopy?.[0]?.id) ref = { externalTable: "marketing_assets", externalId: String(libraryCopy[0].id) }
           void recordCampaignTouchpointsBulkSafe(
             campaign.brokerage_id as string,
             project.marketing_campaign_id as string,
             audience.contactIds,
             "video",
             "manual",
+            ref,
           )
         }
       }

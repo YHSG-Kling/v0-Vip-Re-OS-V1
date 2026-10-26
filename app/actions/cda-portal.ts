@@ -253,6 +253,27 @@ async function loadCdaDispositionRoute(
  * 'closing_disclosure'). Idempotent — if a CDA already exists for the
  * transaction, the prelim CD pointer is just attached to it.
  */
+/**
+ * Wave 144 (lane 144Z — 144I Outside-lane 3; the parent-child graph's deal.transaction>cda arrow): a CDA record that is CREATED
+ * emits KernelEvent.CDA_GENERATED — once per CDA (dedupe key), at the write, through the ONE emitter (lib/kernel/emit.ts: the
+ * lifecycle_events row + the reactor's generic sequence enrolment, exactly as CDA_APPROVED rides it). Before this the member had
+ * no emitter at all, so a brokerage that configured a sequence on it could never have had it fire. Module-private (not an
+ * endpoint); never fails the CDA write it follows — a refused event is logged with its reason.
+ */
+async function emitCdaGenerated(a: { cdaId: string; transactionId: string; brokerageId: string; actorUserId: string; via: "agent_draft" | "preliminary_cd_upload" }): Promise<void> {
+  try {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const r = await emitKernelEvent({
+      event: KernelEvent.CDA_GENERATED, brokerageId: a.brokerageId, entityType: "transaction", entityId: a.transactionId,
+      transactionId: a.transactionId, actorUserId: a.actorUserId, metadata: { cda_id: a.cdaId, via: a.via },
+      dedupeKey: `cda_generated:${a.cdaId}`, dedupeWindowSec: 7 * 86_400,
+    })
+    if (!r.inserted && r.error) console.warn(`[cda-portal] CDA_GENERATED not recorded for CDA ${a.cdaId}: ${r.error}`)
+  } catch (e) {
+    console.warn("[cda-portal] CDA_GENERATED emit threw (non-blocking):", e instanceof Error ? e.message : e)
+  }
+}
+
 export async function notifyAgentOfPreliminaryCdAction(input: {
   transactionId: string
   documentId: string
@@ -337,6 +358,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
       .single()
     if (error || !created) return { success: false as const, error: error?.message ?? "create_failed" }
     cdaId = created.id
+    await emitCdaGenerated({ cdaId, transactionId: input.transactionId, brokerageId: txn.brokerage_id, actorUserId: auth.userId, via: "preliminary_cd_upload" })
   }
   const versionLabel = statementVersion > 1 ? ` (revised statement, version ${statementVersion})` : ""
 
@@ -530,6 +552,7 @@ export async function draftOrUpdateCdaAction(input: {
       .single()
     if (error || !created) return { success: false as const, error: error?.message ?? "create_failed" }
     cdaId = created.id
+    await emitCdaGenerated({ cdaId, transactionId: input.transactionId, brokerageId: txn.brokerage_id, actorUserId: auth.userId, via: "agent_draft" })
   }
 
   await recordRevision({

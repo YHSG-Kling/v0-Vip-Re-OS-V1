@@ -544,15 +544,20 @@ export async function trackPropertyView(data: {
   }
 }
 
-// Get saved properties for a contact
+// Get saved properties for a contact — the read half of the module that owns saving (saveProperty / unsaveProperty). Wave 144
+// (lane 144Z): WIRED to the buyer's Saved tab (app/crm/contacts/[contactId]/search/search-client.tsx SavedPropertiesTab), which
+// read the table itself from the browser; a home the agent removed is `dismissed` and is not a saved home (the tab's own rule,
+// now here). RLS-scoped session client, as before; an invalid id is refused, never queried.
 export async function getSavedProperties(contactId: string) {
   try {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(contactId)) return { success: false, error: "Invalid contact id", properties: [] }
     const supabase = await createClient()
 
     const { data, error } = await supabase
       .from("saved_properties")
       .select("*")
       .eq("contact_id", contactId)
+      .eq("dismissed", false)
       .order("saved_at", { ascending: false })
 
     if (error) throw error

@@ -358,6 +358,10 @@ export interface CreateAudienceSegmentInput {
   sourceRule: SourceRule
   consentBasis: string
   adCampaignId?: string
+  /** Wave 144 (lane 144Z): the SYNCED audience a lookalike is seeded from (facebook_custom_audiences.id, same tenant). The sync
+   *  routes a lookalike on this column (syncAudience) and told the operator to "link a synced audience to seed" — nothing ever
+   *  wrote it, so every lookalike was refused at sync. Required for audienceType 'lookalike'; refused on any other type. */
+  lookalikeSeedAudienceId?: string | null
 }
 
 // TOMBSTONE (§1.3, 2026-08-31, lane M4): `LoadAdPerformanceInput` deleted —
@@ -1638,8 +1642,31 @@ export async function createAudienceSegment(input: CreateAudienceSegmentInput): 
     return { success: false, error: sourceRuleRefusal, errorKind: "input" }
   }
 
+  // THE LOOKALIKE SEED (wave 144, lane 144Z — the column's missing WRITER). A lookalike is seeded from ONE of this tenant's own
+  // audiences — never a caller-named foreign row (the read is pinned to the session tenant and its refusal is read) and never
+  // another lookalike (a lookalike of a lookalike has no consented seed of its own). Refused before the row exists.
+  const seedId = input.lookalikeSeedAudienceId?.trim() || null
+  if (audienceType === "lookalike" && !seedId) {
+    return { success: false, error: "A lookalike audience needs a seed: choose one of your synced audiences to model it on.", errorKind: "input" }
+  }
+  if (seedId && audienceType !== "lookalike") {
+    return { success: false, error: "Only a lookalike audience takes a seed audience.", errorKind: "input" }
+  }
+
   try {
     const supabase = createServiceClient()
+
+    if (seedId) {
+      const { data: seed, error: seedErr } = await supabase
+        .from("facebook_custom_audiences")
+        .select("id, audience_type, lookalike_seed_audience_id")
+        .eq("id", seedId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      if (seedErr) return { success: false, error: `The seed audience could not be verified (${seedErr.message}) — nothing was created.` }
+      if (!seed) return { success: false, error: "That seed audience is not one of this brokerage's audiences.", errorKind: "input" }
+      if ((seed as { audience_type?: string }).audience_type === "lookalike" || (seed as { lookalike_seed_audience_id?: string | null }).lookalike_seed_audience_id) {
+        return { success: false, error: "A lookalike cannot be seeded from another lookalike — choose a customer-list audience.", errorKind: "input" }
+      }
+    }
 
     const { data: audience, error } = await supabase
       .from("facebook_custom_audiences")
@@ -1651,6 +1678,7 @@ export async function createAudienceSegment(input: CreateAudienceSegmentInput): 
         source_rule: sourceRule as any,
         consent_basis: consentBasis,
         status: "draft",
+        lookalike_seed_audience_id: seedId,
       })
       .select()
       .maybeSingle()

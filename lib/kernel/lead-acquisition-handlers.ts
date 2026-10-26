@@ -11,7 +11,10 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { calculateLeadScore, evaluateRoutingEligibility } from "@/lib/lead-governance/index"
+// Imported from the defining modules, not the barrel (wave 144, lane 144Z — test:proxy-graph-budget: the barrel pulls every
+// sibling module into app/crm/page.tsx's graph; the same symbols, nothing else).
+import { calculateLeadScore } from "@/lib/lead-governance/multi-factor-scorer"
+import { evaluateRoutingEligibility } from "@/lib/lead-governance/routing-evaluator"
 
 // ─── VALID TRANSITIONS ────────────────────────────────────────────────────────
 const ALLOWED_TRANSITIONS: Record<string, string[]> = {

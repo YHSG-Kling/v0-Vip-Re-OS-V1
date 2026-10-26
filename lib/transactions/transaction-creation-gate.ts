@@ -303,6 +303,27 @@ export function findUnexecutedDocuments(
 }
 
 /**
+ * PURE. THE CONTRACT'S OWN INSTRUMENTS (wave 144, lane 144Z — owner ruling 2: "ACCEPTED COUNTER + ORIGINAL (+ADDENDA) → ALL
+ * SIGNATURES/INITIALS → COMPLIANCE SCAN"). The checklist decides which classifications a brokerage requires to be PRESENT; it does
+ * not decide whether the executed contract's own paper is signed. A typical checklist lists only the purchase contract, so the
+ * accepted counter's paper was never asked for its signatures — a counter with the seller's signature blank on the page let a
+ * transaction through. When the governing sequence carries a counter, every `counter_offer` paper in the governing packet's file
+ * (excluded counters' paperwork is already dropped by widenAuditToGoverningPacket), and every executed addendum the packet names
+ * by id, must be fully executed — signatures AND initials — through the SAME evaluator (findUnexecutedDocuments), whatever the
+ * checklist lists. Deterministic; no AI. Presence of the counter paper stays the checklist's question (a blind spot, not a guess).
+ */
+export function findUnexecutedContractInstruments(
+  dealFile: ReadonlyArray<DealFileDocument>,
+  packet: Pick<GoverningOfferPacket, "sequence" | "addendumDocumentIds">,
+): UnexecutedDocument[] {
+  const carriesCounter = packet.sequence.length > 1
+  const addenda = new Set(packet.addendumDocumentIds)
+  const instruments = dealFile.filter((d) => (carriesCounter && d.classification === "counter_offer") || addenda.has(d.id))
+  const classes = [...new Set(instruments.map((d) => d.classification).filter((k): k is DocumentClassification => !!k))]
+  return findUnexecutedDocuments(instruments, classes)
+}
+
+/**
  * PURE. Presence re-read over a deal file: a required classification is present when ANY row of the file carries it. This is the
  * presence half of lib/compliance/required-documents.ts (auditAgainst) applied to a file the gate assembled itself — the
  * no-offer branch below and the governing-packet widening both use THIS one function, so the gate holds one presence reading.
@@ -709,6 +730,13 @@ export async function assertTransactionCreationAllowed(
   // ── 3 + 4. Fully signed, and initials complete ───────────────────────────
   const requiredClassifications = audit.required_breakdown.map((r) => r.classification)
   const unexecuted = findUnexecutedDocuments(audit.deal_file, requiredClassifications)
+  // The executed contract's own instruments (the accepted counter's paper, the executed addenda) are held to every signature and
+  // initial even when the checklist does not list them (owner ruling 2) — merged once, never counted twice.
+  if (governingPacket) {
+    for (const u of findUnexecutedContractInstruments(audit.deal_file, governingPacket)) {
+      if (!unexecuted.some((x) => x.documentId === u.documentId)) unexecuted.push(u)
+    }
+  }
 
   const signatureGaps = unexecuted.filter((u) => u.missingSignatures.length > 0)
   const initialGaps   = unexecuted.filter((u) => u.missingInitials.length > 0)

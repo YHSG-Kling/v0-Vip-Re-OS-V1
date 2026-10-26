@@ -14,6 +14,7 @@ import {
   aiRecommendGoals,
   aiCoachGoalProgress,
   syncGoalCurrentValues,
+  updateGoalProgress,
 } from "@/app/actions/ai-agent-goals"
 import { AGENT_GOAL_LABELS, isAgentGoalType, isAutoSynced } from "@/lib/goals/goal-types"
 
@@ -51,6 +52,9 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
   const [coaching, setCoaching] = useState<any>(null)
   const [recommendations, setRecommendations] = useState<any>(null)
   const [editTarget, setEditTarget] = useState<Record<string, string>>({})
+  // Wave 144 (lane 144Z): a MANUAL-tracking goal (isAutoSynced false — the sync cannot measure it) is logged by hand through the
+  // ONE progress writer (app/actions/ai-agent-goals.ts updateGoalProgress — gated, owner-pinned, records the goal's mission).
+  const [editProgress, setEditProgress] = useState<Record<string, string>>({})
   const [isPending, startTransition] = useTransition()
   const [coachLoading, setCoachLoading] = useState(false)
   const [recLoading, setRecLoading] = useState(false)
@@ -70,6 +74,21 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
         toast.success("Goal saved")
       } else {
         toast.error((result as any).error ?? "Failed to save goal")
+      }
+    })
+  }
+
+  const handleLogProgress = (goalType: string, goalId: string) => {
+    const val = Number(editProgress[goalType])
+    if (!Number.isFinite(val) || val < 0) { toast.error("Enter a progress value of 0 or more"); return }
+    startTransition(async () => {
+      const result = await updateGoalProgress({ goalId, agentId, currentValue: val })
+      if (result.success) {
+        setGoals(prev => prev.map(g => (g.id === goalId ? { ...g, current_value: val } : g)))
+        setEditProgress(prev => { const n = { ...prev }; delete n[goalType]; return n })
+        toast.success("Progress logged")
+      } else {
+        toast.error((result as { error?: string }).error ?? "Progress was not saved")
       }
     })
   }
@@ -218,6 +237,29 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
                   >
                     {goal ? "Edit Target" : "Set Target"}
                   </Button>
+                )}
+                {goal && isAgentGoalType(goalType) && !isAutoSynced(goalType) && /^[0-9a-f-]{36}$/i.test(goal.id) && (
+                  goalType in editProgress ? (
+                    <div className="flex gap-2">
+                      <Input
+                        type="number"
+                        placeholder="Progress so far"
+                        className="h-8 text-sm"
+                        value={editProgress[goalType]}
+                        onChange={e => setEditProgress(prev => ({ ...prev, [goalType]: e.target.value }))}
+                      />
+                      <Button size="sm" className="h-8" onClick={() => handleLogProgress(goalType, goal.id)} disabled={isPending}>
+                        Log
+                      </Button>
+                      <Button size="sm" variant="ghost" className="h-8" onClick={() => setEditProgress(prev => { const n = { ...prev }; delete n[goalType]; return n })}>
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button size="sm" variant="ghost" className="h-9 text-xs w-full" onClick={() => setEditProgress(prev => ({ ...prev, [goalType]: goal.current_value.toString() }))}>
+                      Log progress
+                    </Button>
+                  )
                 )}
               </CardContent>
             </Card>

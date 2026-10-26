@@ -110,7 +110,10 @@ export function findDroppedFields(files: string[]): Hit[] {
       // Mentions that are pure wiring: the declaration and the value/checked binding.
       const declared = new RegExp(`\\[\\s*${name}\\s*,\\s*set${cap}\\s*\\]`).test(src) ? 1 : 0
       const bound = [...src.matchAll(new RegExp(`value=\\{\\s*${name}\\s*\\}`, "g"))].length
-      const checked = [...src.matchAll(new RegExp(`checked=\\{\\s*${name}`, "g"))].length
+      // IDENTIFIER BOUNDARY (wave 144, lane 144Z): `checked={addStateRequirement}` is a binding of addStateRequirement, NOT of
+      // addState — without the boundary the prefix-sharing sibling was subtracted as addState's wiring, and a field that DOES
+      // reach the payload (`stateCode: addState || null`) was accused of being dropped (CLAUDE.md §2: a guard accusing live code).
+      const checked = [...src.matchAll(new RegExp(`checked=\\{\\s*${name}(?![A-Za-z0-9_$])`, "g"))].length
       if (total - (declared + bound + checked) <= 0) hits.push({ file, state: name })
     }
   }
@@ -358,6 +361,21 @@ console.log("\n═══ 5. The detector fires on the real shapes ═══")
   writeFileSync(tmp, wired)
   ok("...and the same field IS NOT caught once it reaches a payload",
     findDroppedFields([tmp]).length === 0)
+  // CONTROL (lane 144Z) — a sibling state whose name EXTENDS this one (`checked={stateFlag}` beside `state`) is not this field's
+  // wiring: `state` reaches the payload and is not caught; the same file with `state` dropped from the payload IS caught.
+  const prefixWired = `
+    export function Z() {
+      const [state, setState] = useState("")
+      const [stateFlag, setStateFlag] = useState(false)
+      const go = async () => { await save({ stateCode: state || null, flag: stateFlag }) }
+      return <><select value={state} onChange={(e) => setState(e.target.value)} /><input type="checkbox" checked={stateFlag} onChange={(e) => setStateFlag(e.target.checked)} /></>
+    }`
+  writeFileSync(tmp, prefixWired)
+  ok("CONTROL — a field that reaches the payload is NOT caught because a sibling's name starts with it (checked={stateFlag})",
+    !findDroppedFields([tmp]).some((h) => h.state === "state"))
+  writeFileSync(tmp, prefixWired.replace("stateCode: state || null, ", ""))
+  ok("CONTROL — ...and the same field IS caught once it no longer reaches the payload",
+    findDroppedFields([tmp]).some((h) => h.state === "state"))
   unlinkSync(tmp)
 }
 

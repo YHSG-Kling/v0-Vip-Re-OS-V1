@@ -44,6 +44,7 @@ export type TenantPolicyStore =
   | "ai_isa_settings"
   | "assignment_rules"
   | "cadence_policy"
+  | "brokerage_required_documents"
 
 export interface TenantPolicyDefinition {
   label: string
@@ -189,6 +190,11 @@ export const TENANT_POLICY_ROW_KEYS: Record<string, TenantPolicyDefinition> = {
   blog_cadence_policy:       { label: "Blog cadence", store: "cadence_policy", defaultNote: "no row — cadence off" },
   newsletter_cadence_policy: { label: "Newsletter cadence", store: "cadence_policy", defaultNote: "no row — cadence off" },
   social_cadence_policy:     { label: "Social cadence", store: "cadence_policy", defaultNote: "no row — cadence off" },
+  // Wave 144 (lane 144Z — 143B Outside-lane 5 / 144I Outside-lane 2): ONE brokerage required-document RULE
+  // (brokerage_required_documents row) — `required_document:<rule_id>`. Every checklist edit through
+  // app/actions/compliance/manage-required-docs.ts (add / template / blocking / remove) appends a version, so the checklist
+  // has the same history + revert the other row policies have; the row's own policy_version (m806) stays the gate's evidence.
+  required_document:         { label: "Required-document rule", store: "brokerage_required_documents", defaultNote: "rule removed / never saved here" },
 }
 
 export const FARM_MAIL_POLICY_KEY = "farm_mail"
@@ -196,11 +202,18 @@ export type CadencePolicyTable = "blog_cadence_policy" | "newsletter_cadence_pol
 export type CadenceScopeType = "agent" | "team" | "brokerage"
 
 export function assignmentRulePolicyKey(ruleId: string): string { return `assignment_rule:${ruleId}` }
+/** Wave 144 (lane 144Z): the policy key of ONE required-document rule. */
+export function requiredDocumentPolicyKey(ruleId: string): string { return `required_document:${ruleId}` }
 export function cadencePolicyKey(table: CadencePolicyTable, scopeType: CadenceScopeType, scopeId: string): string { return `${table}:${scopeType}:${scopeId}` }
 
 const ASSIGNMENT_RULE_POLICY_COLUMNS = ["name", "rule_type", "conditions", "agent_ids", "team_id", "priority", "is_active"] as const
 const CADENCE_POLICY_COLUMNS = ["cadence", "fire_day", "preferred_categories", "preferred_persona", "preferred_post_types"] as const
 const FARM_MAIL_POLICY_COLUMNS = ["farm_mail_enabled", "farm_mail_max_per_week", "lob_fallback_template_id"] as const
+const REQUIRED_DOCUMENT_POLICY_COLUMNS = [
+  "scope_type", "scope_id", "classification", "deal_type", "state_code", "is_required", "block_on_missing", "description", "template_form_id",
+  "required_stage", "financing_kind", "contract_subtype", "representation", "legal_basis", "source_url", "source_title", "source_verified_on",
+  "approved_by", "approved_at",
+] as const
 
 function pickPolicyColumns(row: Record<string, unknown> | null | undefined, cols: readonly string[]): Record<string, unknown> | null {
   if (!row) return null
@@ -212,6 +225,9 @@ function pickPolicyColumns(row: Record<string, unknown> | null | undefined, cols
 export function assignmentRulePolicyValue(row: Record<string, unknown> | null | undefined): Record<string, unknown> | null { return pickPolicyColumns(row, ASSIGNMENT_RULE_POLICY_COLUMNS) }
 /** PURE — THE policy value of a *_cadence_policy row (preferred_post_types only where the table has it). */
 export function cadencePolicyValue(row: Record<string, unknown> | null | undefined): Record<string, unknown> | null { return pickPolicyColumns(row, CADENCE_POLICY_COLUMNS) }
+/** PURE (wave 144, lane 144Z) — THE policy value of a brokerage_required_documents row (null = no row / removed). A column the
+ *  row does not carry (pre-migration) is simply absent from the value, never invented. */
+export function requiredDocumentPolicyValue(row: Record<string, unknown> | null | undefined): Record<string, unknown> | null { return pickPolicyColumns(row, REQUIRED_DOCUMENT_POLICY_COLUMNS) }
 /** PURE — THE policy value of brokerages' farm-mail columns. */
 export function farmMailPolicyValue(row: Record<string, unknown> | null | undefined): Record<string, unknown> | null { return pickPolicyColumns(row, FARM_MAIL_POLICY_COLUMNS) }
 
@@ -242,6 +258,7 @@ export type ParsedPolicyKey =
   | { kind: "manager"; field: keyof typeof TENANT_POLICY_MANAGER_FIELDS; agentKind: string; def: TenantPolicyDefinition }
   | { kind: "isa"; ownerType: "brokerage" | "team" | "agent"; ownerId: string | null; def: TenantPolicyDefinition }
   | { kind: "rule"; ruleId: string; def: TenantPolicyDefinition }
+  | { kind: "required_document"; ruleId: string; def: TenantPolicyDefinition }
   | { kind: "cadence"; table: CadencePolicyTable; scopeType: CadenceScopeType; scopeId: string; def: TenantPolicyDefinition }
 
 const ISA_DEF: TenantPolicyDefinition = { label: "AI ISA settings", store: "ai_isa_settings", defaultNote: "platform ISA defaults" }
@@ -262,6 +279,8 @@ export function parsePolicyKey(policyKey: string): ParsedPolicyKey | null {
   // The id segments follow m696's segment grammar (`[a-z0-9_-]+`), not a uuid shape: the CHECK is the authority.
   const r = /^assignment_rule:([a-z0-9_-]+)$/.exec(policyKey)
   if (r) return { kind: "rule", ruleId: r[1], def: TENANT_POLICY_ROW_KEYS.assignment_rule }
+  const rd = /^required_document:([a-z0-9_-]+)$/.exec(policyKey)
+  if (rd) return { kind: "required_document", ruleId: rd[1], def: TENANT_POLICY_ROW_KEYS.required_document }
   const c = /^(blog_cadence_policy|newsletter_cadence_policy|social_cadence_policy):(agent|team|brokerage):([a-z0-9_-]+)$/.exec(policyKey)
   if (c) return { kind: "cadence", table: c[1] as CadencePolicyTable, scopeType: c[2] as CadenceScopeType, scopeId: c[3], def: TENANT_POLICY_ROW_KEYS[c[1]] }
   return null

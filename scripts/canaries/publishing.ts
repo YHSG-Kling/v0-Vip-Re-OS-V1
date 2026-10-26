@@ -75,8 +75,27 @@ export async function run() {
   c.rule("144H", "TOPICS CHOSEN ON EVIDENCE OF DEMAND (ruling 15: 'search/topic intelligence, audience problem, competitor positioning, gaps, originality, conversion … never generic'): the research stage records the demand evidence a topic was chosen on (search / topic intelligence, the audience problem, competitor positioning and the gap) and a concept with no evidence is not advanced as a book", allTrue(evidence), evidence ? `landed rules: ${JSON.stringify(evidence)}` : demand ? `landed at ${demand}, but lib/lead-magnets/book-editorial.ts is absent` : "HEAD: research = { topics, bank_topics, fetched_at } — titles, no demand measure")
 
   // ── 5 · branding: logo + brand colours + approved tagline ──
-  const pdfKeys = Object.keys(creator.composeBookPdfData({ stage: "layout", concept: "x", audience: "seller", area: "Pensacola", brand: "Canary Realty", title: "t", subtitle: null, tagline: "Know every step", introduction: null, closing: null, research: null, outline: null, chapters: [], fact_check: null, pdf_url: null, document_id: null, page_count: null, cost: { tokens: 0, model_calls: 0 }, needs_human_review: [], started_by: "u", started_at: "", updated_at: "", log: [] }))
-  c.rule("144H", "LOGOS, BRAND COLOURS AND APPROVED TAGLINES (ruling 15): the book's rendered data carries the brand context's logo and colour palette beside the approved tagline (lib/branding/resolve-brand-context.ts is the survivor) — at HEAD composeBookPdfData passes the tagline only", pdfKeys.includes("tagline") && pdfKeys.some((k) => /logo/i.test(k)) && pdfKeys.some((k) => /colou?r|palette|brand/i.test(k)), `HEAD pdf data keys: ${pdfKeys.join(", ")}`)
+  // RE-ASSERTED (lane 144Z): this step pinned a SHAPE — "composeBookPdfData's keys name a logo and a colour". The integrator (lane
+  // 144X item H4) carried the brand where the PDF engine takes it: the ClientPdfBrand argument (lib/documents/client-pdf.ts —
+  // accentColor, tagline and the logo as BYTES, the engine staying network-free), filled by book-creator.ts's brand resolver from
+  // the ONE brand context (resolveBrandContext) through the ONE vetting (book-publishing-produce.ts approvedBookBrandAssets). The
+  // RULE is the rendered book's: it carries the brand context's logo, colour palette and approved tagline. Asserted on the RENDER
+  // (the book's own data through bookPdfSpec → renderClientPdf): with the brand's logo the PDF embeds an image; POSITIVE CONTROL —
+  // the same book without one embeds none; and the resolver merges the brand context's logo / colours / approved tagline.
+  const bookData = creator.composeBookPdfData({ stage: "layout", concept: "x", audience: "seller", area: "Pensacola", brand: "Canary Realty", title: "Selling in Pensacola", subtitle: null, tagline: "Know every step", introduction: null, closing: null, research: null, outline: null, chapters: [{ heading: "One", body: "Plain words." }], fact_check: null, pdf_url: null, document_id: null, page_count: null, cost: { tokens: 0, model_calls: 0 }, needs_human_review: [], started_by: "u", started_at: "", updated_at: "", log: [] } as never)
+  const { bookPdfSpec, renderClientPdf } = await import("../../lib/documents/client-pdf")
+  const sharp = (await import("sharp")).default
+  const logoPng = await sharp({ create: { width: 300, height: 90, channels: 3, background: { r: 20, g: 60, b: 160 } } }).png().toBuffer()
+  const baseBrand = { brokerageName: "Canary Realty", agentName: "Casey Agent", primaryColor: "#14532D" }
+  const branded = bookPdfSpec(bookData, { ...baseBrand, accentColor: "#F59E0B", tagline: "Calm advice, local roots", logo: new Uint8Array(logoPng) }, "October 2026")
+  const withLogo = Buffer.from(await renderClientPdf(branded)).toString("latin1")
+  const noLogo = Buffer.from(await renderClientPdf(bookPdfSpec(bookData, baseBrand, "October 2026"))).toString("latin1")
+  const creatorSrc = strippedRepo("lib/lead-magnets/book-creator.ts") ?? ""
+  const resolverAt = creatorSrc.indexOf("const defaultBrandResolver")
+  const resolverBody = resolverAt < 0 ? "" : creatorSrc.slice(resolverAt, (() => { const n = creatorSrc.slice(resolverAt + 1).search(/\n(?:export\s+)?(?:const|function|async function)\s/); return n < 0 ? undefined : resolverAt + 1 + n })())
+  const resolverMerges = /resolveBrandContext\s*\(/.test(resolverBody) && /approvedBookBrandAssets\s*\(/.test(resolverBody) && /accentColor/.test(resolverBody) && /\blogo\b/.test(resolverBody) && /tagline/.test(resolverBody)
+  const brandKeys = Object.keys(branded.brand ?? {})
+  c.rule("144H", "LOGOS, BRAND COLOURS AND APPROVED TAGLINES (ruling 15): the book's rendered data carries the brand context's logo and colour palette beside the approved tagline (lib/branding/resolve-brand-context.ts is the survivor) — the rendered book embeds the brand's logo (positive control: none without it), the PDF brand carries the accent colour and the approved tagline, and the book's brand resolver merges the brand context's logo / colours / approved tagline through the one vetting", /\/Subtype\s*\/Image/.test(withLogo) && !/\/Subtype\s*\/Image/.test(noLogo) && ["accentColor", "tagline", "logo", "primaryColor"].every((k) => brandKeys.includes(k)) && resolverMerges && bookData.tagline === "Know every step", `logo embedded ${/\/Subtype\s*\/Image/.test(withLogo)} (control without: ${/\/Subtype\s*\/Image/.test(noLogo)}); pdf brand keys ${brandKeys.join(", ")}; resolver merges brand context ${resolverMerges}; book data keys ${Object.keys(bookData).join(", ")}`)
 
   // ── 6 · a HUMANIZED review after the draft, before export ──
   const humanized = (creator.BOOK_STAGES as readonly string[]).some((s) => /humaniz/.test(s)) || findLanded(["lib/lead-magnets"], /\bhumaniz\w*\b/) !== null

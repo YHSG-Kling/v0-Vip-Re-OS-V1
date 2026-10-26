@@ -61,7 +61,9 @@
 
 import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
-import { requirePermission } from "@/lib/security"
+// Imported from the defining modules, not the barrel (wave 144, lane 144Z — test:proxy-graph-budget: the barrel pulls every
+// sibling module into app/crm/page.tsx's graph; the same symbols, nothing else).
+import { requirePermission } from "@/lib/security/rbac"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"

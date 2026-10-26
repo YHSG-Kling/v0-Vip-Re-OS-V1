@@ -91,6 +91,9 @@ export async function recordCampaignTouchpointsBulkSafe(
   contactIds:  string[],
   channel:     RecordTouchpointInput["channel"],
   source:      RecordTouchpointInput["source"] = "launch",
+  /** Wave 144 (lane 144Z — 144I Outside-lane 6): WHAT was sent, when the caller knows it — `marketing_assets` + the asset id when
+   *  the thing sent IS a library asset (the marketing.asset>touchpoint edge: which asset reached the contact). Absent = unrecorded. */
+  ref?:        { externalTable: string; externalId: string } | null,
 ): Promise<{ ok: boolean; inserted: number }> {
   if (contactIds.length === 0) return { ok: true, inserted: 0 }
   try {
@@ -103,6 +106,8 @@ export async function recordCampaignTouchpointsBulkSafe(
       source,
       status:       "sent",
       sent_at:      new Date().toISOString(),
+      external_table: ref?.externalTable ?? null,
+      external_id:    ref?.externalId ?? null,
     }))
     const { error } = await svc.from("marketing_campaign_touchpoints").insert(rows)
     if (error) return { ok: false, inserted: 0 }

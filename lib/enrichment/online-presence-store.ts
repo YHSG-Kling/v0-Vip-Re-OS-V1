@@ -110,5 +110,11 @@ export async function persistRealEstateIndicators(
     .select("id")
   if (writeError) return { ok: false, wrote: false, error: writeError.message }
   if (!written || written.length === 0) return { ok: false, wrote: false, error: "indicators write matched no row" }
+  // WAVE 144 (lane 144Z): a NEW online-intent indicator is PUSHED to the AI ISA (online_intent_detected), not only read on the
+  // contact's next evaluation. Lazy: intent-signal-sources.ts imports this module. Never fails the write it follows.
+  try {
+    const { publishNewIntentFacts } = await import("@/lib/enrichment/intent-signal-sources")
+    await publishNewIntentFacts(supabase, target, { enrichment_profile: prior }, { enrichment_profile: next }, opts.now ?? new Date())
+  } catch (e) { console.warn("[online-presence-store] intent push skipped (non-blocking):", e instanceof Error ? e.message : e) }
   return { ok: true, wrote: true }
 }

@@ -11,31 +11,17 @@
 
 import { isValidUUID } from "@/lib/validations"
 import { createClient } from "@/lib/supabase/server"
+// Imported from the defining modules, not the barrel (wave 144, lane 144Z — test:proxy-graph-budget: the barrel pulls every
+// sibling module into app/crm/page.tsx's graph; the same symbols, nothing else).
+import { validateStateTransition, validateRollback, validateReactivation, getNextAllowedStates, type TransitionValidationResult } from "@/lib/buyer-lifecycle/transition-validator"
 import {
-  validateStateTransition,
-  validateRollback,
-  validateReactivation,
-  getNextAllowedStates,
-  emitLifecycleTransition,
-  getLifecycleHistory,
-  getCurrentBuyerState as getStateFromHistory,
-  getLifecycleStatistics,
-  getBuyersInState,
-  isSearchAllowed,
-  isTourAllowed,
-  isOfferAllowed,
-  getEnabledGatesForBuyer,
-  checkFinancialVerification,
-  emitFinancialVerificationEvent,
-  getFinancialVerificationStatus,
-  type TransitionValidationResult,
-  type LifecycleHistoryEntry,
-  type LifecycleStatistics,
-  type GatingResult,
-  type FinancialVerificationResult,
-  type FinancialVerificationStatus,
-  type BuyerState,
-} from "@/lib/buyer-lifecycle"
+  emitLifecycleTransition, getLifecycleHistory, getCurrentBuyerState as getStateFromHistory, getLifecycleStatistics, getBuyersInState,
+  type LifecycleHistoryEntry, type LifecycleStatistics,
+} from "@/lib/buyer-lifecycle/lifecycle-logger"
+import { isSearchAllowed, isTourAllowed, isOfferAllowed, getEnabledGatesForBuyer, type GatingResult } from "@/lib/buyer-lifecycle/gating-helpers"
+import { checkFinancialVerification, getFinancialVerificationStatus, type FinancialVerificationResult } from "@/lib/buyer-lifecycle/financial-verification"
+import { emitFinancialVerificationEvent, type FinancialVerificationStatus } from "@/lib/buyer-lifecycle/extensions/financial-verification-schema"
+import type { BuyerState } from "@/lib/buyer-lifecycle/lifecycle-definitions"
 
 /**
  * Resolve the ACTOR and the TENANT from the session.

@@ -184,6 +184,27 @@ export async function revertPolicy(
       }
       break
     }
+    // Wave 144 (lane 144Z): a required-document RULE reverts through its OWN writers (app/actions/compliance/manage-required-docs.ts —
+    // session tenant, scope / role gate, the team-packet rule), never a direct row write. An edit changes a rule's blocking or its
+    // template; a version whose value is null is the rule removed. A rule removed SINCE is not resurrected here: its dimensions and
+    // legal basis must pass the add path's vocabulary and compliance gates again, so the remedy is named instead.
+    case "required_document": {
+      const docs = await import("@/app/actions/compliance/manage-required-docs")
+      const v = (value ?? null) as { block_on_missing?: unknown; template_form_id?: unknown } | null
+      if (v === null) {
+        const w = await docs.removeRequiredDoc({ id: parsed.ruleId })
+        wrote = w.ok ? { ok: true } : { ok: false, error: w.error }
+        break
+      }
+      const b = await docs.setRequiredDocBlocking({ id: parsed.ruleId, blockOnMissing: v.block_on_missing !== false })
+      if (!b.ok) {
+        wrote = { ok: false, error: /not found/i.test(b.error ?? "") ? "That rule was removed since — re-add it on the Required Documents settings screen (its scope, vocabulary and compliance gates run there); its history stays here." : (b.error ?? "The revert was not saved.") }
+        break
+      }
+      const t = await docs.setRequiredDocTemplate({ id: parsed.ruleId, formId: typeof v.template_form_id === "string" ? v.template_form_id : null })
+      wrote = t.ok ? { ok: true } : { ok: false, error: t.error }
+      break
+    }
     case "cadence": {
       const c = (value ?? {}) as { cadence?: string; fire_day?: number | null; preferred_categories?: string[] | null; preferred_persona?: string | null; preferred_post_types?: string[] | null }
       const cadence = (c.cadence ?? "off") as "weekly" | "biweekly" | "monthly" | "off"
@@ -214,6 +235,9 @@ export async function revertPolicy(
   const after = await loadPolicyHistory(svc, gate.brokerageId, policyKey)
   if (!after.ok) return { ok: true, newVersion: null }
   const top = after.rows[0]
+  // A required-document rule's writers stamp their OWN reason on the version (they take no revert actor) — the newest version
+  // after a successful write IS this revert's (wave 144, lane 144Z).
+  if (parsed.kind === "required_document") return { ok: true, newVersion: top?.version ?? null }
   // The survivor writer appends nothing when the live value already equals the target.
   if (!top || top.reason !== reason) return { ok: true, newVersion: top?.version ?? null, unchanged: true }
   return { ok: true, newVersion: top.version }

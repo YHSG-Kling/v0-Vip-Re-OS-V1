@@ -175,6 +175,7 @@ export async function createAudience(
     sourceRule: params.sourceRule,
     consentBasis: params.consentBasis,
     adCampaignId: params.adCampaignId,
+    lookalikeSeedAudienceId: params.lookalikeSeedAudienceId ?? null,
   })
 
   if (!result.success) {

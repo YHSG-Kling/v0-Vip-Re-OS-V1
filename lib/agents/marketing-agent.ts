@@ -119,6 +119,8 @@ interface MarketingSnapshot {
    *  performance and local-event topics, read from their survivors (lib/content-intel/market-leadership.ts) and ranked by the
    *  evidence's own magnitude. Evidence + briefs for ORIGINAL content, never copy; null = the loader itself failed. */
   marketLeadership: import("@/lib/content-intel/market-leadership").LeadershipSignals | null
+  /** Wave 144 (lane 144Z): local campaign ideas a PERSON approved (lib/content-intel/local-intel.ts) — null = the read failed. */
+  approvedLocalIdeas: Array<{ title: string; brief: string }> | null
   pendingListingPromos: number
   newListingsThisWeek:  number
   atRiskListings:       number
@@ -947,8 +949,21 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     console.error(`[marketing-agent] market-leadership signals failed for ${brokerageId}:`, (e as Error).message)
   }
 
+  // Wave 144 (lane 144Z — owner ruling 14 + the publication ruling): the local campaign ideas a PERSON approved in the ONE
+  // approval queue. A pending or rejected idea is never read here; a refused read is null (said in the kickoff, never "none").
+  let approvedLocalIdeas: MarketingSnapshot["approvedLocalIdeas"] = null
+  try {
+    const { loadApprovedLocalCampaignIdeas } = await import("@/lib/content-intel/local-intel")
+    const r = await loadApprovedLocalCampaignIdeas(svc, brokerageId)
+    if (r.error) console.error(`[marketing-agent] approved local ideas unreadable for ${brokerageId}: ${r.error}`)
+    else approvedLocalIdeas = r.ideas.map((i) => ({ title: i.title, brief: i.brief }))
+  } catch (e) {
+    console.error(`[marketing-agent] approved local ideas failed for ${brokerageId}:`, (e as Error).message)
+  }
+
   return {
     marketLeadership,
+    approvedLocalIdeas,
     pendingListingPromos,
     newListingsThisWeek,
     atRiskListings,
@@ -1087,6 +1102,12 @@ export async function spawnMarketingAgentForBrokerage(params: {
     const { rankLeadershipOpportunities, renderLeadershipBriefForKickoff } = await import("@/lib/content-intel/market-leadership")
     marketLeadershipLines = renderLeadershipBriefForKickoff(snap.marketLeadership, rankLeadershipOpportunities(snap.marketLeadership))
   }
+  // Wave 144 (lane 144Z): only APPROVED local campaign ideas reach the plan; each piece made from one still waits for its own approval.
+  const approvedIdeaLines = snap.approvedLocalIdeas === null
+    ? "──── APPROVED LOCAL CAMPAIGN IDEAS ────\n(the approval queue could not be read this week — propose no local-event piece from it)"
+    : snap.approvedLocalIdeas.length === 0
+      ? "──── APPROVED LOCAL CAMPAIGN IDEAS ────\n(none approved yet — a pending idea is NOT approved; do not produce it)"
+      : ["──── APPROVED LOCAL CAMPAIGN IDEAS (a person approved each; produce ORIGINAL drafts — every draft still goes to its own approval queue) ────", ...snap.approvedLocalIdeas.map((i, n) => `  ${n + 1}. ${i.title} — ${i.brief}`)].join("\n")
 
   const kickoff = params.kickoff ?? [
     renderBrokerageContextForKickoff(brokerage),
@@ -1106,6 +1127,8 @@ export async function spawnMarketingAgentForBrokerage(params: {
     snapshotDeltaLines,
     "",
     marketLeadershipLines,
+    "",
+    approvedIdeaLines,
     "",
     "──── CONTENT INTELLIGENCE — TOP TOPICS FROM THE BANK ────",
     "Lead every asset this week with one of these. The audience is asking",

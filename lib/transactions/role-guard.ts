@@ -1,6 +1,8 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import type { UserRole } from "@/lib/security"
-import { toCanonicalRoleOrDefault } from "@/lib/security"
+// Imported from the defining modules, not the barrel (wave 144, lane 144Z — test:proxy-graph-budget: the barrel pulls every
+// sibling module into app/crm/page.tsx's graph; the same symbols, nothing else).
+import { toCanonicalRoleOrDefault } from "@/lib/security/types"
 import { stageTransitionTier } from "@/lib/auth/resolve-user-role"
 
 export type { UserRole }

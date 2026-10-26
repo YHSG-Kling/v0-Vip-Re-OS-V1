@@ -100,7 +100,9 @@ function resolveComingSoonPolicy(raw: unknown): ComingSoonPolicy {
   return out
 }
 
-export type ComingSoonPolicyAnswer =
+// Module scope (wave 144, lane 144Z — test:opposite-missing category 3): the answer of the module-private comingSoonPolicyFor;
+// no importer and no exported signature carries it, so it is not part of this module's surface.
+type ComingSoonPolicyAnswer =
   | { status: "attested"; entry: ComingSoonPolicyEntry }
   | { status: "unknown"; why: string }
 

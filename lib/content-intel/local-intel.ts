@@ -965,9 +965,96 @@ export async function runLocalIntelSweep(db: Db, opts: { now?: Date; maxTenants?
       out.facts += r.inserted + r.updated
       out.platformCostUsd = Math.round((out.platformCostUsd + r.searchCostUsd) * 10000) / 10000
       for (const e of r.errors.slice(0, 3)) out.errors.push(`${b}: ${e}`)
+      // wave 144 (lane 144Z): the tenant's upcoming verified facts → ORIGINAL campaign ideas, filed PENDING a human's approval.
+      const ideas = await proposeLocalCampaignIdeas(db, b, { now: opts.now })
+      if (ideas.error) out.errors.push(`${b}: campaign ideas: ${ideas.error}`)
     } catch (e) {
       out.errors.push(`${b}: ${(e as Error)?.message ?? String(e)}`)
     }
   }
   return out
+}
+
+// ── TOPIC → ORIGINAL CAMPAIGN IDEA → HUMAN APPROVAL (wave 144, lane 144Z — owner ruling 14 + the publication ruling) ─────────
+// A verified, upcoming local fact is a TOPIC suggestion (the pool above). The campaign IDEA it supports — an original community
+// piece the brokerage could produce (a local guide / newsletter feature, a short video, a lead magnet) — is filed in the ONE
+// approval survivor (approval_items → lib/kernel/approval-queue-aggregator.ts, the agent's / broker's /approvals feed) as
+// PENDING. Nothing uses it before a person approves it: the only reader (loadApprovedLocalCampaignIdeas → the weekly marketing
+// kickoff, lib/agents/marketing-agent.ts) returns APPROVED ideas only, and each piece produced from one still lands in its own
+// approval queue before publication (blog / newsletter / video). The idea is re-derived from the fact row (item_id) — the queue's
+// approve step overwrites review_notes with the reviewer's note, so the idea's text is never stored only there. Expired facts
+// never propose an idea (a recap is not a campaign); a fact that is no longer upcoming drops out of the approved list.
+
+export const LOCAL_CAMPAIGN_IDEA_ITEM_TYPE = "local_campaign_idea"
+
+/** PURE — the ORIGINAL campaign idea an upcoming / ongoing verified fact supports, or null (expired / undated news is not an event idea). */
+export function localCampaignIdea(f: LocalFactView): { title: string; brief: string } | null {
+  if (f.temporal !== "upcoming" && f.temporal !== "ongoing") return null
+  const when = f.eventStart ? (f.eventEnd ? `${fmtDay(f.eventStart)} to ${fmtDay(f.eventEnd)}` : fmtDay(f.eventStart)) : "dates per the source"
+  const where = [f.venue, [f.city, f.state].filter(Boolean).join(", ")].filter(Boolean).join(" · ")
+  return {
+    title: `Community moment: ${f.title}`.slice(0, 200),
+    brief: [
+      `An ORIGINAL local piece around "${f.title}" (${when}${where ? `, ${where}` : ""}) — a short community guide or newsletter feature, a 30-60s video, or a "getting around the event" lead magnet, in the brokerage's own voice.`,
+      `Credit ${f.publisher ?? "the source"}${f.url ? ` (${f.url})` : ""} by name and link; never reproduce its wording.`,
+      "Describe the place by amenities and happenings — never by who lives there, safety or school quality (fair housing). Each piece produced from this idea still goes through its own approval before it is published.",
+    ].join(" "),
+  }
+}
+
+/**
+ * File the campaign ideas the tenant's upcoming verified facts support as PENDING approval items (idempotent per fact: a fact that
+ * already has an idea row — pending, approved or rejected — is never re-proposed). Tenant-pinned; every read is read for its error;
+ * the insert is counted. Never throws.
+ */
+export async function proposeLocalCampaignIdeas(db: Db, brokerageId: string, opts: { now?: Date; max?: number } = {}): Promise<{ proposed: number; existing: number; error: string | null }> {
+  const now = opts.now ?? new Date()
+  try {
+    const { facts, error } = await loadLocalFacts(db, brokerageId, { now })
+    if (error) return { proposed: 0, existing: 0, error }
+    const candidates = facts.map((f) => ({ f, idea: localCampaignIdea(f) })).filter((x) => x.idea !== null).slice(0, Math.min(opts.max ?? 3, 10))
+    if (candidates.length === 0) return { proposed: 0, existing: 0, error: null }
+    const { data: prior, error: priorErr } = await db.from("approval_items").select("item_id")
+      .eq("brokerage_id", brokerageId).eq("item_type", LOCAL_CAMPAIGN_IDEA_ITEM_TYPE).in("item_id", candidates.map((x) => x.f.topicId))
+    if (priorErr) return { proposed: 0, existing: 0, error: `approval_items read refused: ${priorErr.message ?? "unknown"}` }
+    const seen = new Set(((prior ?? []) as Array<{ item_id: string | null }>).map((r) => r.item_id))
+    const fresh = candidates.filter((x) => !seen.has(x.f.topicId))
+    if (fresh.length === 0) return { proposed: 0, existing: candidates.length, error: null }
+    const { data: ins, error: insErr } = await db.from("approval_items").insert(fresh.map((x) => ({
+      brokerage_id: brokerageId, agent_id: null, item_type: LOCAL_CAMPAIGN_IDEA_ITEM_TYPE, item_id: x.f.topicId, status: "pending",
+      submitted_at: now.toISOString(),
+      // The reviewer's view (the queue decodes `excerpt`); the idea itself is re-derived from the fact row on read.
+      review_notes: JSON.stringify({ violations: [], excerpt: `${x.idea!.title} — ${x.idea!.brief}`.slice(0, 500) }),
+    }))).select("id")
+    if (insErr) return { proposed: 0, existing: candidates.length - fresh.length, error: `approval_items insert refused: ${insErr.message ?? "unknown"}` }
+    const n = (ins ?? []).length
+    return { proposed: n, existing: candidates.length - fresh.length, error: n === fresh.length ? null : `approval_items insert returned ${n} of ${fresh.length} rows` }
+  } catch (e) {
+    return { proposed: 0, existing: 0, error: `proposeLocalCampaignIdeas threw: ${(e as Error)?.message ?? String(e)}` }
+  }
+}
+
+/**
+ * THE ONLY READER of local campaign ideas: those a PERSON APPROVED (approval_items status 'approved') whose fact is still upcoming /
+ * ongoing — re-derived from the fact, so an approval lapses with its event (no second freshness window). A pending or rejected idea is
+ * never returned. A refused read is `error`.
+ */
+export async function loadApprovedLocalCampaignIdeas(db: Db, brokerageId: string, opts: { now?: Date } = {}): Promise<{ ideas: Array<{ topicId: string; title: string; brief: string; approvedAt: string | null }>; error: string | null }> {
+  const now = opts.now ?? new Date()
+  if (!brokerageId) return { ideas: [], error: "no tenant" }
+  try {
+    const { data, error } = await db.from("approval_items").select("item_id, reviewed_at")
+      .eq("brokerage_id", brokerageId).eq("item_type", LOCAL_CAMPAIGN_IDEA_ITEM_TYPE).eq("status", "approved")
+      .order("reviewed_at", { ascending: false }).limit(50)
+    if (error) return { ideas: [], error: `approval_items read refused: ${error.message ?? "unknown"}` }
+    const approved = new Map(((data ?? []) as Array<{ item_id: string | null; reviewed_at: string | null }>).filter((r) => !!r.item_id).map((r) => [r.item_id as string, r.reviewed_at]))
+    if (approved.size === 0) return { ideas: [], error: null }
+    const { facts, error: factErr } = await loadLocalFacts(db, brokerageId, { now, limit: 50 })
+    if (factErr) return { ideas: [], error: factErr }
+    const ideas = facts.filter((f) => approved.has(f.topicId)).map((f) => ({ f, idea: localCampaignIdea(f) })).filter((x) => x.idea !== null)
+      .map((x) => ({ topicId: x.f.topicId, title: x.idea!.title, brief: x.idea!.brief, approvedAt: approved.get(x.f.topicId) ?? null }))
+    return { ideas, error: null }
+  } catch (e) {
+    return { ideas: [], error: `loadApprovedLocalCampaignIdeas threw: ${(e as Error)?.message ?? String(e)}` }
+  }
 }

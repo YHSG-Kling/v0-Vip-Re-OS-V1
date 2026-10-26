@@ -38,7 +38,9 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { STANDARD_TIMELINES, type StandardTimeline } from "@/constants/crm-standards"
-import { requirePermission } from "@/lib/security"
+// Imported from the defining modules, not the barrel (wave 144, lane 144Z — test:proxy-graph-budget: the barrel pulls every
+// sibling module into app/crm/page.tsx's graph; the same symbols, nothing else).
+import { requirePermission } from "@/lib/security/rbac"
 import { isTenantAdminOrPlatformStaff, resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
 import { scrapePage } from "@/lib/providers/zenrows/client"
 import { revalidatePath } from "next/cache"

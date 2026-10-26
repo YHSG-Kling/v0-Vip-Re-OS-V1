@@ -1199,10 +1199,20 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
     check("CONVERSION IS FINAL: a converted lead's signal is answered as its CONTACT", r6.action === "isa_engagement" && calls.eng[0]?.contactId === "c-buyer")
     reset(); const r7 = await say({ type: "contact", id: "c-foreign" })
     check("TENANCY: another brokerage's contact is REFUSED (the brokerage on the query is the pin) — nothing recorded, nothing engaged", r7.action === "refused" && calls.rec.length === 0 && calls.eng.length === 0)
+    // RE-ASSERTED (wave 144, lane 144Z): this pinned a SHAPE — "the reactor calls respondToLifeChangeSignal inline". Lane 144Z made
+    // the two bus lines the reactor publishes HANDLED (lib/kernel/signal-registry.ts) by the Sphere Manager's registered handlers,
+    // which call the SAME responder — one door instead of an inline call beside a feed-only line (CLAUDE.md §1, one canonical path).
+    // The RULE is unchanged: EQUITY_MILESTONE / REFINANCE_OPPORTUNITY reach the ONE responder, exactly once. Asserted: the reactor
+    // publishes both to sphere_of_influence; the Sphere has a registered handler for each; that handler's bridge calls the responder;
+    // and the reactor no longer ALSO calls it inline (two doors would evaluate one event twice).
     const reactor = src("lib/kernel/event-reactor.ts")
-    const at = reactor.indexOf("respondToLifeChangeSignal(svc")
-    check("WIRED: the event reactor answers EQUITY_MILESTONE and REFINANCE_OPPORTUNITY through the ONE responder (they were feed-only visibility until now)",
-      at > -1 && /KernelEvent\.EQUITY_MILESTONE \|\| params\.event === KernelEvent\.REFINANCE_OPPORTUNITY/.test(reactor) && reactor.indexOf('signalType:  "refinance_opportunity"') < at)
+    const signals = src("lib/kernel/manager-signals.ts")
+    const bridgeAt = signals.indexOf("async function answerLifeChangeSignal(")
+    const bridge = bridgeAt < 0 ? "" : signals.slice(bridgeAt, signals.indexOf("\n}\n", bridgeAt))
+    const routedToSphere = (t: string) => new RegExp(`toManager:\\s*"sphere_of_influence",\\s*signalType:\\s*"${t}"`).test(reactor)
+    const handled = (t: string) => new RegExp(`"sphere_of_influence:${t}":\\s*async[^\\n]*answerLifeChangeSignal\\(signal,\\s*ctx,\\s*"${t}"`).test(signals)
+    check("WIRED: EQUITY_MILESTONE and REFINANCE_OPPORTUNITY reach the ONE responder exactly once — the reactor publishes each to the Sphere, the Sphere's registered handler answers it through respondToLifeChangeSignal, and the reactor carries no second inline door",
+      ["equity_milestone", "refinance_opportunity"].every((t) => routedToSphere(t) && handled(t)) && /respondToLifeChangeSignal\(/.test(bridge) && !/respondToLifeChangeSignal\(svc/.test(reactor))
     check("(control) a commented-out call is not read as one", !/respondToLifeChangeSignal\(svc/.test(stripComments("// await respondToLifeChangeSignal(svc, x)\nconst y = 1")))
 
     // Lane 144E's provider-backed sources (lib/enrichment/intent-signal-sources.ts): STORED facts on the contact row, read through

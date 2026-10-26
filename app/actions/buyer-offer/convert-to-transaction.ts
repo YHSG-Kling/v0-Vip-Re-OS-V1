@@ -5,7 +5,9 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { isValidUUID } from "@/lib/validations";
 import { getOfferLifecycleState } from "./track-offer-lifecycle";
 import { validateAcceptanceEligibility } from "@/lib/buyer-offer";
-import { createTransactionFromOffer } from "@/lib/transactions";
+// Imported from the defining modules, not the barrel (wave 144, lane 144Z — test:proxy-graph-budget: the barrel pulls every
+// sibling module into app/crm/page.tsx's graph; the same symbols, nothing else).
+import { createTransactionFromOffer } from "@/lib/transactions/offer-bridge";
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 /**

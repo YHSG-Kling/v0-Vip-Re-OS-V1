@@ -84,13 +84,14 @@ export const WAVE144_CANARY_KEYS = [
 export type Wave144CanaryKey = (typeof WAVE144_CANARY_KEYS)[number]
 
 /** One canary's wave-144 verdict: green, or every red step classified by the owner it names (pure — the runner prints it). */
-export interface RulingVerdict { verdict: "green" | "red"; awaiting: Record<string, number>; defects: number; redSteps: Array<{ owner: string; step: string }> }
-export function rulingVerdict(steps: ReadonlyArray<{ step: string; ok: boolean; hook?: string; owner?: string }>): RulingVerdict {
-  const red = steps.filter((s) => !s.ok && !s.hook)
+export interface RulingVerdict { verdict: "green" | "red"; awaiting: Record<string, number>; defects: number; redSteps: Array<{ owner: string; step: string }>; pendingOwner: number }
+export function rulingVerdict(steps: ReadonlyArray<{ step: string; ok: boolean; hook?: string; owner?: string; pendingOwner?: string }>): RulingVerdict {
+  // WAVE 144 (lane 144Z): a PENDING OWNER DECISION step is never red and never green — it is counted apart (pendingOwner).
+  const red = steps.filter((s) => !s.ok && !s.hook && !s.pendingOwner)
   const awaiting: Record<string, number> = {}
   let defects = 0
   for (const s of red) { if (s.owner && s.owner !== "defect") awaiting[s.owner] = (awaiting[s.owner] ?? 0) + 1; else defects += 1 }
-  return { verdict: red.length ? "red" : "green", awaiting, defects, redSteps: red.map((s) => ({ owner: s.owner && s.owner !== "defect" ? `red-awaiting-lane-${s.owner}` : "red-defect", step: s.step })) }
+  return { verdict: red.length ? "red" : "green", awaiting, defects, redSteps: red.map((s) => ({ owner: s.owner && s.owner !== "defect" ? `red-awaiting-lane-${s.owner}` : "red-defect", step: s.step })), pendingOwner: steps.filter((s) => s.pendingOwner).length }
 }
 
 /**

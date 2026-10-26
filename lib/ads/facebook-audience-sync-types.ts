@@ -15,6 +15,8 @@ export interface CreateAudienceParams {
   sourceRule: SourceRule
   consentBasis: string
   adCampaignId?: string
+  /** Wave 144 (lane 144Z): the synced audience a LOOKALIKE is modelled on (verified in-tenant by the kernel). */
+  lookalikeSeedAudienceId?: string | null
 }
 
 export interface SyncAudienceParams {

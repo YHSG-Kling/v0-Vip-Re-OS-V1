@@ -40,7 +40,9 @@ import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import { isValidUUID }          from "@/lib/validations"
 import { OFFER_EVENT }          from "@/lib/buyer-offer/offer-lifecycle"
 import { emitCompliancePassed } from "@/lib/buyer-offer/compliance-gate"
-import { createTransactionFromOffer } from "@/lib/transactions"
+// Imported from the defining modules, not the barrel (wave 144, lane 144Z — test:proxy-graph-budget: the barrel pulls every
+// sibling module into app/crm/page.tsx's graph; the same symbols, nothing else).
+import { createTransactionFromOffer } from "@/lib/transactions/offer-bridge"
 import { auditOfferDocuments }       from "@/lib/compliance/required-documents"
 // THE SAME PURE READING THE TRANSACTION-CREATION GATE MAKES, made HERE too.
 // Imported, never re-spelled: this checkpoint and the gate that later refuses on

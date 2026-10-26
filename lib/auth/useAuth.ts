@@ -21,7 +21,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { isSupabaseConfigured } from '@/services/supabase'
-import { toCanonicalRoleOrDefault } from '@/lib/security'
+// Imported from the defining modules, not the barrel (wave 144, lane 144Z — test:proxy-graph-budget: the barrel pulls every
+// sibling module into app/crm/page.tsx's graph; the same symbols, nothing else).
+import { toCanonicalRoleOrDefault } from '@/lib/security/types'
 import type { UserContext, UserRole } from '@/lib/security'
 import { resolvePlatformRoleIdentity } from '@/lib/platform/platform-staff-roster'
 import type { User } from '@/types'

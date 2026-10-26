@@ -233,6 +233,14 @@ async function conductDueFollowUpMoments(
         continue
       }
 
+      // ── A REFERRAL TO A QUALIFIED PROFESSIONAL (wave 144, lane 144Z): recordAndExecuteExperience already wrote the agent's
+      //    introduction task on the ISA's rail (lead-action-plan.ts prepareProfessionalIntroduction) — a second "no executor took it"
+      //    task would be false. Executed → the moment waits on the person; not executed → the agent still gets the moment. ──
+      if (kind === "professional_referral" && res.recorded.execution.mode === "caller") {
+        if (await settle(svc, row, { status: "pending_review" }, { ...trail, introduction_task: true })) out.routedToAgent++
+        continue
+      }
+
       // ── EVERYTHING ELSE (video, education, properties, market update, portal task …): delegated by recordAndExecuteExperience ──
       const mode = res.recorded.execution.mode
       if (mode === "delegated") {

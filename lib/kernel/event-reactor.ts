@@ -4228,6 +4228,8 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
             entityType:  params.entityType,
             entityId:    params.entityId,
             contactId:   params.contactId ?? null,
+            // wave 144 (lane 144Z): the scan's context rides the line the Sphere's handler answers (the responder's provenance).
+            payload:     { transaction_id: ((params.metadata ?? {}) as Record<string, unknown>).transaction_id ?? null, quarter: ((params.metadata ?? {}) as Record<string, unknown>).quarter ?? null },
           }, svc)
         } catch { /* best-effort */ }
       }
@@ -4242,30 +4244,18 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
             entityType:  params.entityType,
             entityId:    params.entityId,
             contactId:   params.contactId ?? null,
+            // wave 144 (lane 144Z): the scan's context rides the line the Sphere's handler answers (the responder's provenance).
+            payload:     { transaction_id: ((params.metadata ?? {}) as Record<string, unknown>).transaction_id ?? null, quarter: ((params.metadata ?? {}) as Record<string, unknown>).quarter ?? null },
           }, svc)
         } catch { /* best-effort */ }
       }
-      // 8-9b — WAVE 144 (lane 144F, owner ruling 11: "if a customer's life changes … that TRIGGERS an action inside the platform …
-      // through a governed evaluation and next-best action"). The two lines above were VISIBILITY ONLY — both signal types are
-      // feed_only — and the life-change store the follow-up loops actually consume (signal_reactivations, read by long-term nurture
-      // and the Sphere's returning-customer loop) never heard of either: equity / refinance moments reached a feed and nothing else.
-      // The ONE responder (lib/ai-isa/followup-arbiter.ts respondToLifeChangeSignal) records the signal there and routes it by who the
-      // person is (lifetime → the Sphere's gated re-engagement; an ordinary contact → the ISA's governed engagement now). Idempotent
-      // per (person, signal, day) on the action ledger; never throws.
-      if ((params.event === KernelEvent.EQUITY_MILESTONE || params.event === KernelEvent.REFINANCE_OPPORTUNITY) && (params.contactId ?? params.entityId)) {
-        try {
-          const { respondToLifeChangeSignal } = await import("@/lib/ai-isa/followup-arbiter")
-          const meta = (params.metadata ?? {}) as Record<string, unknown>
-          const r = await respondToLifeChangeSignal(svc, {
-            brokerageId: params.brokerageId,
-            subject: { type: "contact", id: String(params.contactId ?? params.entityId) },
-            signalType: params.event === KernelEvent.EQUITY_MILESTONE ? "equity_milestone" : "refinance_opportunity",
-            source: "equity_trigger",
-            detail: { transaction_id: meta.transaction_id ?? null, quarter: meta.quarter ?? null },
-          })
-          if (r.action === "refused") console.warn(`[event-reactor] life-change signal not answered for ${params.contactId ?? params.entityId}: ${r.reason}`)
-        } catch (e) { console.warn("[event-reactor] life-change responder threw (non-blocking):", e instanceof Error ? e.message : e) }
-      }
+      // 8-9b — TOMBSTONE (wave 144, lane 144Z — CLAUDE.md §1.3, "one canonical path"): lane 144F's inline
+      // respondToLifeChangeSignal call for EQUITY_MILESTONE / REFINANCE_OPPORTUNITY stood here, BESIDE the two bus lines above that
+      // were declared feed-only — so the evaluation ran in the reactor while the registered managers' bus said nobody consumed them.
+      // The two lines are now HANDLED: the Sphere Manager's registered handlers consume them and answer through the SAME responder —
+      // survivor lib/kernel/manager-signals.ts SIGNAL_HANDLERS["sphere_of_influence:equity_milestone"] /
+      // ["sphere_of_influence:refinance_opportunity"] (→ answerLifeChangeSignal → lib/ai-isa/followup-arbiter.ts
+      // respondToLifeChangeSignal), with the scan's transaction / quarter carried on the payload above. One door, not two.
 
       // 10 — a contact accessed their client portal (lib/kernel/portal.ts logPortalAccess,
       // entityType "contact", generic across every portal kind). Data Steward (the portal-access

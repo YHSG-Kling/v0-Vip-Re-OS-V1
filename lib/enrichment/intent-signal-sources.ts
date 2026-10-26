@@ -142,3 +142,59 @@ export function intentSignalsFromContact(
   if (contact.home_anniversary) push("home_anniversary", "contacts.home_anniversary", contact.home_anniversary, null, true)
   return out
 }
+
+// ── THE PUSH (wave 144, lane 144Z — rulings 10 + 11; lane 144F Still open 11) ──────────────────────────────────────────────
+// The facts above were only PULLED: read on a contact's next evaluation, so a newly stored behaviour / life-event fact triggered
+// nothing by itself. The writers that land them (online-presence-store.ts persistRealEstateIndicators, contact-enrichment-core.ts
+// enrichContactRecord + runLifeChangeCheck) now hand their BEFORE / AFTER rows here, and each NEW fact a change can rest on is
+// published once on the manager bus (`online_intent_detected`, Data Steward → AI ISA — lib/kernel/signal-registry.ts), whose
+// registered handler answers it through the ONE life-change responder. Only `behaviour` and `life_event` facts are a change (the
+// source's own sensitivity flag — never a threshold invented here): an `age` fact never leaves this module, a stored property fact
+// is history the equity / refinance triggers own.
+
+/** PURE. The behaviour / life-event facts the AFTER row carries that the BEFORE row did not (same key + value + observation). */
+export function newIntentFacts(
+  before: Parameters<typeof intentSignalsFromContact>[0] | null | undefined,
+  after: Parameters<typeof intentSignalsFromContact>[0],
+  now: Date = new Date(),
+): ObservedIntentSignal[] {
+  const id = (o: ObservedIntentSignal) => `${o.key}|${String(o.value)}|${o.observedAt ?? ""}`
+  const seen = new Set((before ? intentSignalsFromContact(before, now) : []).map(id))
+  return intentSignalsFromContact(after, now).filter((o) => (o.sensitivity === "behaviour" || o.sensitivity === "life_event") && !seen.has(id(o)))
+}
+
+/**
+ * Publish each NEW behaviour / life-event fact a write landed on a contact (newIntentFacts) as ONE `online_intent_detected` bus
+ * signal per fact (the bus dedupes per open contact — the evaluation reads every stored fact, so one open line suffices). The
+ * brokerage and contact are the WRITER's verified target, never a payload. Never throws: a refused publish is counted and logged —
+ * the write it follows already succeeded and is not undone.
+ */
+export async function publishNewIntentFacts(
+  svc: unknown,
+  target: { brokerageId: string; contactId: string },
+  before: Parameters<typeof intentSignalsFromContact>[0] | null | undefined,
+  after: Parameters<typeof intentSignalsFromContact>[0],
+  now: Date = new Date(),
+): Promise<{ published: number; refused: number }> {
+  const fresh = newIntentFacts(before, after, now)
+  if (fresh.length === 0 || !target.brokerageId || !target.contactId) return { published: 0, refused: 0 }
+  let published = 0, refused = 0
+  try {
+    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+    for (const f of fresh) {
+      const r = await publishManagerSignal({
+        brokerageId: target.brokerageId, fromManager: "data_steward", toManager: "ai_isa",
+        signalType: "online_intent_detected",
+        message: `A provider we already use recorded a new ${f.sensitivity === "life_event" ? "life-event" : "online-intent"} fact (${f.provider} · ${f.field}).`,
+        entityType: "contact", entityId: target.contactId, contactId: target.contactId,
+        payload: { key: f.key, provider: f.provider, field: f.field, intents: [...f.intents], sensitivity: f.sensitivity, observed_at: f.observedAt },
+      }, svc as never)
+      if (r.ok) published++
+      else { refused++; console.warn(`[intent-signal-sources] online_intent_detected not published for ${target.contactId}: ${r.reason ?? "refused"}`) }
+    }
+  } catch (e) {
+    refused += fresh.length - published
+    console.warn("[intent-signal-sources] publish threw (non-blocking):", e instanceof Error ? e.message : e)
+  }
+  return { published, refused }
+}

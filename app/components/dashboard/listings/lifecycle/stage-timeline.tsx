@@ -30,6 +30,9 @@ interface Props {
   agreement?: { esign_status: string | null; fully_executed_at: string | null } | null
   /** The stage machine's stage — the coming-soon / marketing status is read off it. */
   lifecycleStage?: string | null
+  /** Wave 144 (lane 144Z): time in each stage (listing_stage_history via app/actions/listings.ts getListingTimeline).
+   *  null = the read failed (said, never rendered as "none"); undefined = not provided. */
+  stageDurations?: Array<{ stage: string; enteredAt: string | null; exitedAt: string | null; days: number | null; isOverride: boolean }> | null
 }
 
 type DateField = "go_live_date" | "open_house_marketing_date" | "open_house_event_date"
@@ -69,7 +72,7 @@ function fmtTime(iso: string) {
   })
 }
 
-export function StageTimeline({ listing, lifecycleEvents, agreement = null, lifecycleStage = null }: Props) {
+export function StageTimeline({ listing, lifecycleEvents, agreement = null, lifecycleStage = null, stageDurations }: Props) {
   // PLANNED vs VERIFIED, from the one reader (lib/listings/compute-dom.ts). A planned date is NEVER shown as live.
   const mls = resolveMlsLiveDates(listing)
   // DAYS ON MARKET from the same resolver: counted from the VERIFIED live date; a planned date only counts once it has arrived,
@@ -194,6 +197,27 @@ export function StageTimeline({ listing, lifecycleEvents, agreement = null, life
           onChangeEditValue={setEditValue}
         />
       </div>
+
+      {/* Time in each stage — listing_stage_history (wave 144, lane 144Z) */}
+      {stageDurations !== undefined && (
+        <div className="px-4 pt-4">
+          <h2 className="text-sm font-semibold text-foreground mb-2">Time in each stage</h2>
+          {stageDurations === null ? (
+            <p className="text-xs text-destructive">The stage durations could not be read.</p>
+          ) : stageDurations.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No completed stage recorded yet</p>
+          ) : (
+            <ul className="space-y-1">
+              {stageDurations.map((d, i) => (
+                <li key={`${d.stage}-${i}`} className="flex items-center justify-between gap-2 text-xs">
+                  <span className="text-foreground truncate">{d.stage.replace(/_/g, " ").toLowerCase()}{d.isOverride ? " (override)" : ""}</span>
+                  <span className="text-muted-foreground shrink-0">{d.days !== null ? `${Math.round(d.days * 10) / 10} d` : d.exitedAt ? "—" : "in progress"}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* Timeline */}
       <div className="p-4">

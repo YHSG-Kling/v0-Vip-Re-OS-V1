@@ -433,6 +433,27 @@ async function proposeQualificationConfirmation(
 
 /** The registered conversations — to_manager:signal_type → handler. Handlers act by
  *  proposing GOVERNED deliverables (the gate), never autonomous sends. */
+/**
+ * WAVE 144 (lane 144Z): the ONE bridge from a life-change bus signal to the ONE responder (lib/ai-isa/followup-arbiter.ts
+ * respondToLifeChangeSignal). The subject is the signal's contact (entity or contact column) — tenant-pinned by the responder's own
+ * brokerage-scoped reads; the brokerage is the inbox's, never the payload's. Returns the inbox's action string (a refusal included).
+ */
+async function answerLifeChangeSignal(
+  signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc }, signalType: string, source: string, detail: Record<string, unknown> = {},
+): Promise<string | null> {
+  const contactId = signal.contactId ?? (signal.entityType === "contact" ? signal.entityId : null)
+  if (!contactId) return null
+  const { respondToLifeChangeSignal } = await import("@/lib/ai-isa/followup-arbiter")
+  const payload = (signal.payload ?? {}) as Record<string, unknown>
+  const r = await respondToLifeChangeSignal(ctx.supabase, {
+    brokerageId: ctx.brokerageId,
+    subject: { type: "contact", id: contactId },
+    signalType, source,
+    detail: { ...detail, transaction_id: payload.transaction_id ?? null, quarter: payload.quarter ?? null, manager_signal_id: signal.id },
+  })
+  return r.action === "refused" ? `life-change signal not answered: ${r.reason}` : `life-change ${signalType} answered (${r.action}${r.subjectClass ? `, ${r.subjectClass}` : ""})`
+}
+
 export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   // ── Wave 141B — IMMEDIATE OPERATIONS: `<owner>:operation_failure_escalated` for every registered owning
   //    manager (tenant creation, user creation, invitation, seat provisioning, brokerage transfer, website,
@@ -2450,6 +2471,26 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     })
     if (nextMoveNotifyError) console.error("[manager-signals] next_move_followup notify failed:", nextMoveNotifyError.message)
     return `escalated ${intent} next-move intent to responsible agent (${nextStep})`
+  },
+  // WAVE 144 (lane 144Z — owner ruling 11: "if a customer's life changes … that TRIGGERS an action inside the platform …
+  // through a governed evaluation and next-best action"). Data Steward → Sphere: the equity-trigger wealth scan found a cash-out
+  // equity milestone / a rate-improvement refinance on a contact. These were FEED-ONLY lines (lane 144F answered them inline in the
+  // event reactor, beside a bus line nobody consumed); the Sphere Manager — the lifetime relationship owner the reactor already
+  // addresses — now CONSUMES them and answers through the ONE life-change responder (respondToLifeChangeSignal: lifetime → the
+  // Sphere's gated re-engagement; an ordinary contact → the ISA's governed engagement; idempotent per person / signal / day on the
+  // action ledger). The responder never throws; a refusal is the action string, read by the inbox and kept on the signal row.
+  "sphere_of_influence:equity_milestone": async (signal, ctx) => answerLifeChangeSignal(signal, ctx, "equity_milestone", "equity_trigger"),
+  "sphere_of_influence:refinance_opportunity": async (signal, ctx) => answerLifeChangeSignal(signal, ctx, "refinance_opportunity", "equity_trigger"),
+  // WAVE 144 (lane 144Z — rulings 10 + 11): Data Steward → AI ISA: a write landed a NEW behaviour / life-event fact from a
+  // provider we already use (lane 144E's intent sources; published by lib/enrichment/intent-signal-sources.ts
+  // publishNewIntentFacts). The signal_type the responder files it under comes from the source's own intents
+  // (followup-arbiter.ts intentFactSignalType) — a fact that maps to nothing is NOT answered (age / stored property facts).
+  "ai_isa:online_intent_detected": async (signal, ctx) => {
+    const payload = (signal.payload ?? {}) as { intents?: unknown; sensitivity?: unknown; provider?: unknown; key?: unknown; field?: unknown }
+    const { intentFactSignalType } = await import("@/lib/ai-isa/followup-arbiter")
+    const type = intentFactSignalType({ intents: Array.isArray(payload.intents) ? payload.intents.map(String) : [], sensitivity: String(payload.sensitivity ?? "") })
+    if (!type) return `not a life change (${String(payload.provider ?? "?")}.${String(payload.key ?? "?")}, sensitivity ${String(payload.sensitivity ?? "unknown")}) — nothing to answer`
+    return answerLifeChangeSignal(signal, ctx, type, `enrichment:${String(payload.provider ?? "unknown")}`, { key: payload.key ?? null, field: payload.field ?? null })
   },
   // AI ISA → Sphere: a RELOCATED past client asked for a referral to an agent in their new
   // area. The Sphere Manager (referral-out owner) escalates a HIGH-priority follow-up to place

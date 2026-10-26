@@ -7,7 +7,10 @@
  *
  * This module is the single canonical gate. Callers:
  *   - app/actions/showings.ts:requestShowing
- *   - app/actions/buyer-offer/create-offer.ts:createBuyerOffer
+ *   - lib/kernel/self-book.ts (self-booked showings), lib/ai-isa/convert-buyer-lead-on-intent.ts (the AI-ISA converter)
+ *   - app/actions/buyer-offers.ts:createOffer (the offer WRITER, wave 144 lane 144Z — the file this header used to name,
+ *     app/actions/buyer-offer/create-offer.ts, never existed)
+ *   - app/api/agent-assistant/tool-call/route.ts (voice-staged offer drafts: flags requires_bba_first)
  *
  * Fails CLOSED on errors — better to block a legitimate showing than to
  * expose the brokerage to a $5K–$50K NAR violation.

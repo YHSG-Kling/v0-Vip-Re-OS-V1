@@ -13,14 +13,13 @@
  * events are inferred ONLY from geo-tagged topic-bank rows whose text names an event" (market-leadership.ts header) — no
  * date, location, freshness or confidence is stored, so an expired event cannot be told from an upcoming one — 144G.
  */
-import { CANARY_TAG, LIVE, canary, landedModule, uuid } from "./_harness"
+import { CANARY_TAG, LIVE, canary, landedModule, setSvc, uuid } from "./_harness"
 import { findLanded, listFiles, strippedRepo } from "./_registry"
 import { memSupabase } from "../in-memory-supabase"
 
 export async function run() {
   const c = canary("Local intelligence: verified local event (existing provider, dated, sourced) → topic → ORIGINAL campaign idea → human approval · expired ≠ upcoming · no article copies")
   if (LIVE) return c.report([], 0, "refused in CANARY_LIVE mode: in-memory only")
-  const UNWIRED = false as boolean
   const { rankLeadershipOpportunities } = await import("../../lib/content-intel/market-leadership")
   const empty = { aiVisibility: null, competitorMoves: [], mentions: null, ownPerformance: [], localEvents: [], blindSpots: [] }
 
@@ -64,7 +63,35 @@ export async function run() {
     const after = new Date(nowMs + 30 * DAY)
     const viewLater = await li.loadLocalFacts(db, B, { now: after })
     const viewLaterRecaps = await li.loadLocalFacts(db, B, { now: after, includeExpired: true })
+    // ── 4 (lane 144Z) · the stored upcoming fact → an ORIGINAL campaign idea filed PENDING in the ONE approval queue → nothing reads
+    //    it until a person approves it through that queue (lib/kernel/approval-queue-aggregator.ts cascadeApprove, the /approvals
+    //    door) → only then the weekly marketing kickoff's reader returns it. Same private in-memory client (the harness's service
+    //    seam points at it so the queue's own update runs).
+    const idea = typeof li.proposeLocalCampaignIdeas === "function" ? await (async () => {
+      const first = await li.proposeLocalCampaignIdeas(db, B, { now: NOW })
+      const again = await li.proposeLocalCampaignIdeas(db, B, { now: NOW })
+      const items = (db.tables.approval_items ?? []).filter((x: any) => x.brokerage_id === B && x.item_type === li.LOCAL_CAMPAIGN_IDEA_ITEM_TYPE)
+      const statusBefore = items.map((x: any) => String(x.status))
+      const pendingRead = await li.loadApprovedLocalCampaignIdeas(db, B, { now: NOW })
+      setSvc(db)
+      const { cascadeApprove } = await import("../../lib/kernel/approval-queue-aggregator")
+      const approved = items[0] ? await cascadeApprove(String(items[0].id), { brokerageId: B, agentScopeId: null, reviewerUserId: uuid() }) : { success: false }
+      const approvedRead = await li.loadApprovedLocalCampaignIdeas(db, B, { now: NOW })
+      const expiredView = { topicId: "x", kind: "local_event", title: "Past fair", url: PAST_URL, publisher: "City", eventStart: "2020-01-01", eventEnd: null, publishedAt: null, venue: null, city: "Pensacola", state: "FL", confidence: 0.9, temporal: "expired" }
+      const kickoff = strippedRepo("lib/agents/marketing-agent.ts") ?? ""
+      return {
+        oneIdeaPendingForTheUpcomingFact: first.proposed === 1 && items.length === 1 && statusBefore[0] === "pending" && items[0].item_id === row?.id,
+        idempotent: again.proposed === 0 && again.existing === 1,
+        nothingReadsItWhilePending: pendingRead.error === null && pendingRead.ideas.length === 0,
+        approvedThroughTheOneQueue: (approved as { success: boolean }).success === true && items[0]?.status === "approved",
+        readOnlyOnceApproved: approvedRead.ideas.length === 1 && approvedRead.ideas[0].topicId === row?.id,
+        originalNotACopy: /ORIGINAL/.test(approvedRead.ideas[0]?.brief ?? "") && /never reproduce its wording/.test(approvedRead.ideas[0]?.brief ?? "") && /its own approval/.test(approvedRead.ideas[0]?.brief ?? ""),
+        expiredProposesNothing: li.localCampaignIdea(expiredView) === null,
+        kickoffReadsApprovedOnly: /loadApprovedLocalCampaignIdeas\s*\(/.test(kickoff) && !/from\(\s*["']approval_items["']\s*\)/.test(kickoff),
+      }
+    })() : null
     return {
+      idea,
       stored: {
         ran: !!r.ran && (r.inserted ?? 0) >= 1, date: typeof lf.event_start === "string" && lf.event_start.length === 10,
         location: Array.isArray(row?.geo_relevance?.cities) && row.geo_relevance.cities.includes("Pensacola"),
@@ -97,8 +124,10 @@ export async function run() {
   c.rule("144G", "EXPIRED IS NOT UPCOMING (ruling 14): an event whose date has passed is never proposed as an upcoming community moment (a recap at most, labelled as past) and an undated item is not presented as upcoming — at HEAD the ranker's localEvents carry no date at all", allTrue(fact?.temporal), fact ? `landed pass + reader: ${JSON.stringify(fact.temporal)}` : "HEAD: LeadershipSignals.localEvents = { title, sourceUrl } — no date, so the distinction cannot be made")
 
   // ── 4 · topic → original campaign idea → HUMAN APPROVAL ──
+  // WIRED (lane 144Z): driven above on the landed pass's own stored fact (fact.idea) — the proposal, the ONE approval queue and the
+  // only reader; the findLanded probe stays as evidence of where it landed, never as the pass.
   const approval = findLanded(["lib/local-intel", "lib/content-intel", "lib/kernel/content-creators.ts"], /\b(local_event|localEvent\w*|community_event)\b[\s\S]{0,600}\b(approval|approve|pending_approval|requiresApproval|human_review)\b/)
-  c.rule("144G", "TOPIC → ORIGINAL CAMPAIGN IDEA → HUMAN APPROVAL (ruling 14 + the publication ruling): the verified event feeds a topic suggestion, the content-creator survivor drafts an ORIGINAL community piece / video / lead-magnet idea, and it waits for a human approval before any campaign, publication or follow-up uses it", approval !== null && UNWIRED, approval ? `landed at ${approval} — wire the proposal-awaits-approval assertion here` : "HEAD: no local-event → content proposal path")
+  c.rule("144G", "TOPIC → ORIGINAL CAMPAIGN IDEA → HUMAN APPROVAL (ruling 14 + the publication ruling): the verified event feeds a topic suggestion, the content-creator survivor drafts an ORIGINAL community piece / video / lead-magnet idea, and it waits for a human approval before any campaign, publication or follow-up uses it", approval !== null && allTrue(fact?.idea ?? undefined), fact?.idea ? `driven: ${JSON.stringify(fact.idea)}` : approval ? `landed at ${approval}, but no proposal door (proposeLocalCampaignIdeas) is exported` : "HEAD: no proposal-awaits-approval path")
 
   c.blind("No provider is called and no page is fetched (robots / terms are the provider modules' own rules). The ranker is pure; the store / discovery / approval half has no survivor at HEAD, so those steps read a landed module as evidence and stay red until their behavioural assertion is wired.")
   return c.report([], 0)

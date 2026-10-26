@@ -204,6 +204,11 @@ export interface CanaryStep {
    *  carries the fix ("144D"), or "defect" when no lane's brief owns it. A ruling step is NEVER pending: false is RED, it fails
    *  the canary, and the runner classifies it red-awaiting-lane-X / red-defect (scripts/canaries/_registry.ts rulingVerdict). */
   owner?: RulingOwner
+  /** WAVE 144 (lane 144Z): a ruling step whose behaviour waits on an OWNER DECISION no lane may take (a compliance review, a
+   *  data-governance call) carries the exact decision text here. It is PENDING — counted and printed beside the RESULT line,
+   *  never a pass and never a failure (the journey-promotion-gates guard's "pending outside lane" model). Only the undecided
+   *  half rides it: every decidable half of the same ruling stays a hard step. */
+  pendingOwner?: string
 }
 /** WAVE 144 (lane 144J): the owner of a ruling step — a wave-144 lane, or "defect" (no lane's brief owns the fix). */
 export type Wave144Lane = "144A" | "144B" | "144C" | "144D" | "144E" | "144F" | "144G" | "144H" | "144I"
@@ -219,6 +224,8 @@ export interface CanaryReport {
   passed: boolean
   /** WAVE141 HOOK steps still pending (a lane's module absent) — published beside the RESULT line. */
   hooks: number
+  /** WAVE 144 (lane 144Z): ruling steps PENDING an OWNER DECISION — published beside the RESULT line, never a pass. */
+  pendingOwner?: number
 }
 
 export function canary(chain: string) {
@@ -245,10 +252,24 @@ export function canary(chain: string) {
       console.log(`    ${ok ? "✓" : "✗"} [${owner}] ${step}${evidence ? ` — ${evidence.slice(0, 220)}` : ""}`)
       return ok
     },
+    /** WAVE 144 (lane 144Z): a ruling step that waits on an OWNER DECISION. When the ruled behaviour is observed (`ok`) it is an
+     *  ordinary green ruling step; otherwise it is PENDING OWNER DECISION — recorded with the exact `decision` text, printed ◌,
+     *  excluded from both the pass and the fail counts (scripts/canaries/run-canaries.ts prints the census). It is never a
+     *  green: a pending step is not evidence that the behaviour exists. */
+    pendingOwner(owner: RulingOwner, step: string, ok: boolean, decision: string, evidence = ""): boolean {
+      if (ok) {
+        steps.push({ step, ok, evidence, owner })
+        console.log(`    ✓ [${owner}] ${step}${evidence ? ` — ${evidence.slice(0, 220)}` : ""}`)
+        return true
+      }
+      steps.push({ step, ok: true, evidence, owner, pendingOwner: decision })
+      console.log(`    ◌ [${owner}] PENDING OWNER DECISION — ${step.slice(0, 200)} — decision: ${decision}${evidence ? ` — ${evidence.slice(0, 160)}` : ""}`)
+      return false
+    },
     blind(s: string) { blindSpots.push(s) },
     allOk: () => steps.every((s) => s.ok),
     report(cleanup: CanaryCleanup[], residual: number, skipped: string | null = null): CanaryReport {
-      return { chain, steps, blindSpots, cleanup, residual, skipped, passed: skipped !== null || (steps.every((s) => s.ok) && residual === 0), hooks: steps.filter((s) => s.hook).length }
+      return { chain, steps, blindSpots, cleanup, residual, skipped, passed: skipped !== null || (steps.every((s) => s.ok) && residual === 0), hooks: steps.filter((s) => s.hook).length, pendingOwner: steps.filter((s) => s.pendingOwner).length }
     },
   }
 }

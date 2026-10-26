@@ -74,11 +74,13 @@ async function main() {
   }
   const steps = reports.flatMap((r) => r.report.steps)
   const hookSteps = steps.filter((s) => s.hook)
-  const passedSteps = steps.filter((s) => s.ok && !s.hook).length
+  // WAVE 144 (lane 144Z): a step PENDING an OWNER DECISION is neither a pass nor a failure — excluded from both, counted apart.
+  const pendingOwnerSteps = steps.filter((s) => s.pendingOwner)
+  const passedSteps = steps.filter((s) => s.ok && !s.hook && !s.pendingOwner).length
   const failedCanaries = reports.filter((r) => !r.report.passed)
   const deleted = reports.flatMap((r) => r.report.cleanup).reduce((n, c) => n + Math.max(0, c.deleted), 0)
   console.log("\n──────────────────────────────────────────────────────────────")
-  for (const r of reports) console.log(` ${r.report.passed ? "PASS" : "FAIL"}  ${r.key.padEnd(20)} steps ${r.report.steps.filter((s) => s.ok && !s.hook).length}/${r.report.steps.filter((s) => !s.hook).length}${r.report.hooks ? `  hooks ${r.report.hooks}` : ""}  deleted ${r.report.cleanup.reduce((n, c) => n + Math.max(0, c.deleted), 0)}  residual ${r.report.residual}${r.report.skipped ? "  (skipped)" : ""}`)
+  for (const r of reports) console.log(` ${r.report.passed ? "PASS" : "FAIL"}  ${r.key.padEnd(20)} steps ${r.report.steps.filter((s) => s.ok && !s.hook && !s.pendingOwner).length}/${r.report.steps.filter((s) => !s.hook && !s.pendingOwner).length}${r.report.hooks ? `  hooks ${r.report.hooks}` : ""}${r.report.pendingOwner ? `  pending-owner ${r.report.pendingOwner}` : ""}  deleted ${r.report.cleanup.reduce((n, c) => n + Math.max(0, c.deleted), 0)}  residual ${r.report.residual}${r.report.skipped ? "  (skipped)" : ""}`)
   if (WAVE144) {
     // THE VERDICT TABLE (lane 144J): every red ruling step classified by the owner it names — red-awaiting-lane-X (a wave-144
     // lane's brief carries the fix) or red-defect (no lane owns it; a cleanup / fixture failure is a defect too).
@@ -88,9 +90,12 @@ async function main() {
       const v = rulingVerdict(r.report.steps)
       awaitingTotal += Object.values(v.awaiting).reduce((n, x) => n + x, 0); defectTotal += v.defects
       const lanes = Object.entries(v.awaiting).map(([l, n]) => `red-awaiting-lane-${l}×${n}`)
-      console.log(`   ${r.key.padEnd(16)} ${v.verdict === "green" ? "green" : [...lanes, ...(v.defects ? [`red-defect×${v.defects}`] : [])].join(", ")}`)
+      const pend = v.pendingOwner ? [`pending-owner×${v.pendingOwner}`] : []
+      console.log(`   ${r.key.padEnd(16)} ${v.verdict === "green" ? ["green", ...pend].join(", ") : [...lanes, ...(v.defects ? [`red-defect×${v.defects}`] : []), ...pend].join(", ")}`)
     }
-    console.log(` WAVE144 RULINGS: ${steps.filter((s) => s.owner).length} ruling steps — ${steps.filter((s) => s.owner && s.ok).length} green, ${awaitingTotal} red-awaiting-lane, ${defectTotal} red-defect`)
+    console.log(` WAVE144 RULINGS: ${steps.filter((s) => s.owner).length} ruling steps — ${steps.filter((s) => s.owner && s.ok && !s.pendingOwner).length} green, ${awaitingTotal} red-awaiting-lane, ${defectTotal} red-defect, ${pendingOwnerSteps.length} pending-owner`)
+    // The exact decision each pending step waits on — printed, so the owner reads the question and not a count.
+    for (const s of pendingOwnerSteps) console.log(`   ◌ PENDING OWNER DECISION [${s.owner}]: ${s.pendingOwner}`)
   }
   // THE HOOK CENSUS — read from the registry's probes (stripped source), not from the steps, so the
   // runner and the release gate (production-readiness-guard section G) print the same facts. One line per
@@ -103,7 +108,7 @@ async function main() {
     for (const h of census.pending) byLane.set(h.lane, (byLane.get(h.lane) ?? 0) + 1)
     console.log(` WAVE${wave} HOOKS: ${census.pending.length} pending (${[...byLane].map(([l, n]) => `${l}×${n}`).join(", ") || "none"}), ${census.landed.length} landed${census.landed.length ? ` (${census.landed.map((h) => `${h.lane}@${h.at}`).join(", ")})` : ""}`)
   }
-  console.log(` RESULT: canaries ${reports.length}, passed ${reports.length - failedCanaries.length}, failed ${failedCanaries.length}; steps ${passedSteps}/${steps.length - hookSteps.length}; hooks pending ${hookSteps.length}; rows deleted ${deleted}`)
+  console.log(` RESULT: canaries ${reports.length}, passed ${reports.length - failedCanaries.length}, failed ${failedCanaries.length}; steps ${passedSteps}/${steps.length - hookSteps.length - pendingOwnerSteps.length}; hooks pending ${hookSteps.length}${WAVE144 || pendingOwnerSteps.length ? `; pending owner decision ${pendingOwnerSteps.length}` : ""}; rows deleted ${deleted}`)
   if (failedCanaries.length > 0) { console.log(` ✗ failed: ${failedCanaries.map((r) => r.key).join(", ")}`); process.exit(1) }
   console.log(hookSteps.length ? ` ✅ every business chain ran end-to-end and cleaned up — ${hookSteps.length} contract step(s) still behind a WAVE141/WAVE142 HOOK (the release gate reads them as NOT CERTIFIED)` : " ✅ every business chain ran end-to-end and cleaned up")
 }

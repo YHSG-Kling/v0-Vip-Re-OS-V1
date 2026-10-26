@@ -17,7 +17,7 @@
  * state-scoped document rule carries no approval or source — 144A.
  */
 import { LIVE, canary, landedModule } from "./_harness"
-import { findLanded, strippedRepo } from "./_registry"
+import { findLanded, listFiles, readRepo, strippedRepo } from "./_registry"
 import { CHECK_VOCABULARIES } from "../check-vocabularies"
 import { memSupabase } from "../in-memory-supabase"
 
@@ -26,10 +26,34 @@ export async function run() {
   if (LIVE) return c.report([], 0, "refused in CANARY_LIVE mode: in-memory only")
   const dims = await import("../../lib/compliance/checklist-dimensions")
 
-  // ── 1 · the canonical vocabularies mirror the live CHECKs (green — preserve) ──
-  const live = CHECK_VOCABULARIES.brokerage_required_documents
+  // ── 1 · the canonical vocabularies mirror the database's enforcement (green — preserve) ──
+  // RE-ASSERTED (lane 144Z): this step pinned a SHAPE ("every dimension is a live CHECK"). m847 (lane 144A, applied live) moved
+  // contract_subtype and representation off m806's CHECKs onto a trigger (brd_vocabulary_admission → adaptive_vocabulary_admits)
+  // that admits the PLATFORM array or a brokerage-approved term — so the generated cache rightly no longer carries those two. The
+  // RULE is unchanged: the database's platform list for every dimension equals the code. Each dimension is judged where the
+  // database actually enforces it — its live CHECK (generated cache) if one exists, else the platform ARRAY in the latest
+  // migration defining adaptive_vocabulary_admits (stripped of `--` lines, either line-1 stamp accepted). A dimension enforced by
+  // NEITHER is red (nothing holds it), and a trigger-backed dimension must also have its CHECK dropped by that migration.
+  const live = CHECK_VOCABULARIES.brokerage_required_documents as Record<string, readonly string[] | undefined>
   const same = (a: readonly string[], b: readonly string[] | undefined) => !!b && [...a].sort().join() === [...b].sort().join()
-  c.rule("144A", "ONE CANONICAL VOCABULARY per dimension, mirrored by the live database (generated cache): contract subtype, financing kind, representation and stage in lib/compliance/checklist-dimensions.ts equal brokerage_required_documents' live CHECKs exactly — no second spelling", same(dims.CONTRACT_SUBTYPES, live.contract_subtype) && same(dims.FINANCING_KINDS, live.financing_kind) && same(dims.REPRESENTATIONS, live.representation) && same(dims.CHECKLIST_STAGES, live.required_stage), `subtypes ${dims.CONTRACT_SUBTYPES.join(",")}`)
+  const admitsFile = listFiles("supabase/migrations", (f) => f.endsWith(".sql")).sort()
+    .filter((f) => /CREATE\s+OR\s+REPLACE\s+FUNCTION\s+public\.adaptive_vocabulary_admits\b/i.test((readRepo(f) ?? "").split("\n").filter((l) => !/^\s*--/.test(l)).join("\n"))).pop() ?? null
+  const admitsSql = admitsFile ? (readRepo(admitsFile) ?? "").split("\n").filter((l) => !/^\s*--/.test(l)).join("\n") : ""
+  const admitsArray = (dim: string): string[] | null => {
+    const m = new RegExp(`WHEN\\s+'${dim}'\\s+THEN\\s+ARRAY\\[([^\\]]*)\\]`, "i").exec(admitsSql)
+    return m ? [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]) : null
+  }
+  const vocabDims: Array<[string, readonly string[]]> = [["contract_subtype", dims.CONTRACT_SUBTYPES], ["financing_kind", dims.FINANCING_KINDS], ["representation", dims.REPRESENTATIONS], ["required_stage", dims.CHECKLIST_STAGES]]
+  const mirror = vocabDims.map(([dim, code]) => {
+    if (live[dim]) return { dim, via: "live CHECK", ok: same(code, live[dim]) }
+    const arr = admitsArray(dim)
+    const dropped = new RegExp(`DROP\\s+CONSTRAINT\\s+(IF\\s+EXISTS\\s+)?\\w*${dim}\\w*_check`, "i").test(admitsSql)
+    return { dim, via: arr ? `trigger (${admitsFile})` : "NOTHING", ok: !!arr && dropped && same(code, arr) }
+  })
+  // Positive control: the comparison refuses a list that differs by one value, and the array reader recognises the shape it was
+  // written for (a broken regex would read every trigger-backed dimension as "NOTHING" — red, never a blind green).
+  const controlOk = same(["a", "b"], ["b", "a"]) && !same(["a", "b"], ["a", "c"]) && (/WHEN\s+'x'\s+THEN\s+ARRAY\[/.test("WHEN 'x' THEN ARRAY['y']"))
+  c.rule("144A", "ONE CANONICAL VOCABULARY per dimension, mirrored by the database's enforcement: contract subtype, financing kind, representation and stage in lib/compliance/checklist-dimensions.ts equal what the database admits — a live CHECK (generated cache) where one pins the column, else the platform array of the vocabulary-admission trigger (m847) — no second spelling, and no dimension left unenforced", controlOk && mirror.every((m) => m.ok), mirror.map((m) => `${m.dim} ${m.ok ? "=" : "≠"} ${m.via}`).join("; "))
 
   // ── 2 · an UNKNOWN label is never a silent wildcard ──
   const unknownRow = dims.rowApplicability({ contract_subtype: "auction" }, { stage: "contract", contractSubtype: "standard" })
@@ -130,8 +154,12 @@ export async function run() {
   c.rule("144A", "A NEW FINANCING LABEL BREAKS NOTHING (ruling 1: 'must not break pre-approval, offer requirements, reporting or workflows'): 'seller_financing' and 'assumption' read as FINANCED for the checklist (proof-of-funds vs lender rules) and the offer intake still asks for the down payment and the financing contingency; cash stays cash; an empty value is UNKNOWN, never cash", dims.financingKindFor("seller_financing") === "financed" && dims.financingKindFor("assumption") === "financed" && dims.financingKindFor("cash") === "cash" && dims.financingKindFor("") === null && ["down_payment_amount", "financing_contingency_days"].every((k) => keysFor("assumption").includes(k)) && !keysFor("cash").includes("financing_contingency_days"), `assumption intake: ${keysFor("assumption").filter((k) => /down|financing/.test(k)).join(",")}`)
   const wizard = strippedRepo("lib/forms/form-wizard-sequence.ts") ?? ""
   const literalFinancing = /key:\s*["']financing_type["'][\s\S]{0,200}options:\s*\[\s*\{\s*value:\s*["']cash["']/.test(wizard)
+  // Positive control (lane 144Z): the absence of a literal list is not enough — the picker the wizard actually renders must carry
+  // exactly the canonical FINANCING_TYPES (a deleted options list would also be "no literal").
+  const { OFFER_INTAKE } = await import("../../lib/forms/form-wizard-sequence")
+  const pickerValues = (OFFER_INTAKE.find((q) => q.key === "financing_type")?.options ?? []).map((o) => o.value)
   // Owner 144C: lane 144A landed the ONE list (FINANCING_TYPES + vocabularyOptions) and routed this picker to 144C (144A Outside-lane 1).
-  c.rule("144C", "NO HARD-CODED ALTERNATE LABELS IN A DROPDOWN (ruling 1): the offer intake's financing options are read from the canonical vocabulary (so an approved state/brokerage label appears without a code change) — at HEAD lib/forms/form-wizard-sequence.ts OFFER_INTAKE carries a literal cash/conventional/fha/va/usda/other list (file in lane 144C's domain; 144A Outside-lane 1 routes it there)", !literalFinancing, literalFinancing ? "HEAD: literal options list on financing_type (form-wizard-sequence.ts OFFER_INTAKE)" : "options derived")
+  c.rule("144C", "NO HARD-CODED ALTERNATE LABELS IN A DROPDOWN (ruling 1): the offer intake's financing options are read from the canonical vocabulary (so an approved state/brokerage label appears without a code change) — at HEAD lib/forms/form-wizard-sequence.ts OFFER_INTAKE carries a literal cash/conventional/fha/va/usda/other list (file in lane 144C's domain; 144A Outside-lane 1 routes it there)", !literalFinancing && pickerValues.join() === dims.FINANCING_TYPES.join(), literalFinancing ? "HEAD: literal options list on financing_type (form-wizard-sequence.ts OFFER_INTAKE)" : `options derived from FINANCING_TYPES: ${pickerValues.join(",")}`)
 
   // ── 6 · state-specific REGULATORY document rules need compliance approval + an official source ──
   // The required-document half is the database's: a rule stored as a STATE REQUIREMENT must carry its state, official source and
@@ -152,7 +180,12 @@ export async function run() {
   // Lane 144A Outside-lane 6 (lib/compliance-rules/fair-housing-patterns.ts is in no lane's domain; its proposed patterns need a
   // compliance review): a topic word used as a PREFERENCE is not a service topic.
   const veteransOnly = await scanPublicCopy("Military relocation homes — veterans only. No divorced applicants.", "landing_page")
-  c.rule("defect", "A SERVICE TOPIC USED AS A PREFERENCE IS REFUSED (ruling 17: 'not blanket Fair Housing exemptions'; lane 144A Outside-lane 6): 'veterans only' (military status — state-protected in several markets) and 'no divorced applicants' (marital / familial status) in public copy are refused by the scan — the probate / divorce / military TOPIC is offered to everyone, never a filter on who may buy", !veteransOnly.ok, `HEAD: ok=${veteransOnly.ok}; findings ${veteransOnly.findings.map((f) => f.phrase).join("; ") || "none"} (fair-housing-patterns.ts has no military / marital preference pattern)`)
+  // PENDING OWNER DECISION (lane 144Z): the two patterns are drafted (lane 144A Outside-lane 6) but a fair-housing pattern refuses
+  // public copy, so it is added only after compliance review — no lane may add it, and the canary must not fake it. The DECIDABLE
+  // half of ruling 17 stays hard above: the topics pass and 'adults only, no children' under a military topic is refused.
+  c.pendingOwner("defect", "A SERVICE TOPIC USED AS A PREFERENCE IS REFUSED (ruling 17: 'not blanket Fair Housing exemptions'; lane 144A Outside-lane 6): 'veterans only' (military status — state-protected in several markets) and 'no divorced applicants' (marital / familial status) in public copy are refused by the scan — the probate / divorce / military TOPIC is offered to everyone, never a filter on who may buy", !veteransOnly.ok,
+    "COMPLIANCE REVIEW: approve (or amend) the two drafted preference patterns for lib/compliance-rules/fair-housing-patterns.ts before they refuse public copy — /\\b(military|veterans?)\\s+only\\b/i (military status, state-protected in several markets) and /\\bno\\s+(divorced|single\\s+parents?)\\b/i (marital / familial status)",
+    `HEAD: ok=${veteransOnly.ok}; findings ${veteransOnly.findings.map((f) => f.phrase).join("; ") || "none"} (fair-housing-patterns.ts has no military / marital preference pattern)`)
   c.rule("144A", "55+ KEEPS ITS LAWFUL OLDER-PERSONS EXCEPTION (ruling 17): '55+ community' passes for the named community with a recorded verification meeting every condition, and is held for review when no verification is recorded", older.ok && older.olderPersons?.status === "verified" && !olderNone.ok, `${older.olderPersons?.status} / ${olderNone.olderPersons?.status}`)
 
   c.blind("The adaptive door (steps 3, 4 and the state rule) is driven only once lane 144A's files exist (landedModule), on a PRIVATE in-memory client with no RLS — the brokerage_settings admin-only policy and m847's SECURITY DEFINER reader are not exercised; at 967a4866 those steps are red on absence alone. The live CHECK list is the GENERATED cache (scripts/check-vocabularies.ts) — a migration that is written but not applied does not change it, so step 'a new label is storable' reads the migration FILE as the lane's landing and the cache as the database. The fair-housing scan is the public-copy survivor; state fair-housing classes (lib/compliance-rules/state-fair-housing.ts) need a brokerage state read and are not exercised.")
