@@ -904,13 +904,15 @@ async function claimCapCycle(
 
   const before = cycle.paidToDateCents
   const after = before + context.amountTowardsCap
-  const base = supabase
+  // One awaited write with its { error } read in place (the swallowed-refusal census reads the statement, not a builder
+  // handed through a ternary). The compare-and-swap predicate is `IS NULL` when the counter was never written, else `= paid`.
+  const { data: moved, error } = await supabase
     .from('agent_cap_tracking')
     .update({ cap_paid_to_date: after / 100, is_capped: after >= cycle.capAmountCents })
     .eq('id', trackingId)
     .eq('brokerage_id', context.brokerageId)
-  const swap = paidRaw === null ? base.is('cap_paid_to_date', null) : base.eq('cap_paid_to_date', paidRaw)
-  const { data: moved, error } = await swap.select('id')
+    .filter('cap_paid_to_date', paidRaw === null ? 'is' : 'eq', paidRaw === null ? null : paidRaw)
+    .select('id')
   if (error) throw new Error(`[commission-engine:cap] the cap ledger could not be advanced: ${error.message}`)
   if (!moved || moved.length !== 1) {
     throw new Error(

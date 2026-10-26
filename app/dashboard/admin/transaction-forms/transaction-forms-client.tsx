@@ -342,12 +342,14 @@ function CreateFormDialog({
       if (file) fd.append("file", file)
 
       const res = await fetch("/api/admin/transaction-forms", { method: "POST", body: fd })
-      const body = await res.json().catch(() => ({})) as { error?: string; form?: { name?: string } }
+      const body = await res.json().catch(() => ({})) as { error?: string; form?: { name?: string }; note?: string | null }
       if (!res.ok || !body.form) {
         toast.error(body.error ?? "Upload failed")
         return
       }
       toast.success(`"${body.form.name ?? name}" uploaded`)
+      // The route registers the packet even when its preview link could not be minted or recorded; it says so in `note`.
+      if (body.note) toast.warning(`Uploaded, but ${body.note}`)
       onOpenChange(false)
       // Reset form
       setName(""); setDescription(""); setState(""); setPacketType("offer")

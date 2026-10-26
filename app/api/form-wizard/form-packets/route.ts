@@ -9,7 +9,7 @@ import { FORM_PACKET_BUCKET, FORM_PACKET_PREVIEW_TTL_SECONDS, listFormPacketsFor
  * tenant/team bucket and shares them with their agents as templates. Agents only see packets reachable through their actual
  * memberships/permissions; no cross-tenant/team leakage.").
  *
- * TOMBSTONE (§1): this replaces app/api/form-wizard/platform-packets/route.ts (wave 143), which offered the PLATFORM's packets to
+ * TOMBSTONE (§1): DELETED app/api/form-wizard/platform-packets/route.ts (wave 143) — it offered the PLATFORM's packets to
  * every tenant's agents directly. Survivor for what an agent may see: lib/forms/tenant-form-packets.ts listFormPacketsForActor —
  * the brokerage's library, the agent's OWN team's library (canonical membership, lib/kernel/resolve-user-team.ts), and a platform
  * catalogue packet only once the brokerage has added it to its own library (lib/forms/platform-form-packets.ts

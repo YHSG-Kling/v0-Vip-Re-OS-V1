@@ -71,6 +71,15 @@
  * still carry fourteen values. Retires by APPLYING: once the owner runs m782 the
  * integrator regenerates scripts/check-vocabularies.ts (thirteen values) and this
  * entry dissolves. Entered by hand, not by UPDATE_VOCAB_SNAPSHOT_BASELINE=1.
+ * DISSOLVED 2026-10-26 (wave 144): m782 was applied live on 2026-10-19 and the
+ * cache regenerated in wave 144 carries thirteen values, so the guard reported
+ * the entry reconciled; removed from the baseline by hand, as this note requires.
+ *
+ * RETIRED DECLARATIONS (wave 144): m847 moved brokerage_required_documents
+ * .contract_subtype / .representation from a CHECK onto a trigger and DROPPED
+ * both CHECKs. The parser now applies `DROP CONSTRAINT` (see declarationHistory),
+ * so a deliberately retired vocabulary is not owed to the snapshot — and a drop
+ * that is written but not applied is reported in the other direction.
  *
  * DO NOT re-run UPDATE_VOCAB_SNAPSHOT_BASELINE=1 to absorb a cause-2 entry
  * without recording it here. A baseline that cannot tell "we accepted this" from
@@ -99,6 +108,17 @@ export interface CheckDeclaration {
   column: string
   values: string[]
   migration: string
+  /** The constraint's own name — what a later `DROP CONSTRAINT` retires it by. */
+  constraint: string
+  /** Position in the stripped SQL, so a drop and a re-add in ONE migration apply in document order. */
+  index: number
+}
+/** `ALTER TABLE t DROP CONSTRAINT [IF EXISTS] name` — the statement that RETIRES a declaration. */
+export interface ConstraintDrop {
+  table: string
+  constraint: string
+  migration: string
+  index: number
 }
 
 /**
@@ -187,9 +207,11 @@ export function parseCheckDeclarations(rawSql: string, migration: string): Check
     const start = alters[i].index! + alters[i][0].length
     const end = i + 1 < alters.length ? alters[i + 1].index! : sql.length
     const body = sql.slice(start, end)
-    for (const m of body.matchAll(/ADD\s+CONSTRAINT\s+[\w"]+\s+CHECK\s*(?=\()/gi)) {
+    for (const m of body.matchAll(/ADD\s+CONSTRAINT\s+["]?(\w+)["]?\s+CHECK\s*(?=\()/gi)) {
       const expr = balancedParen(body, m.index! + m[0].length)
       if (expr === null) continue
+      const constraint = m[1]
+      const index = start + m.index!
       // A CHECK declares a vocabulary only when its WHOLE expression is the
       // membership test, optionally prefixed by `col IS NULL OR`. Matching the
       // membership test anywhere INSIDE the expression mis-read m498's compound
@@ -208,21 +230,73 @@ export function parseCheckDeclarations(rawSql: string, migration: string): Check
       // `a IS NULL OR b IN (…)` cross-column implication is not a vocabulary.
       if (hit[1] && hit[1].toLowerCase() !== column.toLowerCase()) continue
       const values = [...(hit[3] ?? hit[4]).matchAll(/'((?:[^']|'')*)'/g)].map((v) => v[1].replace(/''/g, "'"))
-      if (values.length) out.push({ table, column, values, migration })
+      if (values.length) out.push({ table, column, values, migration, constraint, index })
     }
   }
   return out
 }
 
-/** PURE — last declaration wins, keyed table.column, over migrations in name order. */
-export function latestDeclarations(files: Array<{ name: string; sql: string }>): Map<string, CheckDeclaration> {
-  const latest = new Map<string, CheckDeclaration>()
-  for (const f of [...files].sort((a, b) => a.name.localeCompare(b.name, "en"))) {
-    for (const d of parseCheckDeclarations(f.sql, f.name)) {
-      latest.set(`${d.table}.${d.column}`, d)
+/** PURE — every `DROP CONSTRAINT [IF EXISTS] name` in one migration, attributed to its ALTER TABLE. */
+export function parseConstraintDrops(rawSql: string, migration: string): ConstraintDrop[] {
+  const sql = stripSqlComments(rawSql)
+  const out: ConstraintDrop[] = []
+  const alters = [...sql.matchAll(/ALTER\s+TABLE\s+(?:ONLY\s+)?(?:public\.)?["]?(\w+)["]?/gi)]
+  for (let i = 0; i < alters.length; i++) {
+    const table = alters[i][1]
+    const start = alters[i].index! + alters[i][0].length
+    const end = i + 1 < alters.length ? alters[i + 1].index! : sql.length
+    const body = sql.slice(start, end)
+    for (const m of body.matchAll(/DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?["]?(\w+)["]?/gi)) {
+      out.push({ table, constraint: m[1], migration, index: start + m.index! })
     }
   }
-  return latest
+  return out
+}
+
+/**
+ * PURE — the declarations in force (last wins, keyed table.column, migrations in
+ * name order, statements in document order) and the ones a LATER `DROP
+ * CONSTRAINT` retired. A dropped declaration is not owed to the snapshot: m847
+ * (wave 144) moved brokerage_required_documents.contract_subtype / .representation
+ * from a CHECK onto the brd_vocabulary_admission trigger, dropped both CHECKs, and
+ * the regenerated snapshot rightly lost them — this guard then accused the live
+ * database of missing a vocabulary that a migration had deliberately retired.
+ * The retired set is kept so the OTHER direction still shows: a drop that was
+ * written and not applied leaves the CHECK in the snapshot.
+ */
+export function declarationHistory(files: Array<{ name: string; sql: string }>): {
+  latest: Map<string, CheckDeclaration>
+  retired: Map<string, { decl: CheckDeclaration; droppedIn: string }>
+} {
+  const latest = new Map<string, CheckDeclaration>()
+  const retired = new Map<string, { decl: CheckDeclaration; droppedIn: string }>()
+  for (const f of [...files].sort((a, b) => a.name.localeCompare(b.name, "en"))) {
+    const events: Array<{ at: number; add?: CheckDeclaration; drop?: ConstraintDrop }> = [
+      ...parseCheckDeclarations(f.sql, f.name).map((d) => ({ at: d.index, add: d })),
+      ...parseConstraintDrops(f.sql, f.name).map((d) => ({ at: d.index, drop: d })),
+    ].sort((a, b) => a.at - b.at)
+    for (const e of events) {
+      if (e.add) {
+        const key = `${e.add.table}.${e.add.column}`
+        latest.set(key, e.add)
+        retired.delete(key)
+        continue
+      }
+      const drop = e.drop!
+      for (const [key, d] of latest) {
+        if (d.table.toLowerCase() === drop.table.toLowerCase() && d.constraint.toLowerCase() === drop.constraint.toLowerCase()) {
+          latest.delete(key)
+          retired.set(key, { decl: d, droppedIn: drop.migration })
+        }
+      }
+    }
+  }
+  return { latest, retired }
+}
+
+/** PURE — last declaration wins, keyed table.column, over migrations in name order (drops retire). */
+export function latestDeclarations(files: Array<{ name: string; sql: string }>): Map<string, CheckDeclaration> {
+  return declarationHistory(files).latest
 }
 
 /** PURE — set difference both ways, sorted. */
@@ -298,6 +372,24 @@ console.log("\n[pure — the SQL parser]")
   check("a later migration supersedes an earlier one",
     JSON.stringify(later.get("widgets.kind")?.values) === JSON.stringify(["a", "b"]))
 
+  // DROP CONSTRAINT retires (m847 moved two vocabularies onto a trigger) — and the
+  // controls that keep a drop from retiring more than its own declaration.
+  const add1 = { name: "m001.sql", sql: `ALTER TABLE public.widgets ADD CONSTRAINT widgets_kind_check CHECK (kind IN ('a'))` }
+  const dropped = declarationHistory([add1,
+    { name: "m002.sql", sql: `ALTER TABLE public.widgets DROP CONSTRAINT IF EXISTS widgets_kind_check;` }])
+  check("a later DROP CONSTRAINT retires the declaration and records where",
+    !dropped.latest.has("widgets.kind") && dropped.retired.get("widgets.kind")?.droppedIn === "m002.sql")
+  const readded = declarationHistory([add1, { name: "m002.sql", sql: `
+    ALTER TABLE public.widgets DROP CONSTRAINT IF EXISTS widgets_kind_check;
+    ALTER TABLE public.widgets ADD CONSTRAINT widgets_kind_check CHECK (kind IN ('a','b'));` }])
+  check("a drop-then-re-add in one migration keeps the re-added declaration",
+    JSON.stringify(readded.latest.get("widgets.kind")?.values) === JSON.stringify(["a", "b"]) && !readded.retired.has("widgets.kind"))
+  check("a DROP on another table or of another constraint name retires nothing",
+    declarationHistory([add1, { name: "m002.sql", sql: `ALTER TABLE public.gadgets DROP CONSTRAINT widgets_kind_check;` }]).latest.has("widgets.kind")
+    && declarationHistory([add1, { name: "m002.sql", sql: `ALTER TABLE public.widgets DROP CONSTRAINT widgets_other_check;` }]).latest.has("widgets.kind"))
+  check("a commented-out DROP retires nothing",
+    declarationHistory([add1, { name: "m002.sql", sql: `-- ALTER TABLE public.widgets DROP CONSTRAINT widgets_kind_check;` }]).latest.has("widgets.kind"))
+
   const cmp = compareVocabularies(["a", "b", "c"], ["a", "c", "d"])
   check("reports what the snapshot is missing", JSON.stringify(cmp.missingFromSnapshot) === JSON.stringify(["b"]))
   check("reports what the snapshot has too much of", JSON.stringify(cmp.extraInSnapshot) === JSON.stringify(["d"]))
@@ -308,8 +400,8 @@ const files = existsSync(MIGRATIONS)
   ? readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql"))
       .map((name) => ({ name, sql: readFileSync(join(MIGRATIONS, name), "utf8") }))
   : []
-const declared = latestDeclarations(files)
-console.log(`  · ${files.length} migrations · ${declared.size} table.column vocabularies declared in SQL`)
+const { latest: declared, retired } = declarationHistory(files)
+console.log(`  · ${files.length} migrations · ${declared.size} table.column vocabularies declared in SQL · ${retired.size} retired by a later DROP CONSTRAINT`)
 
 // Debug affordance: dump the attribution map so a parser change can be diffed
 // key-by-key instead of judged from the count alone (§2: a count that moves is
@@ -331,6 +423,13 @@ for (const [key, decl] of [...declared.entries()].sort()) {
     )
   }
 }
+// The other direction for a RETIRED declaration: a DROP that was written and not
+// applied leaves the CHECK in the snapshot (files are not the database).
+for (const [key, { decl, droppedIn }] of [...retired.entries()].sort()) {
+  if (CHECK_VOCABULARIES[decl.table]?.[decl.column]) {
+    disagreements.push(`${key} (dropped in ${droppedIn}, still in snapshot — the drop was not applied)`)
+  }
+}
 
 const baseline: string[] = existsSync(BASELINE_PATH) ? JSON.parse(readFileSync(BASELINE_PATH, "utf8")) : []
 
@@ -347,6 +446,9 @@ const reconciled = baseline.filter((b) => !disagreements.includes(b))
 check(`no NEW migration/snapshot disagreement (${baseline.length} baselined)`,
   fresh.length === 0, fresh.slice(0, 5).join(" | "))
 check(`the disagreement list only shrinks (${reconciled.length} reconciled since the baseline)`, true)
+// §2: a count that moves is the finding — name what dissolved, so a reconciliation
+// can be told from a parser that went blind.
+for (const r of reconciled) console.log(`    · reconciled: ${r}`)
 
 // The migration this guard was written for.
 {

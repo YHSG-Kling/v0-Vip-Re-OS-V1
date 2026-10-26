@@ -940,7 +940,9 @@ const READINESS_CONTACT_COLUMNS = "id, email, email_opt_out, email_unsubscribed,
 
 /** Channel → the readiness rows that can serve it (any-of): a readiness CATEGORY or a canonical provider name. */
 const CHANNEL_PROVIDER_RULES: Readonly<Partial<Record<ArbiterChannel, { categories?: readonly string[]; providers?: readonly string[] }>>> = Object.freeze({
-  email: { categories: ["email"] }, sms: { categories: ["voice_sms"] }, phone: { categories: ["voice_sms"], providers: ["vapi", "retell"] },
+  // phone (the AI call) is served by the voice_sms category — the Twilio-native dial. No readiness row carries a named
+  // AI-call vendor (the one that did is retired; test:vendor-retirement keeps its name out of live code).
+  email: { categories: ["email"] }, sms: { categories: ["voice_sms"] }, phone: { categories: ["voice_sms"] },
   voice_drop: { providers: ["voicedrop", "slybroadcast"] }, direct_mail: { categories: ["mail"], providers: ["lob"] },
   social: { categories: ["social"] }, ads: { providers: ["meta", "google_ads", "facebook_ads"] },
 })

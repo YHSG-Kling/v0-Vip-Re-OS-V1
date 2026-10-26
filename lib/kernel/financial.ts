@@ -908,14 +908,13 @@ export async function recalculateCommissionState(
     for (const record of capTracking ?? []) {
       const st = computeCapState(record as CapRecordLite, now)
       if (st.changed) {
+        // The patch is built BEFORE the write so the statement is one awaited write with its { error } read in place.
+        const capPatch = st.rolledOver
+          ? { is_capped: st.isCapped, cap_paid_to_date: st.capPaidToDate, anniversary_start: st.anniversaryStart, anniversary_end: st.anniversaryEnd }
+          : { is_capped: st.isCapped }
         const { data: capUpdated, error: capErr } = await supabase
           .from("agent_cap_tracking")
-          .update({
-            is_capped: st.isCapped,
-            ...(st.rolledOver
-              ? { cap_paid_to_date: st.capPaidToDate, anniversary_start: st.anniversaryStart, anniversary_end: st.anniversaryEnd }
-              : {}),
-          })
+          .update(capPatch)
           .eq("id", record.id)
           .select("id")
         if (capErr) capRefusals.push(`${record.id}: ${capErr.message}`)
@@ -2540,13 +2539,15 @@ async function applyCapLedgerForEntryChange(
         detail: { distribution_id: change.distributionId, contribution_type: type, contributed_cents: contributedCents, net_before_cents: change.netBeforeCents, net_after_cents: change.netAfterCents, paid_before_cents: paidCents, paid_after_cents: after, excess_cents: plan.excessCents },
       },
       async () => {
-        const base = supabase
+        // One awaited write with its { error } read in place; the compare-and-swap predicate is `IS NULL` when the
+        // counter was never written, else `= the value this correction was planned on`.
+        const { data: moved, error } = await supabase
           .from("agent_cap_tracking")
           .update({ cap_paid_to_date: after / 100, is_capped: after >= capCents })
           .eq("id", r.id)
           .eq("brokerage_id", ctx.brokerageId)
-        const swap = r.cap_paid_to_date === null ? base.is("cap_paid_to_date", null) : base.eq("cap_paid_to_date", r.cap_paid_to_date)
-        const { data: moved, error } = await swap.select("id")
+          .filter("cap_paid_to_date", r.cap_paid_to_date === null ? "is" : "eq", r.cap_paid_to_date === null ? null : r.cap_paid_to_date)
+          .select("id")
         if (error) { swapError = `the cap ledger refused the move: ${error.message}`; return { ok: false } }
         if (!moved || moved.length !== 1) { swapError = "the cap ledger moved underneath this correction — re-run the correction's cap move"; return { ok: false } }
         return { ok: true }
