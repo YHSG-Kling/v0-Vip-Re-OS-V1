@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1856 of 1928 pairs) — storing them would be
+ * overwhelming majority (1879 of 1954 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,18 +75,18 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 2022 edges across 737 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1928 unordered
- * table pairs carry at least one FK; 72
- * carry more than one and are listed below. 15 of the constraints are self-referential.
+ * MEASURED AT GENERATION: 2052 edges across 741 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1954 unordered
+ * table pairs carry at least one FK; 75
+ * carry more than one and are listed below. 18 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
  * however many columns it spans, so counting its unnested rows separately would flag an
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-25
+ * generated: 2026-10-27
  * source: public.live_foreign_keys_json()
- * body-sha256: b6589e27693a8875f375be7bf7be87150a2e3372312d4fef7d3c6baf5365ea78
+ * body-sha256: 4eb1d942dcd905a64ac8bdfdbf557ed210bc2b125c870f35c9d9ad943814caa5
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -122,7 +122,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "agent_chat_preferences": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "agent_client_messages": { "approved_by": "users", "brokerage_id": "brokerages" },
   "agent_commission_profile_versions": { "agent_id": "agents", "brokerage_id": "brokerages" },
-  "agent_commission_profiles": { "agent_id": "agents", "brokerage_id": "brokerages" },
+  "agent_commission_profiles": { "agent_id": "agents", "agreement_signature_id": "contract_signatures", "brokerage_id": "brokerages" },
   "agent_commissions": { "agent_id": "agents", "approved_by": "users", "brokerage_id": "brokerages", "payment_received_by": "users", "reconciled_by": "users", "transaction_id": "transactions" },
   "agent_coordination_log": { "brokerage_id": "brokerages" },
   "agent_credentials": { "brokerage_id": "brokerages", "created_by": "users" },
@@ -157,7 +157,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "agent_tax_profile": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "agent_voice_profiles": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "agentic_invocation_log": { "brokerage_id": "brokerages" },
-  "agents": { "brokerage_id": "brokerages", "covering_agent_id": "agents", "location_id": "locations", "team_id": "teams", "user_id": "users" },
+  "agents": { "brokerage_id": "brokerages", "covering_agent_id": "agents", "location_id": "locations", "start_date_source": "contract_signatures", "team_id": "teams", "user_id": "users" },
   "ai_agent_templates": { "brokerage_id": "brokerages" },
   "ai_assistant_notes": { "brokerage_id": "brokerages", "contact_id": "contacts", "created_by": "users", "lead_id": "leads", "listing_id": "listings", "transaction_id": "transactions" },
   "ai_autopilot_actions": { "agent_id": "agents", "brokerage_id": "brokerages" },
@@ -215,6 +215,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "blog_post_share_clicks": { "blog_post_id": "blog_posts", "brokerage_id": "brokerages", "viewer_contact_id": "contacts" },
   "blog_post_views": { "blog_post_id": "blog_posts", "brokerage_id": "brokerages", "viewer_contact_id": "contacts" },
   "blog_posts": { "agent_user_id": "users", "brokerage_id": "brokerages", "created_by": "users", "marketing_campaign_id": "marketing_campaigns", "team_id": "teams" },
+  "book_projects": { "agent_id": "agents", "brokerage_id": "brokerages", "created_by": "users", "distribution_form_id": "lead_capture_forms", "team_id": "teams" },
   "brand_mentions": { "brokerage_id": "brokerages" },
   "brand_templates": { "brokerage_id": "brokerages" },
   "brand_voice_profile": { "agent_id": "agents", "brokerage_id": "brokerages", "team_id": "teams" },
@@ -228,7 +229,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "brokerage_integrations": { "brokerage_id": "brokerages" },
   "brokerage_intelligence_insights": { "brokerage_id": "brokerages", "dismissed_by": "users" },
   "brokerage_p_l": { "brokerage_id": "brokerages" },
-  "brokerage_required_documents": { "approved_by": "users", "brokerage_id": "brokerages", "created_by": "users", "template_form_id": "brokerage_form_library" },
+  "brokerage_required_documents": { "approved_by": "users", "brokerage_id": "brokerages", "carried_from_rule_id": "brokerage_required_documents", "created_by": "users", "template_form_id": "brokerage_form_library" },
   "brokerage_settings": { "brokerage_id": "brokerages" },
   "brokerage_transfer_requests": { "brokerage_id": "brokerages", "initiated_by_user_id": "users", "source_brokerage_id": "brokerages", "subject_user_id": "users", "target_brokerage_id": "brokerages" },
   "brokerage_twin_snapshots": { "brokerage_id": "brokerages", "previous_snapshot_id": "brokerage_twin_snapshots", "team_id": "teams" },
@@ -269,6 +270,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "chat_messages": { "session_id": "chat_sessions" },
   "chat_sessions": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "lead_id": "leads" },
   "chat_templates": { "agent_id": "agents", "brokerage_id": "brokerages" },
+  "client_agreement_fees": { "agent_id": "agents", "amendment_document_id": "documents", "brokerage_id": "brokerages", "buyer_broker_agreement_id": "buyer_broker_agreements", "entered_by": "users", "listing_agreement_id": "listing_agreements", "supersedes_fee_id": "client_agreement_fees", "verified_by": "users" },
   "client_detailed_personas": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "client_documents": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "transaction_id": "transactions", "uploaded_by": "users", "verified_by": "users" },
   "client_engagement_scores": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
@@ -289,7 +291,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "collaborative_search_members": { "collaborative_search_id": "collaborative_searches" },
   "collaborative_search_properties": { "added_by_contact_id": "contacts", "collaborative_search_id": "collaborative_searches" },
   "collaborative_searches": { "brokerage_id": "brokerages", "contact_id": "contacts", "created_by_contact_id": "contacts" },
-  "commission_adjustments": { "approval_decided_by": "users", "approved_by_agent_id": "agents", "brokerage_id": "brokerages", "concession_agent_id": "agents", "created_by_agent_id": "agents", "transaction_id": "transactions" },
+  "commission_adjustments": { "approval_decided_by": "users", "approved_by_agent_id": "agents", "brokerage_id": "brokerages", "concession_agent_id": "agents", "created_by_agent_id": "agents", "offer_id": "offers", "transaction_id": "transactions" },
   "commission_calculations": { "agent_id": "agents", "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "commission_distributions": { "adjusts_distribution_id": "commission_distributions", "agent_id": "agents", "brokerage_id": "brokerages", "commission_id": "agent_commissions", "corrected_by": "users", "referral_partner_id": "referral_partners", "rule_id": "commission_rules", "team_id": "teams", "transaction_id": "transactions" },
   "commission_rules": { "agent_id": "agents", "brokerage_id": "brokerages" },
@@ -334,8 +336,8 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "content_topic_sources": { "brokerage_id": "brokerages" },
   "content_topic_uses": { "agent_id": "agents", "brokerage_id": "brokerages", "topic_id": "content_topic_bank" },
   "contract_reviews": { "agent_id": "agents", "brokerage_id": "brokerages", "document_id": "transaction_documents", "transaction_id": "transactions" },
-  "contract_signatures": { "agent_id": "agents", "brokerage_id": "brokerages", "team_id": "teams" },
-  "contract_term_versions": { "brokerage_id": "brokerages", "document_id": "documents", "offer_id": "offers", "recorded_by": "users", "root_offer_id": "offers", "transaction_id": "transactions" },
+  "contract_signatures": { "agent_id": "agents", "amends_contract_signature_id": "contract_signatures", "brokerage_id": "brokerages", "effective_date_recorded_by": "users", "team_id": "teams" },
+  "contract_term_versions": { "brokerage_id": "brokerages", "document_id": "documents", "listing_agreement_id": "listing_agreements", "offer_id": "offers", "recorded_by": "users", "root_offer_id": "offers", "transaction_id": "transactions" },
   "conversation_audit_flags": { "conversation_id": "conversation_logs", "reviewed_by": "users" },
   "conversation_insights": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "conversation_id": "conversations" },
   "conversation_intelligence": { "agent_id": "agents", "brokerage_id": "brokerages", "lead_id": "leads" },
@@ -366,6 +368,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "direct_mail_responses": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts", "lead_id": "leads", "recipient_id": "direct_mail_recipients" },
   "direct_mail_variant_outcomes": { "brokerage_id": "brokerages", "variant_id": "direct_mail_variants" },
   "direct_mail_variants": { "brokerage_id": "brokerages" },
+  "distribution_finals": { "approved_by": "users", "brokerage_id": "brokerages", "created_by": "users", "notified_user_id": "users" },
   "document_checklist": { "brokerage_id": "brokerages", "transaction_id": "transactions", "verified_by_user_id": "users" },
   "document_classifications": { "brokerage_id": "brokerages" },
   "document_downloads": { "brokerage_id": "brokerages", "user_id": "users" },
@@ -635,6 +638,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "property_smart_insights": { "brokerage_id": "brokerages" },
   "property_upgrades": { "brokerage_id": "brokerages", "listing_id": "listings" },
   "property_views": { "brokerage_id": "brokerages", "contact_id": "contacts" },
+  "protected_research_attributes": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "push_notification_queue": { "brokerage_id": "brokerages" },
   "push_subscriptions": { "brokerage_id": "brokerages", "user_id": "users" },
   "qr_codes": { "agent_id": "agents", "brokerage_id": "brokerages", "listing_id": "listings", "marketing_campaign_id": "marketing_campaigns" },
@@ -646,10 +650,10 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "recruiting_costs": { "brokerage_id": "brokerages", "recruit_id": "recruits", "recruited_agent_id": "agents" },
   "recruiting_roi": { "brokerage_id": "brokerages", "recruited_agent_id": "agents" },
   "recruits": { "brokerage_id": "brokerages", "provisioned_user_id": "users", "recruiter_agent_id": "agents" },
-  "referral_partners": { "agent_id": "agents", "brokerage_id": "brokerages", "vendor_id": "vendors" },
+  "referral_partners": { "agent_id": "agents", "agreement_document_id": "documents", "agreement_recorded_by": "users", "brokerage_id": "brokerages", "vendor_id": "vendors" },
   "referral_payouts": { "posted_by": "users", "prospect_id": "platform_prospects", "received_by": "users", "recipient_brokerage_id": "brokerages" },
   "referral_sources": { "brokerage_id": "brokerages", "contact_id": "contacts" },
-  "referrals": { "agent_id": "agents", "brokerage_id": "brokerages", "partner_id": "referral_partners", "referred_contact_id": "contacts", "referred_lead_id": "leads", "referrer_contact_id": "contacts", "referring_agent_id": "agents", "transaction_id": "transactions" },
+  "referrals": { "agent_id": "agents", "brokerage_id": "brokerages", "partner_id": "referral_partners", "referral_agreement_document_id": "documents", "referral_agreement_recorded_by": "users", "referred_contact_id": "contacts", "referred_lead_id": "leads", "referrer_contact_id": "contacts", "referring_agent_id": "agents", "transaction_id": "transactions" },
   "reg_change_observations": { "brokerage_id": "brokerages" },
   "relationship_edges": { "brokerage_id": "brokerages", "created_by": "users" },
   "remotion_composition_renders": { "agent_user_id": "users", "brokerage_id": "brokerages", "composition_id": "remotion_compositions", "refreshed_from_render_id": "remotion_composition_renders", "served_from_render_id": "remotion_composition_renders", "used_intro_asset_id": "video_assets", "used_music_asset_id": "video_assets", "used_outro_asset_id": "video_assets" },
@@ -864,6 +868,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "agent_mentor_relationships|agents": 2,
   "agent_relationships|agents": 2,
   "agents|commission_adjustments": 3,
+  "agents|contract_signatures": 2,
   "agents|embed_widgets": 2,
   "agents|offers": 2,
   "agents|referrals": 2,
@@ -885,6 +890,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "business_card_scans|users": 2,
   "buyer_broker_agreements|users": 2,
   "buyer_financial_profiles|users": 2,
+  "client_agreement_fees|users": 2,
   "client_documents|users": 2,
   "closing_disclosure_agreement|users": 8,
   "collaborative_searches|contacts": 2,
@@ -894,6 +900,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "contacts|users": 6,
   "contract_term_versions|offers": 2,
   "data_subject_requests|users": 3,
+  "distribution_finals|users": 3,
   "fatigue_alerts|users": 2,
   "feature_access_overrides|users": 2,
   "learning_assignments|users": 2,

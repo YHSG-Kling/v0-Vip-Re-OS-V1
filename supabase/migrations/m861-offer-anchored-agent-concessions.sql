@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 145, lane 145C) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-27 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 145, lane 145C; a DROP TRIGGER / DROP POLICY IF EXISTS of an object that did not yet exist was skipped where the MCP would have held the batch ──
 --
 -- m861 — AN AGENT CONCESSION PROMISED ON AN OFFER, BEFORE ANY TRANSACTION EXISTS (wave 145, lane 145C; closes lane 144D
 -- Still open "pre-contract concessions" and lane 144C Still open 1).

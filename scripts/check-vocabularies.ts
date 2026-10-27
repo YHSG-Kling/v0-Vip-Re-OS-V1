@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 461 tables, 850 columns.
+ * MEASURED AT GENERATION: 465 tables, 866 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-25
+ * generated: 2026-10-27
  * source: public.live_check_constraints_json()
- * body-sha256: e4623f936445f33b87dc5fd62cb295a2ad9109f9d40e2cc93342b7206e4d77c7
+ * body-sha256: 17729622ba03d5779d895e4cd6e2dedce5a715c9917cca5dd33049797a08c43c
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -306,6 +306,12 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     publish_target: ["both", "embed", "hosted", "wordpress"],
     visibility_scope: ["agent", "brokerage", "multi_location", "platform", "team"],
   },
+  book_projects: {
+    audience: ["buyer", "seller"],
+    owner_scope: ["agent", "brokerage", "platform", "team"],
+    publication_context: ["lead_magnet", "platform_kdp", "tenant_kdp"],
+    stage: ["chapters", "edit", "fact_check", "layout", "outline", "ready_for_review", "research"],
+  },
   brand_mentions: {
     sentiment: ["mixed", "negative", "neutral", "positive"],
     subject_kind: ["agent", "brokerage", "competitor", "keyword", "listing", "team"],
@@ -449,6 +455,13 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   chat_sessions: {
     session_type: ["internal", "internal_assistant", "portal_widget", "voice", "website_widget"],
+  },
+  client_agreement_fees: {
+    fee_kind: ["admin_fee", "transaction_fee"],
+    payer: ["buyer", "seller"],
+    receiver: ["agent", "brokerage"],
+    status: ["entered", "superseded", "verified", "void"],
+    value_type: ["flat", "percent_of_price"],
   },
   client_documents: {
     doc_category: ["appraisal", "bank_statement", "contract", "disclosure", "employment_verification", "gift_letter", "inspection_report", "insurance", "offer_form", "other", "pre_approval_letter", "proof_of_funds", "tax_return", "title"],
@@ -605,7 +618,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     source_type: ["apify_actor", "google_trends", "manual", "reddit", "rss", "youtube_search"],
   },
   content_topic_uses: {
-    asset_type: ["blog_post", "direct_mail_postcard", "marketing_plan_item", "newsletter_campaign", "newsletter_video", "podcast_episode", "situational_reel", "social_post"],
+    asset_type: ["blog_post", "ctv_ad", "direct_mail_postcard", "marketing_plan_item", "newsletter_campaign", "newsletter_video", "podcast_episode", "situational_reel", "social_post"],
   },
   contract_reviews: {
     review_type: ["ai_automated", "manual"],
@@ -699,6 +712,12 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   direct_mail_variants: {
     postcard_size: ["4x6", "6x9"],
     use_kind: ["farm_mail", "lifecycle", "pre_listing_kit", "sphere_outreach", "welcome_kit"],
+  },
+  distribution_finals: {
+    approval_basis: ["asset_approval", "derived_from_approved_asset", "human_edit"],
+    asset_kind: ["ad_creative", "blog_post", "book", "ctv_ad", "direct_mail", "email_campaign", "lead_magnet", "listing_creative", "newsletter", "podcast_script", "social_post", "video_description", "video_script"],
+    authored_by: ["ai", "human"],
+    status: ["approved", "awaiting_approval", "published", "superseded"],
   },
   document_extraction_log: {
     extraction_method: ["ai_claude", "docusign_api", "dotloop_api", "manual", "ocr"],
@@ -1227,7 +1246,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   platform_credentials: {
     owner_type: ["agent", "brokerage", "contact", "platform", "team", "vendor"],
-    platform: ["authentisign", "bandwidth", "brokermint", "buffer", "did", "docusign", "dotloop", "facebook", "followupboss", "formsimplicity", "gmail", "gohighlevel", "google_calendar", "google_flow", "hubspot", "idxbroker", "instagram", "linkedin", "listhub", "lob", "lofty", "mailgun", "mls", "mls_direct", "opcity", "openai_ads", "outlook", "pexels", "plaid", "platform_quickbooks", "platform_social_facebook", "platform_social_instagram", "platform_social_linkedin", "platform_social_tiktok", "platform_social_x", "platform_social_youtube", "platform_zoom", "plivo", "postmark", "quickbooks", "realtor_com", "resend", "sendgrid", "showingtime", "sinch", "skyslope", "stripe", "telnyx", "twilio", "twilio_a2p", "twilio_byo", "twilio_subaccount", "vibe", "zillow", "zoom"],
+    platform: ["authentisign", "bandwidth", "brokermint", "buffer", "did", "docusign", "dotloop", "facebook", "followupboss", "formsimplicity", "gmail", "gohighlevel", "google_ads", "google_calendar", "google_flow", "hubspot", "idxbroker", "instagram", "linkedin", "listhub", "lob", "lofty", "mailgun", "mls", "mls_direct", "opcity", "openai_ads", "outlook", "pexels", "plaid", "platform_quickbooks", "platform_social_facebook", "platform_social_instagram", "platform_social_linkedin", "platform_social_tiktok", "platform_social_x", "platform_social_youtube", "platform_zoom", "plivo", "postmark", "quickbooks", "realtor_com", "resend", "sendgrid", "showingtime", "sinch", "skyslope", "stripe", "telnyx", "twilio", "twilio_a2p", "twilio_byo", "twilio_subaccount", "vibe", "zillow", "zoom"],
     scope: ["agent", "brokerage", "platform", "team"],
     test_status: ["fail", "pass", "pending"],
   },
@@ -1357,6 +1376,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   property_upgrades: {
     status: ["approved", "completed", "declined", "suggested"],
+  },
+  protected_research_attributes: {
+    attribute_class: ["age", "disability_health", "familial_status", "language", "military_status", "political_affiliation", "race_color_national_origin", "religion", "sex"],
+    basis: ["public_record", "self_identified", "vendor_modeled"],
+    purpose: ["research"],
   },
   provider_overrides: {
     provider_type: ["accounting", "ai", "ai_voice", "avatar", "calendar", "crm", "crm_sync", "direct_mail", "email", "enrichment", "esign", "idx", "payment", "phone", "scraper", "showing", "sms", "social", "transaction", "video", "voice_clone"],

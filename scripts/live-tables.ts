@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 785 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 789 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -18,9 +18,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-23
+ * generated: 2026-10-27
  * source: public.live_schema_json()
- * body-sha256: ef6d7c2ec6d6efc341fe2b83cfca42dea420d357eda496b2c0e1d5c3ccd6616b
+ * body-sha256: 2a975d87410439ae493e452d2b3213c253253ea6743427b485c96eb11824e1b8
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -151,6 +151,7 @@ export const LIVE_TABLES: readonly string[] = [
   "blog_post_share_clicks",
   "blog_post_views",
   "blog_posts",
+  "book_projects",
   "brand_mentions",
   "brand_templates",
   "brand_voice_profile",
@@ -205,6 +206,7 @@ export const LIVE_TABLES: readonly string[] = [
   "chat_messages",
   "chat_sessions",
   "chat_templates",
+  "client_agreement_fees",
   "client_detailed_personas",
   "client_documents",
   "client_engagement_scores",
@@ -309,6 +311,7 @@ export const LIVE_TABLES: readonly string[] = [
   "direct_mail_responses",
   "direct_mail_variant_outcomes",
   "direct_mail_variants",
+  "distribution_finals",
   "document_access_log",
   "document_audit_trail",
   "document_checklist",
@@ -600,6 +603,7 @@ export const LIVE_TABLES: readonly string[] = [
   "property_smart_insights",
   "property_upgrades",
   "property_views",
+  "protected_research_attributes",
   "provider_overrides",
   "push_notification_queue",
   "push_subscriptions",

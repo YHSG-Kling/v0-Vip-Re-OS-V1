@@ -18,12 +18,12 @@
  * credentials, so without the cache the identity-class guard goes blind — that is the only reason
  * it is committed.
  *
- * MEASURED AT GENERATION: 239 agents(id) columns across 228 tables, 38 agent-ish users(id) columns across 36 tables, 172 contact_id tables.
+ * MEASURED AT GENERATION: 241 agents(id) columns across 230 tables, 38 agent-ish users(id) columns across 36 tables, 173 contact_id tables.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-25
+ * generated: 2026-10-27
  * source: public.live_foreign_keys_json()
- * body-sha256: 2532516ac2d3866320d112cf8fc2984c21f9d5af2b4a88541e4b7be5db075b5c
+ * body-sha256: 31049587663994ebd33cc344d432fe36e4ed7fb2b29a30f219b8087354c61df5
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -98,6 +98,7 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   approval_items: ["agent_id"],
   assignment_log: ["agent_id"],
   auto_response_settings: ["agent_id"],
+  book_projects: ["agent_id"],
   brand_voice_profile: ["agent_id"],
   budgets: ["agent_id"],
   business_card_scans: ["agent_id"],
@@ -113,6 +114,7 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   challenge_participants: ["agent_id"],
   chat_sessions: ["agent_id"],
   chat_templates: ["agent_id"],
+  client_agreement_fees: ["agent_id"],
   client_detailed_personas: ["agent_id"],
   client_engagement_scores: ["agent_id"],
   client_gifts: ["agent_id"],
@@ -450,6 +452,7 @@ export const CONTACT_FK_TABLES: string[] = [
   "property_preferences",
   "property_search_log",
   "property_views",
+  "protected_research_attributes",
   "qr_scan_events",
   "referral_sources",
   "review_requests",
