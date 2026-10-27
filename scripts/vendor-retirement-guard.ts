@@ -62,32 +62,48 @@ const code = (s: string) =>
  * or to keep historical cost rows priceable. Adding a file to this list is a
  * deliberate act that should be justified in the file itself.
  */
-const RETIRED: Record<string, string[]> = {
-  vapi: [
+//
+// WAVE 145 (lane 145D — owner ruling 13, 2026-10-27: "We no longer use vapi or retell"):
+//   · retell JOINS the list with NO epitaph site. It never had a client, a rate, a registry row or a ledger row
+//     (live vendor_usage_tracking: 0 rows), so nothing needs its name to keep it dead. Its last runtime mentions
+//     were a vendor union literal and a billing branch in lib/voice-engine/voice-usage-tracker.ts (removed, tombstone
+//     there) — spelled `retell_ai`, which the word-boundaried matcher below could NOT see (`_` is a word character
+//     to it). So a vendor may be SNAKE-AWARE: its name embedded in a snake_case identifier counts too (§7 proves it).
+//   · two vapi epitaph sites are RETIRED from the list because they no longer name it — and both were not history but
+//     LIVE paths: lib/agentic-os/vendor-ownership.ts PLATFORM_VENDORS (scanConnectivity rendered every member as a
+//     managed connector) and lib/agentic-os/vendor-capability-registry.ts (the voice_call capability still routed to
+//     the retired vendor). The same two files no longer name heygen either (PLATFORM_VENDORS), so they leave heygen's list.
+//     A list entry for a file that no longer needs the name is a standing permission to re-introduce it.
+const RETIRED: Record<string, { epitaphs: string[]; snakeAware: boolean }> = {
+  vapi: { snakeAware: true, epitaphs: [
     "lib/platform/provider-posture.ts",              // DECOMMISSIONED_PROVIDERS — the exclusion mechanism
     "lib/providers/tenancy-matrix.ts",               // vendor-ownership history; "nothing in the app calls Vapi"
     "lib/vendor-governance/meter-vendor.ts",         // historical rate — never delete a rate
     "lib/vendor-governance/vendor-policy.ts",        // keyed to vendor_usage_tracking rows
-    "lib/agentic-os/vendor-ownership.ts",            // ownership axis for historical rows
-    "lib/agentic-os/vendor-capability-registry.ts",  // capability history
     "lib/kernel/manager-registry.ts",                // the written record of the decision
-  ],
-  heygen: [
+  ] },
+  // heygen stays word-boundaried: legacy rows still carry metadata.heygen_video_id and app/actions/ai-isa.ts reads it
+  // as a fallback for historical video jobs — a historical-row read, not a live path to the vendor.
+  heygen: { snakeAware: false, epitaphs: [
     "lib/platform/provider-posture.ts",
     "lib/providers/tenancy-matrix.ts",
     "lib/vendor-governance/meter-vendor.ts",
     "lib/vendor-governance/vendor-policy.ts",
-    "lib/agentic-os/vendor-ownership.ts",
-    "lib/agentic-os/vendor-capability-registry.ts",
     "lib/kernel/manager-registry.ts",
-    "lib/marketing/video-provider-resolver.ts",       // FORCES heygen -> did; must name it to force it
+    // lib/marketing/video-provider-resolver.ts LEFT this list (wave 145, lane 145D — found by the new stale-epitaph
+    // check): resolveVideoProvider forces every non-upload key to 'did' WITHOUT naming the vendor in code (the name
+    // survives only in its comment), so the site no longer needs the permission.
     "lib/vendor-governance/cost-normalizer.ts",       // historical ledger rows must still normalise
     "app/dashboard/onboarding/training/[id]/video-player-client.tsx", // legacy training URL compat
-  ],
+  ] },
+  retell: { snakeAware: true, epitaphs: [] },
 }
 
 /** Word-boundaried so VAPID never matches VAPI. This is the whole safety margin. */
 const tokenOf = (vendor: string) => new RegExp(`(?<![A-Za-z0-9_])${vendor}(?![A-Za-z0-9_])`, "i")
+/** SNAKE-AWARE (wave 145): `_` separates words, so `retell_ai` / `vapi_call_id` count — letters and digits still do not,
+ *  so VAPID / getVapidPublicKey / "retelling" never match. */
+const snakeTokenOf = (vendor: string) => new RegExp(`(?<![A-Za-z0-9])${vendor}(?![A-Za-z0-9])`, "i")
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -100,12 +116,15 @@ const FILES = [...walkTs("app"), ...walkTs("lib"), ...rootRuntimeFiles(".")]
 const SOURCES = FILES.map((f) => ({ file: f, src: code(read(f)) }))
 
 console.log("\n═══ 1. A retired vendor is named only where naming it retires it ═══")
-for (const [vendor, allowed] of Object.entries(RETIRED)) {
-  const re = tokenOf(vendor)
+for (const [vendor, { epitaphs: allowed, snakeAware }] of Object.entries(RETIRED)) {
+  const re = snakeAware ? snakeTokenOf(vendor) : tokenOf(vendor)
   const offenders = SOURCES.filter((s) => re.test(s.src) && !allowed.includes(s.file))
-  ok(`no app/lib file outside the ${allowed.length} epitaph sites still says "${vendor}"`,
+  ok(`no app/lib file outside the ${allowed.length} epitaph sites still says "${vendor}"${snakeAware ? " (snake-aware)" : ""}`,
     offenders.length === 0,
     offenders.map((o) => `${o.file}`).join(", "))
+  // An epitaph that no longer names the vendor is a standing permission to re-introduce it — the list must shrink.
+  const stale = allowed.filter((f) => !re.test(SOURCES.find((s) => s.file === f)?.src ?? ""))
+  ok(`every one of "${vendor}"'s epitaph sites still NEEDS the name (none stale)`, stale.length === 0, stale.join(", "))
 }
 
 console.log("\n═══ 2. The exclusion machinery is intact — the epitaph still works ═══")
@@ -173,7 +192,7 @@ console.log("\n═══ 5. The renamed objects agree with the live schema snaps
   // say which column was renamed or it documents nothing. code() strips
   // comments but NOT string literals, so the registry's prose reads as code to
   // a naive scan — the trap that already cost this sweep one false failure.
-  const epitaphs = new Set(Object.values(RETIRED).flat())
+  const epitaphs = new Set(Object.values(RETIRED).flatMap((r) => r.epitaphs))
   const stale = SOURCES.filter((s) =>
     !epitaphs.has(s.file) && /\bvapi_phone_numbers\b|\bvapi_call_id\b/.test(s.src))
   ok("no query still names a renamed object — tsc cannot see inside a\n    .select() string, so this is the check that actually catches it",
@@ -212,6 +231,29 @@ console.log("\n═══ 6. The exclusion set has a CONSUMER on the monitoring r
   ok("the migration that cleared the retired monitoring rows is still present",
     /DELETE\s+FROM\s+public\.service_status/i.test(mig) &&
     /'heygen'/.test(mig) && /'vapi'/.test(mig))
+}
+
+console.log("\n═══ 7. retell (wave 145) — the snake-aware matcher, its positive controls, and no live path ═══")
+{
+  // The measurement the list needed: the old matcher could not see `retell_ai`, which is how the name survived.
+  const snake = snakeTokenOf("retell"), word = tokenOf("retell")
+  ok("POSITIVE CONTROL: the snake-aware matcher fires on the identifier the old matcher missed (retell_ai)",
+    snake.test("vendor: 'twilio' | 'retell_ai' | string") && !word.test("retell_ai"))
+  ok("...and on a bare mention", snake.test('provider: "retell"'))
+  ok("...and never on an ordinary English word that contains it (retelling)", !snake.test("retelling the story"))
+  ok("the vapi matcher stays VAPID-safe under snake-awareness (VAPID_PUBLIC_KEY, getVapidPublicKey)",
+    !snakeTokenOf("vapi").test("VAPID_PUBLIC_KEY") && !snakeTokenOf("vapi").test("getVapidPublicKey") && snakeTokenOf("vapi").test("vapi_call_id"))
+  const tracker = code(read("lib/voice-engine/voice-usage-tracker.ts"))
+  ok("the voice usage tracker bills by the live lane only (no retired-vendor branch left in code)",
+    /vendor\.includes\('twilio'\)/.test(tracker) && !snake.test(tracker) && !snakeTokenOf("vapi").test(tracker))
+  const cap = code(read("lib/agentic-os/vendor-capability-registry.ts"))
+  ok("the voice_call capability routes to the Twilio-native lane (twilio_voice), not a retired vendor",
+    /voice_call:[\s\S]{0,400}vendor:\s*"twilio_voice"/.test(cap))
+  ok("...and over budget it still BLOCKS (vendor policy names twilio_voice with no free alternative)",
+    /twilio_voice:\s*\{\s*freeAlternative:\s*null\s*\}/.test(code(read("lib/vendor-governance/vendor-policy.ts"))))
+  const own = code(read("lib/agentic-os/vendor-ownership.ts"))
+  ok("PLATFORM_VENDORS no longer lists a decommissioned vendor (scanConnectivity renders every member as a managed connector)",
+    !/PLATFORM_VENDORS[\s\S]{0,600}"(vapi|heygen)"/.test(own))
 }
 
 console.log(`\n${"═".repeat(70)}`)

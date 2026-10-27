@@ -12,6 +12,7 @@ import { googleConnector } from "./google"
 import { vibeCtvConnector } from "./vibe-ctv"
 import { chatgptConnector } from "./chatgpt"
 import { decryptSecret } from "@/lib/security/secret-crypto"
+import { adCredentialPlatform } from "@/lib/ads/connection-status"
 
 const CONNECTORS: Record<string, AdConnector> = {
   facebook:  metaConnector,
@@ -58,8 +59,10 @@ export async function loadConnectorCredential(
     return { accessToken: r.conn.apiKey as string, accountId: r.conn.accountId, config: r.conn.config ?? {}, brokerageId }
   }
   const supabase = client ?? createServiceClient()
-  // instagram auth lives under the facebook (Meta) credential.
-  const lookup = platform === "instagram" ? "facebook" : platform
+  // instagram auth lives under the facebook (Meta) credential; Google Ads under 'google_ads'.
+  // TOMBSTONE (wave 145, lane 145D): the inline `platform === "instagram" ? "facebook" : platform` copy is gone —
+  // survivor lib/ads/connection-status.ts adCredentialPlatform (the ONE campaign → credential mapping, §6).
+  const lookup = adCredentialPlatform(platform)
   // supabase-js RESOLVES a refusal (CLAUDE.md §3) — read it; a refused read is logged, not "not connected" in silence.
   const { data, error } = await supabase
     .from("platform_credentials")

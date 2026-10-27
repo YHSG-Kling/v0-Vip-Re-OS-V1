@@ -12,27 +12,36 @@ import { PROVIDER_CONNECTED_AD_PLATFORMS } from "@/lib/integrations/ad-campaign-
 
 // The platform value an ad campaign uses → the platform_credentials row the
 // connector loads (instagram ads run through the Meta/facebook credential).
+//
+// Wave 145 (lane 145D, owner ruling 13 — "ads = meta, google ads"): Google Ads' credential is 'google_ads', never the
+// bare 'google'. The bare name was the campaign vocabulary leaking into the credential column (CLAUDE.md §6): the live
+// platform_credentials CHECK never admitted 'google', so the OAuth callback's write was refused and Google Ads could
+// never be connected (m862 admits 'google_ads'; lib/providers/channel-provider-matrix.ts AD_PLATFORMS.google_ads).
+// THE ONE mapping — lib/ads/connectors/registry.ts and lib/ads/launch-assembler.ts read it, never a copy.
+const AD_CREDENTIAL_PLATFORM: Readonly<Record<string, string>> = Object.freeze({ instagram: "facebook", google: "google_ads" })
 export function adCredentialPlatform(campaignPlatform: string): string {
-  return campaignPlatform === "instagram" ? "facebook" : campaignPlatform
+  return AD_CREDENTIAL_PLATFORM[campaignPlatform] ?? campaignPlatform
 }
 
 export interface AdConnection { platform: string; connected: boolean; accountId: string | null }
 
-/** Report connection status for the ad platforms (facebook, google). */
+/** Report connection status for the ad platforms (facebook, google) — keyed by CAMPAIGN platform, read by credential name. */
 export async function getAdConnections(
   brokerageId: string, client?: ReturnType<typeof createServiceClient>,
 ): Promise<AdConnection[]> {
   const supabase = client ?? createServiceClient()
   const platforms = ["facebook", "google"]
-  const { data } = await supabase
+  // supabase-js RESOLVES a refusal (CLAUDE.md §3): a refused read is logged and reads as not connected (fail closed), never in silence.
+  const { data, error } = await supabase
     .from("platform_credentials")
     .select("platform, account_id, is_active")
     .eq("brokerage_id", brokerageId)
-    .in("platform", platforms)
+    .in("platform", platforms.map(adCredentialPlatform))
     .eq("is_active", true)
+  if (error) console.error("[ads] ad-account connection read refused:", error.message)
   const rows = (data ?? []) as Array<{ platform: string; account_id: string | null }>
   return platforms.map((p) => {
-    const row = rows.find((r) => r.platform === p)
+    const row = rows.find((r) => r.platform === adCredentialPlatform(p))
     return { platform: p, connected: !!row, accountId: row?.account_id ?? null }
   })
 }

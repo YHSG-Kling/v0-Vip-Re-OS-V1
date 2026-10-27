@@ -30,11 +30,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
 import { checkUpload } from "@/lib/storage/file-limits"
 import { isPlatformStaffIdentity, isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
 import {
-  FORM_PACKET_BUCKET, listLibraryForActor, mayManagePacketScope, registerTenantFormPacket, resolvePacketActor, retireTenantFormPacket, updateTenantFormPacket,
+  FORM_PACKET_BUCKET, issueTenantPacketUrl, listLibraryForActor, mayManagePacketScope, registerTenantFormPacket, resolvePacketActor, retireTenantFormPacket, updateTenantFormPacket,
   type PacketActor,
 } from "@/lib/forms/tenant-form-packets"
 import { PLATFORM_PACKET_PREVIEW_TTL_SECONDS, addPlatformPacketToLibrary, listPlatformPacketsForTenant, parsePlatformPacketPath } from "@/lib/forms/platform-form-packets"
@@ -75,6 +74,14 @@ export async function GET(): Promise<NextResponse> {
 
   const lib = await listLibraryForActor(auth.svc as never, auth.actor)
   if (!lib.ok) return NextResponse.json({ error: lib.error }, { status: 500 })
+  // EVERY PACKET LINK IS MINTED PER VIEW (wave 145, lane 145A): a registered master's `pdf_url` in this response is a short-lived
+  // link from the ONE minting door, issued only for a row this manager has authority over — never the stored column (which used
+  // to carry a 10-year bearer URL no retirement or membership end could revoke). A row whose link cannot be minted shows none.
+  const forms = await Promise.all(lib.forms.map(async (f) => {
+    if (!f.storage_path) return f
+    const minted = await issueTenantPacketUrl(auth.svc as never, auth.actor, f, "manage")
+    return { ...f, pdf_url: minted.ok ? minted.url : null }
+  }))
   // The platform catalogue — what this brokerage MAY add to its own library. A refused catalogue read is reported beside the
   // library, never as an empty catalogue (and never blocks the brokerage's own forms).
   const catalogue = await listPlatformPacketsForTenant(auth.svc as never, {})
@@ -89,7 +96,7 @@ export async function GET(): Promise<NextResponse> {
     }
   }
   return NextResponse.json({
-    forms: lib.forms, share_teams: lib.shareTeams, may_share_brokerage_wide: mayManagePacketScope(auth.actor, null),
+    forms, share_teams: lib.shareTeams, may_share_brokerage_wide: mayManagePacketScope(auth.actor, null),
     platform_catalogue: platformCatalogue, platform_catalogue_error: catalogue.ok ? null : catalogue.error,
   })
 }
@@ -168,17 +175,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   })
   if (!registered.ok) return NextResponse.json({ error: registered.error }, { status: 422 })
 
-  // The legacy readers (the form-fill engine, the agent Forms Library, this page's PDF link) read `pdf_url`; mint it from the ONE
-  // issuer as before. A failure leaves the packet registered (its storage_path is the durable reference) and says so.
-  let pdfUrlNote: string | null = null
-  if (registered.packet.storage_path) {
-    const issued = await issueBucketObjectUrl(auth.svc as never, { bucket: FORM_PACKET_BUCKET, objectPath: registered.packet.storage_path })
-    if (issued.ok) {
-      const { data: upd, error: updErr } = await auth.svc.from("brokerage_form_library").update({ pdf_url: issued.url }).eq("id", registered.packet.id).eq("brokerage_id", auth.brokerageId).select("id")
-      if (updErr || !upd || upd.length === 0) pdfUrlNote = `the preview link was not recorded (${updErr?.message ?? "matched no row"})`
-    } else pdfUrlNote = `the preview link could not be minted (${issued.reason})`
-  }
-  return NextResponse.json({ form: registered.packet, note: pdfUrlNote })
+  // NO LINK IS PERSISTED (wave 145, lane 145A). This used to write a 10-YEAR signed URL (issueBucketObjectUrl's default TTL) into
+  // brokerage_form_library.pdf_url — a bearer link to a licensed master that every reader of the row could keep using after the
+  // packet was retired, its licence expired or their membership ended. `storage_path` is the durable reference; the link the
+  // uploader sees now is minted per view by the ONE door (lib/forms/tenant-form-packets.ts issueTenantPacketUrl) and lives minutes.
+  const minted = registered.packet.storage_path ? await issueTenantPacketUrl(auth.svc as never, auth.actor, registered.packet, "manage") : null
+  return NextResponse.json({ form: { ...registered.packet, pdf_url: minted?.ok ? minted.url : null }, note: minted && !minted.ok ? `the preview link could not be minted (${minted.reason})` : null })
 }
 
 // ─── PATCH — update form ───────────────────────────────────────────────────

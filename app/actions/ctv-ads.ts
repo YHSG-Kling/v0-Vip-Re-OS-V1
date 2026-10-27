@@ -23,6 +23,10 @@ import { requireAdsActor as requireActor } from "@/lib/auth/require-caller"
 export async function stageCtvCampaignAction(input: {
   listingId?: string | null
   videoProjectId?: string | null
+  /** Contract C5 (wave 145, lane 145D): the creative asset (ai_video_projects.id) and the APPROVED topic it is made
+   *  from — the gateway refuses an unapproved topic. The tenant is never an input: it is the session's. */
+  assetId?: string | null
+  topicId?: string | null
   campaignName?: string
   dailyBudgetCents: number
   targeting: CtvTargeting
@@ -35,6 +39,8 @@ export async function stageCtvCampaignAction(input: {
     agentUserId: actor.userId,
     listingId: input.listingId ?? null,
     videoProjectId: input.videoProjectId ?? null,
+    assetId: input.assetId ?? null,
+    topicId: input.topicId ?? null,
     campaignName: input.campaignName,
     dailyBudgetCents: input.dailyBudgetCents,
     targeting: input.targeting,

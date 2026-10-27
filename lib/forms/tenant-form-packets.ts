@@ -23,12 +23,20 @@
  *               bucket prefix, a `brokerage_form_library` row carrying `source_platform_packet_id` and the licence — and agents
  *               only ever see the brokerage's / team's library (lib/forms/platform-form-packets.ts addPlatformPacketToLibrary).
  *   FOUND       the `brokerage-forms` bucket's storage policies admitted ANY signed-in user to read, overwrite and delete ANY
- *               object in it — every tenant's library and every filled offer (a buyer's name, price and terms). m847 scopes them
- *               to the owner layout above. Measured live 2026-10-25: 0 objects, 0 library rows, 0 platform packets.
+ *               object in it — every tenant's library and every filled offer (a buyer's name, price and terms). m853 scoped them
+ *               to the owner layout above; its storage.objects block is owner SQL (docs/operations/OWNER-SQL.md §F). Measured live
+ *               2026-10-25: 0 objects, 0 library rows, 0 platform packets.
+ *   FOUND (145A) the owner layout admitted EVERY users row of the brokerage — portal CONTACTS and VENDOR seats carry brokerage_id
+ *               (live 2026-10-27: 4 contact + 4 vendor users) — so a buyer could list the brokerage's licensed packets and fill /
+ *               read another buyer's filled offer; and a suspended user or a deactivated agent kept access. The reader is now an
+ *               ACTIVE tenant STAFF SEAT (FORM_LIBRARY_SEAT_USER_TYPES, below), in code (resolvePacketActor) and in SQL (m854
+ *               public.brokerage_forms_seat_active()). The upload route also stopped PERSISTING a 10-year signed URL in
+ *               brokerage_form_library.pdf_url — a bearer link no retirement, licence expiry or membership end could revoke; every
+ *               packet link is minted per view by issueTenantPacketUrl.
  *
  * THE RULES (each one is code below, and a check in scripts/closing-compliance-guard.ts section F)
  *   · A packet lives at `brokerage/{brokerageId}/packets/{rowId}/{file}.pdf` (shared with the whole brokerage) or
- *     `teams/{teamId}/packets/{rowId}/{file}.pdf` (shared with that team only). The row's path must sit under its owner (m847 CHECK).
+ *     `teams/{teamId}/packets/{rowId}/{file}.pdf` (shared with that team only). The row's path must sit under its owner (m853 CHECK).
  *   · An agent SEES a packet only when it is their brokerage's, active, in licence, and either brokerage-wide or their OWN team's
  *     (canonical membership). The brokerage's oversight class (the tenant admin roster minus team_lead — "teams see only their
  *     own board", CLAUDE.md §4) sees every team's packets in their brokerage. Another tenant's packet is never visible.
@@ -63,6 +71,27 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
  * the Set, never copy the list). A team lead manages and sees their OWN team's packets; the brokerage's principals see them all.
  */
 export const PACKET_OVERSIGHT_USER_TYPES: ReadonlySet<string> = new Set([...TENANT_ADMIN_USER_TYPES].filter((t) => t !== "team_lead"))
+
+/**
+ * WHO MAY TOUCH THE FORMS BUCKET AT ALL (wave 145, lane 145A — the P1 form-bucket ruling): a tenant STAFF seat — the operational
+ * admin roster (spread, never restated — CLAUDE.md §4) plus the producing / processing seats that fill forms (agent, tc). The same
+ * composition the transfer rail moves (lib/kernel/brokerage-transfer.ts MOVING_SEAT_TYPES). NOT here, by design: `contact` (a
+ * client — sees only their own documents, CLAUDE.md §5), `vendor` (a lender / title seat is a VENDOR CATEGORY, never a form
+ * library reader), `isa` (the AI system seat), `system`, `support`. The SQL twin is m854 public.brokerage_forms_seat_active(); the
+ * guard (scripts/transfer-classification-guard.ts) holds the two lists equal.
+ */
+export const FORM_LIBRARY_SEAT_USER_TYPES: ReadonlySet<string> = new Set([...TENANT_ADMIN_USER_TYPES, "agent", "tc"])
+
+/** PURE: is this users row an ACTIVE forms seat? Revocation on membership end: deleted, suspended / inactive, or not a staff seat
+ *  refuses (platform superadmin is the one non-seat admitted — the SQL twin's is_platform_admin()). Null status = active. */
+function formLibrarySeatRefusal(u: { user_type?: string | null; status?: string | null; deleted_at?: string | null; platform_role?: string | null } | null): string | null {
+  if (!u) return "your account could not be found"
+  if (u.deleted_at) return "your account was removed"
+  if ((u.status ?? "active") !== "active") return `your account is ${u.status} — form packets are closed to it`
+  if (u.platform_role === "superadmin") return null
+  if (!FORM_LIBRARY_SEAT_USER_TYPES.has(String(u.user_type ?? ""))) return "form packets are for the brokerage's staff seats (agents, team leads, transaction coordinators and the brokerage's admins) — not for this account type"
+  return null
+}
 
 export interface PacketActor {
   userId: string
@@ -152,10 +181,19 @@ function packetOffered(row: Pick<TenantPacketRow, "state" | "packet_type">, q: {
  */
 export async function resolvePacketActor(svc: Svc, userId: string): Promise<{ ok: true; actor: PacketActor } | { ok: false; error: string }> {
   if (!userId || !UUID.test(userId)) return { ok: false, error: "no signed-in user" }
-  const { data: me, error: meErr } = await svc.from("users").select("brokerage_id, user_type").eq("id", userId).maybeSingle()
+  const { data: me, error: meErr } = await svc.from("users").select("brokerage_id, user_type, status, deleted_at, platform_role").eq("id", userId).maybeSingle()
   if (meErr) return { ok: false, error: `your account could not be read: ${meErr.message}` }
   const brokerageId = (me as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
   if (!brokerageId) return { ok: false, error: "your account is not attached to a brokerage" }
+  // AN ACTIVE STAFF SEAT ONLY (wave 145, 145A): a contact / vendor seat of the brokerage, a suspended or removed account is refused.
+  const seatRefusal = formLibrarySeatRefusal(me as Parameters<typeof formLibrarySeatRefusal>[0])
+  if (seatRefusal) return { ok: false, error: seatRefusal }
+  // …and an agent deactivated IN THIS BROKERAGE (lib/agents/agent-deactivation.ts sets agents.is_active=false; users stays) is
+  // revoked. No agents row = no agent record to revoke (3 of 6 live agent users have none) — the users row decided above.
+  const { data: agentRows, error: agErr } = await svc.from("agents").select("is_active").eq("user_id", userId).eq("brokerage_id", brokerageId)
+  if (agErr) return { ok: false, error: `your agent record could not be read: ${agErr.message}` }
+  const agentList = (agentRows ?? []) as Array<{ is_active?: boolean | null }>
+  if (agentList.length > 0 && !agentList.some((a) => a.is_active !== false)) return { ok: false, error: "your agent seat in this brokerage is deactivated — form packets are closed to it" }
   const userType = ((me as { user_type?: string | null } | null)?.user_type ?? null)
   const led = await resolveLedTeamId(svc, userId)
   if (!led.ok) return { ok: false, error: led.error }
@@ -164,7 +202,8 @@ export async function resolvePacketActor(svc: Svc, userId: string): Promise<{ ok
   let ledTeamId = led.teamId
   const teamIds = [...new Set([teamId, ledTeamId].filter((t): t is string => !!t))]
   if (teamIds.length > 0) {
-    const { data: teams, error: tErr } = await svc.from("teams").select("id, brokerage_id").in("id", teamIds).eq("brokerage_id", brokerageId)
+    // A DELETED team is a membership that ended (m854's SQL twin requires teams.deleted_at IS NULL for a member's read).
+    const { data: teams, error: tErr } = await svc.from("teams").select("id, brokerage_id").in("id", teamIds).eq("brokerage_id", brokerageId).is("deleted_at", null)
     if (tErr) return { ok: false, error: `your team could not be verified: ${tErr.message}` }
     const mine = new Set(((teams ?? []) as Array<{ id: string }>).map((t) => t.id))
     if (teamId && !mine.has(teamId)) teamId = null
@@ -245,6 +284,38 @@ export async function usableTenantPacketPaths(svc: Svc, actor: PacketActor, path
     if (row.storage_path && packetVisibleTo(row, actor, today).visible) usable.add(row.storage_path)
   }
   return { ok: true, usable }
+}
+
+/**
+ * THE ONE MINTING DOOR FOR A REGISTERED PACKET MASTER (wave 145, lane 145A). A short-lived signed link, minted per view, only when
+ * the row is the actor's brokerage's, its stored path is EXACTLY a well-formed tenant packet path under the row's own owner, and:
+ *   · purpose "use"    — the row is visible to the actor right now (active, in licence, brokerage-wide or their own team — the fill
+ *                        rule; the SQL twin is m854's registered-packet arm of brokerage_forms_path_readable);
+ *   · purpose "manage" — the actor has authority over the row's scope (mayManagePacketScope — the oversight class, or the team's lead
+ *                        for a team packet), retired / expired rows included so a manager can review before reactivating.
+ * Nothing is persisted; a refused signer is a refusal with its reason, never a public fallback. Replaces the 10-year URL the upload
+ * route used to write into brokerage_form_library.pdf_url.
+ */
+export async function issueTenantPacketUrl(
+  svc: Svc,
+  actor: PacketActor,
+  row: Pick<TenantPacketRow, "id" | "brokerage_id" | "team_id" | "is_active" | "license_expires_at" | "storage_path">,
+  purpose: "use" | "manage",
+  now: Date = new Date(),
+): Promise<{ ok: true; url: string; ttlSeconds: number } | { ok: false; reason: string }> {
+  if (row.brokerage_id !== actor.brokerageId) return { ok: false, reason: "the packet belongs to another brokerage" }
+  const parsed = parseTenantPacketPath(row.storage_path)
+  const ownerOk = !!parsed && parsed.rowId === row.id && (row.team_id ? parsed.kind === "team" && parsed.ownerId === row.team_id : parsed.kind === "brokerage" && parsed.ownerId === row.brokerage_id)
+  if (!ownerOk) return { ok: false, reason: "the packet has no registered master under its owner's folder" }
+  if (purpose === "use") {
+    const v = packetVisibleTo(row, actor, todayIso(now))
+    if (!v.visible) return { ok: false, reason: v.reason ?? "the packet is not shared with you" }
+  } else if (!mayManagePacketScope(actor, row.team_id)) {
+    return { ok: false, reason: "you do not manage this packet's scope" }
+  }
+  const { data, error } = await svc.storage.from(FORM_PACKET_BUCKET).createSignedUrl(row.storage_path as string, FORM_PACKET_PREVIEW_TTL_SECONDS)
+  if (error || !data?.signedUrl) return { ok: false, reason: `no link could be signed: ${error?.message ?? "no url"}` }
+  return { ok: true, url: data.signedUrl, ttlSeconds: FORM_PACKET_PREVIEW_TTL_SECONDS }
 }
 
 /**

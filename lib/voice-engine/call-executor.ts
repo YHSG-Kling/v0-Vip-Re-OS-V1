@@ -15,7 +15,7 @@ export interface CallMetadata {
   contactId: string
   initiatorRole: 'ai' | 'agent' | 'contact' | 'office'
   callType: 'inbound' | 'outbound'
-  vendor: string // e.g., 'twilio', 'bland_ai', 'retell_ai'
+  vendor: string // 'twilio' — the Twilio-native lane is the only voice vendor (retired AI-call vendors: wave 145, lane 145D)
   agentId?: string
   transactionId?: string
   listingId?: string

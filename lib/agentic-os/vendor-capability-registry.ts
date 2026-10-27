@@ -128,8 +128,12 @@ export const VENDOR_CAPABILITY_REGISTRY: Record<VendorCapability, VendorCapabili
     domain: "communications",
     purpose: "Place an outbound AI voice conversation (TCPA-gated).",
     inputs: ["phoneNumber", "brokerageId", "assistantConfig"],
+    // Wave 145 (lane 145D, owner ruling 13): this row still routed the capability to the RETIRED third-party voice-AI
+    // vendor, so /api/agentic-os/resolve-capability told an agent asking for voice_call to use a vendor nothing calls.
+    // Survivor: the Twilio-native AI call (lib/voice/twilio-outbound.ts placeOutboundAiCall), priced as 'twilio_voice'
+    // (cost-normalizer VENDOR_PRICING + PLATFORM_VENDOR_RATES). Over budget it still BLOCKS (VENDOR_POLICY.twilio_voice).
     providers: [
-      { vendor: "vapi", tier: "paid", note: "AI voice agent — no free equivalent" },
+      { vendor: "twilio_voice", tier: "paid", note: "Twilio-native AI voice call — no free equivalent" },
     ],
   },
   video_render: {

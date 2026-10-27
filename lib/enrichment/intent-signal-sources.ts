@@ -8,10 +8,12 @@
 // THIS FILE DECIDES NOTHING. It is the SOURCE half lane 144F's arbiter / event reactor consumes (lib/kernel/signal-registry.ts
 // is that lane's): every signal it returns is an OBSERVED FACT with its provider, field, observed-at and the intents it bears
 // on — never a score, never a threshold, never a channel, never copy. "No invented behaviour": a fact absent from the record
-// yields no signal; a value is never inferred from another.
+// yields no signal; a value is never inferred from another. (Wave 145F: it also ROUTES a new fact — see THE WATCHER below — but
+// the routing only delivers the fact to the ONE responder; the decision stays the manager's / the arbiter's.)
 //
 // WHAT IT NEVER RETURNS: a protected characteristic (race, religion, national origin, familial status, sex, disability) — the
-// full-demographic adapter drops them before they are stored (versium-client.ts VERSIUM_PROTECTED_CLASS_FIELD) and nothing here
+// full-demographic adapter keeps them off every profile block (versium-client.ts VERSIUM_PROTECTED_CLASS_FIELD; since wave 145 they
+// are stored ONLY in the segregated research home, protected-research-store.ts) and nothing here
 // reads a field that names one. Age appears ONLY as the birthday-MONTH signal (cards; the education format by band — owner:
 // "never age stereotyping"), flagged `sensitivity: "age"` so a consumer can keep it off any targeting surface (the ad arm of
 // lib/lead-governance/protected-class-signals.ts refuses it there regardless). Life events (probate, divorce, relocation) are
@@ -22,6 +24,8 @@
 
 import { realEstateIndicatorsFromProfile } from "@/lib/enrichment/online-presence-store"
 import { onlineAudienceSummary } from "@/lib/enrichment/online-audience-store"
+import { PROVIDER_FRESHNESS_DAYS, isFresh } from "@/lib/enrichment/provider-dedup"
+import { fieldProvenanceOf } from "@/lib/lead-pipeline/enrichment-column-map"
 
 export type IntentKind = "moving" | "home_sale" | "home_purchase" | "refinance" | "property_engagement" | "market_engagement" | "life_event" | "relationship_moment"
 export type SignalEntity = "raw_lead" | "lead" | "contact" | "lifetime_customer"
@@ -151,23 +155,206 @@ export function intentSignalsFromContact(
 // registered handler answers it through the ONE life-change responder. Only `behaviour` and `life_event` facts are a change (the
 // source's own sensitivity flag — never a threshold invented here): an `age` fact never leaves this module, a stored property fact
 // is history the equity / refinance triggers own.
+//
+// ── THE WATCHER (wave 145, lane 145F — owner ruling 11: "revisit versium enrichment and how intent signals are going to read them
+// when it happens. need a watcher or something") ─────────────────────────────────────────────────────────────────────────────
+// SOURCE UPDATE → FIELD / PROVENANCE CHANGE → INTENT EVALUATION → CANONICAL PERSON → SIGNAL REACTIVATION → EXISTING MANAGER / ARBITER
+// → NEXT-BEST ACTION. Every NEW behaviour / life-event fact becomes ONE durable event — an agent_action_ledger row
+// (`enrichment.intent_fact.observed`, Data Steward) keyed by the FACT (provider + key + value: a re-capture of an unchanged value is
+// NOT a change — the 144Z diff keyed on the observation time too, so a stale re-buy that re-stamped captured_at re-announced every
+// unchanged fact) and carrying source, field, provenance (the block's field_provenance stamp) and freshness. The ledger's unique
+// idempotency key makes it consumed ONCE: a retry, a second writer or the sweep replays, never routes twice. It is routed to the
+// CANONICAL party (contract C2 — a lead whose contact_id is set is OUT of the lead domain and is answered as its contact):
+//   · a contact → ONE `online_intent_detected` bus line PER FACT (dedupe off: a second fact is no longer absorbed by an open line)
+//     → the AI ISA's handler → the ONE life-change responder (lib/ai-isa/followup-arbiter.ts respondToLifeChangeSignal);
+//   · a lead without a contact → that SAME responder with subject `lead` (it records the lead's signal_reactivations row for the
+//     ISA's lead loops — leads are reached by email / mail only). The bus handler resolves contacts only.
+// Two doors, one key: the writers' push (publishNewIntentFacts — BEFORE / AFTER diff at the write) and the sweep
+// (watchEnrichmentFactChanges — rows any writer, the queue drain included, stamped since the cursor; run on the 15-minute
+// enrichment-processor tick). FRESHNESS: a fact is routed only inside BOTH its provider's window (provider-dedup.ts
+// PROVIDER_FRESHNESS_DAYS) and the tenant's life-event window (followup_policy.sphere.lifeEventWindowDays — the arbiter admits nothing
+// older); an undated fact counts as observed at the write that stored it. NO PROVIDER IS CALLED HERE: Versium and PeopleData do not
+// push, so a fact exists only once OUR budget-gated, gap-only enrichment stored it — the sweep never invents a real-time signal.
 
-/** PURE. The behaviour / life-event facts the AFTER row carries that the BEFORE row did not (same key + value + observation). */
+/** PURE. A short, stable digest of a fact value (FNV-1a) — the value itself (a life-event type, a date) never rides the key. */
+function factDigest(value: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < value.length; i++) { h ^= value.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
+  return h.toString(16).padStart(8, "0")
+}
+
+/** PURE. A fact's identity — provider + key + value. Never the observation time (a re-captured unchanged value is the same fact). */
+function intentFactKey(fact: Pick<ObservedIntentSignal, "provider" | "key" | "value">): string {
+  return `${fact.provider}:${fact.key}:${factDigest(String(fact.value))}`
+}
+
+/** PURE. The behaviour / life-event facts the AFTER row carries that the BEFORE row did not (same fact identity — intentFactKey). */
 export function newIntentFacts(
   before: Parameters<typeof intentSignalsFromContact>[0] | null | undefined,
   after: Parameters<typeof intentSignalsFromContact>[0],
   now: Date = new Date(),
 ): ObservedIntentSignal[] {
-  const id = (o: ObservedIntentSignal) => `${o.key}|${String(o.value)}|${o.observedAt ?? ""}`
-  const seen = new Set((before ? intentSignalsFromContact(before, now) : []).map(id))
-  return intentSignalsFromContact(after, now).filter((o) => (o.sensitivity === "behaviour" || o.sensitivity === "life_event") && !seen.has(id(o)))
+  const seen = new Set((before ? intentSignalsFromContact(before, now) : []).map(intentFactKey))
+  return intentSignalsFromContact(after, now).filter((o) => isChangeFact(o) && !seen.has(intentFactKey(o)))
+}
+
+/** Only the source's own `behaviour` / `life_event` sensitivity is a change (age never; a stored property fact is history). */
+const isChangeFact = (o: ObservedIntentSignal): boolean => o.sensitivity === "behaviour" || o.sensitivity === "life_event"
+
+/** The provider windows (provider-dedup.ts PROVIDER_FRESHNESS_DAYS — one table) a fact's observation must sit inside. */
+const PROVIDER_WINDOW_DAYS: Partial<Record<IntentSignalSource["provider"], number>> = {
+  versium: PROVIDER_FRESHNESS_DAYS.versium_online_presence,
+  peopledata: PROVIDER_FRESHNESS_DAYS.peopledata_profile,
+}
+
+interface IntentFactFreshness {
+  /** The observation the window is measured from (the fact's own date, else the write that stored it). */
+  observedAt: string
+  dated: boolean
+  windowDays: number
+  fresh: boolean
+}
+
+/** PURE. Is the fact still current? Inside its provider window AND the tenant's life-event window (a missing / future time is not). */
+function intentFactFreshness(fact: ObservedIntentSignal, writtenAt: string, lifeEventWindowDays: number, now: Date): IntentFactFreshness {
+  const observedAt = fact.observedAt ?? writtenAt
+  const windowDays = Math.min(PROVIDER_WINDOW_DAYS[fact.provider] ?? lifeEventWindowDays, lifeEventWindowDays)
+  return { observedAt, dated: fact.observedAt !== null, windowDays, fresh: isFresh(observedAt, windowDays, now) }
+}
+
+/** Where each source's provenance stamp lives in enrichment_profile.field_provenance (the ONE provenance shape, wave 100C). */
+const PROVENANCE_KEY: Readonly<Record<string, string>> = Object.freeze({
+  online_real_estate_activity: "real_estate_indicators", investor_activity: "real_estate_indicators", home_improvement_interest: "real_estate_indicators",
+  public_life_event: "life_events", location_history: "location_history", job_change: "job_start_date",
+})
+
+/** PURE. The provenance a routed fact carries: the source census row + the stored stamp (null when the record holds none — said). */
+function intentFactProvenance(fact: ObservedIntentSignal, record: Parameters<typeof intentSignalsFromContact>[0]): Record<string, unknown> {
+  const s = SOURCE.get(fact.key)
+  const stamp = fieldProvenanceOf(record.enrichment_profile ?? null)[PROVENANCE_KEY[fact.key] ?? fact.key]
+  const st = stamp && typeof stamp === "object" ? (stamp as Record<string, unknown>) : null
+  return {
+    provider: fact.provider, capability: s?.capability ?? null, field: fact.field, stored_at: s?.storedAt ?? null, docs: s?.docs ?? null,
+    stamp: st ? { source: st.source ?? null, capability: st.capability ?? null, retrieved_at: st.retrievedAt ?? null, purpose: st.purpose ?? null, match_confidence: st.matchConfidence ?? null } : null,
+  }
+}
+
+/** The canonical party a fact is answered for (contract C2). */
+type IntentParty = { type: "contact"; id: string } | { type: "lead"; id: string }
+
+/**
+ * PURE (contract C2 — lane 145E's lib/contact-promotion/lead-domain-boundary.ts canonicalPartyFor is the named survivor; this is its
+ * rule, inline until that module lands — see the lane notes): a lead with a contact_id is answered as that contact; an inactive
+ * lead with none is out of every domain (nothing to answer); otherwise the lead itself.
+ */
+function canonicalIntentParty(lead: { id: string; contact_id?: string | null; is_active?: boolean | null }): IntentParty | null {
+  if (lead.contact_id) return { type: "contact", id: lead.contact_id }
+  if (lead.is_active === false) return null
+  return { type: "lead", id: lead.id }
+}
+
+type IntentFactRoute = "routed" | "replayed" | "refused" | "not_a_change"
+
+export interface IntentFactDeps {
+  ledger?: typeof import("@/lib/kernel/action-ledger").withActionLedger
+  publish?: typeof import("@/lib/kernel/manager-signals").publishManagerSignal
+  respond?: typeof import("@/lib/ai-isa/followup-arbiter").respondToLifeChangeSignal
+  /** The tenant's life-event window (default: loadFollowupPolicy). */
+  lifeEventWindowDays?: number
+}
+
+/** The ledger WHY of a routed fact — from the responder's kind vocabulary (LIFE_CHANGE_SIGNAL_KINDS), never a second one. */
+function intentFactReasonCode(kind: string | undefined): "SELLER_FOLLOWUP_INTENT_INCREASE" | "PROPERTY_VALUE_CHANGE" | "BUYER_PROPERTY_MATCH" | "NURTURE_TOUCH" {
+  if (kind === "home_sale" || kind === "moving") return "SELLER_FOLLOWUP_INTENT_INCREASE"
+  if (kind === "equity" || kind === "refinance") return "PROPERTY_VALUE_CHANGE"
+  if (kind === "buying") return "BUYER_PROPERTY_MATCH"
+  return "NURTURE_TOUCH"
 }
 
 /**
- * Publish each NEW behaviour / life-event fact a write landed on a contact (newIntentFacts) as ONE `online_intent_detected` bus
- * signal per fact (the bus dedupes per open contact — the evaluation reads every stored fact, so one open line suffices). The
- * brokerage and contact are the WRITER's verified target, never a payload. Never throws: a refused publish is counted and logged —
- * the write it follows already succeeded and is not undone.
+ * ONE fact → ONE durable, consumed-once event → its canonical party. Never throws (a refusal is the return value). The brokerage and
+ * the party are the CALLER's verified target (a writer's tenant-anchored row, the sweep's tenant-pinned read) — never a payload.
+ */
+async function routeIntentFact(
+  svc: unknown,
+  a: { brokerageId: string; party: IntentParty; fact: ObservedIntentSignal; freshness: IntentFactFreshness; provenance: Record<string, unknown>; door: "writer_push" | "sweep" },
+  deps: IntentFactDeps,
+): Promise<IntentFactRoute> {
+  try {
+    const arbiter = await import("@/lib/ai-isa/followup-arbiter")
+    const signalType = arbiter.intentFactSignalType(a.fact)
+    if (!signalType) return "not_a_change"
+    const ledger = deps.ledger ?? (await import("@/lib/kernel/action-ledger")).withActionLedger
+    const factKey = intentFactKey(a.fact)
+    const idempotencyKey = `intent_fact:${a.brokerageId}:${a.party.type}:${a.party.id}:${factKey}`
+    let out: IntentFactRoute = "replayed"
+    await ledger<IntentFactRoute>(
+      {
+        brokerageId: a.brokerageId, action: "enrichment.intent_fact.observed", actor: { type: "manager", managerKey: "data_steward" },
+        subject: { type: a.party.type, id: a.party.id }, idempotencyKey, reasonCode: intentFactReasonCode(arbiter.LIFE_CHANGE_SIGNAL_KINDS[signalType]),
+        reasonDetail: `${a.fact.provider} · ${a.fact.field} → ${signalType} (${a.door})`.slice(0, 500), systemSource: "enrichment_fact_watcher",
+        detail: { fact_key: factKey, key: a.fact.key, signal_type: signalType, sensitivity: a.fact.sensitivity, intents: [...a.fact.intents], freshness: a.freshness, provenance: a.provenance, door: a.door },
+      },
+      async () => {
+        if (a.party.type === "contact") {
+          const publish = deps.publish ?? (await import("@/lib/kernel/manager-signals")).publishManagerSignal
+          const r = await publish({
+            brokerageId: a.brokerageId, fromManager: "data_steward", toManager: "ai_isa", signalType: "online_intent_detected",
+            message: `A provider we already use recorded a new ${a.fact.sensitivity === "life_event" ? "life-event" : "online-intent"} fact (${a.fact.provider} · ${a.fact.field}).`,
+            entityType: "contact", entityId: a.party.id, contactId: a.party.id, dedupe: false,
+            payload: { key: a.fact.key, provider: a.fact.provider, field: a.fact.field, intents: [...a.fact.intents], sensitivity: a.fact.sensitivity, observed_at: a.fact.observedAt, fact_key: factKey, idempotency_key: idempotencyKey, freshness: a.freshness, provenance: a.provenance, door: a.door },
+          }, svc as never)
+          if (!r.ok) console.warn(`[intent-signal-sources] online_intent_detected not published for ${a.party.id}: ${r.reason ?? "refused"}`)
+          return (out = r.ok ? "routed" : "refused")
+        }
+        const respond = deps.respond ?? arbiter.respondToLifeChangeSignal
+        const r = await respond(svc as never, {
+          brokerageId: a.brokerageId, subject: { type: "lead", id: a.party.id }, signalType, source: `enrichment:${a.fact.provider}`,
+          detail: { key: a.fact.key, field: a.fact.field, fact_key: factKey, door: a.door },
+        })
+        if (r.action === "refused") console.warn(`[intent-signal-sources] lead ${a.party.id} fact not answered: ${r.reason}`)
+        return (out = r.action === "refused" ? "refused" : "routed")
+      },
+      { settle: (r) => ({ status: r === "routed" ? "executed" : r === "refused" ? "failed" : "skipped", outcome: r, error: r === "refused" ? "the route refused (see the log line)" : null }), replay: () => (out = "replayed") },
+      { client: svc as never },
+    )
+    return out
+  } catch (e) {
+    console.warn("[intent-signal-sources] fact route threw (non-blocking):", e instanceof Error ? e.message : e)
+    return "refused"
+  }
+}
+
+/** The tenant's life-event window (the arbiter's admission window), read once per call; the platform default when unreadable. */
+async function lifeEventWindowFor(svc: unknown, brokerageId: string, deps: IntentFactDeps): Promise<number> {
+  if (typeof deps.lifeEventWindowDays === "number") return deps.lifeEventWindowDays
+  const { loadFollowupPolicy } = await import("@/lib/ai-isa/followup-policy")
+  return (await loadFollowupPolicy(svc as never, brokerageId)).policy.sphere.lifeEventWindowDays
+}
+
+export interface IntentFactTally { published: number; refused: number; replayed: number; stale: number }
+
+/** Route a list of candidate facts for ONE party: fresh → routeIntentFact; stale → counted, never routed. */
+async function routeFacts(
+  svc: unknown,
+  a: { brokerageId: string; party: IntentParty; facts: ObservedIntentSignal[]; record: Parameters<typeof intentSignalsFromContact>[0]; writtenAt: string; windowDays: number; now: Date; door: "writer_push" | "sweep" },
+  deps: IntentFactDeps,
+  tally: IntentFactTally,
+): Promise<void> {
+  for (const fact of a.facts) {
+    const freshness = intentFactFreshness(fact, a.writtenAt, a.windowDays, a.now)
+    if (!freshness.fresh) { tally.stale++; continue }
+    const r = await routeIntentFact(svc, { brokerageId: a.brokerageId, party: a.party, fact, freshness, provenance: intentFactProvenance(fact, a.record), door: a.door }, deps)
+    if (r === "routed") tally.published++
+    else if (r === "replayed") tally.replayed++
+    else if (r === "refused") tally.refused++
+  }
+}
+
+/**
+ * THE WRITERS' DOOR. Each NEW behaviour / life-event fact a write landed on a contact (newIntentFacts) → its own durable, consumed-
+ * once event → ONE `online_intent_detected` bus line (routeIntentFact). The brokerage and contact are the WRITER's verified target,
+ * never a payload. Never throws: a refused route is counted and logged — the write it follows already succeeded and is not undone.
  */
 export async function publishNewIntentFacts(
   svc: unknown,
@@ -175,26 +362,90 @@ export async function publishNewIntentFacts(
   before: Parameters<typeof intentSignalsFromContact>[0] | null | undefined,
   after: Parameters<typeof intentSignalsFromContact>[0],
   now: Date = new Date(),
-): Promise<{ published: number; refused: number }> {
+  deps: IntentFactDeps = {},
+): Promise<IntentFactTally> {
+  const tally: IntentFactTally = { published: 0, refused: 0, replayed: 0, stale: 0 }
   const fresh = newIntentFacts(before, after, now)
-  if (fresh.length === 0 || !target.brokerageId || !target.contactId) return { published: 0, refused: 0 }
-  let published = 0, refused = 0
+  if (fresh.length === 0 || !target.brokerageId || !target.contactId) return tally
   try {
-    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
-    for (const f of fresh) {
-      const r = await publishManagerSignal({
-        brokerageId: target.brokerageId, fromManager: "data_steward", toManager: "ai_isa",
-        signalType: "online_intent_detected",
-        message: `A provider we already use recorded a new ${f.sensitivity === "life_event" ? "life-event" : "online-intent"} fact (${f.provider} · ${f.field}).`,
-        entityType: "contact", entityId: target.contactId, contactId: target.contactId,
-        payload: { key: f.key, provider: f.provider, field: f.field, intents: [...f.intents], sensitivity: f.sensitivity, observed_at: f.observedAt },
-      }, svc as never)
-      if (r.ok) published++
-      else { refused++; console.warn(`[intent-signal-sources] online_intent_detected not published for ${target.contactId}: ${r.reason ?? "refused"}`) }
-    }
+    const windowDays = await lifeEventWindowFor(svc, target.brokerageId, deps)
+    await routeFacts(svc, { brokerageId: target.brokerageId, party: { type: "contact", id: target.contactId }, facts: fresh, record: after, writtenAt: now.toISOString(), windowDays, now, door: "writer_push" }, deps, tally)
   } catch (e) {
-    refused += fresh.length - published
+    // Whatever was not yet accounted for when it threw is a refusal (never silently "fine").
+    const accounted = tally.published + tally.replayed + tally.stale + tally.refused
+    tally.refused += Math.max(0, fresh.length - accounted)
     console.warn("[intent-signal-sources] publish threw (non-blocking):", e instanceof Error ? e.message : e)
   }
-  return { published, refused }
+  return tally
+}
+
+export interface EnrichmentWatchResult extends IntentFactTally {
+  contactsScanned: number
+  leadsScanned: number
+  /** Leads routed to their contact (C2) / leads with no party (inactive, no contact). */
+  leadsAsContact: number
+  leadsOutOfDomain: number
+  errors: string[]
+}
+
+/** The newest enrichment stamp a row carries (the moment its undated facts were stored). */
+const newestStamp = (...stamps: Array<string | null | undefined>): string | null => {
+  const ts = stamps.map((s) => (s ? Date.parse(s) : NaN)).filter((t) => Number.isFinite(t))
+  return ts.length ? new Date(Math.max(...ts)).toISOString() : null
+}
+
+/**
+ * THE SWEEP — the watcher's second door, for every writer that does not push (the queue drain's lead AND contact branches, a
+ * hand edit of enrichment_profile, a future writer). Reads, tenant-pinned, the contacts and leads whose enrichment stamps moved
+ * since the cursor (`windowMinutes`, default 6 h — wider than the 15-minute tick that runs it, so a missed tick loses nothing;
+ * the fact key makes the overlap free), takes each behaviour / life-event fact OBSERVED since the cursor (an older carried fact
+ * is not new), and routes it to its canonical party. Never calls a provider; never throws; every refused read is counted.
+ */
+export async function watchEnrichmentFactChanges(
+  svc: { from: (t: string) => any },
+  brokerageId: string,
+  opts: { now?: Date; windowMinutes?: number; limit?: number } = {},
+  deps: IntentFactDeps = {},
+): Promise<EnrichmentWatchResult> {
+  const out: EnrichmentWatchResult = { published: 0, refused: 0, replayed: 0, stale: 0, contactsScanned: 0, leadsScanned: 0, leadsAsContact: 0, leadsOutOfDomain: 0, errors: [] }
+  if (!brokerageId) return { ...out, errors: ["no brokerage"] }
+  const now = opts.now ?? new Date()
+  const since = new Date(now.getTime() - (opts.windowMinutes ?? 360) * 60_000).toISOString()
+  const limit = opts.limit ?? 200
+  const sinceMs = Date.parse(since)
+  const observedSince = (f: ObservedIntentSignal, writtenAt: string) => Date.parse(f.observedAt ?? writtenAt) >= sinceMs
+  try {
+    const windowDays = await lifeEventWindowFor(svc, brokerageId, deps)
+
+    const { data: contacts, error: cErr } = await svc.from("contacts")
+      .select("id, enrichment_profile, life_events, last_life_event_detected, home_anniversary, last_enriched_at, enriched_at")
+      .eq("brokerage_id", brokerageId).is("deleted_at", null)
+      .or(`last_enriched_at.gte.${since},enriched_at.gte.${since},last_life_event_detected.gte.${since}`)
+      .limit(limit)
+    if (cErr) out.errors.push(`contacts read refused: ${cErr.message}`)
+    for (const c of (cErr ? [] : (contacts ?? [])) as Array<Record<string, any>>) {
+      out.contactsScanned++
+      const writtenAt = newestStamp(c.last_enriched_at, c.enriched_at, c.last_life_event_detected) ?? now.toISOString()
+      const facts = intentSignalsFromContact(c, now).filter((f) => isChangeFact(f) && observedSince(f, writtenAt))
+      await routeFacts(svc, { brokerageId, party: { type: "contact", id: String(c.id) }, facts, record: c, writtenAt, windowDays, now, door: "sweep" }, deps, out)
+    }
+
+    const { data: leads, error: lErr } = await svc.from("leads")
+      .select("id, contact_id, is_active, enrichment_profile, life_events, last_enriched_at")
+      .eq("brokerage_id", brokerageId).gte("last_enriched_at", since)
+      .limit(limit)
+    if (lErr) out.errors.push(`leads read refused: ${lErr.message}`)
+    for (const l of (lErr ? [] : (leads ?? [])) as Array<Record<string, any>>) {
+      out.leadsScanned++
+      const party = canonicalIntentParty({ id: String(l.id), contact_id: l.contact_id ?? null, is_active: l.is_active ?? null })
+      if (!party) { out.leadsOutOfDomain++; continue }
+      if (party.type === "contact") out.leadsAsContact++
+      const writtenAt = newestStamp(l.last_enriched_at) ?? now.toISOString()
+      const facts = intentSignalsFromContact(l, now).filter((f) => isChangeFact(f) && observedSince(f, writtenAt))
+      await routeFacts(svc, { brokerageId, party, facts, record: l, writtenAt, windowDays, now, door: "sweep" }, deps, out)
+    }
+  } catch (e) {
+    out.errors.push(`sweep threw: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  return out
 }

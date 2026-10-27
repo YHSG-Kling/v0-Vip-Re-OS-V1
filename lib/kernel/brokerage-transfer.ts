@@ -130,7 +130,162 @@ export const TRANSFER_DATA_FAMILIES: readonly { table: string; what: string }[] 
   { table: "relationship_edges", what: "the knowledge graph edges" },
 ]
 
-export type TransferHumanTouchpoint = "consent_requested" | "consent_recorded" | "declined" | "verification_failed" | "data_move_failed" | "billing_pending" | "target_not_ready" | "completed"
+// ── FK-CHILD TRANSFER CLASSIFICATION (wave 145, lane 145A — owner ruling 24, 2026-10-27) ─────────────────────────────────
+// Owner, verbatim essentials: "do NOT move all 286 … Classify each FK child relationship (ownership follows parent · shared
+// relationship remains · historical reference immutable · explicit transfer required · not transferable · derived/read-only) on
+// real domain definitions and tenant policy; never transfer another party's contacts, confidential documents, financial records
+// or unrelated brokerage property because an agent changes brokerage; code-level checks and tests now, live transfers only on
+// explicit authorization."
+//
+// THE CENSUS (derived, never listed by hand — scripts/transfer-classification-guard.ts): every live FK in the generated FK cache
+// (scripts/schema-fk-map.ts) that points INTO a TRANSFER_DATA_FAMILIES table, from a table that is not itself a family. At HEAD
+// b364eb4b: 286 child tables carrying brokerage_id (411 FKs) + 20 tables with no tenant column (21 FKs). Every one of the 306
+// tables has exactly ONE class below; each of its FKs onto a moved parent resolves to that class. A FK between two FAMILIES
+// (59 at HEAD) is "follows_parent" by construction — both ends move in the data step.
+//
+// WHAT THE RAIL DOES WITH IT (runBrokerageTransferMigration):
+//   · verification REFUSES (fail closed) when a moved family, or a child named for moving, is classified anything but
+//     follows_parent — so "not_transferable" / "explicit_transfer" can never be moved by this rail, by code or by a proof seam;
+//   · the data step moves ONLY the follows_parent children the owner has AUTHORIZED (TRANSFER_AUTHORIZED_FOLLOWING_CHILDREN —
+//     EMPTY: ruling 24, "live transfers only on explicit authorization"), each pinned, counted and post-conditioned like a family;
+//   · it then COUNTS what stays behind in the explicit_transfer and safety-critical classes and routes it to the Data Steward
+//     (TRANSFER_HUMAN_ROUTES.explicit_transfer_pending) with the owner-approval plan
+//     (docs/architecture/FK-CHILD-TRANSFER-CLASSIFICATION.md). Nothing in those classes is ever moved here.
+
+export const CHILD_TRANSFER_CLASSES = ["follows_parent", "shared_remains", "historical_immutable", "explicit_transfer", "not_transferable", "derived_readonly"] as const
+export type ChildTransferClass = (typeof CHILD_TRANSFER_CLASSES)[number]
+
+/** What each class MEANS (the definitions the classification below is held to). */
+export const CHILD_TRANSFER_CLASS_MEANING: Readonly<Record<ChildTransferClass, string>> = Object.freeze({
+  follows_parent: "part of the parent's own record (its sub-records, workflow state, the client's stated preferences, the agent's work product on it) — it belongs to whoever owns the parent; moved only once the owner authorizes the table",
+  shared_remains: "a relationship with ANOTHER party (a vendor of the source bench, an outside agent, a title company's users, a referral / credit partner, a deal-team member's portal grant) — it stays where it was formed and the target re-establishes its own",
+  historical_immutable: "what the SOURCE did — communications sent under its sender identity and consent basis, outreach, deliveries, analytics events, audits and evidence (LAW 5): immutable, kept with the archived source, readable by platform staff",
+  explicit_transfer: "another person's rights or the source brokerage's executed contract (consent, privacy requests, the client's own financial data, a listing / buyer-broker agreement, confidential deal documents) — it may move only by an explicit, evidenced, per-transfer human decision; this rail never moves it",
+  not_transferable: "money, billing / usage, the supervising broker's compliance file, ad-account property and bearer tokens — never crosses tenants",
+  derived_readonly: "computed from the parent (scores, predictions, insights, health, matches, AI drafts / plans, provider enrichment and scrapes, queues) — never moved; recomputed, re-enriched or re-planned in the target from the moved parent",
+})
+
+/** THE CLASSIFICATION — one rule per group, each table in exactly one group (the guard proves coverage and uniqueness). */
+const CHILD_CLASS_GROUPS: ReadonlyArray<{ cls: ChildTransferClass; rule: string; tables: readonly string[] }> = [
+  // ── not transferable ──
+  { cls: "not_transferable", rule: "MONEY — commission, payout, earnest-money (trust), books, cost, invoice and referral-fee records stay with the brokerage that booked them; money never crosses tenants (m765; ruling 9: a referral obligation is the executing brokerage's)", tables: [
+    "agent_commissions", "commission_adjustments", "commission_calculations", "commission_distributions", "commission_splits", "transaction_commissions",
+    "closing_disclosure_agreement", "company_books_obligations", "deposits", "cost_breakdown_tracking", "transaction_cost_breakdown", "net_sheet_reconciliations",
+    "referrals", "listing_marketing_packages", "listing_marketing_services", "vendor_invoices"] },
+  { cls: "not_transferable", rule: "BILLING / USAGE — metered usage and vendor spend are the source subscription's invoice lines", tables: ["usage_events", "vendor_usage_tracking"] },
+  { cls: "not_transferable", rule: "SUPERVISION — the supervising broker's compliance file for the deal (record retention binds the brokerage that supervised); the target runs its own review", tables: ["compliance_alerts", "compliance_checklists", "compliance_flags", "compliance_tasks"] },
+  { cls: "not_transferable", rule: "AD-ACCOUNT PROPERTY — campaigns, creatives and audiences live in the source's connected ad accounts (spend, platform terms); the target rebuilds them in its own", tables: ["ad_campaigns", "ad_creative_variations", "audience_members"] },
+  { cls: "not_transferable", rule: "BEARER TOKENS / INVITES — never re-scoped to another tenant; the target re-issues them", tables: ["buyer_intake_tokens", "portal_contact_invites"] },
+  // ── explicit transfer required ──
+  { cls: "explicit_transfer", rule: "EXECUTED AGREEMENT WITH THE SOURCE BROKERAGE — a listing / buyer-broker agreement is the client's contract with the brokerage, not the agent; it moves only on the client's executed assignment or release", tables: ["listing_agreements", "buyer_broker_agreements"] },
+  { cls: "explicit_transfer", rule: "CONFIDENTIAL DEAL DOCUMENTS — third-party PII and signatures in the source's deal file; moved only on an explicit, evidenced release (ruling 24)", tables: ["transaction_documents", "generated_documents"] },
+  { cls: "explicit_transfer", rule: "CONSENT AND PRIVACY RIGHTS — given to the source sender / controller and never assumed by another; fail-safe while unmoved (the target treats the person as unconsented until consent is re-obtained or a compliance-approved copy lands)", tables: ["contact_consent_events", "newsletter_subscribers", "data_subject_requests"] },
+  { cls: "explicit_transfer", rule: "THE CLIENT'S OWN FINANCIAL DATA — credit, income, loan applications; moved only with the client's authorization (contacts see only their own financials — CLAUDE.md §5)", tables: ["buyer_financial_profiles", "credit_accounts", "credit_status", "lender_applications"] },
+  // ── shared relationship remains ──
+  { cls: "shared_remains", rule: "THE SOURCE'S VENDOR BENCH — the vendor relationship (and its vendors row, which does not move) is the source brokerage's; moving the row would point the target at another tenant's vendor", tables: [
+    "contact_vendors", "vendor_assignments", "vendor_bookings", "vendor_contact_assignments", "vendor_jobs", "vendor_reviews", "transaction_vendor_services", "title_orders"] },
+  { cls: "shared_remains", rule: "ANOTHER PARTY'S ACCESS OR RELATIONSHIP — outside agents, title-company users, deal-team members with portal grants, credit / referral partners: re-established by the target, never silently re-scoped", tables: [
+    "outside_agent_contact_links", "title_company_users", "deal_team_members", "credit_partner_referrals", "referral_sources"] },
+  // ── historical reference immutable ──
+  { cls: "historical_immutable", rule: "COMMUNICATIONS — sent or received under the source's sender identity, number and consent basis (TCPA / CAN-SPAM evidence)", tables: [
+    "communications", "conversation_logs", "conversations", "messages", "email_sends", "email_tracking", "newsletter_sends", "voice_calls", "client_portal_messages",
+    "chat_sessions", "embed_sessions", "live_agent_sessions", "smart_landing_sessions", "agent_assistant_sessions", "lead_conversation_history", "transaction_communications"] },
+  { cls: "historical_immutable", rule: "OUTREACH AND DELIVERIES — what the source's managers and campaigns sent, gifted or reported", tables: [
+    "ai_isa_activities", "ai_isa_calls", "ai_isa_engagement_tracking", "isa_outreach_log", "intelligent_outreach_log", "campaign_bundle_dispatches", "direct_mail_recipients",
+    "direct_mail_responses", "mail_response_tracking", "marketing_campaign_touchpoints", "sequence_step_executions", "lifetime_customer_touchpoints", "review_requests",
+    "showing_feedback_requests", "open_house_invitations", "open_house_rsvp_tracking", "seller_share_feed", "seller_updates", "seller_weekly_reports",
+    "client_friendly_updates", "timeline_transparency", "transparency_updates", "closing_notifications", "thank_you_notes", "client_gifts", "closing_gifts", "notifications"] },
+  { cls: "historical_immutable", rule: "OBSERVED EVENTS AND ANALYTICS — behaviour, views, clicks, scans and signals observed by the source", tables: [
+    "blog_post_share_clicks", "blog_post_views", "behavioral_signals", "buyer_behavior_log", "client_portal_activity", "external_behavior", "lead_behavioral_data",
+    "lead_external_behavior", "lead_idx_property_interactions", "lead_property_searches", "lead_score_history", "podcast_analytics_events", "portal_access_logs",
+    "portal_event_stream", "property_alert_delivery_log", "property_search_log", "property_views", "qr_scan_events", "site_activity", "video_engagement_events",
+    "website_visitors", "calculator_history", "google_search_activity", "nextdoor_activity", "listing_page_analytics", "ai_search_citation_observations",
+    "intelligence_signals_log", "manager_signals", "open_house_attendees", "open_house_feedback", "social_publish_log", "listing_syndication_tracking"] },
+  { cls: "historical_immutable", rule: "AUDIT, EVIDENCE AND PROVENANCE — policy decisions, compliance and fair-housing logs, privacy acceptances, e-sign envelopes, extraction / field audits, dedup / assignment / distribution logs, support tickets", tables: [
+    "communication_audit_log", "outbound_message_compliance_log", "transaction_compliance_log", "policy_decisions", "fair_housing_logs", "privacy_acceptances",
+    "document_field_audit", "document_extraction_log", "signature_requests", "deconflict_suppression_log", "assignment_log", "lead_deduplication_log", "data_health_logs",
+    "automation_errors", "outcome_reconciliations", "platform_lead_distributions", "lead_sla_tracking", "seo_optimization_log", "support_tickets", "business_card_scans"] },
+  { cls: "historical_immutable", rule: "JOBS AND RUNS — renders, enhancement jobs, packet jobs and workflow runs the source executed (and paid for)", tables: [
+    "workflow_runs", "workflow_webhook_events", "video_render_log", "remotion_composition_renders", "photo_enhancement_jobs", "listing_packet_jobs"] },
+  // ── derived / read-only ──
+  { cls: "derived_readonly", rule: "COMPUTED FROM THE PARENT — scores, predictions, health, insights, matches, checklists instantiated from policy, AI drafts and plans; recomputed in the target from the moved parent", tables: [
+    "ai_autopilot_plans", "ai_comp_scores", "ai_insights", "ai_listing_optimizations", "ai_message_drafts", "buyer_behavior_predictions", "buyer_fatigue_scores",
+    "call_analyses", "campaign_roi", "client_detailed_personas", "client_engagement_scores", "closing_checklist_items", "closing_cost_accuracy_observations",
+    "comp_risk_flags", "contact_property_insights", "contact_segments", "contract_reviews", "conversation_insights", "conversation_intelligence", "copilot_plans",
+    "deal_autopsies", "deal_autopsy_observations", "deal_health_components", "deal_health_factors", "deal_health_scores", "deal_health_snapshots",
+    "document_checklist", "document_field_extractions", "fatigue_alerts", "generated_content", "home_value_estimates", "income_gap_recommended_actions",
+    "investor_deal_matches", "investor_offmarket_candidates", "lead_engagement_scores", "lead_intelligence", "lead_scores", "lead_value_journey",
+    "learning_assignments", "lifetime_customer_npv_scores", "listing_health_interventions", "listing_health_scores", "listing_metrics", "motivated_seller_signals",
+    "negotiation_strategies", "neighborhood_reports", "net_sheet_calculations", "offer_comparison", "person_identities", "predictive_lead_scores",
+    "predictive_listing_actions", "predictive_listing_scores", "price_predictions", "price_trend_alerts", "proactive_interventions", "property_alert_results",
+    "property_intelligence", "property_matches", "scheduled_touchpoints", "showing_analytics", "showing_briefings", "signal_reactivations", "smart_checklists",
+    "smart_showing_recommendations", "social_intelligence", "strategy_outcomes", "strategy_recommendations", "transaction_health_factors", "unified_lead_profile",
+    "video_performance_tracking", "wealth_advisor_recommendations"] },
+  { cls: "derived_readonly", rule: "PROVIDER ENRICHMENT, SCRAPES AND QUEUES — re-enriched under the target's own provider accounts (gap-only, ruling 12) or re-queued; never copied across accounts", tables: [
+    "lead_enrichment_queue", "lead_osint_data", "lead_people_data", "lead_property_ownership", "lead_social_intelligence", "batchdata_motivated_sellers_raw",
+    "raw_scraped_leads", "social_search_raw_results", "zenrows_property_search_raw", "video_generation_queue", "video_streaming_status"] },
+  // ── ownership follows parent ──
+  { cls: "follows_parent", rule: "THE DEAL FILE — milestones, deadlines, timeline, parties, inspections, repairs, closing prep and the deal's own lender / escrow details", tables: [
+    "transaction_milestones", "transaction_deadlines", "transaction_timeline", "transaction_pending_actions", "transaction_closing_prep", "transaction_inspections",
+    "transaction_repair_negotiations", "transaction_participants", "transaction_assignments", "transaction_lenders", "transaction_title_escrow",
+    "transaction_agent_roles", "trid_timeline", "buyer_move_cases", "document_requests", "document_folders", "workflow_intake_sessions"] },
+  { cls: "follows_parent", rule: "THE LISTING FILE — its own price and stage history, inquiries, landing pages, marketing content, presentations, open houses, showings and tours", tables: [
+    "listing_price_changes", "pricing_history", "listing_stage_history", "listing_inquiries", "listing_landing_pages", "listing_marketing_content",
+    "listing_presentations", "presentation_sections", "listing_promo_videos", "open_house_events", "property_upgrades", "cma_reports", "showing_requests",
+    "showing_feedback", "tour_stops", "tours", "appointments", "neighbor_notification_campaigns"] },
+  { cls: "follows_parent", rule: "THE CLIENT RECORD — the client's stated preferences, saved homes, journey state, opt-outs, qualification and the agent's notes / reviews / intro videos", tables: [
+    "contact_portal_modules", "contact_portal_preferences", "contact_suppression_list", "property_interests", "property_preferences", "property_feedback",
+    "saved_properties", "collaborative_searches", "collaborative_search_properties", "offer_intents", "valuation_requests", "journey_states",
+    "journey_stage_progress", "journey_task_completions", "ai_isa_qualifications", "ai_assistant_notes", "drip_campaigns", "agent_reviews", "agent_intro_videos"] },
+  { cls: "follows_parent", rule: "CAMPAIGN AND CONTENT COMPONENTS — schedules, steps, tasks, triggers, QR codes (printed codes keep resolving), sub-campaigns and the content cut from a moved project", tables: [
+    "blog_post_keywords", "campaign_calendar", "campaign_sequence_steps", "marketing_campaign_comments", "marketing_campaign_tasks", "marketing_campaign_triggers",
+    "marketing_asset_qr_links", "qr_codes", "direct_mail_campaigns", "newsletter_campaigns", "newsletter_video_renders", "podcast_episodes", "social_posts",
+    "video_scripts_library", "video_snippets", "training_videos", "calendar_sync_mappings", "calendar_sync_conflicts"] },
+]
+
+/** table → its class and the rule that decided it. Built from the groups (a table named twice is caught by the guard). */
+export const FK_CHILD_TRANSFER_CLASSIFICATION: Readonly<Record<string, { cls: ChildTransferClass; rule: string }>> = Object.freeze(
+  Object.fromEntries(CHILD_CLASS_GROUPS.flatMap((g) => g.tables.map((t) => [t, { cls: g.cls, rule: g.rule }] as const))),
+)
+/** @proofSeam the guard proves every table is named exactly once (the record above would silently keep the LAST naming). */
+export const FK_CHILD_CLASS_NAMINGS: number = CHILD_CLASS_GROUPS.reduce((n, g) => n + g.tables.length, 0)
+
+
+/**
+ * follows_parent children the OWNER has authorized this rail to move live (ruling 24: "live transfers only on explicit
+ * authorization"). EMPTY in wave 145 — the owner-approval plan (docs/architecture/FK-CHILD-TRANSFER-CLASSIFICATION.md) names the
+ * proposed batches, safety-critical first. Adding a table here IS the authorization; verification refuses any table that is not
+ * follows_parent, so this list can never carry money, consent, documents or another party's rows.
+ */
+export const TRANSFER_AUTHORIZED_FOLLOWING_CHILDREN: readonly string[] = []
+
+/**
+ * follows_parent children whose ABSENCE in the target is unsafe, counted and routed to a human on every transfer until the owner
+ * authorizes them: an opt-out left in the archived source is invisible to the target (lib/lead-intent/lead-opt-out.ts and
+ * lib/direct-mail/address-suppression.ts read contact_suppression_list `.eq("brokerage_id", …)`), so the adopted contact could be
+ * messaged again. (A consent left behind is the safe direction — the target sees no consent and sends nothing.)
+ */
+export const TRANSFER_SAFETY_CRITICAL_CHILDREN: readonly string[] = ["contact_suppression_list"]
+
+/** PURE: why the rail must refuse to run — a moved family or a child named for moving that is not follows_parent (module-private:
+ *  the guard proves it through the REAL rail, scripts/transfer-classification-guard.ts A3). */
+function transferClassificationProblems(families: readonly string[], movingChildren: readonly string[]): string[] {
+  const out: string[] = []
+  for (const t of families) {
+    const own = FK_CHILD_TRANSFER_CLASSIFICATION[t]?.cls
+    if (own && own !== "follows_parent") out.push(`family ${t} is classified ${own} — a family must be follows_parent`)
+  }
+  for (const t of movingChildren) {
+    const c = FK_CHILD_TRANSFER_CLASSIFICATION[t]?.cls ?? null
+    if (c !== "follows_parent") out.push(`${t} is ${c ?? "UNCLASSIFIED"} — only an owner-authorized follows_parent child may move`)
+  }
+  return out
+}
+
+/** Rows a closure count stops at (a count, not a census — the human sees "N+" beyond it). */
+const CLOSURE_COUNT_CAP = 500
+
+export type TransferHumanTouchpoint = "consent_requested" | "consent_recorded" | "declined" | "verification_failed" | "data_move_failed" | "billing_pending" | "target_not_ready" | "completed" | "explicit_transfer_pending"
 
 /** HUMANS THROUGH REGISTERED MANAGERS ONLY (owner, wave 141). Every value is a MANAGERS key. */
 export const TRANSFER_HUMAN_ROUTES: Readonly<Record<TransferHumanTouchpoint, ManagerKey>> = Object.freeze({
@@ -142,6 +297,8 @@ export const TRANSFER_HUMAN_ROUTES: Readonly<Record<TransferHumanTouchpoint, Man
   data_move_failed: "data_steward",
   target_not_ready: "data_steward",
   billing_pending: "finance_manager",
+  // wave 145 (ruling 24): explicit-transfer / safety-critical children left in the archived source need a human decision.
+  explicit_transfer_pending: "data_steward",
 })
 
 /** users.user_type values that are SEATS of the moving tenant (the operational admin roster spread,
@@ -165,6 +322,9 @@ export interface TransferMigrationRecord {
   /** Rows moved per family / members / teams — exact counts from the updates' returned ids. */
   counts: Record<string, number>
   last_error?: string | null
+  /** wave 145 (ruling 24): what the classification kept in the archived source for a human — rows held per explicit_transfer /
+   *  safety-critical table (a count stops at CLOSURE_COUNT_CAP), the tables that could not be read (never "0"), and when. */
+  closure?: { at: string; explicit_transfer: Record<string, number>; safety_critical: Record<string, number>; unread: string[]; authorized_moved: Record<string, number> }
 }
 
 export interface TransferConsentEvidence {
@@ -215,6 +375,9 @@ export interface BrokerageTransferDeps {
   emit?: (input: Record<string, unknown>) => Promise<unknown>
   notifyAdmins?: (svc: any, brokerageId: string, n: { type: string; title: string; body: string; entityType?: string | null; entityId?: string | null; priority?: "low" | "medium" | "high" }) => Promise<number>
   notifyStaff?: (svc: any, n: { type: string; title: string; body: string; entityType?: string | null; entityId?: string | null; priority?: "low" | "medium" | "high" }) => Promise<number>
+  /** Proof seam for the owner-authorized follows_parent children (production reads TRANSFER_AUTHORIZED_FOLLOWING_CHILDREN).
+   *  Verification still refuses any table here that is not follows_parent — the seam cannot move a protected class. */
+  authorizedFollowingChildren?: readonly string[]
 }
 
 export interface TransferActor {
@@ -557,6 +720,8 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
   // the original approver. The ledger keeps the RUNNING actor (who pressed the button) and records the
   // approver beside it.
   const approvingAdminUserId = input.actor.kind === "target_admin" ? input.actor.userId : req.initiated_by_user_id
+  // The follows_parent children the owner authorized (ruling 24) — empty in production until the owner adds one.
+  const authorizedChildren: readonly string[] = deps.authorizedFollowingChildren ?? TRANSFER_AUTHORIZED_FOLLOWING_CHILDREN
 
   return ledgered<RunTransferMigrationResult>(svc, {
     brokerageId: targetId, action: "tenant.transfer.migrate", actorUserId, subjectId: req.id, key: `transfer:migrate:${req.id}:attempt:${record.attempts}`, riskClass: "FINANCIAL",
@@ -567,7 +732,7 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
     // ── verification: deterministic checks, each recorded; any failure stops before a row moves ──
     // Held in a ref object: these are assigned inside the step closures, and TS narrows a reassigned
     // `let … = null` read after the closure to `never`.
-    const ref: { source: Awaited<ReturnType<typeof readBrokerage>>["row"]; target: Awaited<ReturnType<typeof readBrokerage>>["row"]; verdict: TenantReadinessVerdict | null } = { source: null, target: null, verdict: null }
+    const ref: { source: Awaited<ReturnType<typeof readBrokerage>>["row"]; target: Awaited<ReturnType<typeof readBrokerage>>["row"]; verdict: TenantReadinessVerdict | null; closureFresh: boolean } = { source: null, target: null, verdict: null, closureFresh: false }
     const okV = await step("verification", async () => {
       const checks: Array<{ key: string; ok: boolean; detail: string }> = []
       const source = await readBrokerage(svc, sourceId)
@@ -591,6 +756,10 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
       const afford = deps.mayUseAndAfford ?? (await import("@/lib/billing/billing-access")).mayUseAndAfford
       const access = await afford({ brokerageId: targetId, capability: "app.access", client: svc })
       checks.push({ key: "target_entitled", ok: access.allowed, detail: access.reason })
+      // RULING 24 (wave 145): nothing this run would move may be a protected class — fail closed on a misclassified family or an
+      // authorized child that is not follows_parent (money, consent, documents and another party's rows never move here).
+      const classProblems = transferClassificationProblems(TRANSFER_DATA_FAMILIES.map((f) => f.table), authorizedChildren)
+      checks.push({ key: "child_classification", ok: classProblems.length === 0, detail: classProblems.length ? classProblems.join("; ") : `${TRANSFER_DATA_FAMILIES.length} families + ${authorizedChildren.length} authorized child table(s), all follows_parent` })
       const failed = checks.filter((c) => !c.ok)
       const verification = { at: nowIso(deps), ok: failed.length === 0, checks }
       const r = await patchRequest(svc, req.id, { verification, ...(failed.length === 0 ? { status: "migrating" } : {}) }, deps)
@@ -680,10 +849,55 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
         if (leftErr) errors.push(`${fam.table} post-condition read: ${leftErr.message}`)
         else if ((left ?? []).length) errors.push(`${fam.table}: rows remain in the source after the move`)
       }
+      // RULING 24: the owner-AUTHORIZED follows_parent children move exactly like a family (pinned, counted, post-conditioned).
+      // Verification already refused anything here that is not follows_parent; re-checked so the move can never run unguarded.
+      const authorized_moved: Record<string, number> = {}
+      if (transferClassificationProblems([], authorizedChildren).length) errors.push("an authorized child is not follows_parent — nothing moved for it")
+      else for (const table of authorizedChildren) {
+        const { data: moved, error } = await svc.from(table).update({ brokerage_id: targetId }).eq("brokerage_id", sourceId).select("id")
+        if (error) { errors.push(`${table}: ${error.message}`); continue }
+        authorized_moved[table] = (moved ?? []).length
+        record.counts[table] = (record.counts[table] ?? 0) + (moved ?? []).length
+        const { data: left, error: leftErr } = await svc.from(table).select("id").eq("brokerage_id", sourceId).limit(1)
+        if (leftErr) errors.push(`${table} post-condition read: ${leftErr.message}`)
+        else if ((left ?? []).length) errors.push(`${table}: rows remain in the source after the move`)
+      }
       if (errors.length) return { error: `data families refused: ${errors.join("; ")}` }
-      return { detail: TRANSFER_DATA_FAMILIES.map((f) => `${f.table}=${record.counts[f.table] ?? 0}`).join(",") }
+      // THE CLOSURE REPORT — what the classification KEEPS in the source that a human must decide: every explicit_transfer table and
+      // every safety-critical child not authorized. Read only, never moved. A refused read is listed as unread, never as 0.
+      const closure: NonNullable<TransferMigrationRecord["closure"]> = { at: nowIso(deps), explicit_transfer: {}, safety_critical: {}, unread: [], authorized_moved }
+      const held = async (table: string): Promise<number | null> => {
+        const { data, error } = await svc.from(table).select("id").eq("brokerage_id", sourceId).limit(CLOSURE_COUNT_CAP)
+        return error ? null : (data ?? []).length
+      }
+      for (const [table, c] of Object.entries(FK_CHILD_TRANSFER_CLASSIFICATION)) {
+        if (c.cls !== "explicit_transfer") continue
+        const n = await held(table)
+        if (n === null) closure.unread.push(table)
+        else if (n > 0) closure.explicit_transfer[table] = n
+      }
+      for (const table of TRANSFER_SAFETY_CRITICAL_CHILDREN.filter((t) => !authorizedChildren.includes(t))) {
+        const n = await held(table)
+        if (n === null) closure.unread.push(table)
+        else if (n > 0) closure.safety_critical[table] = n
+      }
+      record.closure = closure
+      ref.closureFresh = true
+      return { detail: TRANSFER_DATA_FAMILIES.map((f) => `${f.table}=${record.counts[f.table] ?? 0}`).concat(Object.entries(authorized_moved).map(([t, n]) => `${t}=${n}`)).join(",") }
     })
     if (!okD) return stall("data", "data_move_failed", `Data migration stalled: ${record.last_error}. Membership already moved; retry from Settings → Users once the cause is fixed.`, true)
+    // A human decides what the classification kept behind (never moved here). Routed once — a retry finds the data step done.
+    const closure = record.closure
+    const pending = closure ? [
+      ...Object.entries(closure.safety_critical).map(([t, n]) => `${t}: ${n >= CLOSURE_COUNT_CAP ? `${CLOSURE_COUNT_CAP}+` : n} row(s) — SAFETY: the target cannot see these opt-outs`),
+      ...Object.entries(closure.explicit_transfer).map(([t, n]) => `${t}: ${n >= CLOSURE_COUNT_CAP ? `${CLOSURE_COUNT_CAP}+` : n} row(s)`),
+      ...closure.unread.map((t) => `${t}: could not be read`),
+    ] : []
+    if (closure && pending.length && ref.closureFresh) {
+      await notifyHumans(svc, deps, "explicit_transfer_pending", req,
+        `These records stayed with the archived workspace and need an explicit, evidenced decision before anything moves (docs/architecture/FK-CHILD-TRANSFER-CLASSIFICATION.md — owner-approval plan): ${pending.join("; ")}.`,
+        { targetAdmins: true, staff: true })
+    }
 
     // ── billing handoff: the ONE billing call; not ok = nothing changed, archive waits ──
     const okB = await step("billing_handoff", async () => {

@@ -59,6 +59,13 @@ function formPathOwner(path: string | null | undefined): FormPathOwner | null {
   return { kind, id } as FormPathOwner
 }
 
+/**
+ * WHO THE ACTOR IS (wave 145, lane 145A — the P1 form-bucket ruling): a door builds this from the SESSION user through
+ * lib/forms/tenant-form-packets.ts resolvePacketActor — never from a raw `users` read. resolvePacketActor refuses a portal contact
+ * or vendor seat of the brokerage (both carry brokerage_id), a suspended / removed account, an agent deactivated in this
+ * brokerage, and a deleted team (the code twin of m854's public.brokerage_forms_seat_active()); its teamId is the canonical one.
+ * scripts/transfer-classification-guard.ts B3 ratchets the doors that still read users raw.
+ */
 export interface FormPathActor { brokerageId: string; teamId: string | null; userId: string }
 
 type Verdict = "allowed" | "refused" | "needsOfferCheck" | "needsPacketCheck" | "needsTeamCheck"

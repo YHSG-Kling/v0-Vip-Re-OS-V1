@@ -38,17 +38,25 @@ export async function GET(req: NextRequest) {
   let consumed = 0
   let reaped = 0
   let escalated = 0
+  let lifetimeActions = 0
 
   try {
     // Brokerages with recent ISA appointments OR open signals.
-    const [{ data: apptRows }, { data: openRows }] = await Promise.all([
+    // Wave 145 (145F): plus tenants holding an unconsumed contact-arm reactivation signal — the lifetime change action below must
+    // reach a signal recorded by a writer other than the bus (e.g. the inbound-intent classifier). DISCOVERY ONLY: 365 days is the
+    // clamp ceiling of followup_policy.sphere.lifeEventWindowDays (lib/ai-isa/followup-policy.ts); each tenant's OWN window applies
+    // inside runLifetimeChangeActions.
+    const [{ data: apptRows }, { data: openRows }, { data: lifetimeRows }] = await Promise.all([
       supabase.from("ai_isa_calls").select("brokerage_id").eq("appointment_set", true)
         .gte("created_at", new Date(Date.now() - 7 * 86_400_000).toISOString()).limit(2000),
       supabase.from("manager_signals").select("brokerage_id").eq("status", "open").limit(2000),
+      supabase.from("signal_reactivations").select("brokerage_id").eq("isa_reactivated", false).not("contact_id", "is", null)
+        .gte("triggered_at", new Date(Date.now() - 365 * 86_400_000).toISOString()).limit(2000),
     ])
     const brokerages = Array.from(new Set([
       ...((apptRows ?? []) as Array<{ brokerage_id: string }>).map((r) => r.brokerage_id),
       ...((openRows ?? []) as Array<{ brokerage_id: string }>).map((r) => r.brokerage_id),
+      ...((lifetimeRows ?? []) as Array<{ brokerage_id: string | null }>).map((r) => r.brokerage_id).filter((b): b is string => !!b),
     ]))
 
     // The managers that have registered handlers (derived — adding a handler auto-joins).
@@ -61,6 +69,19 @@ export async function GET(req: NextRequest) {
         for (const manager of consumers) {
           const c = await consumeManagerSignals({ brokerageId, toManager: manager }, supabase)
           consumed += c.consumed
+        }
+        // THE LIFETIME CHANGE ACTION (wave 145, lane 145F — owner ruling 14): the Sphere just answered its life-change lines
+        // (respondToLifeChangeSignal → `sphere_signal_recorded`: the signal JOINED signal_reactivations). Each such lifetime signal
+        // whose kind puts the home's value in play now gets the in-app equity check (an estimate from verified inputs, via the
+        // property_valuation capability) and the homeowner playbook — equity / refinance open ONE governed moment the post-close
+        // conductor arbitrates. Ledgered once per signal row; tenant from this loop, never a payload.
+        try {
+          const { runLifetimeChangeActions } = await import("@/lib/ai-isa/lifetime-change-action")
+          const lc = await runLifetimeChangeActions(supabase, brokerageId)
+          lifetimeActions += lc.acted
+          for (const err of lc.errors.slice(0, 5)) errors.push(`lifetime-change ${brokerageId}: ${err}`)
+        } catch (e: any) {
+          errors.push(`lifetime-change ${brokerageId}: ${e?.message ?? String(e)}`)
         }
         // THE HUDDLE — after individual handoffs, convene Team Plays: when ≥2 managers
         // still have open business on the SAME contact, compose ONE coordinated play
@@ -130,9 +151,9 @@ export async function GET(req: NextRequest) {
 
     await recordCronSuccessAction({
       context_id: contextId, records_processed: published + consumed,
-      metadata: { published, consumed, reaped, escalated, health_recovered: healthRecovered, health_escalated: healthEscalated, brokerages: brokerages.length, errors: errors.slice(0, 20) },
+      metadata: { published, consumed, reaped, escalated, lifetime_actions: lifetimeActions, health_recovered: healthRecovered, health_escalated: healthEscalated, brokerages: brokerages.length, errors: errors.slice(0, 20) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, published, consumed, reaped, escalated, brokerages: brokerages.length, errors: errors.length })
+    return NextResponse.json({ ok: true, published, consumed, reaped, escalated, lifetimeActions, brokerages: brokerages.length, errors: errors.length })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

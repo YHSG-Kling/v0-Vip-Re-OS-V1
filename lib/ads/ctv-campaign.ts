@@ -40,6 +40,15 @@
 //     executor/action door (launchCtvCampaignOnVibe) and the connector door
 //     (lib/ads/connectors/vibe-ctv.ts) — is refused until a READY master exists
 //     (ensureCtvBroadcastReady). The judge's numbers are not re-spelled here.
+//
+// TOPIC → TV (wave 145, lane 145D — cross-lane contract C5; owner ruling 13: "TV ads derive from the topic bank",
+// ruling 22: the topic bank feeds TV/CTV ads). This file stays the ONE TV gateway; it now ALSO takes
+// { topicId, assetId } — the asset is the ai_video_projects row (assetId is the contract's name for videoProjectId) and
+// the topic is a content_topic_bank row a PERSON approved for TV: an approval_items row of this tenant whose latest
+// decision on that topic is 'approved' (item types CTV_TOPIC_APPROVAL_ITEM_TYPES below). An unapproved, rejected,
+// foreign or unreadable topic is REFUSED at staging (no draft row) and RE-CHECKED at launch inside the shared gate
+// (ensureCtvBroadcastReady), so an approval revoked after staging never broadcasts. A spot staged without a topic (a
+// listing spot) is unchanged. Lane 145G's lib/marketing/ctv-lane.ts calls stageCtvCampaign({ topicId, assetId, … }).
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { VIBE_HOME_URL, dispatchCtvCampaign, type CtvDispatchResult } from "@/lib/providers/vibe"
@@ -63,6 +72,12 @@ export interface StageCtvCampaignInput {
   /** ai_video_projects.id of the creative. When omitted, the newest eligible
    *  completed video for the listing (listingId required) is used. */
   videoProjectId?: string | null
+  /** Contract C5 (wave 145): the creative ASSET — the same ai_video_projects.id under the contract's name. When both
+   *  are given they must agree (one creative per spot). */
+  assetId?: string | null
+  /** Contract C5 (wave 145): the content_topic_bank topic this spot is made from. Must be APPROVED for TV by a person
+   *  of this tenant (approvedTopicForTv); refused otherwise. Omitted = a listing / video spot, unchanged. */
+  topicId?: string | null
   campaignName?: string
   dailyBudgetCents: number
   targeting: CtvTargeting
@@ -87,6 +102,63 @@ export interface StageCtvCampaignResult {
   success: boolean
   error?: string
   package?: CtvLaunchPackage
+}
+
+// ─── THE TOPIC GATE (contract C5) — a topic spot broadcasts only on a topic a person approved ─────────────
+
+/**
+ * The approval_items.item_type values that mean "a person approved this topic for a TV spot". `ctv_topic` is the TV
+ * approval lane 145G files from the topic bank (lib/marketing/ctv-lane.ts); `local_campaign_idea` is local-intel's
+ * existing approval of a campaign idea built on a verified local fact (lib/content-intel/local-intel.ts
+ * proposeLocalCampaignIdeas — its brief already names a 30-60 s video). Published so the filer and this gate speak ONE
+ * vocabulary (CLAUDE.md §6). A data constant: nothing here is guessed from a title or a score.
+ */
+export const CTV_TOPIC_APPROVAL_ITEM_TYPES = ["ctv_topic", "local_campaign_idea"] as const
+
+type TopicApproval =
+  | { ok: true; topicId: string; title: string; approvalItemId: string; approvedAt: string | null; warnings: string[] }
+  | { ok: false; reason: string }
+
+type ApprovalRow = { id: string; item_type: string; status: string | null; reviewed_at: string | null; submitted_at: string | null }
+
+/**
+ * Is this topic APPROVED FOR TV for this tenant? Reads the topic (this tenant's, or a platform topic with no tenant —
+ * the same visibility the topic picker uses, lib/content-intel/topic-bank.ts pickTopics) and the tenant's approval
+ * items for it; the LATEST decision (approved / rejected, by reviewed_at) wins — a later rejection revokes an earlier
+ * approval, a pending item decides nothing. FAIL CLOSED: a refused read is a refusal with its reason (§3, §4).
+ * An expired freshness window is a WARNING (a person approved it; the fact may have moved), never a silent pass.
+ */
+async function approvedTopicForTv(
+  svc: ReturnType<typeof createServiceClient>, brokerageId: string, topicId: string, now: Date = new Date(),
+): Promise<TopicApproval> {
+  if (!brokerageId || !topicId) return { ok: false, reason: "topic and tenant required" }
+  const { data: t, error } = await svc
+    .from("content_topic_bank").select("id, brokerage_id, topic_title, status, expires_at")
+    .eq("id", topicId).maybeSingle()
+  if (error) return { ok: false, reason: `content_topic_bank read refused: ${error.message}` }
+  const topic = t as { id: string; brokerage_id: string | null; topic_title: string | null; status: string | null; expires_at: string | null } | null
+  if (!topic || (topic.brokerage_id !== null && topic.brokerage_id !== brokerageId)) {
+    return { ok: false, reason: "topic not found in this brokerage's topic bank" }
+  }
+  if (topic.status === "rejected") return { ok: false, reason: "the topic was rejected in the topic bank" }
+  const { data: rows, error: apErr } = await svc
+    .from("approval_items").select("id, item_type, status, reviewed_at, submitted_at")
+    .eq("brokerage_id", brokerageId).eq("item_id", topicId)
+    .in("item_type", [...CTV_TOPIC_APPROVAL_ITEM_TYPES]).limit(50)
+  if (apErr) return { ok: false, reason: `approval_items read refused: ${apErr.message}` }
+  const at = (r: ApprovalRow) => Date.parse(r.reviewed_at ?? r.submitted_at ?? "") || 0
+  const decided = ((rows ?? []) as ApprovalRow[]).filter((r) => r.status === "approved" || r.status === "rejected").sort((a, b) => at(b) - at(a))
+  const latest = decided[0]
+  if (!latest) {
+    return { ok: false, reason: `not approved for TV — no person has approved this topic (approval_items ${CTV_TOPIC_APPROVAL_ITEM_TYPES.join(" / ")}, status approved)` }
+  }
+  if (latest.status !== "approved") return { ok: false, reason: "not approved for TV — the latest decision on this topic is a rejection" }
+  const warnings: string[] = []
+  const expires = topic.expires_at ? Date.parse(topic.expires_at) : NaN
+  if (Number.isFinite(expires) && expires < now.getTime()) {
+    warnings.push(`The topic's freshness window ended ${String(topic.expires_at).slice(0, 10)} — confirm the market fact it carries still holds before launch.`)
+  }
+  return { ok: true, topicId: topic.id, title: (topic.topic_title ?? "").trim(), approvalItemId: latest.id, approvedAt: latest.reviewed_at, warnings }
 }
 
 // ─── CREATIVE VALIDATION (pure) ──────────────────────────────────────────────
@@ -227,7 +299,11 @@ function summarizeCtvBudget(dailyBudgetCents: number): string {
  * launch package. The row is a REAL draft — nothing here talks to Vibe.
  */
 export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<StageCtvCampaignResult> {
-  const { brokerageId, agentUserId, listingId, videoProjectId, dailyBudgetCents, targeting } = input
+  const { brokerageId, agentUserId, listingId, dailyBudgetCents, targeting } = input
+  if (input.assetId && input.videoProjectId && input.assetId !== input.videoProjectId) {
+    return { success: false, error: "assetId and videoProjectId disagree — a spot carries ONE creative; pass one of them" }
+  }
+  const videoProjectId = input.assetId ?? input.videoProjectId ?? null
 
   if (!brokerageId || !agentUserId) {
     return { success: false, error: "brokerageId and agentUserId required" }
@@ -246,6 +322,14 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
   }
 
   const supabase = input.client ?? createServiceClient()
+
+  // ── The topic gate (contract C5): a topic spot stages only on a topic a person approved for TV ──
+  let topic: Extract<TopicApproval, { ok: true }> | null = null
+  if (input.topicId) {
+    const t = await approvedTopicForTv(supabase, brokerageId, input.topicId)
+    if (!t.ok) return { success: false, error: `TV topic refused: ${t.reason}` }
+    topic = t
+  }
 
   // ── Load the creative (explicit pick, or newest eligible for the listing) ──
   let videoQuery = supabase
@@ -288,7 +372,7 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
   if (!check.ok) {
     return { success: false, error: `Creative is not TV-ready: ${check.reasons.join("; ")}` }
   }
-  const warnings = [...broadcast.warnings, ...check.warnings]
+  const warnings = [...broadcast.warnings, ...check.warnings, ...(topic?.warnings ?? [])]
 
   const targetingSummary = summarizeCtvTargeting({ dmas, cities, zips })
   const budgetSummary = summarizeCtvBudget(dailyBudgetCents)
@@ -318,6 +402,8 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
         creative_duration: video.duration_seconds,
         video_project_id: video.id,
         listing_id: listingId ?? video.listing_id ?? null,
+        // Contract C5 provenance — what the spot is about and WHO approved it (re-checked at launch).
+        ...(topic ? { topic_id: topic.topicId, topic_title: topic.title || null, topic_approval_item_id: topic.approvalItemId, topic_approved_at: topic.approvedAt } : {}),
       },
       visibility_scope: "agent",
     })
@@ -348,6 +434,7 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
     broadcast.source === "tv_master"
       ? `Create a new campaign in Vibe and upload the TV MASTER (${durationLabel}, ${TV_MASTER_SUMMARY}; spec ${broadcast.specVersion}): ${broadcast.url}`
       : `Make the TV master first (Video → TV master) — then upload THAT file, never the social reel. The launch here is refused until it reads READY.`,
+    ...(topic ? [`Topic: "${topic.title || topic.topicId}" — approved for TV${topic.approvedAt ? ` on ${topic.approvedAt.slice(0, 10)}` : ""}; the spot's claims must match the topic's source.`] : []),
     `Set geographic targeting to: ${targetingSummary}.`,
     `Set the daily budget to ${budgetSummary} — confirm it meets Vibe's current platform minimum before launching.`,
     `Real-estate compliance: keep targeting Fair-Housing-safe — geography only, no demographic narrowing.`,
@@ -469,6 +556,13 @@ export async function ensureCtvBroadcastReady(input: {
   if (!campaign) return { ok: false, reason: "campaign not found in this brokerage" }
   if (campaign.platform !== "vibe_ctv") return { ok: false, reason: `campaign platform is '${campaign.platform}', not 'vibe_ctv'` }
   const cfg = campaign.targeting_config ?? {}
+  // Contract C5: a TOPIC spot re-reads its approval at the authoritative write — an approval revoked (or a topic
+  // rejected) after staging never broadcasts. Both launch doors run this gate.
+  const topicId = typeof cfg.topic_id === "string" && cfg.topic_id ? cfg.topic_id : null
+  if (topicId) {
+    const t = await approvedTopicForTv(svc, input.brokerageId, topicId)
+    if (!t.ok) return { ok: false, reason: `the campaign's topic is no longer approved for TV (${t.reason}) — a topic spot broadcasts only on an approved topic` }
+  }
   const videoId = typeof cfg.video_project_id === "string" ? cfg.video_project_id : null
   if (!videoId) return { ok: false, reason: "the staged campaign names no video project — stage it again from the video" }
   const { data: v, error: vErr } = await svc

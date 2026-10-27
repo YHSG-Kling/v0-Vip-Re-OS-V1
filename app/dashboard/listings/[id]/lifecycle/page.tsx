@@ -41,6 +41,10 @@ import { resolveTransactionFormsProvider } from "@/lib/kernel/forms"
 import { CompletedDocumentsPanel } from "@/app/components/dashboard/listings/lifecycle/completed-documents-panel"
 // THE MLS LIVE DATE, ONE READER (wave 143, lane 143A): planned vs verified is decided in compute-dom, never re-derived here.
 import { resolveMlsLiveDates } from "@/lib/listings/compute-dom"
+// THE LISTING AGREEMENT'S GOVERNING TERMS + THE COMING SOON ADDRESS RULE (wave 145, lane 145B — owner rulings 1 + 2).
+import { governingListingAgreementTerms } from "@/lib/listings/listing-agreement-terms"
+import { resolveComingSoonCreativeAddress } from "@/lib/marketing/listing-public-address"
+import { ListingAgreementTermsPanel } from "./listing-agreement-terms-panel"
 import { CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
@@ -187,6 +191,34 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   if (listingAgreementError) {
     console.error("[listing lifecycle] listing_agreements read failed:", listingAgreementError.message)
   }
+
+  // THE LISTING AGREEMENT'S GOVERNING TERMS (wave 145, lane 145B — owner rulings 1 + 2): the seller-agreed MLS live date
+  // and the seller's Coming Soon street-address instruction, as the executed agreement and its executed amendments state
+  // them (lib/listings/listing-agreement-terms.ts, the ONE reader). The listing row above came through the session's
+  // tenant gate (RLS + brokerage predicate); the reads below are pinned to that row's brokerage and use the service
+  // client only after it (contract_term_versions / brokerage_settings are read-restricted). A refused read is UNKNOWN.
+  const { createServiceClient: serviceForAgreementTerms } = await import("@/lib/supabase/service")
+  const termsSvc = serviceForAgreementTerms()
+  const agreementTerms = await governingListingAgreementTerms(termsSvc as any, { brokerageId: listing.brokerage_id as string, listingId })
+  const amendmentDocsRead = await supabase
+    .from("documents")
+    .select("id, document_type, classification, metadata, created_at")
+    .eq("listing_id", listingId)
+    .eq("brokerage_id", userRow.brokerage_id)
+    .order("created_at", { ascending: false })
+    .limit(50)
+  if (amendmentDocsRead.error) console.error("[listing lifecycle] documents read for the amendment picker failed:", amendmentDocsRead.error.message)
+  const amendmentDocuments = ((amendmentDocsRead.data ?? []) as Array<{ id: string; document_type: string | null; classification: string | null; metadata: any; created_at: string | null }>).map((d) => ({
+    id: d.id,
+    label: `${d.metadata?.file_name ?? d.metadata?.name ?? d.classification ?? d.document_type ?? "document"} — ${String(d.created_at ?? "").slice(0, 10)}`,
+  }))
+  // What PUBLIC Coming Soon creative may print (owner ruling 1) — the full street address only when the seller
+  // authorized it AND the brokerage's attested MLS rule permits it; otherwise "City, ST". Fail closed.
+  const comingSoonCreative = await resolveComingSoonCreativeAddress({
+    policyClient: termsSvc as any,
+    termsClient: termsSvc as any,
+    listing: { id: listingId, brokerage_id: listing.brokerage_id as string, address: listing.address ?? null, city: listing.city ?? null, state: listing.state ?? null, zip: listing.zip ?? null },
+  })
 
   // The brokerage's CONFIGURED e-sign/forms provider (never assume dotloop — wave-47 ruling,
   // lib/kernel/forms.ts resolveTransactionFormsProvider, platform_credentials source of truth).
@@ -774,6 +806,31 @@ const { data: listingVendorBookings } = await supabase
                 provider_ref  — vendor plumbing for support, not agent-facing
                                 readiness. They belong on a support surface, not on
                                 the "can I launch?" checklist. */}
+        {/* THE AGREED TERMS (wave 145, lane 145B — owner rulings 1 + 2): seller-agreed MLS live date vs the plan vs the
+            VERIFIED MLS status, the seller's Coming Soon address instruction, and the ONE correction path (an executed
+            amendment). */}
+        <ListingAgreementTermsPanel
+          listingId={listingId}
+          agreementId={agreementTerms.ok ? agreementTerms.agreementId : null}
+          readError={agreementTerms.ok ? null : agreementTerms.reason}
+          termsRecordable={agreementTerms.ok ? agreementTerms.termsRecordable : false}
+          agreedDate={{
+            value: agreementTerms.ok ? agreementTerms.sellerRequestedMlsLiveDate : null,
+            source: agreementTerms.ok ? agreementTerms.resolved.terms.seller_requested_mls_live_date?.source ?? null : null,
+            versionNo: agreementTerms.ok ? agreementTerms.resolved.terms.seller_requested_mls_live_date?.versionNo ?? null : null,
+          }}
+          addressInstruction={{
+            value: agreementTerms.ok ? agreementTerms.comingSoonStreetAddressAuthorized : null,
+            source: agreementTerms.ok ? agreementTerms.resolved.terms.coming_soon_street_address_authorized?.source ?? null : null,
+            versionNo: agreementTerms.ok ? agreementTerms.resolved.terms.coming_soon_street_address_authorized?.versionNo ?? null : null,
+          }}
+          supersededCount={agreementTerms.ok ? agreementTerms.resolved.conflicts.length : 0}
+          mls={{ planned: mlsLive.planned ?? null, verified: mlsLive.basis === "verified", actual: mlsLive.actual ?? null, verifiedSource: mlsLive.verifiedSource ?? null }}
+          comingSoon={{ disclose: comingSoonCreative.decision.disclose, addressLine: comingSoonCreative.addressLine, withheldBecause: comingSoonCreative.decision.withheldBecause }}
+          amendmentDocuments={amendmentDocuments}
+          canAmend={isAdminOrBroker({ user_type: userRow.user_type }) || (userRow.user_type ?? "agent") === "agent"}
+        />
+
         <div className="mb-6">
           <LaunchReadinessChecklist
             listingId={listingId}
@@ -894,7 +951,9 @@ const { data: listingVendorBookings } = await supabase
               brokerageId={userRow.brokerage_id}
               role={userRow.user_type ?? "agent"}
               currentStage={currentStage}
-              listingAddress={`${listing.address}, ${listing.city}, ${listing.state}`}
+              // The ONE address line public Coming Soon creative may print (wave 145, lane 145B — owner ruling 1): the
+              // card feeds it to the AI copy and the posts, so the street address never reaches them unless disclosed.
+              listingAddress={comingSoonCreative.addressLine}
               listingStatus={(listing as any).status ?? ""}
               mediaApproved={mediaApproved}
               transactionId={transactionId}

@@ -117,7 +117,7 @@ const OAUTH_CONFIGS: Record<OAuthProvider, OAuthConfig> = {
     scopes: ["business_management", "ads_management", "ads_read"],
   },
   // Google ADS — Customer Match + reporting. Needs GOOGLE_ADS_DEVELOPER_TOKEN (env,
-  // injected into config below). Stored under platform='google'.
+  // injected into config below). Stored under platform='google_ads' (wave 145, lane 145D; m862).
   google_ads: {
     clientIdEnv: "GOOGLE_CLIENT_ID",
     clientSecretEnv: "GOOGLE_CLIENT_SECRET",
@@ -320,7 +320,10 @@ export async function GET(
         oauthProvider === "google" ? "gmail"
         : oauthProvider === "microsoft" ? "outlook"
         : oauthProvider === "meta_ads" ? "facebook"     // what the ad connector loads
-        : oauthProvider === "google_ads" ? "google"
+        // Wave 145 (lane 145D): 'google_ads', the name the ad connector loads (lib/ads/connection-status.ts
+        // adCredentialPlatform) and m862 admits. The old 'google' was refused by the live CHECK (every Google Ads
+        // connect failed) and folds onto gmail in the Connection OS (connection-manager PROVIDER_ALIASES).
+        : oauthProvider === "google_ads" ? "google_ads"
         : oauthProvider === "quickbooks" && ownerType === "platform" ? "platform_quickbooks"
         // Same m273 idiom for meetings: the PLATFORM's own Zoom lives under the
         // distinct 'platform_zoom' key so a tenant's host cascade can never

@@ -592,8 +592,28 @@ export async function markAgreementSigned(params: {
    * read as already on the market and let the compliance loop take its MLS-date hop on a date nobody chose. Now: the date
    * given here, else the one already on the listing (intake / timeline), else NONE — the agreement is still approved and
    * executed, the open-house dates wait, and the loop reports `passed_awaiting_date` until a person sets one.
+   *
+   * @deprecated wave 145 (lane 145B) — the date typed at THIS intake is the date the executed agreement states, so it
+   * is read as `sellerRequestedMlsLiveDate` (which wins when both are given). Kept so the existing intake card keeps
+   * working until it sends the new key.
    */
   plannedMlsLiveDate?: string
+  /**
+   * THE SELLER-AGREED MLS LIVE DATE (yyyy-mm-dd) as stated ON the executed listing agreement (wave 145, lane 145B — owner
+   * ruling 2: "The listing agreement would have the date the seller wants to go live on the MLS"). Recorded on the
+   * agreement (listing_agreements.seller_requested_mls_live_date, write-once — m856), then the listing's planned date
+   * FOLLOWS it (lib/listings/mls-live-date.ts followSellerAgreedMlsLiveDate). It is never overwritten afterwards: a
+   * change is an executed amendment (app/actions/seller-listing/listing-agreement-amendment.ts). Blank = the agreement
+   * states none (NULL, "not recorded"); the existing plan on the listing, if any, is kept.
+   */
+  sellerRequestedMlsLiveDate?: string
+  /**
+   * The seller's signed instruction on the STREET ADDRESS in public Coming Soon advertising (owner ruling 1), as the
+   * executed agreement states it: true = authorized, false = withheld, undefined = not recorded (→ withheld). Write-once
+   * on the agreement (m856); a change is an executed amendment. It is ONE of two conditions — the brokerage's attested
+   * MLS rule must permit it too (lib/compliance/coming-soon-policy.ts comingSoonStreetAddressDecision).
+   */
+  comingSoonStreetAddressAuthorized?: boolean
   commissionTerms?: {
     listingRate?: number
     buyerRate?: number
@@ -659,6 +679,17 @@ export async function markAgreementSigned(params: {
       return { success: false, error: "Effective date must be a valid yyyy-mm-dd date (or left blank if the agreement states none)." }
     }
     effectiveDate = raw
+  }
+  // The seller-agreed MLS live date (wave 145, lane 145B), validated before any work like effectiveDate: the new key
+  // wins, the legacy `plannedMlsLiveDate` key is the same agreement field under its old name.
+  const agreedDateRaw = (params.sellerRequestedMlsLiveDate ?? params.plannedMlsLiveDate ?? "").trim()
+  const { ymdOf: ymdOfAgreed } = await import("@/lib/listings/compute-dom")
+  const agreedMlsLiveDate = agreedDateRaw ? ymdOfAgreed(agreedDateRaw) : null
+  if (agreedDateRaw && agreedMlsLiveDate !== agreedDateRaw) {
+    return { success: false, error: "The MLS live date the seller requested must be a valid yyyy-mm-dd date (or left blank if the agreement states none)." }
+  }
+  if (params.comingSoonStreetAddressAuthorized !== undefined && typeof params.comingSoonStreetAddressAuthorized !== "boolean") {
+    return { success: false, error: "The seller's Coming Soon street-address instruction is yes or no (or left blank if the agreement states none)." }
   }
 
   // TENANT GATE — identity from the SESSION, and the listing must belong to it.
@@ -1029,15 +1060,42 @@ export async function markAgreementSigned(params: {
   // a person (this call, intake, or the lifecycle timeline); it is recorded through the ONE writer
   // (lib/listings/mls-live-date.ts), and when there is none the open-house dates wait rather than being computed
   // from a day nobody chose.
-  const { recordPlannedMlsLiveDate } = await import("@/lib/listings/mls-live-date")
+  //
+  // Wave 145 (lane 145B — owner ruling 2): the date typed here is the date THE EXECUTED AGREEMENT STATES. It is recorded
+  // ON the agreement first (write-once, m856), and the listing's planned date then FOLLOWS the agreement's governing term
+  // (lib/listings/mls-live-date.ts followSellerAgreedMlsLiveDate — the planned date, the alert, the open-house schedule,
+  // the lifecycle event). From here on no other path can plan a different date (recordPlannedMlsLiveDate refuses it);
+  // a change is an executed amendment. The seller's Coming Soon street-address instruction is recorded the same way.
+  const { recordPlannedMlsLiveDate, followSellerAgreedMlsLiveDate, openHouseDatesForPlannedLive } = await import("@/lib/listings/mls-live-date")
+  const { recordOriginalListingAgreementTerms } = await import("@/lib/listings/listing-agreement-terms")
   const { createServiceClient: serviceForPlannedDate } = await import("@/lib/supabase/service")
+  const termsSvc = serviceForPlannedDate() as any
   let plannedDate: string | null = null
-  if (params.plannedMlsLiveDate && params.plannedMlsLiveDate.trim() !== "") {
-    // The agreement row is already written, so a refused date does not undo it: it is REPORTED, never swallowed.
+  let termsWarning: string | null = null
+  const statedTerms = {
+    ...(agreedMlsLiveDate ? { seller_requested_mls_live_date: agreedMlsLiveDate } : {}),
+    ...(typeof params.comingSoonStreetAddressAuthorized === "boolean" ? { coming_soon_street_address_authorized: params.comingSoonStreetAddressAuthorized } : {}),
+  }
+  const termsWrite = Object.keys(statedTerms).length
+    ? await recordOriginalListingAgreementTerms(termsSvc, { brokerageId, agreementId: agreement.id as string, terms: statedTerms })
+    : ({ ok: true, written: [] } as const)
+  if (!termsWrite.ok && !termsWrite.preMigration) {
+    return { success: false, error: `The agreement was filed, but its stated terms were refused: ${termsWrite.reason}` }
+  }
+  if (!termsWrite.ok) {
+    termsWarning = "The agreement's MLS live date and Coming Soon address instruction could not be stored on the agreement yet (migration m856 is not applied): the date is kept as the listing's planned date only, and the street address stays withheld from Coming Soon advertising."
+  }
+  if (termsWrite.ok && agreedMlsLiveDate) {
+    // The agreement row is already written, so a refused follow does not undo it: it is REPORTED, never swallowed.
     // The listing is still at LISTING_AGREEMENT_INITIATED here (the stage transition is step 7), so the writer does
     // not re-run the compliance loop itself; the explicit loop run at the end of this function takes the hop.
-    const recorded = await recordPlannedMlsLiveDate(serviceForPlannedDate() as any, {
-      brokerageId, listingId, date: params.plannedMlsLiveDate.trim(), actorUserId: userId, source: "agreement",
+    const followed = await followSellerAgreedMlsLiveDate(termsSvc, { brokerageId, listingId, actorUserId: userId, via: "agreement" })
+    if (!followed.ok) return { success: false, error: `The agreement was filed, but the seller-agreed MLS live date was not applied to the listing: ${followed.reason}` }
+    plannedDate = followed.planned
+  } else if (agreedMlsLiveDate) {
+    // PRE-m856 (legacy, named above): the stated date is the listing's plan, through the ONE planned-date writer.
+    const recorded = await recordPlannedMlsLiveDate(termsSvc, {
+      brokerageId, listingId, date: agreedMlsLiveDate, actorUserId: userId, source: "agreement",
     })
     if (!recorded.ok) return { success: false, error: `The agreement was filed, but the planned MLS live date was refused: ${recorded.reason}` }
     plannedDate = recorded.planned
@@ -1049,7 +1107,9 @@ export async function markAgreementSigned(params: {
   }
 
   // Open-house dates hang off the PLANNED date; without one nothing is scheduled (and nothing is invented).
-  const openHouse = plannedDate ? calculateOpenHouseDates(new Date(`${plannedDate}T12:00:00Z`)) : null
+  // ONE schedule rule (lib/listings/mls-live-date.ts openHouseDatesForPlannedLive) — the same one an amendment re-derives.
+  const ohDays = plannedDate ? openHouseDatesForPlannedLive(plannedDate) : null
+  const openHouse = ohDays ? { marketingDate: new Date(`${ohDays.marketingDate}T12:00:00Z`), eventDate: new Date(`${ohDays.eventDate}T12:00:00Z`) } : null
   const plannedDateWarning = plannedDate
     ? null
     : "No planned MLS live date is set. The agreement is filed and the compliance review runs, but the listing waits at LISTING_AGREEMENT_SIGNED and the open-house dates are not scheduled until you set the planned MLS live date on the lifecycle timeline."
@@ -1149,6 +1209,9 @@ export async function markAgreementSigned(params: {
       upload_mode:    uploadMode,
       has_adjustment: hasAdjustment,
       planned_mls_live_date: plannedDate,
+      // wave 145 (lane 145B): what the executed agreement states, beside the plan that follows it
+      seller_requested_mls_live_date: agreedMlsLiveDate,
+      coming_soon_street_address_authorized: typeof params.comingSoonStreetAddressAuthorized === "boolean" ? params.comingSoonStreetAddressAuthorized : null,
     },
   })
 
@@ -1177,32 +1240,16 @@ export async function markAgreementSigned(params: {
   // The agreement itself saved. If the ledger entry did not, the caller is told so
   // explicitly rather than being handed an unqualified success — a concession the
   // money engine never sees is money the seller is charged anyway.
-  const warnings = [adjustmentWarning, plannedDateWarning].filter((w): w is string => !!w)
+  const warnings = [adjustmentWarning, plannedDateWarning, termsWarning].filter((w): w is string => !!w)
   return { success: true, agreementId: agreement.id, ...(warnings.length ? { warning: warnings.join(" ") } : {}) }
 }
 
-// ─── OPEN HOUSE DATE CALCULATOR ───────────────────────────────────────────────
-// Spec: marketing_date = last Friday before go_live_date
-//       event_date     = next Saturday after go_live_date
-
-function calculateOpenHouseDates(goLiveDate: Date): {
-  marketingDate: Date
-  eventDate: Date
-} {
-  const dow = goLiveDate.getDay() // 0=Sun … 6=Sat
-
-  // Last Friday: if today IS Friday (5), go back 7 days; otherwise go back (dow+2)%7+1 days
-  const daysToLastFriday = dow === 5 ? 7 : ((dow + 2) % 7) + 1
-  const marketingDate = new Date(goLiveDate)
-  marketingDate.setDate(goLiveDate.getDate() - daysToLastFriday)
-
-  // Next Saturday: 0 if already Saturday is replaced by 7 (always future)
-  const daysToNextSaturday = ((6 - dow + 7) % 7) || 7
-  const eventDate = new Date(goLiveDate)
-  eventDate.setDate(goLiveDate.getDate() + daysToNextSaturday)
-
-  return { marketingDate, eventDate }
-}
+// ─── TOMBSTONE — OPEN HOUSE DATE CALCULATOR (wave 145, lane 145B) ─────────────
+// calculateOpenHouseDates (marketing = last Friday before the planned MLS live day, event = next Saturday after it)
+// MOVED to lib/listings/mls-live-date.ts openHouseDatesForPlannedLive — so the agreement intake above and an executed
+// amendment (followSellerAgreedMlsLiveDate) derive ONE open-house schedule from one rule. It now does calendar-day math
+// in UTC instead of the server's local zone, and its "last Friday" step back is corrected (the retired one landed on a
+// Thursday for every live day except a Friday — see the survivor's header).
 
 /**
  * B. Property Readiness Track
@@ -1561,7 +1608,38 @@ export async function approveMedia(params: {
 }
 
 /**
- * Prepare coming soon assets (WITHOUT address)
+ * THE COMING SOON ADDRESS RULE for this listing (wave 145, lane 145B — owner ruling 1: "You can advertise a coming soon
+ * only if you don't disclose the street address, unless otherwise"). Called by the two Coming Soon doors below AFTER
+ * their tenant gate: the listing is re-read tenant-pinned through the caller's client, and only then are the brokerage's
+ * attested MLS rule and the executed listing agreement read with the service client (brokerage_settings admits admins
+ * only — the readiness checker's documented pattern). FAIL CLOSED: an unreadable listing is ok:false and the doors
+ * withhold / refuse; lib/marketing/listing-public-address.ts already withholds on an unreadable policy or agreement.
+ * Not exported — a "use server" file's exports are public endpoints.
+ */
+async function comingSoonCreativeAddressFor(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  listingId: string,
+  brokerageId: string,
+) {
+  const { data: l, error } = await supabase
+    .from("listings").select("id, brokerage_id, address, city, state, zip")
+    .eq("id", listingId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error || !l) return { ok: false as const, error: error ? `the listing could not be read (${error.message})` : "the listing was not found in your brokerage" }
+  const listing = l as { id: string; brokerage_id: string; address: string | null; city: string | null; state: string | null; zip: string | null }
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { resolveComingSoonCreativeAddress } = await import("@/lib/marketing/listing-public-address")
+    const svc = createServiceClient()
+    const resolved = await resolveComingSoonCreativeAddress({ policyClient: svc as any, termsClient: svc as any, listing })
+    return { ok: true as const, listing, resolved }
+  } catch (err) {
+    return { ok: false as const, error: `the Coming Soon address rule could not be read (${(err as Error)?.message ?? err})` }
+  }
+}
+
+/**
+ * Prepare coming soon assets (WITHOUT the street address unless the seller AND the attested MLS rule both permit it —
+ * wave 145, lane 145B; the claim below is now the computed decision, not a constant)
  */
 export async function prepareComingSoonAssets(params: {
   listingId: string
@@ -1584,6 +1662,19 @@ export async function prepareComingSoonAssets(params: {
   const stageGate = await requireListingStage(supabase, listingId, "COMING_SOON_PREP")
   if (!stageGate.ok) return { success: false, error: stageGate.error }
 
+  // THE ADDRESS RULE, decided — not asserted. This door used to record `includes_address: false` as a literal; it now
+  // records what the rule actually answered (and why), so the evidence says which creative may name the street.
+  const addr = await comingSoonCreativeAddressFor(supabase, listingId, brokerageId)
+  const addressEvidence = addr.ok
+    ? {
+        includes_address: addr.resolved.decision.disclose,
+        public_address_line: addr.resolved.addressLine,
+        address_withheld_because: addr.resolved.decision.withheldBecause,
+        seller_address_authorization: addr.resolved.decision.sellerAuthorization,
+        address_policy_source: addr.resolved.decision.policySource,
+      }
+    : { includes_address: false, address_withheld_because: [addr.error] }
+
   // Stage transition: MEDIA_APPROVED → COMING_SOON_PREP
   const transitionResult = await transitionLifecycle({
     entityType:  "listing_stage_machine",
@@ -1593,7 +1684,7 @@ export async function prepareComingSoonAssets(params: {
     eventType:   KernelEvent.LISTING_COMING_SOON_ASSETS_PREPARED,
     actorUserId: userId,
     brokerageId,
-    metadata: { includes_address: false },
+    metadata: addressEvidence,
   })
 
   if (!transitionResult.success) {
@@ -1612,14 +1703,16 @@ export async function prepareComingSoonAssets(params: {
     agent_id:      await resolveAgentId(supabase as any, userId),
     listing_id:    listingId,
     activity_type: "seller.coming_soon.assets_prepared",
-    title:         "Coming soon assets prepared (without address)",
-    description:   "Coming soon marketing assets prepared, address withheld per compliance",
-    notes:         JSON.stringify({ listing_id: listingId, includes_address: false }),
+    title:         addressEvidence.includes_address ? "Coming soon assets prepared (street address authorized)" : "Coming soon assets prepared (without street address)",
+    description:   addressEvidence.includes_address
+      ? "Coming soon marketing assets prepared; the seller authorized the street address and the attested MLS rule permits it"
+      : `Coming soon marketing assets prepared, street address withheld: ${addressEvidence.address_withheld_because.join("; ")}`,
+    notes:         JSON.stringify({ listing_id: listingId, ...addressEvidence }),
     status:        "completed",
     entity_type:   "contact",
   })
 
-  return { success: true }
+  return { success: true, includesStreetAddress: addressEvidence.includes_address, publicAddressLine: addr.ok ? addr.resolved.addressLine : null }
 }
 
 /**
@@ -1632,6 +1725,12 @@ export async function activateComingSoon(params: {
   /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
   brokerageId?: string
   role: "agent" | "team_lead"
+  /**
+   * The person-reviewed PUBLIC Coming Soon copy that goes out on activation (wave 145, lane 145B — owner ruling 1).
+   * When given, activation is REFUSED if it names the listing's street address without the seller's authorization AND
+   * the attested MLS rule permitting it; the refusal says what to change (nothing is rewritten behind the person).
+   */
+  creative?: { socialPost?: string | null; emailBody?: string | null }
 }) {
   const supabase = await createClient()
   const { listingId, role } = params
@@ -1670,6 +1769,19 @@ export async function activateComingSoon(params: {
     }
   }
 
+  // THE ADDRESS RULE AT THE CREATIVE DOOR (wave 145, lane 145B — owner ruling 1). The copy a person reviewed is checked
+  // in REFUSE mode: an unauthorized street address stops the activation and names the public location to use instead.
+  // An unreadable listing with creative to check is a refusal (fail closed) — "nobody checked" is never "fine".
+  const addr = await comingSoonCreativeAddressFor(supabase, listingId, brokerageId)
+  if (params.creative) {
+    if (!addr.ok) return { success: false, error: `Coming soon cannot be activated: the copy could not be checked for the street address — ${addr.error}` }
+    const { guardComingSoonCreativeText } = await import("@/lib/marketing/listing-public-address")
+    const findings = [params.creative.socialPost, params.creative.emailBody]
+      .map((t) => guardComingSoonCreativeText(t, addr.listing, addr.resolved, "refuse"))
+      .flatMap((g) => (g.ok ? [] : g.findings))
+    if (findings.length) return { success: false, error: `Coming soon cannot be activated: ${findings.join(" ")}` }
+  }
+
   // Stage transition: COMING_SOON_PREP → COMING_SOON_ACTIVE
   const transitionResult = await transitionLifecycle({
     entityType:  "listing_stage_machine",
@@ -1680,7 +1792,12 @@ export async function activateComingSoon(params: {
     actorUserId: userId,
     actorRole:   role,
     brokerageId,
-    metadata: { activated_by_role: role },
+    metadata: {
+      activated_by_role: role,
+      includes_address: addr.ok ? addr.resolved.decision.disclose : false,
+      creative_checked: !!params.creative,
+      ...(addr.ok ? { address_withheld_because: addr.resolved.decision.withheldBecause } : { address_withheld_because: [addr.error] }),
+    },
   })
 
   if (!transitionResult.success) {
@@ -1701,12 +1818,13 @@ export async function activateComingSoon(params: {
     activity_type: "seller.coming_soon.activated",
     title:         "Coming soon marketing activated",
     description:   `Coming soon activated by ${role}`,
-    notes:         JSON.stringify({ listing_id: listingId, activated_by_role: role }),
+    notes:         JSON.stringify({ listing_id: listingId, activated_by_role: role, includes_address: addr.ok ? addr.resolved.decision.disclose : false, creative_checked: !!params.creative }),
     status:        "completed",
     entity_type:   "contact",
   })
 
-  return { success: true }
+  // The ONE address line the Coming Soon marketing that fires next may print (the public location unless disclosed).
+  return { success: true, publicAddressLine: addr.ok ? addr.resolved.addressLine : null }
 }
 
 /**

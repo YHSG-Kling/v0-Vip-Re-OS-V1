@@ -33,12 +33,14 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { listPdfFields } from "./pdf-form-fill"
-import { FORM_PACKET_TYPES, registerCopiedPacket, type FormPacketType, type PacketActor, type TenantPacketRow } from "./tenant-form-packets"
+import { FORM_PACKET_BUCKET, FORM_PACKET_TYPES, registerCopiedPacket, type FormPacketType, type PacketActor, type TenantPacketRow } from "./tenant-form-packets"
 
 type Svc = SupabaseClient<any, any, any>
 
 /** The ONE bucket forms live in. Catalogue masters are a prefix of it, not a new bucket. */
-export const PLATFORM_PACKET_BUCKET = "brokerage-forms"
+// ONE spelling of the bucket (§6, wave 145 lane 145A): the catalogue lives in the tenant bucket under platform/, so its constant IS
+// the tenant constant (lib/forms/tenant-form-packets.ts FORM_PACKET_BUCKET) — kept as an export for its importers, never a 2nd literal.
+export const PLATFORM_PACKET_BUCKET = FORM_PACKET_BUCKET
 export const PLATFORM_PACKET_ROOT = "platform"
 /** Largest PDF a packet may be. */
 export const PLATFORM_PACKET_MAX_BYTES = 25 * 1024 * 1024

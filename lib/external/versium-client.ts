@@ -945,7 +945,9 @@ export async function appendVersiumB2B2C(
 //     "Working Woman in Household"), age ("DOB", "Age Range", "Senior in Household", "Young Adult …"),
 //     disability-adjacent health fields, "Veteran In Household" and "Party Affiliation". The mapper reads
 //     ONLY the allow-list above and the raw row is never returned — a research/intent signal, never a
-//     targeting segment (lookalike-audience.ts carries the ad-policy verdict).
+//     targeting segment (lookalike-audience.ts carries the ad-policy verdict). WAVE 145 (145F, owner
+//     ruling 12): those protected fields are no longer thrown away — they leave ONLY in the segregated
+//     `protectedResearch` field (vendor-modeled, research-only; see versiumProtectedResearchFrom below).
 
 /** The real-estate indicators Versium's full demographic output carries — OUR shape, booleans and plain values only. */
 export interface VersiumRealEstateIndicators {
@@ -973,8 +975,53 @@ export interface VersiumRealEstateIndicators {
   refinanceDate: string | null
 }
 
-/** A field name that names a protected characteristic (or an age/household band) — dropped, never mapped. */
+/** A field name that names a protected characteristic (or an age/household band) — never mapped onto an indicator. */
 const VERSIUM_PROTECTED_CLASS_FIELD = /ethnic|religio|christian|african american|assimilation|\blanguage\b|children|single parent|generations|grandchildren|parenting|in household|household rank|gender|working woman|\bdob\b|age range|senior|young adult|veteran|party affiliation|health|dieting|disab/i
+
+// ── WAVE 145 (lane 145F — owner ruling 12: "no protected fair housing protected attributes holding back any enrichment syncing as it
+// is a major road block when needing that research"). The protected fields of the SAME paid row used to be DISCARDED here. They now
+// leave this adapter in ONE segregated field — `protectedResearch` — and nowhere else: never on `indicators`, never on the
+// provenance, never re-mapped onto a contacts column. Its ONE consumer is the research store (lib/enrichment/protected-research-store.ts
+// → public.protected_research_attributes, m864: RLS, service-role writes, research reads only). Every value is VENDOR-MODELED
+// (Versium's own word for these fields) — stored with that basis, never presented as a fact about the person. ──
+
+/** The protected class a Versium field bears (one vocabulary — m864's attribute_class CHECK). Order matters: "Veteran In Household"
+ *  is military status, not household composition. */
+const VERSIUM_PROTECTED_CLASS_OF: ReadonlyArray<readonly [RegExp, VersiumProtectedClass]> = [
+  [/veteran/i, "military_status"],
+  [/ethnic|african american|assimilation/i, "race_color_national_origin"],
+  [/\blanguage\b/i, "language"],
+  [/religio|christian/i, "religion"],
+  [/gender|working woman/i, "sex"],
+  [/\bdob\b|age range|senior|young adult/i, "age"],
+  [/children|single parent|generations|grandchildren|parenting|in household|household rank/i, "familial_status"],
+  [/party affiliation/i, "political_affiliation"],
+  [/health|dieting|disab/i, "disability_health"],
+]
+
+export type VersiumProtectedClass = "race_color_national_origin" | "language" | "religion" | "familial_status" | "sex" | "age" | "disability_health" | "military_status" | "political_affiliation"
+
+/** One protected field of a paid row — research-only; the vendor's verbatim field name, its value, the class it bears. */
+export interface VersiumProtectedResearchField {
+  sourceField: string
+  value: string
+  protectedClass: VersiumProtectedClass
+  basis: "vendor_modeled"
+}
+
+/** PURE — the protected fields of one full_demographic row (non-empty values only), for the segregated research store. */
+function versiumProtectedResearchFrom(row: unknown): VersiumProtectedResearchField[] {
+  const r = row && typeof row === "object" ? (row as Record<string, unknown>) : {}
+  const out: VersiumProtectedResearchField[] = []
+  for (const [k, v] of Object.entries(r)) {
+    if (!VERSIUM_PROTECTED_CLASS_FIELD.test(k)) continue
+    const value = typeof v === "string" || typeof v === "number" ? String(v).trim() : ""
+    if (!value) continue
+    const cls = VERSIUM_PROTECTED_CLASS_OF.find(([re]) => re.test(k))?.[1]
+    if (cls) out.push({ sourceField: k.slice(0, 120), value: value.slice(0, 200), protectedClass: cls, basis: "vendor_modeled" })
+  }
+  return out
+}
 
 /** PURE — the allow-listed facts from one full_demographic row; everything protected is never read. */
 function versiumRealEstateIndicatorsFrom(row: unknown): VersiumRealEstateIndicators {
@@ -1014,6 +1061,8 @@ export interface VersiumRealEstateIndicatorsResult {
   credits: number
   cost: number
   provenance: VersiumProvenance | null
+  /** Wave 145 (ruling 12): the SAME row's protected fields — SEGREGATED, research-only (protected-research-store.ts); empty on a no-match. */
+  protectedResearch: VersiumProtectedResearchField[]
   skipped?: "unconfigured" | "no_identity"
   error?: string
 }
@@ -1027,7 +1076,7 @@ export async function appendVersiumRealEstateIndicators(
   id: VersiumIdentity,
   deps: { call?: VersiumFullDemographicCall } = {},
 ): Promise<VersiumRealEstateIndicatorsResult> {
-  const none: VersiumRealEstateIndicatorsResult = { indicators: null, credits: 0, cost: 0, provenance: null }
+  const none: VersiumRealEstateIndicatorsResult = { indicators: null, credits: 0, cost: 0, provenance: null, protectedResearch: [] }
   const apiKey = process.env.VERSIUM_API_KEY
   if (!apiKey && !deps.call) return { ...none, skipped: "unconfigured" }
   const query = versiumQueryFor(id)
@@ -1054,11 +1103,14 @@ export async function appendVersiumRealEstateIndicators(
     const credits = (Number.isFinite(counted) && counted >= 0 ? counted : 1) * VERSIUM_CREDIT_WEIGHTS.full_demographic
     const ind = versiumRealEstateIndicatorsFrom(first)
     const any = Object.values(ind).some((x) => x !== null)
+    const protectedResearch = versiumProtectedResearchFrom(first)
     return {
       indicators: any ? ind : null,
       credits,
       cost: versiumCreditsUsd(credits),
-      provenance: any ? provenance("person.enrich_online_presence", new Date().toISOString(), first) : null,
+      // The provenance stamp describes the MATCH (capability, time, match level) — never a field value; it rides the research rows too.
+      provenance: any || protectedResearch.length > 0 ? provenance("person.enrich_online_presence", new Date().toISOString(), first) : null,
+      protectedResearch,
     }
   } catch (e) {
     return { ...none, error: e instanceof Error ? e.message : String(e) }

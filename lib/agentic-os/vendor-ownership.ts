@@ -22,10 +22,17 @@ export type VendorOwnership = "platform" | "user_connected"
 /** Vendors whose key/cost the PLATFORM owns — gated by the per-brokerage budget.
  *  Stripe + QuickBooks are platform-operated: the platform runs its own accounts and
  *  offers payments/accounting to every subscriber (subscribers do NOT connect their own). */
+// TOMBSTONE (wave 145, lane 145D — owner ruling 13: "We no longer use vapi …"): the two DECOMMISSIONED vendors
+// (lib/platform/provider-posture.ts DECOMMISSIONED_PROVIDERS) left this set. Listing them here was not history, it was
+// a resurrection: lib/agentic-os/resolve-connectivity.ts scanConnectivity renders EVERY member as a live
+// "platform_managed" connector, so the connectivity report counted a retired voice-AI vendor and the retired avatar
+// vendor as managed connections. Their classification is UNCHANGED — vendorOwnership() defaults an unknown vendor to
+// "platform", so historical vendor_usage_tracking rows still classify exactly as before; their rates stay in
+// lib/vendor-governance/meter-vendor.ts and cost-normalizer.ts (never delete a rate).
 export const PLATFORM_VENDORS = new Set<string>([
   "perplexity", "osint", "rentcast", "peopledata", "exa", "tavily",
   "apify_social", "apify", "batchdata", "zenrows", "zyte",
-  "vapi", "did", "heygen", "elevenlabs", "browser_tts", "cma_aggregate",
+  "did", "elevenlabs", "browser_tts", "cma_aggregate",
   "lob",                          // direct mail — platform-owned
   "stripe", "quickbooks", "plaid", // financial — platform-operated, offered to all subscribers
 ])
@@ -47,6 +54,11 @@ export const USER_CONNECTED_VENDORS = new Set<string>([
   "meta", "facebook", "instagram", "linkedin", "twitter",
   "tiktok", "youtube", "pinterest", "buffer",                    // social accounts
   "podcast_syndicator",                                          // podcast distribution
+  // Ad accounts (wave 145, lane 145D — owner ruling 13: "ads = meta, google ads, tv via vibe, chatgpt ads"). The
+  // tenant connects its own ad account and pays its own ad spend (provider-adapters: ledger "tenant_account"). None of
+  // the three was named by any source the readiness registry derives from, so getBrokerageProviderReadiness had NO row
+  // for them and the arbiter's ads check could only ever see Meta (lib/providers/channel-provider-matrix.ts).
+  "google_ads", "vibe", "openai_ads",
 ])
 
 /** Classify a vendor. Unknown vendors default to `platform` (conservative — anything

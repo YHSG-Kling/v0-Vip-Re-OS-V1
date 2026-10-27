@@ -27,7 +27,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { fieldProvenanceOf, withFieldProvenance, type FieldProvenance } from "@/lib/lead-pipeline/enrichment-column-map"
-import type { VersiumRealEstateIndicators } from "@/lib/external/versium-client"
+import type { VersiumProtectedResearchField, VersiumRealEstateIndicators } from "@/lib/external/versium-client"
 
 /** The profile key — one spelling, read by lookalike-audience.ts and written only here. */
 export const REAL_ESTATE_INDICATORS_KEY = "real_estate_indicators"
@@ -83,8 +83,14 @@ export async function persistRealEstateIndicators(
   target: { contactId: string; brokerageId: string },
   indicators: VersiumRealEstateIndicators,
   provenance: FieldProvenance | null,
-  opts: { refresh?: boolean; now?: Date } = {},
-): Promise<{ ok: boolean; wrote: boolean; error?: string }> {
+  opts: {
+    refresh?: boolean
+    now?: Date
+    /** Wave 145 (145F, owner ruling 12): the SAME paid row's protected fields (versium-client.ts `protectedResearch`) — stored in the
+     *  segregated research home (protected-research-store.ts), NEVER on this profile block. Omitted → nothing is stored there. */
+    protectedResearch?: readonly VersiumProtectedResearchField[]
+  } = {},
+): Promise<{ ok: boolean; wrote: boolean; error?: string; research?: { stored: number; error?: string } }> {
   if (!target.contactId || !target.brokerageId) return { ok: false, wrote: false, error: "contactId and brokerageId are both required" }
   const { data: row, error: readError } = await supabase
     .from("contacts")
@@ -94,8 +100,17 @@ export async function persistRealEstateIndicators(
     .maybeSingle()
   if (readError) return { ok: false, wrote: false, error: readError.message }
   if (!row) return { ok: false, wrote: false, error: "contact not found in this tenant" }
+  // The research fields of a row we PAID for are kept whether or not the indicator block below is refreshed (ruling 12: never
+  // dropped). Never fails the indicator write — a refused research write is reported beside it.
+  let research: { stored: number; error?: string } | undefined
+  if (opts.protectedResearch && opts.protectedResearch.length > 0) {
+    const { persistProtectedResearch } = await import("@/lib/enrichment/protected-research-store")
+    const w = await persistProtectedResearch(supabase as never, target, opts.protectedResearch, provenance, { now: opts.now })
+    research = { stored: w.inserted + w.changed + w.unchanged, ...(w.ok ? {} : { error: w.error }) }
+    if (!w.ok) console.warn(`[online-presence-store] protected research not stored for ${target.contactId}: ${w.error}`)
+  }
   const prior = (((row as { enrichment_profile?: Record<string, unknown> | null }).enrichment_profile) ?? {}) as Record<string, unknown>
-  if (!opts.refresh && realEstateIndicatorsFromProfile(prior)) return { ok: true, wrote: false }
+  if (!opts.refresh && realEstateIndicatorsFromProfile(prior)) return { ok: true, wrote: false, ...(research ? { research } : {}) }
   const at = (opts.now ?? new Date()).toISOString()
   const next = withFieldProvenance(
     { ...prior, [REAL_ESTATE_INDICATORS_KEY]: realEstateIndicatorsBlock(indicators, at) },
@@ -108,13 +123,13 @@ export async function persistRealEstateIndicators(
     .eq("id", target.contactId)
     .eq("brokerage_id", target.brokerageId)
     .select("id")
-  if (writeError) return { ok: false, wrote: false, error: writeError.message }
-  if (!written || written.length === 0) return { ok: false, wrote: false, error: "indicators write matched no row" }
+  if (writeError) return { ok: false, wrote: false, error: writeError.message, ...(research ? { research } : {}) }
+  if (!written || written.length === 0) return { ok: false, wrote: false, error: "indicators write matched no row", ...(research ? { research } : {}) }
   // WAVE 144 (lane 144Z): a NEW online-intent indicator is PUSHED to the AI ISA (online_intent_detected), not only read on the
   // contact's next evaluation. Lazy: intent-signal-sources.ts imports this module. Never fails the write it follows.
   try {
     const { publishNewIntentFacts } = await import("@/lib/enrichment/intent-signal-sources")
     await publishNewIntentFacts(supabase, target, { enrichment_profile: prior }, { enrichment_profile: next }, opts.now ?? new Date())
   } catch (e) { console.warn("[online-presence-store] intent push skipped (non-blocking):", e instanceof Error ? e.message : e) }
-  return { ok: true, wrote: true }
+  return { ok: true, wrote: true, ...(research ? { research } : {}) }
 }

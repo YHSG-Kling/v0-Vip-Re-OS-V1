@@ -7,8 +7,13 @@
 
 import { logVendorUsage, normalizeVendorCost, validateAttribution } from '@/lib/vendor-governance'
 
+// TOMBSTONE (wave 145, lane 145D — owner ruling 13, 2026-10-27: "We no longer use vapi or retell"): the vendor union
+// named two third-party AI-call vendors nothing in this repo ever called, and inferBillingModel below kept a branch for
+// each. Every AI call runs on the Twilio-native lane (survivor: lib/voice/twilio-outbound.ts placeOutboundAiCall), whose
+// minutes are booked by app/api/voice/twilio/status/route.ts. Both branches returned the default ('per_minute'), so the
+// billing answer is unchanged for every vendor string. scripts/vendor-retirement-guard.ts keeps the names out of runtime code.
 export interface VoiceUsageParams {
-  vendor: 'twilio' | 'bland_ai' | 'retell_ai' | string
+  vendor: 'twilio' | string
   callDurationSeconds: number
   transcriptionWordCount?: number
   contactId: string
@@ -108,16 +113,8 @@ function calculateBillableUnits(
  * Infer billing model from vendor name
  */
 function inferBillingModel(vendor: string): string {
-  // Twilio: per-minute for calls
+  // Twilio: per-minute for calls (the only voice lane — retired vendors' branches removed, see the tombstone above)
   if (vendor.includes('twilio')) return 'per_minute'
-
-  // Bland AI: per-minute
-  if (vendor.includes('bland')) return 'per_minute'
-
-  // Retell AI: per-minute
-  if (vendor.includes('retell')) return 'per_minute'
-
-  // Vapi: per-minute
 
   // Default
   return 'per_minute'

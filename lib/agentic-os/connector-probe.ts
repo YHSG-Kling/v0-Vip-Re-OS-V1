@@ -189,6 +189,12 @@ export const PLATFORM_PROVIDER_KEYS: Record<string, string> = {
   // documented surface is the POST /compose/token mint — a probe would MINT a
   // session; probeConnector returns null for it and the guardian moves on).
   simli: "SIMLI_API_KEY",
+  // Ringless voicemail (wave 145, lane 145D — owner ruling 13, voice drop). lib/voicedrop/orchestrate-voicedrop-send.ts
+  // reads this platform key and delivers through the connector gateway, but NO registry source named it, so the
+  // readiness row 'voicedrop' (registered only by its VENDOR_PRICING rate) had no env home and read platform_dark
+  // FOREVER — the arbiter could never offer a voice drop even with the key set (lane 144F notes: "unresolved").
+  // Key-presence-audited only: no PROBE_SPEC (the provider's only documented call LEAVES a voicemail).
+  voicedrop: "VOICEDROP_API_KEY",
 }
 
 export interface ProbeResult {

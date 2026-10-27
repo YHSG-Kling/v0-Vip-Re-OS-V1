@@ -51,8 +51,12 @@ export const MLS_LIVE_EVENT = {
   VERIFIED: "listing.mls_live_date.verified",
 } as const
 
-/** Where a planned date came from — evidence only. */
-export type PlannedDateSource = "intake" | "timeline" | "launch" | "agreement" | "agent_assistant"
+/**
+ * Where a planned date came from — evidence only. It is NOT an authority: whatever the source, once the executed
+ * listing agreement (or an executed amendment) states the seller-agreed MLS live date, that date governs and no
+ * source may plan a different one (wave 145, lane 145B — see recordPlannedMlsLiveDate).
+ */
+export type PlannedDateSource = "intake" | "timeline" | "launch" | "agreement" | "amendment" | "agent_assistant"
 
 export type PlannedDateResult =
   | { ok: true; noop: boolean; previous: string | null; planned: string | null; timezone: string | null; loop: string | null }
@@ -203,6 +207,24 @@ export async function recordPlannedMlsLiveDate(
   const previous = ymdOf(row?.go_live_date ?? null)
   if (previous === wanted) return { ok: true, noop: true, previous, planned: wanted, timezone: null, loop: null }
 
+  // THE SELLER-AGREED DATE GOVERNS (wave 145, lane 145B — owner ruling 2: "The listing agreement would have the date the
+  // seller wants to go live on the MLS so check the listing agreement"). Once the EXECUTED listing agreement — or an
+  // executed amendment to it — states the date, the planned date is that date and nothing else: intake, the timeline,
+  // the launch door and the agent assistant may not plan a different one or clear it, and the agreement path itself can
+  // only write what the agreement says. Correction = an executed amendment (lib/listings/listing-agreement-terms.ts
+  // recordListingAgreementAmendment), which this writer then follows. FAIL CLOSED: an agreement that could not be read
+  // is "unknown", never "the seller agreed nothing". Pre-m856 nothing can be recorded, so nothing governs (legacy).
+  const { governingListingAgreementTerms } = await import("./listing-agreement-terms")
+  const gov = await governingListingAgreementTerms(input.evidenceClient ?? svc, { brokerageId: input.brokerageId, listingId: input.listingId })
+  if (!gov.ok) return { ok: false, reason: `${gov.reason} — whether the seller agreed a different MLS live date is unknown, so the planned date was not changed` }
+  if (gov.sellerRequestedMlsLiveDate && wanted !== gov.sellerRequestedMlsLiveDate) {
+    const t = gov.resolved.terms.seller_requested_mls_live_date
+    return {
+      ok: false,
+      reason: `The seller-agreed MLS live date is ${gov.sellerRequestedMlsLiveDate} per the executed listing agreement${t?.source === "amendment" ? ` as amended (amendment ${t.versionNo})` : ""}. It changes only through an executed amendment to the listing agreement — record the amendment and the listing follows it.`,
+    }
+  }
+
   const { data: written, error: writeErr } = await svc
     .from("listings")
     .update({ go_live_date: wanted, updated_at: new Date().toISOString() })
@@ -325,6 +347,111 @@ export async function recordVerifiedMlsLive(
       + ". Days on market now count from this verified date.",
   })
   return { ok: true, noop: false, actual, basis, source: input.source, varianceDays, timezone }
+}
+
+// ─── THE SELLER-AGREED DATE, FOLLOWED (wave 145, lane 145B — owner ruling 2) ─────────────────────
+
+/**
+ * PURE — the open-house marketing and event days hung off a planned MLS live day (yyyy-mm-dd → yyyy-mm-dd).
+ * marketing = the last Friday BEFORE the live day; event = the next Saturday AFTER it (a Saturday live day → the
+ * following Saturday). Moved here from app/actions/seller-listing/execution-engine.ts calculateOpenHouseDates (its
+ * tombstone names this line) so the agreement intake and an executed amendment derive ONE schedule. Calendar-day math
+ * in UTC, so the answer does not depend on the server's zone.
+ * DEFECT FIXED IN THE MOVE: the retired step back, `dow === 5 ? 7 : ((dow + 2) % 7) + 1`, landed on a THURSDAY for
+ * every live day except a Friday (Wed 2026-11-04 → Thu 10-29) — its own spec line said "last Friday". The step back is
+ * now `((dow − 5 + 7) % 7) || 7` (Wed → Fri 10-30; a Friday live day → the Friday a week before).
+ */
+export function openHouseDatesForPlannedLive(plannedYmd: string): { marketingDate: string; eventDate: string } | null {
+  const ymd = ymdOf(plannedYmd)
+  if (!ymd) return null
+  const live = new Date(`${ymd}T12:00:00Z`)
+  const dow = live.getUTCDay() // 0=Sun … 6=Sat
+  const daysToLastFriday = ((dow - 5 + 7) % 7) || 7
+  const daysToNextSaturday = ((6 - dow + 7) % 7) || 7
+  const at = (days: number) => new Date(live.getTime() + days * 86_400_000).toISOString().slice(0, 10)
+  return { marketingDate: at(-daysToLastFriday), eventDate: at(daysToNextSaturday) }
+}
+
+/**
+ * Before any open-house marketing has gone out — the only stages whose derived open-house days may move. DERIVED from
+ * the stage table's own order (lib/listing-lifecycle/lifecycle-definitions.ts), never a hand-kept list: a stage added
+ * before OPEN_HOUSE_MARKETING is covered by construction. An unknown stage is NOT pre-open-house (the closed answer:
+ * dates the agent may already have published are never moved on a guess).
+ */
+async function isBeforeOpenHouseMarketing(stage: string | null): Promise<boolean> {
+  const { getStageIndex } = await import("@/lib/listing-lifecycle/lifecycle-definitions")
+  const at = getStageIndex((stage ?? "LEAD") as never), cut = getStageIndex("OPEN_HOUSE_MARKETING")
+  return at >= 0 && cut >= 0 && at < cut
+}
+
+export type FollowAgreedDateResult =
+  | { ok: true; noop: boolean; planned: string | null; previous: string | null; reached: string[]; warnings: string[] }
+  | { ok: false; reason: string }
+
+/**
+ * Make the listing follow the date its EXECUTED listing agreement (as amended) governs — called by the two agreement
+ * paths only: markAgreementSigned (the original agreement's term) and an executed amendment. One date change reaches,
+ * each through its existing survivor:
+ *   · POLICY CHECKS — recordPlannedMlsLiveDate re-runs the listing compliance loop at LISTING_AGREEMENT_SIGNED (its
+ *     MLS_DATE_CONFIRMED hop waits on this fact); the launch door (plannedMlsLiveDateLaunchBlocker) and the Coming Soon
+ *     readiness / creative read listings.go_live_date live, so they judge the new date on their next read.
+ *   · THE MARKETING SCHEDULE — the open-house marketing / event days move with it while no open-house marketing has
+ *     gone out (isBeforeOpenHouseMarketing); after that they are the agent's to move, and the bell says so.
+ *   · ALERTS — the listing agent is belled (`listing.mls_live_date_changed`), naming the old and new date and that it
+ *     came from the agreement.
+ *   · THE EVIDENCE / THE EVENT — `listing.mls_live_date.planned` (lifecycle_events, source agreement|amendment), the
+ *     durable event the listing concierge, the seller portal and the seller weekly report read the date from.
+ * Never touches a verified live date (recordVerifiedMlsLive is its one writer) and never claims "MLS live".
+ */
+export async function followSellerAgreedMlsLiveDate(
+  svc: Svc,
+  input: { brokerageId: string; listingId: string; actorUserId: string | null; via: "agreement" | "amendment"; amendmentVersion?: number | null; evidenceClient?: Svc },
+): Promise<FollowAgreedDateResult> {
+  const sys = input.evidenceClient ?? svc
+  const { governingListingAgreementTerms } = await import("./listing-agreement-terms")
+  const gov = await governingListingAgreementTerms(sys, { brokerageId: input.brokerageId, listingId: input.listingId })
+  if (!gov.ok) return { ok: false, reason: gov.reason }
+  const agreed = gov.sellerRequestedMlsLiveDate
+  if (!agreed) return { ok: true, noop: true, planned: null, previous: null, reached: [], warnings: gov.agreementId ? ["The executed listing agreement states no MLS live date the seller requested."] : [] }
+
+  const { data: listing, error: lErr } = await svc.from("listings")
+    .select("id, state, go_live_date, lifecycle_stage, agent_id, address")
+    .eq("id", input.listingId).eq("brokerage_id", input.brokerageId).maybeSingle()
+  if (lErr) return { ok: false, reason: `listing could not be read: ${lErr.message}` }
+  if (!listing) return { ok: false, reason: "listing not found in your brokerage" }
+  const row = listing as { state: string | null; go_live_date: string | null; lifecycle_stage: string | null; agent_id: string | null; address: string | null }
+
+  const rec = await recordPlannedMlsLiveDate(svc, {
+    brokerageId: input.brokerageId, listingId: input.listingId, date: agreed, actorUserId: input.actorUserId,
+    source: input.via, evidenceClient: input.evidenceClient, listing: row,
+  })
+  if (!rec.ok) return { ok: false, reason: rec.reason }
+  if (rec.noop) return { ok: true, noop: true, planned: agreed, previous: rec.previous, reached: [], warnings: [] }
+  const reached = ["evidence:listing.mls_live_date.planned", ...(rec.loop ? [`policy:listing_compliance_loop(${rec.loop})`] : [])]
+  const warnings: string[] = []
+
+  // THE MARKETING SCHEDULE — only while no open-house marketing has gone out.
+  const oh = openHouseDatesForPlannedLive(agreed)
+  if (oh && (await isBeforeOpenHouseMarketing(row.lifecycle_stage))) {
+    const { data: ohRows, error: ohErr } = await svc.from("listings")
+      .update({ open_house_marketing_date: oh.marketingDate, open_house_event_date: oh.eventDate, updated_at: new Date().toISOString() })
+      .eq("id", input.listingId).eq("brokerage_id", input.brokerageId).select("id")
+    if (ohErr || !ohRows || ohRows.length === 0) warnings.push(`The open-house days were not moved (${ohErr?.message ?? "matched no listing"}).`)
+    else reached.push("marketing_schedule:open_house_dates")
+  } else if (oh) {
+    warnings.push("Open-house marketing has already started, so its days were not moved — move them yourself if they should follow the new date.")
+  }
+
+  // ALERTS — the listing agent, told the old date, the new one, and where it came from.
+  await bellListingAgent(sys, {
+    brokerageId: input.brokerageId, listingId: input.listingId, agentId: row.agent_id, type: "listing.mls_live_date_changed",
+    title: `MLS live date ${rec.previous ? `moved ${rec.previous} → ${agreed}` : `set to ${agreed}`} — ${row.address ?? "your listing"}`,
+    body: `${input.via === "amendment" ? `An executed amendment${input.amendmentVersion ? ` (no. ${input.amendmentVersion})` : ""} to the listing agreement` : "The executed listing agreement"} states the seller wants to go live on the MLS on ${agreed}. `
+      + "The planned date, the compliance check and the open-house schedule follow it; review any scheduled Coming Soon or open-house marketing that names the old date. "
+      + "This is the seller's planned date — the listing is not live on the MLS until the feed verifies it.",
+  })
+  reached.push("alert:listing_agent")
+  return { ok: true, noop: false, planned: agreed, previous: rec.previous, reached, warnings }
 }
 
 // ─── THE LAUNCH DOOR READS IT ────────────────────────────────────────────────────────────────────

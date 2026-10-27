@@ -191,7 +191,12 @@ const USD = VERSIUM_MATCH_CREDIT_USD
   const matched = await appendVersiumRealEstateIndicators({ email: "pat@example.test" }, { call: async () => ({ ok: true, status: 200, data: { versium: { match_counts: { full_demographic: 1 }, num_results: 1, results: [fullRow] } } }) })
   ok(matched.credits === 3 && matched.cost === round2(3 * USD), `one matched full_demographic record books 3 credits = $${matched.cost} (it booked 1 credit = $${USD} before 143D)`)
   ok(matched.indicators?.onlinePresenceRealEstate === true && matched.indicators?.investingRealEstate === true && matched.indicators?.homeOwnRent === "owner" && matched.indicators?.lengthOfResidence === "15+ Years", "the allow-listed indicators are mapped")
-  ok(!JSON.stringify(matched).match(/Ethnicity|Religion|Children|"X"|"Y"/), "…and every protected field of the SAME row (ethnicity, religion, children) never leaves the adapter")
+  // Wave 145 (lane 145F, owner ruling 12) — RE-ASSERTED AS THE RULE. This pinned the 143D/144E waypoint "never leaves the adapter";
+  // the owner has since ruled the protected fields are STORED for research (segregated), never exposed. The rule: they never ride the
+  // indicators or the provenance, and leave ONLY in the segregated `protectedResearch` field (the research store's one input).
+  const { protectedResearch: segregated, ...exposedHalf } = matched
+  ok(!JSON.stringify(exposedHalf).match(/Ethnicity|Religion|Children|"X"|"Y"/) && segregated.length === 3 && segregated.every((f) => /Ethnicity|Religion|Presence of Children/.test(f.sourceField) && f.basis === "vendor_modeled"),
+    "…and every protected field of the SAME row (ethnicity, religion, children) never rides the indicators or the provenance — it leaves ONLY in the segregated, research-only `protectedResearch` field (ruling 12)")
   const none = await appendVersiumRealEstateIndicators({ email: "pat@example.test" }, { call: async () => ({ ok: true, status: 200, data: { versium: { match_counts: { full_demographic: 0 }, num_results: 0, results: [] } } }) })
   ok(none.credits === 0 && none.cost === 0, "a no-match books $0")
 
@@ -407,17 +412,20 @@ console.log("\n━━━ F · the research run over the in-memory database ━�
   ok(topics.every((t) => /never the person/.test(t.raw_data.fair_housing) && t.raw_data.audience_estimate?.estimated_records === 4321), "each brief carries its fair-housing note and the free Versium audience-size read of the research territory")
   const kws = svc.tables.lead_scraping_keywords as Row[]
   ok(kws.length === run.keywords.staged && kws.length > 0 && kws.every((k) => k.is_active === false && k.brokerage_id === B && k.sources.length === KEYWORD_SOURCE_KEYS.length && new Set(CHECK_VOCABULARIES.lead_scraping_keywords.keyword_type).has(k.keyword_type)), "acquisition inputs are STAGED INACTIVE (a human enables them in the existing scraping config), tenant-scoped, on every keyword-reading source, with a live CHECK-valid keyword_type")
-  const ledger = (svc.tables.agent_action_ledger as Row[])
+  // Wave 145 (lane 145F) — RE-ASSERTED AS THE RULE: the ledger now ALSO carries the enrichment watcher's per-fact events
+  // (enrichment.intent_fact.observed, written when the persisted indicators land a new behaviour fact — ruling 11). The rule this
+  // check asserts is unchanged: the research run itself is ONE ledgered `ads.lookalike_research.stage` action.
+  const ledger = (svc.tables.agent_action_ledger as Row[]).filter((r) => r.action === "ads.lookalike_research.stage")
   ok(ledger.length === 1 && ledger[0].action === "ads.lookalike_research.stage" && ledger[0].status === "executed" && ledger[0].reason_code === "CAMPAIGN_STEP" && ledger[0].actor_type === "manager" && ledger[0].actor_manager_key === "ads_manager" && ledger[0].brokerage_id === B && /^seed=6;briefs=\d+;keywords=\d+;asked=4;estimate=4321/.test(ledger[0].outcome),
     "the run is ONE ledgered action (who: ads_manager · why: CAMPAIGN_STEP · what: seed / briefs / keywords / asked / estimate · executed) — LAW 5 evidence", JSON.stringify(ledger[0]))
   ok(ledger[0].provider === "versium" && Math.abs(Number(ledger[0].cost_usd) - round2(4 * 3 * USD)) < 1e-9, `…and it carries what it COST: provider versium, $${ledger[0].cost_usd} = 4 asks × 3 credits (the leg books the same spend to the vendor ledger)`)
   // idempotency — the weekly claim is taken BEFORE anything is read or bought
   const before = { topics: topics.length, kws: kws.length, ledger: ledger.length, asks: asks.length }
   const rerun = await runLookalikeResearch(B, { now: NOW, enrich: { maxContacts: 4 } }, svc as never, { leg: okLeg as never, estimateLeg: (async () => estimate) as never, suppressed: async (ids) => ({ suppressed: new Set(ids.filter((i) => i === U(2))), degraded: false }) })
-  ok(rerun.skipped?.startsWith("already_ran_this_week") === true && asks.length === before.asks && (svc.tables.content_topic_bank as Row[]).length === before.topics && (svc.tables.lead_scraping_keywords as Row[]).length === before.kws && (svc.tables.agent_action_ledger as Row[]).length === before.ledger,
+  ok(rerun.skipped?.startsWith("already_ran_this_week") === true && asks.length === before.asks && (svc.tables.content_topic_bank as Row[]).length === before.topics && (svc.tables.lead_scraping_keywords as Row[]).length === before.kws && (svc.tables.agent_action_ledger as Row[]).filter((r) => r.action === "ads.lookalike_research.stage").length === before.ledger,
     "a second run in the same ISO week REPLAYS the claim: no read, nothing staged twice, NO second batch of indicators bought — the weekly spend cap is really weekly")
   const nextWeek = await runLookalikeResearch(B, { now: new Date(NOW.getTime() + 7 * 86_400_000), enrich: { maxContacts: 4 } }, svc as never, { leg: okLeg as never, estimateLeg: (async () => estimate) as never, suppressed: async (ids) => ({ suppressed: new Set(ids.filter((i) => i === U(2))), degraded: false }) })
-  ok(nextWeek.enrichment.asked === 1 && asks.length - before.asks === 1 && (svc.tables.agent_action_ledger as Row[]).length === before.ledger + 1, "the NEXT week is a new claim, and the online-presence pass is GAP-ONLY: the 4 contacts that already have indicators are not asked again, only the 1 remaining non-suppressed contact is", `asked=${nextWeek.enrichment.asked} newAsks=${asks.length - before.asks}`)
+  ok(nextWeek.enrichment.asked === 1 && asks.length - before.asks === 1 && (svc.tables.agent_action_ledger as Row[]).filter((r) => r.action === "ads.lookalike_research.stage").length === before.ledger + 1, "the NEXT week is a new claim, and the online-presence pass is GAP-ONLY: the 4 contacts that already have indicators are not asked again, only the 1 remaining non-suppressed contact is", `asked=${nextWeek.enrichment.asked} newAsks=${asks.length - before.asks}`)
   ok((svc.tables.content_topic_bank as Row[]).length >= before.topics && (svc.tables.content_topic_bank as Row[]).filter((t) => t.raw_data.lookalike_research_key === (svc.tables.content_topic_bank as Row[])[0].raw_data.lookalike_research_key).length === 1, "…and the briefs of the first week, still FRESH and unexpired, are not staged a second time (keyed dedupe)")
   const noEnrich = await runLookalikeResearch(B, { now: new Date(NOW.getTime() + 14 * 86_400_000), enrich: false }, svc as never, { estimateLeg: (async () => estimate) as never })
   ok(noEnrich.enrichment.skipped === "disabled" && noEnrich.enrichment.asked === 0, "`enrich: false` spends nothing")

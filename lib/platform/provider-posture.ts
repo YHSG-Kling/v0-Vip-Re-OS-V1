@@ -619,6 +619,9 @@ function canonPostureKey(name: string): string {
  *  key). The provider LIST is never hand-typed — only its shelf label is. */
 const CATEGORY_OVERRIDES: Record<string, ProviderCategory> = {
   meta: "leadgen",            // the platform-side Meta rail is lead-ads ingestion (meta_lead_orphan flow)
+  // The other ad accounts share Meta's paid-acquisition shelf (wave 145, lane 145D — they were not rows at all before;
+  // lib/agentic-os/vendor-ownership.ts USER_CONNECTED_VENDORS now names them).
+  google_ads: "leadgen", vibe: "leadgen", openai_ads: "leadgen",
   batchdata: "enrichment",    // owner vocabulary: enrichment, not scraper
   rentcast: "enrichment",
   geoapify: "enrichment",

@@ -68,6 +68,8 @@ export async function GET(request: Request) {
      *  Not successes: the person question went unanswered. */
     paidWithheld?: number
     leadsTopUp?: number
+    /** Wave 145 (145F): new intent facts the watcher routed for this tenant this tick. */
+    factsRouted?: number
     error?: string
   }> = []
 
@@ -126,7 +128,24 @@ export async function GET(request: Request) {
       }
 
       const summary = await processEnrichmentQueue(brokerage.id)
-      results.push({ brokerageId: brokerage.id, ...summary, leadsTopUp })
+
+      // ── THE ENRICHMENT-FACT WATCHER (wave 145, lane 145F — owner ruling 11: "how intent signals are going to read them when it
+      // happens. need a watcher or something") ─────────────────────────────────────────────────────────────────────────────
+      // Right after the drain wrote this tenant's leads / contacts, every NEW behaviour / life-event fact stored since the cursor
+      // becomes one durable, consumed-once event routed to its canonical party (a lead with a contact is answered as the contact)
+      // → the ONE life-change responder → the existing managers / arbiter (lib/enrichment/intent-signal-sources.ts
+      // watchEnrichmentFactChanges). No provider is called: Versium / PeopleData do not push, so the cadence IS this drain's —
+      // a fact exists only once our budget-gated enrichment stored it. Additive: a failure never undoes the drain above.
+      let factsRouted = 0
+      try {
+        const { watchEnrichmentFactChanges } = await import('@/lib/enrichment/intent-signal-sources')
+        const watch = await watchEnrichmentFactChanges(supabase, brokerage.id)
+        factsRouted = watch.published
+        for (const e of watch.errors.slice(0, 3)) console.error(`[EnrichmentProcessor] ${brokerage.id} fact watcher: ${e}`)
+      } catch (err) {
+        console.error(`[EnrichmentProcessor] ${brokerage.id} fact watcher failed:`, err)
+      }
+      results.push({ brokerageId: brokerage.id, ...summary, leadsTopUp, factsRouted })
     } catch (err) {
       results.push({
         brokerageId: brokerage.id,
@@ -143,6 +162,7 @@ export async function GET(request: Request) {
   const totalSucceeded = results.reduce((s, r) => s + r.succeeded, 0)
   const totalFreeLane = results.reduce((s, r) => s + (r.freeLaneRuns ?? 0), 0)
   const totalPaidWithheld = results.reduce((s, r) => s + (r.paidWithheld ?? 0), 0)
+  const totalFactsRouted = results.reduce((s, r) => s + (r.factsRouted ?? 0), 0)
 
   await recordCronSuccessAction({
     context_id: contextId,
@@ -152,7 +172,7 @@ export async function GET(request: Request) {
       brokerages: results.length, totalProcessed, totalSucceeded,
       // Lane split, so a run that leaned on the free lane (or that withheld paid
       // spend against an exhausted budget) is legible from the cron ledger alone.
-      totalFreeLane, totalPaidWithheld,
+      totalFreeLane, totalPaidWithheld, totalFactsRouted,
       duration_ms: Date.now() - startedAt,
     },
   })

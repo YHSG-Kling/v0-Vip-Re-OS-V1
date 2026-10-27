@@ -100,7 +100,9 @@ interface CensusSignal { kind: "env" | "gateway" | "module" | "webhook"; name: s
 function censusSignals(files: Array<{ path: string; src: string }>): CensusSignal[] {
   const out = new Map<string, CensusSignal>()
   const add = (s: CensusSignal) => { const k = `${s.kind}:${s.name}`; if (!out.has(k)) out.set(k, s) }
-  const GENERIC = new Set(["accounting", "calendar", "email", "esign", "messaging", "payment", "content-safety", "dispatch", "inbound-router", "index", "mailing-cass-gate", "outbound-sender", "tenancy-matrix", "webhook-contract", "permissions"])
+  // channel-provider-matrix (wave 145, lane 145D — contract C1) is DATA about providers, like tenancy-matrix: no client,
+  // no key, no egress. Its own proof is test:channel-provider-matrix.
+  const GENERIC = new Set(["accounting", "calendar", "email", "esign", "messaging", "payment", "content-safety", "dispatch", "inbound-router", "index", "mailing-cass-gate", "outbound-sender", "tenancy-matrix", "webhook-contract", "permissions", "channel-provider-matrix"])
   for (const { path, src } of files) {
     const p = path.replace(/^\.\//, "")
     const s = stripComments(src)

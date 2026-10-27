@@ -41,6 +41,14 @@ export interface ComingSoonPolicyEntry {
   showings_permitted: boolean
   /** Business days after PUBLIC marketing by which the listing must be submitted to the MLS; null = the rule states none. */
   mls_submission_within_business_days: number | null
+  /**
+   * May PUBLIC Coming Soon advertising show the STREET ADDRESS (with the seller's signed authorization)? Wave 145, lane
+   * 145B — owner ruling 1: "You can advertise a coming soon only if you don't disclose the street address, unless
+   * otherwise." true = this MLS rule / the brokerage's approved policy permits it once the seller authorizes it;
+   * false = never; null = the recorded rule does not say → treated as NOT permitted (the closed default). Entries
+   * recorded before wave 145 carry no value and read null.
+   */
+  street_address_disclosure_permitted: boolean | null
   source: { url: string; rule_ref: string; title: string | null; verified_on: string | null }
   attestation: { user_id: string; user_type: string; at: string } | null
   updated_at: string | null
@@ -82,17 +90,20 @@ function resolveComingSoonPolicy(raw: unknown): ComingSoonPolicy {
     const slug = str(e.mls_slug), name = str(e.mls_name)
     const states = Array.isArray(e.state_codes) ? e.state_codes.map((s) => String(s ?? "").trim().toUpperCase()) : []
     const maxDays = intOrNull(e.max_days, 365), within = intOrNull(e.mls_submission_within_business_days, 60)
+    const addressRule = e.street_address_disclosure_permitted
     const src = isObj(e.source) ? e.source : null
     const problems = comingSoonSourceProblems(src as any, name)
     if (!slug || !SLUG_RE.test(slug) || slug !== id) { out.rejected.push({ id, why: "the MLS slug does not match its id" }); continue }
     if (!states.length || !states.every((s) => STATE_RE.test(s))) { out.rejected.push({ id, why: "state_codes must be two-letter state codes" }); continue }
     if (typeof e.permitted !== "boolean" || typeof e.showings_permitted !== "boolean" || maxDays === false || within === false) { out.rejected.push({ id, why: "permitted / showings_permitted must be stated; max_days and the submission window are whole numbers or null" }); continue }
+    if (addressRule !== undefined && addressRule !== null && typeof addressRule !== "boolean") { out.rejected.push({ id, why: "street_address_disclosure_permitted is yes, no, or unstated" }); continue }
     if (problems.length) { out.rejected.push({ id, why: problems.join("; ") }); continue }
     const at = isObj(e.attestation) && str(e.attestation.user_id) && str(e.attestation.user_type) && str(e.attestation.at)
       ? { user_id: str(e.attestation.user_id)!, user_type: str(e.attestation.user_type)!, at: str(e.attestation.at)! } : null
     out.entries[id] = {
       mls_slug: slug, mls_name: name!, state_codes: [...new Set(states)].sort(), permitted: e.permitted, max_days: maxDays, showings_permitted: e.showings_permitted,
       mls_submission_within_business_days: within,
+      street_address_disclosure_permitted: typeof addressRule === "boolean" ? addressRule : null,
       source: { url: str(src!.url)!, rule_ref: str(src!.rule_ref)!, title: str(src!.title), verified_on: str(src!.verified_on) },
       attestation: at, updated_at: str(e.updated_at),
     }
@@ -148,6 +159,59 @@ export function evaluateComingSoonReadiness(
   return { ready: blockers.length === 0, status: "attested", blockers, source: { url: e.source.url, rule_ref: e.source.rule_ref } }
 }
 
+/** Where the seller's Coming Soon street-address instruction stands (read from the executed listing agreement). */
+export type SellerAddressAuthorization = "authorized" | "declined" | "not_recorded" | "unreadable"
+
+export interface ComingSoonAddressDecision {
+  /** true ONLY when the seller authorized it AND the applicable attested MLS / brokerage rule permits it. */
+  disclose: boolean
+  /** Every reason the street address stays out of public Coming Soon creative (empty only when disclose is true). */
+  withheldBecause: string[]
+  sellerAuthorization: SellerAddressAuthorization
+  /** The attested rule the answer rests on (null when no rule applies — then the address is withheld). */
+  policySource: { mls_name: string; url: string; rule_ref: string } | null
+}
+
+/**
+ * PURE — may PUBLIC Coming Soon creative show this listing's STREET ADDRESS? (wave 145, lane 145B; owner ruling 1:
+ * "You can advertise a coming soon only if you don't disclose the street address, unless otherwise.")
+ *
+ * DEFAULT: NO. The street address is disclosed only when BOTH hold:
+ *   1. the SELLER authorized it in the executed listing agreement (or an executed amendment) —
+ *      lib/listings/listing-agreement-terms.ts `coming_soon_street_address_authorized`, never an agent's say-so; and
+ *   2. the APPLICABLE approved rule permits it — the brokerage's compliance-attested entry for the listing's MLS (or the
+ *      ONE attested entry covering its state), which must also permit Coming Soon at all, with
+ *      `street_address_disclosure_permitted === true`. No nationwide constant: an MLS / brokerage with no recorded rule,
+ *      an unattested one, or one silent on the address withholds it.
+ * Withholding the address does NOT exempt the listing from the MLS's other obligations (submission windows, showings,
+ * day limits) — evaluateComingSoonReadiness keeps judging those separately. The full address stays internal (agents,
+ * the transaction record, compliance): this answers only what PUBLIC creative may print.
+ */
+export function comingSoonStreetAddressDecision(
+  policy: ComingSoonPolicy | null,
+  listing: { mlsSlug?: string | null; stateCode?: string | null },
+  seller: SellerAddressAuthorization,
+): ComingSoonAddressDecision {
+  const withheldBecause: string[] = []
+  if (seller === "unreadable") withheldBecause.push("the listing agreement could not be read, so the seller's instruction is unknown")
+  else if (seller === "not_recorded") withheldBecause.push("the executed listing agreement records no seller authorization to show the street address in Coming Soon advertising")
+  else if (seller === "declined") withheldBecause.push("the seller's executed listing agreement withholds the street address from Coming Soon advertising")
+  const p = comingSoonPolicyFor(policy, listing)
+  let policySource: ComingSoonAddressDecision["policySource"] = null
+  if (p.status === "unknown") withheldBecause.push(`${p.why} — without an attested rule permitting it, the street address stays out of Coming Soon advertising`)
+  else {
+    const e = p.entry
+    policySource = { mls_name: e.mls_name, url: e.source.url, rule_ref: e.source.rule_ref }
+    if (!e.permitted) withheldBecause.push(`${e.mls_name} ${e.source.rule_ref}: this MLS does not permit a coming-soon status`)
+    else if (e.street_address_disclosure_permitted !== true) {
+      withheldBecause.push(e.street_address_disclosure_permitted === false
+        ? `${e.mls_name} ${e.source.rule_ref}: the street address may not appear in Coming Soon advertising`
+        : `${e.mls_name} ${e.source.rule_ref}: the recorded rule does not say the street address may appear in Coming Soon advertising — record it through the coming-soon policy report (a compliance approver attests)`)
+    }
+  }
+  return { disclose: withheldBecause.length === 0, withheldBecause, sellerAuthorization: seller, policySource }
+}
+
 export interface ComingSoonPolicyReport {
   mlsName: string
   stateCodes: string[]
@@ -158,6 +222,8 @@ export interface ComingSoonPolicyReport {
   sourceUrl: string | null
   ruleRef: string | null
   sourceTitle?: string | null
+  /** Wave 145 (lane 145B): may public Coming Soon advertising show the street address, per this rule? Unstated = null = NOT permitted. */
+  streetAddressDisclosurePermitted?: boolean | null
 }
 
 /** PURE — a report → the entry it proposes, or every problem (nothing invented: an unstated value is refused). */
@@ -173,6 +239,8 @@ export function validateComingSoonPolicyReport(report: ComingSoonPolicyReport, a
   if (typeof report.showingsPermitted !== "boolean") errors.push("say whether showings are permitted while coming soon")
   if (maxDays === false) errors.push("max days is a whole number (or blank when the rule states no limit)")
   if (within === false) errors.push("the submission window is a whole number of business days (or blank when the rule states none)")
+  const addr = report.streetAddressDisclosurePermitted
+  if (addr !== undefined && addr !== null && typeof addr !== "boolean") errors.push("say whether the rule permits the street address in Coming Soon advertising (yes / no), or leave it unstated")
   errors.push(...comingSoonSourceProblems({ url: report.sourceUrl, rule_ref: report.ruleRef }, name))
   if (errors.length) return { ok: false, errors }
   return {
@@ -180,6 +248,7 @@ export function validateComingSoonPolicyReport(report: ComingSoonPolicyReport, a
     entry: {
       mls_slug: slug, mls_name: name!, state_codes: [...new Set(states)].sort(), permitted: report.permitted as boolean, max_days: maxDays as number | null,
       showings_permitted: report.showingsPermitted as boolean, mls_submission_within_business_days: within as number | null,
+      street_address_disclosure_permitted: typeof report.streetAddressDisclosurePermitted === "boolean" ? report.streetAddressDisclosurePermitted : null,
       source: { url: String(report.sourceUrl).trim(), rule_ref: String(report.ruleRef).trim().slice(0, 120), title: str(report.sourceTitle)?.slice(0, 200) ?? null, verified_on: at.slice(0, 10) },
       attestation: null, updated_at: at,
     },

@@ -140,6 +140,13 @@ export async function recordLifecycleEventAction(input: {
         // The PLANNED MLS live date (wave 143, lane 143A) — a person's plan, recorded as one. Blank passes undefined:
         // the recorder then keeps the date already on the listing, and invents none.
         plannedMlsLiveDate: str("plannedMlsLiveDate"),
+        // Wave 145 (lane 145B — owner ruling 2): the MLS live date AS THE EXECUTED AGREEMENT STATES IT (the recorder
+        // stores it on the agreement, write-once, and the listing's plan follows it). Wins over the legacy key above.
+        sellerRequestedMlsLiveDate: str("sellerRequestedMlsLiveDate"),
+        // Owner ruling 1: the seller's signed Coming Soon street-address instruction — "authorized" / "withheld" as the
+        // agreement states it; blank = not recorded (the street address stays withheld).
+        comingSoonStreetAddressAuthorized:
+          str("comingSoonStreetAddress") === "authorized" ? true : str("comingSoonStreetAddress") === "withheld" ? false : undefined,
         commissionTerms: {
           listingRate: num("listingRate"),
           buyerRate: num("buyerRate"),
