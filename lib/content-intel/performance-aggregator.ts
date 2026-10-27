@@ -36,10 +36,15 @@ export type AssetType =
   // situational_reel; farm mail writes direct_mail_postcard) but not typeable.
   | "situational_reel"
   | "direct_mail_postcard"
+  // Wave 145 (lane 145G, contract C5): a streaming-TV spot made from an APPROVED topic claims it (lib/marketing/ctv-lane.ts);
+  // the live CHECK gains the value in m866 (written, not applied — the integrator applies and regenerates the vocabulary cache).
+  | "ctv_ad"
 
 /**
  * Log that a topic was used to seed an asset. The producer calls this
- * AFTER the asset is created so asset_id is available.
+ * AFTER the asset is created so asset_id is available. Returns the refusal
+ * (wave 145, lane 145G) so a caller that must REPORT a lost claim can — the
+ * console line stays for the fire-and-forget callers that ignore the result.
  */
 export async function logTopicUses(args: {
   topicIds:     string[]
@@ -49,8 +54,8 @@ export async function logTopicUses(args: {
   /** agents.id of the claimant (m357). The office claim says WHO took the
    *  topic, so a broker can see which of their agents covered it. */
   agentId?:     string | null
-}): Promise<void> {
-  if (args.topicIds.length === 0) return
+}): Promise<{ error: string | null }> {
+  if (args.topicIds.length === 0) return { error: null }
   const svc = createServiceClient()
   const rows = args.topicIds.map((topic_id) => ({
     topic_id,
@@ -66,7 +71,9 @@ export async function logTopicUses(args: {
   const { error } = await svc.from("content_topic_uses").insert(rows)
   if (error) {
     console.error("[performance-aggregator] logTopicUses insert failed — topic claim NOT recorded:", error.message)
+    return { error: error.message ?? "content_topic_uses insert refused" }
   }
+  return { error: null }
 }
 
 /**

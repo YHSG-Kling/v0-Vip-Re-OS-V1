@@ -108,7 +108,9 @@ export interface RunClosingComplianceInput {
   transactionId: string
   /** THE SESSION'S (or the verified row's) tenant — never a request body's. */
   brokerageId: string
-  trigger: "settlement_scanned" | "contract_document_scanned" | "final_check" | "manual"
+  /** wave 145: "contract_addendum" — an executed addendum / amendment changed the governing terms (compliance re-review,
+   *  lib/offers/governing-terms-consequences.ts). */
+  trigger: "settlement_scanned" | "contract_document_scanned" | "final_check" | "manual" | "contract_addendum"
   actorUserId?: string | null
 }
 
@@ -329,18 +331,68 @@ async function loadApprovedAgentConcessionInstrument(svc: Svc, tx: TransactionRo
     .eq("direction", "credit")
   if (error) return { ok: false, error: `the deal's agent concessions could not be read: ${error.message}` }
   const credits = ((data ?? []) as Array<Record<string, any>>).filter((r) =>
-    r.is_active !== false && r.settlement_treatment === STATEMENT_CREDIT && r.recipient_type === "buyer"
+    r.is_active !== false && r.settlement_treatment === STATEMENT_CREDIT && (r.recipient_type === "buyer" || r.recipient_type === "seller")
     && CONCESSION_APPLIES.has(String(r.approval_status ?? "not_required") as AgentConcessionApprovalStatus))
   if (credits.length === 0) return { ok: true, instrument: null }
-  if (credits.some((r) => r.value_type !== "flat")) return { ok: true, instrument: null }
-  const total = Math.round(credits.reduce((s, r) => s + Number(r.value ?? 0), 0) * 100) / 100
-  if (!(total > 0)) return { ok: true, instrument: null }
+  // WAVE 145 (lane 145C — 144C Still open 3): a PERCENT concession's dollars are the ENGINE's (they depend on the gross) — read
+  // from the latest calculation's evidence (commission_calculations.breakdown_json.agent_concessions, stage 03's own record of
+  // what it applied), never recomputed here. No calculation yet, or the row not applied there → that side's term is not stated
+  // (a partial sum would accuse a correct statement).
+  let engineApplied: Map<string, number> | null = null
+  if (credits.some((r) => r.value_type !== "flat")) {
+    const { data: calc, error: cErr } = await svc
+      .from("commission_calculations")
+      .select("breakdown_json, calculated_at")
+      .eq("brokerage_id", tx.brokerage_id)
+      .eq("transaction_id", tx.id)
+      .order("calculated_at", { ascending: false })
+      .limit(1)
+    if (cErr) return { ok: false, error: `the commission calculation behind a percent concession could not be read: ${cErr.message}` }
+    const evidence = (((calc ?? [])[0] as { breakdown_json?: { agent_concessions?: Array<Record<string, unknown>> } } | undefined)?.breakdown_json?.agent_concessions) ?? []
+    engineApplied = new Map(evidence.filter((e) => e.verdict === "applied" && typeof e.adjustment_id === "string").map((e) => [String(e.adjustment_id), Math.abs(Number(e.signed_amount ?? 0))]))
+  }
+  const dollarsOf = (r: Record<string, any>): number | null => r.value_type === "flat" ? Number(r.value ?? 0) : (engineApplied?.get(String(r.id)) ?? null)
+  const terms: TermMap = {}
+  for (const [side, term] of [["buyer", "agent_credit"], ["seller", "agent_credit_seller"]] as const) {
+    const mine = credits.filter((r) => r.recipient_type === side)
+    if (mine.length === 0) continue
+    const amounts = mine.map(dollarsOf)
+    if (amounts.some((a) => a === null)) continue
+    const total = Math.round((amounts as number[]).reduce((s, a) => s + a, 0) * 100) / 100
+    if (!(total > 0)) continue
+    terms[term] = { unit: "usd", value: total, confidence: "record", source: `commission_adjustments ${mine.map((r) => r.id).join(", ")} (broker-approved agent concession${mine.some((r) => r.value_type !== "flat") ? "; percent concessions at the commission engine's applied amount" : ""})` }
+  }
+  if (Object.keys(terms).length === 0) return { ok: true, instrument: null }
   const decided = credits.map((r) => (r.approval_decided_at as string | null) ?? null).filter((d): d is string => !!d).sort()
   return { ok: true, instrument: {
-    id: `concessions:${tx.id}`, kind: "approved_concession", label: "approved agent concession(s) — credit to the buyer off the agent's gross commission",
+    id: `concessions:${tx.id}`, kind: "approved_concession", label: "approved agent concession(s) — credit off the agent's gross commission",
     executed: true, executedAt: decided.length ? decided[decided.length - 1] : null, round: null,
-    terms: { agent_credit: { unit: "usd", value: total, confidence: "record", source: `commission_adjustments ${credits.map((r) => r.id).join(", ")} (broker-approved agent concession)` } },
+    terms,
   } }
+}
+
+/**
+ * WAVE 145 (lane 145C — owner ruling 5): the VERIFIED client-agreement fees that settle as their own lines (verified against the
+ * executed listing / buyer-broker agreement, brokerage policy permits, payable at closing, NOT already inside the commission),
+ * per payer and kind — through the ONE resolver (lib/commission/client-agreement-fees.ts). A refused read is an error (fail
+ * closed); m859 not applied yet → no instrument (said by the resolver's own finding), never a guess.
+ */
+async function loadClientAgreementFeeInstrument(svc: Svc, tx: TransactionRow): Promise<{ ok: true; instrument: TermsInstrument | null } | { ok: false; error: string }> {
+  const { loadClientAgreementFeesForTransaction, CLIENT_FEE_SETTLEMENT_TERM } = await import("@/lib/commission/client-agreement-fees")
+  const r = await loadClientAgreementFeesForTransaction(svc as never, tx.brokerage_id, tx.id)
+  if (!r.ok) return { ok: false, error: `the client-agreement fees could not be read: ${r.error}` }
+  if (!r.available) return { ok: true, instrument: null }
+  const terms: TermMap = {}
+  for (const payer of ["seller", "buyer"] as const) {
+    for (const [kind, amount] of Object.entries(r.resolution.settlementTotals[payer]) as Array<["transaction_fee" | "admin_fee", number]>) {
+      if (!(amount > 0)) continue
+      const term = CLIENT_FEE_SETTLEMENT_TERM[payer][kind] as ClosingTermKey
+      const ids = r.resolution.fees.filter((f) => f.payer === payer && f.kind === kind && f.settlesAsOwnLine).map((f) => f.feeId).join(", ")
+      terms[term] = { unit: "usd", value: amount, confidence: "record", source: `client_agreement_fees ${ids} (verified against the executed ${payer === "seller" ? "listing" : "buyer-broker"} agreement)` }
+    }
+  }
+  if (Object.keys(terms).length === 0) return { ok: true, instrument: null }
+  return { ok: true, instrument: { id: `client-fees:${tx.id}`, kind: "client_agreement_fee", label: "verified client-agreement fees (listing / buyer-broker agreement)", executed: true, executedAt: null, round: null, terms } }
 }
 
 /** DEFAULT READER — superimposes the offer chain, the executed documents and the listing-side commission. */
@@ -400,10 +452,13 @@ const readGoverningTermsFromRecords: GoverningTermsReader = async (svc, tx) => {
 
   const concessions = await loadApprovedAgentConcessionInstrument(svc, tx)
   if (!concessions.ok) return concessions
+  const clientFees = await loadClientAgreementFeeInstrument(svc, tx)
+  if (!clientFees.ok) return clientFees
 
   const instruments: TermsInstrument[] = [...offers.instruments, ...docs.instruments]
   if (listing.instrument) instruments.push(listing.instrument)
   if (concessions.instrument) instruments.push(concessions.instrument)
+  if (clientFees.instrument) instruments.push(clientFees.instrument)
   // Wave 143 integration (one canonical path, CLAUDE.md law 2): lane A's VERSIONED record — contract_term_versions
   // plus the offer chain (lib/offers/governing-terms.ts governingContractTerms) — is the authoritative terms record;
   // an executed counter / addendum recorded there supersedes what the instruments above say. It rides in as ONE

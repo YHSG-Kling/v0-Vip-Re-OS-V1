@@ -50,6 +50,13 @@
  *   · lib/kernel/marketing.ts createVideoProject (unwired): its brand_voice_context stamp and
  *     its audience_type default ('customer_facing'), which the survivor wrote as NULL into a
  *     NOT NULL column (23502 for every caller but the listing media panel)
+ *
+ * THE FINAL PERSONALIZATION PHASE (wave 145, lane 145G — owner ruling 20, contract C4). Every AI-drafted PUBLIC piece these
+ * creators stage — the AI blog post, the AI newsletter, the podcast script — passes lib/marketing/humanize-final.ts
+ * finalizeForDistribution LAST (machine phrasing removed, the brand's approved tagline added, disclosures + figures kept,
+ * unsupported superlatives / testimonials / rank claims named for the human), and the staged version is recorded
+ * (distribution_finals, m866) with the human told the moment it is ready (a notification to the requester). The asset's
+ * OWN approval queue stays the publication gate; the publication door proves which approved version went out.
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -68,6 +75,33 @@ type FeatureClient = Parameters<typeof canAccessFeature>[3]
 interface ContentRefusal { success: false; error: string; complianceWarnings?: string[] }
 
 // ─── shared gates ─────────────────────────────────────────────────────────────
+
+// ─── the final personalization phase (wave 145 — contract C4) ─────────────────────────────────
+
+type HumanizeAssetKindLocal = import("@/lib/marketing/humanize-final").HumanizeAssetKind
+type FinalizedLocal = import("@/lib/marketing/humanize-final").FinalizedDistribution
+
+/** THE LAST PHASE of an AI-drafted public piece: humanized + branded, figures and disclosures kept, open items named. */
+async function finalPhase(supabase: ContentClient, ctx: MarketingActorContext, a: { assetKind: HumanizeAssetKindLocal; text?: string; html?: string; authoredBy?: "ai" | "human"; agentUserId?: string | null }): Promise<FinalizedLocal> {
+  const hf = await import("@/lib/marketing/humanize-final")
+  const { brand, error } = await hf.resolveTenantBrandForFinal(supabase as never, { brokerageId: ctx.brokerageId, agentUserId: a.agentUserId ?? ctx.userId })
+  const final = await hf.finalizeForDistribution({ assetKind: a.assetKind, text: a.text, html: a.html, tenantBrand: brand, authoredBy: a.authoredBy ?? "ai" })
+  if (error) final.reviewNotes.push(error)
+  return final
+}
+
+/** Record the staged final and tell the requester it is ready (their approval queue holds the piece). Never throws. */
+async function recordFinal(supabase: ContentClient, ctx: MarketingActorContext, a: { assetTable: string; assetId: string; final: FinalizedLocal; storedAs?: string }): Promise<{ finalId: string | null; warning: string | null }> {
+  const hf = await import("@/lib/marketing/humanize-final")
+  const r = await hf.stageDistributionFinal(supabase as never, { brokerageId: ctx.brokerageId, assetTable: a.assetTable, assetId: a.assetId, final: a.final, createdBy: ctx.userId, notifyUserId: ctx.userId, storedAs: a.storedAs })
+  if (!r.ok) return { finalId: null, warning: `the humanized final was not recorded: ${r.error}` }
+  return { finalId: r.finalId, warning: r.notifyError }
+}
+
+/** The human-facing summary of the phase, returned beside the staged piece. */
+function humanizationOf(final: FinalizedLocal, rec: { finalId: string | null; warning: string | null }) {
+  return { finalId: rec.finalId, summary: final.summary, blockers: final.blockers, reviewNotes: [...final.reviewNotes, ...(rec.warning ? [rec.warning] : [])], removed: final.removed.length, tagline: final.tagline.applied }
+}
 
 /** Fail closed on a missing actor (§4): "nobody said who" is never "the platform". */
 function actorRefusal(ctx: MarketingActorContext | undefined, what: string): ContentRefusal | null {
@@ -209,6 +243,8 @@ export async function authorNewsletterContent(input: AuthorNewsletterContentInpu
       contentId: string | null
       seedTopicIds: string[]
       complianceWarnings?: string[]
+      /** The final personalization phase's account (wave 145); its version is recorded when the campaign is created. */
+      humanization: ReturnType<typeof humanizationOf>
     }
 > {
   const { ctx } = input
@@ -471,6 +507,11 @@ ${insiderBlock}`,
     }
   }
 
+  // THE FINAL PERSONALIZATION PHASE, part 1 (wave 145 — contract C4): the machine phrasing that can go without touching a
+  // fact is removed from every section (the ONE tell list — lib/lead-magnets/book-editorial.ts), before any HTML escaping.
+  const { stripAiTells } = await import("@/lib/lead-magnets/book-editorial")
+  for (const section of brandedSections as Array<{ content: string }>) section.content = stripAiTells(String(section.content ?? "")).text
+
   const plainText = brandedSections.map((s: any) => `${s.title}\n${s.content}`).join("\n\n")
   // Post-check over the whole issue (§5): warnings PASS THROUGH; a hard fair-housing flag or a
   // phrase the brokerage marked blocking refuses the draft before anything is stored or counted.
@@ -492,6 +533,14 @@ ${insiderBlock}`,
       `</section>`)
     .join('<hr style="margin:1.5rem 0;border-color:#e5e7eb">')
 
+  // THE FINAL PERSONALIZATION PHASE, part 2: the whole issue — the brand's approved tagline as its sign-off (a closing
+  // section, so the STORED issue carries it), disclosures + figures proven kept, open items named for the reviewer.
+  const issueFinal = await finalPhase(supabase, ctx, { assetKind: "newsletter", html: flatContent })
+  if (issueFinal.tagline.applied === "appended" && issueFinal.tagline.text) {
+    brandedSections.push({ type: "custom", section_type: "custom", title: "", content: `\u2014 ${issueFinal.tagline.text}`, order_index: 10_000, target_personas: [], target_locations: {} })
+  }
+  const finalIssueHtml = issueFinal.text
+
   // Them-first quality verdict + the ai_generated_content artifact row (merged §1.1 from the
   // deleted /api/generate/newsletter route). Non-fatal on refusal, but the error is READ.
   const quality = analyzeContentQuality(plainText)
@@ -500,7 +549,7 @@ ${insiderBlock}`,
     .insert({
       content_type: "newsletter",
       content: plainText,
-      generated_content: flatContent,
+      generated_content: finalIssueHtml,
       user_id: userId,        // users-class
       agent_id: agentId,      // agents-class
       brokerage_id: brokerageId,
@@ -520,8 +569,9 @@ ${insiderBlock}`,
 
   return {
     success: true,
-    content: flatContent,
+    content: finalIssueHtml,
     sections: brandedSections,
+    humanization: humanizationOf(issueFinal, { finalId: null, warning: null }),
     estimatedReadTime: (content as any).estimatedReadTime ?? null,
     wordCount: (content as any).wordCount ?? null,
     quality,
@@ -635,6 +685,17 @@ export async function createNewsletterCampaign(input: CreateNewsletterCampaignIn
     newsletter = one.row
   }
   const savedCampaign = newsletter
+
+  // THE STORED ISSUE is the version the newsletter's approval covers (wave 145 — contract C4): an AI-authored issue's final
+  // is recorded (hash of exactly what is stored) and the requester is told it is ready for review.
+  if (input.aiAuthored) {
+    const issueText = Array.isArray(input.content)
+      ? input.content.map((sec) => [sec.title, sec.content].filter(Boolean).join("\n")).join("\n\n")
+      : String(input.content ?? "")
+    const issueFinal = await finalPhase(supabase, ctx, { assetKind: "newsletter", text: issueText })
+    const rec = await recordFinal(supabase, ctx, { assetTable: "newsletter_campaigns", assetId: String(savedCampaign.id), final: issueFinal, storedAs: body })
+    if (rec.warning) console.error(`[content-creators] newsletter ${String(savedCampaign.id)}: ${rec.warning}`)
+  }
 
   // Wave 20 decomposer — the non-flat per-section targeting the assembler reads. Best-effort:
   // the assembler falls back to the flat campaign body, so a decompose failure is logged.
@@ -939,7 +1000,7 @@ interface BlogPostDraftJson {
  * through as complianceWarnings. evaluateOutbound still runs as the blocking gate.
  */
 export async function writeBlogPost(input: WriteBlogPostInput): Promise<
-  ContentRefusal | { success: true; postId: string; title: string; content: string; keywordWarnings?: string[]; complianceWarnings: string[] }
+  ContentRefusal | { success: true; postId: string; title: string; content: string; keywordWarnings?: string[]; complianceWarnings: string[]; humanization: ReturnType<typeof humanizationOf> }
 > {
   const { ctx } = input
   const refused = actorRefusal(ctx, "blog post")
@@ -1095,6 +1156,10 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
     return { success: false, error: `The drafted post tripped a hard compliance flag and was not kept: ${graded.redFlags.join("; ")}`, complianceWarnings: graded.redFlags }
   }
 
+  // ── 7b. THE FINAL PERSONALIZATION PHASE (wave 145 — contract C4) — the stored article IS the humanized final ──
+  const blogFinal = await finalPhase(supabase, ctx, { assetKind: "blog_post", html: draft.content, agentUserId: agentUserId ?? userId })
+  draft.content = blogFinal.text
+
   // ── 8. Optional branded cover image ───────────────────────────────────────
   let featuredImageUrl: string | null = null
   if (input.generateCoverImage && draft.featuredImagePrompt) {
@@ -1151,6 +1216,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
     return { success: false, error: one.error }
   }
   const postId = String(one.row.id)
+  const blogFinalRec = await recordFinal(supabase, ctx, { assetTable: "blog_posts", assetId: postId, final: blogFinal })
 
   if (topicSeeds.length > 0) {
     void logTopicUses({ topicIds: topicSeeds.map((t) => t.id), brokerageId, assetType: "blog_post", assetId: postId })
@@ -1203,6 +1269,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
     content: draft.content,
     ...(keywordFailures.length ? { keywordWarnings: keywordFailures } : {}),
     complianceWarnings: graded.warnings,
+    humanization: humanizationOf(blogFinal, blogFinalRec),
   }
 }
 
@@ -1279,7 +1346,10 @@ export async function writePodcastScript(input: {
   if (graded.redFlags.length > 0) {
     return { success: false, error: `The drafted script tripped a hard compliance flag and was not kept: ${graded.redFlags.join("; ")}`, complianceWarnings: graded.redFlags }
   }
-  return { success: true, script, complianceWarnings: [...graded.warnings, ...scanForAiTells(script)] }
+  // THE FINAL PERSONALIZATION PHASE (wave 145 — contract C4): the script the human reviews is the humanized one (spoken
+  // sign-off tagline, machine phrasing removed, figures kept); its version is recorded when the episode is created.
+  const final = await finalPhase(supabase, ctx, { assetKind: "podcast_script", text: script })
+  return { success: true, script: final.text, complianceWarnings: [...graded.warnings, ...scanForAiTells(final.text), ...final.blockers] }
 }
 
 interface CreatePodcastEpisodeInput {
@@ -1367,11 +1437,15 @@ export async function createPodcastEpisode(input: CreatePodcastEpisodeInput): Pr
 
   let finalScript = input.script
   let complianceWarnings: string[] = []
+  // A script handed in is the person's (reviewed / edited in the studio); one written here is the model's (wave 145 — the
+  // final phase records the stored version either way, and never re-flags a person's own words for machine phrasing).
+  let scriptAuthor: "ai" | "human" = "human"
   if (!finalScript?.trim() && input.keywords && input.keywords.length > 0) {
     const written = await writePodcastScript({ ctx, client: supabase, keywords: input.keywords, category: input.category })
     if (!written.success) return written
     finalScript = written.script
     complianceWarnings = written.complianceWarnings
+    scriptAuthor = "ai"
   }
   if (!finalScript?.trim()) return { success: false, error: "Script or keywords required" }
 
@@ -1418,6 +1492,13 @@ export async function createPodcastEpisode(input: CreatePodcastEpisodeInput): Pr
   const one = exactlyOne(rows, error, "Podcast episode")
   if (!one.ok) return { success: false, error: one.error }
   const episode = one.row
+  // THE STORED SCRIPT is the version the episode's approval covers (wave 145 — contract C4): recorded, the requester told.
+  {
+    const scriptFinal = await finalPhase(supabase, ctx, { assetKind: "podcast_script", text: finalScript, authoredBy: scriptAuthor })
+    const rec = await recordFinal(supabase, ctx, { assetTable: "podcast_episodes", assetId: String(episode.id), final: scriptFinal, storedAs: finalScript })
+    if (rec.warning) complianceWarnings = [...complianceWarnings, rec.warning]
+    if (scriptFinal.blockers.length) complianceWarnings = [...complianceWarnings, ...scriptFinal.blockers]
+  }
 
   // The template's use counter (rendered "Used {n} times"). Read-then-write, counted, never
   // blocking the episode.

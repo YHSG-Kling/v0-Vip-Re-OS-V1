@@ -39,9 +39,17 @@
  * refusal returns its reason; nothing here throws into an approval or a render.
  * Tenant-pinned reads and writes throughout (the project's own brokerage_id); the caller's
  * client is used so a proof can drive it in memory.
+ *
+ * WAVE 145 (lane 145G, owner ruling 20 — contract C4): the post's public words (title + script excerpt) pass the FINAL
+ * PERSONALIZATION PHASE (lib/marketing/humanize-final.ts finalizeForDistribution: machine phrasing removed, the brand's
+ * approved tagline added, disclosures and figures kept) before they are queued; the version is recorded as the one the
+ * human's VIDEO approval covers (distribution_finals, basis derived_from_approved_asset), and the write-back records it as
+ * PUBLISHED with the provider's id — the approved version that actually went out. A hard fair-housing finding or a word the
+ * brand prohibits refuses the queue (no approval waives them).
  */
 import { classifyPublicVideo, readVideoAutoPublishPolicy, VIDEO_AUTO_PUBLISH_POLICY_KEY } from "./public-video"
 import { getPublishedPostUrl } from "@/lib/social/get-published-post-url"
+import { finalizeForDistribution, recordDistributionPublication, resolveTenantBrandForFinal, stageDistributionFinal, type TenantBrandForFinal } from "@/lib/marketing/humanize-final"
 
 /** social_posts.post_brief key — ONE spelling, exact-match idempotency (never a LIKE scan). */
 const YOUTUBE_AUTO_PUBLISH_BRIEF_PREFIX = "YOUTUBE AUTO-PUBLISH — video_project:"
@@ -96,14 +104,20 @@ interface ProjectRow {
   video_url: string | null
   script_content: string | null
   video_metadata: Record<string, unknown> | null
+  approved_by?: string | null
+  approved_at?: string | null
 }
 
-const PROJECT_COLUMNS = "id, brokerage_id, agent_id, listing_id, marketing_campaign_id, title, video_type, audience_type, usage_intent, contact_id, learning_module_id, approval_status, status, compliance_status, video_url, script_content, video_metadata"
+const PROJECT_COLUMNS = "id, brokerage_id, agent_id, listing_id, marketing_campaign_id, title, video_type, audience_type, usage_intent, contact_id, learning_module_id, approval_status, approved_by, approved_at, status, compliance_status, video_url, script_content, video_metadata"
+
+/** The tenant brand for a final (seam: a proof hands one; default the ONE cascade + brand voice, unreadable = no brand, said). */
+export type YouTubeBrandResolver = (svc: any, a: { brokerageId: string; agentUserId: string | null }) => Promise<TenantBrandForFinal>
+const defaultBrand: YouTubeBrandResolver = async (svc, a) => (await resolveTenantBrandForFinal(svc, { brokerageId: a.brokerageId, agentUserId: a.agentUserId })).brand
 
 /**
  * Stage the YouTube publish for ONE approved video. Idempotent per video. Never throws.
  */
-export async function queueYouTubeAutoPublish(svc: any, videoId: string): Promise<YouTubeQueueOutcome> {
+export async function queueYouTubeAutoPublish(svc: any, videoId: string, deps: { brand?: YouTubeBrandResolver } = {}): Promise<YouTubeQueueOutcome> {
   try {
     const { data, error } = await svc.from("ai_video_projects").select(PROJECT_COLUMNS).eq("id", videoId).maybeSingle()
     if (error) return { queued: false, reason: `video read refused: ${error.message}` }
@@ -140,7 +154,13 @@ export async function queueYouTubeAutoPublish(svc: any, videoId: string): Promis
 
     const title = (p.title && p.title.trim()) || `${String(p.video_type ?? "video").replace(/_/g, " ")} video`
     const excerpt = (p.script_content ?? "").trim().replace(/\s+/g, " ").slice(0, 600)
-    const content = excerpt ? `${title}\n\n${excerpt}` : title
+    // THE FINAL PERSONALIZATION PHASE (wave 145, contract C4): the post's public words, humanized + branded, figures kept.
+    const brand = await (deps.brand ?? defaultBrand)(svc, { brokerageId: p.brokerage_id, agentUserId: userId }).catch(() => ({} as TenantBrandForFinal))
+    const final = await finalizeForDistribution({ assetKind: "video_description", text: excerpt ? `${title}\n\n${excerpt}` : title, tenantBrand: brand })
+    if (final.fairHousing.length || final.brandVoice.prohibited.length) {
+      return { queued: false, reason: `the post's words carry what no approval waives — ${[...final.fairHousing, ...final.brandVoice.prohibited.map((w) => `prohibited by the brand voice: "${w}"`)].join("; ")}` }
+    }
+    const content = final.text
     const now = new Date().toISOString()
 
     const { data: inserted, error: insErr } = await svc.from("social_posts").insert({
@@ -164,6 +184,12 @@ export async function queueYouTubeAutoPublish(svc: any, videoId: string): Promis
     }).select("id").maybeSingle()
     if (insErr || !inserted) return { queued: false, reason: `social_posts insert refused: ${insErr?.message ?? "no row returned"}` }
     const socialPostId = (inserted as { id: string }).id
+    // The version the VIDEO's human approval covers — recorded so the write-back can prove what went out.
+    const staged = await stageDistributionFinal(svc, {
+      brokerageId: p.brokerage_id, assetTable: "social_posts", assetId: socialPostId, final, createdBy: userId, notifyUserId: null,
+      derivedFromApproval: { by: p.approved_by ?? null, at: p.approved_at ?? null },
+    })
+    if (!staged.ok) console.error(`[youtube-publish] post ${socialPostId} queued but its humanized final was not recorded: ${staged.error}`)
 
     // The decision's evidence on the asset itself: why it was queued, under which rule, and the
     // post that carries it — the slot recordYouTubePublishOnAsset fills with the id + url later.
@@ -218,18 +244,39 @@ export async function recordYouTubePublishOnAsset(svc: any, post: PublishedYouTu
     const videoUrl = Array.isArray(post.media_urls) && post.media_urls.length > 0 ? post.media_urls[0] : null
 
     // The project: by the brief this module wrote, else by the file the post carried.
-    type ProjectStamp = { id: string; video_metadata: Record<string, unknown> | null; status: string | null }
+    type ProjectStamp = { id: string; video_metadata: Record<string, unknown> | null; status: string | null; approved_by?: string | null; approved_at?: string | null }
     let projectId = videoProjectIdFromBrief(post.post_brief)
     let project: ProjectStamp | null = null
+    // Reads READ their refusal (wave 145): a refused project read is said, never read as "no project".
     if (projectId) {
-      const { data } = await svc.from("ai_video_projects").select("id, video_metadata, status").eq("id", projectId).eq("brokerage_id", post.brokerage_id).maybeSingle()
+      const { data, error: readErr } = await svc.from("ai_video_projects").select("id, video_metadata, status, approved_by, approved_at").eq("id", projectId).eq("brokerage_id", post.brokerage_id).maybeSingle()
+      if (readErr) return none(`project read refused: ${readErr.message}`)
       project = (data as ProjectStamp | null) ?? null
     }
     if (!project && videoUrl) {
-      const { data } = await svc.from("ai_video_projects").select("id, video_metadata, status").eq("brokerage_id", post.brokerage_id).eq("video_url", videoUrl).limit(1).maybeSingle()
+      const { data, error: readErr } = await svc.from("ai_video_projects").select("id, video_metadata, status, approved_by, approved_at").eq("brokerage_id", post.brokerage_id).eq("video_url", videoUrl).limit(1).maybeSingle()
+      if (readErr) return none(`project read refused: ${readErr.message}`)
       project = (data as ProjectStamp | null) ?? null
     }
     projectId = project?.id ?? null
+
+    // THE APPROVED VERSION THAT WENT OUT (wave 145, contract C4): the post's words, as sent, recorded against the final the
+    // video's approval covered (a human's edit of the post becomes its own version). Never blocks the write-back below.
+    let finalRecorded: string | null = null
+    {
+      const { data: sent, error: sentErr } = await svc.from("social_posts").select("content, approval_status, approved_by, approved_at").eq("id", post.id).eq("brokerage_id", post.brokerage_id).maybeSingle()
+      if (sentErr) finalRecorded = `post read refused: ${sentErr.message}`
+      else if (sent && typeof (sent as { content?: unknown }).content === "string") {
+        const s = sent as { content: string; approval_status: string | null; approved_by: string | null; approved_at: string | null }
+        const rec = await recordDistributionPublication(svc, {
+          brokerageId: post.brokerage_id, assetKind: "video_description", assetTable: "social_posts", assetId: post.id, content: s.content,
+          approval: { approved: s.approval_status === "approved", by: s.approved_by ?? project?.approved_by ?? null, at: s.approved_at ?? project?.approved_at ?? null },
+          via: "youtube", ref: post.external_post_id, basis: "derived_from_approved_asset",
+        })
+        if (!rec.ok) finalRecorded = rec.error
+      }
+      if (finalRecorded) console.error(`[youtube-publish] post ${post.id} published; its final version was not recorded: ${finalRecorded}`)
+    }
 
     const stamp = { video_id: post.external_post_id, url, published_at: publishedAt, social_post_id: post.id }
     if (project) {

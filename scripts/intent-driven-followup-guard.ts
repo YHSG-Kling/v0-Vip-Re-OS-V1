@@ -944,6 +944,8 @@ async function sections4to7(c: Ctx): Promise<void> {
       "lib/content-intel/performance-aggregator.ts": { baseline: 1, why: "the 30d REPORTING window of content performance" },
       "lib/content-intel/topic-bank.ts": { baseline: 1, why: "OFFICE_CLAIM_WINDOW_DAYS — how long an office's claim on a topic holds" },
       "lib/content-intel/local-intel.ts": { baseline: 3, why: "local-FACT freshness windows (the 30-day year roll of a year-less date, the 2x stale-news cutoff, the 60-day recap read) — data freshness of verified local facts, not a follow-up timetable" },
+      "lib/content-intel/topic-intelligence.ts": { baseline: 1, why: "the 30-day topic-EVIDENCE look-back over competitor posts / inbound questions / inquiries — the freshness of the evidence behind a marketing theme, not a follow-up timetable (wave 145, lane 145G)" },
+      "lib/content-intel/topic-themes.ts": { baseline: 1, why: "MARKET_STALE_DAYS — a market statistic older than this is not filed as a theme (data freshness of the tenant's own market figures), not a follow-up timetable (wave 145, lane 145G)" },
       "lib/sphere/lifetime-touchpoint-reaper-policy.ts": { baseline: 1, why: "STALE_TOUCHPOINT_GRACE_DAYS — a MAINTENANCE threshold on a row nobody delivered (asserted by name below)" },
     }
     const others = ["lib/ai-isa/next-best-touch.ts", "lib/ai-isa/lead-nurture.ts", "lib/ai-isa/adaptive-reengagement.ts", "lib/ai-isa/speed-to-lead-policy.ts", "lib/ai-isa/stale-contact-detector.ts", "lib/ai-isa/saved-home-nudge.ts", "lib/ai-isa/ghost-escalation.ts", "lib/sphere/lifetime-touchpoint-reaper.ts"]

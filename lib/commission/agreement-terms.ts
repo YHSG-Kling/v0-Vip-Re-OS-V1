@@ -37,7 +37,17 @@
 // test:agreement-waterfall proves the rules THROUGH the loaders against the in-memory client, so no export exists only
 // for a proof (scripts/orphan-export-guard.ts counts those).
 
+//
+// WAVE 145 (lane 145C; owner rulings 3/4, 2026-10-27: "the agreement dictates the money structure … an executed change applies
+// from its effective date"): the signed agreement of record is now the one IN FORCE BY ITS EFFECTIVE DATE (m858
+// contract_signatures.effective_date; the execution date only stands in — SAID — until a finance admin records it), amendments
+// included (lib/agreements/agent-agreements.ts agreementInForce). The resolution also says whether the terms in force were
+// VERIFIED against that executed agreement (m858 agent_commission_profiles.agreement_signature_id, copied into every m812
+// version's terms) — `governance` — and the engine HOLDS a FINAL when the executed paper states a term that disagrees with the
+// stored one (lib/commission/engine.ts): a stated contradiction is never posted as money.
+
 import type { createServiceClient } from "@/lib/supabase/service"
+import { agreementInForce, type AgentAgreementRow } from "@/lib/agreements/agent-agreements"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -108,10 +118,20 @@ export interface AgentTermsResolution {
   asOfSource: AgreementAsOfSource
   /** Everything the resolver noticed — printed, stored in engine_inputs, never silent. */
   findings: string[]
-  /** The signed commission_agreement of record on the as-of date (cited, not copied). */
-  signedAgreement: { id: string; fullyExecutedAt: string; documentUrl: string | null } | null
+  /** The signed commission_agreement of record on the as-of date (cited, not copied). WAVE 145: in force by its EFFECTIVE date
+   *  (m858), amendments included; `effectiveDate` is null while only the execution date is known. */
+  signedAgreement: { id: string; fullyExecutedAt: string; documentUrl: string | null; effectiveDate?: string | null; amends?: string | null } | null
   /** Terms the signed form states under a canonical term key that differ from what the engine applied. */
   signedFieldMismatches: Array<{ key: string; signed: number; applied: number }>
+  /**
+   * WAVE 145 (owner ruling 4) — were the terms in force VERIFIED against the executed agreement in force?
+   *   verified               the version's terms name that agreement (m858 agreement_signature_id)
+   *   unverified             an executed agreement governs, the terms do not name it (a human must verify them against it)
+   *   no_executed_agreement  no executed commission agreement is on record for the date (the brokerage's terms stand alone)
+   */
+  governance?: "verified" | "unverified" | "no_executed_agreement"
+  /** The agreement the terms in force were verified against (null = never verified). */
+  termsVerifiedAgainst?: string | null
 }
 
 /** Identity / bookkeeping columns that are not terms. */
@@ -158,16 +178,26 @@ function compareSignedFieldsToTerms(
   return out
 }
 
-/** PURE — the latest FULLY SIGNED agreement whose execution date is on/before `asOf`. */
+type SignedRow = { id: string; esign_status?: string | null; fully_signed_at?: string | null; document_url?: string | null; field_values?: unknown; effective_date?: string | null; amends_contract_signature_id?: string | null; contract_type?: string | null }
+
+/**
+ * PURE — the FULLY SIGNED agreement IN FORCE on `asOf` (wave 145: by its recorded EFFECTIVE date — m858 — with the execution date
+ * standing in, said, until one is recorded; an executed amendment is in force from its own effective date). The rows are one
+ * contract family (the loader filters), so the shared rule in lib/agreements/agent-agreements.ts decides.
+ */
 function signedAgreementAsOf(
-  rows: ReadonlyArray<{ id: string; esign_status?: string | null; fully_signed_at?: string | null; document_url?: string | null; field_values?: unknown }>,
+  rows: ReadonlyArray<SignedRow>,
   asOf: Ymd,
-): { id: string; fullyExecutedAt: string; documentUrl: string | null; fieldValues: unknown } | null {
-  const signed = rows
-    .filter((r) => r.esign_status === "fully_signed" && typeof r.fully_signed_at === "string" && r.fully_signed_at.slice(0, 10) <= asOf)
-    .sort((a, b) => String(b.fully_signed_at).localeCompare(String(a.fully_signed_at)))
-  const r = signed[0]
-  return r ? { id: r.id, fullyExecutedAt: String(r.fully_signed_at), documentUrl: r.document_url ?? null, fieldValues: r.field_values } : null
+): { id: string; fullyExecutedAt: string; documentUrl: string | null; fieldValues: unknown; effectiveDate: string | null; amends: string | null; findings: string[] } | null {
+  const usable = rows.filter((r) => typeof r.fully_signed_at === "string")
+  const family = Array.from(new Set(usable.map((r) => r.contract_type ?? "commission_agreement")))
+  const pick = agreementInForce(usable.map((r) => ({ ...r, contract_type: r.contract_type ?? "commission_agreement", agent_id: null, brokerage_id: null }) as AgentAgreementRow), family, asOf)
+  if (!pick) return null
+  const r = pick.row as AgentAgreementRow
+  return {
+    id: r.id, fullyExecutedAt: String(r.fully_signed_at), documentUrl: r.document_url ?? null, fieldValues: r.field_values,
+    effectiveDate: pick.basis === "effective_date" ? pick.from : null, amends: r.amends_contract_signature_id ?? null, findings: pick.findings,
+  }
 }
 
 /**
@@ -181,7 +211,7 @@ function resolveAgentTerms(input: {
   liveProfile: Record<string, unknown> | null
   versionsAvailable: boolean
   asOf: { date: Ymd; source: AgreementAsOfSource }
-  signedRows?: ReadonlyArray<{ id: string; esign_status?: string | null; fully_signed_at?: string | null; document_url?: string | null; field_values?: unknown }>
+  signedRows?: ReadonlyArray<SignedRow>
 }): AgentTermsResolution {
   const findings: string[] = []
   const pick = pickVersionAsOf(input.versions, input.asOf.date)
@@ -214,9 +244,19 @@ function resolveAgentTerms(input: {
   }
 
   const signed = signedAgreementAsOf(input.signedRows ?? [], input.asOf.date)
+  if (signed) findings.push(...signed.findings)
   const mismatches = signed ? compareSignedFieldsToTerms(signed.fieldValues, terms) : []
   if (mismatches.length > 0) {
     findings.push(`the signed agreement states ${mismatches.map((m) => `${m.key} ${m.signed}`).join(", ")} but the engine applied ${mismatches.map((m) => `${m.key} ${m.applied}`).join(", ")} — a finance admin must reconcile the profile to the signed document`)
+  }
+
+  // WAVE 145 (owner ruling 4): did a human verify the terms in force against the executed agreement in force?
+  const verifiedAgainst = terms && typeof terms.agreement_signature_id === "string" ? (terms.agreement_signature_id as string) : null
+  const governance: AgentTermsResolution["governance"] = !signed ? "no_executed_agreement" : verifiedAgainst === signed.id ? "verified" : "unverified"
+  if (governance === "unverified") {
+    findings.push(verifiedAgainst
+      ? `the terms in force were verified against agreement ${verifiedAgainst}, but the executed agreement in force on ${input.asOf.date} is ${signed!.id}${signed!.amends ? ` (an amendment of ${signed!.amends})` : ""} — a finance admin verifies the terms against it`
+      : `an executed agreement (${signed!.id}) governs on ${input.asOf.date}, but the terms in force were never verified against it — a finance admin verifies them (Financials → Commission agreements)`)
   }
 
   return {
@@ -227,8 +267,10 @@ function resolveAgentTerms(input: {
     asOf: input.asOf.date,
     asOfSource: input.asOf.source,
     findings,
-    signedAgreement: signed ? { id: signed.id, fullyExecutedAt: signed.fullyExecutedAt, documentUrl: signed.documentUrl } : null,
+    signedAgreement: signed ? { id: signed.id, fullyExecutedAt: signed.fullyExecutedAt, documentUrl: signed.documentUrl, effectiveDate: signed.effectiveDate, amends: signed.amends } : null,
     signedFieldMismatches: mismatches,
+    governance,
+    termsVerifiedAgainst: verifiedAgainst,
   }
 }
 
@@ -266,8 +308,9 @@ export interface TeamTermsResolution {
   capAmount: number | null
   source: "version" | "live_team"
   effectiveFrom: Ymd | null
-  /** The agent's signed team_agreement of record on the deal's date (contract_signatures; cited, never copied). */
-  signedAgreement?: { id: string; fullyExecutedAt: string; documentUrl: string | null } | null
+  /** The agent's signed team_agreement of record on the deal's date (contract_signatures; cited, never copied). Wave 145: in
+   *  force by its recorded effective date (m858), amendments included. */
+  signedAgreement?: { id: string; fullyExecutedAt: string; documentUrl: string | null; effectiveDate?: string | null; amends?: string | null } | null
   /** m812 trigger-written on the governing version row: the team's fee schedule, per-member overrides, and when it was recorded. */
   teamFees?: Record<string, unknown> | null
   memberOverrides?: Record<string, unknown> | null
@@ -361,14 +404,18 @@ export async function loadAgentAgreementAsOf(
       .eq("agent_id", args.agentId)
       .eq("brokerage_id", args.brokerageId)
       .maybeSingle(),
+    // select("*"): m858's effective_date / amends_contract_signature_id arrive when applied and are simply absent before —
+    // naming them would turn "not applied yet" into a refused read (CLAUDE.md §3, PGRST204's sibling 42703).
+    // WAVE 145: the money terms live in the commission agreement; a brokerage that uses ONE combined paper has only the
+    // independent-contractor agreement — it is read as the agreement of record only when no commission agreement exists.
     svc.from("contract_signatures")
-      .select("id, esign_status, fully_signed_at, document_url, field_values")
+      .select("*")
       .eq("agent_id", args.agentId)
       .eq("brokerage_id", args.brokerageId)
-      .eq("contract_type", "commission_agreement")
+      .in("contract_type", ["commission_agreement", "independent_contractor"])
       .eq("esign_status", "fully_signed")
       .order("fully_signed_at", { ascending: false })
-      .limit(25),
+      .limit(50),
   ])
   const unavailable = isHistoryUnavailable(versionsRes.error)
   if (versionsRes.error && !unavailable) {
@@ -376,12 +423,14 @@ export async function loadAgentAgreementAsOf(
     throw new Error(`[agreement-terms] agent agreement history read refused: ${versionsRes.error.message}`)
   }
   if (liveRes.error) throw new Error(`[agreement-terms] agent commission profile read refused: ${liveRes.error.message}`)
+  const signedAll = signedRes.error ? [] : ((signedRes.data ?? []) as SignedRow[])
+  const commissionPaper = signedAll.filter((r) => (r.contract_type ?? "commission_agreement") === "commission_agreement")
   const resolution = resolveAgentTerms({
     versions: unavailable ? [] : ((versionsRes.data ?? []) as AgentTermsVersion[]),
     liveProfile: (liveRes.data ?? null) as Record<string, unknown> | null,
     versionsAvailable: !unavailable,
     asOf: args.asOf,
-    signedRows: signedRes.error ? [] : ((signedRes.data ?? []) as Array<{ id: string; esign_status?: string | null; fully_signed_at?: string | null; document_url?: string | null; field_values?: unknown }>),
+    signedRows: commissionPaper.length > 0 ? commissionPaper : signedAll.filter((r) => r.contract_type === "independent_contractor"),
   })
   if (signedRes.error) resolution.findings.push(`the signed agreement of record could not be read (${signedRes.error.message}) — not cited`)
   else if (!resolution.signedAgreement) resolution.findings.push("no fully signed commission agreement is on record for this agent on the deal's date")
@@ -404,7 +453,7 @@ export async function loadTeamTermsAsOf(
       .eq("team_id", args.teamId)
       .eq("brokerage_id", args.brokerageId),
     svc.from("contract_signatures")
-      .select("id, esign_status, fully_signed_at, document_url, field_values")
+      .select("*")
       .eq("team_id", args.teamId)
       .eq("agent_id", args.agentId)
       .eq("brokerage_id", args.brokerageId)
@@ -418,7 +467,7 @@ export async function loadTeamTermsAsOf(
   const terms = resolveTeamTermsAsOf({ versions: unavailable ? [] : ((versionsRes.data ?? []) as TeamTermsVersion[]), liveTeam: args.liveTeam, asOf: args.asOf })
   if (!terms) return null
   // A refused read of the signed record is evidence lost, not money lost: the terms still price the deal.
-  const signed = signedRes.error ? null : signedAgreementAsOf((signedRes.data ?? []) as Array<{ id: string; esign_status?: string | null; fully_signed_at?: string | null; document_url?: string | null; field_values?: unknown }>, args.asOf)
+  const signed = signedRes.error ? null : signedAgreementAsOf((signedRes.data ?? []) as SignedRow[], args.asOf)
   // The version row that governs (m812 trigger-written): its team fees / member overrides / recorded_at ride on the
   // resolution so the waterfall and the agreements page read what the trigger wrote (wave 143 integration).
   const governingRow = (unavailable ? [] : ((versionsRes.data ?? []) as Array<Record<string, unknown>>))
@@ -426,7 +475,7 @@ export async function loadTeamTermsAsOf(
     .sort((x, y) => String(y.effective_date).localeCompare(String(x.effective_date)))[0] ?? null
   return {
     ...terms,
-    signedAgreement: signed ? { id: signed.id, fullyExecutedAt: signed.fullyExecutedAt, documentUrl: signed.documentUrl } : null,
+    signedAgreement: signed ? { id: signed.id, fullyExecutedAt: signed.fullyExecutedAt, documentUrl: signed.documentUrl, effectiveDate: signed.effectiveDate, amends: signed.amends } : null,
     teamFees: (governingRow?.team_fees_json as Record<string, unknown> | null | undefined) ?? null,
     memberOverrides: (governingRow?.member_overrides_json as Record<string, unknown> | null | undefined) ?? null,
     recordedAt: (governingRow?.recorded_at as string | null | undefined) ?? null,

@@ -256,6 +256,16 @@ export interface WaterfallContext {
   royaltyDistributions?: DistributionRecord[]
   royaltyCents?: number
 
+  // WHERE THE GROSS RATE CAME FROM (stage 01, wave 145 lane 145C — owner ruling 4: no default when a signed agreement
+  // governs). OPTIONAL — only stage 01 sets it. `brokerage_default` is used only when no EXECUTED client agreement (listing
+  // agreement / buyer-broker agreement) on the deal states a rate; when one does and the deal records no rate of its own, a
+  // FINAL refuses by name and a preview says so.
+  grossRateEvidence?: {
+    from: 'deal_override' | 'agent_profile' | 'brokerage_default'
+    governingClientAgreements: Array<{ kind: 'listing_agreement' | 'buyer_broker_agreement'; id: string; statesRate: boolean }>
+    findings: string[]
+  }
+
   // Distribution collections
   grossAdjustments: DistributionRecord[]
   agentAdjustments: DistributionRecord[]

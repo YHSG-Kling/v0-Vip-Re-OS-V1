@@ -30,6 +30,9 @@ export const SYSTEM_TOPIC_WRITERS = {
   brand_listening: "Brand listening topics (system)",
   competitor_promotion: "Competitor ad insights (system)",
   lookalike_research: "Look-alike research briefs (system)",
+  // wave 145 (lane 145G, owner ruling 22): competitor post themes, viral patterns, customer questions, education and
+  // AI-search gaps, property-value trends and market changes — lib/content-intel/topic-intelligence.ts
+  topic_intelligence: "Topic intelligence — competitor themes, questions, gaps & market trends (system)",
 } as const
 export type SystemTopicWriter = keyof typeof SYSTEM_TOPIC_WRITERS
 

@@ -125,7 +125,13 @@ export function concessionWaterfallVerdict(row: GrossAdjustmentRow, ctx: { produ
 // ─── PURE: request validation ──────────────────────────────────────────────────────────────────────────────────────
 
 export interface AgentConcessionRequestInput {
-  transactionId: string
+  /** The transaction the concession comes off… */
+  transactionId?: string | null
+  /** …or (wave 145, lane 145C — m861) the OFFER it is promised on, before any transaction exists. Exactly one of the two.
+   *  "Ask permission FIRST … block unauthorized commitment" (owner ruling 4): the request is made while the offer is still
+   *  being written, and the chain's offer-anchored rows are re-pointed to the transaction when it is created
+   *  (anchorOfferConcessionsToTransaction, called by lib/offers/governing-terms.ts freezeExecutedTermsAfterPromotion). */
+  offerId?: string | null
   beneficiary: string
   beneficiaryName?: string | null
   amount: number
@@ -136,6 +142,7 @@ export interface AgentConcessionRequestInput {
 /** PURE — refuse a malformed request by name. Money is never rounded on the agent's behalf. Module-private: reached
  *  through requestAgentConcession. */
 function validateAgentConcessionRequest(input: AgentConcessionRequestInput): { ok: true } | { ok: false; error: string } {
+  if (!!input.transactionId === !!input.offerId) return { ok: false, error: "anchor_invalid: name the transaction OR the offer the concession is promised on — exactly one" }
   if (!(AGENT_CONCESSION_BENEFICIARIES as readonly string[]).includes(input.beneficiary)) {
     return { ok: false, error: "beneficiary_invalid: an agent concession is a credit to the buyer or the seller" }
   }
@@ -173,6 +180,8 @@ function m850Missing(message: string | undefined): boolean {
 export interface AgentConcessionRecord {
   id: string
   transactionId: string
+  /** wave 145 (m861): the offer it was promised on (kept as provenance after the transaction exists). */
+  offerId?: string | null
   concessionAgentId: string | null
   beneficiary: string | null
   beneficiaryName: string | null
@@ -192,6 +201,7 @@ function toRecord(r: Record<string, unknown>): AgentConcessionRecord {
   return {
     id: String(r.id),
     transactionId: String(r.transaction_id ?? ""),
+    offerId: (r.offer_id as string | null | undefined) ?? null,
     concessionAgentId: (r.concession_agent_id as string | null) ?? null,
     beneficiary: (r.recipient_type as string | null) ?? null,
     beneficiaryName: (r.recipient_name as string | null) ?? null,
@@ -251,30 +261,54 @@ export async function requestAgentConcession(
   const v = validateAgentConcessionRequest(input)
   if (!v.ok) return v
 
-  const { data: txn, error: txnErr } = await db
-    .from("transactions")
-    .select("id, agent_id, buyer_agent_id, seller_agent_id, commission_finalized_at")
-    .eq("id", input.transactionId)
-    .eq("brokerage_id", actor.brokerageId)
-    .maybeSingle()
-  if (txnErr) return { ok: false, error: `transaction_read_refused: ${txnErr.message}` }
-  if (!txn) return { ok: false, error: "transaction_not_found" }
-  const t = txn as { agent_id?: string | null; buyer_agent_id?: string | null; seller_agent_id?: string | null; commission_finalized_at?: string | null }
-  if (![t.agent_id, t.buyer_agent_id, t.seller_agent_id].includes(actor.agentId)) {
-    return { ok: false, error: "not_on_deal: an agent records a concession only off their own commission on a deal they are on" }
+  // WAVE 145 (m861): an OFFER anchor — the agent on the offer asks BEFORE the offer commits the credit. An offer that already
+  // became a transaction is judged on its transaction (the request lands there, never on a closed-out offer row).
+  let transactionId: string | null = input.transactionId ?? null
+  let offerId: string | null = null
+  if (input.offerId) {
+    const { data: offer, error: offerErr } = await db
+      .from("offers")
+      .select("id, agent_id, transaction_id, status")
+      .eq("id", input.offerId)
+      .eq("brokerage_id", actor.brokerageId)
+      .maybeSingle()
+    if (offerErr) return { ok: false, error: `offer_read_refused: ${offerErr.message}` }
+    if (!offer) return { ok: false, error: "offer_not_found" }
+    const o = offer as { agent_id?: string | null; transaction_id?: string | null }
+    if (o.transaction_id) transactionId = o.transaction_id
+    else {
+      if (o.agent_id !== actor.agentId) return { ok: false, error: "not_on_offer: an agent requests a concession only off their own commission, on an offer they wrote" }
+      offerId = input.offerId
+    }
   }
-  if (t.commission_finalized_at) {
-    return { ok: false, error: "commission_final: the commission is finalized (CDA signed / final CD) — a change now is a correction by a finance admin" }
+
+  if (transactionId) {
+    const { data: txn, error: txnErr } = await db
+      .from("transactions")
+      .select("id, agent_id, buyer_agent_id, seller_agent_id, commission_finalized_at")
+      .eq("id", transactionId)
+      .eq("brokerage_id", actor.brokerageId)
+      .maybeSingle()
+    if (txnErr) return { ok: false, error: `transaction_read_refused: ${txnErr.message}` }
+    if (!txn) return { ok: false, error: "transaction_not_found" }
+    const t = txn as { agent_id?: string | null; buyer_agent_id?: string | null; seller_agent_id?: string | null; commission_finalized_at?: string | null }
+    if (![t.agent_id, t.buyer_agent_id, t.seller_agent_id].includes(actor.agentId)) {
+      return { ok: false, error: "not_on_deal: an agent records a concession only off their own commission on a deal they are on" }
+    }
+    if (t.commission_finalized_at) {
+      return { ok: false, error: "commission_final: the commission is finalized (CDA signed / final CD) — a change now is a correction by a finance admin" }
+    }
+    const { data: posted, error: postedErr } = await db
+      .from("commission_distributions")
+      .select("id, status")
+      .eq("transaction_id", transactionId)
+      .eq("brokerage_id", actor.brokerageId)
+    if (postedErr) return { ok: false, error: `ledger_read_refused: ${postedErr.message}` }
+    if (((posted ?? []) as Array<{ status?: string | null }>).some((r) => r.status !== "voided")) {
+      return { ok: false, error: "commission_posted: the commission is already posted — a concession now is a correction by a finance admin" }
+    }
   }
-  const { data: posted, error: postedErr } = await db
-    .from("commission_distributions")
-    .select("id, status")
-    .eq("transaction_id", input.transactionId)
-    .eq("brokerage_id", actor.brokerageId)
-  if (postedErr) return { ok: false, error: `ledger_read_refused: ${postedErr.message}` }
-  if (((posted ?? []) as Array<{ status?: string | null }>).some((r) => r.status !== "voided")) {
-    return { ok: false, error: "commission_posted: the commission is already posted — a concession now is a correction by a finance admin" }
-  }
+  const anchorRef = transactionId ?? `offer:${offerId}`
 
   const { data: brk, error: brkErr } = await db.from("brokerages").select("*").eq("id", actor.brokerageId).maybeSingle()
   if (brkErr) return { ok: false, error: `policy_read_refused: ${brkErr.message}` }
@@ -291,10 +325,11 @@ export async function requestAgentConcession(
       action: policy.requiresApproval ? "finance.agent_concession.requested" : "finance.agent_concession.recorded",
       actor,
       subjectId: null,
-      transactionId: input.transactionId,
-      reasonDetail: `agent concession to the ${input.beneficiary}: ${reason}`,
+      transactionId: anchorRef,
+      reasonDetail: `agent concession to the ${input.beneficiary}${offerId ? " (promised on an offer, before the contract commits it)" : ""}: ${reason}`,
       detail: {
-        transaction_id: input.transactionId,
+        transaction_id: transactionId,
+        offer_id: offerId,
         concession_agent_id: actor.agentId,
         beneficiary: input.beneficiary,
         beneficiary_name: input.beneficiaryName ?? null,
@@ -311,7 +346,10 @@ export async function requestAgentConcession(
         .from("commission_adjustments")
         .insert({
           brokerage_id: actor.brokerageId,
-          transaction_id: input.transactionId,
+          transaction_id: transactionId,
+          // m861 — named ONLY when the anchor is an offer: before m861 is applied a transaction-anchored insert must not name
+          // an absent column (PGRST204 refuses the whole row — CLAUDE.md §3)
+          ...(offerId ? { offer_id: offerId } : {}),
           created_by_agent_id: actor.agentId,
           concession_agent_id: actor.agentId,
           adjustment_type: "credit",
@@ -330,7 +368,7 @@ export async function requestAgentConcession(
           settlement_treatment: "closing_statement_credit",
         })
         .select("*")
-      if (error) return { ok: false, error: m850Missing(error.message) ? `m850 (agent concession columns) is not applied: ${error.message}` : `concession_refused: ${error.message}` }
+      if (error) return { ok: false, error: m850Missing(error.message) ? `m850 (agent concession columns) is not applied: ${error.message}` : offerId && /offer_id|transaction_id/.test(error.message) ? `m861 (offer-anchored concessions) is not applied: ${error.message}` : `concession_refused: ${error.message}` }
       const rows = (data ?? []) as Array<Record<string, unknown>>
       if (rows.length !== 1) return { ok: false, error: `concession_not_recorded (${rows.length} rows written)` }
       inserted = rows[0]
@@ -345,9 +383,9 @@ export async function requestAgentConcession(
       await notifyBrokerageAdmins(db as never, actor.brokerageId, {
         type: "agent_concession_requested",
         title: "An agent asks to give a concession",
-        body: `An agent asks to credit the ${input.beneficiary} ${input.valueType === "flat" ? `$${Number(input.amount).toLocaleString("en-US")}` : `${input.amount}% of the gross commission`} off their gross commission. Reason: ${reason}. Approve or deny it on the transaction's CDA page before it is committed.`,
-        entityType: "transaction",
-        entityId: input.transactionId,
+        body: `An agent asks to credit the ${input.beneficiary} ${input.valueType === "flat" ? `$${Number(input.amount).toLocaleString("en-US")}` : `${input.amount}% of the gross commission`} off their gross commission${offerId ? " on an offer that is not yet a contract" : ""}. Reason: ${reason}. Approve or deny it ${offerId ? "before the offer is sent" : "on the transaction's CDA page before it is committed"}.`,
+        entityType: transactionId ? "transaction" : "offer",
+        entityId: (transactionId ?? offerId) as string,
         priority: "high",
       })
     } catch (e) {
@@ -461,13 +499,14 @@ export async function withdrawAgentConcession(
 export async function listAgentConcessions(
   db: Db,
   actor: ConcessionActor,
-  input: { transactionId: string },
+  input: { transactionId?: string | null; offerIds?: readonly string[] | null },
 ): Promise<{ ok: true; records: AgentConcessionRecord[]; policy: AgentConcessionPolicy } | { ok: false; error: string }> {
   if (!actor.brokerageId) return { ok: false, error: "no_tenant" }
-  const { data, error } = await db
-    .from("commission_adjustments")
-    .select("*")
-    .eq("transaction_id", input.transactionId)
+  // wave 145 (m861): before a transaction exists, the concessions promised on the offer chain
+  const byOffer = !input.transactionId && (input.offerIds?.length ?? 0) > 0
+  if (!input.transactionId && !byOffer) return { ok: false, error: "anchor_required: a transaction or the offer chain" }
+  const base = db.from("commission_adjustments").select("*")
+  const { data, error } = await (byOffer ? base.in("offer_id", [...(input.offerIds as string[])]) : base.eq("transaction_id", input.transactionId as string))
     .eq("brokerage_id", actor.brokerageId)
     .eq("applies_to", "gross")
     .eq("direction", "credit")
@@ -480,4 +519,65 @@ export async function listAgentConcessions(
     records: ((data ?? []) as Array<Record<string, unknown>>).map(toRecord),
     policy: resolveAgentConcessionPolicy((brk as Record<string, unknown> | null)?.agent_concession_approval),
   }
+}
+
+// ─── WAVE 145 (lane 145C, m861): the offer anchor — before the contract, and at the moment it becomes a transaction ──────────
+
+/**
+ * PURE — the concessions promised on an offer chain that are NOT yet authorized (still 'requested'): an offer stating them is an
+ * UNAUTHORIZED COMMITMENT if sent or signed now (owner ruling 4: "ask permission FIRST … block unauthorized commitment"). Read
+ * here at promotion (below); the offer send / e-sign doors are other lanes' files — when they wire the pre-dispatch check (lane
+ * 145C notes, Outside-lane) this becomes their export. The commission engine already holds a FINAL on a requested concession
+ * (stage 03). Module-private until then: proved through anchorOfferConcessionsToTransaction's `unauthorized`.
+ */
+function unauthorizedOfferConcessions(rows: ReadonlyArray<Record<string, unknown>>): Array<{ id: string; value: number; valueType: string; beneficiary: string | null }> {
+  return rows
+    .filter((r) => r.is_active !== false && r.applies_to === "gross" && r.direction === "credit" && String(r.approval_status ?? "not_required") === "requested")
+    .map((r) => ({ id: String(r.id), value: Number(r.value ?? 0), valueType: String(r.value_type ?? "flat"), beneficiary: (r.recipient_type as string | null) ?? null }))
+}
+
+/**
+ * AT PROMOTION (offer → transaction): re-point the chain's offer-anchored concession rows to the new transaction — one counted
+ * UPDATE, tenant-pinned, only rows that have no transaction yet (offer_id stays as provenance). Called by
+ * lib/offers/governing-terms.ts freezeExecutedTermsAfterPromotion, which every promotion path already calls. A refused write is
+ * RETURNED (the promotion has happened and is never undone for this); before m861 is applied the column is absent and nothing
+ * can be offer-anchored, which is reported as `unavailable`, not as an error.
+ */
+export async function anchorOfferConcessionsToTransaction(
+  db: Db,
+  input: { brokerageId: string; offerIds: readonly string[]; transactionId: string },
+): Promise<{ ok: true; moved: number; unauthorized: ReturnType<typeof unauthorizedOfferConcessions>; unavailable?: boolean } | { ok: false; error: string }> {
+  if (!input.brokerageId) return { ok: false, error: "no_tenant" }
+  if (input.offerIds.length === 0) return { ok: true, moved: 0, unauthorized: [] }
+  const { data, error } = await db
+    .from("commission_adjustments")
+    .update({ transaction_id: input.transactionId, updated_at: new Date().toISOString() })
+    .eq("brokerage_id", input.brokerageId)
+    .in("offer_id", [...input.offerIds])
+    .is("transaction_id", null)
+    .select("*")
+  if (error) {
+    if (/offer_id/.test(String(error.message ?? "")) && /column|schema cache|does not exist/i.test(String(error.message ?? ""))) return { ok: true, moved: 0, unauthorized: [], unavailable: true }
+    return { ok: false, error: `concession_reanchor_refused: ${error.message}` }
+  }
+  const moved = (data ?? []) as Array<Record<string, unknown>>
+  // A contract that EXECUTED while a concession it carries still awaited the broker's decision is the unauthorized commitment
+  // ruling 4 forbids: the broker is told at once (the waterfall already holds a FINAL on it — stage 03).
+  const unauthorized = unauthorizedOfferConcessions(moved)
+  if (unauthorized.length > 0) {
+    try {
+      const { notifyBrokerageAdmins } = await import("@/lib/notifications/brokerage-admins")
+      await notifyBrokerageAdmins(db as never, input.brokerageId, {
+        type: "agent_concession_unauthorized_commitment",
+        title: "A contract executed with an agent concession still awaiting approval",
+        body: `${unauthorized.length} agent concession(s) promised on the offer were not decided before the contract became a transaction. Approve or deny them on the transaction's CDA page — the commission will not finalize until you do.`,
+        entityType: "transaction",
+        entityId: input.transactionId,
+        priority: "high",
+      })
+    } catch (e) {
+      console.error("[agent-concession] unauthorized-commitment notice failed:", e instanceof Error ? e.message : String(e))
+    }
+  }
+  return { ok: true, moved: moved.length, unauthorized }
 }

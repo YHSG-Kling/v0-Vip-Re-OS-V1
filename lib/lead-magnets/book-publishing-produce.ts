@@ -6,7 +6,8 @@
 // tenant-pinned, stage must be `ready_for_review`, no chapter still owned by a human), compose, GUARD, make the cover
 // (the existing image rail, entitlement-gated, spend booked, falling back to typography), build the EPUB, host both files
 // in the PRIVATE `documents` bucket (they are pre-publication — never a permanent public URL), and record the package on
-// lead_capture_forms.settings.book_publishing under withActionLedger evidence.
+// the BOOK's own row (book_projects.publishing — wave 145, m867; it was lead_capture_forms.settings.book_publishing while a book
+// rode a capture form) under withActionLedger evidence.
 //
 // THE GATES, in order — a book that fails one is NOT packaged and the reasons are returned by name:
 //   1. the book is finished (ready_for_review) and no chapter is waiting on the human (needs_human_review empty);
@@ -25,7 +26,7 @@
 //   · WHOSE retail book it is. A lead magnet becomes the TENANT's KDP book (tenant_kdp) when its owner asks for the
 //     package; a book in the platform's house tenant is the PLATFORM's (platform_kdp) — packaged and approved by platform
 //     staff only (users.platform_role), branded with the platform's product brand, the platform as rights holder. The
-//     context change is recorded on the book (settings.book.publication.history).
+//     context change is recorded on the book (book_projects.project.publication.history; the column publication_context mirrors it).
 //   · THE BRAND: logo, colours and tagline from the ONE brand cascade (lib/branding/resolve-brand-context.ts — agent
 //     motto > team > brokerage; team > brokerage logo / colours), or the platform's product brand. A tagline that fails
 //     the claim guard or the public-copy fair-housing gate is LEFT OFF the cover (approved taglines only), with a warning.
@@ -35,7 +36,8 @@
 import "server-only"
 import { randomUUID } from "node:crypto"
 import sharp from "sharp"
-import { loadProject, composeBookPdfData, type BookProject } from "./book-creator"
+import { loadProject, composeBookPdfData, type BookProject, type LoadedBook } from "./book-creator"
+import { locatorOf, saveBookRow } from "./book-entity"
 import {
   bookContextAllowed, humanizedReviewRefusal, humanizedReviewState, kdpContextFor, publicationRecord,
   type BookPublication, type HumanizedReviewRecord,
@@ -52,7 +54,7 @@ import { GENERATED_DOCUMENT_BUCKET, issueBucketObjectUrl } from "@/lib/storage/d
 
 type Svc = { from: (t: string) => any; storage?: any }
 
-/** The recorded package — lead_capture_forms.settings.book_publishing. */
+/** The recorded package — book_projects.publishing (wave 145; the book's own row). */
 export interface KdpPackageRecord {
   built_at: string
   built_by: string
@@ -90,7 +92,7 @@ export interface KdpBuildDeps {
   /** Entitlement before the paid image call (default mayUseAndAfford ai.generate). */
   entitlement?: (ask: { brokerageId: string; estTokens: number }) => Promise<{ allowed: boolean; reason: string }>
   /** The text-free art, bytes (default: the existing image rail generateImage, spend booked on ai_tool_usage). null = no art. */
-  coverArt?: (a: { brokerageId: string; userId: string; magnetId: string; prompt: string }) => Promise<{ bytes: Buffer | null; note: string | null; costUsd: number | null }>
+  coverArt?: (a: { brokerageId: string; userId: string; bookId: string; prompt: string }) => Promise<{ bytes: Buffer | null; note: string | null; costUsd: number | null }>
   /** Hosting (default hostRenderedMedia into the private documents bucket). */
   host?: (svc: Svc, path: string, bytes: Buffer, contentType: string) => Promise<void>
   now?: Date
@@ -157,10 +159,12 @@ export async function approvedBookBrandAssets(
   const warnings: string[] = []
   let tagline: string | null = (brand?.tagline ?? "").trim() || null
   if (tagline) {
-    const tagClaims = scanBookClaims({ brand_tagline: tagline })
-    const tagFh = await scanPublicCopy(tagline, "book", { brokerageName: ctx.brokerageName, olderPersons: ctx.olderPersons })
-    if (tagClaims.length > 0 || !tagFh.ok) {
-      warnings.push(`The brand tagline "${tagline}" was left off the book — ${tagClaims.length ? tagClaims.map((c) => c.rule).join("; ") : tagFh.findings.map((f) => f.fix).join("; ")}. Approve a clean tagline in brand settings to carry it.`)
+    // Wave 145 (lane 145G, owner ruling 20): ONE tagline vetting for every public piece — the claim guard, unsupported
+    // superlatives and public-copy fair housing (lib/marketing/humanize-final.ts vetBrandTagline). The cover keeps its words.
+    const { vetBrandTagline } = await import("@/lib/marketing/humanize-final")
+    const vetted = await vetBrandTagline(tagline, { surface: "book", brokerageName: ctx.brokerageName, olderPersons: ctx.olderPersons })
+    if (!vetted.tagline) {
+      warnings.push(`The brand tagline "${tagline}" was left off the book — ${vetted.why ?? vetted.reason}. Approve a clean tagline in brand settings to carry it.`)
       tagline = null
     }
   }
@@ -190,7 +194,7 @@ const defaultCoverArt: NonNullable<KdpBuildDeps["coverArt"]> = async (a) => {
     const r = await generateImage({
       prompt: a.prompt, purpose: "generic", size: "1024x1792", quality: "hd", style: "natural",
       brand: { noLogo: true, mlsClean: true },
-      spend: { brokerageId: a.brokerageId, userId: a.userId, feature: "book_cover", idempotencyKey: `book_cover:${a.magnetId}` },
+      spend: { brokerageId: a.brokerageId, userId: a.userId, feature: "book_cover", idempotencyKey: `book_cover:${a.bookId}` },
     })
     if (!r.success || !r.imageUrl) return { bytes: null, note: `image rail returned no image (${r.error ?? "unknown"})`, costUsd: null }
     if (!/^https:\/\//i.test(r.imageUrl)) return { bytes: null, note: "image rail returned a non-https URL", costUsd: r.cost ?? null }
@@ -215,10 +219,11 @@ function kdpInputOf(p: BookProject, authorName: string, brokerageName: string, l
 }
 
 /** Build (or rebuild) the KDP package of a finished book. Tenant + actor come from the caller's SESSION. */
-export async function buildKdpPackage(args: { brokerageId: string; magnetId: string; actorUserId: string; landingUrl?: string | null }, deps: KdpBuildDeps = {}): Promise<KdpBuildResult> {
-  if (!args.brokerageId || !args.magnetId || !args.actorUserId) return { ok: false, error: "Missing tenant, magnet or actor." }
+export async function buildKdpPackage(args: { brokerageId: string; bookId?: string; magnetId?: string; actorUserId: string; landingUrl?: string | null }, deps: KdpBuildDeps = {}): Promise<KdpBuildResult> {
+  const locator = locatorOf(args)
+  if (!args.brokerageId || !locator || !args.actorUserId) return { ok: false, error: "Missing tenant, book or actor." }
   const svc = (deps.client ?? (await import("@/lib/supabase/service")).createServiceClient()) as Svc
-  const loaded = await loadProject(svc, args.brokerageId, args.magnetId)
+  const loaded = await loadProject(svc, args.brokerageId, locator)
   if (!loaded.ok) return { ok: false, error: loaded.error }
   const p = loaded.project
   if (p.stage !== "ready_for_review") return { ok: false, error: `The book is still being written (stage: ${p.stage.replace(/_/g, " ")}) — finish it before packaging for KDP.` }
@@ -278,7 +283,7 @@ export async function buildKdpPackage(args: { brokerageId: string; magnetId: str
   let artNote: string | null = null
   const ent = await (deps.entitlement ?? defaultEntitlement)({ brokerageId: args.brokerageId, estTokens: COVER_EST_TOKENS }).catch((e) => ({ allowed: false, reason: `entitlement_threw: ${(e as Error).message}` }))
   if (ent.allowed) {
-    const a = await (deps.coverArt ?? defaultCoverArt)({ brokerageId: args.brokerageId, userId: args.actorUserId, magnetId: args.magnetId, prompt: coverArtPrompt({ title: metadata.title, audience: p.audience, area: p.area }) })
+    const a = await (deps.coverArt ?? defaultCoverArt)({ brokerageId: args.brokerageId, userId: args.actorUserId, bookId: loaded.row.id, prompt: coverArtPrompt({ title: metadata.title, audience: p.audience, area: p.area }) })
     art = a.bytes
     artNote = a.note
   } else {
@@ -299,7 +304,7 @@ export async function buildKdpPackage(args: { brokerageId: string; magnetId: str
   if (!kdpTrimAllowed(paperback.trimIn.width, paperback.trimIn.height)) warnings.push(`PAPERBACK: the planned trim ${paperback.trimIn.width}×${paperback.trimIn.height} in is outside KDP's allowed range`)
   const rights = composeRightsRecord({ authorName, year: now.getUTCFullYear(), coverArt: cover.usedArt ? "image_rail" : "typographic_only", publication: { context: context === "platform_kdp" ? "platform_kdp" : "tenant_kdp", owner: publication.owner, rightsHolder } })
 
-  const base = `client-docs/${args.brokerageId}/kdp/${args.magnetId}`
+  const base = `client-docs/${args.brokerageId}/kdp/${loaded.row.id}`
   const epubPath = `${base}/book.epub`, coverPath = `${base}/cover.jpg`
   const host = deps.host ?? defaultHost
   try {
@@ -318,28 +323,26 @@ export async function buildKdpPackage(args: { brokerageId: string; magnetId: str
     brand: { source: publication.brand_source, logo: logoState, tagline: brandTagline, primary_color: brand?.primaryColor ?? null, accent_color: brand?.accentColor ?? null },
   }
   // The book records its (possibly new) publication context in the same counted write as the package.
-  const saved = await savePackage(svc, args.brokerageId, args.magnetId, args.actorUserId, loaded.row.settings, record, "build", now, { publication })
+  const saved = await savePackage(svc, args.brokerageId, loaded.row, loaded.project, args.actorUserId, record, "build", now, { publication })
   if (saved) return { ok: false, error: saved }
   return { ok: true, record }
 }
 
-async function savePackage(svc: Svc, brokerageId: string, magnetId: string, actorUserId: string, settings: Record<string, unknown>, record: KdpPackageRecord, kind: "build" | "approve", now: Date, bookPatch: Record<string, unknown> | null = null): Promise<string | null> {
-  const book = settings.book && typeof settings.book === "object" ? (settings.book as Record<string, unknown>) : null
-  const nextSettings = { ...settings, book_publishing: record, ...(book && bookPatch ? { book: { ...book, ...bookPatch } } : {}) }
+async function savePackage(svc: Svc, brokerageId: string, book: LoadedBook, project: BookProject, actorUserId: string, record: KdpPackageRecord, kind: "build" | "approve", now: Date, bookPatch: Record<string, unknown> | null = null): Promise<string | null> {
+  // ONE counted write of the BOOK's row: the package, and (when given) the project change it carries (publication / sign-off).
+  const nextProject = bookPatch ? ({ ...(project as unknown as Record<string, unknown>), ...bookPatch }) : undefined
   const { withActionLedger } = await import("@/lib/kernel/action-ledger")
   const res = await withActionLedger<string | null>(
     {
       brokerageId, action: kind === "build" ? "marketing.lead_magnet.kdp_package" : "marketing.lead_magnet.kdp_approve",
-      actor: { type: "user", userId: actorUserId }, subject: { type: "lead_capture_form", id: magnetId }, reasonCode: "HUMAN_REQUESTED",
+      actor: { type: "user", userId: actorUserId }, subject: { type: "book_project", id: book.id }, reasonCode: "HUMAN_REQUESTED",
       reasonDetail: kind === "build" ? `human request: KDP package for book "${record.metadata.title}"` : `human approval: KDP package for "${record.metadata.title}" — rights and AI disclosure attested`,
       riskClass: "LOW_RISK_WRITE", systemSource: "lead_magnets",
       detail: { cover_art: record.cover_art, words: record.words, attested: record.approval?.attestations ?? [], warnings: record.warnings.length, context: record.publication?.context ?? null, owner: record.publication?.owner ?? null, logo: record.brand?.logo ?? null },
     },
     async () => {
-      const { data, error } = await svc.from("lead_capture_forms").update({ settings: nextSettings, updated_at: now.toISOString() }).eq("brokerage_id", brokerageId).eq("id", magnetId).select("id")
-      if (error) return `KDP package not saved: ${error.message}`
-      if ((data ?? []).length !== 1) return "KDP package not saved: no row matched this brokerage + id"
-      return null
+      const err = await saveBookRow(svc, brokerageId, book.id, { publishing: record as unknown as Record<string, unknown>, ...(nextProject ? { project: nextProject } : {}), updatedAt: now.toISOString() })
+      return err ? err.replace(/^Book project not saved/, "KDP package not saved") : null
     },
     { settle: (err) => (err ? { status: "failed", outcome: "save_refused", error: err } : { status: "executed", outcome: kind === "build" ? "packaged" : "approved" }), replay: (claim) => `ledger refused the KDP ${kind}: ${claim.kind}` },
     { client: svc as never },
@@ -347,29 +350,28 @@ async function savePackage(svc: Svc, brokerageId: string, magnetId: string, acto
   return res
 }
 
-/** The recorded package on a magnet's settings (null when none). PURE. */
-export function kdpPackageOf(settings: Record<string, unknown> | null | undefined): KdpPackageRecord | null {
-  const r = (settings ?? {}).book_publishing as KdpPackageRecord | undefined
+/** The recorded package — the book's `publishing` column (null when none was built). PURE. */
+export function kdpPackageOf(publishing: Record<string, unknown> | null | undefined): KdpPackageRecord | null {
+  const r = (publishing ?? null) as KdpPackageRecord | null
   return r && typeof r === "object" && r.files && r.metadata ? r : null
 }
 
 /**
  * The human's approval: every attestation, by id, by a session user. Re-building the package clears it (the files changed).
  * Wave 144: the humanized_review attestation is one of them, and the sign-off is recorded on the book
- * (settings.book.humanized_review); a package built before the manuscript last changed is refused (the files are stale);
+ * (book_projects.project.humanized_review); a package built before the manuscript last changed is refused (the files are stale);
  * a PLATFORM book is approved by platform staff only.
  */
-export async function approveKdpPackage(args: { brokerageId: string; magnetId: string; actorUserId: string; attested: string[] }, deps: { client?: Svc; now?: Date; staffReader?: KdpBuildDeps["staffReader"] } = {}): Promise<{ ok: true; record: KdpPackageRecord } | { ok: false; error: string }> {
-  if (!args.brokerageId || !args.magnetId || !args.actorUserId) return { ok: false, error: "Missing tenant, magnet or approver." }
+export async function approveKdpPackage(args: { brokerageId: string; bookId?: string; magnetId?: string; actorUserId: string; attested: string[] }, deps: { client?: Svc; now?: Date; staffReader?: KdpBuildDeps["staffReader"] } = {}): Promise<{ ok: true; record: KdpPackageRecord } | { ok: false; error: string }> {
+  const locator = locatorOf(args)
+  if (!args.brokerageId || !locator || !args.actorUserId) return { ok: false, error: "Missing tenant, book or approver." }
   const svc = (deps.client ?? (await import("@/lib/supabase/service")).createServiceClient()) as Svc
-  const { data, error } = await svc.from("lead_capture_forms").select("id, settings").eq("id", args.magnetId).eq("brokerage_id", args.brokerageId).maybeSingle()
-  if (error) return { ok: false, error: `Could not read the magnet: ${error.message}` }
-  if (!data) return { ok: false, error: "Lead magnet not found in this brokerage." }
-  const settings = ((data as { settings?: Record<string, unknown> | null }).settings ?? {}) as Record<string, unknown>
-  const pkg = kdpPackageOf(settings)
+  const loaded = await loadProject(svc, args.brokerageId, locator)
+  if (!loaded.ok) return { ok: false, error: loaded.error }
+  const pkg = kdpPackageOf(loaded.row.publishing)
   if (!pkg) return { ok: false, error: "No KDP package has been built for this book yet." }
   if (!pkg.rights.attestations.some((a) => a.id === "humanized_review")) return { ok: false, error: "This package was built before the humanized review was required — rebuild it, then approve." }
-  const book = (settings.book ?? null) as BookProject | null
+  const book: BookProject | null = loaded.project
   if (book?.updated_at && pkg.built_at && book.updated_at > pkg.built_at) return { ok: false, error: "The manuscript changed after this package was built — rebuild the package so the files match the book, then approve." }
   const review = humanizedReviewState(book?.chapters ?? [])
   if (!review.ready) return { ok: false, error: humanizedReviewRefusal(review) }
@@ -382,16 +384,16 @@ export async function approveKdpPackage(args: { brokerageId: string; magnetId: s
   const now = deps.now ?? new Date()
   const record: KdpPackageRecord = { ...pkg, approval: { by: args.actorUserId, at: now.toISOString(), attestations: KDP_ATTESTATIONS.map((a) => a.id) } }
   const signOff: HumanizedReviewRecord = { by: args.actorUserId, at: now.toISOString(), basis: "kdp_attestation", chapters_human_revised: review.humanRevised, ai_tells_open: 0 }
-  const err = await savePackage(svc, args.brokerageId, args.magnetId, args.actorUserId, settings, record, "approve", now, book ? { humanized_review: signOff } : null)
+  const err = await savePackage(svc, args.brokerageId, loaded.row, loaded.project, args.actorUserId, record, "approve", now, book ? { humanized_review: signOff } : null)
   return err ? { ok: false, error: err } : { ok: true, record }
 }
 
 /** Fresh signed URLs for the package files (the bucket is private; a stored URL would expire). Tenant-pinned. */
-export async function kdpPackageDownloads(args: { brokerageId: string; magnetId: string }, deps: { client?: Svc } = {}): Promise<{ ok: true; epubUrl: string; coverUrl: string } | { ok: false; error: string }> {
+export async function kdpPackageDownloads(args: { brokerageId: string; bookId?: string; magnetId?: string }, deps: { client?: Svc } = {}): Promise<{ ok: true; epubUrl: string; coverUrl: string } | { ok: false; error: string }> {
   const svc = (deps.client ?? (await import("@/lib/supabase/service")).createServiceClient()) as Svc
-  const { data, error } = await svc.from("lead_capture_forms").select("settings").eq("id", args.magnetId).eq("brokerage_id", args.brokerageId).maybeSingle()
-  if (error) return { ok: false, error: `Could not read the magnet: ${error.message}` }
-  const pkg = kdpPackageOf(((data as { settings?: Record<string, unknown> | null } | null)?.settings ?? null))
+  const loaded = await loadProject(svc, args.brokerageId, locatorOf(args) ?? { bookId: "" })
+  if (!loaded.ok) return { ok: false, error: loaded.error }
+  const pkg = kdpPackageOf(loaded.row.publishing)
   if (!pkg) return { ok: false, error: "No KDP package has been built for this book yet." }
   const epub = await issueBucketObjectUrl(svc as never, { bucket: pkg.files.epub.bucket, objectPath: pkg.files.epub.path })
   const cover = await issueBucketObjectUrl(svc as never, { bucket: pkg.files.cover.bucket, objectPath: pkg.files.cover.path })

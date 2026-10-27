@@ -42,6 +42,14 @@ export const CLOSING_TERM_KEYS = [
   // under the brokerage's concession policy. NEVER the seller credit: it comes off that agent's gross commission, not the
   // seller's proceeds — two terms, two lines on the statement, never conflated.
   "agent_credit",
+  // wave 145 (lane 145C — 144C Still open 3): an approved agent concession credited to the SELLER (off that agent's gross)
+  "agent_credit_seller",
+  // wave 145 (lane 145C — owner ruling 5): fees the CLIENT's agreement establishes (client_agreement_fees, m859), settled on
+  // that party's side. Never an agent-agreement fee (those are the agent's, charged by the commission engine).
+  "seller_transaction_fee",
+  "seller_admin_fee",
+  "buyer_transaction_fee",
+  "buyer_admin_fee",
   "owner_title_policy_payer",
   "commission_listing_side",
   "commission_buyer_side",
@@ -55,6 +63,11 @@ const CLOSING_TERM_LABEL: Record<ClosingTermKey, string> = {
   closing_date:             "Closing date",
   seller_credit:            "Seller credit to buyer",
   agent_credit:             "Agent credit to buyer (approved agent concession)",
+  agent_credit_seller:      "Agent credit to seller (approved agent concession)",
+  seller_transaction_fee:   "Seller's transaction fee (listing agreement)",
+  seller_admin_fee:         "Seller's administrative fee (listing agreement)",
+  buyer_transaction_fee:    "Buyer's transaction fee (buyer-broker agreement)",
+  buyer_admin_fee:          "Buyer's administrative fee (buyer-broker agreement)",
   owner_title_policy_payer: "Who pays the owner's title policy",
   commission_listing_side:  "Listing-side commission",
   commission_buyer_side:    "Buyer-side commission",
@@ -66,7 +79,8 @@ const CLOSING_TERM_LABEL: Record<ClosingTermKey, string> = {
  * review but does not block: an extension is often legitimate and its amendment may be in flight.
  */
 export const BLOCKING_TERMS: ReadonlySet<ClosingTermKey> = new Set<ClosingTermKey>([
-  "purchase_price", "earnest_money", "seller_credit", "agent_credit", "owner_title_policy_payer",
+  "purchase_price", "earnest_money", "seller_credit", "agent_credit", "agent_credit_seller", "owner_title_policy_payer",
+  "seller_transaction_fee", "seller_admin_fee", "buyer_transaction_fee", "buyer_admin_fee",
   "commission_listing_side", "commission_buyer_side", "commission_total",
 ])
 
@@ -79,8 +93,11 @@ export type Party = "buyer" | "seller" | "split"
 
 /** Instruments that can state contract terms (see KIND_ORDER for how they rank). */
 export type InstrumentKind = "original_offer" | "counter" | "addendum" | "listing_agreement" | "executed_contract"
-  /** wave 144: the broker-APPROVED agent concessions on the deal (commission_adjustments, m850). States `agent_credit` only. */
+  /** wave 144: the broker-APPROVED agent concessions on the deal (commission_adjustments, m850). States `agent_credit` (and,
+   *  wave 145, `agent_credit_seller`) only. */
   | "approved_concession"
+  /** wave 145 (lane 145C): the VERIFIED client-agreement fees (client_agreement_fees, m859). States the four fee terms only. */
+  | "client_agreement_fee"
 
 interface FactBase { confidence: Confidence; source: string; instrumentId?: string | null; executedAt?: string | null; kind?: InstrumentKind }
 export type TermFact =
@@ -126,7 +143,7 @@ export interface GoverningTerms {
  * negotiation round, decide. A TOTAL order on purpose (kind, then time, then round): a comparator that
  * mixes "by time" and "by kind" depending on which timestamps happen to exist is not transitive.
  */
-const KIND_ORDER: Record<InstrumentKind, number> = { listing_agreement: 0, original_offer: 1, counter: 2, executed_contract: 3, addendum: 4, approved_concession: 5 }
+const KIND_ORDER: Record<InstrumentKind, number> = { listing_agreement: 0, original_offer: 1, counter: 2, executed_contract: 3, addendum: 4, approved_concession: 5, client_agreement_fee: 6 }
 
 const tsOf = (iso: string | null | undefined): number => (iso ? Date.parse(iso) : NaN)
 
@@ -198,6 +215,13 @@ export const SETTLEMENT_FIELD_TO_TERM: Readonly<Record<string, { term: ClosingTe
   // the statement's agent / broker credit line to the buyer — compared against the APPROVED agent concessions (wave 144)
   agent_credit_to_buyer:    { term: "agent_credit",             unit: "usd" },
   broker_credit_to_buyer:   { term: "agent_credit",             unit: "usd" },
+  // wave 145: the agent / broker credit printed in the SELLER's column, and the client-agreement fee lines
+  agent_credit_to_seller:   { term: "agent_credit_seller",      unit: "usd" },
+  broker_credit_to_seller:  { term: "agent_credit_seller",      unit: "usd" },
+  seller_transaction_fee:   { term: "seller_transaction_fee",   unit: "usd" },
+  seller_admin_fee:         { term: "seller_admin_fee",         unit: "usd" },
+  buyer_transaction_fee:    { term: "buyer_transaction_fee",    unit: "usd" },
+  buyer_admin_fee:          { term: "buyer_admin_fee",          unit: "usd" },
   owner_title_policy_payer: { term: "owner_title_policy_payer", unit: "party" },
   commission_listing_broker:{ term: "commission_listing_side",  unit: "usd" },
   commission_buyer_broker:  { term: "commission_buyer_side",    unit: "usd" },
@@ -293,6 +317,11 @@ const SETTLEMENT_CORRECTION: Record<ClosingTermKey, string> = {
   closing_date:             "Confirm whether an executed extension exists; if so upload it. Otherwise ask title to correct the date.",
   seller_credit:            "Confirm the credit in the executed contract or counter; ask title to correct the statement, or upload the executed amendment that changed it.",
   agent_credit:             "An agent concession comes off THAT agent's gross commission and is credited to the buyer — never out of the seller's proceeds. Compare the approved concessions on the transaction's CDA page; ask title to correct the line, or have the agent request and the broker decide the concession. A credit the broker has not approved is never a governing term.",
+  agent_credit_seller:      "An agent concession credited to the SELLER comes off THAT agent's gross commission — never out of the buyer's funds or the seller's own proceeds. Compare the approved concessions on the CDA page; ask title to correct the line, or have the agent request and the broker decide it.",
+  seller_transaction_fee:   "The seller's transaction fee is what the EXECUTED listing agreement (or its executed amendment) establishes, verified on the client-agreement fees record. Ask title to correct the line; a fee the agreement includes in the commission is not charged again; never an agent-agreement fee.",
+  seller_admin_fee:         "The seller's administrative fee is what the EXECUTED listing agreement (or its executed amendment) establishes, verified on the client-agreement fees record. Ask title to correct the line, or record the executed amendment that changed it.",
+  buyer_transaction_fee:    "The buyer's transaction fee is what the EXECUTED buyer-broker agreement (or its executed amendment) establishes, verified on the client-agreement fees record. Ask title to correct the line; a fee the agreement includes in the commission is not charged again.",
+  buyer_admin_fee:          "The buyer's administrative fee is what the EXECUTED buyer-broker agreement (or its executed amendment) establishes, verified on the client-agreement fees record. Ask title to correct the line, or record the executed amendment that changed it.",
   owner_title_policy_payer: "The executed contract (or the latest executed counter) names who pays the owner's title policy; ask title to move the premium to that party, or upload the executed amendment that changed it.",
   commission_listing_side:  "Compare to the listing agreement and the executed contract; ask title to correct the commission line, or upload the executed amendment. The CDA must follow the signed commission terms.",
   commission_buyer_side:    "Compare to the buyer-broker compensation in the executed contract / buyer agreement; ask title to correct the line, or upload the executed amendment.",

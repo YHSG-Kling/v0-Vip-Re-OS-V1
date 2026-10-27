@@ -50,6 +50,10 @@ export interface ReferralCandidate {
   /** The deal this referral was consumed by (m812). undefined = the column is not applied yet. */
   transaction_id?: string | null
   created_at?: string | null
+  /** WAVE 145 (lane 145C, owner ruling 9; m860): the EXECUTED referral agreement for this referral (documents) and the date it
+   *  was fully executed. undefined = m860 not applied yet (read as "not on record" — fail closed). */
+  referral_agreement_document_id?: string | null
+  referral_agreement_executed_on?: string | null
 }
 
 /** A referral_partners row, as the payee rule reads it. */
@@ -62,6 +66,32 @@ export interface PartnerCandidate {
   agreement_end_date?: string | null
   commission_split_percentage?: unknown
   referral_fee_flat?: unknown
+  /** WAVE 145 (m860): the partner's STANDING executed referral agreement (documents) and the window it governs. */
+  agreement_document_id?: string | null
+  agreement_date?: string | null
+}
+
+/**
+ * WAVE 145 (lane 145C; owner ruling 9, 2026-10-27, verbatim: "There will be agreed and executed referral agreements if a
+ * brokerage needs to pay the referral on a transaction."): PURE — is an EXECUTED referral agreement on record for this payout on
+ * `asOf`? The referral's own executed agreement (m860 referrals.referral_agreement_document_id + executed_on, on/before the
+ * deal's date), or — for an OUTSIDE partner — the partner's standing executed agreement (m860 referral_partners
+ * .agreement_document_id) whose window (agreement_date … agreement_end_date) contains the deal's date. Never a percent typed on
+ * a row, never an `informal` partner arrangement, never a date without the paper. Module-private: reached through
+ * pickReferralForDeal (a payout owed without it HOLDS a final — the fee is not paid on a guess, and not silently dropped).
+ */
+function referralAgreementOnRecord(referral: ReferralCandidate, partner: PartnerCandidate | null | undefined, asOf: string): { ok: true; basis: string } | { ok: false; why: string } {
+  const own = typeof referral.referral_agreement_document_id === "string" && referral.referral_agreement_document_id.length > 0
+  const executedOn = typeof referral.referral_agreement_executed_on === "string" ? referral.referral_agreement_executed_on.slice(0, 10) : null
+  if (own && executedOn && executedOn <= asOf) return { ok: true, basis: `the referral's executed agreement (document ${referral.referral_agreement_document_id}, executed ${executedOn})` }
+  if (own && executedOn && executedOn > asOf) return { ok: false, why: `its referral agreement was executed ${executedOn}, after the deal's date ${asOf}` }
+  if (partner && typeof partner.agreement_document_id === "string" && partner.agreement_document_id.length > 0) {
+    const from = typeof partner.agreement_date === "string" ? partner.agreement_date.slice(0, 10) : null
+    const end = typeof partner.agreement_end_date === "string" ? partner.agreement_end_date.slice(0, 10) : null
+    if ((!from || from <= asOf) && (!end || end >= asOf)) return { ok: true, basis: `partner ${partner.id}'s standing executed referral agreement (document ${partner.agreement_document_id})` }
+    return { ok: false, why: `partner ${partner.id}'s standing referral agreement does not cover the deal's date ${asOf}` }
+  }
+  return { ok: false, why: "no executed referral agreement is on record" }
 }
 
 export type ReferralPayee =
@@ -183,11 +213,21 @@ export function pickReferralForDeal(
       findings.push(`referral ${chosen.id}: no agreed fee percent (0–100) is recorded — no fee booked (never fabricated)`)
       return none()
     }
+    const asOf = ctx.asOf ?? new Date().toISOString().slice(0, 10)
+    const paper = referralAgreementOnRecord(chosen, null, asOf)
+    if (!paper.ok) {
+      const hold = `referral ${chosen.id}: a ${pct}% fee is owed to the referring agent, but ${paper.why} — record the executed referral agreement, then recalculate (owner ruling 9)`
+      findings.push(hold)
+      return { ...none(), referral: chosen, alreadyLinked, hold }
+    }
+    findings.push(`referral ${chosen.id}: paid on ${paper.basis}`)
     return { referral: chosen, feePct: pct, feeFlatCents: null, payee: { kind: "agent", agentId: chosen.referring_agent_id }, alreadyLinked, hold: null, findings }
   }
 
   // OUTSIDE: a partner of record referred it (see the header for the payee rule).
-  const terms = partnerReferralTerms(chosen, ctx.partners?.get(String(chosen.partner_id)), ctx.asOf ?? new Date().toISOString().slice(0, 10))
+  const partnerAsOf = ctx.asOf ?? new Date().toISOString().slice(0, 10)
+  const partner = ctx.partners?.get(String(chosen.partner_id))
+  const terms = partnerReferralTerms(chosen, partner, partnerAsOf)
   if (!terms.ok) {
     if ("hold" in terms) {
       findings.push(terms.hold)
@@ -196,5 +236,11 @@ export function pickReferralForDeal(
     findings.push(terms.skip)
     return none()
   }
-  return { referral: chosen, feePct: terms.feePct, feeFlatCents: terms.feeFlatCents, payee: terms.payee, alreadyLinked, hold: null, findings: [...findings, `referral ${chosen.id}: outside partner fee on ${terms.basis}`] }
+  const paper = referralAgreementOnRecord(chosen, partner, partnerAsOf)
+  if (!paper.ok) {
+    const hold = `referral ${chosen.id}: a fee is owed to outside partner ${partner?.partner_name ?? chosen.partner_id}, but ${paper.why} — record the executed referral agreement, then recalculate (owner ruling 9)`
+    findings.push(hold)
+    return { ...none(), referral: chosen, alreadyLinked, hold }
+  }
+  return { referral: chosen, feePct: terms.feePct, feeFlatCents: terms.feeFlatCents, payee: terms.payee, alreadyLinked, hold: null, findings: [...findings, `referral ${chosen.id}: outside partner fee on ${terms.basis}, paid on ${paper.basis}`] }
 }

@@ -181,9 +181,15 @@ async function main() {
     again.success && rows(old.svc, "agent_commissions").length === 1 && rows(old.svc, "commission_calculations").length === 1 && rows(old.svc, "commission_distributions").length === 2)
   const mism = newDeal({ close: "2026-08-15", liveSplit: 85, versions: [{ effective_from: "2026-01-01", split: 70 }], signed: [{ id: "sig-x", agent_id: "", contract_type: "commission_agreement", esign_status: "fully_signed", fully_signed_at: "2026-01-05T10:00:00Z", field_values: { split_percent: "75" } }] })
   ;(mism.signed![0] as Record<string, unknown>).agent_id = mism.A; (mism.signed![0] as Record<string, unknown>).brokerage_id = mism.B
+  // RE-ASSERTED AS THE RULE (wave 145, lane 145C — owner ruling 4, "the agreement dictates the money structure"): a signed form
+  // that disagrees with the stored term is a stated contradiction — a FINAL refuses by name (posting neither number), a PREVIEW
+  // still prices the STORED 70 % (never silently the document's 75 %) and carries the mismatch for a human. The waypoint this
+  // replaced ("the final posts the stored number with a finding") is what the ruling forbids.
   const mis = await runEngine(seedDeal(mism), mism)
-  const mei = rows(mis.svc, "commission_calculations")[0]?.engine_inputs as Record<string, any>
-  check("a signed form that disagrees with the stored term: the engine still applies the STORED 70 % (never silently the document's 75 %) and the mismatch is on the record for a human", mis.r.success && cents(mis.r.net_to_agent) === 840_000 && mei?.agreement?.signed_field_mismatches?.length === 1)
+  const misPrev = await runEngine(seedDeal(mism), mism, {}, "preview")
+  check("a signed form that disagrees with the stored term: the FINAL refuses by name and posts nothing; the PREVIEW applies the STORED 70 % (never silently the document's 75 %) with the mismatch on its evidence",
+    mis.r.success === false && /states split_percent 75/.test(mis.r.error ?? "") && rows(mis.svc, "commission_distributions").length === 0
+    && misPrev.r.success && cents(misPrev.r.net_to_agent) === 840_000)
 
   // ══ B · team terms + members for the period ══════════════════════════════════════════════════
   console.log("\n[B · the team's terms and members are judged on the deal's date]")
@@ -248,7 +254,9 @@ async function main() {
   check("agreedReferralPct: only 0 < pct <= 100 is an agreement; blank/0/negative/>100/NaN are NOT (never fabricated)", agreedReferralPct(25) === 25 && agreedReferralPct("12.5") === 12.5 && [null, "", 0, -3, 101, "x"].every((v) => agreedReferralPct(v) === null))
   check("referralFeeCents: 25 % of $12,000.00 = 300,000 cents; one rounding at the boundary; a non-positive base pays nothing", referralFeeCents(1_200_000, 25) === 300_000 && referralFeeCents(1_001, 33.33) === 334 && referralFeeCents(0, 25) === 0 && referralFeeCents(-5, 25) === 0)
   const RA = "agent-recv", RR = "agent-ref", TXN = "txn-1"
-  const base = (o: Record<string, unknown>) => ({ id: "r", agent_id: RA, referring_agent_id: RR, referral_fee_pct: 25, status: "received", transaction_id: null, created_at: "2026-07-01T00:00:00Z", ...o })
+  // WAVE 145 (lane 145C, owner ruling 9): a referral pays only on an EXECUTED referral agreement on record (m860) — the fixtures
+  // that pay carry one; the hold without it is proved in scripts/agreement-governance-guard.ts (section E, with a positive control).
+  const base = (o: Record<string, unknown>) => ({ id: "r", agent_id: RA, referring_agent_id: RR, referral_fee_pct: 25, status: "received", transaction_id: null, created_at: "2026-07-01T00:00:00Z", referral_agreement_document_id: "doc-referral-agreement", referral_agreement_executed_on: "2026-06-30", ...o })
   check("pickReferralForDeal: a referral already linked to THIS deal wins; else the newest unlinked non-lost one",
     pickReferralForDeal([base({ id: "a" }), base({ id: "b", transaction_id: TXN })], { transactionId: TXN, producingAgentId: RA }).alreadyLinked === true
     && pickReferralForDeal([base({ id: "old", created_at: "2026-01-01T00:00:00Z" }), base({ id: "new" }), base({ id: "lost", status: "lost", created_at: "2026-12-01T00:00:00Z" })], { transactionId: TXN, producingAgentId: RA }).referral?.id === "new")
@@ -262,7 +270,7 @@ async function main() {
 
   const rf = newDeal({ close: "2026-08-15", liveSplit: 70, versions: [{ effective_from: "2026-01-01", split: 70 }] })
   const REFERRER = uuid(), REF = uuid()
-  rf.referrals = [{ id: REF, brokerage_id: rf.B, agent_id: rf.A, referring_agent_id: REFERRER, referral_fee_pct: 25, status: "received", referred_contact_id: rf.C, transaction_id: null, created_at: "2026-07-01T00:00:00Z" }]
+  rf.referrals = [{ id: REF, brokerage_id: rf.B, agent_id: rf.A, referring_agent_id: REFERRER, referral_fee_pct: 25, status: "received", referred_contact_id: rf.C, transaction_id: null, created_at: "2026-07-01T00:00:00Z", referral_agreement_document_id: "doc-referral-agreement", referral_agreement_executed_on: "2026-06-30" }]
   rf.extra = { agents: [{ id: rf.A, brokerage_id: rf.B, user_id: rf.U, team_id: null }, { id: REFERRER, brokerage_id: rf.B, user_id: uuid(), team_id: null }] }
   const ref = await runEngine(seedDeal(rf), rf)
   const rd = rows(ref.svc, "commission_distributions")
@@ -354,7 +362,7 @@ async function main() {
   console.log("\n[G · with m812 NOT applied the engine degrades to the live rows and says so]")
   const pre = newDeal({ close: "2026-08-15", liveSplit: 80 })
   const PREREF = uuid(), PREFER = uuid()
-  pre.referrals = [{ id: PREREF, brokerage_id: pre.B, agent_id: pre.A, referring_agent_id: PREFER, referral_fee_pct: 10, status: "received", referred_contact_id: pre.C, created_at: "2026-07-01T00:00:00Z" }]
+  pre.referrals = [{ id: PREREF, brokerage_id: pre.B, agent_id: pre.A, referring_agent_id: PREFER, referral_fee_pct: 10, status: "received", referred_contact_id: pre.C, created_at: "2026-07-01T00:00:00Z", referral_agreement_document_id: "doc-referral-agreement", referral_agreement_executed_on: "2026-06-30" }]
   pre.extra = { agents: [{ id: pre.A, brokerage_id: pre.B, user_id: pre.U, team_id: null }, { id: PREFER, brokerage_id: pre.B, user_id: uuid(), team_id: null }] }
   const warns: string[] = []
   const w0 = console.warn; console.warn = (...a: unknown[]) => { warns.push(a.join(" ")) }

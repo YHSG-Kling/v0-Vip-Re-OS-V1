@@ -14,6 +14,10 @@ import { sanitizeLeadMagnetAttribution, sourceChannelFor, touchpointChannelFor, 
 import { FORM_DECLARABLE_CONTACT_TYPES, declarableContactType } from "@/lib/lead-magnets/form-contact-types"
 // Wave 144 (lane 144H, owner ruling 15 — "ALWAYS a humanized review after the draft"): the pure rule the book publish reads.
 import { humanizedReviewState, humanizedReviewRefusal, type HumanizedReviewRecord } from "@/lib/lead-magnets/book-editorial"
+// Wave 145 (lane 145G, owner ruling 19): a BOOK is its own entity (book_projects, m867); a capture form that DISTRIBUTES one
+// carries settings.book_id only. The publish gate and the delivery read the distributed book through this ONE reader.
+import { loadDistributedBook, saveBookRow } from "@/lib/lead-magnets/book-entity"
+import { leadMagnetPublicText } from "@/lib/lead-magnets/public-text"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -220,7 +224,8 @@ export function leadMagnetQrLabel(magnetId: string): string {
 }
 
 /**
- * PURE (wave 142): the FINISHED book a magnet carries, read from lead_capture_forms.settings.book — only a
+ * PURE (wave 142): the FINISHED book a magnet distributes, read from `{ book: project }` — since wave 145 the project is the
+ * distributed book's own record (book_projects.project, read through lib/lead-magnets/book-entity.ts loadDistributedBook); only a
  * project that reached ready_for_review with a hosted PDF counts; anything earlier is null (the booklet
  * path stands in). One reader for the capture (delivery) and the review surface. @proofSeam asserted directly.
  */
@@ -547,6 +552,7 @@ export async function publishLeadMagnet(
   // public copy into is scanned once more here — the ONE pattern list + the public gate's blockers — and a
   // hard flag REFUSES the publish naming the findings. Warnings pass through (CLAUDE.md §5). A magnet with
   // no landing copy has nothing public to scan beyond its name and thank-you line.
+  let pagePublicText = ""
   {
     const { data: pageRow, error: pageErr } = await supabase
       .from("lead_capture_forms")
@@ -555,12 +561,10 @@ export async function publishLeadMagnet(
       .eq("brokerage_id", input.brokerageId)
       .maybeSingle()
     if (pageErr) return { success: false, error: `Could not read the page copy before publishing: ${pageErr.message}` }
-    const lc = ((pageRow as { landing_content?: Record<string, unknown> | null } | null)?.landing_content ?? {}) as Record<string, unknown>
-    const faq = Array.isArray(lc.faq) ? (lc.faq as Array<{ question?: unknown; answer?: unknown }>) : []
-    const publicText = [
-      (pageRow as { name?: string | null } | null)?.name, (pageRow as { thank_you_message?: string | null } | null)?.thank_you_message,
-      lc.headline, lc.subhead, lc.cta, ...(Array.isArray(lc.bullets) ? lc.bullets : []), ...faq.flatMap((f) => [f?.question, f?.answer]),
-    ].filter((s): s is string => typeof s === "string" && s.trim().length > 0).join("\n")
+    // ONE composition of the page's public words (lib/lead-magnets/public-text.ts — wave 145): the text scanned here is the
+    // text the AI draft's final phase recorded and the text the version ledger below proves went out.
+    const publicText = leadMagnetPublicText(pageRow as Parameters<typeof leadMagnetPublicText>[0])
+    pagePublicText = publicText
     const { scanPublicCopy } = await import("@/lib/kernel/marketing/public-copy-rewrite")
     // Wave 143 (lane 143F): a "55+ / senior living" claim passes ONLY against the tenant's recorded, verified
     // housing-for-older-persons exemption for the community the page names (42 U.S.C. § 3607(b)); an unreadable
@@ -576,8 +580,12 @@ export async function publishLeadMagnet(
   // A BOOK MAGNET PUBLISHES ONLY WITH ITS FINISHED, REVIEWABLE BOOK (wave 142): a half-written manuscript has
   // no deliverable, so the page would promise a book the capture cannot send. Fail closed, name the stage.
   let bookSignOff: HumanizedReviewRecord | null = null
+  // The book this form DISTRIBUTES (wave 145 — its own row). An unreadable book FAILS CLOSED: a page that promises a book is
+  // never published on a gate that could not read the book.
+  const distributed = await loadDistributedBook(supabase as never, input.brokerageId, input.magnetId, curSettings)
+  if (distributed.error) return { success: false, error: `The book this lead magnet distributes could not be read — not published: ${distributed.error}` }
   {
-    const book = (curSettings.book ?? null) as { stage?: string; needs_human_review?: number[]; chapters?: Array<{ body?: string; edited?: { human_revised_at?: string } }> } | null
+    const book = (distributed.book?.project ?? null) as { stage?: string; needs_human_review?: number[]; chapters?: Array<{ body?: string; edited?: { human_revised_at?: string } }> } | null
     if (book && typeof book === "object" && book.stage && book.stage !== "ready_for_review") {
       return { success: false, error: `The book is still being written (stage: ${book.stage.replace(/_/g, " ")}) — finish it before publishing this lead magnet.` }
     }
@@ -588,14 +596,29 @@ export async function publishLeadMagnet(
       return { success: false, error: `Fair-housing review: chapter${n === 1 ? "" : "s"} ${book.needs_human_review.join(", ")} of the book still need${n === 1 ? "s" : ""} your rewrite (the AI reached its cap) — revise ${n === 1 ? "it" : "them"} before publishing.` }
     }
     // THE HUMANIZED REVIEW (wave 144): an AI-drafted chapter that still reads machine-written is the HUMAN's to rewrite in
-    // their own voice before the book goes out; the reviewer's publish is then the sign-off, recorded on the book in the
-    // same counted write below (settings.book.humanized_review — any later revision clears it).
+    // their own voice before the book goes out; the reviewer's publish is then the sign-off, recorded on the BOOK's own row
+    // (book_projects.project.humanized_review — any later revision clears it) by a counted write before the page activates.
     if (book && typeof book === "object" && Array.isArray(book.chapters)) {
       const review = humanizedReviewState(book.chapters)
       if (!review.ready) return { success: false, error: humanizedReviewRefusal(review) }
       bookSignOff = { by: input.actorUserId, at: publishedAt, basis: "lead_magnet_publish", chapters_human_revised: review.humanRevised, ai_tells_open: 0 }
     }
   }
+  // THE VERSION THAT GOES OUT (wave 145, lane 145G — owner ruling 20 / contract C4): the page about to go live is checked
+  // against the humanized final the AI draft recorded (distribution_finals, lib/marketing/humanize-final.ts): byte-for-byte the
+  // staged final, or the reviewer's OWN edit — which must keep every disclosure the final carried and no word the brand
+  // prohibits (fair housing was scanned above). This publish is the human approval. FAIL CLOSED: an unreadable ledger refuses.
+  const hf = await import("@/lib/marketing/humanize-final")
+  const { resolveBrandVoiceCore } = await import("@/lib/kernel/brand-voice")
+  const pageVoice = await resolveBrandVoiceCore(supabase as never, { brokerageId: input.brokerageId, actorUserId: input.actorUserId })
+  const versionInput = {
+    brokerageId: input.brokerageId, assetKind: "lead_magnet" as const, assetTable: "lead_capture_forms", assetId: input.magnetId,
+    content: pagePublicText, approval: { approved: true, by: input.actorUserId, at: publishedAt },
+    tenantBrand: { prohibitedWords: pageVoice.prohibitedWords, preferredWords: pageVoice.preferredWords },
+  }
+  const versionCheck = await hf.checkDistributionPublication(supabase as never, versionInput)
+  if (!versionCheck.ok) return { success: false, error: `Not published — ${versionCheck.reason}` }
+
   const prevLifecycle = (curSettings.lifecycle ?? {}) as Partial<LeadMagnetLifecycle>
   const lifecycle: LeadMagnetLifecycle = {
     state: "published",
@@ -617,10 +640,15 @@ export async function publishLeadMagnet(
       detail: { channels: input.channels, landingUrl, authoring: curSettings.authoring ?? null, provenance: curSettings.provenance ?? null },
     },
     async () => {
+      // The humanized-review sign-off lands on the BOOK first (counted): a page never activates on an unrecorded sign-off.
+      if (bookSignOff && distributed.book) {
+        const signed = await saveBookRow(supabase as never, input.brokerageId, distributed.book.id, { project: { ...distributed.book.project, humanized_review: bookSignOff }, updatedAt: publishedAt })
+        if (signed) return { ok: false as const, error: `The book's humanized-review sign-off was not recorded — not published: ${signed}` }
+      }
       // Activate the form + record the approval on ONE row (a COUNTED update — CLAUDE.md §3).
       const { data: activated, error: activateErr } = await supabase
         .from("lead_capture_forms")
-        .update({ is_active: true, settings: { ...curSettings, lifecycle, ...(bookSignOff ? { book: { ...(curSettings.book as Record<string, unknown>), humanized_review: bookSignOff } } : {}) }, updated_at: publishedAt })
+        .update({ is_active: true, settings: { ...curSettings, lifecycle }, updated_at: publishedAt })
         .eq("brokerage_id", input.brokerageId)
         .eq("id", input.magnetId)
         .select("id")
@@ -635,6 +663,13 @@ export async function publishLeadMagnet(
     { client: supabase as any },
   )
   if (!activation.ok) return { success: false, error: activation.error }
+
+  // RECORD WHAT WENT LIVE (C4): the approved final marked published — or the reviewer's edit as its own version (basis
+  // human_edit). The page is already live, so a lost record is logged loudly, never an unwound publish.
+  {
+    const rec = await hf.recordDistributionPublication(supabase as never, { ...versionInput, via: "lead_magnet_page", ref: form.slug, now: new Date(publishedAt) })
+    if (!rec.ok) console.error("[publishLeadMagnet] the published version was NOT recorded:", rec.error)
+  }
 
   // Create QR code if requested.
   // MERGED-THEN-DELETED: this used to be its own `qr_codes` insert with slug `lm-<formSlug>` and
@@ -1283,9 +1318,12 @@ export async function captureFormSubmission(
         agentUserId = (formAgent as { user_id?: string | null } | null)?.user_id ?? null
       }
       const { deliverMagnet } = await import("@/lib/marketing/lead-magnet-delivery-runner")
-      // Wave 142: a magnet that carries a FINISHED BOOK (settings.book, lib/lead-magnets/book-creator.ts)
-      // delivers that PDF; the deliverable records the magnet + document refs so follow-up can find it.
-      await deliverMagnet({ brokerageId: input.brokerageId, contactId, agentUserId, magnetType, magnetId: input.formId, book: leadMagnetBookRefOf((form as { settings?: Record<string, unknown> | null }).settings), ctx: { area: data.city ?? null } }, supabase)
+      // Wave 142: a magnet that DISTRIBUTES a FINISHED BOOK (wave 145: the book's own row — book_projects, read through
+      // loadDistributedBook) delivers that PDF; the deliverable records the magnet + document refs so follow-up can find it.
+      // An unreadable book is said and the booklet path stands in (the capture itself already landed).
+      const distributedBook = await loadDistributedBook(supabase as never, input.brokerageId, input.formId, (form as { settings?: Record<string, unknown> | null }).settings ?? null)
+      if (distributedBook.error) console.warn("[lead-magnets] distributed book unreadable — the booklet path delivers instead:", distributedBook.error)
+      await deliverMagnet({ brokerageId: input.brokerageId, contactId, agentUserId, magnetType, magnetId: input.formId, book: leadMagnetBookRefOf({ book: distributedBook.book?.project ?? null }), ctx: { area: data.city ?? null } }, supabase)
     } catch (err) {
       console.warn("[lead-magnets] deliverable failed:", err)
     }

@@ -11,7 +11,10 @@ function missingColumn(error: { code?: string; message?: string } | null): boole
   return error.code === '42703' || error.code === 'PGRST204' || m.includes('does not exist') || m.includes('schema cache')
 }
 
-const REFERRAL_COLUMNS = 'id, agent_id, referring_agent_id, partner_id, referral_fee_pct, status, created_at'
+// WAVE 145 (lane 145C): select('*') — m860's executed-agreement columns (referral_agreement_document_id / executed_on) arrive
+// when applied and are absent before; naming them would turn "not applied yet" into a refused read. Absent reads as "no
+// executed referral agreement on record" (lib/commission/referral-payout.ts) — fail closed, the payout holds by name.
+const REFERRAL_COLUMNS = '*'
 
 async function readReferrals(
   supabase: Svc,
@@ -21,7 +24,7 @@ async function readReferrals(
   // Linked to THIS deal (a re-run), then unlinked for the deal's contacts. `transaction_id` is the m812 link.
   const linkedRes = await supabase
     .from('referrals')
-    .select(`${REFERRAL_COLUMNS}, transaction_id`)
+    .select(REFERRAL_COLUMNS)
     .eq('brokerage_id', context.brokerageId)
     .eq('transaction_id', context.transactionId)
   if (linkedRes.error && !missingColumn(linkedRes.error)) {
@@ -33,7 +36,7 @@ async function readReferrals(
 
   if (contactIds.length > 0) {
     const open = linkAvailable
-      ? await supabase.from('referrals').select(`${REFERRAL_COLUMNS}, transaction_id`)
+      ? await supabase.from('referrals').select(REFERRAL_COLUMNS)
           .eq('brokerage_id', context.brokerageId).in('referred_contact_id', contactIds).is('transaction_id', null)
       : await supabase.from('referrals').select(REFERRAL_COLUMNS)
           .eq('brokerage_id', context.brokerageId).in('referred_contact_id', contactIds)
@@ -51,7 +54,8 @@ async function readPartners(supabase: Svc, context: WaterfallContext, rows: Refe
   if (ids.length === 0) return out
   const { data, error } = await supabase
     .from('referral_partners')
-    .select('id, partner_type, partner_name, company_name, active, agreement_end_date, commission_split_percentage, referral_fee_flat')
+    // '*' for m860's agreement_document_id (absent before it is applied — read as "no standing executed agreement")
+    .select('*')
     .eq('brokerage_id', context.brokerageId)
     .in('id', ids)
   if (error) throw new Error(`[referral-deduction] referral partner read refused: ${error.message}`)

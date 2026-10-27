@@ -40,6 +40,27 @@ export async function calculateCommission(
       )
     }
 
+    // WAVE 145 (lane 145C; owner ruling 4, 2026-10-27: "the agreement dictates the money structure"): when the EXECUTED
+    // agreement in force states a term (under its canonical key) that DISAGREES with the stored term in force, a FINAL refuses
+    // by name — a stated contradiction is never posted as money, in either direction (never the stored number over the signed
+    // one, never the document's number over a human's verification). A finance admin verifies the terms against the executed
+    // agreement (lib/commission/agreement-onboarding.ts verifyAgreementTerms), then recalculates. A PREVIEW still prices the
+    // stored terms and carries the mismatch in its evidence.
+    if (calculationMode === 'final' && context.agreement && context.agreement.signedFieldMismatches.length > 0) {
+      const m = context.agreement.signedFieldMismatches
+      throw new Error(
+        `[commission-engine] The executed agreement ${context.agreement.signedAgreement?.id ?? ''} states ${m.map((x) => `${x.key} ${x.signed}`).join(', ')} ` +
+        `but the terms in force say ${m.map((x) => `${x.key} ${x.applied}`).join(', ')} (${context.agreement.asOf}). ` +
+        `Verify the agent's terms against the executed agreement, then recalculate.`
+      )
+    }
+
+    // WAVE 145 (owner ruling 4): the brokerage default rate never prices a FINAL over an executed client agreement that states
+    // the commission (or when that agreement could not be read — unprovable is not "none").
+    if (calculationMode === 'final' && context.grossRateEvidence?.from === 'brokerage_default' && context.grossRateEvidence.findings.length > 0) {
+      throw new Error(`[commission-engine] ${context.grossRateEvidence.findings.join('; ')}`)
+    }
+
     // Step 2: Calculate gross commission
     context = calculateGrossCommission(context)
 

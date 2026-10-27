@@ -239,7 +239,10 @@ export async function getLeadMagnetDraftAction(magnetId: string) {
     const lifecycle = (settings.lifecycle ?? null) as { state?: string; published_at?: string | null; approved_by?: string | null } | null
     const authoring = (settings.authoring ?? null) as { by?: string; fallback_reason?: string | null; fair_housing_flags?: string[]; concept?: string; kind?: string; fair_housing?: { rewrites?: number; escalated?: boolean; findings?: Array<{ phrase: string; fix: string }> } } | null
     const provenance = (settings.provenance ?? null) as { cloned_from_id?: string; cloned_from_name?: string } | null
-    const book = (settings.book ?? null) as { stage?: string } | null
+    // Wave 145 (owner ruling 19): the book is its own row; this form only DISTRIBUTES it (settings.book_id). Unreadable = unknown stage.
+    const { loadDistributedBook } = await import("@/lib/lead-magnets/book-entity")
+    const distributed = await loadDistributedBook(supabase as never, ctx.brokerageId, row.id, settings)
+    const book = (distributed.book ? { stage: distributed.book.stage } : null) as { stage?: string } | null
     return {
       success: true as const,
       magnet: {
@@ -380,7 +383,9 @@ export async function startBookProjectAction(input: { concept: string; audience:
     const platformRole = ((me as { platform_role?: string | null } | null)?.platform_role ?? null) || null
     const { startBookProject } = await import("@/lib/lead-magnets/book-creator")
     // context: the lib validates it and refuses a context this tenant may not use (platform_kdp is the house tenant's only).
-    const r = await startBookProject({ brokerageId: ctx.brokerageId, agentId: ctx.agentId, createdBy: ctx.userId, concept: input.concept, audience: input.audience, area: input.area ?? null, brand: input.brand ?? null, context: input.context ?? null, actor: { userType: ctx.role ?? null, platformRole } })
+    // The lead-magnet BUILDER starts a book that is DISTRIBUTED as a lead magnet (wave 145 — the book is its own entity; the
+    // draft capture form this door opens points at it).
+    const r = await startBookProject({ brokerageId: ctx.brokerageId, agentId: ctx.agentId, createdBy: ctx.userId, concept: input.concept, audience: input.audience, area: input.area ?? null, brand: input.brand ?? null, context: input.context ?? null, actor: { userType: ctx.role ?? null, platformRole }, distributeAsLeadMagnet: true })
     if (!r.success || !r.magnetId) return { success: false as const, error: r.error ?? "The book project was not created." }
     return { success: true as const, magnetId: r.magnetId, slug: r.slug ?? "", title: r.title ?? "" }
   } catch (err: any) {
@@ -402,18 +407,17 @@ export async function advanceBookProjectAction(magnetId: string) {
   }
 }
 
-/** The book project on a magnet (tenant-scoped read) — what the review surface renders. */
+/** The book a magnet distributes (tenant-scoped read of the BOOK's own row — wave 145) — what the review surface renders. */
 export async function getBookProjectAction(magnetId: string) {
   try {
     const ctx = await getAgentContext()
     if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
     const supabase = createServiceClient()
-    const { data, error } = await supabase.from("lead_capture_forms").select("id, settings").eq("id", magnetId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
-    if (error) return { success: false as const, error: error.message }
-    if (!data) return { success: false as const, error: "Magnet not found" }
-    const settings = ((data as { settings?: Record<string, unknown> | null }).settings ?? {}) as Record<string, unknown>
-    const project = (settings.book ?? null) as import("@/lib/lead-magnets/book-creator").BookProject | null
-    return { success: true as const, book: bookSummaryOf(project), ref: leadMagnetBookRefOf(settings) }
+    const { loadProject } = await import("@/lib/lead-magnets/book-creator")
+    const loaded = await loadProject(supabase as never, ctx.brokerageId, { magnetId })
+    if (!loaded.ok) return { success: false as const, error: loaded.error }
+    const project = loaded.project
+    return { success: true as const, book: bookSummaryOf(project), ref: leadMagnetBookRefOf({ book: project }) }
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to load the book" }
   }
@@ -466,11 +470,12 @@ export async function getKdpPackageAction(magnetId: string) {
     const ctx = await getAgentContext()
     if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
     const supabase = createServiceClient()
-    const { data, error } = await supabase.from("lead_capture_forms").select("settings").eq("id", magnetId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
-    if (error) return { success: false as const, error: error.message }
-    if (!data) return { success: false as const, error: "Magnet not found" }
+    // Wave 145: the package lives on the BOOK's own row (book_projects.publishing), found through the magnet that distributes it.
+    const { loadProject } = await import("@/lib/lead-magnets/book-creator")
+    const loaded = await loadProject(supabase as never, ctx.brokerageId, { magnetId })
+    if (!loaded.ok) return { success: false as const, error: loaded.error }
     const { kdpPackageOf } = await import("@/lib/lead-magnets/book-publishing-produce")
-    const pkg = kdpPackageOf((data as { settings?: Record<string, unknown> | null }).settings ?? null)
+    const pkg = kdpPackageOf(loaded.row.publishing)
     return { success: true as const, kdp: pkg ? kdpSummaryOf(pkg) : null }
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to load the KDP package" }

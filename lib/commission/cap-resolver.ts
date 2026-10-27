@@ -55,12 +55,14 @@
 // write a window that does not contain today rather than writing a row that
 // cannot be found.
 //
-// `agents.start_date` DOES NOT EXIST on this schema. Anchoring on a phantom column
-// would make this module an instance of the exact defect class it exists to clean
-// up. CORRECTED (wave 144, lane 144D): `agents.anniversary_date` DOES exist — the
-// seat's start date every provisioning path stamps (app/actions/agents.ts,
-// lib/kernel/users.ts) — and is now the anchor, with created_at the fallback; an
-// agreement that states its own cap anniversary (m850) outranks both.
+// `agents.start_date` did not exist on this schema until m858. CORRECTED (wave 144,
+// lane 144D): `agents.anniversary_date` exists — but it is the SEAT-PROVISIONING
+// stamp (app/actions/agents.ts writes today's date at seat creation), i.e. account
+// creation. WAVE 145 (lane 145C, owner ruling 3 / contract C6): agents.start_date
+// (m858) is the EXECUTED agent agreement's effective date and is now the anchor of
+// the agent's own anniversary, ahead of the seat stamps (anniversary_date, then
+// created_at — the stated fallback; `anchorSource` says which decided). An agreement
+// that states its own cap anniversary (m850) still outranks all of them.
 //
 // THE WINDOW A DEAL USES IS THE ONE CONTAINING THE DEAL'S DATE (wave 144): see
 // resolveCapCycleForDeal below. "Today" remains the seeder's default only for the
@@ -196,7 +198,19 @@ export interface AnniversaryWindow {
   anchor: string
   /** Whole years the anchor was rolled forward to reach the live window. */
   yearsElapsed: number
+  /** WAVE 145 (lane 145C, owner ruling 3): WHICH fact anchored the window — so the evidence can say when the cycle rests on a
+   *  seat-provisioning date instead of the executed agreement. */
+  anchorSource?: CapAnchorSource
 }
+
+/** Where a cap window's anchor came from, strongest first (owner rulings 3 and 9). */
+export type CapAnchorSource =
+  | "agreement_cap_anniversary"   // agent_commission_profiles.cap_anniversary_date (m850) — the agreement's own cycle
+  | "agreement_start_date"        // agents.start_date (m858) — the executed agent agreement's effective date
+  | "calendar_year"
+  | "brokerage_created_at"
+  | "seat_anniversary_date"       // agents.anniversary_date — the SEAT-PROVISIONING stamp, not an agreement fact
+  | "seat_created_at"             // agents.created_at — account creation, not an agreement fact
 
 export type WindowResult =
   | { ok: true; window: AnniversaryWindow }
@@ -215,7 +229,7 @@ export type WindowResult =
 export function resolveAnniversaryWindow(input: {
   basis: CapAnniversaryBasis
   today: string
-  /** `agents.created_at`. There is no `agents.start_date` on this schema. */
+  /** `agents.created_at` — account creation; the last fallback (see agentStartDate). */
   agentCreatedAt?: string | null
   /** WAVE 144 (lane 144D): `agents.anniversary_date` — the seat's start date, stamped at creation by every provisioning
    *  path (app/actions/agents.ts, lib/kernel/users.ts). Preferred over created_at for the agent's own anniversary. */
@@ -224,6 +238,10 @@ export function resolveAnniversaryWindow(input: {
    *  anniversary (agent_commission_profiles.cap_anniversary_date, m850). When stated it OUTRANKS every basis — the
    *  brokerage default only speaks for an agreement that is silent. */
   agreementAnniversaryDate?: string | null
+  /** WAVE 145 (lane 145C, owner ruling 3 / contract C6): `agents.start_date` (m858) — the EXECUTED agent agreement's effective
+   *  date. For the agent's-own-anniversary basis it OUTRANKS the seat stamps (anniversary_date / created_at are account
+   *  provisioning, which ruling 3 rules out as a start date); the agreement's own cap anniversary still outranks it. */
+  agentStartDate?: string | null
   /** `brokerages.created_at` — the brokerage's own year has no other anchor:
    *  there is no fiscal-year-start column on `brokerages`, and inventing one
    *  here would be a phantom. */
@@ -233,13 +251,17 @@ export function resolveAnniversaryWindow(input: {
   if (!today) return { ok: false, error: `"${String(input.today)}" is not a calendar date.` }
 
   let anchorIso: string | null
+  let anchorSource: CapAnchorSource
   const agreementAnchor = parseCapDate(input.agreementAnniversaryDate)
   if (agreementAnchor) {
     anchorIso = agreementAnchor
+    anchorSource = "agreement_cap_anniversary"
   } else if (input.basis === "calendar_year") {
     anchorIso = `${today.slice(0, 4)}-01-01`
+    anchorSource = "calendar_year"
   } else if (input.basis === "brokerage_fiscal_year") {
     anchorIso = parseCapDate(input.brokerageCreatedAt)
+    anchorSource = "brokerage_created_at"
     if (!anchorIso) {
       return {
         ok: false,
@@ -248,7 +270,10 @@ export function resolveAnniversaryWindow(input: {
       }
     }
   } else {
-    anchorIso = parseCapDate(input.agentAnniversaryDate) ?? parseCapDate(input.agentCreatedAt)
+    const start = parseCapDate(input.agentStartDate)
+    const seat = parseCapDate(input.agentAnniversaryDate)
+    anchorIso = start ?? seat ?? parseCapDate(input.agentCreatedAt)
+    anchorSource = start ? "agreement_start_date" : seat ? "seat_anniversary_date" : "seat_created_at"
     if (!anchorIso) {
       return {
         ok: false,
@@ -282,7 +307,7 @@ export function resolveAnniversaryWindow(input: {
   }
 
   const endIso = fromYmd(subtractOneDay(addYears(start, 1)))
-  return { ok: true, window: { start: startIso, end: endIso, anchor: anchorIso, yearsElapsed: years } }
+  return { ok: true, window: { start: startIso, end: endIso, anchor: anchorIso, yearsElapsed: years, anchorSource } }
 }
 
 /** PURE. Exactly stage 07's filter, so "does this window work?" is asked the way
@@ -490,10 +515,12 @@ export async function ensureAgentCapWindow(
   // ── 2. What cap applies? ──────────────────────────────────────────────────
   // TENANT-SCOPED reads. `agents` is filtered by brokerage_id as well as id, so
   // an agent id from another tenant resolves to nothing rather than to a row.
+  // agents select("*"): m858's start_date (the agreement-sourced anchor) arrives when applied and is simply absent before —
+  // naming it would turn "not applied yet" into a refused read.
   const [agentRes, brokerageRes, profileRes] = await Promise.all([
     db
       .from("agents")
-      .select("id, created_at, anniversary_date")
+      .select("*")
       .eq("brokerage_id", args.brokerageId)
       .eq("id", args.agentId)
       .maybeSingle(),
@@ -565,6 +592,7 @@ export async function ensureAgentCapWindow(
     today,
     agentCreatedAt: (agentRes.data as unknown as { created_at: string | null }).created_at,
     agentAnniversaryDate: (agentRes.data as unknown as { anniversary_date?: string | null }).anniversary_date ?? null,
+    agentStartDate: (agentRes.data as unknown as { start_date?: string | null }).start_date ?? null,
     agreementAnniversaryDate: args.agreementAnniversaryDate ?? null,
     brokerageCreatedAt: brokerage.created_at,
   })
@@ -771,7 +799,7 @@ export async function resolveCapCycleForDeal(
   // No ledger window covers the deal's date. Is a cap configured at all? The agreement in force first, then the brokerage default.
   const [brkRes, agentRes] = await Promise.all([
     db.from("brokerages").select("id, created_at, default_cap_amount, default_cap_anniversary_basis").eq("id", args.brokerageId).maybeSingle(),
-    db.from("agents").select("id, created_at, anniversary_date").eq("id", args.agentId).eq("brokerage_id", args.brokerageId).maybeSingle(),
+    db.from("agents").select("*").eq("id", args.agentId).eq("brokerage_id", args.brokerageId).maybeSingle(),
   ])
   if (brkRes.error) return { ok: false, error: `the brokerage's cap settings could not be read: ${brkRes.error.message}` }
   if (agentRes.error) return { ok: false, error: `the agent record could not be read: ${agentRes.error.message}` }
@@ -780,17 +808,22 @@ export async function resolveCapCycleForDeal(
   const capAmount = capTerms.capAmount ?? brokerageDefault
   if (capAmount === null) return { ok: true, cycle: null, findings }
   if (capAmount < 0) return { ok: false, error: `a cap cannot be negative — ${capAmount} applies on ${asOf}` }
-  const agent = (agentRes.data ?? null) as { created_at?: string | null; anniversary_date?: string | null } | null
+  const agent = (agentRes.data ?? null) as { created_at?: string | null; anniversary_date?: string | null; start_date?: string | null } | null
   const win = resolveAnniversaryWindow({
     basis: normalizeCapAnniversaryBasis(brk?.default_cap_anniversary_basis),
     today: asOf,
     agentCreatedAt: agent?.created_at ?? null,
     agentAnniversaryDate: agent?.anniversary_date ?? null,
+    agentStartDate: agent?.start_date ?? null,
     agreementAnniversaryDate: capTerms.anniversaryDate,
     brokerageCreatedAt: brk?.created_at ?? null,
   })
   if (!win.ok) return { ok: false, error: `a $${capAmount} cap applies on ${asOf} but its cycle cannot be placed: ${win.error}` }
   findings.push(`no ledger window covered ${asOf}: the cycle ${win.window.start} → ${win.window.end} starts at $0 (the anniversary restart); the final calculation opens it`)
+  if (win.window.anchorSource === "seat_anniversary_date" || win.window.anchorSource === "seat_created_at") {
+    // WAVE 145 (owner ruling 3): said, never silent — the cycle rests on an account-provisioning date, not the agreement
+    findings.push(`the cycle is anchored on the seat's ${win.window.anchorSource === "seat_created_at" ? "creation" : "provisioning"} date ${win.window.anchor}, not the executed agent agreement — record the agreement's effective date as the agent's start date (Financials → Commission agreements)`)
+  }
   return {
     ok: true,
     findings,

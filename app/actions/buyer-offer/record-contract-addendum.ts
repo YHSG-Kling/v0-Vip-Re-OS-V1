@@ -48,7 +48,16 @@ export async function recordContractAddendum(params: {
   terms: Record<string, unknown>
   /** The day it was fully signed, yyyy-mm-dd. */
   executedOn: string
-}): Promise<{ success: boolean; error?: string; versionNo?: number }> {
+  /** WAVE 145 (lane 145C, owner ruling 8): the day the change TAKES EFFECT when the instrument states one apart from its
+   *  execution (yyyy-mm-dd). Kept as evidence on the version and carried to its consequences; precedence stays execution order. */
+  effectiveOn?: string | null
+}): Promise<{
+  success: boolean
+  error?: string
+  versionNo?: number
+  /** WAVE 145: what the executed change set in motion (affected obligations, compliance re-review, settlement, CDA, notices). */
+  consequences?: { obligations: string[]; settlement: string; cda: string | null; resendCdaToTitle: boolean; complianceOpenBlocking: number; needsHuman: string[] }
+}> {
   const caller = await requireCaller()
   if (!caller.ok) return { success: false, error: caller.error }
   if (!!params.transactionId === !!params.offerId) return { success: false, error: "Name the transaction OR an offer in the contract's chain — exactly one." }
@@ -59,6 +68,10 @@ export async function recordContractAddendum(params: {
   if (!params.terms || typeof params.terms !== "object" || Array.isArray(params.terms)) return { success: false, error: "State the terms the addendum changes." }
   const dayError = executedDayError(params.executedOn, new Date())
   if (dayError) return { success: false, error: dayError }
+  const effectiveOn = params.effectiveOn ? String(params.effectiveOn) : null
+  if (effectiveOn && (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveOn) || new Date(`${effectiveOn}T00:00:00.000Z`).toISOString().slice(0, 10) !== effectiveOn)) {
+    return { success: false, error: "Give the date the change takes effect as yyyy-mm-dd (or leave it empty when it takes effect on signing)." }
+  }
 
   const svc = createServiceClient()
   const ref = params.transactionId ? { transactionId: params.transactionId } : { offerId: params.offerId as string }
@@ -81,7 +94,7 @@ export async function recordContractAddendum(params: {
   const rec = await recordContractTermsVersion(svc as any, {
     brokerageId: caller.brokerageId, rootOfferId: current.rootOfferId, transactionId: current.transactionId,
     source: params.kind, status: "executed", terms: params.terms, documentId: params.documentId, executedAt, recordedBy: caller.userId,
-    evidence: { recorded_via: "record_contract_addendum", executed_on: params.executedOn },
+    evidence: { recorded_via: "record_contract_addendum", executed_on: params.executedOn, ...(effectiveOn ? { effective_on: effectiveOn } : {}) },
   })
   if (!rec.ok) return { success: false, error: rec.reason }
 
@@ -97,5 +110,19 @@ export async function recordContractAddendum(params: {
   } catch (err) {
     console.error(`[record-contract-addendum] version ${rec.versionNo} recorded but its lifecycle event was not written:`, (err as Error)?.message ?? err)
   }
-  return { success: true, versionNo: rec.versionNo }
+  const c = rec.consequences
+  return {
+    success: true,
+    versionNo: rec.versionNo,
+    consequences: c
+      ? {
+          obligations: c.impact.obligations,
+          settlement: c.settlement.detail,
+          cda: c.cda?.outcome ?? null,
+          resendCdaToTitle: c.cda?.resendToTitle ?? false,
+          complianceOpenBlocking: c.complianceReReview.openBlocking,
+          needsHuman: c.errors,
+        }
+      : undefined,
+  }
 }

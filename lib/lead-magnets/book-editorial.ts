@@ -208,22 +208,46 @@ export function scoreBookTopicEvidence(input: {
 
 export interface AiTellFinding { phrase: string; rule: string }
 
+/**
+ * A SAFE deterministic removal of one tell (wave 145, lane 145G — owner ruling 20: "all distributions of material created by
+ * ai should have a last phase of removing any ai typical wording"). Only a tell whose removal cannot change a fact gets one:
+ * an introductory clause that ends in a comma, a hedge in front of the real sentence, essay scaffolding, a verb with a plain
+ * equivalent. A tell with no safe rewrite ("unlock the potential", "as an AI") stays OPEN for the human to rewrite — the
+ * final phase never guesses at meaning. `re` is global; `to` is the replacement (a function receives the match groups).
+ */
+interface AiTellFix { re: RegExp; to: string | ((m: RegExpExecArray) => string) }
+
+const VERB_TENSE = (stem: string, m: RegExpExecArray): string => {
+  const suffix = (m[1] ?? "").toLowerCase()
+  return suffix === "es" || suffix === "s" ? `${stem}s` : suffix === "ed" ? `${stem}ed` : suffix === "ing" ? `${stem}ing` : stem
+}
+
 // Tells a reader recognises as machine-written. A short list on purpose: each is a phrase people notice, not a style
-// opinion — the human review is the judgement; this only points at sentences that must not ship unread.
-const AI_TELLS: ReadonlyArray<{ re: RegExp; rule: string }> = [
-  { re: /\bin today'?s\s+(?:fast[\s-]paced|ever[\s-]changing|ever[\s-]evolving|competitive|dynamic)\s+(?:real[\s-]estate\s+)?(?:market|world|landscape|economy|environment)\b/i, rule: "stock opener ('in today's fast-paced market')" },
-  { re: /\bin the (?:ever[\s-]evolving|ever[\s-]changing|dynamic) (?:world|landscape|realm) of\b/i, rule: "stock opener ('in the ever-evolving world of')" },
-  { re: /\bit(?:'s| is) (?:important|worth|crucial|essential) to (?:note|remember|mention) that\b/i, rule: "hedging filler ('it's important to note that')" },
-  { re: /\bdelv(?:e|es|ed|ing) (?:deeper )?into\b/i, rule: "model diction ('delve into')" },
-  { re: /\bnavigat(?:e|es|ed|ing) the (?:complex(?:ities)?|intricac(?:y|ies)|maze|labyrinth)\b/i, rule: "model diction ('navigate the complexities')" },
+// opinion — the human review is the judgement; this only points at sentences that must not ship unread. ONE list for the
+// book's humanized review AND the final distribution phase (lib/marketing/humanize-final.ts) — never a second humanizer.
+const AI_TELLS: ReadonlyArray<{ re: RegExp; rule: string; fix?: AiTellFix }> = [
+  { re: /\bin today'?s\s+(?:fast[\s-]paced|ever[\s-]changing|ever[\s-]evolving|competitive|dynamic)\s+(?:real[\s-]estate\s+)?(?:market|world|landscape|economy|environment)\b/i, rule: "stock opener ('in today's fast-paced market')",
+    fix: { re: /\bin today'?s\s+(?:fast[\s-]paced|ever[\s-]changing|ever[\s-]evolving|competitive|dynamic)\s+(?:real[\s-]estate\s+)?(?:market|world|landscape|economy|environment),\s*/gi, to: "" } },
+  { re: /\bin the (?:ever[\s-]evolving|ever[\s-]changing|dynamic) (?:world|landscape|realm) of\b/i, rule: "stock opener ('in the ever-evolving world of')",
+    fix: { re: /\bin the (?:ever[\s-]evolving|ever[\s-]changing|dynamic) (?:world|landscape|realm) of [^,.;:!?\n\d$%]{1,60},\s*/gi, to: "" } },
+  { re: /\bit(?:'s| is) (?:important|worth|crucial|essential) to (?:note|remember|mention) that\b/i, rule: "hedging filler ('it's important to note that')",
+    fix: { re: /\bit(?:'s| is) (?:important|worth|crucial|essential) to (?:note|remember|mention) that\s+/gi, to: "" } },
+  { re: /\bdelv(?:e|es|ed|ing) (?:deeper )?into\b/i, rule: "model diction ('delve into')",
+    fix: { re: /\bdelv(e|es|ed|ing) (deeper )?into\b/gi, to: (m) => `${m[1]?.toLowerCase() === "ing" ? "looking" : VERB_TENSE("look", m)}${m[2] ? " closer" : ""} at` } },
+  { re: /\bnavigat(?:e|es|ed|ing) the (?:complex(?:ities)?|intricac(?:y|ies)|maze|labyrinth)\b/i, rule: "model diction ('navigate the complexities')",
+    fix: { re: /\bnavigat(e|es|ed|ing) the (?:complexities|intricacies|maze|labyrinth) of\b/gi, to: (m) => `${m[1]?.toLowerCase() === "ing" ? "working" : VERB_TENSE("work", m)} through` } },
   { re: /\bembark(?:s|ed|ing)? on (?:a|an|your|this) (?:journey|adventure)\b/i, rule: "model diction ('embark on a journey')" },
-  { re: /\bis a testament to\b/i, rule: "model diction ('a testament to')" },
+  { re: /\bis a testament to\b/i, rule: "model diction ('a testament to')",
+    fix: { re: /\bis a testament to\b/gi, to: "shows" } },
   { re: /\bunlock(?:s|ing)? the (?:secrets?|power|potential)\b/i, rule: "model diction ('unlock the secrets')" },
   { re: /\b(?:rich|vibrant|intricate) tapestry\b/i, rule: "model diction ('a rich tapestry')" },
-  { re: /\blook no further\b/i, rule: "ad-copy filler ('look no further')" },
+  { re: /\blook no further\b/i, rule: "ad-copy filler ('look no further')",
+    // Only the sentence-final form ("Looking for X? Look no further!"); "look no further than our team" keeps its object → open.
+    fix: { re: /\s*\blook no further[.!]+/gi, to: "" } },
   { re: /\bwhether you(?:'re| are) a (?:first[\s-]time|seasoned|savvy)\b[^.]{0,80}\bor a (?:seasoned|first[\s-]time|savvy)\b/i, rule: "symmetric both-sides opener" },
   { re: /\bas an ai\b|\b(?:large )?language model\b/i, rule: "the model talking about itself" },
-  { re: /\bin conclusion,|\bto sum(?:marize| it)? up,/i, rule: "essay scaffolding ('in conclusion,')" },
+  { re: /\bin conclusion,|\bto sum(?:marize| it)? up,/i, rule: "essay scaffolding ('in conclusion,')",
+    fix: { re: /\b(?:in conclusion|to sum(?:marize| it)? up),\s*/gi, to: "" } },
   { re: /\bthis (?:comprehensive |ultimate |complete )?(?:guide|chapter|book) will (?:walk|take|explore|delve|cover)\b/i, rule: "self-announcing paragraph ('this guide will walk you through')" },
 ]
 
@@ -235,6 +259,40 @@ export function scanAiTells(text: string): AiTellFinding[] {
     if (m) out.push({ phrase: m[0], rule: t.rule })
   }
   return out
+}
+
+/**
+ * PURE (wave 145, lane 145G). Apply every SAFE removal above to a text and say what was removed; whatever tell has no safe
+ * rewrite is left exactly where it was (scanAiTells on the result names it — the human rewrites those). Never touches a
+ * digit, a currency amount or a percentage (the fixes' patterns exclude them), so material terms survive by construction;
+ * lib/marketing/humanize-final.ts still proves it on every final. A removal at a sentence start re-capitalises the next word.
+ */
+export function stripAiTells(text: string): { text: string; removed: AiTellFinding[] } {
+  let out = String(text ?? "")
+  const removed: AiTellFinding[] = []
+  for (const t of AI_TELLS) {
+    if (!t.fix) continue
+    const re = new RegExp(t.fix.re.source, t.fix.re.flags.includes("g") ? t.fix.re.flags : `${t.fix.re.flags}g`)
+    const cap = (s: string) => (/^[a-z]/.test(s) ? s.charAt(0).toUpperCase() + s.slice(1) : s)
+    let next = ""
+    let last = 0
+    let capNext = false
+    for (let m = re.exec(out); m; m = re.exec(out)) {
+      if (m[0].length === 0) { re.lastIndex++; continue }
+      const replacement = typeof t.fix.to === "string" ? t.fix.to : t.fix.to(m)
+      const between = out.slice(last, m.index)
+      next += capNext ? cap(between) : between
+      // An emptied introductory clause leaves the real sentence: capitalise its first letter when it now starts one.
+      const atSentenceStart = /(^|[.!?:]\s+|\n\s*|>\s*)$/.test(next)
+      if (replacement === "") capNext = atSentenceStart
+      else { next += atSentenceStart ? cap(replacement) : replacement; capNext = false }
+      removed.push({ phrase: m[0].trim(), rule: t.rule })
+      last = re.lastIndex
+    }
+    const tail = out.slice(last)
+    out = next + (capNext ? cap(tail) : tail)
+  }
+  return { text: out, removed }
 }
 
 export interface HumanizedReviewState {
@@ -257,7 +315,7 @@ export function humanizedReviewState(chapters: ReadonlyArray<{ body?: string | n
   return { open, humanRevised, ready: open.length === 0 }
 }
 
-/** The record the human's sign-off leaves on the book (settings.book.humanized_review). */
+/** The record the human's sign-off leaves on the book (book_projects.project.humanized_review — wave 145; was settings.book). */
 export interface HumanizedReviewRecord {
   by: string
   at: string

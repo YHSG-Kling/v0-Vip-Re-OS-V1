@@ -617,6 +617,30 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
     }
   }
 
+  // ── ASK AT CLOSING (wave 145, lane 145C — owner rulings 6/7) ─────────────────
+  // Signed agreements → current effective terms → offer/counter/addenda → settlement → waterfall are compared
+  // (lib/commission/closing-verification.ts), and the agent answers ONE question before the commission is submitted: is
+  // any executed change unrecorded? The question is a blocking compliance-log row; it is asked here (after the file check,
+  // so it never blocks that check before it was asked) and answered on the CDA page. A "yes" holds the CDA until the
+  // executed evidence is recorded; the answer itself never changes a term, an agreement or a ledger row. The service
+  // client is used only after the assigned-agent gate above (the agent cannot write the compliance log under RLS).
+  {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { ensureClosingAttestationAsked, closingAttestationState } = await import("@/lib/commission/closing-verification")
+    const svcForAttestation = createServiceClient()
+    const asked = await ensureClosingAttestationAsked(svcForAttestation as never, { brokerageId: cda.brokerage_id, transactionId: cda.transaction_id })
+    if (!asked.ok) return { success: false as const, error: "closing_attestation_unavailable", blockers: [asked.error] }
+    const state = await closingAttestationState(svcForAttestation as never, { brokerageId: cda.brokerage_id, transactionId: cda.transaction_id })
+    if (!state.ok) return { success: false as const, error: "closing_attestation_unavailable", blockers: [state.error] }
+    if (state.status !== "pass") {
+      return {
+        success: false as const,
+        error: "closing_attestation_required",
+        blockers: [state.reason ?? "Confirm whether any executed change (agreement amendment, contract addendum, fee change) is unrecorded."],
+      }
+    }
+  }
+
   const now = new Date().toISOString()
 
   // CONTRACT/FEE AUDIT at submit — the AI matches the agent's brokerage CONTRACT (split + cap)
@@ -1154,6 +1178,32 @@ export async function requestCdaChangesAction(input: { cdaId: string; reason: st
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   revalidatePath(`/dashboard/compliance`)
   return { success: true as const }
+}
+
+/**
+ * WAVE 145 (lane 145C, owner ruling 8) — THE CDA CORRECTION DOOR. An executed change after the CDA was approved (or sent to
+ * title) re-opens it for correction: requestCdaChangesAction above only works from 'submitted' (a compliance review act), so an
+ * APPROVED CDA kept instructing title on superseded terms. The executed-addendum path runs this automatically
+ * (lib/offers/governing-terms-consequences.ts); this is the human door for a correction that arrived another way. Compliance
+ * roster only (the same seats that send a CDA back); tenant from the session; the rule and the counted write live in
+ * lib/commission/cda-correction.ts (service client after this gate). Nothing signed is edited — the CDA re-opens, a revision
+ * row is written, and a CDA already delivered to title is flagged for re-send.
+ */
+export async function requestCdaCorrectionAction(input: { transactionId: string; reason: string }) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  if (!COMPLIANCE_ROLES.has(auth.userType)) return { success: false as const, error: "forbidden" }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(input?.transactionId ?? ""))) return { success: false as const, error: "invalid_transaction" }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { reopenCdaForCorrection } = await import("@/lib/commission/cda-correction")
+  const r = await reopenCdaForCorrection(createServiceClient() as never, {
+    brokerageId: auth.brokerageId, transactionId: input.transactionId, reason: String(input.reason ?? ""), actedBy: auth.userId, source: "manual",
+  })
+  if (!r.ok) return { success: false as const, error: r.error }
+  revalidatePath(`/dashboard/transactions/${input.transactionId}`)
+  revalidatePath(`/dashboard/transactions/${input.transactionId}/cda`)
+  return { success: true as const, outcome: r.result.outcome, resendToTitle: r.result.resendToTitle, detail: r.result.detail }
 }
 
 // ─── Reads ───────────────────────────────────────────────────────────────────

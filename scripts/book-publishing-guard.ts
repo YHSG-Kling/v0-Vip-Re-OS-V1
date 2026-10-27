@@ -40,6 +40,12 @@
  *   L. THE BRAND ON THE BOOK: logo (the brand's own file, fetched only from the platform's own storage host), accent colour and
  *      the APPROVED tagline (a claiming tagline is left off) reach the cover and the EPUB.
  *   M. THE RIGHTS NOTICE is displayed at /legal (public route), linked from the Marketing Studio, standard language only.
+ *
+ * WAVE 145 (lane 145G, owner ruling 19 — "a lead magnet is … not a manuscript or book"): the BOOK is its own entity
+ * (public.book_projects, m867; lib/lead-magnets/book-entity.ts). Every fixture below that used to seed the manuscript on a
+ * capture form (lead_capture_forms.settings.book / settings.book_publishing) now seeds the BOOK's row (project / publishing)
+ * and a capture form that only POINTS at it (settings.book_id) — the WAYPOINT moved; every RULE asserted here is unchanged.
+ * The review surfaces still address a book through the form that distributes it (magnetId), and that locator is exercised.
  */
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs"
 import { join } from "node:path"
@@ -81,6 +87,7 @@ const section = (t: string) => console.log(`\n[${t}]`)
 
 const B1 = "00000000-0000-4000-8000-0000000000b1", B2 = "00000000-0000-4000-8000-0000000000b2", U1 = "00000000-0000-4000-8000-0000000000a1"
 const MAGNET = "11111111-1111-4111-8111-111111111111"
+const BOOK = "22222222-2222-4222-8222-222222222222"
 const para = (n: number) => Array.from({ length: n }, (_, i) => `Sentence ${i + 1} explains one practical step in plain English & stays calm about the process.`).join(" ")
 const chapters = [
   { heading: "Getting your home ready", body: `${para(8)}\n\n- Declutter one room at a time\n- Fix the small things first\n\n## A note on timing\n\n${para(4)}` },
@@ -239,7 +246,15 @@ async function main() {
     research: null, outline: null, chapters: chapters.map((c) => ({ ...c, words: c.body.split(/\s+/).length, written_at: "2026-10-01", edited: { fact_findings: 0, fair_housing_rewrites: 0, escalated: false, findings: [] } })),
     fact_check: null, pdf_url: "https://cdn/book.pdf", document_id: null, page_count: null, cost: { tokens: 0, model_calls: 0 }, needs_human_review: [], started_by: U1, started_at: "2026-10-01", updated_at: "2026-10-01", log: [], ...over,
   })
-  const seed = (p: Record<string, unknown> = project(), tenant = B1) => memSupabase({ lead_capture_forms: [{ id: MAGNET, brokerage_id: tenant, name: "Calm Home Seller", slug: "calm-home-seller", agent_id: null, settings: { book: p }, landing_content: null }], agent_action_ledger: [] }, { uuidIds: true })
+  // The BOOK's own row (wave 145) + the capture form that distributes it (a pointer, never a copy of the manuscript).
+  const bookRow = (p: Record<string, unknown>, tenant = B1, extra: Record<string, unknown> = {}) => ({
+    id: BOOK, brokerage_id: tenant, owner_scope: "brokerage", team_id: null, agent_id: null, created_by: U1, title: String(p.title ?? "Untitled"),
+    audience: String(p.audience ?? "seller"), publication_context: ((p.publication as { context?: string } | undefined)?.context) ?? "lead_magnet",
+    stage: String(p.stage ?? "research"), project: p, publishing: null, distribution_form_id: MAGNET, ...extra,
+  })
+  const seed = (p: Record<string, unknown> = project(), tenant = B1) => memSupabase({ book_projects: [bookRow(p, tenant)], lead_capture_forms: [{ id: MAGNET, brokerage_id: tenant, name: "Calm Home Seller", slug: "calm-home-seller", agent_id: null, settings: { book_id: BOOK }, landing_content: null }], agent_action_ledger: [] }, { uuidIds: true })
+  const pkgOf = (db: { tables: Record<string, Array<Record<string, any>>> }) => kdpPackageOf(db.tables.book_projects?.[0]?.publishing ?? null)
+  const bookOf = (db: { tables: Record<string, Array<Record<string, any>>> }, id = BOOK) => (db.tables.book_projects ?? []).find((r) => r.id === id)
   const hosted: Array<{ path: string; type: string; bytes: number }> = []
   const deps = (o: Record<string, unknown> = {}) => ({
     brandResolver: async () => ({ brokerageName: "Harbor Realty", agentName: "Dana Reyes", primaryColor: "#14532D" }),
@@ -251,26 +266,27 @@ async function main() {
   {
     const db = seed()
     const r = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1, landingUrl: "https://app.example.com/lm/calm-home-seller" }, { client: db as never, ...deps() } as never)
-    const saved = kdpPackageOf(db.tables.lead_capture_forms[0].settings)
-    check("a finished book is PACKAGED: recorded on settings.book_publishing (counted), EPUB + cover hosted, art from the image rail", r.ok && !!saved && saved.cover_art === "image_rail" && saved.files.epub.bytes > 1000 && saved.files.cover.width === 1600 && saved.approval === null, JSON.stringify(r).slice(0, 300))
-    check("both files go to the PRIVATE documents bucket under the TENANT's path (never a public bucket; the tenant id is in the key)", hosted.length === 2 && hosted.every((h) => h.path.startsWith(`client-docs/${B1}/kdp/${MAGNET}/`)) && saved?.files.epub.bucket === "documents" && saved.files.cover.bucket === "documents" && hosted.some((h) => h.type === "application/epub+zip") && hosted.some((h) => h.type === "image/jpeg"))
-    check("the book itself (settings.book) is untouched by packaging", (db.tables.lead_capture_forms[0].settings as { book: { stage: string; chapters: unknown[] } }).book.stage === "ready_for_review" && (db.tables.lead_capture_forms[0].settings as { book: { chapters: unknown[] } }).book.chapters.length === 4)
+    const saved = pkgOf(db)
+    check("a finished book is PACKAGED: recorded on the BOOK's own row (book_projects.publishing, counted), EPUB + cover hosted, art from the image rail", r.ok && !!saved && saved.cover_art === "image_rail" && saved.files.epub.bytes > 1000 && saved.files.cover.width === 1600 && saved.approval === null, JSON.stringify(r).slice(0, 300))
+    check("both files go to the PRIVATE documents bucket under the TENANT's path (never a public bucket; the tenant id is in the key)", hosted.length === 2 && hosted.every((h) => h.path.startsWith(`client-docs/${B1}/kdp/${BOOK}/`)) && saved?.files.epub.bucket === "documents" && saved.files.cover.bucket === "documents" && hosted.some((h) => h.type === "application/epub+zip") && hosted.some((h) => h.type === "image/jpeg"))
+    check("the book's manuscript (book_projects.project) is untouched by packaging, and the capture form still only POINTS at it", bookOf(db)?.project?.stage === "ready_for_review" && (bookOf(db)?.project?.chapters ?? []).length === 4 && db.tables.lead_capture_forms[0].settings.book_id === BOOK && !("book" in db.tables.lead_capture_forms[0].settings) && !("book_publishing" in db.tables.lead_capture_forms[0].settings))
     check("evidence: a marketing.lead_magnet.kdp_package ledger row, HUMAN_REQUESTED", db.tables.agent_action_ledger.some((l) => l.action === "marketing.lead_magnet.kdp_package" && l.reason_code === "HUMAN_REQUESTED"))
     check("the record carries the rights/AI-disclosure record, the paperback plan WITH its blocker, and the paperback warning", !!saved && saved.rights.aiDisclosure.images === "ai_generated" && saved.paperback.blockers.length >= 1 && saved.warnings.some((w) => /PAPERBACK/.test(w)))
     const noAll = await approveKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1, attested: ["i_hold_rights", "no_rank_claims"] }, { client: db as never })
     check("approval with a MISSING attestation is refused and names exactly the missing ones", !noAll.ok && /ai_disclosure_confirmed/.test((noAll as { error: string }).error) && /facts_reviewed/.test((noAll as { error: string }).error) && !/i_hold_rights,/.test((noAll as { error: string }).error))
-    check("…and nothing was approved", kdpPackageOf(db.tables.lead_capture_forms[0].settings)?.approval === null)
-    const ok = await approveKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1, attested: KDP_ATTESTATIONS.map((a) => a.id) }, { client: db as never, now: new Date("2026-10-23T13:00:00Z") })
-    check("every attestation, by a session user → approved, recording WHO and WHEN, ledgered as a human approval", ok.ok && kdpPackageOf(db.tables.lead_capture_forms[0].settings)?.approval?.by === U1 && db.tables.agent_action_ledger.some((l) => l.action === "marketing.lead_magnet.kdp_approve"))
+    check("…and nothing was approved", pkgOf(db)?.approval === null)
+    // The BOOK's own id is a locator too (a KDP-only book has no capture form).
+    const ok = await approveKdpPackage({ brokerageId: B1, bookId: BOOK, actorUserId: U1, attested: KDP_ATTESTATIONS.map((a) => a.id) }, { client: db as never, now: new Date("2026-10-23T13:00:00Z") })
+    check("every attestation, by a session user → approved, recording WHO and WHEN, ledgered as a human approval (addressed by the BOOK's own id)", ok.ok && pkgOf(db)?.approval?.by === U1 && db.tables.agent_action_ledger.some((l) => l.action === "marketing.lead_magnet.kdp_approve"))
     const rebuilt = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: db as never, ...deps() } as never)
-    check("REBUILDING the package clears the approval (the files changed — the human attests again)", rebuilt.ok && kdpPackageOf(db.tables.lead_capture_forms[0].settings)?.approval === null)
+    check("REBUILDING the package clears the approval (the files changed — the human attests again)", rebuilt.ok && pkgOf(db)?.approval === null)
     check("another tenant cannot approve or build this magnet (not found, nothing changed)", !(await approveKdpPackage({ brokerageId: B2, magnetId: MAGNET, actorUserId: U1, attested: KDP_ATTESTATIONS.map((a) => a.id) }, { client: db as never })).ok && !(await buildKdpPackage({ brokerageId: B2, magnetId: MAGNET, actorUserId: U1 }, { client: db as never, ...deps() } as never)).ok)
   }
   {
     hosted.length = 0
     const db = seed()
     const r = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: db as never, ...deps({ entitlement: async () => ({ allowed: false, reason: "budget_exhausted" }) }) } as never)
-    const saved = kdpPackageOf(db.tables.lead_capture_forms[0].settings)
+    const saved = pkgOf(db)
     check("the tenant may not spend on art → a TYPOGRAPHIC cover, the rights record claims NO AI image, the warning says why — the book is not held for want of a picture", r.ok && saved?.cover_art === "typographic_only" && saved.rights.aiDisclosure.images === "none" && saved.warnings.some((w) => /typography only/.test(w) && /budget_exhausted/.test(w)))
     const fail = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: seed() as never, ...deps({ coverArt: async () => ({ bytes: null, note: "image rail returned no image (provider key missing)", costUsd: null }) }) } as never)
     check("the image rail failing (no provider key) → typographic cover, never an error", fail.ok && fail.record.cover_art === "typographic_only" && /provider key missing/.test(fail.record.cover_art_note ?? ""))
@@ -278,7 +294,7 @@ async function main() {
   const blocked = async (label: string, db: ReturnType<typeof seed>, expect: (r: Awaited<ReturnType<typeof buildKdpPackage>>) => boolean, d: Record<string, unknown> = {}) => {
     hosted.length = 0
     const r = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: db as never, ...deps(d) } as never)
-    check(label, !r.ok && expect(r) && hosted.length === 0 && kdpPackageOf(db.tables.lead_capture_forms[0].settings) === null, JSON.stringify(r).slice(0, 300))
+    check(label, !r.ok && expect(r) && hosted.length === 0 && pkgOf(db) === null, JSON.stringify(r).slice(0, 300))
   }
   await blocked("a book still being written (stage chapters) is NOT packaged and nothing is hosted", seed(project({ stage: "chapters" })), (r) => !r.ok && /still being written/.test(r.error))
   await blocked("a book with a chapter still waiting on the human (needs_human_review) is NOT packaged", seed(project({ needs_human_review: [2] })), (r) => !r.ok && /need your rewrite/.test(r.error))
@@ -291,7 +307,7 @@ async function main() {
     const r = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: db as never, ...deps({ olderPersons: [verified] }) } as never)
     check("…the SAME title passes when the tenant has a VERIFIED exemption for the community it names (the claim is verified, not forbidden)", r.ok, JSON.stringify(r).slice(0, 200))
   }
-  await blocked("a magnet with no book project is not a book", memSupabase({ lead_capture_forms: [{ id: MAGNET, brokerage_id: B1, name: "x", slug: "x", settings: {}, landing_content: null }], agent_action_ledger: [] }, { uuidIds: true }) as never, (r) => !r.ok && /no book project/.test(r.error))
+  await blocked("a magnet with no book project is not a book", memSupabase({ book_projects: [], lead_capture_forms: [{ id: MAGNET, brokerage_id: B1, name: "x", slug: "x", settings: {}, landing_content: null }], agent_action_ledger: [] }, { uuidIds: true }) as never, (r) => !r.ok && /no book project/.test(r.error))
 
   // ═══════════════════ H · source rules ═══════════════════
   section("H · source rules — the platform never logs in to KDP, stores a credential or claims a publication")
@@ -308,20 +324,22 @@ async function main() {
   // ═══════════════════ shared world for I–L (wave 144) ═══════════════════
   const BH = "00000000-0000-4000-8000-0000000000c1", US = "00000000-0000-4000-8000-0000000000a9", AG1 = "00000000-0000-4000-8000-0000000000d1", AGH = "00000000-0000-4000-8000-0000000000d9"
   const NOW144 = new Date("2026-10-25T12:00:00Z")
-  const world = (o: { refuse?: Record<string, string>; forms?: Array<Record<string, unknown>>; subs?: Array<Record<string, unknown>> } = {}) => {
+  const world = (o: { refuse?: Record<string, string>; forms?: Array<Record<string, unknown>>; subs?: Array<Record<string, unknown>>; books?: Array<Record<string, unknown>> } = {}) => {
     const db = memSupabase({
       brokerages: [{ id: B1, name: "Harbor Realty", is_demo: false }, { id: B2, name: "Other Realty", is_demo: false }, { id: BH, name: "Platform House", is_demo: true }],
       users: [{ id: U1, brokerage_id: B1, first_name: "Dana", last_name: "Reyes", platform_role: null }, { id: US, brokerage_id: BH, first_name: "Sam", last_name: "Staff", platform_role: "platform_admin" }],
       agents: [{ id: AG1, user_id: U1, brokerage_id: B1 }, { id: AGH, user_id: US, brokerage_id: BH }],
       platform_settings: [{ id: "ps-1", product_brand: { name: "VIP Agents", tagline: "The AI team that runs the whole business", primaryColor: "#0F172A", accentColor: "#F59E0B" } }],
-      lead_capture_forms: o.forms ?? [], form_submissions: o.subs ?? [], agent_action_ledger: [], lifecycle_events: [], qr_codes: [], contacts: [], activities: [],
+      lead_capture_forms: o.forms ?? [], book_projects: o.books ?? [], form_submissions: o.subs ?? [], agent_action_ledger: [], lifecycle_events: [], qr_codes: [], contacts: [], activities: [],
       generated_documents: [], manager_signals: [], notifications: [], brokerage_settings: [],
     }, { uuidIds: true, stampCreatedAt: true, refuse: o.refuse })
     ;(db as unknown as { rpc: unknown }).rpc = async () => ({ data: null, error: null })
     return db
   }
   const allow: NonNullable<BookDeps["entitlement"]> = async () => ({ allowed: true, reason: "ok" })
-  const formWith = (tenant: string, p: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ id: MAGNET, brokerage_id: tenant, name: "Calm Home Seller", slug: "calm-home-seller", agent_id: tenant === B1 ? AG1 : null, is_active: false, magnet_type: "seller_guide", thank_you_message: "Thanks!", settings: { book: p }, landing_content: { headline: "The Calm Home Seller", subhead: "Sell with a plan", cta: "Send me the book", bullets: ["Pricing"] }, ...extra })
+  // A capture form that DISTRIBUTES the book (settings.book_id) + the BOOK's own row (wave 145) — always seeded together.
+  const formWith = (tenant: string, _p: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ id: MAGNET, brokerage_id: tenant, name: "Calm Home Seller", slug: "calm-home-seller", agent_id: tenant === B1 ? AG1 : null, is_active: false, magnet_type: "seller_guide", thank_you_message: "Thanks!", settings: { book_id: BOOK }, landing_content: { headline: "The Calm Home Seller", subhead: "Sell with a plan", cta: "Send me the book", bullets: ["Pricing"] }, ...extra })
+  const bookFor = (tenant: string, p: Record<string, unknown>) => bookRow(p, tenant, { agent_id: tenant === B1 ? AG1 : null, owner_scope: tenant === BH ? "platform" : "agent" })
   const startPub = (ctx: "lead_magnet" | "platform_kdp", house: boolean, agentId: string | null) => publicationRecord({ context: ctx, agentId, isHouseTenant: house, by: U1, at: "2026-10-01T00:00:00.000Z", why: "tenant default at start" })
 
   // ═══════════════════ I · publication context ═══════════════════
@@ -342,18 +360,23 @@ async function main() {
     const counting: NonNullable<BookDeps["entitlement"]> = async () => { asked++; return { allowed: true, reason: "ok" } }
     const ok = await startBookProject({ brokerageId: B1, agentId: AG1, createdBy: U1, concept: "A seller's book on pricing a fixer-upper in Tampa Bay", audience: "seller" }, { client: db as never, entitlement: counting, now: NOW144 })
     const row = db.tables.lead_capture_forms.find((r) => r.id === ok.magnetId)
-    const pub = (row?.settings as { book?: { publication?: { context: string; owner: string; brand_source: string } } } | undefined)?.book?.publication
+    const okBook = bookOf(db, ok.bookId)
+    const pub = (okBook?.project as { publication?: { context: string; owner: string; brand_source: string } } | undefined)?.publication
     check("an ordinary tenant's book starts as a LEAD MAGNET owned by its agent, tenant-branded; the ledger names the context", ok.success && ok.context === "lead_magnet" && pub?.context === "lead_magnet" && pub.owner === "agent" && pub.brand_source === "tenant" && db.tables.agent_action_ledger.some((l) => l.action === "marketing.lead_magnet.book_start" && (l.detail as { context?: string } | null)?.context === "lead_magnet"), JSON.stringify({ ok, pub }))
+    check("ruling 19 — the BOOK is its own entity (book_projects: owner agent, stage research, context lead_magnet) and the capture form that distributes it only POINTS at it (settings.book_id, no manuscript)",
+      !!okBook && okBook.owner_scope === "agent" && okBook.agent_id === AG1 && okBook.stage === "research" && okBook.publication_context === "lead_magnet" && okBook.distribution_form_id === ok.magnetId && row?.settings?.book_id === ok.bookId && !("book" in (row?.settings ?? {})), JSON.stringify({ okBook, settings: row?.settings }))
     const house = await startBookProject({ brokerageId: BH, agentId: AGH, createdBy: US, concept: "An agent's field guide to AI-assisted listing launches in Florida", audience: "seller" }, { client: db as never, entitlement: allow, now: NOW144 })
-    const hp = (db.tables.lead_capture_forms.find((r) => r.id === house.magnetId)?.settings as { book?: { publication?: { context: string; owner: string; brand_source: string } } } | undefined)?.book?.publication
-    check("the platform's HOUSE tenant (brokerages.is_demo) starts a PLATFORM book: owner platform, platform-branded", house.success && house.context === "platform_kdp" && hp?.owner === "platform" && hp.brand_source === "platform", JSON.stringify({ house, hp }))
+    const houseBook = bookOf(db, house.bookId)
+    const hp = (houseBook?.project as { publication?: { context: string; owner: string; brand_source: string } } | undefined)?.publication
+    check("the platform's HOUSE tenant (brokerages.is_demo) starts a PLATFORM book: owner platform, platform-branded — owner_scope platform on the entity, and (not asked to distribute) NO capture form", house.success && house.context === "platform_kdp" && hp?.owner === "platform" && hp.brand_source === "platform" && houseBook?.owner_scope === "platform" && !house.magnetId && houseBook?.distribution_form_id === null, JSON.stringify({ house, hp }))
     const before = db.tables.lead_capture_forms.length
+    const booksBefore = db.tables.book_projects.length
     const stolen = await startBookProject({ brokerageId: B1, agentId: AG1, createdBy: U1, concept: "A seller's book on pricing a fixer-upper in Tampa Bay", audience: "seller", context: "platform_kdp" }, { client: db as never, entitlement: allow, now: NOW144 })
     const junk = await startBookProject({ brokerageId: B1, agentId: AG1, createdBy: U1, concept: "A seller's book on pricing a fixer-upper in Tampa Bay", audience: "seller", context: "amazon_store" as never }, { client: db as never, entitlement: allow, now: NOW144 })
-    check("a tenant cannot start a PLATFORM book, and an unknown context is refused — nothing written", !stolen.success && /house tenant/.test(stolen.error ?? "") && !junk.success && /lead_magnet, tenant_kdp or platform_kdp/.test(junk.error ?? "") && db.tables.lead_capture_forms.length === before)
+    check("a tenant cannot start a PLATFORM book, and an unknown context is refused — nothing written", !stolen.success && /house tenant/.test(stolen.error ?? "") && !junk.success && /lead_magnet, tenant_kdp or platform_kdp/.test(junk.error ?? "") && db.tables.lead_capture_forms.length === before && db.tables.book_projects.length === booksBefore)
     asked = 0
     const generic = await startBookProject({ brokerageId: B1, agentId: AG1, createdBy: U1, concept: "A complete guide to buying a home", audience: "buyer" }, { client: db as never, entitlement: counting, now: NOW144 })
-    check("a GENERIC concept ('a complete guide to buying a home') is refused BEFORE the entitlement is even asked — nothing written, nothing spent", !generic.success && /names no niche/.test(generic.error ?? "") && asked === 0 && db.tables.lead_capture_forms.length === before)
+    check("a GENERIC concept ('a complete guide to buying a home') is refused BEFORE the entitlement is even asked — nothing written, nothing spent", !generic.success && /names no niche/.test(generic.error ?? "") && asked === 0 && db.tables.lead_capture_forms.length === before && db.tables.book_projects.length === booksBefore)
     const blindDb = world({ refuse: { brokerages: "permission denied for table brokerages" } })
     const blindPlat = await startBookProject({ brokerageId: BH, agentId: AGH, createdBy: US, concept: "An agent's field guide to AI-assisted listing launches in Florida", audience: "seller", context: "platform_kdp" }, { client: blindDb as never, entitlement: allow, now: NOW144 })
     const blindDefault = await startBookProject({ brokerageId: BH, agentId: AGH, createdBy: US, concept: "An agent's field guide to AI-assisted listing launches in Florida", audience: "seller" }, { client: blindDb as never, entitlement: allow, now: NOW144 })
@@ -388,7 +411,7 @@ async function main() {
     const good = await startBookProject({ brokerageId: B1, agentId: AG1, createdBy: U1, concept: "Selling a fixer-upper in Tampa without losing equity", audience: "seller" }, base)
     const gDeps: BookDeps = { ...base, researcher: async () => [{ topic: "Should I fix the roof before listing a fixer upper?", score: 6 }, { topic: "How do buyers finance a home that needs repairs?", score: 4 }], positioningResearcher: async () => ({ titles: ["How to price a fixer upper home"], snippets: [] }) }
     const g1 = await advanceBookProject({ brokerageId: B1, magnetId: good.magnetId!, actorUserId: U1 }, gDeps)
-    const ev = (db.tables.lead_capture_forms.find((r) => r.id === good.magnetId)?.settings as { book?: { research?: { evidence?: { verdict: string; conversion: { magnets: number; captures: number } | null } } } } | undefined)?.book?.research?.evidence
+    const ev = (bookOf(db, good.bookId)?.project as { research?: { evidence?: { verdict: string; conversion: { magnets: number; captures: number } | null } } } | undefined)?.research?.evidence
     const g2 = await advanceBookProject({ brokerageId: B1, magnetId: good.magnetId!, actorUserId: U1 }, gDeps)
     check("an EVIDENCED topic: the CONVERSION is read from this tenant's own magnets of the type (1 prior magnet, its 2 captures — the other tenant's capture and this book itself excluded)", g1.success && ev?.verdict === "evidenced" && ev.conversion?.magnets === 1 && ev.conversion.captures === 2, JSON.stringify(ev))
     check("…and the outline lane is handed the audience problem, the UNMET questions to own and the titles to position against (never to copy)", g2.success && g2.stage === "chapters" && prompts.length === 1 && /The problem this book exists to solve/.test(prompts[0]) && /UNMET questions/.test(prompts[0]) && prompts[0].includes("Should I fix the roof before listing a fixer upper?") && /Books already on this topic/.test(prompts[0]) && prompts[0].includes("How to price a fixer upper home") && /never reuse their titles/.test(prompts[0]) && /Return ONLY JSON: \{"title"/.test(prompts[0]))
@@ -405,12 +428,12 @@ async function main() {
   check("the state: an AI-drafted chapter with a tell is OPEN (named, with the phrase); the human's own revision of the same words is never re-flagged", (() => { const a = humanizedReviewState(tellChapters), b = humanizedReviewState(revisedChapters); return !a.ready && a.open.length === 1 && a.open[0].chapter === 2 && /fast-paced/.test(a.open[0].phrases[0]) && b.ready && b.humanRevised.join() === "2" })())
   await blocked("the KDP package is NOT built while an AI-drafted chapter still reads machine-written — the blocker names the chapter", seed(project({ chapters: tellChapters })), (r) => !r.ok && /Humanized review: chapter 2/.test(r.error) && r.blockers?.humanize?.[0]?.chapter === 2)
   {
-    const db = world({ forms: [formWith(B1, project({ chapters: tellChapters, publication: startPub("lead_magnet", false, AG1) }))] })
+    const db = world({ forms: [formWith(B1, {})], books: [bookFor(B1, project({ chapters: tellChapters, publication: startPub("lead_magnet", false, AG1) }))] })
     const refused = await publishLeadMagnet({ magnetId: MAGNET, brokerageId: B1, channels: ["landing_page"], actorUserId: U1, baseUrl: "https://app.example.com" }, { client: db as never })
     check("the LEAD-MAGNET publish is refused too (the same rule, the same words) — the page stays a draft", !refused.success && /Humanized review: chapter 2/.test(refused.error ?? "") && db.tables.lead_capture_forms[0].is_active === false, JSON.stringify(refused))
-    const db2 = world({ forms: [formWith(B1, project({ chapters: revisedChapters, publication: startPub("lead_magnet", false, AG1) }))] })
+    const db2 = world({ forms: [formWith(B1, {})], books: [bookFor(B1, project({ chapters: revisedChapters, publication: startPub("lead_magnet", false, AG1) }))] })
     const ok = await publishLeadMagnet({ magnetId: MAGNET, brokerageId: B1, channels: ["landing_page"], actorUserId: U1, baseUrl: "https://app.example.com" }, { client: db2 as never })
-    const hr = ((db2.tables.lead_capture_forms[0].settings as { book?: { humanized_review?: { by: string; basis: string; chapters_human_revised: number[]; ai_tells_open: number } } }).book?.humanized_review)
+    const hr = ((bookOf(db2)?.project as { humanized_review?: { by: string; basis: string; chapters_human_revised: number[]; ai_tells_open: number } } | undefined)?.humanized_review)
     check("once the human rewrote it, the publish lands and RECORDS the sign-off on the book (who, basis lead_magnet_publish, the chapters they rewrote, 0 open tells)", ok.success && db2.tables.lead_capture_forms[0].is_active === true && hr?.by === U1 && hr.basis === "lead_magnet_publish" && hr.chapters_human_revised.join() === "2" && hr.ai_tells_open === 0, JSON.stringify({ ok, hr }))
   }
   {
@@ -420,13 +443,13 @@ async function main() {
     const five = await approveKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1, attested: ["i_hold_rights", "ai_disclosure_confirmed", "content_guidelines_reviewed", "no_rank_claims", "facts_reviewed"] }, { client: db as never })
     check("KDP approval WITHOUT the humanized_review attestation is refused and names it", built.ok && !five.ok && /humanized_review/.test((five as { error: string }).error))
     const all = await approveKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1, attested: KDP_ATTESTATIONS.map((a) => a.id) }, { client: db as never, now: new Date("2026-10-23T13:00:00Z") })
-    const hr = (db.tables.lead_capture_forms[0].settings as { book?: { humanized_review?: { basis: string; by: string } } }).book?.humanized_review
+    const hr = (bookOf(db)?.project as { humanized_review?: { basis: string; by: string } } | undefined)?.humanized_review
     check("…with every attestation the sign-off is recorded on the BOOK (basis kdp_attestation, by the session user)", all.ok && hr?.basis === "kdp_attestation" && hr.by === U1)
-    ;(db.tables.lead_capture_forms[0].settings as { book: { updated_at: string } }).book.updated_at = "2026-10-24T00:00:00.000Z"
+    ;(bookOf(db)!.project as { updated_at: string }).updated_at = "2026-10-24T00:00:00.000Z"
     const stale = await approveKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1, attested: KDP_ATTESTATIONS.map((a) => a.id) }, { client: db as never })
     check("a package OLDER than the manuscript cannot be approved (the files no longer match the book — rebuild)", !stale.ok && /changed after this package was built/.test((stale as { error: string }).error))
     const old = seed()
-    ;(old.tables.lead_capture_forms[0].settings as Record<string, unknown>).book_publishing = { ...kdpPackageOf(db.tables.lead_capture_forms[0].settings)!, approval: null, rights: { ...kdpPackageOf(db.tables.lead_capture_forms[0].settings)!.rights, attestations: KDP_ATTESTATIONS.filter((a) => a.id !== "humanized_review") } }
+    old.tables.book_projects[0].publishing = { ...pkgOf(db)!, approval: null, rights: { ...pkgOf(db)!.rights, attestations: KDP_ATTESTATIONS.filter((a) => a.id !== "humanized_review") } }
     const legacy = await approveKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1, attested: KDP_ATTESTATIONS.map((a) => a.id) }, { client: old as never })
     check("a wave-143 package (built before the humanized review existed) is refused with 'rebuild it' — never silently approved", !legacy.ok && /rebuild it/.test((legacy as { error: string }).error))
   }
@@ -445,8 +468,8 @@ async function main() {
     files.clear()
     const db = seed(project({ publication: startPub("lead_magnet", false, AG1) }))
     const r = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: db as never, ...deps({ brandResolver: tenantBrand("Calm advice, local roots"), fetchLogo: async () => logoPng, host: keep, tenantReader: async () => ({ isHouseTenant: false, readable: true }) }) } as never)
-    const rec = kdpPackageOf(db.tables.lead_capture_forms[0].settings)
-    const about = unzip(files.get(`client-docs/${B1}/kdp/${MAGNET}/book.epub`)!).find((e) => e.name === "OEBPS/about.xhtml")?.data.toString("utf8") ?? ""
+    const rec = pkgOf(db)
+    const about = unzip(files.get(`client-docs/${B1}/kdp/${BOOK}/book.epub`)!).find((e) => e.name === "OEBPS/about.xhtml")?.data.toString("utf8") ?? ""
     check("the brand's LOGO is embedded, the APPROVED tagline kept, the colours recorded; the EPUB's about page carries the tagline", r.ok && rec?.brand?.logo === "embedded" && rec.brand.tagline === "Calm advice, local roots" && rec.brand.accent_color === "#F59E0B" && rec.brand.source === "tenant" && /Calm advice, local roots/.test(about), JSON.stringify(rec?.brand))
     // Pixel means from the RAW extracted region (sharp's stats() reads the whole input, not the extract — measured, so not used here).
     const band = async (b: Buffer) => {
@@ -455,13 +478,13 @@ async function main() {
       for (let i = 0; i < data.length; i += info.channels) for (let c = 0; c < 3; c++) sums[c] += data[i + c]
       return sums.map((s) => s / (data.length / info.channels))
     }
-    const withLogo = await band(files.get(`client-docs/${B1}/kdp/${MAGNET}/cover.jpg`)!)
+    const withLogo = await band(files.get(`client-docs/${B1}/kdp/${BOOK}/cover.jpg`)!)
     files.clear()
     await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: seed() as never, ...deps({ brandResolver: tenantBrand(null, null), host: keep, tenantReader: async () => ({ isHouseTenant: false, readable: true }) }) } as never)
-    const noLogo = await band(files.get(`client-docs/${B1}/kdp/${MAGNET}/cover.jpg`)!)
+    const noLogo = await band(files.get(`client-docs/${B1}/kdp/${BOOK}/cover.jpg`)!)
     check("…the logo is really ON the cover: the logo band differs from the same cover without one (pixel means, R/G/B)", withLogo.reduce((s, v, i) => s + Math.abs(v - noLogo[i]), 0) > 60, `${withLogo.map((v) => v.toFixed(0))} vs ${noLogo.map((v) => v.toFixed(0))}`)
-    const pub = (db.tables.lead_capture_forms[0].settings as { book?: { publication?: { context: string; history: unknown[] } } }).book?.publication
-    check("I · the KDP build moved the lead magnet into the TENANT's retail context, recorded on the book with its history, and the rights record names the rights holder", rec?.publication?.context === "tenant_kdp" && pub?.context === "tenant_kdp" && pub.history.length === 2 && rec?.rights.publication?.context === "tenant_kdp" && rec.rights.publication.rightsHolder === "Dana Reyes")
+    const pub = (bookOf(db)?.project as { publication?: { context: string; history: unknown[] } } | undefined)?.publication
+    check("I · the KDP build moved the lead magnet into the TENANT's retail context, recorded on the book with its history (and the entity's publication_context column in the same write), and the rights record names the rights holder", rec?.publication?.context === "tenant_kdp" && pub?.context === "tenant_kdp" && pub.history.length === 2 && bookOf(db)?.publication_context === "tenant_kdp" && rec?.rights.publication?.context === "tenant_kdp" && rec.rights.publication.rightsHolder === "Dana Reyes")
   }
   {
     const r = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: seed() as never, ...deps({ brandResolver: tenantBrand("The #1 team in Tampa Bay"), fetchLogo: async () => logoPng, tenantReader: async () => ({ isHouseTenant: false, readable: true }) }) } as never)
@@ -488,20 +511,20 @@ async function main() {
   }
   {
     hosted.length = 0
-    const plat = () => world({ forms: [formWith(BH, project({ publication: startPub("platform_kdp", true, null) }))] })
+    const plat = () => world({ forms: [formWith(BH, {})], books: [bookFor(BH, project({ publication: startPub("platform_kdp", true, null) }))] })
     const dbA = plat()
     const notStaff = await buildKdpPackage({ brokerageId: BH, magnetId: MAGNET, actorUserId: U1 }, { client: dbA as never, ...deps({ brandResolver: undefined }) } as never)
-    check("I · a PLATFORM book is not packaged by a non-staff user (users.platform_role empty) — nothing hosted", !notStaff.ok && /only platform staff/.test(notStaff.error) && hosted.length === 0 && kdpPackageOf(dbA.tables.lead_capture_forms[0].settings) === null)
+    check("I · a PLATFORM book is not packaged by a non-staff user (users.platform_role empty) — nothing hosted", !notStaff.ok && /only platform staff/.test(notStaff.error) && hosted.length === 0 && pkgOf(dbA) === null)
     const ok = await buildKdpPackage({ brokerageId: BH, magnetId: MAGNET, actorUserId: US }, { client: dbA as never, ...deps({ brandResolver: undefined }) } as never)
     const rec = ok.ok ? ok.record : null
     check("…by platform staff it IS: context platform_kdp, owner platform, the PRODUCT brand (platform_settings.product_brand) as author and rights holder", ok.ok && rec?.publication?.context === "platform_kdp" && rec.publication.owner === "platform" && rec.brand?.source === "platform" && rec.metadata.authorName === "VIP Agents" && rec.rights.copyrightLine === "© 2026 VIP Agents. All rights reserved." && rec.brand.tagline === "The AI team that runs the whole business", JSON.stringify(ok).slice(0, 300))
     const byTenant = await approveKdpPackage({ brokerageId: BH, magnetId: MAGNET, actorUserId: U1, attested: KDP_ATTESTATIONS.map((a) => a.id) }, { client: dbA as never })
     const byStaff = await approveKdpPackage({ brokerageId: BH, magnetId: MAGNET, actorUserId: US, attested: KDP_ATTESTATIONS.map((a) => a.id) }, { client: dbA as never, now: new Date("2026-10-23T13:00:00Z") })
     check("…and approved by platform staff only", !byTenant.ok && /only platform staff/.test((byTenant as { error: string }).error) && byStaff.ok)
-    const blindStaff = world({ forms: [formWith(BH, project({ publication: startPub("platform_kdp", true, null) }))], refuse: { users: "permission denied for table users" } })
+    const blindStaff = world({ forms: [formWith(BH, {})], books: [bookFor(BH, project({ publication: startPub("platform_kdp", true, null) }))], refuse: { users: "permission denied for table users" } })
     const failClosed = await buildKdpPackage({ brokerageId: BH, magnetId: MAGNET, actorUserId: US }, { client: blindStaff as never, ...deps({ brandResolver: undefined }) } as never)
     check("FAIL CLOSED: an unreadable staff record never packages a platform book", !failClosed.ok && /Could not verify platform staff/.test(failClosed.error))
-    const moved = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: world({ forms: [formWith(B1, project({ publication: startPub("platform_kdp", true, null) }))] }) as never, ...deps({ brandResolver: undefined }) } as never)
+    const moved = await buildKdpPackage({ brokerageId: B1, magnetId: MAGNET, actorUserId: U1 }, { client: world({ forms: [formWith(B1, {})], books: [bookFor(B1, project({ publication: startPub("platform_kdp", true, null) }))] }) as never, ...deps({ brandResolver: undefined }) } as never)
     check("a platform book found in an ordinary tenant (moved data) is refused, never packaged as the tenant's", !moved.ok && /house tenant/.test(moved.error))
   }
 

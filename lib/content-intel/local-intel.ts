@@ -131,8 +131,9 @@ const BASE_CONFIDENCE: Readonly<Record<LocalSourceClass, number>> = { official: 
 const DATE_ADJUST: Readonly<Record<DateBasis, number>> = { ics: 0, text_explicit_year: -0.05, text_inferred_year: -0.15, published: 0, observed: -0.1 }
 
 /** Topics that are NOT community marketing material (steering). Matched on text with the place's
- *  own name removed, so a city called Temple is not a religious topic. */
-const EXCLUDED_TOPIC_RULES: ReadonlyArray<{ reason: string; pattern: RegExp }> = [
+ *  own name removed, so a city called Temple is not a religious topic. ONE list: the topic-intelligence
+ *  pass (lib/content-intel/topic-intelligence.ts, wave 145) screens every theme it files with it too. */
+export const EXCLUDED_TOPIC_RULES: ReadonlyArray<{ reason: string; pattern: RegExp }> = [
   { reason: "crime_safety", pattern: /\b(crimes?|criminal|shootings?|stabbings?|homicides?|murders?|robber(y|ies)|burglar(y|ies)|assault(ed|s)?|arrest(ed|s)?|suspects?|gangs?|carjack\w*|police (say|said|report\w*)|safest|most dangerous|unsafe)\b/i },
   { reason: "school_rating", pattern: /\b(school (ratings?|rankings?|scores?|grades?)|(top|best|highest)[- ](rated|ranked) schools?|best schools?|greatschools)\b/i },
   { reason: "religious_congregation", pattern: /\b(church(es)?|mosques?|synagogues?|temples?|parish(es)?|congregations?|worship|ministry|bible|sermons?)\b/i },
@@ -944,9 +945,9 @@ export async function runLocalIntelPass(brokerageId: string, deps: LocalIntelDep
  * every live tenant WITH an active territory, bounded by tenants-per-run and a wall-clock budget. A
  * refused gate read fails CLOSED (nobody is searched) under its own reason.
  */
-export async function runLocalIntelSweep(db: Db, opts: { now?: Date; maxTenants?: number; budgetMs?: number; pullGate?: PullGateLike } = {}): Promise<{ tenants: number; ran: number; skipped: number; facts: number; platformCostUsd: number; reason: string; errors: string[] }> {
+export async function runLocalIntelSweep(db: Db, opts: { now?: Date; maxTenants?: number; budgetMs?: number; pullGate?: PullGateLike } = {}): Promise<{ tenants: number; ran: number; skipped: number; facts: number; topicIntel: number; platformCostUsd: number; reason: string; errors: string[] }> {
   const started = Date.now()
-  const out = { tenants: 0, ran: 0, skipped: 0, facts: 0, platformCostUsd: 0, reason: "ok", errors: [] as string[] }
+  const out = { tenants: 0, ran: 0, skipped: 0, facts: 0, topicIntel: 0, platformCostUsd: 0, reason: "ok", errors: [] as string[] }
   let pullGate = opts.pullGate
   if (!pullGate) {
     const { resolveActivePullGate } = await import("@/lib/lead-pipeline/scrape-territories")
@@ -968,6 +969,13 @@ export async function runLocalIntelSweep(db: Db, opts: { now?: Date; maxTenants?
       // wave 144 (lane 144Z): the tenant's upcoming verified facts → ORIGINAL campaign ideas, filed PENDING a human's approval.
       const ideas = await proposeLocalCampaignIdeas(db, b, { now: opts.now })
       if (ideas.error) out.errors.push(`${b}: campaign ideas: ${ideas.error}`)
+      // wave 145 (lane 145G, owner ruling 22): the rest of the topic bank's intelligence for the same tenant — competitor post
+      // themes, high-engagement patterns, customer questions, education + AI-search gaps, property-value trends and market
+      // changes (read from this OS's own survivors; no provider call, no spend) — into the ONE pool, ideas PENDING approval.
+      const { runTopicIntelligencePass } = await import("./topic-intelligence")
+      const intel = await runTopicIntelligencePass(db, b, { now: opts.now })
+      out.topicIntel += intel.inserted + intel.refreshed
+      for (const e of intel.errors.slice(0, 3)) out.errors.push(`${b}: topic intelligence: ${e}`)
     } catch (e) {
       out.errors.push(`${b}: ${(e as Error)?.message ?? String(e)}`)
     }

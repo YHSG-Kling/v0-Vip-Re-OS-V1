@@ -22,9 +22,16 @@
  * The competitor's actual creative is NEVER copied verbatim into the
  * AI prompt — the value_angle is a paraphrase. The Fair Housing gate
  * applies on the output regardless.
+ *
+ * WAVE 145 (lane 145G, owner ruling 22 — "extract themes, never copy creative"): the header above said
+ * paraphrase, but the code filed the rival's headline as topic_title and their ad copy as value_angle,
+ * VERBATIM. The row now carries the THEME only — competitorAdTheme (lib/content-intel/topic-themes.ts),
+ * the same theme vocabulary every other intelligence source files under — and an ad whose theme is an
+ * excluded topic (crime, school rank, demographics) or matches no theme is skipped, said, never guessed.
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { competitorAdTheme } from "@/lib/content-intel/topic-themes"
 
 export interface PromoteResult {
   brokerage_id: string
@@ -133,24 +140,20 @@ export async function promoteCompetitorAdsToTopicBank(args: {
       continue
     }
 
-    // Title precedence: ad_headline > first chars of body. The Exa/Meta adapter
-    // writes its creative title into ad_headline and body into ad_copy (the live
-    // competitor_ads columns), so a single canonical read is source-agnostic.
-    const title =
-      (ad.ad_headline ?? ad.ad_copy ?? "")
-        .toString()
-        .trim()
-        .slice(0, 120)
-    if (!title) {
+    // THE THEME, NEVER THE CREATIVE (wave 145): the Exa/Meta adapter writes the creative title into
+    // ad_headline and the body into ad_copy (the live competitor_ads columns); both are READ to find the
+    // theme and neither is written. No theme (or an excluded one) → skipped with the reason.
+    if (!(ad.ad_headline ?? ad.ad_copy ?? "").toString().trim()) {
       skipped.push({ competitor_ad_id: ad.id, reason: "no_usable_title" })
       continue
     }
-
-    const valueAngle =
-      (ad.ad_copy ?? "")
-        .toString()
-        .trim()
-        .slice(0, 400) || null
+    const theme = competitorAdTheme(ad.ad_headline, ad.ad_copy)
+    if (!theme) {
+      skipped.push({ competitor_ad_id: ad.id, reason: "no_theme_or_excluded_topic" })
+      continue
+    }
+    const title = theme.title
+    const valueAngle = theme.valueAngle
 
     const categories = Array.from(
       new Set([...(ad.categories ?? []), "competitor_intel"]),
@@ -176,6 +179,8 @@ export async function promoteCompetitorAdsToTopicBank(args: {
         raw_data:          {
           promoted_from_competitor_ad_id: ad.id,
           promoted_at:                    new Date().toISOString(),
+          theme_keys:                     theme.themeKeys,
+          theme_only:                     true,
           competitor_page:                (ad.raw_payload?.page_name as string | undefined) ?? null,
         },
       })

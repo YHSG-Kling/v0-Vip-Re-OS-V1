@@ -765,9 +765,16 @@ async function recordCalculationEvidence(
           as_of_source: agreement.asOfSource,
           signed_agreement: agreement.signedAgreement,
           signed_field_mismatches: agreement.signedFieldMismatches,
+          // WAVE 145 (lane 145C, owner ruling 4): whether the terms that priced the deal were verified against the executed
+          // agreement in force (m858 agreement_signature_id) — the closing verification's "current effective terms" layer reads it
+          governance: agreement.governance ?? null,
+          terms_verified_against: agreement.termsVerifiedAgainst ?? null,
           findings: agreement.findings,
         }
       : null,
+    // WAVE 145 (lane 145C, owner ruling 4): where the GROSS RATE came from — the deal's own rate, or the brokerage default only
+    // when no executed client agreement states one (lib/commission/waterfall/01-resolve-rate.ts)
+    gross_rate: c.grossRateEvidence ?? null,
     team_agreement: c.teamAgreement ?? null,
     applied: { agent_split_percent: c.agentSplitPercent, gross_rate_decimal: c.grossRateDecimal, resolved_from: c.resolvedFrom },
     referral: { link: c.referralLink ?? null, deduction_cents: c.referralDeductionCents ?? 0, findings: c.referralFindings ?? [] },

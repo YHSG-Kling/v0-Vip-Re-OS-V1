@@ -39,6 +39,11 @@ import { rewritePublicCopyUntilCompliant, renderFindingsForRewrite, type CopyFin
 // older-persons exemption (a held claim is rewritten around with the reason, then a human decides).
 import { OLDER_PERSONS_WRITING_DIRECTIVE } from "@/lib/compliance/fair-housing-older-persons"
 import { loadOlderPersonsVerifications } from "@/lib/compliance/fair-housing-older-persons-store"
+// Wave 145 (lane 145G, owner ruling 20 — contract C4): THE FINAL PERSONALIZATION PHASE on the draft's public copy — machine
+// phrasing removed with the ONE tell list (book-editorial.ts stripAiTells), the brand's tagline / logo handed to the renderer,
+// unsupported superlatives / testimonials / rank claims named for the reviewer, and the version recorded + the requester told.
+import { stripAiTells } from "./book-editorial"
+import { leadMagnetPublicText } from "./public-text"
 
 /** The AI_TASK_ROUTING key (lib/ai/models.ts) — scripts/ai-routing-coverage-guard.ts requires the literal at the call site.
  *  @proofSeam the proof asserts the routing row + the recorded authoring feature against it. */
@@ -273,6 +278,8 @@ interface DraftLeadMagnetDeps {
   entitlement?: EntitlementGate
   client?: NonNullable<Parameters<typeof createLeadMagnet>[1]>["client"]
   now?: Date
+  /** The tenant brand for the final phase (default: the ONE brand cascade + brand voice, read on the client). */
+  brand?: () => Promise<import("@/lib/marketing/humanize-final").TenantBrandForFinal>
 }
 
 interface DraftLeadMagnetOutput {
@@ -345,6 +352,22 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
   }
   const now = (deps.now ?? new Date()).toISOString()
   const spec = composed.spec
+  // THE FINAL PERSONALIZATION PHASE (wave 145 — contract C4): every line a visitor reads, humanized; then the whole page judged.
+  const strip = (t: string) => stripAiTells(t).text
+  spec.description = strip(spec.description)
+  spec.subhead = strip(spec.subhead)
+  spec.bullets = spec.bullets.map(strip)
+  spec.thankYou = strip(spec.thankYou)
+  spec.faq = spec.faq.map((f) => ({ question: f.question, answer: strip(f.answer) }))
+  const hf = await import("@/lib/marketing/humanize-final")
+  const brandRead = deps.brand
+    ? { brand: await deps.brand().catch(() => ({})), error: null as string | null }
+    : await hf.resolveTenantBrandForFinal((deps.client as never) ?? ((await import("@/lib/supabase/service")).createServiceClient() as never), { brokerageId: input.brokerageId, agentUserId: input.createdBy }).catch((e) => ({ brand: {}, error: String((e as Error)?.message ?? e) }))
+  const pageFinal = await hf.finalizeForDistribution({ assetKind: "lead_magnet", text: draftPublicText(spec), tenantBrand: brandRead.brand, authoredBy: "ai", olderPersons })
+  if (brandRead.error) pageFinal.reviewNotes.push(brandRead.error)
+  const pageLanding = landingContentFromDraft(spec, composed.fromAi, now)
+  // The version recorded is the page's public words in the publish gate's own composition (lib/lead-magnets/public-text.ts).
+  const pageStored = leadMagnetPublicText({ name: spec.name, thank_you_message: spec.thankYou, landing_content: pageLanding as unknown as Record<string, unknown> })
   const createInput: CreateLeadMagnetInput = {
     title: spec.name,
     description: spec.description,
@@ -355,7 +378,7 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
     fields: spec.fields,
     thankYouMessage: spec.thankYou,
     publishState: "draft",
-    landingContent: landingContentFromDraft(spec, composed.fromAi, now),
+    landingContent: pageLanding,
     settings: {
       authoring: {
         by: "ai",
@@ -368,6 +391,8 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
         fair_housing: { ok: loop.ok, rewrites: loop.rewrites, escalated: loop.escalated, findings: loop.findings.map((f) => ({ phrase: f.phrase, fix: f.fix, reference: f.reference })), warnings: loop.warnings, trail: loop.trail },
         generated_at: now,
         requested_by: input.createdBy,
+        // Wave 145: the final personalization phase's account (the version itself is in distribution_finals).
+        humanized: { summary: pageFinal.summary, removed: pageFinal.removed.length, blockers: pageFinal.blockers, review_notes: pageFinal.reviewNotes, tagline: pageFinal.tagline, logo: pageFinal.logo },
       },
     },
   }
@@ -401,11 +426,13 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
 
   // ESCALATION TO A HUMAN (wave 142): the cap was reached with findings still present — the requester is told
   // in-app that this draft needs their rewrite before it can publish (publishLeadMagnet re-scans the public copy
-  // and refuses a hard flag). Best-effort: a lost bell never undoes the draft that already landed.
+  // and refuses a hard flag). Best-effort: a lost bell never undoes the draft that already landed. Counted (wave 145):
+  // a bell that did not land is not reported as the announcement of the final below.
+  let escalationBell: string | null = null
   if (loop.escalated) {
     try {
       const client = (deps.client ?? (await import("@/lib/supabase/service")).createServiceClient()) as { from: (t: string) => any }
-      const { error: bellErr } = await client.from("notifications").insert({
+      const { data: bellRows, error: bellErr } = await client.from("notifications").insert({
         user_id: input.createdBy,
         brokerage_id: input.brokerageId,
         type: "lead_magnet_fair_housing_review",
@@ -417,11 +444,24 @@ export async function draftLeadMagnetFromConcept(input: DraftLeadMagnetInput, de
         priority: "high",
         channel: "in_app",
         created_at: now,
-      })
-      if (bellErr) console.warn("[lead-magnets] fair-housing escalation bell not recorded:", bellErr.message)
+      }).select("id")
+      if (bellErr || (bellRows ?? []).length !== 1) console.warn("[lead-magnets] fair-housing escalation bell not recorded:", bellErr?.message ?? "no notification row")
+      else escalationBell = "lead_magnet_fair_housing_review"
     } catch (e) {
       console.warn("[lead-magnets] fair-housing escalation bell threw:", (e as Error)?.message ?? String(e))
     }
   }
+
+  // THE VERSION THE HUMAN WILL APPROVE (wave 145): recorded against the draft, the requester told it is ready (the publish —
+  // publishLeadMagnet — is the approval; the publication door proves the approved version is the one that went live). ONE
+  // bell per version: a stubborn draft's escalation bell above already told the requester about THIS version ("edit it
+  // before publishing"), so the final is stamped as announced by it rather than a second, contradictory "ready" bell.
+  {
+    const client = (deps.client ?? (await import("@/lib/supabase/service")).createServiceClient()) as never
+    const staged = await hf.stageDistributionFinal(client, { brokerageId: input.brokerageId, assetTable: "lead_capture_forms", assetId: result.magnetId, final: pageFinal, createdBy: input.createdBy, notifyUserId: input.createdBy, announcedBy: escalationBell, storedAs: pageStored, now: new Date(now) })
+    if (!staged.ok) console.warn("[lead-magnets] the draft's humanized final was not recorded:", staged.error)
+    else if (staged.notifyError) console.warn("[lead-magnets] the draft's humanized final:", staged.notifyError)
+  }
+
   return { success: true, magnetId: result.magnetId, slug: result.slug, magnetType, draft: spec, fromAi: composed.fromAi, fallbackReason, fairHousing: { flagged: fh.flagged, high: fh.high, rewrites: loop.rewrites, escalated: loop.escalated } }
 }

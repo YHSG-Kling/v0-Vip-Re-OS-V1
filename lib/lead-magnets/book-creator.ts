@@ -15,9 +15,10 @@
 //   LOOP, lib/kernel/marketing/public-copy-rewrite.ts, capped and escalated per chapter)
 //   → COVER + LAYOUT + PDF (lib/documents/client-pdf.ts bookPdfSpec on the SAME engine as the booklet;
 //   hosted + recorded in the document library by lib/documents/client-document-producer.ts)
-//   → the DRAFT lead magnet it rides on (lib/kernel/lead-magnets.ts — the project record lives in
-//   lead_capture_forms.settings.book; a human reviews, edits and PUBLISHES it — publishLeadMagnet refuses
-//   an unfinished book) → capture → DELIVERY (lead-magnet-delivery-runner ships the book PDF and records
+//   → the DRAFT lead magnet that DISTRIBUTES it (lib/kernel/lead-magnets.ts — since wave 145 the project record
+//   lives on the book's OWN row, public.book_projects (m867, lib/lead-magnets/book-entity.ts); the capture form carries
+//   settings.book_id only; a human reviews, edits and PUBLISHES it — publishLeadMagnet refuses an unfinished book)
+//   → capture → DELIVERY (lead-magnet-delivery-runner ships the book PDF and records
 //   the asset refs on the activity) → follow-up → attribution (the existing spine, untouched).
 //
 // STAGED AND RESUMABLE: one advance = one stage (or a bounded slice of one), each a counted, tenant-pinned
@@ -28,6 +29,8 @@
 // states anyway is caught and removed. Entitlement (mayUseAndAfford "ai.generate") before every spend.
 
 import { createLeadMagnet, type CreateLeadMagnetInput } from "@/lib/kernel/lead-magnets"
+// Wave 145 (lane 145G, owner ruling 19 — "a lead magnet is … not a manuscript or book"): the BOOK is its own entity.
+import { BOOK_ROW_COLUMNS, insertBookRow, loadBookRow, loadDistributionForm, locatorOf, ownerScopeFor, saveBookRow, type BookLocator, type BookRow } from "./book-entity"
 import { bookPdfSpec, type BookPdfData, type ClientPdfBrand, type ClientPdfSpec } from "@/lib/documents/client-pdf"
 import { rewritePublicCopyUntilCompliant, scanPublicCopy, renderFindingsForRewrite, type CopyFinding } from "@/lib/kernel/marketing/public-copy-rewrite"
 import type { ContentTopic } from "@/lib/marketing/content-topics"
@@ -42,7 +45,7 @@ import {
   type BookPublication, type BookPublicationContext, type BookTopicEvidence, type HumanizedReviewRecord,
 } from "./book-editorial"
 
-// ── The project record (lead_capture_forms.settings.book) ─────────────────────────────────────────
+// ── The project record (public.book_projects.project — wave 145; was lead_capture_forms.settings.book) ──────────
 
 export const BOOK_STAGES = ["research", "outline", "chapters", "fact_check", "edit", "layout", "ready_for_review"] as const
 export type BookStage = (typeof BOOK_STAGES)[number]
@@ -405,14 +408,25 @@ interface StartBookInput {
   actor?: { platformRole?: string | null; userType?: string | null } | null
   /** Where the book publishes. Omitted = the tenant's default (lead_magnet; platform_kdp in the platform's house tenant). */
   context?: BookPublicationContext | null
+  /**
+   * DISTRIBUTE IT AS A LEAD MAGNET (owner ruling 19: a book "may be distributed as a lead magnet but keeps its Book entity").
+   * true = a DRAFT capture form is created that points at the book (settings.book_id) — the lead-magnet builder's door.
+   * Omitted = distributed only when the context is lead_magnet; a KDP book started elsewhere needs no capture form.
+   */
+  distributeAsLeadMagnet?: boolean
+  /** A book an agent makes for the team they lead is the TEAM's (owner_scope team) — the caller verifies the lead. */
+  teamId?: string | null
+  teamOwned?: boolean
 }
 
-interface StartBookOutput { success: boolean; magnetId?: string; slug?: string; title?: string; context?: BookPublicationContext; error?: string }
+interface StartBookOutput { success: boolean; bookId?: string; magnetId?: string; slug?: string; title?: string; context?: BookPublicationContext; error?: string }
 
 /**
- * Concept → a DRAFT lead magnet carrying a NEW book project at stage "research". Entitlement first (a refusal
- * writes nothing). The magnet type is the audience's guide type, so capture, intent routing and attribution
- * ride the survivors unchanged; the book replaces the booklet at delivery once it is finished.
+ * Concept → a NEW BOOK (its own book_projects row, stage "research", owned by the agent / brokerage / team / platform) and,
+ * when it is distributed as a lead magnet, the DRAFT capture form that points at it. Entitlement first (a refusal writes
+ * nothing). The capture form's type is the audience's guide type, so capture, intent routing and attribution ride the
+ * survivors unchanged; the finished book replaces the booklet at delivery. A failed capture form rolls the book back (one
+ * request, one outcome).
  */
 export async function startBookProject(input: StartBookInput, deps: BookDeps = {}): Promise<StartBookOutput> {
   const concept = (input.concept ?? "").trim()
@@ -439,38 +453,58 @@ export async function startBookProject(input: StartBookInput, deps: BookDeps = {
   const publication = publicationRecord({ context, agentId: input.agentId, isHouseTenant: tenant.isHouseTenant, by: input.createdBy, at: now, why: input.context ? "chosen at start" : "tenant default at start" })
   const project = newProject({ concept, audience: input.audience, area: input.area ?? null, brand: input.brand ?? null, startedBy: input.createdBy, now, publication })
   const magnetType: CreateLeadMagnetInput["magnetType"] = input.audience === "buyer" ? "buyer_guide" : "seller_guide"
-  const createInput: CreateLeadMagnetInput = {
-    title: project.title,
-    description: `A ${input.audience}'s book written from the agent's concept: ${concept.slice(0, 160)}`,
-    magnetType,
-    brokerageId: input.brokerageId,
-    agentId: input.agentId,
-    createdBy: input.createdBy,
-    thankYouMessage: "Thank you! Your book is on its way to your inbox.",
-    publishState: "draft",
-    settings: {
-      authoring: { by: "ai", feature: "book_manuscript", kind: "book", concept, generated_at: now, requested_by: input.createdBy, from_ai_copy: true, fallback_reason: null, fair_housing_flags: [] },
-      book: project,
-    },
+  const distribute = input.distributeAsLeadMagnet ?? context === "lead_magnet"
+  const ownerScope = ownerScopeFor(publication, { agentId: input.agentId, teamId: input.teamId ?? null, teamOwned: input.teamOwned === true })
+  type StartBody = { success: boolean; bookId?: string; magnetId?: string; slug?: string; error?: string }
+  const body = async (): Promise<StartBody> => {
+    // 1 · THE BOOK — its own entity, whatever happens to its distribution.
+    const ins = await insertBookRow(svc, {
+      brokerage_id: input.brokerageId, owner_scope: ownerScope, team_id: ownerScope === "team" ? (input.teamId ?? null) : null,
+      agent_id: input.agentId, created_by: input.createdBy, title: project.title, audience: input.audience,
+      publication_context: context, stage: project.stage, project: project as unknown as Record<string, unknown>, created_at: now, updated_at: now,
+    })
+    if (!ins.ok) return { success: false, error: ins.error }
+    if (!distribute) return { success: true, bookId: ins.id }
+    // 2 · ITS DISTRIBUTION — a DRAFT capture form that POINTS at the book (never a copy of the manuscript).
+    const created = await createLeadMagnet({
+      title: project.title,
+      description: `A ${input.audience}'s book written from the agent's concept: ${concept.slice(0, 160)}`,
+      magnetType, brokerageId: input.brokerageId, agentId: input.agentId, createdBy: input.createdBy,
+      thankYouMessage: "Thank you! Your book is on its way to your inbox.",
+      publishState: "draft",
+      settings: {
+        authoring: { by: "ai", feature: "book_manuscript", kind: "book", concept, generated_at: now, requested_by: input.createdBy, from_ai_copy: true, fallback_reason: null, fair_housing_flags: [] },
+        book_id: ins.id,
+      },
+    }, { client: deps.client })
+    if (!created.success || !created.magnetId) {
+      // One request, one outcome: the book the form was for is rolled back (counted — a delete that matched nothing is said).
+      const { data: gone, error: delErr } = await svc.from("book_projects").delete().eq("brokerage_id", input.brokerageId).eq("id", ins.id).select("id")
+      const rollback = delErr ? ` (and the book row could not be rolled back: ${delErr.message})` : (gone ?? []).length === 1 ? "" : " (the book row to roll back was not found)"
+      return { success: false, error: `${created.error ?? "The lead magnet that distributes the book was not created."}${rollback}` }
+    }
+    const attached = await saveBookRow(svc, input.brokerageId, ins.id, { distribution_form_id: created.magnetId, updatedAt: now })
+    if (attached) return { success: false, bookId: ins.id, magnetId: created.magnetId, error: `The book and its lead magnet were created but not linked: ${attached}` }
+    return { success: true, bookId: ins.id, magnetId: created.magnetId, slug: created.slug }
   }
   try {
     const { withActionLedger } = await import("@/lib/kernel/action-ledger")
-    const result = await withActionLedger<Awaited<ReturnType<typeof createLeadMagnet>>>(
+    const result = await withActionLedger<StartBody>(
       {
         brokerageId: input.brokerageId, action: "marketing.lead_magnet.book_start", actor: { type: "user", userId: input.createdBy },
-        subject: { type: "lead_capture_form", ref: concept.slice(0, 120) }, reasonCode: "HUMAN_REQUESTED",
-        reasonDetail: `AI book project (${input.audience}, ${context}) started from the agent's concept`, riskClass: "LOW_RISK_WRITE", systemSource: "lead_magnets",
-        detail: { audience: input.audience, magnetType, feature: "book_manuscript", context, owner: publication.owner, brand_source: publication.brand_source },
+        subject: { type: "book_project", ref: concept.slice(0, 120) }, reasonCode: "HUMAN_REQUESTED",
+        reasonDetail: `AI book project (${input.audience}, ${context}, owned by the ${ownerScope}${distribute ? ", distributed as a lead magnet" : ""}) started from the agent's concept`, riskClass: "LOW_RISK_WRITE", systemSource: "lead_magnets",
+        detail: { audience: input.audience, magnetType, feature: "book_manuscript", context, owner: publication.owner, owner_scope: ownerScope, brand_source: publication.brand_source, distributed: distribute },
       },
-      () => createLeadMagnet(createInput, { client: deps.client }),
+      body,
       {
-        settle: (r) => r.success ? { status: "executed", outcome: "book_project_started", providerRef: r.magnetId ?? null } : { status: "failed", outcome: "create_refused", error: r.error ?? null },
+        settle: (r) => r.success ? { status: "executed", outcome: "book_project_started", providerRef: r.bookId ?? null } : { status: "failed", outcome: "create_refused", error: r.error ?? null },
         replay: (claim) => ({ success: false, error: claim.kind === "replay" ? "already started" : `ledger refused the book: ${claim.kind}` }),
       },
       { client: deps.client as any },
     )
-    if (!result.success || !result.magnetId) return { success: false, error: result.error ?? "The book project was not created." }
-    return { success: true, magnetId: result.magnetId, slug: result.slug, title: project.title, context }
+    if (!result.success || !result.bookId) return { success: false, error: result.error ?? "The book project was not created." }
+    return { success: true, bookId: result.bookId, magnetId: result.magnetId, slug: result.slug, title: project.title, context }
   } catch (e) {
     return { success: false, error: (e as Error)?.message ?? String(e) }
   }
@@ -478,7 +512,9 @@ export async function startBookProject(input: StartBookInput, deps: BookDeps = {
 
 interface AdvanceBookInput {
   brokerageId: string
-  magnetId: string
+  /** The book's own id (book_projects.id) — or the lead magnet that distributes it (the review surface's handle). */
+  bookId?: string
+  magnetId?: string
   /** users.id of whoever asked for the next stage (the reviewer clicking Continue, or the sweep's system actor). */
   actorUserId: string | null
   actor?: { platformRole?: string | null; userType?: string | null } | null
@@ -494,22 +530,56 @@ interface AdvanceBookOutput {
   error?: string
 }
 
-/** Read the project off the magnet row — tenant-pinned; a magnet without a book is not a book project. */
-export async function loadProject(svc: Svc, brokerageId: string, magnetId: string): Promise<{ ok: true; row: { id: string; name: string; agent_id: string | null; settings: Record<string, unknown>; landing_content: Record<string, unknown> | null }; project: BookProject } | { ok: false; error: string }> {
-  const { data, error } = await svc.from("lead_capture_forms").select("id, name, agent_id, settings, landing_content").eq("id", magnetId).eq("brokerage_id", brokerageId).maybeSingle()
-  if (error) return { ok: false, error: `Book project unreadable: ${error.message}` }
-  if (!data) return { ok: false, error: "Book project not found in this brokerage" }
-  const settings = ((data as { settings?: Record<string, unknown> | null }).settings ?? {}) as Record<string, unknown>
-  const project = settings.book as BookProject | undefined
-  if (!project || typeof project !== "object" || !project.stage) return { ok: false, error: "This lead magnet carries no book project" }
-  return { ok: true, row: { id: (data as { id: string }).id, name: (data as { name: string }).name, agent_id: (data as { agent_id?: string | null }).agent_id ?? null, settings, landing_content: ((data as { landing_content?: Record<string, unknown> | null }).landing_content ?? null) }, project }
+/** The book as the pipeline reads it: the entity row (id, owner, the capture form that distributes it) + its project record. */
+export interface LoadedBook {
+  /** book_projects.id */
+  id: string
+  name: string
+  /** agents.id of the book's author (book_projects.agent_id). */
+  agent_id: string | null
+  /** The capture form that distributes it (null = not distributed as a lead magnet). */
+  distribution_form_id: string | null
+  /** That form's landing copy (the layout stage names the book on it). */
+  landing_content: Record<string, unknown> | null
+  /** The KDP package record (book_projects.publishing), null until built. */
+  publishing: Record<string, unknown> | null
+  owner_scope: BookRow["owner_scope"]
 }
 
-/** A COUNTED, tenant-pinned write of the project record (plus the name / landing copy when the title lands). */
-async function saveProject(svc: Svc, brokerageId: string, magnetId: string, settings: Record<string, unknown>, project: BookProject, extra: Record<string, unknown> = {}): Promise<string | null> {
-  const { data, error } = await svc.from("lead_capture_forms").update({ settings: { ...settings, book: project }, updated_at: project.updated_at, ...extra }).eq("brokerage_id", brokerageId).eq("id", magnetId).select("id")
-  if (error) return `Book project not saved: ${error.message}`
-  if ((data ?? []).length !== 1) return "Book project not saved: no row matched this brokerage + id"
+/**
+ * Read the BOOK — tenant-pinned, by its own id or by the lead magnet that distributes it (wave 145: book_projects, m867). A
+ * capture form that distributes no book is not a book project; a refused read is an error, never "no book".
+ */
+export async function loadProject(svc: Svc, brokerageId: string, locator: BookLocator | string): Promise<{ ok: true; row: LoadedBook; project: BookProject } | { ok: false; error: string }> {
+  const loc: BookLocator | null = typeof locator === "string" ? locatorOf({ magnetId: locator }) : locator
+  const res = await loadBookRow(svc, brokerageId, loc)
+  if (!res.ok) return { ok: false, error: res.error }
+  const project = res.row.project as unknown as BookProject | undefined
+  if (!project || typeof project !== "object" || !project.stage) return { ok: false, error: "This book carries no project record" }
+  const form = await loadDistributionForm(svc, brokerageId, res.row.distribution_form_id)
+  if (!form.ok) return { ok: false, error: form.error }
+  return {
+    ok: true,
+    row: {
+      id: res.row.id, name: res.row.title, agent_id: res.row.agent_id, distribution_form_id: res.row.distribution_form_id,
+      landing_content: form.form?.landing_content ?? null, publishing: res.row.publishing ?? null, owner_scope: res.row.owner_scope,
+    },
+    project,
+  }
+}
+
+/**
+ * A COUNTED, tenant-pinned write of the book's project record (its stage / title / context mirrored onto the entity's columns
+ * in the same write) — plus, when the title lands, the name / landing copy of the capture form that distributes it.
+ */
+async function saveProject(svc: Svc, brokerageId: string, book: LoadedBook, project: BookProject, formPatch: Record<string, unknown> = {}): Promise<string | null> {
+  const saved = await saveBookRow(svc, brokerageId, book.id, { project: project as unknown as Record<string, unknown>, updatedAt: project.updated_at })
+  if (saved) return saved
+  if (book.distribution_form_id && Object.keys(formPatch).length > 0) {
+    const { data, error } = await svc.from("lead_capture_forms").update({ ...formPatch, updated_at: project.updated_at }).eq("brokerage_id", brokerageId).eq("id", book.distribution_form_id).select("id")
+    if (error) return `The book was saved, but the lead magnet that distributes it was not updated: ${error.message}`
+    if ((data ?? []).length !== 1) return "The book was saved, but the lead magnet that distributes it matched no row in this brokerage"
+  }
   return null
 }
 
@@ -518,12 +588,12 @@ async function saveProject(svc: Svc, brokerageId: string, magnetId: string, sett
  * simply runs the following one; a failed model call leaves the record untouched and reports why.
  */
 export async function advanceBookProject(input: AdvanceBookInput, deps: BookDeps = {}): Promise<AdvanceBookOutput> {
-  if (!input.brokerageId || !input.magnetId) return { success: false, error: "Missing required fields: brokerageId, magnetId" }
+  const locator = locatorOf(input)
+  if (!input.brokerageId || !locator) return { success: false, error: "Missing required fields: brokerageId, bookId (or the magnetId that distributes it)" }
   const svc = (deps.client ?? (await import("@/lib/supabase/service")).createServiceClient()) as Svc
-  const loaded = await loadProject(svc, input.brokerageId, input.magnetId)
+  const loaded = await loadProject(svc, input.brokerageId, locator)
   if (!loaded.ok) return { success: false, error: loaded.error }
   const { row } = loaded
-  const settings = row.settings
   const p: BookProject = { ...loaded.project, chapters: [...loaded.project.chapters], log: [...loaded.project.log], needs_human_review: [...(loaded.project.needs_human_review ?? [])], cost: { ...loaded.project.cost } }
   const now = (deps.now ?? new Date()).toISOString()
   if (p.stage === "ready_for_review") return { success: true, stage: p.stage, done: true, note: "The book is finished — review and publish it.", project: p }
@@ -551,7 +621,7 @@ export async function advanceBookProject(input: AdvanceBookInput, deps: BookDeps
         // unanswered + whether the concept is original + what this tenant's magnets of the type already converted.
         const positioning = await (deps.positioningResearcher ?? defaultPositioningResearcher)({ concept: p.concept, audience: p.audience, area: p.area, brokerageId: input.brokerageId }).catch(() => null)
         const magnetType = p.audience === "buyer" ? "buyer_guide" : "seller_guide"
-        const conversion = await (deps.conversionReader ?? defaultConversionReader)(svc, { brokerageId: input.brokerageId, magnetType, excludeMagnetId: input.magnetId }).catch(() => null)
+        const conversion = await (deps.conversionReader ?? defaultConversionReader)(svc, { brokerageId: input.brokerageId, magnetType, excludeMagnetId: row.distribution_form_id ?? "" }).catch(() => null)
         const evidence = scoreBookTopicEvidence({ concept: p.concept, workingTitle: p.title, demand: topics, bank, positioning, conversion, now })
         p.research = { topics: topics.map((t) => t.topic), bank_topics: bank, fetched_at: now, evidence }
         p.stage = "outline"
@@ -648,7 +718,7 @@ export async function advanceBookProject(input: AdvanceBookInput, deps: BookDeps
         const brand = await (deps.brandResolver ?? defaultBrandResolver)(svc, input.brokerageId, agentUserId)
         const dateLabel = new Date(now).toLocaleDateString("en-US", { year: "numeric", month: "long" })
         const spec = bookPdfSpec(composeBookPdfData(p), brand, dateLabel)
-        const produced = await (deps.producer ?? defaultProducer)(svc, { brokerageId: input.brokerageId, agentUserId, spec, metadata: { source: "lead_magnet_book", magnet_id: input.magnetId, chapters: p.chapters.length, audience: p.audience } })
+        const produced = await (deps.producer ?? defaultProducer)(svc, { brokerageId: input.brokerageId, agentUserId, spec, metadata: { source: "lead_magnet_book", book_id: row.id, magnet_id: row.distribution_form_id, chapters: p.chapters.length, audience: p.audience } })
         if (!produced.ok || !produced.pdfUrl) return { success: false, stage: p.stage, error: produced.error ?? "The book PDF was not produced.", project: p }
         p.pdf_url = produced.pdfUrl
         p.document_id = produced.documentId
@@ -685,11 +755,11 @@ export async function advanceBookProject(input: AdvanceBookInput, deps: BookDeps
       {
         brokerageId: input.brokerageId, action: "marketing.lead_magnet.book_stage",
         actor: input.actorUserId ? { type: "user", userId: input.actorUserId } : { type: "system" },
-        subject: { type: "lead_capture_form", id: input.magnetId }, reasonCode: "HUMAN_REQUESTED",
+        subject: { type: "book_project", id: row.id }, reasonCode: "HUMAN_REQUESTED",
         reasonDetail: `book stage ${stageBefore} → ${p.stage}: ${note}`, riskClass: "LOW_RISK_WRITE", systemSource: "lead_magnets",
         detail: { stage_before: stageBefore, stage_after: p.stage, chapters: p.chapters.length, tokens: p.cost.tokens, model_calls: p.cost.model_calls, needs_human_review: p.needs_human_review },
       },
-      () => saveProject(svc, input.brokerageId, input.magnetId, settings, p, extra),
+      () => saveProject(svc, input.brokerageId, row, p, extra),
       {
         settle: (err) => err ? { status: "failed", outcome: "save_refused", error: err } : { status: "executed", outcome: p.stage },
         replay: (claim) => `ledger refused the stage: ${claim.kind}`,
@@ -705,7 +775,9 @@ export async function advanceBookProject(input: AdvanceBookInput, deps: BookDeps
 
 interface ReviseBookChapterInput {
   brokerageId: string
-  magnetId: string
+  /** The book's own id — or the lead magnet that distributes it. */
+  bookId?: string
+  magnetId?: string
   /** 1-based chapter number. */
   chapter: number
   body: string
@@ -721,13 +793,13 @@ interface ReviseBookChapterInput {
  * ledger evidence (marketing.lead_magnet.book_revise).
  */
 export async function reviseBookChapter(input: ReviseBookChapterInput, deps: BookDeps = {}): Promise<AdvanceBookOutput> {
-  if (!input.brokerageId || !input.magnetId) return { success: false, error: "Missing required fields: brokerageId, magnetId" }
+  const locator = locatorOf(input)
+  if (!input.brokerageId || !locator) return { success: false, error: "Missing required fields: brokerageId, bookId (or the magnetId that distributes it)" }
   const text = (input.body ?? "").trim()
   const svc = (deps.client ?? (await import("@/lib/supabase/service")).createServiceClient()) as Svc
-  const loaded = await loadProject(svc, input.brokerageId, input.magnetId)
+  const loaded = await loadProject(svc, input.brokerageId, locator)
   if (!loaded.ok) return { success: false, error: loaded.error }
   const { row } = loaded
-  const settings = row.settings
   const p: BookProject = { ...loaded.project, chapters: [...loaded.project.chapters], log: [...loaded.project.log], needs_human_review: [...(loaded.project.needs_human_review ?? [])], cost: { ...loaded.project.cost } }
   const i = input.chapter - 1
   if (!Number.isInteger(input.chapter) || i < 0 || i >= p.chapters.length) return { success: false, stage: p.stage, error: `Chapter ${input.chapter} does not exist (the book has ${p.chapters.length}).`, project: p }
@@ -755,11 +827,11 @@ export async function reviseBookChapter(input: ReviseBookChapterInput, deps: Boo
       {
         brokerageId: input.brokerageId, action: "marketing.lead_magnet.book_revise",
         actor: input.actorUserId ? { type: "user", userId: input.actorUserId } : { type: "system" },
-        subject: { type: "lead_capture_form", id: input.magnetId }, reasonCode: "HUMAN_REQUESTED",
+        subject: { type: "book_project", id: row.id }, reasonCode: "HUMAN_REQUESTED",
         reasonDetail: note, riskClass: "LOW_RISK_WRITE", systemSource: "lead_magnets",
         detail: { chapter: input.chapter, stage_before: stageBefore, stage_after: p.stage, words: wordCount(text), needs_human_review: p.needs_human_review },
       },
-      () => saveProject(svc, input.brokerageId, input.magnetId, settings, p),
+      () => saveProject(svc, input.brokerageId, row, p),
       {
         settle: (err) => err ? { status: "failed", outcome: "save_refused", error: err } : { status: "executed", outcome: "chapter_revised" },
         replay: (claim) => `ledger refused the revision: ${claim.kind}`,
@@ -791,15 +863,16 @@ export async function sweepStalledBookProjects(svc: Svc, brokerageId: string, op
   const now = opts.now ?? new Date()
   const stale = new Date(now.getTime() - (opts.staleMinutes ?? 15) * 60_000).toISOString()
   const out = { advanced: 0, errors: [] as string[] }
-  const { data, error } = await svc.from("lead_capture_forms").select("id, settings").eq("brokerage_id", brokerageId).eq("is_active", false).limit(200)
+  // Wave 145: the BOOKS themselves (book_projects), not capture forms — a KDP book with no lead magnet is swept too.
+  const { data, error } = await svc.from("book_projects").select(BOOK_ROW_COLUMNS).eq("brokerage_id", brokerageId).neq("stage", "ready_for_review").limit(200)
   if (error) { out.errors.push(`book sweep read refused: ${error.message}`); return out }
   const max = opts.max ?? 2
-  for (const r of (data ?? []) as Array<{ id: string; settings?: Record<string, unknown> | null }>) {
+  for (const r of (data ?? []) as BookRow[]) {
     if (out.advanced >= max) break
-    const book = (r.settings?.book ?? null) as BookProject | null
+    const book = (r.project ?? null) as unknown as BookProject | null
     if (!book || typeof book !== "object" || !book.stage || book.stage === "ready_for_review") continue
     if ((book.updated_at ?? "") > stale) continue
-    const res = await advanceBookProject({ brokerageId, magnetId: r.id, actorUserId: null }, { ...(opts.deps ?? {}), client: (opts.deps?.client ?? svc) as never, now })
+    const res = await advanceBookProject({ brokerageId, bookId: r.id, actorUserId: null }, { ...(opts.deps ?? {}), client: (opts.deps?.client ?? svc) as never, now })
     if (res.success) out.advanced++
     else out.errors.push(`${r.id}: ${res.error}`)
   }

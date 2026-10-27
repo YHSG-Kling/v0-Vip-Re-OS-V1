@@ -254,8 +254,10 @@ export const SETUP_ITEMS: SetupItem[] = [
     why: "The logo and colors brand every video, page, postcard, and portal.",
     href: "/settings/branding", detect: (s) => s.hasBranding },
   { key: "commission_structure", label: "Set up each agent's commission", roles: ["broker", "admin"], required: true, category: "brokerage",
-    why: "Admins set the commission plan for each agent per their subscription tier — required before deals compute payouts and P&L.",
-    href: "/settings/commission", detect: (s) => s.hasCommissionStructure },
+    // Wave 145 (145C, owner rulings 4 + 6): the executed agent agreement is the authority — the door is the agreement
+    // governance page (record its effective date, read the proposed terms, a human verifies), not a typed-in plan.
+    why: "Each agent's split, cap and fees come from their executed agreement — record its effective date and verify the terms read from it; the brokerage default applies only where no agreement governs. Required before deals compute payouts and P&L.",
+    href: "/dashboard/financials/agreements", detect: (s) => s.hasCommissionStructure },
   { key: "email_provider", label: "Configure an email sender", roles: ["broker", "admin"], required: true, category: "integrations",
     why: "An email sender lets managers deliver approved client messages for agents who haven't self-connected.",
     href: "/settings/providers", detect: (s) => s.hasEmailProvider },
@@ -548,10 +550,12 @@ export async function loadSetupReadiness(params: {
 
     // Brokerage foundations (broker/admin).
     if (isBrokerAdmin && brokerageId) {
-      const [brk, gs, comm, sms, isaPhone, acct, team, locs] = await Promise.all([
+      const [brk, gs, comm, agreed, sms, isaPhone, acct, team, locs] = await Promise.all([
         svc.from("brokerages").select("license_number, recruiting_pitch, logo_url, primary_color, phone, email, website").eq("id", brokerageId).maybeSingle(),
         svc.from("global_settings").select("app_logo_url, primary_color, from_email, smtp_host").eq("brokerage_id", brokerageId).maybeSingle(),
         svc.from("commission_structures").select("id").eq("brokerage_id", brokerageId).limit(1),
+        // an agent's terms VERIFIED against their executed agreement (m858) — before m858 the read is refused and counts as not set
+        svc.from("agent_commission_profiles").select("id").eq("brokerage_id", brokerageId).not("agreement_signature_id", "is", null).limit(1),
         svc.from("platform_credentials").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).in("platform", ["twilio", "telnyx", "bandwidth"]).limit(1),
         svc.from("tenant_phone_numbers").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(1),
         svc.from("brokerage_integrations").select("id").eq("brokerage_id", brokerageId).eq("provider_type", "accounting").limit(1),
@@ -565,7 +569,7 @@ export async function loadSetupReadiness(params: {
       // Branding is set if EITHER the wizard (global_settings) OR the brokerage row carries a logo/color.
       snap.hasBranding = !!(g.app_logo_url || g.primary_color || b.logo_url || b.primary_color)
       snap.hasEmailProvider = !!(g.from_email || g.smtp_host)
-      snap.hasCommissionStructure = has(comm)
+      snap.hasCommissionStructure = has(comm) || has(agreed)
       snap.hasSmsProvider = has(sms)
       snap.hasIsaPhone = has(isaPhone)
       snap.hasAccountingSync = has(acct)

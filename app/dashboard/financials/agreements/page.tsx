@@ -8,6 +8,8 @@ import { Badge } from "@/components/ui/badge"
 import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 import { ArrowLeft, FileSignature } from "lucide-react"
 import { listCommissionAgreementHistoryAction } from "@/app/actions/commission-agreement-history"
+import { listAgentAgreementGovernanceAction } from "@/app/actions/commission-policy/agreements"
+import { AgreementGovernancePanel } from "./agreement-governance-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -26,6 +28,8 @@ const TERM_LABELS: Record<string, string> = {
   // Wave 144 (144D, owner ruling 9): the cap cycle and what counts toward it come from the agreement (m850).
   cap_anniversary_date: "Cap anniversary",
   cap_eligible_contributions: "Counts toward the cap",
+  // Wave 145 (145C, owner ruling 4): which executed agreement the terms were verified against (m858).
+  agreement_signature_id: "Verified against agreement",
   structure_type: "Structure",
   is_active: "Active",
 }
@@ -48,6 +52,8 @@ export default async function CommissionAgreementsPage() {
   }
 
   const result = await listCommissionAgreementHistoryAction()
+  // WAVE 145 (lane 145C, owner rulings 3/4/6): the executed agreements' effective dates, start dates and verified terms
+  const governance = await listAgentAgreementGovernanceAction()
 
   return (
     <div className="container mx-auto max-w-5xl space-y-6 px-4 py-6">
@@ -62,6 +68,12 @@ export default async function CommissionAgreementsPage() {
           </p>
         </div>
       </div>
+
+      {!governance.success ? (
+        <Card><CardContent className="py-4 text-sm text-destructive">The executed-agreement view could not load: {governance.error}</CardContent></Card>
+      ) : (
+        <AgreementGovernancePanel agents={governance.agents} scans={governance.scans} />
+      )}
 
       {!result.ok ? (
         <Card><CardContent className="py-6 text-sm text-destructive">{result.error}</CardContent></Card>

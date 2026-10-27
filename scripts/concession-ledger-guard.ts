@@ -189,7 +189,7 @@ async function main() {
   const d = newDeal()
   const P = uuid(), REF = uuid()
   const partner = { id: P, brokerage_id: d.B, agent_id: d.A, partner_name: "Riley Outside", partner_type: "real_estate_agent", company_name: "Outside Realty LLC", active: true, commission_split_percentage: null, referral_fee_flat: null }
-  const sd = canaryClient(seed(d, { extra: { referral_partners: [partner], referrals: [{ id: REF, brokerage_id: d.B, agent_id: d.A, partner_id: P, referring_agent_id: null, referral_fee_pct: 25, status: "received", referred_contact_id: d.C, transaction_id: null, created_at: "2026-07-01T00:00:00Z" }] } }) as never)
+  const sd = canaryClient(seed(d, { extra: { referral_partners: [partner], referrals: [{ id: REF, brokerage_id: d.B, agent_id: d.A, partner_id: P, referring_agent_id: null, referral_fee_pct: 25, status: "received", referred_contact_id: d.C, transaction_id: null, created_at: "2026-07-01T00:00:00Z", referral_agreement_document_id: "doc-referral-agreement", referral_agreement_executed_on: "2026-06-30" }] } }) as never)
   const rd = await engine(sd, d)
   const refRow = rows(sd, "commission_distributions").filter((r) => r.distribution_type === "referral")
   check("the outside referral is a DEDUCTION off the top: $3,000 (25 %) payable to the partner (referral_partner_id, no agents row), the rest splits 70/30 — agent $6,300, brokerage $2,700",
@@ -202,7 +202,9 @@ async function main() {
   const second = await quiet(() => calculateCommission({ transactionId: T2, brokerageId: d.B, calculationMode: "final", triggeredBy: null }))
   check("NO DOUBLE PAYMENT: a second closing for the same contact pays no second fee", second.success && rows(sd, "commission_distributions").filter((r) => r.distribution_type === "referral").length === 1)
   const { pickReferralForDeal } = await import("../lib/commission/referral-payout")
-  const base = { id: "r", agent_id: "A", partner_id: "P", referring_agent_id: null, referral_fee_pct: null, status: "received", transaction_id: null, created_at: "2026-07-01T00:00:00Z" }
+  // WAVE 145 (lane 145C, owner ruling 9): the paying fixtures carry the executed referral agreement (m860); the hold without it
+  // is proved in scripts/agreement-governance-guard.ts (section E).
+  const base = { id: "r", agent_id: "A", partner_id: "P", referring_agent_id: null, referral_fee_pct: null, status: "received", transaction_id: null, created_at: "2026-07-01T00:00:00Z", referral_agreement_document_id: "doc-referral-agreement", referral_agreement_executed_on: "2026-06-30" }
   const pm = (p: Record<string, unknown>) => new Map([["P", { id: "P", partner_type: "real_estate_agent", partner_name: "Riley", company_name: "Outside Realty", active: true, ...p }]])
   const lender = pickReferralForDeal([base], { transactionId: "T", producingAgentId: "A", asOf: "2026-08-15", partners: pm({ partner_type: "mortgage_broker", commission_split_percentage: 25 }) })
   check("a LENDER (any non-real-estate partner) is NEVER paid a referral fee — RESPA §8 — skipped with a finding", lender.referral === null && lender.findings.some((f) => /RESPA/.test(f)))

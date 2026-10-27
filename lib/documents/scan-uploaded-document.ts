@@ -121,6 +121,9 @@ Per-classification extracted_fields shape:
                             settlement_fee, transfer_taxes, recording_fees,
                             sales_price, earnest_money_deposit, seller_credit_to_buyer,
                             agent_credit_to_buyer, broker_credit_to_buyer,
+                            agent_credit_to_seller, broker_credit_to_seller,
+                            seller_transaction_fee, seller_admin_fee,
+                            buyer_transaction_fee, buyer_admin_fee,
                             owner_title_policy_payer, commission_listing_broker,
                             commission_buyer_broker, commission_total }
                           (dollar figures are the BORROWER-paid amounts as stated on the
@@ -130,7 +133,19 @@ Per-classification extracted_fields shape:
                            stated; never estimate or total lines yourself.)
   wire_instructions     → { receiving_institution, account_number_last_4, beneficiary_name }
   agency_disclosure     → { brokerage_name, agent_name, signed_at }
-  commission_agreement  → { commission_percentage, commission_payer, expires_at }
+  commission_agreement  → { commission_percentage, commission_payer, expires_at,
+                            structure_type, split_percent, team_override_percent, cap_amount, cap_anniversary_date,
+                            cap_eligible_contributions[], transaction_fee_value, transaction_fee_type, desk_fee_value,
+                            desk_fee_type, technology_fee_value, technology_fee_type, eo_fee_value, eo_fee_type,
+                            royalty_value, royalty_type, referral_value, referral_type, residual_value, residual_type }
+                          (AGENT-AGREEMENT TERMS — structure_type … residual_type — only when the document is an AGENT's
+                           agreement WITH the brokerage (independent contractor / commission agreement), and only the terms
+                           it states: split_percent is the agent's share as a number (70 for 70/30); each *_fee_type /
+                           royalty_type / referral_type / residual_type is exactly "flat" or "percent" as the document
+                           states it; structure_type exactly "split", "flat_cap", "tiered", "team" or "multi_layer";
+                           cap_eligible_contributions only from brokerage_split, transaction_fee, desk_fee,
+                           technology_fee, eo_fee, royalty. Use null for every term the document does not state — these
+                           are a PROPOSAL a finance admin verifies against the executed paper, never applied unread.)
   lender_letter         → { lender_name, letter_type, issued_at }
   earnest_money_receipt → { amount, depositor, escrow_holder, received_at }
   listing_agreement     → { property_address, city, state, zip_code, list_price,
@@ -145,12 +160,19 @@ Per-classification extracted_fields shape:
   preliminary_closing_statement → { closing_date, seller_proceeds, total_seller_costs, title_company,
                             sales_price, earnest_money_deposit, seller_credit_to_buyer,
                             agent_credit_to_buyer, broker_credit_to_buyer,
+                            agent_credit_to_seller, broker_credit_to_seller,
+                            seller_transaction_fee, seller_admin_fee,
+                            buyer_transaction_fee, buyer_admin_fee,
                             owner_title_policy_payer, commission_listing_broker,
                             commission_buyer_broker, commission_total }
                           (SETTLEMENT-COMPARISON FIELDS on closing_disclosure and preliminary_closing_statement —
                            sales_price, earnest_money_deposit, seller_credit_to_buyer, agent_credit_to_buyer /
                            broker_credit_to_buyer (a credit the buyer's or listing AGENT / BROKER gives the buyer — NOT the
-                           seller's credit; null when no such line is printed), commission_* — are dollar
+                           seller's credit; null when no such line is printed), agent_credit_to_seller /
+                           broker_credit_to_seller (the same kind of agent / broker credit printed in the SELLER's column),
+                           seller_transaction_fee / seller_admin_fee and buyer_transaction_fee / buyer_admin_fee (a
+                           brokerage transaction or administrative fee charged to THAT party, as its own line; null when
+                           not printed — never a commission line), commission_* — are dollar
                            amounts exactly as the statement prints them; commission_listing_broker and
                            commission_buyer_broker are the real-estate commission lines paid to each side's
                            broker, commission_total the combined figure only if the statement prints one.

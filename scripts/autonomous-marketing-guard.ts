@@ -113,6 +113,9 @@ type Client = ReturnType<typeof fixture>
 const rows = (c: Client, t: string) => (c.tables[t] ?? []) as Array<Record<string, any>>
 const ledger = (c: Client, action: string) => rows(c, "agent_action_ledger").filter((r) => r.action === action)
 const formRow = (c: Client, id: string | undefined) => rows(c, "lead_capture_forms").find((r) => r.id === id)!
+// Wave 145 (lane 145G, owner ruling 19): the BOOK is its own row (book_projects); the capture form only points at it (settings.book_id).
+const bookEntity = (c: Client, id: string | undefined) => rows(c, "book_projects").find((r) => r.id === id)!
+const projectOf = (c: Client, id: string | undefined) => bookEntity(c, id)?.project as any
 
 // Quiet the kernel's best-effort warnings (every refusal is still asserted through the rows); background
 // fire-and-forget work reaches server-only modules that cannot load under tsx — recorded, never a crash.
@@ -379,9 +382,10 @@ async function main() {
     !refusedStart.success && /AI budget used up/.test(refusedStart.error ?? "") && rows(c, "lead_capture_forms").length === formsBefore && ledger(c, "marketing.lead_magnet.book_start").length === 0)
   const started = await startBookProject({ brokerageId: A, agentId: AGENT_A, createdBy: USER_A, concept, audience, area: "Riverbend", brand: "Alpha Realty" }, { client: c, entitlement: allow, now: NOW })
   const bookRow = () => formRow(c, started.magnetId)
-  check("E4 concept → a DRAFT lead magnet (seller_guide, inactive) carrying the book project at stage research, authored by AI (kind book), one ledger row marketing.lead_magnet.book_start",
+  const bk = () => projectOf(c, started.bookId)
+  check("E4 concept → a BOOK at stage research (its own row, ruling 19) distributed by a DRAFT lead magnet (seller_guide, inactive) that points at it, authored by AI (kind book), one ledger row marketing.lead_magnet.book_start",
     started.success && started.title === workingTitle(concept) && bookRow()?.is_active === false && bookRow()?.magnet_type === "seller_guide" && bookRow()?.settings?.lifecycle?.state === "draft"
-    && bookRow()?.settings?.book?.stage === "research" && bookRow()?.settings?.authoring?.kind === "book" && ledger(c, "marketing.lead_magnet.book_start").length === 1 && ledger(c, "marketing.lead_magnet.book_start")[0].status === "executed", JSON.stringify(started))
+    && bk()?.stage === "research" && bookEntity(c, started.bookId)?.distribution_form_id === started.magnetId && bookRow()?.settings?.book_id === started.bookId && !("book" in (bookRow()?.settings ?? {})) && bookRow()?.settings?.authoring?.kind === "book" && ledger(c, "marketing.lead_magnet.book_start").length === 1 && ledger(c, "marketing.lead_magnet.book_start")[0].status === "executed", JSON.stringify(started))
   const plain = await createLeadMagnet({ title: "Not a book", description: "", magnetType: "generic_form", brokerageId: A, agentId: AGENT_A, createdBy: USER_A, publishState: "draft" }, { client: c })
   const noBook = await advanceBookProject({ brokerageId: A, magnetId: plain.magnetId!, actorUserId: USER_A }, deps)
   const wrongTenant = await advanceBookProject({ brokerageId: B, magnetId: started.magnetId!, actorUserId: USER_B }, deps)
@@ -390,31 +394,31 @@ async function main() {
   const adv = (label: string) => advanceBookProject({ brokerageId: A, magnetId: started.magnetId!, actorUserId: USER_A }, deps).then((r) => { if (!r.success) fails.push(`advance ${label}: ${r.error}`); return r })
   const s1 = await adv("research")
   check("E6 RESEARCH: the gated search rail (demand topics) + the tenant's topic bank are recorded on the project; stage → outline",
-    s1.success && s1.stage === "outline" && bookRow().settings.book.research.topics.length === 2 && bookRow().settings.book.research.bank_topics.length === 1 && /2 demand topic/.test(s1.note ?? ""))
+    s1.success && s1.stage === "outline" && bk().research.topics.length === 2 && bk().research.bank_topics.length === 1 && /2 demand topic/.test(s1.note ?? ""))
   const s2 = await adv("outline")
   check("E7 OUTLINE (routed lane, JSON parsed out of prose): title / subtitle / tagline / intro / closing / 4 chapters; the magnet's NAME becomes the title; stage → chapters",
-    s2.success && s2.stage === "chapters" && bookRow().settings.book.title === "The Smart Seller's Playbook" && bookRow().name === "The Smart Seller's Playbook" && bookRow().settings.book.outline.length === 4 && bookRow().settings.book.tagline === "What the first two weeks decide")
+    s2.success && s2.stage === "chapters" && bk().title === "The Smart Seller's Playbook" && bookRow().name === "The Smart Seller's Playbook" && bk().outline.length === 4 && bk().tagline === "What the first two weeks decide")
   const s3 = await adv("chapters 1-2")
   const s4 = await adv("chapters 3-4")
   check(`E8 ORIGINAL CHAPTERS are written ${BOOK_CHAPTERS_PER_ADVANCE} per advance (bounded), each ≥ ${BOOK_MIN_CHAPTER_WORDS} words; the stage moves on only when every outline chapter exists`,
-    s3.success && s3.stage === "chapters" && s3.project?.chapters.length === BOOK_CHAPTERS_PER_ADVANCE && s4.success && s4.stage === "fact_check" && bookRow().settings.book.chapters.length === 4 && bookRow().settings.book.chapters.every((ch: { words: number }) => ch.words >= BOOK_MIN_CHAPTER_WORDS))
+    s3.success && s3.stage === "chapters" && s3.project?.chapters.length === BOOK_CHAPTERS_PER_ADVANCE && s4.success && s4.stage === "fact_check" && bk().chapters.length === 4 && bk().chapters.every((ch: { words: number }) => ch.words >= BOOK_MIN_CHAPTER_WORDS))
   const s5 = await adv("fact check")
-  const findings = (bookRow().settings.book.fact_check?.findings ?? []) as Array<{ chapter: number; claim: string; by: string }>
+  const findings = (bk().fact_check?.findings ?? []) as Array<{ chapter: number; claim: string; by: string }>
   check("E9 FACT CHECK: the deterministic figure scan catches $450,000 and 2023 (never supplied) and passes 12% (supplied); the model's finding is kept beside it; stage → edit",
     s5.success && s5.stage === "edit" && findings.some((f) => f.chapter === 1 && f.claim === "$450,000" && f.by === "scan") && findings.some((f) => f.chapter === 1 && f.claim === "2023" && f.by === "scan")
     && findings.some((f) => f.chapter === 1 && f.claim === "$450,000" && f.by === "model") && !findings.some((f) => f.claim === "12%") && findings.every((f) => f.chapter === 1), JSON.stringify(findings))
   const s6 = await adv("edit 1-2")
   const s7 = await adv("edit 3-4")
-  const chapters = bookRow().settings.book.chapters as Array<{ body: string; edited?: { fact_findings: number; fair_housing_rewrites: number; escalated: boolean; findings: string[] } }>
+  const chapters = bk().chapters as Array<{ body: string; edited?: { fact_findings: number; fair_housing_rewrites: number; escalated: boolean; findings: string[] } }>
   check("E10 EDIT: chapter 1's figures are removed (fact findings resolved, no fair-housing rewrite); chapter 2's steering phrase is rewritten WITH the findings (1 rewrite, clean); chapter 4 untouched",
     s6.success && s6.stage === "edit" && chapters[0].edited?.fact_findings === 3 && !/\$450,000|2023/.test(chapters[0].body) && chapters[0].edited?.fair_housing_rewrites === 0
     && chapters[1].edited?.fair_housing_rewrites === 1 && chapters[1].edited?.escalated === false && !/perfect for families/.test(chapters[1].body) && /room to grow into/.test(chapters[1].body)
     && chapters[3].edited?.fair_housing_rewrites === 0 && fhRewriteAsks.filter((i) => i === 2).length === 1, JSON.stringify(chapters.map((ch) => ch.edited)))
   check(`E11 EDIT: the STUBBORN chapter 3 hits the cap (${PUBLIC_COPY_MAX_REWRITES} rewrites, still 'great for retirees') → ESCALATED, listed in needs_human_review; stage → layout`,
     s7.success && s7.stage === "layout" && chapters[2].edited?.fair_housing_rewrites === PUBLIC_COPY_MAX_REWRITES && chapters[2].edited?.escalated === true && chapters[2].edited?.findings.includes("great for retirees")
-    && JSON.stringify(bookRow().settings.book.needs_human_review) === "[3]" && fhRewriteAsks.filter((i) => i === 3).length === PUBLIC_COPY_MAX_REWRITES && /1 escalated to the reviewer/.test(s7.note ?? ""))
+    && JSON.stringify(bk().needs_human_review) === "[3]" && fhRewriteAsks.filter((i) => i === 3).length === PUBLIC_COPY_MAX_REWRITES && /1 escalated to the reviewer/.test(s7.note ?? ""))
   const s8 = await adv("layout")
-  const book = bookRow().settings.book as BookProject
+  const book = bk() as BookProject
   check("E12 COVER + CONTENTS + LAYOUT: a REAL multi-page PDF (cover page, table of contents, intro, one page per chapter, closing) is produced, hosted and recorded in the document library; stage → ready_for_review; the landing page names the book",
     s8.success && s8.done === true && s8.stage === "ready_for_review" && producedBytes !== null && Buffer.from((producedBytes as Uint8Array).slice(0, 5)).toString() === "%PDF-" && producedPages >= 2 + 1 + 4 + 1
     && book.pdf_url === `${ORIGIN}/docs/book.pdf` && !!book.document_id && rows(c, "generated_documents").some((d) => d.id === book.document_id && d.document_type === "book" && d.brokerage_id === A && d.metadata?.magnet_id === started.magnetId)
@@ -435,7 +439,7 @@ async function main() {
   const badRevision = await reviseBookChapter({ brokerageId: A, magnetId: started.magnetId!, chapter: 3, body: body("Still an adult community, great for retirees."), actorUserId: USER_A }, deps)
   const shortRevision = await reviseBookChapter({ brokerageId: A, magnetId: started.magnetId!, chapter: 3, body: "Too short.", actorUserId: USER_A }, deps)
   const revised = await reviseBookChapter({ brokerageId: A, magnetId: started.magnetId!, chapter: 3, body: body("Single-level homes here offer accessible features and easy upkeep without giving up space."), actorUserId: USER_A }, deps)
-  const afterRevise = bookRow().settings.book as BookProject
+  const afterRevise = bk() as BookProject
   check("E17 the human REVISES the escalated chapter: a steering revision is refused (the scan runs on the human's words too), a stub is refused, a clean one clears the review list and sends the book back to LAYOUT for a fresh PDF",
     !badRevision.success && /great for retirees/.test(badRevision.error ?? "") && !shortRevision.success && /words/.test(shortRevision.error ?? "")
     && revised.success && afterRevise.stage === "layout" && afterRevise.pdf_url === null && afterRevise.needs_human_review.length === 0 && afterRevise.chapters[2].edited?.escalated === false && /accessible features/.test(afterRevise.chapters[2].body)
@@ -443,11 +447,11 @@ async function main() {
   const s9 = await adv("re-layout")
   const pubBook = await publishLeadMagnet({ magnetId: started.magnetId!, brokerageId: A, channels: ["landing_page"], actorUserId: USER_A, baseUrl: ORIGIN }, { client: c })
   check("E18 re-layout renders the corrected book (ready again, hosted) and the human's publish now lands: the row is live, lifecycle approved_by the reviewer",
-    s9.success && s9.stage === "ready_for_review" && !!bookRow().settings.book.pdf_url && pubBook.success && bookRow().is_active === true && bookRow().settings.lifecycle.approved_by === USER_A, JSON.stringify(pubBook))
-  const refAfter = leadMagnetBookRefOf(bookRow().settings)
+    s9.success && s9.stage === "ready_for_review" && !!bk().pdf_url && pubBook.success && bookRow().is_active === true && bookRow().settings.lifecycle.approved_by === USER_A, JSON.stringify(pubBook))
+  const refAfter = leadMagnetBookRefOf({ book: bk() })
   const cap = await captureFormSubmission({ formId: started.magnetId!, brokerageId: A, submissionData: { first_name: "Rae", last_name: "Reader", email: "rae@reader.test" }, tcpaConsentGiven: true, source: "landing_page" }, { client: c })
   check("E19 CAPTURE: a visitor's submission on the published book lands (contact + submission); the kernel's delivery reads the finished book through leadMagnetBookRefOf (4 chapters, the hosted PDF)",
-    cap.success && !!cap.contactId && rows(c, "form_submissions").some((s) => s.form_id === started.magnetId) && refAfter?.chapters === 4 && refAfter?.pdfUrl === bookRow().settings.book.pdf_url && refAfter?.title === "The Smart Seller's Playbook", JSON.stringify(cap))
+    cap.success && !!cap.contactId && rows(c, "form_submissions").some((s) => s.form_id === started.magnetId) && refAfter?.chapters === 4 && refAfter?.pdfUrl === bk().pdf_url && refAfter?.title === "The Smart Seller's Playbook", JSON.stringify(cap))
   const shortWriter: BookDeps = { ...deps, manuscriptWriter: async (req) => /Return ONLY JSON: \{"title"/.test(req.prompt) ? manuscriptWriter(req) : { text: "A stub chapter that is far too short to ship.", tokens: 10, model: "stub" } }
   const p4 = await startBookProject({ brokerageId: A, agentId: AGENT_A, createdBy: USER_A, concept: "A buyer's book on offers, inspections and the closing table", audience: "buyer" }, { client: c, entitlement: allow, now: NOW })
   await advanceBookProject({ brokerageId: A, magnetId: p4.magnetId!, actorUserId: USER_A }, shortWriter)
@@ -455,12 +459,12 @@ async function main() {
   const ledgerBefore = ledger(c, "marketing.lead_magnet.book_stage").length
   const stubChapter = await advanceBookProject({ brokerageId: A, magnetId: p4.magnetId!, actorUserId: USER_A }, shortWriter)
   check("E20 control — a chapter under the word floor is REFUSED: the stage does not move, nothing is saved, no ledger row, the error names the chapter",
-    !stubChapter.success && stubChapter.stage === "chapters" && /Chapter 1 did not land/.test(stubChapter.error ?? "") && formRow(c, p4.magnetId).settings.book.chapters.length === 0 && ledger(c, "marketing.lead_magnet.book_stage").length === ledgerBefore, JSON.stringify(stubChapter))
+    !stubChapter.success && stubChapter.stage === "chapters" && /Chapter 1 did not land/.test(stubChapter.error ?? "") && projectOf(c, p4.bookId).chapters.length === 0 && ledger(c, "marketing.lead_magnet.book_stage").length === ledgerBefore, JSON.stringify(stubChapter))
   const stale = await startBookProject({ brokerageId: A, agentId: AGENT_A, createdBy: USER_A, concept: "A seller's book left in a closed tab for twenty minutes", audience: "seller" }, { client: c, entitlement: allow, now: new Date(NOW.getTime() - 20 * 60_000) })
   const fresh = await startBookProject({ brokerageId: A, agentId: AGENT_A, createdBy: USER_A, concept: "A seller's book the reviewer is watching right now", audience: "seller" }, { client: c, entitlement: allow, now: NOW })
   const sweep = await sweepStalledBookProjects(c, A, { staleMinutes: 15, now: NOW, deps })
   check("E21 THE SAFETY NET: the sweep advances only the STALE unfinished project (one stage), leaves the fresh one and the finished books alone, reports errors",
-    sweep.advanced === 1 && sweep.errors.length === 0 && formRow(c, stale.magnetId).settings.book.stage === "outline" && formRow(c, fresh.magnetId).settings.book.stage === "research" && bookRow().settings.book.stage === "ready_for_review", JSON.stringify(sweep))
+    sweep.advanced === 1 && sweep.errors.length === 0 && projectOf(c, stale.bookId).stage === "outline" && projectOf(c, fresh.bookId).stage === "research" && bk().stage === "ready_for_review", JSON.stringify(sweep))
 
   // ── F. CONSOLIDATION ───────────────────────────────────────────────────────
   console.log("\n── F. the admin Forms Manager's lead-capture half merged onto the lead-magnet survivor ──")

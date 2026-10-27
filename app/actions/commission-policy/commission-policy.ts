@@ -11,31 +11,14 @@
  * lib/transactions/cda-closing-policy.ts. Nothing here computes money — the deterministic waterfall does.
  */
 
-import { createClient } from "@/lib/supabase/server"
-import { requireAuth } from "@/lib/kernel/api-auth"
-import { isBrokerageFinanceAdmin, resolveTenantPrincipalTeamLead } from "@/lib/auth/resolve-user-role"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { revalidatePath } from "next/cache"
 import type { AgentConcessionBeneficiary } from "@/lib/commission/agent-concession"
+// WAVE 145 (lane 145C): the session actor moved, body unchanged, to its ONE home (lib/agreements/session-actor.ts) so the new
+// agreement / client-fee / closing-verification doors use the same resolution instead of a second copy (CLAUDE.md §6).
+import { resolveSessionActor as sessionActor } from "@/lib/agreements/session-actor"
 
 type ActionResult<T> = ({ success: true } & T) | { success: false; error: string }
-
-async function sessionActor() {
-  const supabase = await createClient()
-  const auth = await requireAuth(supabase)
-  if (!auth.ok) return { ok: false as const, error: "unauthenticated" }
-  const principal = await resolveTenantPrincipalTeamLead(supabase as never, auth.userId, auth.brokerageId)
-  if (!principal.ok) return { ok: false as const, error: `role_unresolved: ${principal.reason}` }
-  return {
-    ok: true as const,
-    actor: {
-      userId: auth.userId,
-      agentId: auth.agentId,
-      brokerageId: auth.brokerageId,
-      userType: auth.userType,
-      isTenantPrincipal: principal.isPrincipal,
-    },
-  }
-}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -43,20 +26,28 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** An agent asks (or, where the brokerage requires no approval, records) a concession off their own gross commission. */
 export async function requestAgentConcessionAction(input: {
-  transactionId: string
+  /** The transaction… */
+  transactionId?: string | null
+  /** …or (wave 145, m861) the offer it is promised on before any transaction exists — exactly one. */
+  offerId?: string | null
   beneficiary: AgentConcessionBeneficiary
   beneficiaryName?: string | null
   amount: number
   valueType: "flat" | "percent"
   reason: string
 }): Promise<ActionResult<{ concessionId: string; requiresApproval: boolean }>> {
-  if (!UUID.test(String(input?.transactionId ?? ""))) return { success: false, error: "invalid_transaction" }
+  const tx = input?.transactionId ? String(input.transactionId) : null
+  const offer = input?.offerId ? String(input.offerId) : null
+  if (!!tx === !!offer) return { success: false, error: "anchor_invalid: name the transaction or the offer — exactly one" }
+  if (tx && !UUID.test(tx)) return { success: false, error: "invalid_transaction" }
+  if (offer && !UUID.test(offer)) return { success: false, error: "invalid_offer" }
   const s = await sessionActor()
   if (!s.ok) return { success: false, error: s.error }
   const { createServiceClient } = await import("@/lib/supabase/service")
   const { requestAgentConcession } = await import("@/lib/commission/agent-concession")
   const r = await requestAgentConcession(createServiceClient() as never, s.actor, {
-    transactionId: input.transactionId,
+    transactionId: tx,
+    offerId: offer,
     beneficiary: input.beneficiary,
     beneficiaryName: input.beneficiaryName ?? null,
     amount: Number(input.amount),
@@ -64,7 +55,7 @@ export async function requestAgentConcessionAction(input: {
     reason: String(input.reason ?? ""),
   })
   if (!r.ok) return { success: false, error: r.error }
-  revalidatePath(`/dashboard/transactions/${input.transactionId}/cda`)
+  if (r.record.transactionId) revalidatePath(`/dashboard/transactions/${r.record.transactionId}/cda`)
   return { success: true, concessionId: r.record.id, requiresApproval: r.requiresApproval }
 }
 

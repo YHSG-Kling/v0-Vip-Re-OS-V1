@@ -201,7 +201,13 @@ export interface RecordVersionInput {
  * The version number is assigned here (an offers-row version takes the row's own number; an addendum / amendment the next in its
  * source) and the unique index makes a concurrent duplicate a refusal, not a second row.
  */
-export async function recordContractTermsVersion(svc: Svc, input: RecordVersionInput): Promise<{ ok: true; versionNo: number; id: string } | { ok: false; reason: string }> {
+export async function recordContractTermsVersion(
+  svc: Svc,
+  input: RecordVersionInput,
+  /** wave 145 (lane 145C, owner ruling 8): an EXECUTED addendum / amendment runs its consequences (governing-terms-consequences.ts)
+   *  once recorded; `consequences: false` records only (a proof of the recorder alone), `consequenceDeps` swaps a survivor in a proof. */
+  opts: { consequences?: boolean; consequenceDeps?: import("./governing-terms-consequences").ConsequenceDeps } = {},
+): Promise<{ ok: true; versionNo: number; id: string; consequences?: import("./governing-terms-consequences").ExecutedChangeConsequences } | { ok: false; reason: string }> {
   if (!input.brokerageId) return { ok: false, reason: "no tenant" }
   if (!input.rootOfferId && !input.transactionId) return { ok: false, reason: "a terms version needs an anchor: the chain's root offer or a transaction" }
   const { terms, unknownKeys } = canonicalTerms(input.terms)
@@ -248,7 +254,21 @@ export async function recordContractTermsVersion(svc: Svc, input: RecordVersionI
     .select("id")
   if (error) return { ok: false, reason: error.code === "23505" ? "that version number was just recorded by another request — retry" : `contract_term_versions insert refused: ${error.message}` }
   const id = ((ins ?? [])[0] as { id?: string } | undefined)?.id
-  return id ? { ok: true, versionNo: next, id } : { ok: false, reason: "contract_term_versions insert matched no row" }
+  if (!id) return { ok: false, reason: "contract_term_versions insert matched no row" }
+  // WAVE 145 (lane 145C, owner ruling 8 — contract C7): an EXECUTED addendum / amendment reaches every financial obligation it
+  // changes — the operational row, compliance re-review, the closing attestation, settlement reconciliation, the CDA, the deal
+  // team — AFTER the version is recorded (the record stands whatever a consequence does; each outcome is returned).
+  if (input.status === "executed" && (input.source === "addendum" || input.source === "amendment") && opts.consequences !== false) {
+    const { afterExecutedContractChange } = await import("./governing-terms-consequences")
+    const consequences = await afterExecutedContractChange(svc, {
+      brokerageId: input.brokerageId, transactionId: input.transactionId ?? null, rootOfferId: input.rootOfferId ?? null, versionNo: next,
+      source: input.source, changedTerms: terms, documentId: input.documentId as string,
+      executedOn: String(input.executedAt ?? "").slice(0, 10), effectiveOn: typeof input.evidence?.effective_on === "string" ? (input.evidence.effective_on as string) : null,
+      recordedBy: input.recordedBy ?? null,
+    }, opts.consequenceDeps)
+    return { ok: true, versionNo: next, id, consequences }
+  }
+  return { ok: true, versionNo: next, id }
 }
 
 /**
@@ -261,6 +281,15 @@ export async function freezeExecutedTermsAfterPromotion(input: { brokerageId: st
     const svc = input.client ?? ((await import("@/lib/supabase/service")).createServiceClient() as unknown as Svc)
     const snap = await snapshotExecutedTerms(svc, input)
     if (!snap.ok) console.error(`[governing-terms] transaction ${input.transactionId}: executed terms NOT frozen — ${snap.reason}`)
+    // WAVE 145 (lane 145C, m861 — owner ruling 4): agent concessions requested on the offer chain BEFORE the contract follow it
+    // onto the new transaction (a counted re-anchor; offer_id kept as provenance). Every promotion path calls this function.
+    const chain = await loadOfferChainRows(svc, input.brokerageId, input.offerId)
+    if (!chain.ok) console.error(`[governing-terms] transaction ${input.transactionId}: offer chain unreadable — concessions not re-anchored: ${chain.reason}`)
+    else if (chain.rows.length > 0) {
+      const { anchorOfferConcessionsToTransaction } = await import("@/lib/commission/agent-concession")
+      const moved = await anchorOfferConcessionsToTransaction(svc, { brokerageId: input.brokerageId, offerIds: chain.rows.map((r) => r.id), transactionId: input.transactionId })
+      if (!moved.ok) console.error(`[governing-terms] transaction ${input.transactionId}: offer concessions NOT re-anchored — ${moved.error}`)
+    }
   } catch (err) {
     console.error(`[governing-terms] transaction ${input.transactionId}: executed-terms step threw —`, (err as Error)?.message ?? err)
   }

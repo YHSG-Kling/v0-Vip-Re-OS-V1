@@ -43,7 +43,7 @@
  *         (source), and must go RED.
  * LIVE (creds-gated): m461 is in the DATABASE, not merely on disk.
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { stripComments as canonicalStripComments } from "./strip-comments"
@@ -761,16 +761,24 @@ const SOURCE_PROBES: SourceProbe[] = [
     },
   },
   {
-    name: "S20 the PHANTOM COLUMN is not reintroduced — nothing in the resolver reads agents.start_date",
-    run: (s) =>
-      // The CODE must never name it; the PROSE must still warn about it, so the
-      // reason it is absent survives the next person who reads this file.
-      // `agent_start_date` is the name of an anniversary BASIS (a value of the
-      // live CHECK constraint) and is legitimate; it is masked out first so the
-      // ban lands on the COLUMN and nothing else.
-      !/start_date/.test(stripComments(s.resolver).replace(/agent_start_date/g, "ANNIVERSARY_BASIS"))
-      && /agents\.start_date` DOES NOT EXIST/.test(s.resolver)
-      && /agentCreatedAt/.test(s.resolver),
+    // RE-ASSERTED AS THE RULE (wave 145, lane 145C — owner ruling 3, contract C6): agents.start_date is no longer a phantom —
+    // m858 creates it, sourced ONLY from an executed agent agreement (trigger agents_start_date_from_agreement). The waypoint
+    // "nothing reads it" became false the moment the ruling landed; the RULE it protected still holds and is what is asserted:
+    // (1) the column the resolver reads is a REAL one (the migration that creates it, with its agreement-source trigger, is on
+    // disk); (2) the resolver never NAMES it in a select (a pre-apply database must never turn into a refused read — it reads
+    // agents through select("*")); (3) it is an anchor from the agreement, ranked below the agreement's own cap anniversary and
+    // ABOVE the seat-provisioning stamps. The mutation below (naming start_date in a select) still goes red.
+    name: "S20 agents.start_date is read only as the AGREEMENT-sourced anchor (m858), never named in a select, ranked above the seat stamps",
+    run: (s) => {
+      const code = stripComments(s.resolver).replace(/agent_start_date/g, "ANNIVERSARY_BASIS")
+      const selects = [...code.matchAll(/\.select\(\s*"([^"]*)"\s*\)/g)].map((m) => m[1])
+      const migDir = join(process.cwd(), "supabase/migrations")
+      const m858 = readdirSync(migDir).filter((f) => /^m\d+-.*start-date.*\.sql$/.test(f)).map((f) => readFileSync(join(migDir, f), "utf8")).join("\n")
+      return !selects.some((c) => /\bstart_date\b/.test(c))
+        && /ADD COLUMN IF NOT EXISTS start_date\s+date/.test(m858) && /agents_start_date_from_agreement/.test(m858)
+        && /anchorIso = start \?\? seat \?\? parseCapDate\(input\.agentCreatedAt\)/.test(code)
+        && /agentCreatedAt/.test(s.resolver)
+    },
   },
   {
     // ══ S21-S30: THE CAP SURFACES OUTSIDE SETTINGS, AND THE TEAM SEEDER ══════

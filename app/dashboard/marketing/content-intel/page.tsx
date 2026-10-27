@@ -40,6 +40,10 @@ export default async function ContentIntelPage() {
           neighborhood-specific Instagram hashtags, competitor handles, or local RSS
           feeds — the topic bank tags them as LOCAL and the picker boosts them +15.
         </p>
+        <p className="mt-2 text-sm">
+          <a className="text-blue-600 underline" href="/dashboard/marketing/content-intel/topics">Open the topic bank</a>{" "}
+          — every intelligence topic with its source, evidence and approval state.
+        </p>
       </div>
 
       <section>

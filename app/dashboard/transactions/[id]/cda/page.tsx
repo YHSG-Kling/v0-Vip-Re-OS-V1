@@ -4,6 +4,9 @@ import { TRANSACTION_STAGES } from "@/lib/transactions/transaction-stages"
 import { isBrokerageFinanceAdminGrantRole } from "@/lib/auth/resolve-user-role"
 import { CDAWorkflowClient } from "./cda-workflow-client"
 import { AgentConcessionsCard } from "./agent-concessions-card"
+import { ClosingVerificationCard } from "./closing-verification-card"
+import { ClientAgreementFeesCard } from "./client-agreement-fees-card"
+import { ReferralAgreementCard } from "./referral-agreement-card"
 import { resolveCdaMode } from "@/lib/transactions/cda-closing-policy"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
@@ -249,8 +252,13 @@ export default async function CDAPage({ params }: PageProps) {
       cdaTimeline={cdaTimeline ?? []}
     />
     {/* WAVE 144 (lane 144D, owner ruling 4): the agent concession request / broker decision for this deal. */}
-    <div className="mx-auto max-w-5xl px-4 pb-8">
+    <div className="mx-auto max-w-5xl space-y-6 px-4 pb-8">
       <AgentConcessionsCard transactionId={id} />
+      {/* WAVE 145 (lane 145C, owner rulings 5/6/7/9): client-agreement fees, the referral agreement a payout needs, and the
+          five-layer closing verification with the agent's attestation (+ the compliance CDA-correction door). */}
+      <ClientAgreementFeesCard transactionId={id} />
+      <ReferralAgreementCard transactionId={id} />
+      <ClosingVerificationCard transactionId={id} />
     </div>
     </>
   )

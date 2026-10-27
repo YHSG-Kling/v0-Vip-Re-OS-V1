@@ -106,7 +106,10 @@ export async function pickTopics(args: {
     q = q.overlaps("categories", args.categoriesAny)
   }
 
-  const { data } = await q
+  // READ THE REFUSAL (CLAUDE.md §3 — wave 145, lane 145G): a refused pool read used to be indistinguishable from an empty
+  // bank, so every writer silently fell back to evergreen copy. It is said now; the fallback stays (a writer still writes).
+  const { data, error: poolErr } = await q
+  if (poolErr) console.error(`[topic-bank] content_topic_bank read REFUSED for ${args.brokerageId} — writers fall back to evergreen topics:`, poolErr.message)
   let rows = (data ?? []) as Array<{
     id:               string
     brokerage_id:     string | null

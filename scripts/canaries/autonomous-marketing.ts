@@ -175,15 +175,17 @@ export async function run() {
         stages.push(String(step.stage)); done = step.done === true
       }
       const row = (svc.tables.lead_capture_forms ?? []).find((f) => f.id === started.magnetId)
-      const project = (row?.settings as { book?: Record<string, unknown> } | undefined)?.book as Record<string, unknown> | undefined
+      // Wave 145 (lane 145G, owner ruling 19): the BOOK is its own row (book_projects); the magnet only POINTS at it.
+      const bookEntityRow = (svc.tables.book_projects ?? []).find((b) => b.id === started.bookId)
+      const project = bookEntityRow?.project as Record<string, unknown> | undefined
       const chaptersOut = (project?.chapters ?? []) as Array<{ heading: string; words: number; edited?: { fair_housing_rewrites: number; escalated: boolean } }>
-      const ref = leadMagnetBookRefOf((row?.settings ?? {}) as Record<string, unknown>)
+      const ref = leadMagnetBookRefOf({ book: project ?? null })
       const pages = pdfBytes ? (await PDFDocument.load(pdfBytes)).getPageCount() : 0
       const magnetsSrc = strippedRepo("lib/kernel/lead-magnets.ts") ?? ""
       const magnetsAfterRefusal = (svc.tables.lead_capture_forms ?? []).filter((f) => f.id !== started.magnetId).length
       const bookChecks: Array<[string, boolean]> = [
         ["refused entitlement writes nothing", !refused.success && /not available/.test(refused.error ?? "") && magnetsAfterRefusal === magnetsBefore],
-        ["concept opens the project", started.success && !!started.magnetId],
+        ["concept opens the project — the BOOK is its own entity and the draft magnet points at it", started.success && !!started.magnetId && !!bookEntityRow && bookEntityRow.distribution_form_id === started.magnetId && (row?.settings as { book_id?: string } | undefined)?.book_id === started.bookId],
         ["walks every stage to ready_for_review", done && lastError === null && stages.join(",") === "outline,chapters,chapters,fact_check,edit,edit,layout,ready_for_review"],
         ["entitlement asked on the start + every advance", entitlementCalls === stages.length + 1],
         ["model lanes: 1 outline + 4 chapters, 1 fact-check, 0 edits", writerCalls === 5 && checkerCalls === 1],
