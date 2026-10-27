@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 145, lane 145D) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-27 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 145, lane 145D; a DROP … IF EXISTS of an object that did not yet exist was skipped where the MCP would have held the batch ──
 --
 -- m862 — GOOGLE ADS' CREDENTIAL HAS ITS OWN NAME: 'google_ads' (wave 145, lane 145D; owner ruling 13, 2026-10-27:
 -- "ads = meta (facebook/instagram ARE meta), google ads, tv via vibe …" and "stop hallucinating; verify at HEAD").

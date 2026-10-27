@@ -2,13 +2,12 @@
 //
 // DELIVERY FORMAT — baked into the business process: not every lesson should be a video. The FORMAT is
 // chosen by the MATERIAL (an emotional/complex explainer earns a video; a procedural step-list is a
-// checklist; a comparative decision is a guide), and for CONTACTS it is then gauged by AGE GROUP (younger
-// cohorts favor video, older favor checklists/guides — the existing DELIVERY_MATRIX). The VOICE follows
-// the audience: a contact-facing video speaks in the AGENT's own voice; an agent-facing video in their
-// ASSISTANT's voice. All pure — the authors set the channel from the material format; the delivery layer
-// adapts to the contact's age; the video renderer reads the voice. Reuses lib/kernel/education (no drift).
+// checklist; a comparative decision is a guide), and for CONTACTS a format the PERSON STATED then wins
+// (wave 145, owner ruling 18 — never their age group; the band→format DELIVERY_MATRIX is tombstoned in
+// lib/kernel/education.ts). The VOICE follows the audience: a contact-facing video speaks in the AGENT's own
+// voice; an agent-facing video in their ASSISTANT's voice. All pure — the authors set the channel from the
+// material format; the delivery layer honours the person's stated format; the video renderer reads the voice.
 
-import { getEducationDelivery, type AgeSegment } from "@/lib/kernel/education"
 import type { EducationFormat } from "@/lib/kernel/types"
 
 /** Which authored materials genuinely warrant an explainer VIDEO — emotional, complex, or reassurance
@@ -59,13 +58,11 @@ export function voiceForAudience(audienceRoles: string[] | null | undefined): Ed
 }
 
 /**
- * PURE: gauge the DELIVERED format for a contact by their age group. The material has an inherent format;
- * if that format already suits the cohort (its primary or secondary preference) we keep it, otherwise we
- * adapt to the cohort's preferred format. Unknown age → the material's own format unchanged.
+ * PURE: the DELIVERED format for a contact. A format the PERSON STATED (their channel-preference word, or their
+ * accessibility preference — lib/contacts/accessibility-preferences.ts) wins; otherwise the material keeps its own
+ * format. Wave 145 (owner ruling 18): this used to ADAPT the format to the contact's AGE BAND ("a video explainer
+ * becomes a checklist for a 65+ contact") — an assumption about a person made from their birth year. No age is read.
  */
-export function resolveContactDeliveryFormat(ageSegment: AgeSegment | null | undefined, materialFmt: EducationFormat): EducationFormat {
-  if (!ageSegment) return materialFmt
-  const cfg = getEducationDelivery({ ageSegment })
-  if (materialFmt === cfg.primaryFormat || materialFmt === cfg.secondaryFormat) return materialFmt
-  return cfg.primaryFormat
+export function resolveContactDeliveryFormat(statedFormat: EducationFormat | null | undefined, materialFmt: EducationFormat): EducationFormat {
+  return statedFormat ?? materialFmt
 }

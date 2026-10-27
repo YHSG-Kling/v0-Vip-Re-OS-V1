@@ -15,6 +15,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { User, Bell, Shield, Smartphone, Mail, Save, ArrowLeft, Camera, Check, AlertCircle, Globe } from "lucide-react"
 import Link from "next/link"
 import { uploadProfilePhoto, updateContactProfile, fileDataSubjectRequestFromPortal } from "@/app/actions/portal-settings"
+import { AccessibilityPreferencesCard } from "@/components/contact/AccessibilityPreferencesCard"
+import type { AccessibilityOptionLists, AccessibilityPreferences } from "@/lib/contacts/accessibility-preferences"
 
 interface Contact {
   id: string
@@ -41,9 +43,16 @@ interface PortalSettingsPageProps {
   /** LOCALE_TO_ELEVENLABS_LANGUAGE's 23 codes, resolved server-side (§6 —
    *  the ONE vocabulary, lib/video/multilingual-reel.ts LANGUAGE_OPTIONS). */
   languageOptions: { code: string; name: string }[]
+  /** Accessibility preferences (wave 145, owner ruling 18) — the person's own choices + the ONE vocabulary's options,
+   *  read server-side through lib/contacts/accessibility-preferences.ts. */
+  accessibility: {
+    initial: AccessibilityPreferences
+    options: AccessibilityOptionLists
+    unavailable: string | null
+  }
 }
 
-export default function PortalSettingsPage({ contact, contactId, languageOptions }: PortalSettingsPageProps) {
+export default function PortalSettingsPage({ contact, contactId, languageOptions, accessibility }: PortalSettingsPageProps) {
   // Both privacy controls below used to render with no onClick at all. These
   // are CCPA/CPRA and GDPR obligations with a statutory clock, so a control
   // that silently does nothing is worse than no control — the client believes
@@ -453,6 +462,15 @@ export default function PortalSettingsPage({ contact, contactId, languageOptions
               </div>
             </CardContent>
           </Card>
+
+          {/* Accessibility preferences (wave 145, owner ruling 18) — the person's own choices; nothing is assumed. */}
+          <AccessibilityPreferencesCard
+            contactId={contactId}
+            mode="self"
+            initial={accessibility.initial}
+            options={accessibility.options}
+            unavailable={accessibility.unavailable}
+          />
         </TabsContent>
 
         {/* Notifications Tab */}

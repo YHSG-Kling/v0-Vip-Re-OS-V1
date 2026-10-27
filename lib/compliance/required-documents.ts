@@ -6,7 +6,17 @@
  * offer to compliance.passed.
  *
  * Resolution cascade mirrors the e-sign / SMS / email provider resolver:
- *   agent_user → team → brokerage   (most-specific scope wins)
+ *   agent_user → team → brokerage   (most-specific scope wins the rule's TEXT / template)
+ *
+ * WAVE 145 (lane 145H, owner ruling 21 — "Teams required document checklist should follow the team"):
+ *   · A lower scope may ADD a requirement or TIGHTEN one (warning → blocking); it can never LOOSEN a requirement
+ *     a higher scope (the brokerage over a team, the team over an agent) or a cited STATE requirement makes
+ *     blocking. Before this, a team row with block_on_missing=false silently downgraded the brokerage's blocking
+ *     rule for the same document. The brokerage is the supervising licensee; a team is under its licence.
+ *   · The deal's TEAM is resolved through THE team resolver (lib/kernel/resolve-user-team.ts) when the caller does
+ *     not state it — so a team lead (whose team lives on teams.team_lead_id, not users.team_id) has their team's
+ *     checklist applied, and the closing audit (which passed no agent at all) applies the deal agent's team.
+ *   · A team's rules move WITH the team into an adopting brokerage (lib/compliance/team-checklist-carry.ts).
  *
  * The subscription tier determines which scope settings get used:
  *   - Sole-agent subscription → agent's own list
@@ -100,11 +110,19 @@ export interface ResolvedRequiredDoc {
    */
   legal_basis?:      string | null
   source_url?:       string | null
+  /**
+   * Wave 145 (ruling 21): the HIGHER-scope or cited state-requirement rules that kept this document BLOCKING when the
+   * winning (more specific) rule would only have warned — a team / agent rule cannot loosen them. Empty / absent = the
+   * winning rule decided alone (every checklist with no lower-scope override reads exactly as before).
+   */
+  floor_rule_ids?:   string[]
 }
 
 export interface ResolveContext extends ChecklistContext {
   brokerageId:   string
   agentUserId?:  string | null   // users.id of the deal's agent
+  /** The deal's team. Stated by the caller, or — when absent and an agent is known — resolved through THE team
+   *  resolver (lib/kernel/resolve-user-team.ts; wave 145) only if the brokerage has any team-scope rule. */
   teamId?:       string | null
   dealType:      "buyer" | "seller" | "dual"
   stateCode?:    string | null
@@ -133,12 +151,13 @@ export type ResolveRequiredDocsOutcome =
   | { ok: true;  docs: ResolvedRequiredDoc[]; policy_version: number | null; checklist_fingerprint: string | null }
   | { ok: false; docs: [];                   error: string }
 
-/** The highest policy_version among the winning rules, and a stable fingerprint of exactly which rules applied. */
+/** The highest policy_version among the winning rules, and a stable fingerprint of exactly which rules applied.
+ *  A floor rule (wave 145) is part of "which rules applied", so it is appended as `+<id>` — only when one decided. */
 function checklistEvidence(docs: ResolvedRequiredDoc[]): { policy_version: number | null; checklist_fingerprint: string | null } {
   if (docs.length === 0) return { policy_version: null, checklist_fingerprint: null }
   const versions = docs.map(d => d.policy_version).filter((v): v is number => typeof v === "number")
   const fingerprint = docs
-    .map(d => `${d.rule_id ?? d.classification}@${d.policy_version ?? 1}${d.block_on_missing ? "!" : "?"}`)
+    .map(d => `${d.rule_id ?? d.classification}@${d.policy_version ?? 1}${d.block_on_missing ? "!" : "?"}${(d.floor_rule_ids ?? []).map((f) => `+${f}`).join("")}`)
     .sort()
     .join("|")
   return { policy_version: versions.length ? Math.max(...versions) : null, checklist_fingerprint: fingerprint }
@@ -175,18 +194,30 @@ export async function resolveRequiredDocuments(
   }
   if (!rows || rows.length === 0) return { ok: true, docs: [], policy_version: null, checklist_fingerprint: null }
 
+  // THE DEAL'S TEAM (wave 145, ruling 21). Stated by the caller, or — when the brokerage has any team-scope rule and
+  // the deal's agent is known — resolved through THE team resolver (lead link → users.team_id → active membership →
+  // agents.team_id). Callers used to pass users.team_id alone, which is null for a team LEAD (their team lives on
+  // teams.team_lead_id), so a lead's own deals skipped the team checklist; the closing audit passed no team at all.
+  // The read is pinned below to THIS brokerage's rows, so a team id from anywhere else can never match a rule.
+  let teamId = ctx.teamId ?? null
+  if (!teamId && ctx.agentUserId && (rows as any[]).some((r) => r.scope_type === "team")) {
+    const { resolveUserTeam } = await import("@/lib/kernel/resolve-user-team")
+    teamId = (await resolveUserTeam(supabase, ctx.agentUserId)).teamId
+  }
+
   // Filter to rows applicable to this actor's scopes AND to the question being asked (state,
   // stage, financing, contract subtype, representation — lib/compliance/checklist-dimensions.ts).
   const vocabulary = await checklistVocabularyForCall(supabase, ctx.brokerageId, [
     ctx.contractSubtype, ctx.representation,
     ...(rows as any[]).flatMap((r) => [r.contract_subtype, r.representation]),
   ])
-  const applicable: Array<{ row: any; unresolved: ChecklistDimensionColumn[] }> = []
+  type Candidate = { row: any; unresolved: ChecklistDimensionColumn[] }
+  const applicable: Candidate[] = []
   for (const r of rows as any[]) {
     if (r.state_code && ctx.stateCode && r.state_code !== ctx.stateCode) continue
     const inScope =
       r.scope_type === "brokerage" ? r.scope_id === ctx.brokerageId
-      : r.scope_type === "team"    ? !!ctx.teamId      && r.scope_id === ctx.teamId
+      : r.scope_type === "team"    ? !!teamId          && r.scope_id === teamId
       : r.scope_type === "agent"   ? !!ctx.agentUserId && r.scope_id === ctx.agentUserId
       : false
     if (!inScope) continue
@@ -200,33 +231,60 @@ export async function resolveRequiredDocuments(
   // generic one at the same scope — before this, two rows at one scope were order-dependent), then
   // the strictest (blocking beats warning). Deterministic by construction.
   const SCOPE_RANK: Record<string, number> = { agent: 2, team: 1, brokerage: 0 }
-  const beats = (a: { row: any }, b: { row: any }): boolean => {
-    const sa = SCOPE_RANK[a.row.scope_type] ?? -1, sb = SCOPE_RANK[b.row.scope_type] ?? -1
-    if (sa !== sb) return sa > sb
+  const beatsWithinScope = (a: { row: any }, b: { row: any }): boolean => {
     const pa = rowSpecificity(a.row, vocabulary), pb = rowSpecificity(b.row, vocabulary)
     if (pa !== pb) return pa > pb
     return !!a.row.block_on_missing && !b.row.block_on_missing
   }
-  const byClass = new Map<string, { row: any; unresolved: ChecklistDimensionColumn[] }>()
+  const beats = (a: { row: any }, b: { row: any }): boolean => {
+    const sa = SCOPE_RANK[a.row.scope_type] ?? -1, sb = SCOPE_RANK[b.row.scope_type] ?? -1
+    if (sa !== sb) return sa > sb
+    return beatsWithinScope(a, b)
+  }
+  // Wave 145 (ruling 21): beside the winner, each scope's OWN answer for the document (its best rule) and every cited
+  // state requirement — the "floors" a more specific rule may tighten but never loosen.
+  const byClass = new Map<string, { winner: Candidate; perScope: Map<string, Candidate>; stateRules: Candidate[] }>()
   for (const cand of applicable) {
-    const existing = byClass.get(cand.row.classification)
-    if (!existing || beats(cand, existing)) byClass.set(cand.row.classification, cand)
+    const cls = cand.row.classification as string
+    const entry = byClass.get(cls) ?? { winner: cand, perScope: new Map<string, Candidate>(), stateRules: [] as Candidate[] }
+    if (!byClass.has(cls)) byClass.set(cls, entry)
+    else if (beats(cand, entry.winner)) entry.winner = cand
+    const sc = String(cand.row.scope_type)
+    const best = entry.perScope.get(sc)
+    if (!best || beatsWithinScope(cand, best)) entry.perScope.set(sc, cand)
+    if (cand.row.legal_basis === "state_requirement") entry.stateRules.push(cand)
   }
 
-  const docs: ResolvedRequiredDoc[] = Array.from(byClass.values()).map(({ row: r, unresolved }) => ({
-    classification:   r.classification as DocumentClassification,
-    scope:            r.scope_type as ResolvedRequiredDoc["scope"],
-    // A rule that could not be confirmed to cover this deal cannot BLOCK it — it warns, and says why.
-    block_on_missing: !!r.block_on_missing && unresolved.length === 0,
-    description:      r.description ?? null,
-    template_form_id: r.template_form_id ?? null,
-    rule_id:          (r.id as string | undefined) ?? null,
-    required_stage:   (r.required_stage as string | null | undefined) ?? null,
-    policy_version:   typeof r.policy_version === "number" ? r.policy_version : null,
-    unresolved,
-    legal_basis:      (r.legal_basis as string | null | undefined) ?? null,
-    source_url:       (r.source_url as string | null | undefined) ?? null,
-  }))
+  // A rule that could not be confirmed to cover this deal cannot BLOCK it — it warns, and says why.
+  const blocks = (c: Candidate): boolean => !!c.row.block_on_missing && c.unresolved.length === 0
+  const docs: ResolvedRequiredDoc[] = Array.from(byClass.values()).map(({ winner, perScope, stateRules }) => {
+    const r = winner.row
+    const winnerRank = SCOPE_RANK[r.scope_type] ?? -1
+    // CONFLICTS RESOLVE TOWARD THE MANDATORY RULE: a higher scope's own answer, or a cited state requirement, that
+    // blocks keeps the document blocking when the winning (more specific) rule would only warn.
+    const floors = winnerRank < 0 || blocks(winner) ? [] : [
+      ...[...perScope.values()].filter((c) => c !== winner && (SCOPE_RANK[c.row.scope_type] ?? 99) < winnerRank),
+      ...stateRules.filter((c) => c !== winner),
+    ].filter(blocks)
+    const floorIds = [...new Set(floors.map((c) => String(c.row.id ?? c.row.classification)))]
+    // A cited state requirement in force is cited on the document even when a brokerage / team rule supplies its text.
+    const cite = r.legal_basis === "state_requirement" ? r : (stateRules.find(blocks) ?? stateRules[0])?.row ?? null
+    return {
+      classification:   r.classification as DocumentClassification,
+      scope:            r.scope_type as ResolvedRequiredDoc["scope"],
+      block_on_missing: blocks(winner) || floors.length > 0,
+      description:      r.description ?? null,
+      template_form_id: r.template_form_id ?? null,
+      rule_id:          (r.id as string | undefined) ?? null,
+      required_stage:   (r.required_stage as string | null | undefined) ?? null,
+      policy_version:   typeof r.policy_version === "number" ? r.policy_version : null,
+      // A floor that blocks was confirmed to cover this deal, so the requirement is not a warning any more.
+      unresolved:       floors.length > 0 ? [] : winner.unresolved,
+      legal_basis:      (cite?.legal_basis as string | null | undefined) ?? (r.legal_basis as string | null | undefined) ?? null,
+      source_url:       (cite?.source_url as string | null | undefined) ?? (r.source_url as string | null | undefined) ?? null,
+      ...(floorIds.length ? { floor_rule_ids: floorIds } : {}),
+    }
+  })
   return { ok: true, docs, ...checklistEvidence(docs) }
 }
 
@@ -563,6 +621,35 @@ export async function auditListingDocuments(
 }
 
 /**
+ * The deal's agent as a users.id, read off the transaction (wave 145). The side's agent column first (seller →
+ * seller_agent_id, buyer → buyer_agent_id), then the primary agent_id; `transactions.*agent_id` are agents.id, crossed
+ * to users.id through agents.user_id (the two id spaces are disjoint — CLAUDE.md §3). No agent on the deal → null
+ * (only brokerage rules apply, exactly as before). A refused read → ok:false (fail closed).
+ */
+async function transactionAgentUserId(
+  supabase: SupabaseClient, brokerageId: string, transactionId: string, dealType: "buyer" | "seller" | "dual",
+): Promise<{ ok: true; userId: string | null } | { ok: false; error: string }> {
+  const { data: tx, error: txErr } = await supabase
+    .from("transactions")
+    .select("agent_id, buyer_agent_id, seller_agent_id")
+    .eq("id", transactionId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (txErr) return { ok: false, error: `the deal's agent could not be read: ${txErr.message}` }
+  const t = (tx ?? {}) as { agent_id?: string | null; buyer_agent_id?: string | null; seller_agent_id?: string | null }
+  const agentId = (dealType === "seller" ? t.seller_agent_id : dealType === "buyer" ? t.buyer_agent_id : null) ?? t.agent_id ?? null
+  if (!agentId) return { ok: true, userId: null }
+  const { data: agent, error: agentErr } = await supabase
+    .from("agents")
+    .select("user_id")
+    .eq("id", agentId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (agentErr) return { ok: false, error: `the deal's agent could not be read: ${agentErr.message}` }
+  return { ok: true, userId: ((agent as { user_id?: string | null } | null)?.user_id) ?? null }
+}
+
+/**
  * Audit the deal file of a TRANSACTION — the contract and CLOSING stages of the brokerage's
  * checklist (wave 143: "the brokerage gives the complete list of required documents for each
  * contract type, for compliance including closing").
@@ -591,9 +678,19 @@ export async function auditTransactionDocuments(
     representation?:  ChecklistContext["representation"]
   },
 ): Promise<AuditResult> {
+  // WAVE 145 (ruling 21): the closing audit used to be asked with NO agent and NO team, so every team- and agent-scope
+  // requirement silently fell away at closing. When the caller states neither, the deal's own agent is read off the
+  // TRANSACTION (the side's agent, else the primary — agents.id, crossed to users.id through agents.user_id, CLAUDE.md
+  // §3) and the team resolves from that agent in the resolver. A refused read is "the audit could not run".
+  let agentUserId = params.agentUserId
+  if (params.agentUserId === undefined && params.teamId === undefined) {
+    const dealAgent = await transactionAgentUserId(supabase, params.brokerageId, params.transactionId, params.dealType)
+    if (!dealAgent.ok) return unavailableAudit(dealAgent.error)
+    agentUserId = dealAgent.userId
+  }
   const required = await resolveRequiredDocuments(supabase, {
     brokerageId:  params.brokerageId,
-    agentUserId:  params.agentUserId,
+    agentUserId,
     teamId:       params.teamId,
     dealType:     params.dealType,
     stateCode:    params.stateCode,

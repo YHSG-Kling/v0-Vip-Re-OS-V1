@@ -4,7 +4,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { RequiredDocsSettingsClient } from "./required-docs-settings-client"
 import { RequiredDocRowActions } from "./required-doc-row-actions"
-import { getSupportedPresetStates } from "@/lib/compliance/required-doc-presets"
+import { getSupportedPresetStates, uncitedLegalClaims } from "@/lib/compliance/required-doc-presets"
+import { listJoinedTeams } from "@/lib/compliance/team-checklist-carry"
+import { TeamChecklistCarryPanel } from "./team-checklist-carry-panel"
 import { documentClassificationLabel } from "@/lib/compliance/document-classifications"
 import { describeRowScope } from "@/lib/compliance/checklist-dimensions"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
@@ -86,11 +88,19 @@ export default async function RequiredDocsSettingsPage() {
   // SESSION's brokerage only (brokerage_settings is admin-only under RLS; the vocabulary is not). A refused
   // read is SHOWN, and the pickers fall back to the platform lists — never to an empty list.
   const svc = createServiceClient()
-  const [vocabRead, proposalRead, comingSoonRead] = await Promise.all([
+  // Wave 145 (ruling 21): the teams that joined through a completed adoption — shown to those who manage team rules.
+  // The tenant roster (TENANT_ADMIN_USER_TYPES — includes team_lead) plus the transaction coordinator, never a retyped
+  // list (CLAUDE.md §4/§6). The door itself re-checks the exact scope (canManage on THAT team).
+  const canCarryTeams = isTenantAdminGrantRole(profile.user_type as string) || profile.user_type === "tc"
+  const [vocabRead, proposalRead, comingSoonRead, joinedRead] = await Promise.all([
     loadTenantVocabulary(svc, profile.brokerage_id as string),
     listVocabularyProposals(svc, profile.brokerage_id as string),
     loadComingSoonPolicy(svc, profile.brokerage_id as string),
+    canCarryTeams ? listJoinedTeams(svc, profile.brokerage_id as string) : Promise.resolve({ ok: true as const, teams: [] }),
   ])
+  // Wave 145: the human compliance task — rules whose text claims a legal source they do not cite (the presets are
+  // common practice, not citations). Derived from the live rules on every render, so it is never stale.
+  const citationTasks = uncitedLegalClaims((rules ?? []) as Array<{ id: string; classification: string; state_code?: string | null; description?: string | null; legal_basis?: string | null; source_url?: string | null }>)
   const comingSoonRules = comingSoonRead.ok
     ? Object.values(comingSoonRead.policy.entries).map((e) => ({
         mlsName: e.mls_name, states: e.state_codes, attested: !!e.attestation, sourceUrl: e.source.url, ruleRef: e.source.rule_ref,
@@ -127,7 +137,8 @@ export default async function RequiredDocsSettingsPage() {
         <h1 className="text-2xl font-semibold">Required documents</h1>
         <p className="text-sm text-muted-foreground">
           The documents your deals must have on file before submitting to compliance. Rules cascade
-          agent → team → brokerage (most specific wins per classification). Attach a blank template
+          agent → team → brokerage: a team or agent rule may add a document or make one blocking, but it never
+          loosens a brokerage rule or a cited state requirement — those stay blocking. Attach a blank template
           to any rule so agents grab the exact form you require — upload new form files in{" "}
           <a href="/dashboard/admin/transaction-forms" className="text-primary underline underline-offset-2">Legal Forms</a>.
         </p>
@@ -193,6 +204,31 @@ export default async function RequiredDocsSettingsPage() {
           )}
         </CardContent>
       </Card>
+
+      {citationTasks.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle>Compliance task — {citationTasks.length} rule{citationTasks.length === 1 ? "" : "s"} name a legal source without citing it</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              These rules apply as your brokerage's policy. Their text names a statute, a state form or a state requirement,
+              but no official source is on file, so the platform does not present them as legal requirements. A compliance
+              approver should verify the official (.gov / .us) page and re-save each as a cited state requirement — or edit
+              the description. Nothing here was looked up for you.
+            </p>
+            <ul className="list-disc pl-5 text-sm">
+              {citationTasks.map((r) => (
+                <li key={r.id}>{documentClassificationLabel(r.classification)}{r.state_code ? ` (${r.state_code})` : ""}: {r.description}</li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+
+      {joinedRead.ok
+        ? (joinedRead.teams.length > 0 && (
+            <TeamChecklistCarryPanel teams={joinedRead.teams.map((t) => ({ teamId: t.teamId, teamName: t.teamName, completedAt: t.completedAt, workspaceWasTheTeams: t.workspaceWasTheTeams }))} />
+          ))
+        : <p className="text-sm text-amber-900">Teams that joined through an adoption could not be listed: {joinedRead.error}</p>}
 
       <RequiredDocsSettingsClient
         brokerageId={profile.brokerage_id as string}

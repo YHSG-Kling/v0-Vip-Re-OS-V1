@@ -163,19 +163,22 @@ async function main() {
         { audience_roles: ["customer"], audience_personas: ["first_time"], audience_generations: [], audience_age_segs: ["18-30"], stage_tags: [], gap_tags: [], display_priority: 0 },
         ctxOf(withSignals)) === null)
 
-    // ── 3. THE SIGNAL CHANGES WHICH RAIL IT TRAVELS ─────────────────────────
-    // Same lesson, same consent, same preference — only the band differs. The
-    // module is published to a newsletter/email form, which the portal rail
-    // cannot carry, so the band is the whole difference between "email" and
-    // "the portal, because nothing else was allowed".
+    // ── 3. THE BAND NO LONGER CHOOSES THE RAIL — THE PERSON DOES (wave 145, owner ruling 18) ─────────
+    // RE-ASSERTED AS THE RULE. Until wave 145 this section asserted the wave-15 reading ("the measured band moves the
+    // lesson onto a different RAIL — email for 65+"). Ruling 18 (2026-10-27: accessibility is "explicit, user-
+    // controllable … never inferred from age/demographics"; the lane brief names CHANNEL_ORDER_BY_BAND) supersedes it.
+    // Same lesson, same consent — the band differs and the rail does NOT; the person's STATED channel moves it.
     const consent = { tcpa_consent: true, dnc_status: false }
     const banded = pickEducationChannel({ ageSegment: withSignals.ageSegment, moduleChannels: ["newsletter"], consent, preferredChannel: null })
     const unbanded = pickEducationChannel({ ageSegment: withNone.ageSegment, moduleChannels: ["newsletter"], consent, preferredChannel: null })
-    check("THE OWNER'S ASK, CHANNEL HALF — the measured band moves the lesson onto a different RAIL",
-      banded.channel !== unbanded.channel, `banded=${banded.channel} unbanded=${unbanded.channel}`)
-    check("…and the banded rail is the one the band's own delivery matrix implies (email for 65+ reading matter)",
-      banded.channel === "email" && banded.ageSegment === "65+")
-    check("FAIL SOFT — the unbanded client is still educated, on the portal (the surface needing no consent)",
+    check("RULING 18 — the measured band (65+) does NOT move the lesson onto a different rail",
+      banded.channel === unbanded.channel && banded.railSource === "default", `banded=${banded.channel} unbanded=${unbanded.channel}`)
+    check("…the band is still RECORDED on the choice (the scorer's topic band — wave 16's honesty record)",
+      banded.ageSegment === "65+" && unbanded.ageSegment === null)
+    const statedEmail = pickEducationChannel({ ageSegment: withNone.ageSegment, moduleChannels: ["newsletter"], consent, preferredChannel: "email" })
+    check("POSITIVE CONTROL — the person's STATED channel does move the rail (email, said by them)",
+      statedEmail.channel === "email" && statedEmail.railSource === "stated", JSON.stringify(statedEmail))
+    check("FAIL SOFT — with nothing stated the client is still educated, on the portal (the surface needing no consent)",
       unbanded.channel === "portal")
     check("…and the rails it could not use are REPORTED, so a default never reads as a decision",
       unbanded.rejected.length > 0, unbanded.rejected.join(" | "))

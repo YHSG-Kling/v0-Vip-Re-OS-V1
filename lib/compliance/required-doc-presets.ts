@@ -176,3 +176,27 @@ export function getRequiredDocPresetsForState(
 export function getSupportedPresetStates(): string[] {
   return Object.keys(STATE_ADDITIONS).sort()
 }
+
+// ── THE HUMAN COMPLIANCE TASK FOR AN UNCITED LEGAL CLAIM (wave 145, lane 145H) ──────────────────────────────────
+//
+// The presets above are COMMON PRACTICE, not citations: several descriptions name a statute, a state form or "required
+// by state" without an official source URL (lane 144A counted them: IL:addendum, TX:disclosure, TX:addendum,
+// WA:agency_disclosure). Owner ruling (wave 144, ruling 1): "state-specific regulatory document rules need human
+// compliance approval and verified official sources — AI never invents binding legal requirements." So they STAY
+// seeded as brokerage policy (legal_basis NULL — app/actions/compliance/seed-required-docs.ts never writes one) and the
+// open item is SURFACED to a person instead of being silently resolved: the settings page lists every rule in the
+// brokerage whose text claims a legal source it does not cite, with what to do. A compliance approver verifies the
+// official (.gov / .us) page and re-saves the rule as a cited state requirement (manage-required-docs.ts ruleLegalBasis).
+// Nothing here invents a URL. THE ONE matcher — scripts/adaptive-vocabulary-guard.ts E5 reads it from here.
+
+/** A description that asserts a legal source: a statute marker, a state form body, or "required by state". */
+export const LEGAL_SOURCE_CLAIM = /required by state|state law|\bRCW\b|\bTREC\b|§|statute|\bAct\b|Civil Code|\bILCS\b|Public Act/i
+
+/**
+ * PURE. The rules (any shape carrying description / legal_basis / source_url) that claim a legal source WITHOUT a
+ * citation — each one a human compliance task. A rule already saved as a cited state requirement is not a task.
+ */
+export function uncitedLegalClaims<R extends { description?: string | null; legal_basis?: string | null; source_url?: string | null }>(rules: readonly R[]): R[] {
+  return rules.filter((r) => !!r.description && LEGAL_SOURCE_CLAIM.test(r.description)
+    && !(r.legal_basis === "state_requirement" && !!r.source_url))
+}

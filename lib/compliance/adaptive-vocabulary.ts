@@ -54,7 +54,7 @@
 import {
   CHECKLIST_STAGES, CHECKLIST_STAGE_LABEL, CONTRACT_SUBTYPES, CONTRACT_SUBTYPE_LABEL, FINANCING_KINDS, FINANCING_KIND_LABEL,
   FINANCING_TYPES, FINANCING_TYPE_LABEL, REPRESENTATIONS, REPRESENTATION_LABEL, normalizeVocabularyValue, platformFinancingType,
-  type ChecklistVocabulary,
+  platformContractSubtype, type ChecklistVocabulary,
 } from "./checklist-dimensions"
 import { ALL_DOCUMENT_CLASSIFICATIONS, DOCUMENT_CLASSIFICATION_LABEL } from "./document-classifications"
 import { LISTING_STATUSES, LISTING_STATUS_LABELS, PROPERTY_TYPE_OPTIONS, canonicalPropertyType } from "@/lib/constants"
@@ -329,6 +329,8 @@ export interface ResolvedTerm {
 const platformAlias = (dimension: VocabularyDimension, c: string): string | null =>
   dimension === "financing_type" ? platformFinancingType(c)
   : dimension === "property_type" ? canonicalPropertyType(c)
+  // Wave 145 (lane 145H): the merged second contract-type list's spellings (residential → standard …) resolve forever.
+  : dimension === "contract_subtype" ? platformContractSubtype(c)
   : null
 
 function resolveKey(dimension: VocabularyDimension, key: string, vocab: TenantVocabulary, via: ResolvedTerm["via"]): ResolvedTerm | null {

@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 145, lane 145A) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-27 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 145, lane 145A; a DROP … IF EXISTS of an object that did not yet exist was skipped where the MCP would have held the batch ──
 --
 -- m854 — THE brokerage-forms PATH RULES, CORRECTED: an ACTIVE STAFF SEAT, the registered packet's own row, revocation on
 -- membership end, and browser writes only into the caller's own folder (wave 145, lane 145A — owner ruling 23: "Form-bucket

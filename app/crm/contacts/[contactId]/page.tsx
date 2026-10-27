@@ -8,6 +8,9 @@ import { ContactQuickActions }      from "@/components/contact/ContactQuickActio
 import { AddressingCard }           from "@/components/contact/AddressingCard"
 import { StrategySessionCard }      from "@/components/contact/StrategySessionCard"
 import { LastPromiseCard }          from "@/components/contact/LastPromiseCard"
+import { AccessibilityPreferencesCard } from "@/components/contact/AccessibilityPreferencesCard"
+import { accessibilityPreferenceOptions, readAccessibilityPreferences } from "@/lib/contacts/accessibility-preferences"
+import { createServiceClient }      from "@/lib/supabase/service"
 import { InvestorDealsPanel }        from "@/components/contact/investor-deals-panel"
 import { BuyerBrokerAgreementPanel } from "@/components/contact/buyer-broker-agreement-panel"
 import { WorkflowRunsPanel }         from "./components/workflow-runs-panel"
@@ -141,6 +144,9 @@ export default async function ContactDetailPage({ params }: PageProps) {
   }
 
   const brokerageId  = contact.brokerage_id ?? ""
+  // Accessibility preferences (wave 145, owner ruling 18) — THE reader (contract C3), after the gate above, pinned to
+  // this contact's own brokerage. A refused read is shown on the card, never rendered as "nothing stated".
+  const accessibility = await readAccessibilityPreferences(createServiceClient(), brokerageId, contactId)
   const agentProfile = profileResult.data
   const agentName    = `${agentProfile?.first_name ?? ""} ${agentProfile?.last_name ?? ""}`.trim() || "Agent"
   const contactSegments = segmentsResult.error
@@ -378,6 +384,14 @@ export default async function ContactDetailPage({ params }: PageProps) {
           contactId={contactId}
           initialPromise={contact.last_promise ?? null}
           initialPromiseAt={contact.last_promise_at ?? null}
+        />
+        {/* Accessibility preferences (wave 145, owner ruling 18) — what the CLIENT asked for, recorded at their request. */}
+        <AccessibilityPreferencesCard
+          contactId={contactId}
+          mode="staff"
+          initial={accessibility.ok ? accessibility.preferences : {}}
+          options={accessibilityPreferenceOptions()}
+          unavailable={accessibility.ok ? null : accessibility.notApplied ? "Accessibility preferences become available once migration m868 is applied." : `Could not read this client's accessibility preferences: ${accessibility.error}`}
         />
       </div>
 

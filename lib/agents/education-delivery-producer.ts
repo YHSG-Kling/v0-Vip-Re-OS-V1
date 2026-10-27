@@ -71,6 +71,18 @@
 // written by app/actions/learning-modules.ts:132. All three are read on this path.
 // No new column is needed and no migration is shipped with this lane.
 //
+// ── WAVE 145 (lane 145H): THE RAIL AND THE FORMAT FOLLOW THE PERSON, NEVER THEIR AGE ──
+// Owner ruling 18 (2026-10-27): accessibility needs are "explicit, user-controllable fields … never inferred from
+// age/demographics", and the lane brief names the band paths to remove. SUPERSEDES the wave-15 "channel by age group"
+// reading for DELIVERY: `CHANNEL_ORDER_BY_BAND` is tombstoned below, the band→format adaptation in
+// lib/education/delivery-format.ts is gone, and DELIVERY_MATRIX in lib/kernel/education.ts is tombstoned. The rail is
+// the person's STATED channel, else the one default (the portal — what every LIVE client already got, since no live
+// contact carries a measured band). The format is what the person STATED (their channel-preference word or their
+// accessibility preference, read through lib/contacts/accessibility-preferences.ts readAccessibilityPreferences —
+// contract C3), else the material's own. Captions / transcript requests ride on the assignment and are told to the
+// human approver. The band is still RECORDED (the module scorer chose the lesson's TOPIC with it — wave 16's honesty
+// record stands); it no longer chooses the envelope.
+//
 // FAIR HOUSING IS NOT ON THIS PATH BY DESIGN. Choosing which lesson and which rail
 // an EXISTING client gets is not housing advertising; the refusal for that lives at
 // lib/lead-governance/protected-class-signals.ts:521 and is enforced at
@@ -79,9 +91,12 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
-import type { AgeSegment } from "@/lib/kernel/education"
+import { getEducationDelivery, type AgeSegment } from "@/lib/kernel/education"
 import type { EducationFormat } from "@/lib/kernel/types"
 import { isVideoFormat, resolveContactDeliveryFormat } from "@/lib/education/delivery-format"
+import {
+  accessibilityAdaptations, readAccessibilityPreferences, type AccessibilityPreferences,
+} from "@/lib/contacts/accessibility-preferences"
 import type { ProtectedClassBasis } from "@/lib/lead-governance/protected-class-signals"
 import {
   canDispatchToContact,
@@ -97,41 +112,15 @@ type Svc = ReturnType<typeof createServiceClient>
  *  survive either. */
 export type EducationChannel = "portal" | "portal_push" | "email" | "sms"
 
-/**
- * THE BAND → CHANNEL PREFERENCE ORDER. One table, keyed by the one band
- * vocabulary, ordered most- to least-preferred. The first entry the contact's
- * consent, stated preference and the module's own publication channels all
- * allow is the one used; `portal` is the terminal fallback because it is the
- * client's own surface and needs no marketing consent.
- *
- * The ordering follows the SAME reasoning as `DELIVERY_MATRIX` in
- * lib/kernel/education.ts rather than inventing a second opinion about age:
- *   · 18-30  — primaryFormat video, autoPlay, 5-minute ceiling. A push to the
- *              phone, then a text. This band does not open email.
- *   · 30-50  — primaryFormat guide, 10-minute ceiling, quiz-gated. Email is the
- *              rail that carries a guide; push second.
- *   · 50-65  — primaryFormat guide, DETAILED reading level, 15-minute ceiling.
- *              Email first and no SMS: the longest material on the calmest rail.
- *   · 65+    — primaryFormat checklist, simplified, progress indicators OFF.
- *              The portal, where the lesson sits beside everything else the
- *              client has, with email as the only nudge.
- *
- * NOT A PROTECTED-CLASS DECISION IN THE STATUTORY SENSE, and this is the
- * distinction the owner drew: nobody is shown or denied HOUSING here. The same
- * lesson catalogue is available to every band in the portal; the band chooses
- * the ENVELOPE.
- */
-const CHANNEL_ORDER_BY_BAND: Record<AgeSegment, readonly EducationChannel[]> = {
-  "18-30": ["portal_push", "sms", "portal"],
-  "30-50": ["email", "portal_push", "portal"],
-  "50-65": ["email", "portal"],
-  "65+":   ["portal", "email"],
-}
+// TOMBSTONE (wave 145, lane 145H — owner ruling 18; the lane brief names it). `CHANNEL_ORDER_BY_BAND:
+// Record<AgeSegment, readonly EducationChannel[]>` was DELETED here: 18-30 → push then SMS ("this band does not open
+// email"), 30-50 / 50-65 → email first, 65+ → the portal. It chose a person's rail from their birth year. SURVIVOR:
+// DEFAULT_EDUCATION_CHANNEL_ORDER below (the portal — byte-identical to the unbanded order every LIVE client already
+// got, since no live contact carries a measured band) with the person's STATED rail first (statedEducationChannel).
 
-/** The band's ordering, or the unbanded default. A contact with NO measured band
- *  gets the portal — the surface that needs no consent and makes no assumption —
- *  rather than being routed as if they were 30-50. */
-const CHANNEL_ORDER_UNBANDED: readonly EducationChannel[] = ["portal"]
+/** THE default rail order when the person stated none: the portal — the client's own surface, which needs no
+ *  marketing consent and assumes nothing about them. */
+const DEFAULT_EDUCATION_CHANNEL_ORDER: readonly EducationChannel[] = ["portal"]
 
 /** PURE (wave 144). The education RAIL a stated preference names (contacts.preferred_channel / the channel_preference memory
  *  fact), or null. Phone / voice / mail name no lesson rail (a lesson is a link) — they leave the default order alone. */
@@ -172,15 +161,18 @@ function moduleAllowsChannel(moduleChannels: readonly string[], channel: Educati
 
 export interface EducationChannelChoice {
   channel: EducationChannel
-  /** The band that chose it, or null when no band was measured. */
+  /** The band the module scorer used for the lesson's TOPIC, echoed for the record — it chose neither the rail nor
+   *  the format (wave 145). null when no band was measured. */
   ageSegment: AgeSegment | null
   /** Every rail considered and why it lost — so "we sent to portal" is never
    *  indistinguishable from "nothing else was tried" (CLAUDE.md §2). */
   rejected: string[]
-  /** The format this contact is DELIVERED — the material's own format kept when the band accepts it,
-   *  the band's preference otherwise (lib/education/delivery-format.ts:resolveContactDeliveryFormat);
-   *  null when no band was measured. Carried for the rationale line. */
+  /** The format this contact is DELIVERED when the PERSON stated one (their channel-preference word, else their
+   *  accessibility preference) — lib/education/delivery-format.ts:resolveContactDeliveryFormat; null = nothing
+   *  stated, so the material keeps its own format. Carried for the rationale line. */
   preferredFormat: string | null
+  /** Where the rail came from: the person's stated channel, or the one default. Never an age band. */
+  railSource: "stated" | "default"
   /** Whether the module is a video-format material (channels carry "video") — the explainer-render
    *  pipeline's own predicate (isVideoFormat), so the rationale can say "video kept" vs "adapted". */
   materialIsVideo: boolean
@@ -195,33 +187,35 @@ export interface EducationChannelChoice {
  * sits unread, not a text somebody did not consent to.
  */
 export function pickEducationChannel(input: {
-  ageSegment: AgeSegment | null
+  /** RECORDED ONLY (echoed on the choice): the band the scorer used for the lesson's topic. It orders no rail. */
+  ageSegment?: AgeSegment | null
   moduleChannels: readonly string[]
   consent: ContactConsentState
   preferredChannel: string | null
+  /** What the person STATED (lib/contacts/accessibility-preferences.ts) — null / absent = nothing stated. */
+  accessibility?: AccessibilityPreferences | null
 }): EducationChannelChoice {
-  // WAVE 144 (lane 144F, owner ruling 10/12): the education channel / format follows the person's PREFERENCE (and accessibility,
-  // when stated) — "never age stereotyping". A band's order is only the DEFAULT when the person has said nothing, and it can
-  // never EXCLUDE the rail they asked for: before this, a 50-65 client who prefers texts was never texted a lesson (the band's
-  // order has no `sms`, and the preference gate then refused every rail the band did offer → portal). The stated rail now leads;
-  // consent, the module's publication and the preference gate still decide whether it is usable.
+  // WAVE 144 (lane 144F) made the person's PREFERENCE lead; WAVE 145 (lane 145H, owner ruling 18) removes the band from
+  // the decision entirely: the stated rail first, then the ONE default (the portal). Consent, the module's publication
+  // and the preference gate still decide whether a rail is usable.
   const stated = statedEducationChannel(input.preferredChannel)
-  const bandOrder = input.ageSegment ? CHANNEL_ORDER_BY_BAND[input.ageSegment] : CHANNEL_ORDER_UNBANDED
-  const order: readonly EducationChannel[] = stated ? [stated, ...bandOrder.filter((c) => c !== stated)] : bandOrder
+  const order: readonly EducationChannel[] = stated
+    ? [stated, ...DEFAULT_EDUCATION_CHANNEL_ORDER.filter((c) => c !== stated)]
+    : DEFAULT_EDUCATION_CHANNEL_ORDER
   const rejected: string[] = []
-  // ONE spelling of "what format does this cohort get" (§6). This used to read
-  // the band's primary format straight off DELIVERY_MATRIX, which ignores the
-  // MATERIAL: a lesson authored as a video for an emotional moment was reported
-  // as "prefers checklist" for an older band even when video is that band's
-  // secondary preference. lib/education/delivery-format.ts:resolveContactDeliveryFormat
-  // is the rule — keep the material's format when the cohort accepts it, adapt
-  // only when it does not; unknown band → the material's own format.
   const materialFormat: EducationFormat = (input.moduleChannels ?? []).includes("video") ? "video" : "guide"
   const materialIsVideo = isVideoFormat(materialFormat)
-  // A FORMAT the person stated ("I'd rather watch a video", a checklist …) beats the band's adaptation (wave 144).
-  const statedFormat = statedEducationFormat(input.preferredChannel)
-  const preferredFormat = statedFormat
-    ?? (input.ageSegment ? resolveContactDeliveryFormat(input.ageSegment, materialFormat) : null)
+  // THE FORMAT THE PERSON STATED, in order: their channel-preference word ("I'd rather watch a video", a checklist …),
+  // else their accessibility preference (the ONE mapping — lib/kernel/education.ts getEducationDelivery). Nothing
+  // stated → null: the material keeps its own format. lib/education/delivery-format.ts:resolveContactDeliveryFormat is
+  // the rule; no age is read.
+  const accessibleDelivery = accessibilityAdaptations(input.accessibility).stated
+    ? getEducationDelivery({ accessibility: input.accessibility })
+    : null
+  const statedFormat = statedEducationFormat(input.preferredChannel) ?? accessibleDelivery?.primaryFormat ?? null
+  const preferredFormat = statedFormat ? resolveContactDeliveryFormat(statedFormat, materialFormat) : null
+  const railSource: EducationChannelChoice["railSource"] = stated ? "stated" : "default"
+  const ageSegment = input.ageSegment ?? null
 
   for (const channel of order) {
     if (!moduleAllowsChannel(input.moduleChannels, channel)) {
@@ -231,10 +225,10 @@ export function pickEducationChannel(input: {
     if (!gate.allowed) { rejected.push(`${channel}:${gate.reason ?? "no_consent"}`); continue }
     const pref = honorsChannelPreference(input.preferredChannel, channel)
     if (!pref.allowed) { rejected.push(`${channel}:${pref.reason ?? "against_preference"}`); continue }
-    return { channel, ageSegment: input.ageSegment, rejected, preferredFormat, materialIsVideo }
+    return { channel, ageSegment, rejected, preferredFormat, railSource, materialIsVideo }
   }
   rejected.push("fell_through_to_portal")
-  return { channel: "portal", ageSegment: input.ageSegment, rejected, preferredFormat, materialIsVideo }
+  return { channel: "portal", ageSegment, rejected, preferredFormat, railSource, materialIsVideo }
 }
 
 // TOMBSTONE (wave 16 — the seller-signal education wire). `resolveClientAgeBand`
@@ -381,19 +375,16 @@ async function deliverChosenModule(
   const { side, dualClient, agentName } = await resolveClientContext(supabase, brokerageId, contactId)
   const manager = conciergeForSide(side)
 
-  // ── THE OWNER'S ACTUAL USE CASE: the RAIL is chosen by AGE BAND ──────────────
-  // "we determine the kind of education in channels by the age group". The band
-  // is the one the MATCHER already resolved and scored `audience_age_segs`
-  // against — read off the pick rather than re-derived here, so the lesson and
-  // the rail can never disagree about how old the client is. Its sources, in
-  // order: contacts.birthday → contacts.age_range → the seller-signal lane's
-  // senior_owner observation (lib/education/seller-signal-education-context.ts).
+  // ── THE BAND IS RECORDED, NOT ROUTED ON (wave 145, owner ruling 18) ─────────
+  // The band is the one the MATCHER already resolved and scored `audience_age_segs`
+  // against (the lesson's TOPIC) — read off the pick and written onto the
+  // assignment so the topic choice stays auditable (wave 16's honesty record).
+  // Until wave 145 it also chose the RAIL ("we determine the kind of education in
+  // channels by the age group"); ruling 18 ends that: the rail and the format follow
+  // what the person STATED, else the one default (pickEducationChannel above).
   //
-  // FAIL SOFT, deliberately (see the same note on the reader): `ageSegment: null`
-  // is the answer whenever nothing was measured, and it routes to the portal —
-  // the client's own surface, which needs no consent and assumes nothing. The
-  // client still gets the lesson. Refusing to educate somebody because we could
-  // not guess their age band would be worse than the status quo.
+  // FAIL SOFT, deliberately: `ageSegment: null` is the answer whenever nothing was
+  // measured; the client still gets the lesson on the default rail.
   const band = {
     ageSegment: chosen.ageSegment ?? null,
     source: chosen.ageSegSource ?? "default",
@@ -405,11 +396,18 @@ async function deliverChosenModule(
     .eq("id", contactId)
     .maybeSingle()
   const cr = (consentRow ?? {}) as ContactConsentState & { preferred_channel?: string | null }
+  // WHAT THE PERSON STATED they need (wave 145, owner ruling 18) — through THE reader (contract C3), tenant-pinned. A
+  // refused read is recorded as such and the lesson still goes out on the default; it is never "nothing stated".
+  const accessRead = await readAccessibilityPreferences(supabase, brokerageId, contactId)
+  const accessibility = accessRead.ok ? accessRead.preferences : null
+  const adapt = accessibilityAdaptations(accessibility)
+  const accessibilitySource = !accessRead.ok ? "unavailable" : adapt.stated ? "stated" : "default"
   const choice = pickEducationChannel({
     ageSegment: band.ageSegment,
     moduleChannels: chosen.channels ?? [],
     consent: cr,
     preferredChannel: cr.preferred_channel ?? null,
+    accessibility,
   })
 
   // Record the assignment (status='open') so the portal feed + completion tracking pick it up.
@@ -433,8 +431,14 @@ async function deliverChosenModule(
       age_band: band.ageSegment,
       age_band_source: band.source,
       delivery_channel: choice.channel,
+      delivery_channel_source: choice.railSource,
       delivery_channels_rejected: choice.rejected,
-      band_preferred_format: choice.preferredFormat,
+      preferred_format: choice.preferredFormat,
+      // Wave 145: what the person stated (never inferred) and what it asks of the lesson — so the reel / the portal
+      // honour captions and a transcript, and a refused read is a recorded fact, not "nothing stated".
+      accessibility_source: accessibilitySource,
+      accessibility_captions: adapt.captions,
+      accessibility_transcript: adapt.transcript,
       protected_class_basis: basis,
       // Wave 103 (103A): a dual client is taught BOTH sides (the router matched both layouts'
       // stages); the record says so, and which side this lesson's concierge spoke for.
@@ -452,9 +456,19 @@ async function deliverChosenModule(
   // Propose the nudge into the gate (the side-appropriate concierge).
   const msg = buildEducationDelivery(chosen.title, chosen.summary, chosen.estimatedMinutes, agentName)
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
-  const bandNote = band.ageSegment
-    ? `${choice.channel} chosen for age band ${band.ageSegment} (from ${band.source})`
-    : `${choice.channel} — no age band measured, so the client's own portal`
+  // The RAIL came from the client's stated channel or the one default — never their age (wave 145). The approver is
+  // also told what the client asked for (captions / a transcript / a format), so the lesson and its reel honour it.
+  const bandNote = choice.railSource === "stated"
+    ? `${choice.channel} — the client's stated channel`
+    : `${choice.channel} — the default rail (the client's own portal); the client stated no channel`
+  const asks = [
+    choice.preferredFormat ? `${choice.preferredFormat} format` : null,
+    adapt.captions ? "captions" : null,
+    adapt.transcript ? "a written transcript" : null,
+  ].filter(Boolean)
+  const accessNote = accessibilitySource === "unavailable"
+    ? " — the client's accessibility preferences could not be read, so check with them before sending a video"
+    : asks.length ? ` — the client asked for ${asks.join(", ")}; keep it on the lesson and its reel` : ""
   // THE HUMAN APPROVER IS TOLD when protected-class-derived data shaped this
   // proposal. The gate is a person; a person cannot exercise judgement about a
   // basis they were not shown. Sources only — the reason sentences are on the
@@ -466,7 +480,7 @@ async function deliverChosenModule(
     brokerageId, agentKind: manager, entityType: "learning_module", entityId: chosen.id,
     recipientContactId: contactId, audience: side === "seller" ? "seller" : "buyer",
     subject: msg.subject, body: msg.body,
-    rationale: `Stage-matched lesson "${sanitizeProperNoun(chosen.title, 80) ?? "lesson"}" (${chosen.signalSource}) — ${bandNote}${basisNote} — review/edit before it reaches the client.`,
+    rationale: `Stage-matched lesson "${sanitizeProperNoun(chosen.title, 80) ?? "lesson"}" (${chosen.signalSource}) — ${bandNote}${accessNote}${basisNote} — review/edit before it reaches the client.`,
     channel: choice.channel,
   }, supabase)
   if (!res.ok) return { proposed: false, reason: res.error }

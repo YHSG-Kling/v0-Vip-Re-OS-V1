@@ -175,7 +175,9 @@ function wiringLayer() {
   check("the router adds the second milestone + the second layout to the stage match", /if \(ctx\.secondaryMilestone\) stageTags\.push\(ctx\.secondaryMilestone\)/.test(composer) && /for \(const l of ctx\.layouts \?\? \[\]\)/.test(composer))
   const producer = code("lib/agents/education-delivery-producer.ts")
   check("the delivery producer resolves the client's side(s) from the party columns (resolveClientSides) and records client_side/dual_client", /export function resolveClientSides\(/.test(producer) && /resolveClientSides\(contactId/.test(producer) && /dual_client: dualClient/.test(producer))
-  check("PORTAL + EMAIL per stage: the producer records a learning_assignment and proposes through the gate on the band-chosen rail (portal/email/push/sms)", /from\("learning_assignments"\)\.insert\(\{/.test(producer) && /channel: choice\.channel/.test(producer) && /CHANNEL_ORDER_BY_BAND/.test(producer))
+  // Wave 145 (lane 145H, owner ruling 18): the rail is the person's STATED channel, else the one default — the band
+  // order (CHANNEL_ORDER_BY_BAND) is tombstoned. Re-asserted as the rule: the stated rail leads the default order.
+  check("PORTAL + EMAIL per stage: the producer records a learning_assignment and proposes through the gate on the STATED-or-default rail (portal/email/push/sms)", /from\("learning_assignments"\)\.insert\(\{/.test(producer) && /channel: choice\.channel/.test(producer) && /DEFAULT_EDUCATION_CHANNEL_ORDER/.test(producer) && /\[stated, \.\.\.DEFAULT_EDUCATION_CHANNEL_ORDER/.test(producer))
   const gate = code("lib/agents/agent-client-messages.ts")
   check("…and the gate's approve path delivers email through dispatchEmail and portal through the canonical portal card", /channel === "email"/.test(gate) && /dispatchEmail\(/.test(gate) && /portal \/ portal_push/.test(readFileSync("lib/agents/agent-client-messages.ts", "utf8")))
   check("STAGE-APPROPRIATE: client modules are authored per buyer/seller milestone with stage_tags (the curriculum) — buyer AND seller stages both present",

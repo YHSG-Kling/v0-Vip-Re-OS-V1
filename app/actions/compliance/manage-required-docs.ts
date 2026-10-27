@@ -415,6 +415,67 @@ export async function setRequiredDocBlocking(
   return { ok: true }
 }
 
+// ── CARRY A JOINED TEAM'S CHECKLIST (wave 145, lane 145H — owner ruling 21) ───────────────────────────────────────
+
+/**
+ * "Teams required document checklist should follow the team." For a team that joined THIS brokerage through a
+ * completed adoption (lib/kernel/brokerage-transfer.ts) before the rail carried checklists — or whose carry was held —
+ * copy the team's rules from its previous workspace into this brokerage as the team's rules
+ * (lib/compliance/team-checklist-carry.ts: source untouched, idempotent, versioned, can tighten but never loosen this
+ * brokerage's own rules). Who: anyone who may manage that team's rules (canManage — the brokerage's principals,
+ * platform staff, or the team's own lead). Tenant and actor from the SESSION; the authority to read the previous
+ * workspace is the completed, consented adoption of the team's lead into this brokerage — nothing in the body.
+ * Ledgered (withActionLedger, risk LEGAL): who, which team, which adoption, what was carried / held.
+ */
+export async function carryJoinedTeamChecklist(
+  input: { teamId: string },
+): Promise<{ ok: true; carried: number; alreadyCarried: number; equivalentExists: number; held: Array<{ classification: string; reason: string }>; templatesDropped: number; reattestation: number } | { ok: false; error: string }> {
+  const actor = await resolveActor()
+  if ("error" in actor) return { ok: false, error: actor.error }
+  if (!isValidUUID(input?.teamId)) return { ok: false, error: "Invalid team id" }
+  if (!canManage(actor, "team", input.teamId)) return { ok: false, error: "Forbidden for your role/scope" }
+
+  const svc = createServiceClient()
+  const { listJoinedTeams, carryTeamChecklistRules } = await import("@/lib/compliance/team-checklist-carry")
+  const joined = await listJoinedTeams(svc, actor.brokerageId, input.teamId)
+  if (!joined.ok) return { ok: false, error: joined.error }
+  const team = joined.teams[0]
+  if (!team) return { ok: false, error: "This team did not join your brokerage through a completed adoption — there is no previous workspace to carry a checklist from." }
+
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  type CarryOut = Awaited<ReturnType<typeof carryTeamChecklistRules>>
+  const res = await withActionLedger<CarryOut>(
+    {
+      brokerageId: actor.brokerageId, action: "compliance.required_documents.carry_team",
+      actor: { type: "user", userId: actor.userId },
+      subject: { type: "team", id: team.teamId },
+      reasonCode: "HUMAN_REQUESTED",
+      reasonDetail: `carry the joined team's required-document checklist from its previous workspace (adoption ${team.transferRequestId})`,
+      idempotencyKey: `compliance.required_documents.carry_team:${actor.brokerageId}:${team.teamId}:${Date.now()}`,
+      riskClass: "LEGAL", systemSource: "team_checklist_carry",
+      detail: { transfer_request_id: team.transferRequestId, source_brokerage_id: team.sourceBrokerageId, include_workspace_rules: team.workspaceWasTheTeams },
+    },
+    () => carryTeamChecklistRules(svc, {
+      sourceBrokerageId: team.sourceBrokerageId, targetBrokerageId: actor.brokerageId, teamIds: [team.teamId],
+      includeWorkspaceRules: team.workspaceWasTheTeams, actorUserId: actor.userId,
+      reason: `carried on request by ${actor.userId} (adoption ${team.transferRequestId})`,
+    }),
+    {
+      settle: (r) => r.ok
+        ? { status: "executed", outcome: `carried ${r.carried}, already ${r.alreadyCarried}, equivalent ${r.equivalentExists}, held ${r.held.length}` }
+        : { status: "failed", outcome: "carry_refused", error: r.error },
+      replay: () => ({ ok: false, error: "This carry is already running or was just made — refresh the page." }),
+    },
+  )
+  if (!res.ok) return res
+  revalidatePath("/dashboard/settings/required-documents")
+  return {
+    ok: true, carried: res.carried, alreadyCarried: res.alreadyCarried, equivalentExists: res.equivalentExists,
+    held: res.held.map((h) => ({ classification: h.classification, reason: h.reason })),
+    templatesDropped: res.templatesDropped.length, reattestation: res.reattestation.length,
+  }
+}
+
 // ── REMOVE ──────────────────────────────────────────────────────────────────────
 
 export async function removeRequiredDoc(

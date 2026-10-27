@@ -135,6 +135,42 @@ export const CONTRACT_SUBTYPE_LABEL: Record<ContractSubtype, string> = {
   lease_option:     "Lease option",
 }
 
+/**
+ * THE ONE CONTRACT-TYPE VOCABULARY, AND THE SECOND ONE MERGED ONTO IT (wave 145, lane 145H — CLAUDE.md §6; lane 144A
+ * Outside-lane 2). The offer intake (lib/workflow/intake/voice-to-offer.ts) and the state form-field registry
+ * (lib/state-forms/field-defs.ts OFFER_FIELD_DEFS.contractType) spoke a second list — residential | as_is |
+ * new_construction | land | commercial — that nothing downstream could read (the checklist matches CONTRACT_SUBTYPES).
+ * Both now speak CONTRACT_SUBTYPES. Historical / spoken spellings resolve here forever (an alias is never deleted):
+ *
+ *   residential → standard (the owner's mapping, 144A Outside-lane 2: a standard residential resale contract).
+ *
+ * TOMBSTONE — the three members that are NOT contract types, each with its home:
+ *   · land, commercial → PROPERTY types (lib/constants/index.ts PROPERTY_TYPES, read off listings.property_type), not
+ *     the kind of purchase contract. They resolve to nothing here, so the intake asks for the contract type.
+ *   · as_is → a sale CONDITION, and jurisdictional: in Texas it is a term inside the standard TREC resale contract
+ *     (¶7D "Buyer accepts the Property As Is"); in Florida it is a separate form (the FR/BAR "AS IS" contract). It is
+ *     therefore never a platform constant: a brokerage whose market uses an as-is FORM adds it as a STATE-SCOPED,
+ *     cited, compliance-attested contract-type term (Required documents → Vocabulary — lib/compliance/
+ *     adaptive-vocabulary.ts), and the term then resolves through that brokerage's vocabulary.
+ * Keys are normalized (normalizeVocabularyValue); separator-tolerant platform keys match before an alias.
+ */
+const CONTRACT_SUBTYPE_ALIASES: Readonly<Record<string, ContractSubtype>> = {
+  "residential": "standard", "standard residential": "standard", "residential resale": "standard", "resale": "standard",
+  "standard resale": "standard", "standard purchase": "standard",
+  "new build": "new_construction", "builder contract": "new_construction", "new home": "new_construction",
+  "reo": "reo_bank_owned", "bank owned": "reo_bank_owned", "bank-owned": "reo_bank_owned",
+  "probate": "probate_estate", "estate sale": "probate_estate",
+}
+
+/** A raw contract-type value → its PLATFORM contract subtype (exact, separator-tolerant, or a platform alias), or null. */
+export function platformContractSubtype(raw: unknown): ContractSubtype | null {
+  const c = normalizeVocabularyValue(raw)
+  if (!c) return null
+  const underscored = c.replace(/[\s-]+/g, "_")
+  if ((CONTRACT_SUBTYPES as readonly string[]).includes(underscored)) return underscored as ContractSubtype
+  return CONTRACT_SUBTYPE_ALIASES[c] ?? null
+}
+
 export const REPRESENTATIONS = ["single_agency", "dual_agency", "designated_agency", "transaction_brokerage"] as const
 export type Representation = (typeof REPRESENTATIONS)[number]
 

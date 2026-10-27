@@ -19,7 +19,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID }          from "@/lib/validations"
-import { getRequiredDocPresetsForState } from "@/lib/compliance/required-doc-presets"
+import { getRequiredDocPresetsForState, uncitedLegalClaims } from "@/lib/compliance/required-doc-presets"
 import { authorizeRequiredDocsScope } from "@/app/actions/compliance/manage-required-docs"
 
 export interface SeedRequiredDocsParams {
@@ -43,6 +43,12 @@ export interface SeedRequiredDocsResult {
   inserted_count: number
   skipped_count:  number
   classifications_inserted: string[]
+  /**
+   * Wave 145 (lane 145H): the seeded rules whose description claims a legal source WITHOUT a citation — each a human
+   * compliance task (verify the official .gov/.us source, then re-save as a cited state requirement). They are seeded
+   * as brokerage policy; the settings page lists them until a compliance approver resolves them.
+   */
+  citation_tasks?: string[]
   error?:         string
 }
 
@@ -80,14 +86,18 @@ export async function seedRequiredDocsForBrokerage(
 
   const supabase = createServiceClient()
 
-  // Pre-fetch existing rows at the same scope so we can skip duplicates.
-  const { data: existing } = await supabase
+  // Pre-fetch existing rows at the same scope so we can skip duplicates. The error is READ (wave 145): a refused read
+  // used to become "nothing exists", and the seed then wrote a second copy of every rule the scope already had.
+  const { data: existing, error: existingErr } = await supabase
     .from("brokerage_required_documents")
     .select("classification")
     .eq("brokerage_id", brokerageId)
     .eq("scope_type", scope)
     .eq("scope_id", scopeId)
     .eq("deal_type", dealType)
+  if (existingErr) {
+    return { success: false, inserted_count: 0, skipped_count: 0, classifications_inserted: [], error: `could not check the rules already in this scope: ${existingErr.message} — nothing was seeded` }
+  }
   const existingSet = new Set((existing ?? []).map((r: any) => r.classification))
 
   const toInsert = presets
@@ -121,5 +131,6 @@ export async function seedRequiredDocsForBrokerage(
     inserted_count:           toInsert.length,
     skipped_count:            presets.length - toInsert.length,
     classifications_inserted: toInsert.map(r => r.classification),
+    citation_tasks:           uncitedLegalClaims(toInsert).map(r => `${r.classification}: ${r.description}`),
   }
 }

@@ -24,6 +24,7 @@ import PortalChatLauncher from "@/app/components/features/portal/ai/PortalChatLa
 import { PortalNotificationBell } from "./components/PortalNotificationBell"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
+import { portalDisplayFor, readAccessibilityPreferences } from "@/lib/contacts/accessibility-preferences"
 
 // View badge labels
 const VIEW_LABELS: Record<PortalView, string> = {
@@ -256,6 +257,14 @@ export default async function PortalLayout({
     }
   }
 
+  // ACCESSIBILITY DISPLAY (wave 145, owner ruling 18) — the text size / contrast / reduced motion THE PERSON stated,
+  // read through THE reader (contract C3) on this request's session client, pinned to the contact's own brokerage.
+  // Nothing stated, or a refused read → the portal renders exactly as before (no class, no style); nothing is inferred.
+  const accessibilityRead = contact.brokerage_id
+    ? await readAccessibilityPreferences(supabase, contact.brokerage_id as string, contactId)
+    : null
+  const display = portalDisplayFor(accessibilityRead?.ok ? accessibilityRead.preferences : null)
+
   // Unread notification count for bell badge
   const { count: unreadNotifications } = await supabase
     .from("notifications")
@@ -294,7 +303,7 @@ export default async function PortalLayout({
   logPortalAccess(supabase, contactId, "layout", `view:${view}`, agentData?.id).catch(() => {})
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className={`min-h-screen bg-background ${display.className}`.trim()} style={display.style}>
       <header className="border-b">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex flex-col gap-1">

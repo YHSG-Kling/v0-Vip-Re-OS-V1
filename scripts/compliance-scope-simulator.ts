@@ -565,7 +565,7 @@ check("CONTROL — the carve-out keys on the KEY: the same word under contact_ta
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-console.log(`\n[4 · THE CAPABILITY THE RULING WAS FOR — education routed by AGE BAND]`)
+console.log(`\n[4 · AGE BANDS pick lesson TOPICS; since wave 145 (ruling 18) they never pick the delivery or the rail]`)
 const { ageSegmentFromAge, ageSegmentFromAgeRange, AGE_SEGMENTS } = await import("../lib/kernel/education")
 const { pickEducationChannel } = await import("../lib/agents/education-delivery-producer")
 
@@ -578,22 +578,31 @@ check("the enrichment lane's own banding collapses onto ours (one age vocabulary
   && ageSegmentFromAgeRange("55-64") === "50-65" && ageSegmentFromAgeRange("65+") === "65+",
   [ageSegmentFromAgeRange("25-34"), ageSegmentFromAgeRange("18-24"), ageSegmentFromAgeRange("55-64"), ageSegmentFromAgeRange("65+")].join(","))
 {
+  // WAVE 145 (lane 145H, owner ruling 18 — 2026-10-27): RE-ASSERTED AS THE RULE. This block asserted the wave-15
+  // reading "the CHANNEL differs by age band for the same lesson". Ruling 18 supersedes it for DELIVERY: accessibility
+  // and delivery are what the person STATED, "never inferred from age/demographics" (the lane brief names
+  // CHANNEL_ORDER_BY_BAND / DELIVERY_MATRIX). Every band now gets the SAME rail for the same lesson; the stated
+  // preference — and only that — moves it. The band survives for lesson TOPIC relevance (the sweep above).
   const consented = { tcpa_consent: true, dnc_status: false }
-  const young = pickEducationChannel({ ageSegment: "18-30", moduleChannels: ["video"], consent: consented, preferredChannel: null })
-  const mid = pickEducationChannel({ ageSegment: "30-50", moduleChannels: ["article"], consent: consented, preferredChannel: null })
-  const old = pickEducationChannel({ ageSegment: "65+", moduleChannels: ["article"], consent: consented, preferredChannel: null })
-  check("THE OWNER'S ASK — the CHANNEL differs by age band for the same lesson",
-    young.channel !== mid.channel && mid.channel !== old.channel,
-    `18-30=${young.channel} 30-50=${mid.channel} 65+=${old.channel}`)
-  check("…and an unbanded contact falls to the portal, not to the middle band's rail",
-    pickEducationChannel({ ageSegment: null, moduleChannels: [], consent: consented, preferredChannel: null }).channel === "portal")
-  check("CONSENT still outranks the band — no TCPA consent means no SMS to the young band",
-    pickEducationChannel({ ageSegment: "18-30", moduleChannels: ["video"], consent: { tcpa_consent: false, sms_opt_out: true }, preferredChannel: null })
+  const rails = AGE_SEGMENTS.map((b) => pickEducationChannel({ ageSegment: b, moduleChannels: ["article"], consent: consented, preferredChannel: null }).channel)
+  const unbanded = pickEducationChannel({ ageSegment: null, moduleChannels: ["article"], consent: consented, preferredChannel: null })
+  check("RULING 18 — EVERY band gets the SAME rail for the same lesson (the band chooses no envelope)",
+    rails.every((r) => r === unbanded.channel), `bands=${rails.join(",")} unbanded=${unbanded.channel}`)
+  check("…and that one default is the portal (the surface needing no consent and assuming nothing)",
+    unbanded.channel === "portal")
+  check("CONSENT still outranks a stated rail — a texts preference with no TCPA consent never texts",
+    pickEducationChannel({ ageSegment: "18-30", moduleChannels: ["video"], consent: { tcpa_consent: false, sms_opt_out: true }, preferredChannel: "sms" })
       .channel !== "sms")
-  check("STATED PREFERENCE still outranks the band — an email-only contact is not pushed",
-    pickEducationChannel({ ageSegment: "30-50", moduleChannels: ["article"], consent: consented, preferredChannel: "email" }).channel === "email")
+  check("POSITIVE CONTROL — a STATED preference moves the rail (an email-preferring contact is emailed, whatever the band)",
+    AGE_SEGMENTS.every((b) => pickEducationChannel({ ageSegment: b, moduleChannels: ["article"], consent: consented, preferredChannel: "email" }).channel === "email"))
   check("every rejected rail is REPORTED, so 'portal' is never indistinguishable from 'nothing was tried'",
-    pickEducationChannel({ ageSegment: "50-65", moduleChannels: ["podcast"], consent: consented, preferredChannel: null }).rejected.length > 0)
+    pickEducationChannel({ ageSegment: "50-65", moduleChannels: ["podcast"], consent: consented, preferredChannel: "email" }).rejected.length > 0)
+  const { getEducationDelivery } = await import("../lib/kernel/education")
+  const dflt = getEducationDelivery({})
+  check("RULING 18 — the delivery takes no age at all: one default (guide first, standard reading, no auto-play)",
+    dflt.primaryFormat === "guide" && dflt.readingLevel === "standard" && dflt.autoPlay === false && dflt.statedByPerson === false)
+  check("POSITIVE CONTROL — a STATED preference changes the delivery (video + captions, said by the person)",
+    (() => { const d = getEducationDelivery({ accessibility: { communication_format: "video", captions: true } }); return d.primaryFormat === "video" && d.captions && d.statedByPerson && d.autoPlay === false })())
 }
 
 // ── WAVE 16 — THE SOURCED SIGNAL ACTUALLY REACHES THE SELECTOR ──────────────

@@ -1311,7 +1311,9 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
     const consent = { tcpa_consent: true, dnc_status: false }
     const prefSms = pickEducationChannel({ ageSegment: "50-65", moduleChannels: ["article"], consent, preferredChannel: "sms" })
     check("a 50-65 client who PREFERS texts gets the lesson by text (the band's default order has no SMS — before wave 144 this fell to the portal)", prefSms.channel === "sms", JSON.stringify(prefSms))
-    check("(control) with no stated preference the band's DEFAULT still orders the rails (email first for 50-65)", pickEducationChannel({ ageSegment: "50-65", moduleChannels: ["article"], consent, preferredChannel: null }).channel === "email")
+    // Wave 145 (lane 145H, owner ruling 18): re-asserted as the rule — with no stated preference the ONE default (the
+    // portal) answers for every band; the band orders no rail (CHANNEL_ORDER_BY_BAND is tombstoned).
+    check("(control) with no stated preference the ONE default answers, whatever the band (the portal for 50-65 too)", pickEducationChannel({ ageSegment: "50-65", moduleChannels: ["article"], consent, preferredChannel: null }).channel === "portal")
     check("a stated FORMAT beats the band's adaptation (prefers video → video)", pickEducationChannel({ ageSegment: "65+", moduleChannels: ["article"], consent, preferredChannel: "video" }).preferredFormat === "video")
     check("consent still decides: a text preference without TCPA consent never texts", pickEducationChannel({ ageSegment: "50-65", moduleChannels: ["article"], consent: { tcpa_consent: false }, preferredChannel: "sms" }).channel !== "sms")
   }

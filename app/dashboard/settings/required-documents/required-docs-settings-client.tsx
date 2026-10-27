@@ -114,7 +114,10 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
         dealType: seedDealType,
       })
       if (r.success) {
-        setResult(`Seeded ${r.inserted_count} new ${seedDealType} rule${r.inserted_count === 1 ? "" : "s"} (${r.skipped_count} already on file).`)
+        // Wave 145: seeded rules that name a legal source without citing it are a human compliance task — said here,
+        // and listed on this page until a compliance approver verifies the official source.
+        const tasks = r.citation_tasks?.length ?? 0
+        setResult(`Seeded ${r.inserted_count} new ${seedDealType} rule${r.inserted_count === 1 ? "" : "s"} (${r.skipped_count} already on file).${tasks ? ` ${tasks} name a legal source without a citation — see "Compliance task" below; they apply as brokerage policy until a compliance approver verifies the official source.` : ""}`)
         router.refresh()
       } else {
         setResult(`Failed: ${r.error}`)

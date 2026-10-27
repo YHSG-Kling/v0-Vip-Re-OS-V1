@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 145, lane 145F) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-27 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 145, lane 145F; a DROP … IF EXISTS of an object that did not yet exist was skipped where the MCP would have held the batch ──
 --
 -- m864 — THE SEGREGATED RESEARCH HOME FOR PROTECTED / SENSITIVE ENRICHMENT FIELDS (owner ruling 12, wave 145).
 --

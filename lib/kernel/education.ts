@@ -14,6 +14,10 @@ import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import type { EducationFormat, JourneyPhase, Persona } from "./types"
 import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
+import {
+  accessibilityAdaptations, readAccessibilityPreferences,
+  type AccessibilityAdaptations, type AccessibilityPreferences,
+} from "@/lib/contacts/accessibility-preferences"
 
 // ─── AGE SEGMENT ──────────────────────────────────────────────────────────────
 
@@ -30,12 +34,17 @@ export type AgeSegment = "18-30" | "30-50" | "50-65" | "65+"
  * never 30/60/90, CLAUDE.md §5). The same discipline applies here: selection
  * reads the BAND, never the raw age or the birthday.
  *
- * `AgeSegment` and `DELIVERY_MATRIX` already lived in this file, so the
- * derivation lives beside them rather than in a fifth module. It was previously
- * open-coded inline at lib/portal/resolve-education-context.ts, which is the
- * duplicate this replaces.
+ * `AgeSegment` already lived in this file, so the derivation lives beside it
+ * rather than in a fifth module. It was previously open-coded inline at
+ * lib/portal/resolve-education-context.ts, which is the duplicate this replaces.
+ *
+ * WAVE 145 (owner ruling 18, 2026-10-27): a band decides lesson TOPIC relevance
+ * only (the module scorer's audience_age_segs). It no longer decides HOW a lesson
+ * is delivered — format, reading level, auto-play, rail — which now come from what
+ * the person STATED (lib/contacts/accessibility-preferences.ts) or the one default.
+ * DELIVERY_MATRIX is tombstoned below.
  */
-/** @proofSeam every runtime decision resolves ONE band through ageSegmentFromAge / ageSegmentFromAgeRange and the DELIVERY_MATRIX is keyed by the AgeSegment type; the roster exists so scripts/compliance-scope-simulator.ts can sweep every band (matrix total, no raw age or birthday read) — an enumeration nothing at runtime needs to walk. */
+/** @proofSeam every runtime decision resolves ONE band through ageSegmentFromAge / ageSegmentFromAgeRange; the roster exists so scripts/compliance-scope-simulator.ts can sweep every band and prove no band changes the delivery or the rail (wave 145) — an enumeration nothing at runtime needs to walk. */
 export const AGE_SEGMENTS: readonly AgeSegment[] = ["18-30", "30-50", "50-65", "65+"]
 
 /** PURE. Whole-years age → band. null in, null out — an unknown age must stay
@@ -135,13 +144,13 @@ export function cohortFraming(cohort: GenerationalCohort): string {
 // ─── DELIVERY CONFIG ──────────────────────────────────────────────────────────
 
 export interface DeliveryConfig {
-  /** Preferred primary format for this age segment */
+  /** Primary format — the ONE default, or what the person STATED (never an age band; owner ruling 18, wave 145) */
   primaryFormat: EducationFormat
   /** Secondary/fallback format */
   secondaryFormat: EducationFormat
-  /** Preferred reading level: simplified | standard | detailed */
+  /** Reading level. "standard" for everyone: a simpler level is never assumed from age (it was, for 65+, until wave 145). */
   readingLevel: "simplified" | "standard" | "detailed"
-  /** Whether to auto-play video content */
+  /** Whether to auto-play video content — never by default (WCAG 2.2 SC 2.2.2 / 1.4.2) */
   autoPlay: boolean
   /** Whether to show progress indicators prominently */
   showProgress: boolean
@@ -149,6 +158,14 @@ export interface DeliveryConfig {
   maxLessonMinutes: number
   /** Whether quiz gates should be required before advancing */
   requireQuizCompletion: boolean
+  /** Wave 145 — the person asked for captions on video. */
+  captions: boolean
+  /** Wave 145 — the person asked for a written transcript beside video / audio (a screen-reader portal implies it). */
+  transcript: boolean
+  /** Wave 145 — the portal text size the person asked for. */
+  textSize: AccessibilityAdaptations["textSize"]
+  /** Wave 145 — whether the person stated ANY accessibility preference (false = the one default). */
+  statedByPerson: boolean
 }
 
 // ─── EDUCATION LESSON ─────────────────────────────────────────────────────────
@@ -177,16 +194,21 @@ export interface EducationPlan {
   journeyType: "buyer" | "seller"
   journeyPhase: JourneyPhase
   persona: Persona | string
+  /** The band the module scorer reads for lesson TOPIC relevance — it does not shape the delivery (wave 145). */
   ageSegment: AgeSegment
   delivery: DeliveryConfig
+  /** Where `delivery` came from: the person's statement, the one default, or the default because the read was refused. */
+  accessibilitySource: "stated" | "default" | "unavailable"
   lessons: EducationLesson[]
 }
 
 // ─── PARAMS ───────────────────────────────────────────────────────────────────
 
 export interface GetEducationDeliveryParams {
-  ageSegment: AgeSegment
+  /** A format the caller already decided (e.g. the material's own) — it overrides the primary format. */
   format?: EducationFormat
+  /** What the person STATED (lib/contacts/accessibility-preferences.ts) — null / absent = the one default. */
+  accessibility?: AccessibilityPreferences | null
 }
 
 export interface GetEducationPlanParams {
@@ -200,47 +222,58 @@ export interface GetEducationPlanParams {
   contactId?: string
 }
 
-// ─── DELIVERY MATRIX ──────────────────────────────────────────────────────────
-// Maps age segments to delivery preferences.
-// Based on NAR and UX research patterns for real estate education consumption.
+// ─── DELIVERY: ONE DEFAULT + WHAT THE PERSON STATED ───────────────────────────
+//
+// TOMBSTONE (wave 145, lane 145H — owner ruling 18, 2026-10-27: accessibility is "explicit, user-controllable fields …
+// never inferred from age/demographics"; the lane brief names this table). `DELIVERY_MATRIX: Record<AgeSegment,
+// DeliveryConfig>` was DELETED here. It chose the delivery by AGE BAND: 18-30 → video, AUTO-PLAY, "simplified" reading,
+// 5-minute ceiling; 50-65 → "detailed"; 65+ → checklist, "simplified" reading, progress indicators OFF. Those are
+// accessibility assumptions made from a birth year — exactly what the ruling forbids — and auto-play by default is
+// itself a barrier (WCAG 2.2 SC 2.2.2 / 1.4.2).
+// SURVIVOR: DEFAULT_DELIVERY below + the person's own statement (lib/contacts/accessibility-preferences.ts
+// accessibilityAdaptations), applied by applyStatedAccessibility. DEFAULT_DELIVERY is the old "30-50" row byte-for-byte
+// (plus auto-play off, which it already was) — the row every LIVE client was getting, because the band resolver
+// (lib/portal/resolve-education-context.ts) defaults an unmeasured age to "30-50" and, measured 2026-08-22 and again by
+// lane 144F on 2026-10-25, no live contact carries a birthday or an age range. So no live client's delivery moves.
+// The band still exists (AgeSegment above) for lesson TOPIC relevance in the module scorer; it no longer shapes HOW a
+// lesson is delivered.
 
-const DELIVERY_MATRIX: Record<AgeSegment, DeliveryConfig> = {
-  "18-30": {
-    primaryFormat: "video",
-    secondaryFormat: "checklist",
-    readingLevel: "simplified",
-    autoPlay: true,
-    showProgress: true,
-    maxLessonMinutes: 5,
-    requireQuizCompletion: false,
-  },
-  "30-50": {
-    primaryFormat: "guide",
-    secondaryFormat: "video",
-    readingLevel: "standard",
+const DEFAULT_DELIVERY: DeliveryConfig = {
+  primaryFormat: "guide",
+  secondaryFormat: "video",
+  readingLevel: "standard",
+  autoPlay: false,
+  showProgress: true,
+  maxLessonMinutes: 10,
+  requireQuizCompletion: true,
+  captions: false,
+  transcript: false,
+  textSize: "standard",
+  statedByPerson: false,
+}
+
+/**
+ * PURE. The default delivery adapted to what the person STATED — one deterministic table, no model, no age:
+ *   communication_format text → a written guide first (checklist second); video → video first (guide second);
+ *   audio → narrated video first (guide second). Absent, portal_modality decides: screen_reader → a written guide
+ *   first with a transcript; audio → narrated video first. Captions / transcript / text size are carried for the
+ *   renderer. Auto-play stays off for everyone.
+ */
+function applyStatedAccessibility(base: DeliveryConfig, prefs: AccessibilityPreferences | null | undefined): DeliveryConfig {
+  const a = accessibilityAdaptations(prefs)
+  if (!a.stated) return base
+  const wantsVideo = a.format === "video" || a.format === "audio" || (a.format === null && a.modality === "audio")
+  const wantsText = a.format === "text" || (a.format === null && a.modality === "screen_reader")
+  return {
+    ...base,
+    primaryFormat: wantsVideo ? "video" : wantsText ? "guide" : base.primaryFormat,
+    secondaryFormat: wantsVideo ? "guide" : wantsText ? "checklist" : base.secondaryFormat,
     autoPlay: false,
-    showProgress: true,
-    maxLessonMinutes: 10,
-    requireQuizCompletion: true,
-  },
-  "50-65": {
-    primaryFormat: "guide",
-    secondaryFormat: "checklist",
-    readingLevel: "detailed",
-    autoPlay: false,
-    showProgress: true,
-    maxLessonMinutes: 15,
-    requireQuizCompletion: true,
-  },
-  "65+": {
-    primaryFormat: "checklist",
-    secondaryFormat: "guide",
-    readingLevel: "simplified",
-    autoPlay: false,
-    showProgress: false,
-    maxLessonMinutes: 10,
-    requireQuizCompletion: false,
-  },
+    captions: a.captions,
+    transcript: a.transcript || a.format === "audio",
+    textSize: a.textSize,
+    statedByPerson: true,
+  }
 }
 
 // ─── LESSON CATALOG ───────────────────────────────────────────────────────────
@@ -739,12 +772,11 @@ function filterToMilestone(
 // ─── PUBLIC API ───────────────────────────────────────────────────────────────
 
 /**
- * Returns the delivery configuration for a given age segment.
- * If `format` is supplied, overrides the primaryFormat with that format.
- * Does NOT hit the database — purely static.
+ * Returns the delivery configuration: the ONE default, adapted to what the person STATED (wave 145 — never an age
+ * band). If `format` is supplied, it overrides the primaryFormat. Does NOT hit the database — purely static.
  */
-export function getEducationDelivery(params: GetEducationDeliveryParams): DeliveryConfig {
-  const base = DELIVERY_MATRIX[params.ageSegment]
+export function getEducationDelivery(params: GetEducationDeliveryParams = {}): DeliveryConfig {
+  const base = applyStatedAccessibility(DEFAULT_DELIVERY, params.accessibility)
   if (!params.format) return base
   return { ...base, primaryFormat: params.format }
 }
@@ -765,15 +797,25 @@ export async function getEducationPlan(params: GetEducationPlanParams): Promise<
   let resolvedMilestoneKey: string | undefined = params.milestoneKey
 
   // ── 1. Resolve persona from contact record if contactId supplied ─────────────
+  // Wave 145 (owner ruling 18): the contact's brokerage is read too, so the person's STATED accessibility preferences
+  // are read through THE reader (contract C3) on this same session client (RLS), pinned to that brokerage.
+  let accessibility: AccessibilityPreferences | null = null
+  let accessibilitySource: EducationPlan["accessibilitySource"] = "default"
   if (params.contactId) {
     const { data: contact } = await supabase
       .from("contacts")
-      .select("contact_persona, status")
+      .select("contact_persona, status, brokerage_id")
       .eq("id", params.contactId)
       .maybeSingle()
 
     if (contact?.contact_persona) {
       resolvedPersona = contact.contact_persona
+    }
+    if (contact?.brokerage_id) {
+      const read = await readAccessibilityPreferences(supabase, contact.brokerage_id as string, params.contactId)
+      // A refused read is said, never rendered as "nothing stated" — the plan then uses the one default.
+      if (read.ok) { accessibility = read.preferences; accessibilitySource = read.stated ? "stated" : "default" }
+      else accessibilitySource = "unavailable"
     }
   }
 
@@ -809,7 +851,8 @@ export async function getEducationPlan(params: GetEducationPlanParams): Promise<
   }
 
   // ── 3. Select lesson catalog ──────────────────────────────────────────────────
-  const delivery = getEducationDelivery({ ageSegment: params.ageSegment })
+  // The delivery is the one default adapted to what the person STATED — never the age band (wave 145, ruling 18).
+  const delivery = getEducationDelivery({ accessibility })
 
   let rawLessons: Omit<EducationLesson, "format">[]
 
@@ -853,6 +896,7 @@ export async function getEducationPlan(params: GetEducationPlanParams): Promise<
     persona: resolvedPersona,
     ageSegment: params.ageSegment,
     delivery,
+    accessibilitySource,
     lessons,
   }
 }

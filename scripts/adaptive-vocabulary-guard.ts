@@ -49,7 +49,7 @@ import { TENANT_POLICY_SETTINGS_KEYS, parsePolicyKey } from "../lib/kernel/tenan
 import { scoreBuyerStrength } from "../lib/offers/offer-strength"
 import { OFFER_FIELD_DEFS } from "../lib/state-forms/field-defs"
 import { CAMPAIGN_PERSONAS } from "../lib/campaigns/contact-sources"
-import { getRequiredDocPresetsForState, getSupportedPresetStates } from "../lib/compliance/required-doc-presets"
+import { LEGAL_SOURCE_CLAIM, getRequiredDocPresetsForState, getSupportedPresetStates, uncitedLegalClaims } from "../lib/compliance/required-doc-presets"
 import { COMING_SOON_POLICY_KEY, evaluateComingSoonReadiness, loadComingSoonPolicy, validateComingSoonPolicyReport } from "../lib/compliance/coming-soon-policy"
 import { reportComingSoonPolicy } from "../lib/compliance/vocabulary-healing"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
@@ -135,9 +135,22 @@ async function main() {
   section("A5 disagreeing copies of a vocabulary, COUNTED (§6 — the finding is the number; fixes are other lanes' files)")
   const fieldFinancing = (OFFER_FIELD_DEFS.financingType?.enum_values ?? []) as readonly string[]
   check("the state form-field financing enum is the SAME six as FINANCING_TYPES (a roll-up value always fits the form)", sameSet(fieldFinancing, FINANCING_TYPES))
+  // WAVE 145 (lane 145H): the second contract-type vocabulary this section used to PUBLISH (5 values, 4 not in
+  // CONTRACT_SUBTYPES) is MERGED — re-asserted as the rule: the form-field enum and the voice intake ARE the one list.
   const fieldContract = (OFFER_FIELD_DEFS.contractType?.enum_values ?? []) as readonly string[]
-  const contractDisagree = fieldContract.filter((v) => !(CONTRACT_SUBTYPES as readonly string[]).includes(v))
-  console.log(`    published: lib/state-forms/field-defs.ts OFFER_FIELD_DEFS.contractType carries ${fieldContract.length} values, ${contractDisagree.length} not in CONTRACT_SUBTYPES (${contractDisagree.join(", ")}) — a second contract-type vocabulary (Outside-lane)`)
+  const disagreeing = (list: readonly string[]) => list.filter((v) => !(CONTRACT_SUBTYPES as readonly string[]).includes(v))
+  check(`the state form-field contract-type enum IS CONTRACT_SUBTYPES (${fieldContract.length} values, ${disagreeing(fieldContract).length} outside it)`,
+    sameSet(fieldContract, CONTRACT_SUBTYPES), disagreeing(fieldContract).join(", "))
+  check("POSITIVE CONTROL — the disagreement finder sees the retired second list", disagreeing(["residential", "as_is", "new_construction", "land", "commercial"]).length === 4)
+  const intakeSrc = code("lib/workflow/intake/voice-to-offer.ts")
+  check("the voice intake types contractType as the ONE list and normalizes what it hears through it",
+    /contractType:\s*IntakeField<ContractSubtype>/.test(intakeSrc) && /platformContractSubtype\(spoken\)/.test(intakeSrc)
+    && !/"residential\|as_is/.test(codeWithStrings("lib/workflow/intake/voice-to-offer.ts")))
+  check("a legacy spoken spelling resolves forever (residential → standard), and the three retired members resolve to nothing",
+    resolveVocabularyValue("contract_subtype", "residential")?.key === "standard" && resolveVocabularyValue("contract_subtype", "Standard Residential")?.key === "standard"
+    && ["as_is", "land", "commercial"].every((v) => resolveVocabularyValue("contract_subtype", v) === null))
+  check("…and every canonical key still resolves to itself (the alias table shadows nothing)",
+    CONTRACT_SUBTYPES.every((k) => resolveVocabularyValue("contract_subtype", k)?.key === k))
   const financingListRe = /["'](?:conventional|fha|va|usda)["'][^\n]{0,160}["'](?:conventional|fha|va|usda)["'][^\n]{0,160}["'](?:conventional|fha|va|usda)["']/
   const walk = (dir: string, out: string[] = []): string[] => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -341,9 +354,18 @@ async function main() {
   check("POSITIVE CONTROL — a table that exempts probate is caught", badTopics([["probate", { treatment: "exemption_if_verified", fairHousingScanApplies: true }]]).length === 1)
 
   section("E5 state presets are common practice, not citations — they seed as brokerage policy; a state requirement is cited + approved")
-  const legalClaim = /required by state|state law|\bRCW\b|\bTREC\b|§|statute|\bAct\b/i
-  const claims = getSupportedPresetStates().flatMap((s) => getRequiredDocPresetsForState(s, "buyer").concat(getRequiredDocPresetsForState(s, "seller")).filter((p) => legalClaim.test(p.description)).map((p) => `${s}:${p.classification}`))
-  console.log(`    published: ${new Set(claims).size} preset row(s) whose description asserts a legal source without a citation URL — seeded as brokerage policy (legal_basis NULL): ${[...new Set(claims)].join(", ")}`)
+  // Wave 145 (lane 145H): THE matcher now lives in the product (lib/compliance/required-doc-presets.ts
+  // LEGAL_SOURCE_CLAIM / uncitedLegalClaims) — the settings page surfaces every such rule as a human compliance task and
+  // the seed reports them. It also learned "Civil Code" / "ILCS" / "Public Act" (the 144A matcher was blind to CA / IL).
+  const legalClaim = LEGAL_SOURCE_CLAIM
+  const claims = getSupportedPresetStates().flatMap((s) => uncitedLegalClaims(getRequiredDocPresetsForState(s, "buyer").concat(getRequiredDocPresetsForState(s, "seller"))).map((p) => `${s}:${p.classification}`))
+  console.log(`    published: ${new Set(claims).size} preset row(s) whose description asserts a legal source without a citation URL — seeded as brokerage policy (legal_basis NULL), each surfaced as a human compliance task: ${[...new Set(claims)].join(", ")}`)
+  check("the uncited claims are SURFACED to a person: the settings page lists them and the seed reports them",
+    /uncitedLegalClaims\(/.test(code("app/dashboard/settings/required-documents/page.tsx")) && /citation_tasks:\s+uncitedLegalClaims\(/.test(code("app/actions/compliance/seed-required-docs.ts")))
+  check("a CITED state requirement is not a task; an uncited claim is (and a plain description is neither)",
+    uncitedLegalClaims([{ description: "TX: TREC OP-H", legal_basis: "state_requirement", source_url: "https://www.trec.texas.gov/x" }]).length === 0
+    && uncitedLegalClaims([{ description: "TX: TREC OP-H", legal_basis: null, source_url: null }]).length === 1
+    && uncitedLegalClaims([{ description: "Buyer ID for the file", legal_basis: null, source_url: null }]).length === 0)
   const seed = code("app/actions/compliance/seed-required-docs.ts")
   check("the preset seed never writes legal_basis / a state requirement", !/legal_basis|state_requirement/.test(seed))
   check("the rule write records a state requirement only with a state, an official source and a compliance approver", (() => { const m = codeWithStrings("app/actions/compliance/manage-required-docs.ts"); return /legalBasis !== "state_requirement"/.test(m) && /isPrimarySourceUrl\(input\.sourceUrl/.test(m) && /VOCABULARY_COMPLIANCE_APPROVER_USER_TYPES\.has\(actor\.userType\)/.test(m) && /if \(!input\.stateCode\)/.test(m) })())

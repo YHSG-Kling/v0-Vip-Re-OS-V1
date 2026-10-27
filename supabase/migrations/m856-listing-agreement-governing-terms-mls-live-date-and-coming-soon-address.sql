@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 145, lane 145B) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-27 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 145, lane 145B; a DROP … IF EXISTS of an object that did not yet exist was skipped where the MCP would have held the batch ──
 --
 -- m856 — THE LISTING AGREEMENT'S GOVERNING TERMS: the seller-agreed MLS live date and the seller's Coming Soon street-
 -- address instruction, write-once on the executed agreement, amendable ONLY through contract_term_versions (wave 145,
