@@ -7,11 +7,22 @@
  * "managing managers … work together so the agentic OS runs smoothly; they share evidence through the
  * canonical kernel; every workflow exception has an accountable registered owner").
  *
- *   ORG       PLATFORM → BROKERAGE → LOCATION → TEAM → AGENT
+ *   ORG       PLATFORM → BROKERAGE → LOCATION → TEAM → AGENT → AGREEMENT (the agreement arrow: wave 145)
  *   PERSON    PERSON → CONTACT / VENDOR / AGENT
  *   DEAL      PROPERTY → LISTING → OFFER → ACCEPTED COUNTER / CONTRACT → TRANSACTION → COMMISSION / CLOSING
  *   MARKETING STRATEGY → CAMPAIGN → ASSET → TOUCHPOINT → OUTCOME
  *   FINANCE   SIGNED AGREEMENT → FINANCIAL RULES → CAP CYCLE → COMMISSION → REVENUE SHARE → PAYMENT
+ *
+ * WAVE 145 (lane 145I — "audit the chains"): the owner's six chains. Brokerage → Team → Agent → Agreement →
+ * Commission Rules is ORG + FINANCE; Property → … → Closing is DEAL; and three chains were added:
+ *   JOURNEY   CONTACT → INTENT SIGNAL → NEXT-BEST ACTION → CHANNEL → DELIVERY → OUTCOME          (table arrows)
+ *   CONTENT   TOPIC BANK → IDEA → CREATIVE → HUMANIZED FINAL → PUBLICATION → ATTRIBUTION         (table arrows)
+ * and the nodes that are CODE, not rows, are SYMBOL CHAINS (each step = the ONE survivor's export, wired to the
+ * step before it): BOOK → CHAPTERS → MANUSCRIPT → EXPORT → APPROVAL (the book is a JSON document on a lead-magnet
+ * row), PROVIDER → CAPABILITY → CHANNEL/FORMAT → GATEWAY → COST → OUTCOME (+ the derived per-channel OUTCOME LOOP:
+ * ledgered → claim opened → provider truth ingested), the arbiter's decision door (rulings 15–16, contract C2) and
+ * the humanized final (ruling 20, contract C4). A cross-lane contract that has not landed is a KEYED finding routed
+ * to its lane — it burns when the lane lands; the guard never pins the waypoint.
  *
  * ── WHAT THIS IS, AND WHAT IT IS NOT (CLAUDE.md §1 — no fourth instrument) ──────────────────────────
  * The whole-repo instruments already exist and are NOT re-implemented here; this guard composes them
@@ -95,8 +106,10 @@ type LinkSpec =
    *  the columns exist AND that no FK exists between the two tables (else the map is stale: it is an fk). */
   | { kind: "soft"; holder: "child" | "parent"; columns: string[]; via: string;
       /** A polymorphic link: holder.typeColumn = typeValue identifies the other end. The writer census
-       *  then looks for a write of that VALUE, not only of the column. */
-      polymorphic?: { typeColumn: string; idColumn: string; typeValue: string } }
+       *  then looks for a write of that VALUE, not only of the column — as a literal, as a same-file string
+       *  CONSTANT whose value it is (`item_type: LOCAL_CAMPAIGN_IDEA_ITEM_TYPE`), or in one of the API shapes
+       *  `writerShapes` names (regex sources — e.g. the ledger's `subject: { type: "contact" }`). */
+      polymorphic?: { typeColumn: string; idColumn: string; typeValue: string; writerShapes?: string[] } }
   /** The parent is not a row (the platform, a property since m547). */
   | { kind: "root"; why: string }
   /** No link exists. The run asserts none exists in the cache (else the map is stale). */
@@ -128,7 +141,7 @@ interface ChainSpec { key: string; label: string; arrows: ArrowSpec[] }
 
 export const CHAINS: ChainSpec[] = [
   {
-    key: "org", label: "PLATFORM → BROKERAGE → LOCATION → TEAM → AGENT",
+    key: "org", label: "PLATFORM → BROKERAGE → LOCATION → TEAM → AGENT → AGREEMENT",
     arrows: [
       { id: "org.platform>brokerage", parentNode: "PLATFORM", childNode: "BROKERAGE", parent: null, child: "brokerages",
         link: { kind: "root", why: "the platform is not a row: platform staff are users.platform_role (CLAUDE.md §4); a brokerage is the tenant root and carries no parent tenant" } },
@@ -150,6 +163,16 @@ export const CHAINS: ChainSpec[] = [
         link: { kind: "fk", column: "brokerage_id" }, events: ["USER_BROKERAGE_ASSIGNED"],
         mirrors: [{ table: "users", column: "brokerage_id" }],
         resolver: { file: "lib/kernel/users.ts", symbol: "assignUserToBrokerage" } },
+      // Wave 145 (lane 145I) — the owner's chain is BROKERAGE → TEAM → AGENT → AGREEMENT → COMMISSION RULES (the
+      // agreement → rules half is the finance chain below). Ruling 3: "There has to be an agents.start date which comes
+      // from the agents agreement" — the start date is a COPY of the executed agreement's effective date (contract C6:
+      // lane 145C writes agents.start_date + start_date_source and nobody else does), so it is declared here as
+      // materialized state whose truth is the signed agreement.
+      { id: "org.agent>agreement", parentNode: "AGENT", childNode: "AGREEMENT (signed agent / team agreement)", parent: "agents", child: "contract_signatures",
+        link: { kind: "fk", column: "agent_id" },
+        // Lane 145C names the ONE writer (its notes, C6): setAgentStartDateFromAgreement; the m858 trigger
+        // agents_start_date_from_agreement holds the column equal to the agreement's effective_date.
+        materialized: [{ table: "agents", column: "start_date", truth: "the executed agent agreement's effective date + amendment history (ruling 3, contract C6 — never account creation, first login or team join)", reconciler: { file: "lib/agreements/agent-agreements.ts", symbol: "setAgentStartDateFromAgreement" } }] },
     ],
   },
   {
@@ -244,6 +267,103 @@ export const CHAINS: ChainSpec[] = [
         link: { kind: "reverse_fk", column: "commission_id" }, events: ["COMMISSION_APPROVED", "COMMISSION_PAID"] },
     ],
   },
+  // ── WAVE 145 (lane 145I) — the owner's remaining chains. A node that is CODE rather than a row (the arbiter's
+  // channel choice, the gateway, the humanized final, the book's chapters inside a JSON column) is audited in
+  // SYMBOL_CHAINS below; the arrows here are the ones a table carries.
+  {
+    key: "journey", label: "CONTACT → INTENT SIGNAL → NEXT-BEST ACTION → CHANNEL → DELIVERY → OUTCOME",
+    arrows: [
+      { id: "journey.contact>signal", parentNode: "CONTACT", childNode: "INTENT SIGNAL (manager bus line)", parent: "contacts", child: "manager_signals",
+        link: { kind: "fk", column: "contact_id" } },
+      { id: "journey.contact>behaviour", parentNode: "CONTACT", childNode: "INTENT SIGNAL (observed behaviour)", parent: "contacts", child: "behavioral_signals",
+        link: { kind: "fk", column: "contact_id" } },
+      { id: "journey.contact>reactivation", parentNode: "CONTACT", childNode: "INTENT SIGNAL (reactivation)", parent: "contacts", child: "signal_reactivations",
+        link: { kind: "fk", column: "contact_id" } },
+      // Ruling 15 / contract C2: a lead row is evaluated ONLY while it has no contact_id. The arrow is audited like
+      // any other; the row half (a reactivation written on a lead that already has a contact) is a live reading.
+      { id: "journey.lead>reactivation", parentNode: "LEAD (no contact yet)", childNode: "INTENT SIGNAL (reactivation)", parent: "leads", child: "signal_reactivations",
+        link: { kind: "fk", column: "lead_id" } },
+      { id: "journey.contact>decision", parentNode: "CONTACT", childNode: "NEXT-BEST ACTION → CHANNEL → DELIVERY (ledgered decision / send)", parent: "contacts", child: "agent_action_ledger",
+        link: { kind: "soft", holder: "child", columns: ["subject_type", "subject_id"], via: "lib/kernel/action-ledger.ts withActionLedger({ subject: { type: 'contact', id } }) — the arbiter's decision (detail.arbitration) and the dispatcher's send are one row each",
+          polymorphic: { typeColumn: "subject_type", idColumn: "subject_id", typeValue: "contact", writerShapes: ["subject\\s*:\\s*\\{\\s*type\\s*:\\s*[\"'`]contact[\"'`]"] } } },
+      { id: "journey.decision>evaluation", parentNode: "DELIVERY (ledger row)", childNode: "OUTCOME (evaluation)", parent: "agent_action_ledger", child: "agent_outcome_evaluations",
+        link: { kind: "fk", column: "ledger_action_id" } },
+      { id: "journey.contact>outcome", parentNode: "CONTACT", childNode: "OUTCOME (provider-reconciled delivery)", parent: "contacts", child: "outcome_reconciliations",
+        link: { kind: "fk", column: "contact_id" } },
+    ],
+  },
+  {
+    key: "content", label: "TOPIC BANK → IDEA → CREATIVE → HUMANIZED FINAL → PUBLICATION → ATTRIBUTION",
+    arrows: [
+      { id: "content.source>topic", parentNode: "TOPIC SOURCE", childNode: "TOPIC BANK", parent: "content_topic_sources", child: "content_topic_bank",
+        link: { kind: "fk", column: "source_id" } },
+      { id: "content.topic>idea", parentNode: "TOPIC BANK", childNode: "IDEA (approval queue)", parent: "content_topic_bank", child: "approval_items",
+        link: { kind: "soft", holder: "child", columns: ["item_type", "item_id"], via: "lib/content-intel/local-intel.ts proposeLocalCampaignIdeas files a PENDING approval_items row per fact (item_type LOCAL_CAMPAIGN_IDEA_ITEM_TYPE, item_id = the topic-bank row); loadApprovedLocalCampaignIdeas is the only reader",
+          polymorphic: { typeColumn: "item_type", idColumn: "item_id", typeValue: "local_campaign_idea" } } },
+      { id: "content.topic>studio_idea", parentNode: "TOPIC BANK", childNode: "IDEA (content studio board)", parent: "content_topic_bank", child: "content_ideas",
+        link: { kind: "absent", why: "app/actions/content-studio.ts writes content_ideas (title / description / content_type) with no topic reference — a studio idea cannot say which topic-bank theme it came from, so topic → idea → creative attribution cannot join through the studio board (ruling 22: the topic bank feeds every content surface)" } },
+      { id: "content.topic>creative", parentNode: "TOPIC BANK", childNode: "CREATIVE (topic use: asset_type / asset_id)", parent: "content_topic_bank", child: "content_topic_uses",
+        link: { kind: "fk", column: "topic_id" } },
+      { id: "content.asset>ad_creative", parentNode: "CREATIVE (library asset)", childNode: "CREATIVE (ad variation)", parent: "marketing_assets", child: "ad_creative_variations",
+        link: { kind: "fk", column: "source_marketing_asset_id" } },
+      { id: "content.campaign>post", parentNode: "CAMPAIGN", childNode: "CREATIVE (social post)", parent: "marketing_campaigns", child: "social_posts",
+        link: { kind: "fk", column: "marketing_campaign_id" } },
+      { id: "content.post>publication", parentNode: "CREATIVE (social post)", childNode: "PUBLICATION (publish log)", parent: "social_posts", child: "social_publish_log",
+        link: { kind: "fk", column: "social_post_id" } },
+    ],
+  },
+]
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// SYMBOL CHAINS (wave 145, lane 145I) — the nodes that are CODE, not rows.
+// Each step names the ONE survivor (file + exported symbol). A step `after` another must be WIRED to it: the
+// step's file names the previous step's symbol in stripped code (an import + a call, or a direct reference).
+// The cross-lane contracts (C1 channel matrix, C4 humanized final) are named by their contract names; a step
+// that does not exist yet is a KEYED finding routed to the lane that lands it — it BURNS when the lane lands,
+// it never pins the waypoint.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+interface SymbolStep { node: string; file: string; symbol: string; after?: string; why?: string }
+interface SymbolChainSpec { key: string; label: string; steps: SymbolStep[] }
+export const SYMBOL_CHAINS: SymbolChainSpec[] = [
+  {
+    key: "book", label: "BOOK → CHAPTERS → MANUSCRIPT → EXPORT → APPROVAL",
+    steps: [
+      { node: "BOOK", file: "lib/lead-magnets/book-creator.ts", symbol: "startBookProject", why: "the book is lead_capture_forms.settings.book on a lead-magnet row — see the BOOK ENTITY check" },
+      { node: "CHAPTERS", file: "lib/lead-magnets/book-creator.ts", symbol: "advanceBookProject", after: "startBookProject" },
+      { node: "MANUSCRIPT (humanized review)", file: "lib/lead-magnets/book-editorial.ts", symbol: "humanizedReviewState" },
+      { node: "EXPORT", file: "lib/lead-magnets/book-publishing-produce.ts", symbol: "buildKdpPackage", after: "humanizedReviewState" },
+      { node: "APPROVAL", file: "lib/lead-magnets/book-publishing-produce.ts", symbol: "approveKdpPackage", after: "buildKdpPackage" },
+    ],
+  },
+  {
+    key: "provider", label: "PROVIDER → CAPABILITY → CHANNEL/FORMAT → GATEWAY → COST → OUTCOME",
+    steps: [
+      { node: "CAPABILITY (router)", file: "lib/ai-isa/property-lookup-rail.ts", symbol: "routeCapability" },
+      { node: "CHANNEL → PROVIDER (matrix, contract C1)", file: "lib/providers/channel-provider-matrix.ts", symbol: "CHANNEL_PROVIDER_MATRIX", why: "lane 145D creates it; lane 145E's arbiter imports it" },
+      { node: "CHANNEL choice (arbiter)", file: "lib/ai-isa/followup-arbiter.ts", symbol: "ARBITER_CHANNELS", after: "CHANNEL_PROVIDER_MATRIX", why: "the arbiter's inline CHANNEL_PROVIDER_RULES is replaced by an import of the matrix (lane 145E)" },
+      { node: "PROVIDER readiness", file: "lib/platform/provider-posture.ts", symbol: "getBrokerageProviderReadiness" },
+      { node: "GATEWAY (send)", file: "lib/providers/dispatch.ts", symbol: "dispatchEmail" },
+      { node: "COST (vendor spend)", file: "lib/vendor-governance/usage-logger.ts", symbol: "logVendorUsage" },
+      { node: "COST booked by the gateway", file: "lib/providers/dispatch.ts", symbol: "dispatchSms", after: "logVendorUsage" },
+      { node: "OUTCOME (claim → provider truth)", file: "lib/outcomes/reconciliation-ledger.ts", symbol: "ingestProviderTruth" },
+    ],
+  },
+  {
+    key: "decision", label: "INTENT → NEXT-BEST ACTION: speed-to-lead is the ARBITER's decision (ruling 16); the lead domain ends at contact_id (ruling 15, contract C2)",
+    steps: [
+      { node: "ARBITER (the decision + its ledger row)", file: "lib/ai-isa/followup-arbiter.ts", symbol: "arbitrateAndRecordExperience" },
+      { node: "ENGAGE (the one door into the arbiter)", file: "app/actions/ai-isa/engage-contact.ts", symbol: "engageContact", after: "arbitrateAndRecordExperience" },
+      { node: "SPEED TO LEAD (consumed by the arbiter)", file: "lib/ai-isa/speed-to-lead.ts", symbol: "runSpeedToLead", after: "engageContact" },
+      { node: "LEAD-DOMAIN BOUNDARY (contract C2)", file: "lib/contact-promotion/lead-domain-boundary.ts", symbol: "isInLeadDomain", why: "lane 145E exports isInLeadDomain / canonicalPartyFor" },
+    ],
+  },
+  {
+    key: "humanize", label: "CREATIVE → HUMANIZED FINAL → PUBLICATION (ruling 20, contract C4)",
+    steps: [
+      { node: "HUMANIZED REVIEW (the 144H survivor, books)", file: "lib/lead-magnets/book-editorial.ts", symbol: "scanAiTells" },
+      { node: "HUMANIZED FINAL (every public AI asset)", file: "lib/marketing/humanize-final.ts", symbol: "finalizeForDistribution", why: "lane 145G extends the 144H survivor into the one final phase" },
+    ],
+  },
 ]
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -253,19 +373,30 @@ const KNOWN_FINDINGS: Record<string, { owner: ManagerKey; route: string }> = {
   "absent:org.location>team": { owner: "recruiting_manager", route: "OWNER QUESTION — does a team belong to one office? (no migration written: never invent a hierarchy)" },
   "absent:person.person>agent": { owner: "data_steward", route: "OWNER QUESTION — should the person graph span agent / vendor seats (PERSON_ENTITY_TYPES)?" },
   "absent:marketing.strategy>campaign": { owner: "campaign_orchestrator", route: "Outside-lane — campaign creators stamp the strategy ref (lane 144I notes: campaign-orchestrator kickoff)" },
-  "edge-never-written:marketing.asset>touchpoint": { owner: "campaign_orchestrator", route: "Outside-lane 144H/144F — no touchpoint writer records external_table='marketing_assets', so which ASSET reached the contact is unrecorded" },
   "unreconciled:finance.cap_cycle>commission:agent_cap_tracking.cap_paid_to_date": { owner: "finance_manager", route: "lane 144D — the cap paid-to-date ledger (ruling 9) needs a re-derivation from commission_distributions" },
   "event-duplicate-vocabulary:deal.offer>counter": { owner: "shopping_agent", route: "§6 — OFFER_COUNTER_SENT / OFFER_ACCEPTED and OFFER_OS_COUNTERED / OFFER_OS_ACCEPTED are two spellings of one promotion (lane 144C notes)" },
   "live:org.team>agent:mirror-drift": { owner: "recruiting_manager", route: "live 2026-10-25: 1 of 5 agents has agents.team_id ≠ users.team_id and no active team_members row — resolveUserTeam decides; the stores were never reconciled" },
-  "event-never-emitted:deal.transaction>cda:CDA_GENERATED": { owner: "deal_coordinator", route: "lane 144D (app/actions/cda-portal.ts) — the CDA create/generate writer emits no event; KernelEvent.CDA_GENERATED is a dead member (emit it at the write, or retire it with a tombstone)" },
   "live:org.location>agent:mirror-drift": { owner: "data_steward", route: "live 2026-10-25: 1 of 5 agents has agents.location_id ≠ users.location_id — resolveUserOffice decides" },
+  // BURNED at b364eb4b and removed (wave 145, lane 145I): edge-never-written:marketing.asset>touchpoint (closed by 144Z item 6 —
+  // lib/marketing/touchpoint-recorder.ts ref + lib/kernel/marketing.ts distributeVideoAsset) and
+  // event-never-emitted:deal.transaction>cda:CDA_GENERATED (closed by 144Z item 3 — app/actions/cda-portal.ts emitCdaGenerated).
+  // ── wave 145 (lane 145I) — measured at b364eb4b on the new chains; each routed to the lane / owner that closes it ──
+  "materialized-column-missing:org.agent>agreement:agents.start_date": { owner: "recruiting_manager", route: "lane 145C (contract C6) — agents.start_date + agents.start_date_source (the executed agreement) land in m858–m861; burns when the integrator regenerates the schema caches" },
+  "unreconciled:org.agent>agreement:agents.start_date": { owner: "recruiting_manager", route: "lane 145C (contract C6) — the ONE writer lib/agreements/agent-agreements.ts setAgentStartDateFromAgreement (145C's notes) is declared as the reconciler; this key BURNS when lane 145C's patch is merged (the symbol then exports)" },
+  "edge-never-read:journey.decision>evaluation": { owner: "data_steward", route: "NOT A DEFECT — agent_outcome_evaluations.ledger_action_id is the idempotency key (m700 UNIQUE (ledger_action_id, outcome_ref); lib/agents/outcomes.ts reads 23505 as duplicate) and the per-arm readers aggregate on experiment_arm; no product read traverses delivery → evaluation. A per-action outcome view on the AI audit page (app/actions/flight-recorder.ts) would be the first traversal — a product decision, not built to move a number" },
+  "absent:content.topic>studio_idea": { owner: "campaign_orchestrator", route: "lane 145G / OWNER — app/actions/content-studio.ts content_ideas (125 live rows) carry no topic reference; ruling 22 says the topic bank feeds every content surface. Needs a nullable content_ideas.topic_id → content_topic_bank (migration in G's range) + the studio writer stamping it" },
+  "symbol-missing:provider:CHANNEL_PROVIDER_MATRIX": { owner: "campaign_orchestrator", route: "lane 145D (contract C1) creates lib/providers/channel-provider-matrix.ts; lane 145E replaces the arbiter's inline CHANNEL_PROVIDER_RULES with an import — burns when both land (step-unwired catches the second half)" },
+  "symbol-missing:decision:isInLeadDomain": { owner: "ai_isa", route: "lane 145E (contract C2) exports lib/contact-promotion/lead-domain-boundary.ts isInLeadDomain / canonicalPartyFor" },
+  "symbol-missing:humanize:finalizeForDistribution": { owner: "asset_manager", route: "lane 145G (contract C4) extends the 144H humanized-review survivor (lib/lead-magnets/book-editorial.ts scanAiTells / humanizedReviewState) into lib/marketing/humanize-final.ts finalizeForDistribution" },
+  "entity-conflated:book": { owner: "asset_manager", route: "lane 145G (ruling 19) — a book is lead_capture_forms.settings.book on a lead-magnet row; 145G's m867 creates book_projects (platform / brokerage / team / agent owned, distribution_form_id → lead_capture_forms), so this key BURNS when m867 is applied and live-tables.ts is regenerated (BOOK_TABLE already names book_projects). Then add the arrow book_projects → lead_capture_forms (fk distribution_form_id) and distribution_finals (m866, asset_table / asset_id) to the CONTENT chain" },
+  "outcome-claim-missing:email": { owner: "campaign_orchestrator", route: "lane 145D's matrix (contract C1) — email is SendGrid on the platform key (mailgun / resend / postmark are inbound-only). dispatchEmail is ledgered but opens no recordOutcomeClaim, so an email's outcome is 'handed to the provider'; app/api/webhooks/sendgrid-events mirrors messages.status but never calls ingestProviderTruth. Closing it = a claim at dispatchEmail (channel 'email', providerRef = the sg_message_id the webhook already correlates on) + ingestProviderTruth in the SendGrid webhook (lib/providers/** is 145D's; the webhook route is in no lane's domain this wave)" },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 // LIVE READINGS — measured through the Supabase MCP, declared with their SQL and denominators.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 const LIVE_MEASURED_ON = "2026-10-25"
-interface LiveReading { arrow: string; what: string; sql: string; n: number; denominator: string; rule: "zero" | "info" }
+interface LiveReading { arrow: string; what: string; sql: string; n: number; denominator: string; rule: "zero" | "info"; /** when measured on another date than LIVE_MEASURED_ON */ on?: string }
 const LIVE_READINGS: LiveReading[] = [
   { arrow: "org.team>agent", what: "agents.team_id → team in ANOTHER tenant", rule: "zero", n: 0, denominator: "5 agents, 1 team",
     sql: "select count(*) from agents a join teams t on t.id=a.team_id where a.brokerage_id is distinct from t.brokerage_id" },
@@ -293,6 +424,26 @@ const LIVE_READINGS: LiveReading[] = [
     sql: "select count(*) from contacts c where not exists (select 1 from person_identities p where p.canonical_contact_id=c.id)" },
   { arrow: "finance.terms>cap_cycle", what: "agents with no agent_commission_profiles row (financial rules missing)", rule: "info", n: 4, denominator: "5 agents (finance baseline is an onboarding input — nothing is assumed)",
     sql: "select count(*) from agents a where not exists (select 1 from agent_commission_profiles p where p.agent_id=a.id)" },
+  // ── wave 145 (lane 145I) — the new chains, measured read-only through the Supabase MCP ──
+  { arrow: "org.agent>agreement", what: "agents with NO fully-signed agreement on record (ruling 3: the start date has no source to derive from)", rule: "info", n: 5, on: "2026-10-27",
+    denominator: "5 agents, 0 contract_signatures rows — every live agent's start date is UNSOURCED until an executed agreement is recorded; nothing is inferred from account creation",
+    sql: "select count(*) from agents a where not exists (select 1 from contract_signatures s where s.agent_id=a.id and s.fully_signed_at is not null)" },
+  { arrow: "org.agent>agreement", what: "contract_signatures.agent_id → agent in another tenant", rule: "zero", n: 0, on: "2026-10-27", denominator: "0 contract_signatures (NOT_APPLICABLE, never PASS)",
+    sql: "select count(*) from contract_signatures s join agents a on a.id=s.agent_id where s.brokerage_id is distinct from a.brokerage_id" },
+  { arrow: "journey.contact>signal", what: "manager_signals.contact_id → contact in another tenant", rule: "zero", n: 0, on: "2026-10-27", denominator: "0 manager_signals rows (NOT_APPLICABLE)",
+    sql: "select count(*) from manager_signals s join contacts c on c.id=s.contact_id where s.brokerage_id is distinct from c.brokerage_id" },
+  { arrow: "journey.lead>reactivation", what: "reactivation written on a lead AFTER it gained a contact_id (ruling 15 / C2: the lead domain ended)", rule: "zero", n: 0, on: "2026-10-27", denominator: "0 signal_reactivations, 0 leads (NOT_APPLICABLE)",
+    sql: "select count(*) from signal_reactivations r join leads l on l.id=r.lead_id where l.contact_id is not null and r.triggered_at > coalesce(l.updated_at, l.created_at)" },
+  { arrow: "journey.contact>decision", what: "ledger rows on a contact of another tenant", rule: "zero", n: 0, on: "2026-10-27", denominator: "0 agent_action_ledger rows with subject_type='contact' (NOT_APPLICABLE)",
+    sql: "select count(*) from agent_action_ledger a join contacts c on c.id::text=a.subject_id::text where a.subject_type='contact' and a.brokerage_id is distinct from c.brokerage_id" },
+  { arrow: "journey.contact>outcome", what: "outcome claims still 'pending' after 7 days (stalled async work)", rule: "info", n: 0, on: "2026-10-27", denominator: "0 outcome_reconciliations rows (NOT_APPLICABLE)",
+    sql: "select count(*) from outcome_reconciliations where verdict='pending' and created_at < now() - interval '7 days'" },
+  { arrow: "content.topic>creative", what: "content_topic_uses.topic_id → topic of another tenant", rule: "zero", n: 0, on: "2026-10-27", denominator: "0 content_topic_bank, 0 content_topic_uses (NOT_APPLICABLE)",
+    sql: "select count(*) from content_topic_uses u join content_topic_bank t on t.id=u.topic_id where u.brokerage_id is distinct from t.brokerage_id" },
+  { arrow: "content.topic>studio_idea", what: "content-studio ideas that cannot name their topic (the ABSENT arrow, by rows)", rule: "info", n: 125, on: "2026-10-27", denominator: "125 content_ideas rows, 0 topic-bank rows",
+    sql: "select count(*) from content_ideas" },
+  { arrow: "content.post>publication", what: "social posts with no publish-log row", rule: "info", n: 3, on: "2026-10-27", denominator: "3 social_posts, 0 social_publish_log (status not asserted — a draft has no log by design)",
+    sql: "select count(*) from social_posts p where not exists (select 1 from social_publish_log l where l.social_post_id=p.id)" },
 ]
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -407,6 +558,69 @@ export function findReaders(table: string, column: string, other: string | null,
     for (const h of index.get(other) ?? []) if (embedRe.test(h.window)) out.add(`${h.file}:${lineOf(h.file, h.idx)}`)
   }
   return [...out].sort()
+}
+
+// ── POLYMORPHIC WRITER finder (wave 145): who records holder.typeColumn = typeValue? ───────────────
+/** A literal (`item_type: "x"`), a same-file string constant whose value is the type (`item_type: X_TYPE` with
+ *  `const X_TYPE = "x"` in the file), or a declared API shape (`subject: { type: "contact" }`). Read on
+ *  comment-blanked source, so a tombstone naming the write is not a writer (§2). */
+export function findPolymorphicWriters(p: { typeColumn: string; typeValue: string; writerShapes?: string[] }, code: Map<string, string>): string[] {
+  const keys = `(?:${esc(p.typeColumn)}|externalTable)`
+  const valRe = new RegExp(`${keys}\\s*:\\s*["'\`]${esc(p.typeValue)}["'\`]`)
+  const shapes = (p.writerShapes ?? []).map((s) => new RegExp(s))
+  const out: string[] = []
+  for (const [f, s] of code) {
+    if (valRe.test(s) || shapes.some((re) => re.test(s))) { out.push(f); continue }
+    const consts = [...fileStringConsts(f, code)].filter(([, v]) => v === p.typeValue).map(([k]) => k)
+    if (consts.some((k) => new RegExp(`${keys}\\s*:\\s*${esc(k)}\\b`).test(s))) out.push(f)
+  }
+  return out
+}
+
+// ── SYMBOL CHAIN finders (wave 145) ────────────────────────────────────────────────────────────────
+/** Does `file` name `symbol` as CODE — an import binding or a reference (strings blanked, so a log line or a
+ *  narrative string naming it is not a wire)? */
+export function fileReferencesSymbol(file: string, symbol: string, code: Map<string, string>): boolean {
+  const s = code.get(file)
+  if (!s) return false
+  return new RegExp(`\\b${esc(symbol)}\\b`).test(blankStrings(s))
+}
+export interface SymbolChainProblem { key: string; detail: string }
+export function symbolChainProblems(chain: SymbolChainSpec, code: Map<string, string>): SymbolChainProblem[] {
+  const out: SymbolChainProblem[] = []
+  const bySymbol = new Map(chain.steps.map((s) => [s.symbol, s]))
+  for (const st of chain.steps) {
+    const exists = symbolExists({ file: st.file, symbol: st.symbol }, code)
+    if (!exists) { out.push({ key: `symbol-missing:${chain.key}:${st.symbol}`, detail: `${st.node}: ${st.file} does not export ${st.symbol}${st.why ? ` (${st.why})` : ""}` }); continue }
+    if (st.after) {
+      const prev = bySymbol.get(st.after)
+      if (prev && !symbolExists({ file: prev.file, symbol: prev.symbol }, code)) continue // the missing predecessor is already the finding
+      if (!fileReferencesSymbol(st.file, st.after, code)) out.push({ key: `step-unwired:${chain.key}:${st.after}>${st.symbol}`, detail: `${st.node} (${st.file}) never names ${st.after} — the step is not wired to the one before it${st.why ? ` (${st.why})` : ""}` })
+    }
+  }
+  return out
+}
+
+// ── OUTCOME LOOP per channel (wave 145): ledgered send → claim opened → provider truth ingested ──────
+/** Channels the gateway LEDGERS (`ledgerContextFor("…", "<channel>"`), opens an outcome CLAIM for
+ *  (`recordOutcomeClaim({ … channel: "<c>"`), and reconciles from a provider callback
+ *  (`ingestProviderTruth({ … channel: "<c>"`). A claim with no reconciler is stalled async work (a pending row
+ *  forever); a ledgered channel with no claim reports "sent" as the outcome. */
+export function outcomeLoop(code: Map<string, string>): { ledgered: string[]; claimed: string[]; reconciled: string[] } {
+  const ledgered = new Set<string>(), claimed = new Set<string>(), reconciled = new Set<string>()
+  const callArg = (s: string, fn: string, into: Set<string>) => {
+    for (const m of s.matchAll(new RegExp(`\\b${fn}\\(\\s*\\{`, "g"))) {
+      const win = s.slice(m.index ?? 0, (m.index ?? 0) + 600)
+      const c = win.match(/\bchannel\s*:\s*["'`]([a-z_]+)["'`]/)?.[1]
+      if (c) into.add(c)
+    }
+  }
+  for (const [, s] of code) {
+    for (const m of s.matchAll(/\bledgerContextFor\(\s*["'`][^"'`]+["'`]\s*,\s*["'`]([a-z_]+)["'`]/g)) ledgered.add(m[1])
+    callArg(s, "recordOutcomeClaim", claimed)
+    callArg(s, "ingestProviderTruth", reconciled)
+  }
+  return { ledgered: [...ledgered].sort(), claimed: [...claimed].sort(), reconciled: [...reconciled].sort() }
 }
 
 // ── EVENT finder ─────────────────────────────────────────────────────────────────────────────────────
@@ -559,6 +773,40 @@ console.log("\n[positive controls — every finder flags the defect it exists fo
   check("CONTROL live-tables: a retired table name (open_houses) is NOT live — a stale map would be caught", !LIVE_TABLES.includes("open_houses"))
   const evParse = parseKernelEvents("export enum KernelEvent {\n  A_B = 'a_b',\n  C = \"c\",\n}\n")
   check("CONTROL event parse: enum members and values are parsed", evParse.get("A_B") === "a_b" && evParse.get("C") === "c")
+
+  // ── wave 145 finders ──
+  {
+    const px = new Map<string, string>([
+      ["lib/x/lit.ts", blankComments(`await db.from("q").insert({ item_type: "idea", item_id: t })`)],
+      ["lib/x/const.ts", blankComments(`export const IDEA_T = "idea"\nawait db.from("q").insert({ item_type: IDEA_T, item_id: t })`)],
+      ["lib/x/shape.ts", blankComments(`await withActionLedger({ subject: { type: "contact", id }, action: "a" }, run)`)],
+      ["lib/x/ghost.ts", blankComments(`// db.from("q").insert({ item_type: "idea" })\n/* subject: { type: "contact" } */ export const IDEA_X = "idea"`)],
+      ["lib/x/other.ts", blankComments(`await db.from("q").insert({ item_type: "not_idea", item_id: t })`)],
+    ])
+    const lit = findPolymorphicWriters({ typeColumn: "item_type", typeValue: "idea" }, px)
+    check("CONTROL polymorphic writer: a literal AND a same-file constant are writers; a tombstone and a constant never used as the key are not",
+      lit.includes("lib/x/lit.ts") && lit.includes("lib/x/const.ts") && !lit.includes("lib/x/ghost.ts") && !lit.includes("lib/x/other.ts"))
+    const sh = findPolymorphicWriters({ typeColumn: "subject_type", typeValue: "contact", writerShapes: ["subject\\s*:\\s*\\{\\s*type\\s*:\\s*[\"'`]contact[\"'`]"] }, px)
+    check("CONTROL polymorphic writer: a declared API shape (the ledger's subject) is a writer; the same shape in a comment is not",
+      sh.length === 1 && sh[0] === "lib/x/shape.ts")
+    const sx = new Map<string, string>([
+      ["lib/s/a.ts", blankComments(`export function first() { return 1 }`)],
+      ["lib/s/b.ts", blankComments(`import { first } from "./a"\nexport function second() { return first() }`)],
+      ["lib/s/c.ts", blankComments(`// we should call first() here\nexport function third() { return "first" }`)],
+    ])
+    const chainOk: SymbolChainSpec = { key: "k", label: "", steps: [{ node: "A", file: "lib/s/a.ts", symbol: "first" }, { node: "B", file: "lib/s/b.ts", symbol: "second", after: "first" }] }
+    const chainBad: SymbolChainSpec = { key: "k", label: "", steps: [{ node: "A", file: "lib/s/a.ts", symbol: "first" }, { node: "C", file: "lib/s/c.ts", symbol: "third", after: "first" }, { node: "D", file: "lib/s/d.ts", symbol: "fourth" }] }
+    const bad = symbolChainProblems(chainBad, sx).map((p) => p.key)
+    check("CONTROL symbol chain: a wired step passes; a step naming its predecessor only in a comment / a string is UNWIRED; a missing file is a MISSING symbol",
+      symbolChainProblems(chainOk, sx).length === 0 && bad.includes("step-unwired:k:first>third") && bad.includes("symbol-missing:k:fourth") && bad.length === 2)
+    const ox = new Map<string, string>([
+      ["lib/o/d.ts", blankComments(`withActionLedger(ledgerContextFor("comms.email.send", "email", p, to), run)\nwithActionLedger(ledgerContextFor("comms.sms.send", "sms", p, to), run)\nawait recordOutcomeClaim({ brokerageId, channel: "sms", providerRef })`)],
+      ["app/api/w/route.ts", blankComments(`await ingestProviderTruth({ channel: "sms", providerRef: sid })\n// await ingestProviderTruth({ channel: "email" })`)],
+    ])
+    const loop = outcomeLoop(ox)
+    check("CONTROL outcome loop: ledgered / claimed / reconciled channels are derived; a commented-out reconciler is not one",
+      loop.ledgered.join() === "email,sms" && loop.claimed.join() === "sms" && loop.reconciled.join() === "sms")
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -628,8 +876,7 @@ for (const chain of CHAINS) {
       }
       if (L.kind === "soft" && L.polymorphic) {
         const p = L.polymorphic
-        const valRe = new RegExp(`(?:${esc(p.typeColumn)}|externalTable)\\s*:\\s*["'\`]${esc(p.typeValue)}["'\`]`)
-        const writers = [...CODE.entries()].filter(([, s]) => valRe.test(s)).map(([f]) => f)
+        const writers = findPolymorphicWriters(p, CODE)
         lines.push(`POLYMORPHIC ${holder}.${p.typeColumn}='${p.typeValue}' writers: ${writers.length}`)
         if (writers.length === 0) find(`edge-never-written:${a.id}`, a.id, `no writer records ${holder}.${p.typeColumn}='${p.typeValue}' — the edge is never formed`)
       }
@@ -748,10 +995,48 @@ const orphanActions = actions.filter((x) => !isReferencedElsewhere(x.name, x.fil
 for (const o of orphanActions) find(`orphan-action:${o.file}:${o.name}`, `table:${o.table}`, `"use server" export ${o.name} writes ${o.table} and no other runtime file names it — a public endpoint with no caller`)
 console.log(`    ${actions.length} server-action exports write a chain table; ${orphanActions.length} are named by no other runtime file`)
 
+// ── SYMBOL CHAINS (wave 145) ───────────────────────────────────────────────────────────────────────
+console.log("\n[symbol chains — the nodes that are code: each step exported by its ONE survivor and wired to the step before it]")
+for (const chain of SYMBOL_CHAINS) {
+  const probs = symbolChainProblems(chain, CODE)
+  console.log(`  [${chain.key}] ${chain.label}`)
+  for (const st of chain.steps) {
+    const p = probs.find((x) => x.key.endsWith(`:${st.symbol}`) || x.key.endsWith(`>${st.symbol}`))
+    console.log(`      · ${st.node} — ${st.file}:${st.symbol}${st.after ? ` (after ${st.after})` : ""} ${p ? (p.key.startsWith("symbol-missing") ? "MISSING" : "UNWIRED") : "ok"}`)
+  }
+  for (const p of probs) find(p.key, `symbol:${chain.key}`, p.detail)
+}
+check(`every symbol-chain step names a file under a runtime root (${SYMBOL_CHAINS.reduce((n, c) => n + c.steps.length, 0)} steps)`,
+  SYMBOL_CHAINS.every((c) => c.steps.every((s) => /^(app|lib|components|hooks)\//.test(s.file))))
+
+// ── BOOK ENTITY (ruling 19: a lead magnet is not a book) ──────────────────────────────────────────
+// Derived from the live relation list: a book has its OWN entity when a live table holds books / book projects /
+// manuscripts. Until then the book is a JSON document on a lead-magnet row (lead_capture_forms.settings.book), so a
+// book distributed as a lead magnet and a lead magnet are the same row — the ruling's two capabilities share one store.
+console.log("\n[book entity — ruling 19: a lead magnet is a guide / video / checklist; a book is a manuscript for publication]")
+{
+  const BOOK_TABLE = /^(books|book_projects|book_manuscripts|book_chapters|book_editions)$/
+  check("CONTROL book entity: the pattern recognises a books table and not a look-alike (agent_book_transfers)", BOOK_TABLE.test("books") && !BOOK_TABLE.test("agent_book_transfers"))
+  const bookTables = LIVE_TABLES.filter((t) => BOOK_TABLE.test(t))
+  const storedOnMagnet = /settings\.book\b|settings\?\.book\b/.test(blankStrings(CODE.get("lib/lead-magnets/book-creator.ts") ?? "")) || /lead_capture_forms\.settings\.book/.test(readFileSync(join(ROOT, "lib/lead-magnets/book-creator.ts"), "utf8"))
+  console.log(`    live book tables: ${bookTables.join(", ") || "none"} · book stored on the lead-magnet row (lead_capture_forms.settings.book): ${storedOnMagnet ? "yes" : "no"}`)
+  if (bookTables.length === 0) find("entity-conflated:book", "symbol:book", "no live table holds a book as its own entity — the book is lead_capture_forms.settings.book on a lead-magnet row, so 'a book distributed as a lead magnet' and 'a lead magnet' are one store (ruling 19)")
+}
+
+// ── OUTCOME LOOP per channel (wave 145): send → claim → provider truth ─────────────────────────────
+console.log("\n[outcome loop — every ledgered channel opens a claim, and every claimed channel has a provider callback that settles it]")
+{
+  const loop = outcomeLoop(CODE)
+  console.log(`    ledgered by the gateway: ${loop.ledgered.join(", ") || "none"} · claim opened: ${loop.claimed.join(", ") || "none"} · provider truth ingested: ${loop.reconciled.join(", ") || "none"}`)
+  check("the gateway ledgers at least the three dispatch channels (a broken finder reads zero — positive control on the real tree)", loop.ledgered.length >= 3, loop.ledgered.join(", "))
+  for (const c of loop.claimed.filter((x) => !loop.reconciled.includes(x))) find(`outcome-claim-unreconciled:${c}`, "symbol:provider", `a ${c} claim is opened at dispatch and no provider callback ingests truth for it — every row stays 'pending' (stalled async work)`)
+  for (const c of loop.ledgered.filter((x) => !loop.claimed.includes(x))) find(`outcome-claim-missing:${c}`, "symbol:provider", `${c} is ledgered at send but no outcome claim is opened — "handed to the provider" stands in for "delivered" (lib/outcomes/reconciliation-ledger.ts recordOutcomeClaim)`)
+}
+
 // ── LIVE ARM ─────────────────────────────────────────────────────────────────────────────────────
 console.log(`\n[live readings — measured ${LIVE_MEASURED_ON} through the Supabase MCP against hrvaqgvukzxfskkcrwbt]`)
 for (const r of LIVE_READINGS) {
-  console.log(`    ${String(r.n).padStart(3)}  ${r.arrow}  ${r.what}  (denominator: ${r.denominator})`)
+  console.log(`    ${String(r.n).padStart(3)}  ${r.arrow}  ${r.what}  (denominator: ${r.denominator})${r.on ? `  [measured ${r.on}]` : ""}`)
   if (SQL_MODE) console.log(`          SQL: ${r.sql};`)
 }
 const zeroBroken = LIVE_READINGS.filter((r) => r.rule === "zero" && r.n !== 0)
@@ -777,10 +1062,15 @@ check("every known finding names a REAL manager as its owner", Object.values(KNO
 check(`no NEW parent/child finding (${keys.length} keyed findings, ${Object.keys(KNOWN_FINDINGS).length} known)`, fresh.length === 0, fresh.join(", "))
 if (burned.length) console.log(`    ✓ BURNED (closed since the map was written — remove from KNOWN_FINDINGS): ${burned.join(", ")}`)
 
-console.log(`\n[coverage] ${CHAINS.length} chains · ${allArrows.length} arrows (${fkCount} FK, ${soft} soft, ${absent} absent, ${root} root) · ${chainTables.size} tables · ${files.length} runtime files · ${SQL.size} migrations · ${EVENTS.size} kernel events`)
+console.log(`\n[coverage] ${CHAINS.length} table chains · ${allArrows.length} arrows (${fkCount} FK, ${soft} soft, ${absent} absent, ${root} root) · ${SYMBOL_CHAINS.length} symbol chains (${SYMBOL_CHAINS.reduce((n, c) => n + c.steps.length, 0)} steps) · ${chainTables.size} tables · ${files.length} runtime files · ${SQL.size} migrations · ${EVENTS.size} kernel events`)
 console.log(`
 [BLIND SPOTS — published beside the numbers]
-  · the MAP is declared: an arrow nobody put in CHAINS is not audited (the owner's five chains, as written in WAVE144 ruling 18 / lane 144I brief);
+  · the MAP is declared: an arrow nobody put in CHAINS / SYMBOL_CHAINS is not audited (the owner's chains as written in WAVE144 ruling 18 and the wave-145 lane 145I brief);
+  · symbol chains: "wired" is a NAME-level reference in the step's own file (strings blanked) — a step reached through a third module, a registry
+    or a string-keyed dispatch reads as UNWIRED (the failure mode is a false accusation, so every UNWIRED key is triaged by hand before it is listed);
+  · the outcome loop reads channel names written as literals at ledgerContextFor / recordOutcomeClaim / ingestProviderTruth; a channel passed in a
+    variable is invisible; voice / phone / voice drop never reach the gateway's ledger (lib/voice-engine) so they are outside this loop entirely;
+  · the book entity check reads the LIVE relation cache: a books table written as a migration but not applied (or not regenerated) is not seen;
     likewise a materialized copy or a mirror nobody declared on an arrow is not checked (the derived checks verify what is declared exists);
   · writers: a payload assembled in another module and passed in, a dynamic table name, or an .rpc() is invisible; the
     "file" tier is co-occurrence (the file writes the table and names the column), weaker than "statement";

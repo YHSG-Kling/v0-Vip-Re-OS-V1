@@ -499,6 +499,18 @@ function doorOf(users: string[], ui: Set<string>, edges: (f: string) => string[]
 }
 /** Window tables with NO user door BY DESIGN — platform/cron-internal evidence or caches, each with its reason. */
 const DOORLESS_BY_DESIGN: Record<string, string> = {}
+/** Wave 145 (lane 145I, the one editor of this census this wave): doorless-by-design rulings for tables ANOTHER wave-145
+ *  lane's migration adds. While that migration is not in the tree the table is not in the window, so the entry is
+ *  PENDING (printed, never stale); the moment the table enters the window the entry becomes an ordinary
+ *  DOORLESS_BY_DESIGN row and U2's staleness rule applies to it unchanged (the rule, not the waypoint). */
+const DOORLESS_BY_DESIGN_PENDING_LANE: Record<string, { lane: string; reason: string }> = {
+  protected_research_attributes: { lane: "145F (m864)", reason: "research-only store (owner ruling 12, wave 145F): service-role writes, RLS SELECT for platform staff / same-tenant compliance_officer; no user door by design until the owner decides the research roles and surface" },
+}
+/** Landed = the lane's migration put the table in the window AND its runtime code uses it (a migration without its code is
+ *  M1's finding, not this ruling's). */
+const pendingLanded = (t: string) => windowTables.includes(t) && (tableUse.get(t)?.length ?? 0) > 0
+for (const [t, e] of Object.entries(DOORLESS_BY_DESIGN_PENDING_LANE)) if (pendingLanded(t)) DOORLESS_BY_DESIGN[t] = e.reason
+console.log(`    pending-lane doorless rulings: ${Object.entries(DOORLESS_BY_DESIGN_PENDING_LANE).map(([t, e]) => `${t} (${e.lane}) ${pendingLanded(t) ? "LANDED — now an ordinary ruling" : windowTables.includes(t) ? "pending: migration present, runtime code not" : "pending: table not in this tree's window"}`).join("; ") || "none"}`)
 /** Tables whose persisting module is fronted by a kernel service (wave 142: the forms-submit route stopped importing
  *  lib/kernel/person-identity.ts directly once capture consolidated onto captureFormSubmission → captureContact, so the
  *  identity layer's doors are all one service deep — the contact brief, the CRM command set, the capture pipeline). */
@@ -988,6 +1000,59 @@ console.log(`    └ census: ${blockerRows.length} rows — ${tally}`)
 console.log("    BLIND SPOT: this section reads CODE, HEADER STAMPS and WORKFLOW FILES, never the database or the deployment env — an env key, a Stripe price, a snapshot row, an applied policy or a Playwright run is proven only by the integrator's live check / the recorded CI run; a header stamp is the migration's own claim (test:migration-claim adjudicates it against the ledger).")
 
 // ═════════════════════════════════════════════════════════════════════════════
+// WAVE 145 (lane 145I) — A · THE AUTONOMY BOUNDARY. Brief: "Managers coordinate through the kernel only; no
+// autonomous production-code mutation without the deployment control." The healing rails already bound WHAT a
+// manager may do (lib/kernel/self-healing.ts — declared playbooks only, an invented action refused, money / tenant /
+// security / deletion forbidden; lib/kernel/improvement-proposals.ts — a closed subject-kind list, a human decides).
+// This census holds the boundary from the other side: no runtime module (everything that ships, so everything a
+// manager can reach) carries the SHAPE of a code mutation or a deploy — a source-control / package-manager / deploy
+// CLI spawn, a GitHub contents / commit write, a Vercel deployment or deploy-hook call, or a file write under the
+// repository source tree. The deployment control is the human PR → CI (guards + build) → Vercel promotion; nothing
+// in the runtime may stand in for it. Read on comment-blanked source with strings intact (a URL is a literal),
+// each shape with a positive control.
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("\n[A · autonomy boundary — managers act through the kernel's declared rails; nothing autonomous mutates production code or deploys]")
+const CLI_NAMES = ["g" + "it", "npm", "npx", "pnpm", "yarn", "vercel", "gh", "supabase"]
+const CLI_SPAWN = new RegExp(`\\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync|fork)\\(\\s*["'\`](?:${CLI_NAMES.join("|")})\\b`)
+/** PURE — the code-mutation / deploy shapes in one comment-blanked module (strings intact). */
+function codeMutationShapes(src: string): string[] {
+  const out: string[] = []
+  if (CLI_SPAWN.test(src)) out.push("spawns a source-control / package-manager / deploy CLI")
+  if (/api\.github\.com[^"'`]*\/(?:contents|git\/(?:commits|refs|trees|blobs)|pulls|merges)\b/.test(src) || /\.(?:createOrUpdateFileContents|createCommit|updateRef|createRef)\(/.test(src)) out.push("writes to a GitHub repository")
+  if (/\/v\d+\/deployments\b|\/v1\/integrations\/deploy\/|api\.vercel\.com\/[^"'`]*deploy/.test(src)) out.push("creates a Vercel deployment / calls a deploy hook")
+  if (/\b(?:writeFile|writeFileSync|appendFile|appendFileSync|rm|rmSync|unlink|unlinkSync|rename|renameSync)\(\s*(?:(?:path\.)?(?:join|resolve)\(\s*process\.cwd\(\)|["'`](?:\.\/)?(?:app|lib|scripts|supabase|components|hooks|remotion)\/)/.test(src)) out.push("writes / deletes a file under the repository source tree")
+  return out
+}
+check("A1 POSITIVE CONTROL — every code-mutation / deploy shape is recognised in code and NOT in a comment; a tmpdir media write and the custom-domain API are not shapes",
+  codeMutationShapes(blankComments(`await execFile("${CLI_NAMES[0]}", ["commit", "-am", "x"])`)).length === 1
+  && codeMutationShapes(blankComments(`await fetch("https://api.github.com/repos/o/r/contents/lib/x.ts", { method: "PUT" })`)).length === 1
+  && codeMutationShapes(blankComments("await fetch(`https://api.vercel.com/v13/deployments?teamId=${t}`, { method: \"POST\" })")).length === 1
+  && codeMutationShapes(blankComments(`await writeFile(join(process.cwd(), "lib/kernel/x.ts"), src)`)).length === 1
+  && codeMutationShapes(blankComments(`// await execFile("${CLI_NAMES[0]}", ["push"])\n/* fetch("https://api.vercel.com/v13/deployments") */ const x = 1`)).length === 0
+  && codeMutationShapes(blankComments("await fs.writeFile(join(os.tmpdir(), \"in.mp4\"), buf)\nawait fetch(`${VERCEL_API}/v10/projects/${p}/domains`)")).length === 0)
+{
+  const hits = RUNTIME.map((f) => [f, codeMutationShapes(RT.get(f)?.bc ?? "")] as const).filter(([, h]) => h.length > 0)
+  check(`A2 no runtime module (${RUNTIME.length} files) carries a code-mutation or deploy shape — the deployment control (human PR → CI guards + build → promotion) is never bypassed`,
+    hits.length === 0, hits.map(([f, h]) => `${f}: ${h.join("; ")}`).join(" | "))
+  const proposalSrc = bc("lib/kernel/improvement-proposals.ts")
+  const kinds = [...(proposalSrc.match(/export const PROPOSAL_SUBJECT_KINDS\s*=\s*\[([^\]]*)\]/)?.[1] ?? "").matchAll(/["']([a-z_]+)["']/g)].map((m) => m[1])
+  const CODE_KIND = /code|deploy|migration|schema|sql|release|commit/
+  check(`A3 the improvement-proposal subject kinds (${kinds.join(", ")}) name no code / deploy / migration / SQL kind — a manager can PROPOSE policy, never a code change`,
+    kinds.length >= 5 && !kinds.some((k) => CODE_KIND.test(k)), kinds.filter((k) => CODE_KIND.test(k)).join(", "))
+  const healSrc = bc("lib/kernel/self-healing.ts")
+  const lib = healSrc.split(/export const SELF_HEAL_PLAYBOOKS\s*=\s*\{/)[1]?.split(/\n\}/)[0] ?? ""
+  const playbooks = [...lib.matchAll(/^\s{2}([a-z_]+)\s*:\s*\{\s*label:\s*"([^"]*)"/gm)].map((m) => ({ key: m[1], label: m[2] }))
+  const codeBooks = playbooks.filter((p) => CODE_KIND.test(p.key) || /\b(code|deploy|commit|migration|release)\b/i.test(p.label))
+  check(`A4 the self-healing playbook library (${playbooks.length} declared) holds no code / deploy / migration action — healing re-runs, re-syncs, re-renders and hands off; it never edits code`,
+    playbooks.length >= 8 && codeBooks.length === 0, codeBooks.map((p) => p.key).join(", "))
+  const healRaw = read("lib/kernel/self-healing.ts")
+  check("A5 the self-healing selection validator exists and refuses an INVENTED action and SQL in a parameter (both refusals present)",
+    /export function validatePlaybookSelection/.test(healSrc) && /is not a declared playbook/.test(healRaw) && /never LLM → SQL/.test(healRaw))
+  console.log(`    reading: ${hits.length} runtime module(s) with a code-mutation / deploy shape · ${kinds.length} proposal kinds · ${playbooks.length} healing playbooks (${playbooks.map((p) => p.key).join(", ")})`)
+  console.log("    BLIND SPOT: a shape assembled at runtime (a CLI name or a URL built from variables, a dynamic import of a deploy SDK) is invisible; the Vercel API is allowed for custom-domain attach only (lib/platform/custom-domains.ts), which changes routing config, not code.")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // WAVE 141 (lane 141J) — THE RELEASE GATE.
 // Owner (2026-10-14): "RELEASE GATE: READY requires every PASS in the owner's list (security, tenant
 // isolation, role safety, brokerage identity, subscriber migration, Stripe proration, provisioning,
@@ -1186,10 +1251,95 @@ console.log(`    reading: READINESS-MATRIX.md "Wave 142 release gate" section ${
 check("G13 when the matrix carries a wave-142 release-gate section, it has a five-cell row per wave-142 gate (the rule applies the moment the section lands)",
   !gateDoc142 || WAVE142_GATES.every((g) => gateRows142.includes(g.gate.toLowerCase())), WAVE142_GATES.filter((g) => !gateRows142.includes(g.gate.toLowerCase())).map((g) => g.gate).join(", "))
 
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 145 (lane 145I) — G″ · THE WAVE-145 CLOSURE GATES. The owner's 2026-10-27 rulings, grouped by the lane-J canary
+// areas (security · listings · financial onboarding · providers/channels · lead/contact · signals · marketing ·
+// compliance/UX) plus this lane's managers/production closure and lane J's canary runner. Each gate names the CHAINED
+// survivors that already certify its area and the NEW proof keys its lane published ("## package.json keys to add" in
+// $S/lane145X-notes.md, collected by lane 145I — the one editor of the registry this wave). A lane that had NOT
+// published when lane 145I closed is `null` here: every gate waiting on it reads NOT CERTIFIED with that reason, never
+// silently green. Ruling 23 ("form-bucket security is release-blocking until the live storage policies are applied and
+// verified") is the security gate's EXTERNAL verdict until every brokerage-forms storage.objects migration of lane
+// 145A carries the applied stamp (the MCP cannot alter storage.objects — 42501 — so the owner applies it in the SQL
+// editor with OWNER-SQL §F's verification queries); the stamp is read through the ONE classifier (claimOf).
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("\n[G″ · wave 145 gates — the owner's 2026-10-27 rulings → the lane contracts (145A–J) + chained survivors]")
+const WAVE145_LANE_IDS = ["145A", "145B", "145C", "145D", "145E", "145F", "145G", "145H", "145I", "145J"] as const
+/** NEW proof keys per wave-145 lane (null = the lane had not published its notes when lane 145I closed). */
+const WAVE145_CONTRACT_PROOFS: Readonly<Record<(typeof WAVE145_LANE_IDS)[number], readonly string[] | null>> = Object.freeze({
+  "145A": ["test:transfer-classification"], "145B": ["test:listing-coming-soon-live-date"], "145C": ["test:agreement-governance"], "145D": ["test:channel-provider-matrix"], "145E": [],
+  "145F": ["test:lifetime-signals"], "145G": ["test:content-distribution"], "145H": ["test:accessibility-preferences", "test:team-checklist"], "145I": [], "145J": ["test:wave145-canaries"],
+})
+const contract145 = (lane: (typeof WAVE145_LANE_IDS)[number]) => WAVE145_CONTRACT_PROOFS[lane] ?? []
+/** Lane 145A's form-bucket policy migrations (its assigned range m854–m855) that touch storage.objects for brokerage-forms. */
+const FORM_BUCKET_POLICY_MIGRATIONS = [854, 855].map(migrationNamed).filter((f): f is string => !!f)
+  .filter((f) => { const sql = read(`${MIG}/${f}`); return /storage\.objects/i.test(sql) && /brokerage-forms/.test(sql) })
+const formBucketApplied = FORM_BUCKET_POLICY_MIGRATIONS.length > 0 && FORM_BUCKET_POLICY_MIGRATIONS.every((f) => stampOf(f) === "applied")
+const FORM_BUCKET_EXTERNAL = formBucketApplied ? undefined
+  : `ruling 23 — the brokerage-forms storage.objects policies (${FORM_BUCKET_POLICY_MIGRATIONS.join(", ") || "lane 145A's m854–m855, not in the tree"}; docs/operations/OWNER-SQL.md §F) are applied in the owner SQL editor and verified with §F's queries — release-blocking until the migration carries the applied stamp`
+interface Wave145Gate extends GateSpec { gate: string; rulings: string; lanes: Array<(typeof WAVE145_LANE_IDS)[number]> }
+const WAVE145_GATES: Wave145Gate[] = [
+  { gate: "security", rulings: "23, 24", lanes: ["145A"], hookLanes: ["145A"], canaries: [], external: FORM_BUCKET_EXTERNAL,
+    proofs: ["test:tenant-scope", "test:brokerage-identity", "test:form-wizard-esign", "test:support-isolation", ...contract145("145A")] },
+  { gate: "listings", rulings: "1, 2", lanes: ["145B"], hookLanes: ["145B"], canaries: [],
+    proofs: ["test:listing-offer-lifecycle", "test:journey-promotion-gates", "test:listing-compliance-loop", ...contract145("145B")] },
+  { gate: "financial onboarding", rulings: "3–10", lanes: ["145C"], hookLanes: ["145C"], canaries: [],
+    proofs: ["test:agreement-waterfall", "test:cap-cycle", "test:concession-ledger", "test:closing-compliance", "test:proposal-compliance-gate", "test:referral-payouts", ...contract145("145C")] },
+  { gate: "providers/channels", rulings: "13", lanes: ["145D"], hookLanes: ["145D"], canaries: [],
+    proofs: ["test:vendor-retirement", "test:provider-readiness", "test:provider-cost-routing", "test:egress-coverage", ...contract145("145D")] },
+  { gate: "lead/contact", rulings: "15, 16, 17", lanes: ["145E"], hookLanes: ["145E"], canaries: [],
+    proofs: ["test:intent-driven-followup", "test:next-best-experience", "test:conversion-welcome", "test:welcome-avatar-video", "test:conversion-finality", "test:speed-to-lead", ...contract145("145E")] },
+  { gate: "signals", rulings: "11, 12, 14", lanes: ["145F"], hookLanes: ["145F"], canaries: [],
+    proofs: ["test:signal-integrity", "test:versium-capability-matrix", "test:enrichment-one-rail", "test:local-intel", ...contract145("145F")] },
+  { gate: "marketing", rulings: "19, 20, 22", lanes: ["145G"], hookLanes: ["145G"], canaries: [],
+    proofs: ["test:brand-listening", "test:book-publishing", "test:tv-spot", "test:content-studio", ...contract145("145G")] },
+  { gate: "compliance/UX", rulings: "18, 21", lanes: ["145H"], hookLanes: ["145H"], canaries: [],
+    proofs: ["test:adaptive-vocabulary", "test:closing-compliance", "test:education-delivery", "test:check-vocabulary", ...contract145("145H")] },
+  { gate: "managers/production", rulings: "brief 145I (chains, registry, autonomy boundary)", lanes: ["145I"], hookLanes: ["145I"], canaries: [],
+    proofs: ["test:parent-child-graph", "test:manager-ownership", "test:production-readiness", "test:orphaned-children", "test:manager-cross-cooperation", ...contract145("145I")] },
+  { gate: "canaries", rulings: "every ruling + contracts C1–C7", lanes: ["145J"], hookLanes: ["145J"], canaries: [],
+    proofs: [...contract145("145J")] },
+]
+/** PURE — a wave-145 gate's verdict: certifyGate's, then NOT CERTIFIED while a lane it waits on has no published contract. */
+function certify145(g: Wave145Gate, env: GateEnv, contracts: Readonly<Record<string, readonly string[] | null>>): GateVerdict {
+  const v = certifyGate(g, env)
+  const unpublished = g.lanes.filter((l) => contracts[l] === null)
+  if (!unpublished.length) return v
+  return { ...v, state: "NOT CERTIFIED", reasons: [...unpublished.map((l) => `lane ${l} had not published its contract (notes) when lane 145I closed`), ...v.reasons.filter((r) => !/^external verdict required/.test(r))] }
+}
+const verdicts145 = WAVE145_GATES.map((g) => certify145(g, gateEnv, WAVE145_CONTRACT_PROOFS))
+const certified145 = verdicts145.filter((v) => v.state === "CERTIFIED"), external145 = verdicts145.filter((v) => v.state === "EXTERNAL"), notCertified145 = verdicts145.filter((v) => v.state === "NOT CERTIFIED")
+for (const v of verdicts145) console.log(`    ${v.state.padEnd(13)} ${v.gate.padEnd(22)} owner ${v.owner.padEnd(22)} lanes ${(WAVE145_GATES.find((g) => g.gate === v.gate)!.lanes ?? []).join("+").padEnd(6)} proofs ${v.proofs.map((p) => `${p.key.replace(/^test:/, "")}${mark(p.state)}`).join(" ")}${v.reasons.length ? `\n                  · ${v.reasons.join("\n                  · ")}` : ""}`)
+const contractKeys145 = WAVE145_LANE_IDS.flatMap((l) => contract145(l))
+const unpublished145 = WAVE145_LANE_IDS.filter((l) => WAVE145_CONTRACT_PROOFS[l] === null)
+console.log(`    census: ${WAVE145_GATES.length} wave-145 gates; ${contractKeys145.length} lane contract keys (${contractKeys145.filter((k) => proofState(k) === "ok").length} landed+chained, ${contractKeys145.filter((k) => proofState(k) === "unchained").length} registered but unchained, ${contractKeys145.filter((k) => proofState(k) === "absent").length} pending); lanes unpublished at 145I close: ${unpublished145.join(", ") || "none"}; form-bucket policy migrations: ${FORM_BUCKET_POLICY_MIGRATIONS.map((f) => `${f} (${stampOf(f)})`).join(", ") || "none in the tree"}`)
+check("G14 every wave-145 gate names ≥1 proof or waits on an unpublished lane, waits only on wave-145 lanes, and every published contract key is named by ≥1 wave-145 gate",
+  WAVE145_GATES.every((g) => (g.proofs.length > 0 || g.lanes.some((l) => WAVE145_CONTRACT_PROOFS[l] === null)) && g.lanes.length > 0 && g.lanes.every((l) => (WAVE145_LANE_IDS as readonly string[]).includes(l)))
+  && contractKeys145.every((k) => WAVE145_GATES.some((g) => g.proofs.includes(k))),
+  contractKeys145.filter((k) => !WAVE145_GATES.some((g) => g.proofs.includes(k))).join(", "))
+check("G15 no wave-145 contract key is claimed by two lanes, and every SURVIVOR a wave-145 gate names is registered + chained TODAY",
+  new Set(contractKeys145).size === contractKeys145.length && WAVE145_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys145.includes(k)).every((k) => proofState(k) === "ok"),
+  WAVE145_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys145.includes(k) && proofState(k) !== "ok").join(", "))
+check("G16 POSITIVE CONTROL — a gate waiting on an unpublished lane reads NOT CERTIFIED even when its survivors are green; the form-bucket rule makes a green security gate EXTERNAL (never CERTIFIED) until the policy migration is stamped applied",
+  (() => {
+    const env145: GateEnv = { ...gateEnv, scripts: { "test:spec": "tsx scripts/spec.ts" }, chain: "npm run test:spec", fileExists: () => true, roster: [], pending: new Map(), ownerOf: () => "data_steward" }
+    const waiting = certify145({ gate: "x", rulings: "", lanes: ["145B"], proofs: ["test:spec"], canaries: [] }, env145, { "145B": null })
+    const ext = certify145({ gate: "security", rulings: "", lanes: ["145A"], proofs: ["test:spec"], canaries: [], external: "ruling 23" }, env145, { "145A": ["test:spec"] })
+    const ok = certify145({ gate: "y", rulings: "", lanes: ["145A"], proofs: ["test:spec"], canaries: [] }, env145, { "145A": ["test:spec"] })
+    return waiting.state === "NOT CERTIFIED" && /145B/.test(waiting.reasons[0]) && ext.state === "EXTERNAL" && ok.state === "CERTIFIED"
+  })())
+const gateDoc145 = matrix.split(/^## /m).find((s) => /^Wave 145 release gate/i.test(s)) ?? ""
+const gateRows145 = parseGateRows(gateDoc145)
+console.log(`    reading: READINESS-MATRIX.md "Wave 145 release gate" section ${gateDoc145 ? `present — ${gateRows145.length} gate row(s)` : "absent"}`)
+check("G17 when the matrix carries a wave-145 release-gate section, it has a row per wave-145 gate (the rule applies the moment the section lands)",
+  !gateDoc145 || WAVE145_GATES.every((g) => gateRows145.includes(g.gate.toLowerCase())), WAVE145_GATES.filter((g) => !gateRows145.includes(g.gate.toLowerCase())).map((g) => g.gate).join(", "))
+
 console.log(`\nRELEASE GATE: ${certified.length}/${RELEASE_GATES.length} certified, ${external.length} external-verdict, ${notCertified.length} not certified${notCertified.length ? ` — ${notCertified.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 142 GATE: ${certified142.length}/${WAVE142_GATES.length} certified, ${notCertified142.length} not certified${notCertified142.length ? ` — ${notCertified142.map((v) => v.gate).join(", ")}` : ""}`)
-const openGates = notCertified.length + notCertified142.length
-console.log(`RELEASE: ${openGates === 0 && external.length === 0 ? "READY — every owner gate (wave 141 + wave 142) certified in-repo" : "NOT READY — " + (openGates ? `${openGates} gate(s) not certified (wave 141 ${notCertified.length}, wave 142 ${notCertified142.length})` : "") + (external.length ? `${openGates ? "; " : ""}${external.length} gate(s) await an external verdict (${external.map((v) => v.gate).join(", ")})` : "")}`)
+console.log(`WAVE 145 GATE: ${certified145.length}/${WAVE145_GATES.length} certified, ${external145.length} external-verdict, ${notCertified145.length} not certified${notCertified145.length ? ` — ${notCertified145.map((v) => v.gate).join(", ")}` : ""}`)
+const openGates = notCertified.length + notCertified142.length + notCertified145.length
+const externalAll = [...external, ...external145]
+console.log(`RELEASE: ${openGates === 0 && externalAll.length === 0 ? "READY — every owner gate (wave 141 + wave 142 + wave 145) certified in-repo" : "NOT READY — " + (openGates ? `${openGates} gate(s) not certified (wave 141 ${notCertified.length}, wave 142 ${notCertified142.length}, wave 145 ${notCertified145.length})` : "") + (externalAll.length ? `${openGates ? "; " : ""}${externalAll.length} gate(s) await an external verdict (${externalAll.map((v) => v.gate).join(", ")})` : "")}`)
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
 if (fail) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }
