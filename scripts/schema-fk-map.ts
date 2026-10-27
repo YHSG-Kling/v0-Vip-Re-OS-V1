@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1879 of 1954 pairs) — storing them would be
+ * overwhelming majority (1880 of 1955 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 2052 edges across 741 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1954 unordered
+ * MEASURED AT GENERATION: 2053 edges across 741 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1955 unordered
  * table pairs carry at least one FK; 75
  * carry more than one and are listed below. 18 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-27
  * source: public.live_foreign_keys_json()
- * body-sha256: 4eb1d942dcd905a64ac8bdfdbf557ed210bc2b125c870f35c9d9ad943814caa5
+ * body-sha256: b76c265329b12c5546a7e1095fad04cb2bcd7b02366db82012728a68531d35d7
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -328,7 +328,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "content_asset_persona_performance": { "topic_id": "content_topic_bank" },
   "content_calendar": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "content_generation_logs": { "agent_id": "agents", "brokerage_id": "brokerages" },
-  "content_ideas": { "brokerage_id": "brokerages", "created_by": "users" },
+  "content_ideas": { "brokerage_id": "brokerages", "created_by": "users", "topic_id": "content_topic_bank" },
   "content_performance_predictions": { "brokerage_id": "brokerages" },
   "content_performance_tracking": { "agent_id": "agents", "brokerage_id": "brokerages", "content_id": "ai_generated_content" },
   "content_templates": { "agent_id": "agents", "brokerage_id": "brokerages" },
