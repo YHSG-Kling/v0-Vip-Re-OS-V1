@@ -172,9 +172,12 @@ export async function getContentIdeas(_userId?: string, _userRole?: string) {
   const supabase = createServiceClient()
 
   try {
+    // The topic behind an idea (m872, owner ruling 22) rides along: the board shows which topic-bank theme an idea
+    // came from, so topic → idea → creative attribution can be read where ideas are chosen. One FK links the two
+    // tables, so the bare embed is unambiguous (PGRST201 needs two).
     let query = supabase
       .from("content_ideas")
-      .select("*")
+      .select("id, brokerage_id, created_by, title, description, content_type, status, created_at, topic_id, topic:content_topic_bank(id, topic_title)")
       .eq("brokerage_id", auth.brokerageId)
       .order("created_at", { ascending: false })
       .limit(50)

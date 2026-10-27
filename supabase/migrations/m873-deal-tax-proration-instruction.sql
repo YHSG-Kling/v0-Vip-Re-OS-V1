@@ -22,7 +22,7 @@
 -- MEASURED BEFORE WRITING (scripts/schema-snapshot.ts, 2026-10-27): transactions has no proration column.
 --
 -- SAFE IN EITHER ORDER: the code writes the column ONLY in its own UPDATE and reads it ONLY through a star select, and
--- treats 42703 / PGRST204 as "m873 not applied" (said on the card) — no transaction read or write is refused for it.
+-- treats 42703 / PGRST204 as the column-absent reading (the code's own notApplied message) (said on the card) — no transaction read or write is refused for it.
 --
 -- AFTER APPLYING: regenerate scripts/schema-snapshot.ts (transactions +1). The CHECK is a type CHECK, not an IN-list, so
 -- scripts/check-vocabularies.ts does not change (read it back to confirm).

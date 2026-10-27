@@ -22,7 +22,7 @@
 --
 -- SAFE IN EITHER ORDER: the code writes the column ONLY in its own UPDATE (never inside the offer/transaction INSERT
 -- or a SELECT list), and reads it ONLY through lib/offers/financing-subtype.ts, which treats 42703 / PGRST204 as
--- "m871 not applied" — the offer and the transaction are written either way.
+-- the column-absent reading (the code's own notApplied message) — the offer and the transaction are written either way.
 --
 -- AFTER APPLYING: regenerate scripts/schema-snapshot.ts (offers +1, transactions +1). The CHECKs are format CHECKs,
 -- not IN-lists, so scripts/check-vocabularies.ts does not change (read it back to confirm).

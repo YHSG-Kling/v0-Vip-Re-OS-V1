@@ -1107,6 +1107,11 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
                           {idea.description && (
                             <p className="text-xs text-slate-500 mt-1">{idea.description}</p>
                           )}
+                          {/* The topic-bank theme the idea was drawn from (m872, owner ruling 22) — read through
+                              getContentIdeas' embed; an idea written before m872 has none and says nothing. */}
+                          {idea.topic?.topic_title && (
+                            <p className="text-xs text-slate-400 mt-1">From topic: {idea.topic.topic_title}</p>
+                          )}
                         </CardContent>
                       </Card>
                     ))

@@ -359,7 +359,9 @@ async function main() {
       /<TaxProrationCard transactionId=\{transaction\.id\} \/>/.test(detail) && /view\.options\.timings/.test(card) && /view\.options\.closingDayOwners/.test(card) && /view\.options\.dayBases/.test(card) && /saveTaxProrationAction\(/.test(card))
     const m873 = readFileSync(join(ROOT, "supabase/migrations/m873-deal-tax-proration-instruction.sql"), "utf8")
     check("m873 line 1 is a lane stamp or an applied stamp (the rule, not the waypoint), and it adds transactions.tax_proration jsonb with an is-object CHECK",
-      /^-- (WRITTEN, NOT APPLIED \(wave 145, lane 145Z\)|APPLIED)/.test(m873.split("\n")[0]) && /ADD COLUMN IF NOT EXISTS tax_proration jsonb NULL/.test(m873) && /jsonb_typeof\(tax_proration\) = 'object'/.test(m873))
+      // The applied stamp this repo writes is `-- ── APPLIED LIVE <date> via Supabase MCP …` (the preamble's exact prefix);
+      // the first draft matched `-- APPLIED` and went red the moment the integrator applied m873 (§2: assert the rule).
+      /^-- (WRITTEN, NOT APPLIED \(wave 145, lane 145Z\)|── APPLIED LIVE )/.test(m873.split("\n")[0]) && /ADD COLUMN IF NOT EXISTS tax_proration jsonb NULL/.test(m873) && /jsonb_typeof\(tax_proration\) = 'object'/.test(m873))
   }
 
   // ══ I · one calculator ══════════════════════════════════════════════════════════════════════════

@@ -17,7 +17,7 @@
 -- RLS is unchanged (content_ideas is tenant-scoped by brokerage_id; the topic it names is the tenant's own or a platform row).
 --
 -- SAFE IN EITHER ORDER: the studio writer stamps topic_id in its OWN tenant-pinned UPDATE after the insert and treats
--- 42703 / PGRST204 as "m872 not applied" (the idea is kept either way, without its lineage — said in the log).
+-- 42703 / PGRST204 as the column-absent reading (the code's own notApplied message) (the idea is kept either way, without its lineage — said in the log).
 --
 -- AFTER APPLYING: regenerate scripts/schema-snapshot.ts (content_ideas +1) and scripts/schema-fk-map.ts
 -- (content_ideas.topic_id → content_topic_bank); then re-declare scripts/parent-child-graph-guard.ts arrow content.topic>studio_idea

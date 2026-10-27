@@ -23,6 +23,7 @@
  */
 import { LIVE } from "./_harness"
 import { strippedRepo } from "./_registry"
+import { stripComments } from "../strip-comments"
 import { memSupabase } from "../in-memory-supabase"
 import { CONTRACTS, bindContract, canary145, quiet, type Contract } from "./wave145-harness"
 
@@ -103,7 +104,7 @@ export async function run() {
     const again = JSON.stringify({ m: rowsOf("agent_client_messages"), e: rowsOf("sequence_enrollments").map(({ completed_at: _c, ...rest }) => rest) }) === JSON.stringify({ m: after1.m, e: after1.e.map(({ completed_at: _c, ...rest }) => rest) })
     // Reach: the conversion paths call this door (stripped; positive control on the finder).
     const callsDoor = (f: string) => /\bdeactivateLead\s*\(/.test(strippedRepo(f) ?? "")
-    const reach = callsDoor("lib/kernel/crm.ts") && callsDoor("lib/contact-promotion/promote-lead-to-contact.ts") && !/\bdeactivateLead\s*\(/.test("// deactivateLead(x) is retired".replace(/\/\/.*$/gm, ""))
+    const reach = callsDoor("lib/kernel/crm.ts") && callsDoor("lib/contact-promotion/promote-lead-to-contact.ts") && !/\bdeactivateLead\s*\(/.test(stripComments("// deactivateLead(x) is retired"))
     return { ok: r1.success !== false && suppressed && untouched && stopped && kept && lead.ai_isa_owner === false && lead.is_active === false && again && reach, evidence: `lead drafts → ${m("m-prop").status}/${m("m-appr").status} (provenance kept ${suppressed}); sent/contact/other untouched ${untouched}; lead sequences → ${e("e-act").status}/${e("e-pau").status}; rows kept ${kept}; lead ai_isa_owner ${lead.ai_isa_owner}, is_active ${lead.is_active}; duplicate event changes nothing ${again}; conversion paths call the door ${reach}` }
   })
 
