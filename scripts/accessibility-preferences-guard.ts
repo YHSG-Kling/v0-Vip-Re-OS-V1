@@ -163,10 +163,21 @@ async function main() {
       }
       return out
     }
-    const writerRe = /\baccessibility_preferences\s*:/
-    const others = [...walk("app"), ...walk("lib")].filter((p) => p !== join("lib", "contacts", "accessibility-preferences.ts") && writerRe.test(stripComments(read(p))))
+    // A WRITE is the column as a payload key of a write call. A bare object key of the same spelling is not one —
+    // the manager registry keys its MAINTENANCE_DOMAINS entry `accessibility_preferences:` (lane 145I) and the first
+    // finder accused it of writing the column (§2: a scan for a code token must know which token it is looking at).
+    const writerRe = /\baccessibility_preferences\s*:/g
+    const WRITE_CALL = /\.(update|insert|upsert)\s*\(/
+    const writesColumn = (src: string) =>
+      [...src.matchAll(writerRe)].some((m) => WRITE_CALL.test(src.slice(Math.max(0, m.index! - 400), m.index!)))
+    const others = [...walk("app"), ...walk("lib")].filter((p) => p !== join("lib", "contacts", "accessibility-preferences.ts") && writesColumn(stripComments(read(p))))
     check(`no other file in app/ or lib/ writes accessibility_preferences (found: ${others.join(", ") || "0"})`, others.length === 0)
-    check("POSITIVE CONTROL — the writer census sees a payload key", writerRe.test(`svc.from("contacts").update({ accessibility_preferences: x })`))
+    check("POSITIVE CONTROL — the writer census sees a payload key of an update, an insert and an upsert",
+      writesColumn(`svc.from("contacts").update({ accessibility_preferences: x })`)
+      && writesColumn(`await svc.from("contacts").insert({\n  brokerage_id: b,\n  accessibility_preferences: x,\n})`)
+      && writesColumn(`svc.from("contacts").upsert({ accessibility_preferences: x })`))
+    check("POSITIVE CONTROL — a registry / object key of the same spelling is NOT a write",
+      !writesColumn(`const D = { accessibility_preferences: { manager: "data_steward", proof: "test:x" } }`))
   }
 
   // ═══ F. THE READERS ARE WIRED ═══════════════════════════════════════════════════════════════════════════
