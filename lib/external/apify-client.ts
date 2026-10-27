@@ -17,7 +17,12 @@ export class ApifyClient {
     return runApifyActor(actorMap[platform], { searchQuery, maxPosts: 50 }).then(r => r.data)
   }
   async scrapeGoogleMaps(location: string, searchQuery: string) {
-    return runApifyActor('compass~google-maps-scraper', { searchQuery, location, maxResults: 100 }).then(r => r.data)
+    return runApifyActor('johnvc~google-maps-places-api', { searchTerms: [searchQuery], location, maxResultsPerSearch: 100 })
+      .then(r => {
+        // Every row failed: surface the error instead of an empty result
+        if (r.data.length && r.data.every((place: any) => place?.error_message)) throw new Error(r.data[0].error_message)
+        return r.data.filter((place: any) => !place?.error_message)
+      })
   }
   async scrapeYelp(location: string, category: string) {
     return runApifyActor('compass~yelp-scraper', { location, searchTerm: category, maxResults: 50 }).then(r => r.data)
