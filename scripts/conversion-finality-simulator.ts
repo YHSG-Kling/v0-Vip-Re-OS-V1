@@ -352,6 +352,67 @@ console.log("\n══ 6. THE VOICE STACK — conversion finality is a consumer-p
     OUTBOUND_CALL_GATE_ORDER.indexOf("conversion_finality" as any) < spendIdx)
 }
 
+// ─── 7. WAVE 145 (lane 145E) — CONTRACT C2: THE LEAD / CONTACT BOUNDARY ──────
+// Owner ruling 15 (2026-10-27): "Leads are only evaluated without a contact_id; if a contact_id is present, then communication
+// ends in the lead table and continues in the contact table as a contact." The contract's two names are built ON this guard
+// (lib/contact-promotion/lead-domain-boundary.ts → conversionVerdictForRow) — asserted here at runtime, with the duplicate /
+// retry shapes the canaries need, plus the one scheduled-send door conversion left open (lead-addressed drafts).
+console.log("\n══ 7. WAVE 145 CONTRACT C2 — isInLeadDomain / canonicalPartyFor + the lead drafts conversion supersedes ══")
+{
+  const { isInLeadDomain, canonicalPartyFor } = await import("../lib/contact-promotion/lead-domain-boundary")
+  check("C2: an OPEN lead (no contact_id) is in the lead domain and is its own party",
+    isInLeadDomain({ id: "L1", contact_id: null }) && canonicalPartyFor({ id: "L1", contact_id: null }).type === "lead")
+  const conv = canonicalPartyFor({ id: "L2", contact_id: "C2" })
+  check("C2: a lead WITH a contact_id is OUT of the lead domain and resolves to its CONTACT (the lead id kept as provenance)",
+    !isInLeadDomain({ id: "L2", contact_id: "C2" }) && conv.type === "contact" && conv.id === "C2" && conv.leadId === "L2")
+  const unread = canonicalPartyFor(null)
+  check("C2: an UNREAD row FAILS CLOSED — not in the lead domain and resolved to neither party (never 'the lead' on a guess)",
+    !isInLeadDomain(null) && !isInLeadDomain(undefined) && unread.type === "unresolved" && unread.id === null && unread.reason.length > 0)
+  check("C2 (positive control): the boundary is the guard's own verdict — the two answers can never disagree",
+    [{ id: "a", contact_id: null }, { id: "b", contact_id: "c" }, null].every((r) => isInLeadDomain(r as never) === conversionVerdictForRow(r as never).allowed))
+  // RETRY / DUPLICATE EVENT: the same converted lead evaluated twice resolves to the same contact both times.
+  check("C2 retry: a replayed event on the same converted lead resolves to the SAME contact every time (no second competing record)",
+    JSON.stringify(canonicalPartyFor({ id: "L2", contact_id: "C2" })) === JSON.stringify(canonicalPartyFor({ id: "L2", contact_id: "C2" })))
+
+  // WIRING (stripped source): the lead first-touch sweep re-checks per row; the life-change responder answers on the contact.
+  const stl = stripComments(src("lib/ai-isa/speed-to-lead.ts"))
+  const arbSrc = stripComments(src("lib/ai-isa/followup-arbiter.ts"))
+  check("C2 WIRED: the speed-to-lead LEAD sweep excludes converted leads at the query AND re-checks each row before it touches (a conversion between select and send)",
+    /excludeConvertedLeads\(/.test(stl) && /if \(!isInLeadDomain\(lead/.test(stl) && stl.indexOf("isInLeadDomain(lead") < stl.indexOf("doLeadEngagement(lead.id"))
+  check("C2 WIRED: the life-change responder answers a converted lead's signal on its contact through canonicalPartyFor",
+    /canonicalPartyFor\(data/.test(arbSrc) && /party\.type === "contact"\) subject = \{ type: "contact", id: party\.id \}/.test(arbSrc))
+  check("(control) the per-row finder rejects a sweep that touches without the re-check",
+    !/if \(!isInLeadDomain\(lead/.test("for (const lead of leads) { await doLeadEngagement(lead.id) }"))
+
+  // THE SCHEDULED LEAD SEND CONVERSION LEFT OPEN: drafts addressed to the LEAD (agent_client_messages.recipient_lead_id).
+  const { memSupabase } = await import("./in-memory-supabase")
+  const { deactivateLead } = await import("../lib/contact-promotion/lead-deactivator")
+  const mem = memSupabase({
+    leads: [{ id: "LD", is_active: true, ai_isa_owner: true }],
+    sequence_enrollments: [],
+    agent_client_messages: [
+      { id: "m-prop", recipient_lead_id: "LD", recipient_contact_id: null, status: "proposed", rationale: "lead plan step 2" },
+      { id: "m-appr", recipient_lead_id: "LD", recipient_contact_id: null, status: "approved", rationale: "lead plan step 3" },
+      { id: "m-sent", recipient_lead_id: "LD", recipient_contact_id: null, status: "sent", rationale: "step 1 (already went)" },
+      { id: "m-both", recipient_lead_id: "LD", recipient_contact_id: "CX", status: "proposed", rationale: "conversion race" },
+      { id: "m-other", recipient_lead_id: "LZ", recipient_contact_id: null, status: "proposed", rationale: "another lead" },
+    ],
+    notifications: [{ id: "n1", entity_type: "agent_client_message", entity_id: "m-prop", type: "approval_needed" }, { id: "n2", entity_type: "agent_client_message", entity_id: "m-other", type: "approval_needed" }],
+  })
+  const quiet = console.log; console.log = () => {}
+  const d1 = await deactivateLead(mem, "LD")
+  const d2 = await deactivateLead(mem, "LD")
+  console.log = quiet
+  const msg = (id: string) => mem.tables.agent_client_messages.find((m) => m.id === id) ?? {}
+  check("C2 suppression: on conversion the lead's PENDING drafts (proposed + approved) are closed 'rejected' WITH the reason — never deleted (provenance kept)",
+    d1.success && msg("m-prop").status === "rejected" && msg("m-appr").status === "rejected" && /superseded on conversion/.test(String(msg("m-prop").send_error)) && mem.tables.agent_client_messages.length === 5)
+  check("C2 suppression (controls): a SENT draft, a draft already naming the contact (the conversion race the governor stages) and another lead's draft are untouched",
+    msg("m-sent").status === "sent" && msg("m-both").status === "proposed" && msg("m-other").status === "proposed")
+  check("C2 suppression: the moot 'approve me' bell for a closed draft is cleared; another lead's bell stays",
+    !(mem.tables.notifications ?? []).some((n) => n.entity_id === "m-prop") && (mem.tables.notifications ?? []).some((n) => n.entity_id === "m-other"))
+  check("C2 retry: a second conversion pass (duplicate event) changes nothing more and still succeeds", d2.success && msg("m-prop").status === "rejected" && msg("m-other").status === "proposed")
+}
+
 // ─── MEASUREMENT: denominator and blind spots ────────────────────────────────
 console.log("\n══ DENOMINATOR AND EXCLUSIONS ══")
 console.log(`  files audited for guard wiring : ${SITES.length}`)

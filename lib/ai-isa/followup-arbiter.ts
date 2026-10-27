@@ -67,10 +67,31 @@
 // Every one of these is a PRE-CHECK that shapes the menu; the dispatcher's own gates stay authoritative at the send.
 //
 // Not server-only (unchanged): the readiness function is pure; its loader takes an injected client and lazy-imports the rest.
+//
+// ── WAVE 145 (lane 145E) — SPEED-TO-LEAD IS THE ARBITER'S DECISION; PROVIDER TRUTH COMES FROM ONE MATRIX ───────────────────────
+// OWNER RULING 16 (2026-10-27): "Speed to lead should be consumed by the followup-arbiter and should be the arbiter decision." This
+// SUPERSEDES the wave-144 reading (ruling 12) that made the speed-to-lead first touch a FIXED send the model was never asked about.
+// Now `priority: "speed_to_lead"` is a HIGH-PRIORITY REQUIREMENT inside the judgment, not an exemption from it:
+//   · the hard stops still LOCK first (DNC, opt-out, the NBA's blocking verdicts) — the model is never asked about a locked person;
+//   · the menu is narrowed to the ways of ANSWERING NOW — a first touch on any permitted channel, or a person (notify human) —
+//     and WAIT is never offered, so the requirement cannot be deferred;
+//   · the model weighs stage, authority (approval), consent, channel, urgency, preference, budget and existing activity and picks;
+//   · an outage / refused reply / spent budget / a tenant that turned the arbiter off falls to the deterministic first touch on the
+//     planner's channel — speed-to-lead never degrades into a wait.
+// The LEAD half (an unassigned, ISA-owned lead — email / direct mail only, CLAUDE.md §5) is arbitrateSpeedToLead below; the
+// sweeper lib/ai-isa/speed-to-lead.ts now dispatches the ARBITER's channel for both halves instead of its own fixed cascade.
+// CONTRACT C1: the channel → provider readiness rules are lane 145D's CHANNEL_PROVIDER_MATRIX (lib/providers/channel-provider-matrix.ts),
+// imported — the inline CHANNEL_PROVIDER_RULES this file carried is retired (tombstone at the readiness loader).
 
 import type { ExperienceKind, NextBestExperienceInput, NextBestExperiencePlan, RankedExperience } from "./lead-action-plan"
 import type { FollowupPolicy } from "./followup-policy"
 import { channelCarriesVideo, type CampaignChannelKey } from "@/lib/campaigns/channels"
+import { CHANNEL_PROVIDER_MATRIX } from "@/lib/providers/channel-provider-matrix"
+import { canonicalPartyFor } from "@/lib/contact-promotion/lead-domain-boundary"
+import { LEAD_ALLOWED_CHANNELS } from "./lead-channel-policy"
+
+/** Contract C1's row shape, local on purpose (one line): the arbiter depends on the matrix's VALUES, never on lane D's type names. */
+type ChannelProviderRule = { categories?: readonly string[]; providers?: readonly string[] }
 
 /** Memory facts the model may read — preferences and timing, never anything that describes who the person is. */
 export const ARBITER_MEMORY_KEYS: readonly string[] = ["channel_preference", "timeline", "price_expectation", "preferred_contact_time", "language"]
@@ -626,7 +647,7 @@ export const ARBITER_SYSTEM = [
   "Never invent facts, never mention prices, commissions or costs, and never reason from any personal characteristic — only from the evidence keys supplied.",
   "Your choice is one of five stances: ACT NOW (a useful touch on the best permitted channel), WAIT (a bounded hold), EDUCATE (a lesson), NOTIFY HUMAN (a task for the agent), or CHANGE CHANNEL (a touch on a different permitted channel than the last one).",
   "A channel is HOW a message travels (email, text, call, voice drop, mail, the portal, a task for a person); a video is a FORMAT that rides email, text or the portal — never name it as a channel. Consider every channel in `channels` with its reasons; choose only one marked available.",
-  "Speed-to-lead and the one welcome on becoming a contact are fixed sends outside this judgment.",
+  "When moment.key is speed_to_lead the person is NEW and must be answered now: a fast first response is a high-priority requirement, so waiting is not offered — choose the best permitted way to answer (the first touch on the channel that fits their stage, consent, preference, urgency and any existing activity, or a person when the situation needs one). The one welcome on becoming a contact is a fixed send outside this judgment.",
   "Reply with JSON only: {optionId, channel|null, format|null, waitHours|null, rationale (1-3 sentences, plain words), evidence (the fact keys you used), confidence 0..1}.",
 ].join(" ")
 
@@ -704,7 +725,7 @@ async function defaultDecide(a: { brokerageId: string; system: string; prompt: s
  * `planned` is the planner's own verdict (the thing that happens if the model does not answer).
  */
 async function arbitrateFollowUp(
-  a: { brokerageId: string; facts: ArbiterFacts; menu: ArbiterMenu; planned: ArbiterOption; policy: FollowupPolicy; budget?: ArbiterBudget; fixedSend?: FixedSendException | null },
+  a: { brokerageId: string; facts: ArbiterFacts; menu: ArbiterMenu; planned: ArbiterOption; policy: FollowupPolicy; budget?: ArbiterBudget; priority?: ArbiterPriority | null },
   deps: { decide?: ArbiterDecide } = {},
 ): Promise<ArbiterDecision> {
   const withStance = (d: Omit<ArbiterDecision, "stance">): ArbiterDecision => ({ ...d, stance: arbiterStance(d, a.facts.history.lastChannel) })
@@ -717,15 +738,39 @@ async function arbitrateFollowUp(
       menu: a.menu.menu.map((o) => o.id), ...over,
     })
   }
+  /** Ask the model over a CLOSED menu; anything it cannot or may not answer falls to `fallback` with the reason (never an unchecked send). */
+  const ask = async (menu: ArbiterOption[], facts: ArbiterFacts, fallback: (why: string) => ArbiterDecision): Promise<ArbiterDecision> => {
+    if (a.budget && a.budget.remaining <= 0) return fallback("this sweep's decision budget is spent")
+    if (a.budget) a.budget.remaining -= 1
+    let raw: ArbiterRaw
+    try {
+      raw = await (deps.decide ?? defaultDecide)({ brokerageId: a.brokerageId, system: ARBITER_SYSTEM, prompt: buildArbiterPrompt({ facts, menu, policy: a.policy }) })
+    } catch (e) {
+      return fallback(`the model was unavailable (${e instanceof Error ? e.message : String(e)})`)
+    }
+    const v = validateArbiterReply(raw, menu, facts, a.policy)
+    if (!v.ok) return fallback(`the model's reply was refused — ${v.why}`)
+    return withStance({ ...v.decision, source: "ai", fallbackReason: null, menu: menu.map((o) => o.id) })
+  }
   if (a.menu.locked) return base({ kind: a.menu.locked.kind, optionId: a.menu.locked.kind, channel: null, fallbackReason: `locked — ${a.menu.locked.reason}` })
-  // THE EXPLICIT EXCEPTIONS (owner ruling 12): a speed-to-lead first touch is a FIXED send — the model is never asked whether to
-  // wait on it or to swap it for another experience. The hard gates above (locked) still apply; consent / quiet hours / DNC still
-  // gate the dispatch. The planner's communication option is the touch when it is on the menu; otherwise the planner's verdict.
-  if (a.fixedSend) {
-    const touch = a.menu.menu.find((o) => o.kind === "communication")
-    return touch
-      ? base({ optionId: touch.id, kind: touch.kind, channel: touch.channels[0] ?? null, fallbackReason: `${a.fixedSend} — a fixed send (owner ruling 12); the arbiter is not consulted` })
-      : base({ fallbackReason: `${a.fixedSend} — a fixed send, but no permitted channel carries a touch; the planner's verdict stands` })
+  // SPEED-TO-LEAD IS THE ARBITER'S DECISION (owner ruling 16, wave 145 — supersedes ruling 12's "fixed send"). The hard stops above
+  // still lock first. The menu narrows to the ways of ANSWERING NOW (a first touch on a permitted channel, or a person); WAIT and
+  // every slower experience are not offered, so the requirement cannot be deferred. When there is a real choice (two ways to
+  // answer, or two permitted channels for the touch) the model makes it from the full evidence; otherwise — and on any outage /
+  // refusal / spent budget / arbiter switched off — the first touch goes on the planner's channel (never a wait).
+  if (a.priority === "speed_to_lead") {
+    const answerNow = a.menu.menu.filter((o) => SPEED_TO_LEAD_KINDS.has(o.kind) && (o.kind !== "communication" || o.channels.length > 0))
+    const touch = answerNow.find((o) => o.kind === "communication")
+    const first = touch ?? answerNow[0]
+    const ids = answerNow.map((o) => o.id)
+    const fallback = (why: string): ArbiterDecision => first
+      ? base({ optionId: first.id, kind: first.kind, channel: first.channels[0] ?? null, menu: ids, rationale: `Speed-to-lead: the first response goes now — ${why}.`, fallbackReason: `speed_to_lead — ${why}` })
+      : base({ menu: ids, fallbackReason: `speed_to_lead — ${why}` })
+    if (!first) return fallback("no permitted channel carries a first touch and no person can take it; the planner's verdict stands")
+    const hasChoice = answerNow.length > 1 || (touch?.channels.length ?? 0) > 1
+    if (!hasChoice) return fallback("only one way to answer is permitted")
+    if (!a.policy.arbiter.enabled) return fallback("the tenant turned the arbiter off")
+    return ask(answerNow, a.facts, fallback)
   }
   if (!a.policy.arbiter.enabled) return base({ fallbackReason: "the tenant turned the arbiter off" })
   if (a.menu.menu.length <= 1) {
@@ -736,17 +781,15 @@ async function arbitrateFollowUp(
     if (sole && sole.id !== a.planned.id) return base({ optionId: sole.id, kind: sole.kind, channel: sole.channels[0] ?? null, fallbackReason: "only one option is permitted" })
     return base({ fallbackReason: "only one option is permitted" })
   }
-  if (a.budget && a.budget.remaining <= 0) return base({ fallbackReason: "this sweep's decision budget is spent" })
-  if (a.budget) a.budget.remaining -= 1
-  let raw: ArbiterRaw
-  try {
-    raw = await (deps.decide ?? defaultDecide)({ brokerageId: a.brokerageId, system: ARBITER_SYSTEM, prompt: buildArbiterPrompt({ facts: a.facts, menu: a.menu.menu, policy: a.policy }) })
-  } catch (e) {
-    return base({ fallbackReason: `the model was unavailable (${e instanceof Error ? e.message : String(e)})` })
-  }
-  const v = validateArbiterReply(raw, a.menu.menu, a.facts, a.policy)
-  if (!v.ok) return base({ fallbackReason: `the model's reply was refused — ${v.why}` })
-  return withStance({ ...v.decision, source: "ai", fallbackReason: null, menu: a.menu.menu.map((o) => o.id) })
+  return ask(a.menu.menu, a.facts, (why) => base({ fallbackReason: why }))
+}
+
+/** The experiences that ANSWER a speed-to-lead requirement now: the first touch itself, or a person (notify human). */
+const SPEED_TO_LEAD_KINDS: ReadonlySet<ExperienceKind> = new Set<ExperienceKind>(["communication", "agent_intervention"])
+
+/** The facts' moment for a speed-to-lead decision (the prompt's cue that waiting is not on the table). */
+function speedToLeadMoment(): NonNullable<ArbiterFacts["moment"]> {
+  return { key: "speed_to_lead", intent: "A new lead / newly assigned contact must be answered now — choose HOW to answer (channel, or a person), not whether.", daysSinceOpen: 0 }
 }
 
 // ── experience-plan integration ──────────────────────────────────────────────────────────────
@@ -760,10 +803,11 @@ type ArbitratedPlan = { plan: NextBestExperiencePlan; decision: ArbiterDecision 
 async function arbitrateExperiencePlan(
   a: {
     brokerageId: string; input: NextBestExperienceInput; plan: NextBestExperiencePlan; policy: FollowupPolicy; budget?: ArbiterBudget; moment?: ArbiterFacts["moment"]; daysDeferred?: number | null
-    checks?: ChannelCheck[] | null; deliverable?: readonly ArbiterChannel[] | null; signals?: readonly LifeChangeSignal[]; fixedSend?: FixedSendException | null
+    checks?: ChannelCheck[] | null; deliverable?: readonly ArbiterChannel[] | null; signals?: readonly LifeChangeSignal[]; priority?: ArbiterPriority | null
   },
   deps: { decide?: ArbiterDecide } = {},
 ): Promise<ArbitratedPlan> {
+  const moment = a.moment ?? (a.priority === "speed_to_lead" ? speedToLeadMoment() : null)
   // Days the person has ALREADY been held: a moment's age since it OPENED, else the arbiter's own prior waits for this person.
   const ctx: ChannelContext & { daysSinceMomentOpen: number | null } = {
     allowedChannels: a.input.policy.allowedChannels, videoAllowed: a.input.policy.videoAllowed, checks: a.checks ?? null, deliverable: a.deliverable ?? null,
@@ -771,8 +815,8 @@ async function arbitrateExperiencePlan(
   }
   const menu = arbiterMenuFromPlan(a.plan, a.policy, ctx)
   const chosenOpt: ArbiterOption = { id: a.plan.chosen.kind, kind: a.plan.chosen.kind, channels: channelsForKind(a.plan.chosen.kind, ctx), why: a.plan.chosen.reasons.slice(0, 4) }
-  const facts = arbiterFactsFromExperienceInput(a.input, a.moment ?? null, { checks: a.checks ?? null, signals: a.signals })
-  const decision = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts, menu, planned: chosenOpt, policy: a.policy, budget: a.budget, fixedSend: a.fixedSend ?? null }, deps)
+  const facts = arbiterFactsFromExperienceInput(a.input, moment, { checks: a.checks ?? null, signals: a.signals })
+  const decision = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts, menu, planned: chosenOpt, policy: a.policy, budget: a.budget, priority: a.priority ?? null }, deps)
   if (decision.kind === a.plan.chosen.kind && decision.waitHours === null) return { plan: a.plan, decision }
   let found: RankedExperience | undefined = a.plan.ranked.find((r) => r.kind === decision.kind)
   if (!found && decision.kind === "agent_intervention") {
@@ -798,9 +842,11 @@ function arbitrationLedgerDetail(d: ArbiterDecision, policyRef: string | null, e
   }
 }
 
-/** A send the owner FIXED (ruling 12) that reaches this path: the arbiter never defers or swaps it. (The other fixed send — the one
- *  welcome when a lead becomes a contact — never reaches the arbiter: lib/contact-promotion/conversion-welcome.ts sends it.) */
-export type FixedSendException = "speed_to_lead"
+/** A HIGH-PRIORITY REQUIREMENT the arbiter decides under (owner ruling 16, wave 145): `speed_to_lead` = answer now — the model
+ *  chooses how (channel, or a person), never whether or when. Replaces wave 144's `FixedSendException` (ruling 12's "fixed send, the
+ *  arbiter is not consulted"), which the owner reversed. (The one welcome when a lead becomes a contact never reaches the arbiter:
+ *  lib/contact-promotion/conversion-welcome.ts sends it.) */
+export type ArbiterPriority = "speed_to_lead"
 
 // ── the re-engagement cadence integration (ghost leads) ──────────────────────────────────────
 
@@ -862,6 +908,81 @@ export async function arbitrateCadence(a: CadenceArbitrationInput, deps: { decid
   }
   const decision = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts: factsForModel, menu, planned: send, policy: a.policy, budget: a.budget }, deps)
   return { sendNow: decision.kind !== "wait", decision, skippedReason: null }
+}
+
+// ── speed-to-lead, the LEAD half (owner ruling 16, wave 145) ──────────────────────────────────
+
+/** The channels an UNASSIGNED, unconsented lead may be reached on — THE lead roster (CLAUDE.md §5; lib/ai-isa/lead-channel-policy.ts
+ *  LEAD_ALLOWED_CHANNELS), read rather than retyped (§6). */
+export type SpeedToLeadLeadChannel = (typeof LEAD_ALLOWED_CHANNELS)[number]
+const isLeadRosterChannel = (c: unknown): c is SpeedToLeadLeadChannel => (LEAD_ALLOWED_CHANNELS as readonly unknown[]).includes(c)
+
+export interface SpeedToLeadArbitrationInput {
+  brokerageId: string
+  policy: FollowupPolicy
+  /** What the deterministic eligibility PERMITS for this lead — never wider — with its default FIRST
+   *  (lib/ai-isa/speed-to-lead-policy.ts firstTouchDecision: verified email, else verified mail). */
+  permitted: readonly SpeedToLeadLeadChannel[]
+  facts: {
+    leadTemperature: string | null
+    leadScore: number | null
+    timeline: string | null
+    /** Where the lead came from (a portal, an open house, a form) — context, never an identity trait. */
+    source: string | null
+    minutesSinceArrival: number | null
+    hoursSinceLastOutreach: number | null
+    preferences: Array<{ key: string; value: string }>
+  }
+  budget?: ArbiterBudget
+}
+
+export interface SpeedToLeadArbitration {
+  /** The channel the first touch goes on; null only when nothing is permitted (the sweep then does not touch the lead). */
+  channel: SpeedToLeadLeadChannel | null
+  decision: ArbiterDecision | null
+  skippedReason: string | null
+}
+
+/**
+ * The first touch for a NEW, ISA-owned lead is the ARBITER's decision (ruling 16) — the sweeper no longer dispatches its own fixed
+ * email-then-mail cascade. The deterministic eligibility decides what is PERMITTED (verified email / verified mail; never SMS / call —
+ * a lead consented to nothing); the arbiter decides which, from the evidence, under the speed-to-lead priority (no wait is offered;
+ * one permitted channel or any outage → the default channel at once). The caller ledgers the decision (recordArbitration) and
+ * dispatches the arbiter's channel through the ONE lead door (initiateAIISAEngagement forceChannel). Never throws.
+ */
+export async function arbitrateSpeedToLead(a: SpeedToLeadArbitrationInput, deps: { decide?: ArbiterDecide } = {}): Promise<SpeedToLeadArbitration> {
+  const permitted = [...new Set(a.permitted)].filter(isLeadRosterChannel)
+  if (permitted.length === 0) {
+    return { channel: null, decision: null, skippedReason: "no permitted first-touch channel — an unconsented lead is reached by verified email or verified mail only" }
+  }
+  const touch: ArbiterOption = {
+    id: "first_touch", kind: "communication", channels: permitted,
+    why: ["a new lead must be answered now (speed-to-lead)", `permitted for an unconsented lead: ${permitted.join(" / ")}`],
+  }
+  const facts: ArbiterFacts = {
+    subject: "lead",
+    relationship: { type: "lead", persona: a.facts.leadTemperature, hasAssignedAgent: false },
+    intent: a.facts.leadScore === null ? null : { score: a.facts.leadScore, trend: a.facts.leadTemperature ?? "unknown" },
+    history: { hoursSinceAnyTouch: a.facts.hoursSinceLastOutreach, hoursSinceAgentTouch: null, campaignTouches7d: null, lastChannel: null, portalEducationViews: null },
+    journey: { transactionStage: a.facts.timeline, nextMilestone: null, openLessons: null, nextLesson: null },
+    preferences: a.facts.preferences.filter((p) => ARBITER_MEMORY_KEYS.includes(p.key)),
+    fatigueRisk: null,
+    localHour: null,
+    moment: {
+      ...speedToLeadMoment(),
+      intent: `A new lead${a.facts.source ? ` from ${a.facts.source}` : ""}${a.facts.minutesSinceArrival !== null ? ` arrived ${a.facts.minutesSinceArrival} minute(s) ago` : ""} must be answered now — choose the channel for the first touch, not whether.`,
+    },
+    blindSpots: ["a lead has no recorded channel consent beyond email / mail — the menu is the deterministic lead rule"],
+    urgency: "high",
+  }
+  try {
+    const decision = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts, menu: { menu: [touch], locked: null }, planned: touch, policy: a.policy, budget: a.budget, priority: "speed_to_lead" }, deps)
+    const channel: SpeedToLeadLeadChannel = isLeadRosterChannel(decision.channel) ? decision.channel : permitted[0]
+    return { channel, decision, skippedReason: null }
+  } catch (e) {
+    // Never block a first touch on the judgment: the deterministic default answers now.
+    return { channel: permitted[0], decision: null, skippedReason: `arbiter threw (${e instanceof Error ? e.message : String(e)}) — the default channel answers` }
+  }
 }
 
 /**
@@ -938,14 +1059,11 @@ const DAY_MS = 86_400_000
 /** The contact columns the channel checks read (live names — scripts/schema-snapshot.ts contacts). */
 const READINESS_CONTACT_COLUMNS = "id, email, email_opt_out, email_unsubscribed, phone, tcpa_consent, sms_opt_out, phone_opt_out, call_stop_flag, dnc_status, direct_mail_opt_out, mailing_address, mailing_address_verified, opt_out_channels, has_login"
 
-/** Channel → the readiness rows that can serve it (any-of): a readiness CATEGORY or a canonical provider name. */
-const CHANNEL_PROVIDER_RULES: Readonly<Partial<Record<ArbiterChannel, { categories?: readonly string[]; providers?: readonly string[] }>>> = Object.freeze({
-  // phone (the AI call) is served by the voice_sms category — the Twilio-native dial. No readiness row carries a named
-  // AI-call vendor (the one that did is retired; test:vendor-retirement keeps its name out of live code).
-  email: { categories: ["email"] }, sms: { categories: ["voice_sms"] }, phone: { categories: ["voice_sms"] },
-  voice_drop: { providers: ["voicedrop", "slybroadcast"] }, direct_mail: { categories: ["mail"], providers: ["lob"] },
-  social: { categories: ["social"] }, ads: { providers: ["meta", "google_ads", "facebook_ads"] },
-})
+// TOMBSTONE (wave 145, lane 145E, contract C1) — the inline `CHANNEL_PROVIDER_RULES` table that stood here (channel → readiness
+// category / provider names) is RETIRED. It was the arbiter's own copy of provider truth, and the owner found it wrong ("the channel
+// provider rules are incorrect again"). Survivor: lib/providers/channel-provider-matrix.ts CHANNEL_PROVIDER_MATRIX (lane 145D owns
+// it — one matrix for every channel reader), consumed at loadChannelReadiness below. A channel whose matrix row names no category
+// and no provider is not provider-gated here (PROVIDER_GATED decides which channels a provider check applies to).
 
 export type ChannelReadinessLoad =
   | { ok: true; checks: ChannelCheck[]; blindSpots: string[] }
@@ -1007,7 +1125,9 @@ async function loadChannelReadiness(
       const scan = deps.providers ?? (async (s: unknown, b: string) => (await import("@/lib/platform/provider-posture")).getBrokerageProviderReadiness(s, b))
       const r = await scan(svc, a.brokerageId)
       providers = {}
-      for (const [ch, rule] of Object.entries(CHANNEL_PROVIDER_RULES) as Array<[ArbiterChannel, { categories?: readonly string[]; providers?: readonly string[] }]>) {
+      // Contract C1: lane 145D's matrix is the ONE channel → provider truth (keyed by the nine arbiter channel names).
+      for (const [ch, rule] of Object.entries(CHANNEL_PROVIDER_MATRIX) as Array<[ArbiterChannel, ChannelProviderRule]>) {
+        if (!(rule.categories?.length || rule.providers?.length)) continue
         const rows = r.rows.filter((row) => (rule.categories ?? []).includes(row.category) || (rule.providers ?? []).includes(row.provider))
         providers[ch] = rows.some((row) => row.ready) ? "ready" : "not_ready"
       }
@@ -1224,8 +1344,10 @@ export async function respondToLifeChangeSignal(
       const { data, error } = await svc.from("leads").select("id, contact_id, is_active").eq("id", subject.id).eq("brokerage_id", input.brokerageId).maybeSingle()
       if (error) return refused(`lead read refused: ${error.message}`)
       if (!data) return refused("lead not in this brokerage")
-      const contactId = (data as { contact_id?: string | null }).contact_id ?? null
-      if (contactId) subject = { type: "contact", id: contactId }
+      // Contract C2 (owner ruling 15): a lead with a contact_id is OUT of the lead domain — the signal is answered on the contact.
+      const party = canonicalPartyFor(data as { id?: string | null; contact_id?: string | null })
+      if (party.type === "unresolved") return refused(party.reason)
+      if (party.type === "contact") subject = { type: "contact", id: party.id }
       subjectClass = "lead"
     } else subjectClass = "contact"
     let contactType: string | null = null
@@ -1293,8 +1415,8 @@ export async function arbitrateAndRecordExperience(
     humanInitiated?: boolean; missionId?: string | null; systemSource?: string; moment?: ArbiterFacts["moment"]; budget?: ArbiterBudget; policy?: FollowupPolicy
     /** Wave 144: the channels THIS caller can deliver for a communication (default email + SMS — what every current caller sends). */
     deliverable?: readonly ArbiterChannel[] | null
-    /** Wave 144: a fixed send (speed-to-lead) — the arbiter is not consulted on it (owner ruling 12). */
-    fixedSend?: FixedSendException | null
+    /** Wave 145: a high-priority requirement the arbiter DECIDES under (speed-to-lead — owner ruling 16: answer now; how is the arbiter's call). */
+    priority?: ArbiterPriority | null
     /** Wave 144: preloaded channel checks (else loaded here through loadChannelReadiness). */
     channelReadiness?: ChannelReadinessLoad | null
   },
@@ -1326,7 +1448,7 @@ export async function arbitrateAndRecordExperience(
     if (sig.blindSpot) channelBlindSpots.push(sig.blindSpot)
     signals = sig.signals
     const withSignals = planWithLifeChangeSignals(a.plan, signals, { contactType: a.input.person.contactType }, { executors: EXPERIENCE_EXECUTORS, kinds: EXPERIENCE_KINDS })
-    const arbitrated = await arbitrateExperiencePlan({ brokerageId: a.brokerageId, input: a.input, plan: withSignals, policy, budget: a.budget, moment: a.moment, daysDeferred, checks, deliverable: a.deliverable ?? null, signals, fixedSend: a.fixedSend ?? null }, { decide: deps.decide })
+    const arbitrated = await arbitrateExperiencePlan({ brokerageId: a.brokerageId, input: a.input, plan: withSignals, policy, budget: a.budget, moment: a.moment, daysDeferred, checks, deliverable: a.deliverable ?? null, signals, priority: a.priority ?? null }, { decide: deps.decide })
     plan = arbitrated.plan
     decision = arbitrated.decision
   }

@@ -1007,7 +1007,7 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
   type NbeInput = import("../lib/ai-isa/lead-action-plan").NextBestExperienceInput
   const inputFor = (w: World, over: Partial<NbeInput> = {}): NbeInput =>
     base({ nba: { intent: intent(80), memoryFacts: [] }, policy: { complianceHardFlag: false, allowedChannels: w.allowed ?? ["email", "sms", "phone", "direct_mail"], autoSendAllowed: true, videoAllowed: true }, ...over })
-  const run = async (o: { world?: World; deliverable?: readonly string[] | null; decide?: () => Promise<Record<string, unknown>>; input?: NbeInput; fixedSend?: "speed_to_lead"; noContact?: boolean }) => {
+  const run = async (o: { world?: World; deliverable?: readonly string[] | null; decide?: () => Promise<Record<string, unknown>>; input?: NbeInput; priority?: "speed_to_lead"; noContact?: boolean }) => {
     const w = o.world ?? {}
     const recorded: Array<Record<string, any>> = []
     let prompt = "", calls = 0
@@ -1016,7 +1016,7 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
     const input = o.input ?? inputFor(w)
     const r = await arb.arbitrateAndRecordExperience(memSupabase(seed), {
       brokerageId: B, contactId: C, input, plan: lap.planNextBestExperience(input), now: NOW, policy, systemSource: "t",
-      deliverable: (o.deliverable === undefined ? arb.CONTACT_ENGAGEMENT_DELIVERABLE : o.deliverable) as never, fixedSend: o.fixedSend ?? null,
+      deliverable: (o.deliverable === undefined ? arb.CONTACT_ENGAGEMENT_DELIVERABLE : o.deliverable) as never, priority: o.priority ?? null,
     }, {
       decide: async (a) => { calls++; prompt = a.prompt; if (!o.decide) throw new Error("no model here"); return (await o.decide()) as never },
       record: { ledger: async (ctx: Record<string, any>, f: () => Promise<unknown>) => { recorded.push(ctx); return f() }, emit: async () => ({ inserted: true }), delegate: async () => ({ ok: true, delegation: { id: "d1" } }) },
@@ -1126,19 +1126,94 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
       (await stanceOf({ optionId: "education", channel: null }, edu)) === "educate" && (await stanceOf({ optionId: "agent_intervention", channel: null }, noAgent)) === "notify_human")
   }
 
-  console.log("\n── 8d. SPEED-TO-LEAD IS THE EXPLICIT EXCEPTION — the arbiter never defers or swaps the first touch ──")
+  // RE-ASSERTED (wave 145, lane 145E): §8d pinned ruling 12's "speed-to-lead is a FIXED send — the model is never asked". Owner
+  // ruling 16 (2026-10-27) REVERSED it: "Speed to lead should be consumed by the followup-arbiter and should be the arbiter
+  // decision." The RULE asserted now: the arbiter IS asked (under the speed-to-lead PRIORITY); WAIT is never offered and a wait reply
+  // is refused (the first touch goes at once); an AI channel pick among the permitted ones is honoured; a hard stop still locks.
+  console.log("\n── 8d. SPEED-TO-LEAD IS THE ARBITER'S DECISION under a high-priority requirement — answer now; how is the arbiter's call (ruling 16) ──")
   {
     const waitReply = async () => ({ optionId: "wait", channel: null, waitHours: 48, rationale: "Hold it for two days, they just arrived.", evidence: ["intent"], confidence: 0.9 })
-    const fixed = await run({ fixedSend: "speed_to_lead", decide: waitReply })
-    check("speed-to-lead: the model is NEVER asked; the touch (communication) is the decision, the reason names the fixed send", fixed.calls === 0 && fixed.r.plan.chosen.kind === "communication" && /fixed send/.test(fixed.r.decision?.fallbackReason ?? ""))
-    check("(control) the same plan WITHOUT the exception is arbitrated", (await run({ decide: waitReply })).calls === 1)
-    const dnc = await run({ fixedSend: "speed_to_lead", input: inputFor({}, { nba: { deadEnds: [{ outcome: "do_not_contact", at: null, source: "t" }] } }) })
-    check("…and a fixed send never beats a HARD stop: a do-not-contact person stays locked", (dnc.r.decision?.fallbackReason ?? "").startsWith("locked") && dnc.r.plan.chosen.kind !== "communication")
+    const smsReply = async () => ({ optionId: "communication", channel: "sms", format: null, waitHours: null, rationale: "A fresh, high-intent contact who texts back — answer by text now.", evidence: ["intent", "moment"], confidence: 0.9 })
+    const asked = await run({ priority: "speed_to_lead", decide: waitReply })
+    check("speed-to-lead: the model IS asked, WAIT is not on its menu, and a wait reply is REFUSED — the first touch (communication) goes now",
+      asked.calls === 1 && !/"id":"wait"/.test(asked.prompt) && /"key":"speed_to_lead"/.test(asked.prompt) && asked.r.plan.chosen.kind === "communication" && /speed_to_lead/.test(asked.r.decision?.fallbackReason ?? ""))
+    const picked = await run({ priority: "speed_to_lead", decide: smsReply })
+    check("…and the arbiter's own pick among the permitted channels IS the decision (source ai, channel sms, stance act now / change channel)",
+      picked.calls === 1 && picked.r.decision?.source === "ai" && picked.r.decision?.channel === "sms" && picked.r.plan.chosen.kind === "communication" && ["act_now", "change_channel"].includes(String(picked.r.decision?.stance)))
+    check("(control) the same plan WITHOUT the priority offers WAIT on the menu", /"id":"wait"/.test((await run({ decide: waitReply })).prompt))
+    const dnc = await run({ priority: "speed_to_lead", decide: smsReply, input: inputFor({}, { nba: { deadEnds: [{ outcome: "do_not_contact", at: null, source: "t" }] } }) })
+    check("…and the priority never beats a HARD stop: a do-not-contact person stays locked and the model is never asked", (dnc.r.decision?.fallbackReason ?? "").startsWith("locked") && dnc.r.plan.chosen.kind !== "communication" && dnc.calls === 0)
     const engRaw = src("app/actions/ai-isa/engage-contact.ts")
-    check("WIRED (the consumer): engage-contact tells the arbiter what it can deliver and that speed-to-lead is fixed, and dispatches the AI's channel ahead of its fallback picker (a human's forced channel still wins)",
-      /deliverable: CONTACT_ENGAGEMENT_DELIVERABLE/.test(engRaw) && /fixedSend: reason === 'speed_to_lead' \? 'speed_to_lead' : null/.test(engRaw) && /arbiterDecision = decision/.test(engRaw)
+    check("WIRED (the consumer): engage-contact tells the arbiter what it can deliver and passes speed-to-lead as the PRIORITY, and dispatches the AI's channel ahead of its fallback picker (a human's forced channel still wins)",
+      /deliverable: CONTACT_ENGAGEMENT_DELIVERABLE/.test(engRaw) && /priority: reason === 'speed_to_lead' \? 'speed_to_lead' : null/.test(engRaw) && /arbiterDecision = decision/.test(engRaw)
       && /const channel = forceChannel \?\? touchChannelForDecision\(arbiterDecision\) \?\? resolvedChannel/.test(engRaw) && engRaw.indexOf("touchChannelForDecision(arbiterDecision)") > engRaw.indexOf("arbitrateAndRecordExperience(supabase"))
-    check("(control) the consumer finder rejects the pre-144 dispatch line", !/touchChannelForDecision\(arbiterDecision\)/.test("const channel = forceChannel ?? resolvedChannel"))
+    check("(control) the consumer finder rejects the wave-144 fixed-send wiring", !/priority: reason === 'speed_to_lead'/.test("fixedSend: reason === 'speed_to_lead' ? 'speed_to_lead' : null"))
+    const stlRaw = src("lib/ai-isa/speed-to-lead.ts")
+    check("WIRED (the sweeper, LEADS): the lead first touch is the arbiter's (arbitrateSpeedToLead), ledgered (recordArbitration), and dispatched on ITS channel (forceChannel: arb.channel) — no fixed cascade",
+      /arbitrateSpeedToLead\)\(arbInput\)/.test(stlRaw) && /recordArbitration\(supabase/.test(stlRaw) && /forceChannel: arb\.channel/.test(stlRaw) && stlRaw.indexOf("recordArbitration(supabase") < stlRaw.indexOf("forceChannel: arb.channel"))
+    const lead = await arb.arbitrateSpeedToLead({ brokerageId: B, policy, permitted: ["email", "direct_mail"], facts: { leadTemperature: "hot", leadScore: 80, timeline: "1-3_months", source: "website", minutesSinceArrival: 2, hoursSinceLastOutreach: null, preferences: [] } },
+      { decide: async () => ({ optionId: "first_touch", channel: "direct_mail", format: null, waitHours: null, rationale: "A new lead with a verified address — a handwritten-style note lands well.", evidence: ["moment", "intent"], confidence: 0.9 }) })
+    const leadSms = await arb.arbitrateSpeedToLead({ brokerageId: B, policy, permitted: ["email"], facts: { leadTemperature: "hot", leadScore: 80, timeline: null, source: null, minutesSinceArrival: 1, hoursSinceLastOutreach: null, preferences: [] } },
+      { decide: async () => { throw new Error("must not be asked: one permitted channel is not a choice") } })
+    const leadNone = await arb.arbitrateSpeedToLead({ brokerageId: B, policy, permitted: [], facts: { leadTemperature: null, leadScore: null, timeline: null, source: null, minutesSinceArrival: null, hoursSinceLastOutreach: null, preferences: [] } })
+    check("LEADS: the arbiter chooses among the PERMITTED lead channels (direct mail here), one permitted channel goes at once without a model call, and nothing permitted means no touch",
+      lead.channel === "direct_mail" && lead.decision?.source === "ai" && leadSms.channel === "email" && leadSms.decision?.source === "deterministic" && leadNone.channel === null && !!leadNone.skippedReason)
+    const leadSmsAsked = await arb.arbitrateSpeedToLead({ brokerageId: B, policy, permitted: ["email", "direct_mail"], facts: { leadTemperature: "hot", leadScore: 90, timeline: null, source: null, minutesSinceArrival: 1, hoursSinceLastOutreach: null, preferences: [] } },
+      { decide: async () => ({ optionId: "first_touch", channel: "sms", format: null, waitHours: null, rationale: "Text them right away, they are hot.", evidence: ["intent"], confidence: 0.95 }) })
+    check("LEADS (refusal control): a model pick OUTSIDE the lead rule (SMS to an unconsented lead) is refused — the default permitted channel answers", leadSmsAsked.channel === "email" && leadSmsAsked.decision?.source === "deterministic" && /not permitted/.test(leadSmsAsked.decision?.fallbackReason ?? ""))
+  }
+
+  // WAVE 145 (lane 145E — owner ruling 16): the SWEEPER. runSpeedToLead driven IN MEMORY with recorder seams at the engagement doors
+  // (no provider; no model unless a seam answers). Here rather than in test:speed-to-lead because the sweep's import graph reaches
+  // the server-only kernel, which only this proof's react-server condition loads.
+  console.log("\n── 8d-ii. THE SPEED-TO-LEAD SWEEP dispatches the ARBITER's first touch — it picks no channel of its own (ruling 16) ──")
+  {
+    const { runSpeedToLead } = await import("../lib/ai-isa/speed-to-lead")
+    const NOW = new Date("2026-10-27T15:00:00.000Z"), B = "b-145e"
+    const ago = (min: number) => new Date(NOW.getTime() - min * 60_000).toISOString()
+    const leadRow = (id: string, over: Record<string, unknown> = {}) => ({ id, brokerage_id: B, created_at: ago(3), distributed_at: null, first_touched_at: null, contact_id: null,
+      email: `${id}@example.test`, email_verified: true, email_opt_out: false, mailing_address: "1 Main St", mailing_address_verified: true, direct_mail_opt_out: false,
+      preferred_channel: null, lead_score: 82, lead_temperature: "hot", timeline: "1-3_months", source: "website", ai_isa_owner: true, lifecycle_state: "unconsented", ...over })
+    const contactRow = (id: string) => ({ id, brokerage_id: B, created_at: ago(10), first_touched_at: null, last_contacted_at: null, agent_id: "ag-1",
+      tcpa_consent: true, dnc_status: false, phone_opt_out: false, sms_opt_out: false, email_opt_out: false, preferred_channel: null, mailing_address: null })
+    const db = memSupabase({
+      leads: [leadRow("L-both"), leadRow("L-email", { mailing_address_verified: false }), leadRow("L-none", { email_verified: false, mailing_address_verified: false }), leadRow("L-conv", { contact_id: "C-x" })],
+      contacts: [contactRow("C-text"), contactRow("C-person")],
+      automation_errors: [], agent_action_ledger: [],
+    }, { uuidIds: true, stampCreatedAt: true })
+    const leadCalls: Array<{ id: string; force: unknown }> = []
+    const arbAsked: Array<{ permitted: readonly string[]; moment?: unknown }> = []
+    const r = await runSpeedToLead(B, { now: NOW }, {
+      supabase: db as never,
+      arbitrateLead: async (input) => {
+        arbAsked.push({ permitted: input.permitted })
+        // The arbiter's AI pick for the lead with two permitted channels; the real arbiter for everyone else.
+        if (input.permitted.length > 1) {
+          return { channel: "direct_mail", skippedReason: null, decision: { optionId: "first_touch", kind: "communication", channel: "direct_mail", format: "postcard", stance: "act_now", waitHours: null, rationale: "A verified address and a hot timeline — a mailed note answers first.", evidence: ["moment"], confidence: 0.9, source: "ai", fallbackReason: null, menu: ["first_touch"] } }
+        }
+        return (await import("../lib/ai-isa/followup-arbiter")).arbitrateSpeedToLead(input, { decide: async () => { throw new Error("one permitted channel is not a choice — the model must not be asked") } })
+      },
+      initiateEngagement: (async (id: string, o?: { forceChannel?: string }) => { leadCalls.push({ id, force: o?.forceChannel }); return { success: true, channel: o?.forceChannel } }) as never,
+      contactEngagement: (async (p: { contactId: string }) => p.contactId === "C-person"
+        ? { success: false, reason: "experience:agent_intervention:delegated" }
+        : { success: true, channel: "sms" }) as never,
+    })
+    const lead = (id: string) => (db.tables.leads ?? []).find((x) => x.id === id) ?? {}
+    const contact = (id: string) => (db.tables.contacts ?? []).find((x) => x.id === id) ?? {}
+    check("W145 the LEAD first touch is the ARBITER's: asked with the PERMITTED lead channels only (verified email / verified mail — never SMS or a call), and its pick is dispatched (forceChannel)",
+      arbAsked.some((a) => a.permitted.join(",") === "email,direct_mail") && leadCalls.some((c) => c.id === "L-both" && c.force === "direct_mail"), JSON.stringify({ arbAsked, leadCalls }))
+    check("W145 …one permitted channel goes at once on the real arbiter WITHOUT a model call (deterministic, speed-to-lead never waits)",
+      leadCalls.some((c) => c.id === "L-email" && c.force === "email"))
+    check("W145 …the decision is EVIDENCE before the send (LAW 5): a followup decision row on the action ledger per arbitrated lead, subject = the lead",
+      (db.tables.agent_action_ledger ?? []).some((x) => x.subject_type === "lead" && x.subject_id === "L-both" && /followup\.decision/.test(String(x.action))), JSON.stringify((db.tables.agent_action_ledger ?? []).map((x) => `${x.action}:${x.subject_id}`)))
+    check("W145 a lead with NOTHING permitted is never handed to a door; a converted lead (contact_id set) is never a lead touch (ruling 15)",
+      !leadCalls.some((c) => c.id === "L-none" || c.id === "L-conv") && !arbAsked.some((a) => a.permitted.length === 0))
+    check("W145 first_touch_channel records what ACTUALLY went out (the arbiter's channel), not the eligibility's guess",
+      lead("L-both").first_touch_channel === "direct_mail" && lead("L-email").first_touch_channel === "email" && !lead("L-none").first_touched_at)
+    check("W145 CONTACTS: the engagement's own channel is stamped; when the arbiter's answer is a PERSON (notify human) the requirement is answered and claimed 'human_task' — never re-arbitrated every sweep",
+      contact("C-text").first_touch_channel === "sms" && !!contact("C-person").first_touched_at && contact("C-person").first_touch_channel === "human_task" && r.contactsTouched === 2, JSON.stringify({ r, t: contact("C-text").first_touch_channel, p: contact("C-person").first_touch_channel }))
+    const r2 = await runSpeedToLead(B, { now: NOW }, { supabase: db as never, arbitrateLead: async () => { throw new Error("a retried sweep must not re-arbitrate a touched lead") }, initiateEngagement: (async () => { throw new Error("no second touch") }) as never, contactEngagement: (async () => { throw new Error("no second touch") }) as never })
+    check("W145 RETRY / DUPLICATE SWEEP: a second run touches nobody twice and asks the arbiter nothing (first_touched_at is the claim)", r2.leadsTouched === 0 && r2.contactsTouched === 0, JSON.stringify(r2))
   }
 
   console.log("\n── 8e. LIFE-CHANGE / INTENT SIGNALS → a governed evaluation and next-best action (ruling 11) ──")
@@ -1265,18 +1340,22 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
     check("the old 'format' union that was really a channel list is gone from the stripped source", !/"blog"\s*\|\s*"social"\s*\|\s*"newsletter"\s*\|\s*"video"\s*\|\s*"podcast"/.test(src("lib/content-intel/market-leadership.ts")))
   }
 
-  console.log("\n── 8g. THE ONE FIXED SEND: the welcome goes now; the video FOLLOWS once (ruling 13) ──")
+  // RE-ASSERTED (wave 145, lane 145E): the two checks below pinned ruling 13's TIMING ("the welcome goes now; the video follows"),
+  // which owner ruling 17 (2026-10-27) REVERSED — "the welcome email … has to wait for the avatar welcome email from the agent to
+  // finish and auto send after". The RULE asserted now: a render in flight HOLDS the one welcome (the sweeper sends it with the
+  // video); no possible video HOLDS it for a human-approved exception; the hold branches RETURN before the send.
+  console.log("\n── 8g. THE ONE WELCOME WAITS FOR THE AGENT'S VIDEO; a failure is a human-approved exception (ruling 17) ──")
   {
     const wav = await import("../lib/contact-promotion/welcome-avatar-video")
     const cw = await import("../lib/contact-promotion/conversion-welcome")
-    check("the welcome is NEVER held for a render: a render in flight now means 'send now, the video follows'",
-      cw.decideWelcomeTiming({ commissioned: true, reason: "commissioned" }).action === "send_now_video_follows" && cw.decideWelcomeTiming({ commissioned: false, reason: "agent_not_video_ready" }).action === "send_now")
+    check("the welcome WAITS for a render in flight (hold_for_video), and with no possible video it is HELD for a human exception — never sent without it on its own",
+      cw.decideWelcomeTiming({ commissioned: true, reason: "commissioned" }).action === "hold_for_video" && cw.decideWelcomeTiming({ commissioned: false, reason: "agent_not_video_ready" }).action === "hold_for_exception")
     const body = src("lib/contact-promotion/conversion-welcome.ts")
     const entry = body.slice(body.indexOf("export async function deliverConversionWelcome"))
-    const followsAt = entry.indexOf('if (timing.action === "send_now_video_follows")')
-    const block = entry.slice(followsAt, entry.indexOf("ensureClientWelcome"))
-    check("the conversion entry point sends the welcome whatever the timing — the video-follows branch has no early return before the send", followsAt > -1 && block.length > 50 && !/return\b/.test(block) && entry.indexOf("ensureClientWelcome") > entry.indexOf("decideWelcomeTiming("))
-    check("(control) the early-return finder sees the pre-144 shape", /return\b/.test('if (timing.action === "wait_for_video") { warnings.push("x"); return out }'))
+    const holdAt = entry.indexOf('if (timing.action === "hold_for_video")')
+    const block = entry.slice(holdAt, entry.indexOf("ensureClientWelcome"))
+    check("the conversion entry point does NOT send while the video is pending — the hold branch returns before the send", holdAt > -1 && block.length > 50 && /return out/.test(block) && entry.indexOf("ensureClientWelcome") > entry.indexOf("decideWelcomeTiming("))
+    check("(control) the early-return finder rejects the wave-144 send-anyway shape", !/return out/.test('if (timing.action === "send_now_video_follows") { warnings.push("x") }'))
     const sends: Array<Record<string, any>> = []
     const svc = memSupabase({
       contacts: [{ id: "c1", brokerage_id: B, first_name: "Pat", email: "pat@example.test", email_opt_out: false, email_unsubscribed: false, contact_type: "buyer", agent_id: "ag1", video_opt_out: false },

@@ -409,22 +409,30 @@ interface WelcomeEmailInput {
   /** True when a REAL finished personal video from this agent was resolved. */
   hasVideo: boolean
   agentFirstName: string | null
+  /** Wave 145 (contract C3 — the contact's STATED preference): render the body at a larger size. */
+  largeText?: boolean
+  /** Wave 145 (contract C3): the video's own script, shown as text under it when captions / a transcript were asked for. */
+  transcript?: string | null
 }
 
 /** PURE — the welcome email's HTML body, before the kernel's assembly order
  *  (body → signature → unsubscribe → legal) is applied by dispatchEmail. */
 function composeWelcomeEmailHtml(input: WelcomeEmailInput): string {
+  const size = input.largeText ? "font-size:19px;" : ""
   const paragraphs = input.body
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((line) => `<p style="margin:0 0 12px;line-height:1.55;">${escapeHtml(line)}</p>`)
+    .map((line) => `<p style="margin:0 0 12px;line-height:1.55;${size}">${escapeHtml(line)}</p>`)
     .join("\n")
 
   // The video block carries NO hedge and NO placeholder — it exists only when
-  // there is something to play.
+  // there is something to play. A transcript rides it only when the contact asked for one AND the video's own script exists.
+  const transcriptBlock = input.hasVideo && input.transcript?.trim()
+    ? `\n<p style="margin:12px 0 4px;line-height:1.55;font-weight:600;${size}">What I say in the video:</p>\n<p style="margin:0 0 12px;line-height:1.55;${size}">${escapeHtml(input.transcript.trim()).replace(/\n+/g, "<br>")}</p>`
+    : ""
   const videoBlock = input.hasVideo
-    ? `<p style="margin:20px 0 8px;line-height:1.55;">I recorded something for you — here it is:</p>\n${VIDEO_EMBED_TOKEN}`
+    ? `<p style="margin:20px 0 8px;line-height:1.55;${size}">I recorded something for you — here it is:</p>\n${VIDEO_EMBED_TOKEN}${transcriptBlock}`
     : ""
 
   const portalBlock = input.portalUrl
@@ -631,6 +639,13 @@ export interface EnsureClientWelcomeOptions {
    * hardcoded "thanks for visiting" string.
    */
   origin?: WelcomeOrigin | null
+  /**
+   * Wave 145 (contract C3): the contact's STATED accessibility preferences, when the caller already read them
+   * (deliverConversionWelcome). UNDEFINED → read here through the same one reader
+   * (lib/contact-promotion/conversion-welcome.ts readWelcomeAccessibility → lane 145H's readAccessibilityPreferences), so the
+   * sweeper's release and an approved exception honour them too. NULL → unread; the defaults apply (never inferred).
+   */
+  accessibility?: import("@/lib/contact-promotion/conversion-welcome").WelcomeAccessibility | null
 }
 
 /**
@@ -863,12 +878,31 @@ export async function ensureClientWelcome(svc: Svc, contact: {
     return { ...base, state: "no_email_on_file", reason: c.email ? "contact opted out of email" : "contact has no email" }
   }
 
+  // ── WAVE 145 (contract C3): THE CONTACT'S STATED FORMAT — larger text; the video's own script as text when they asked ──
+  let accessibility = opts.accessibility
+  if (accessibility === undefined) {
+    try {
+      const { readWelcomeAccessibility } = await import("@/lib/contact-promotion/conversion-welcome")
+      accessibility = (await readWelcomeAccessibility(svc, { brokerageId: contact.brokerageId, contactId: contact.id })).accessibility
+    } catch { accessibility = null }
+  }
+  let transcript: string | null = null
+  if (accessibility?.transcript && videoReady?.videoProjectId) {
+    // The SCRIPT the video speaks (compliance-drafted by the one avatar spine) — tenant-pinned; a refused read means no transcript, said in the log.
+    const { data: proj, error: projErr } = await svc.from("ai_video_projects").select("script_content")
+      .eq("id", videoReady.videoProjectId).eq("brokerage_id", contact.brokerageId).maybeSingle()
+    if (projErr) console.warn(`[client-welcome] transcript read refused for ${videoReady.videoProjectId}: ${projErr.message}`)
+    transcript = ((proj as { script_content?: string | null } | null)?.script_content ?? null)?.slice(0, 4000) ?? null
+  }
+
   // ── (a) THE SEND — canonical governed dispatch, FROM the assigned agent ────
   const html = composeWelcomeEmailHtml({
     body: copy.body,
     portalUrl: portalAccess ? portalUrlFor(contact.id) : null,
     hasVideo: !!videoReady,
     agentFirstName,
+    largeText: accessibility?.largeText === true,
+    transcript,
   })
   const { embedVideoInEmail } = await import("@/lib/ai-isa/video-generator")
   // The token is only present when videoReady — so this call can never render

@@ -256,9 +256,10 @@ export async function engageContact(
         const { plan, decision, recorded: rec } = await arbitrateAndRecordExperience(supabase, {
           brokerageId, contactId, input: inputs.input, plan: planned, now: nbaNow, humanInitiated, missionId: missionId ?? null, systemSource: 'engage_contact',
           // WAVE 144 (owner ruling 12): this path delivers email / SMS / direct mail / AI call / voice drop (dispatchContactChannel), so
-          // every one of them is a real option; and speed-to-lead is the FIXED first touch — the arbiter never defers or swaps it.
+          // every one of them is a real option. WAVE 145 (owner ruling 16): speed-to-lead is the ARBITER's decision under a
+          // high-priority requirement — answer now (no wait offered); the arbiter chooses the channel or a person from the evidence.
           deliverable: CONTACT_ENGAGEMENT_DELIVERABLE,
-          fixedSend: reason === 'speed_to_lead' ? 'speed_to_lead' : null,
+          priority: reason === 'speed_to_lead' ? 'speed_to_lead' : null,
         })
         arbiterDecision = decision
         for (const w of rec.warnings) console.warn(`[engageContact] experience ${plan.chosen.kind}: ${w}`)

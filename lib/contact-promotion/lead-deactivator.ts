@@ -68,7 +68,35 @@ export async function deactivateLead(
       console.warn(`[deactivateLead] sequence_enrollments termination skipped:`, e)
     }
 
-    console.log(`[v0] Lead ${leadId} deactivated (preserved for audit; ISA released; enrollments closed)`)
+    // WAVE 145 (lane 145E, owner ruling 15 — contract C2): "if a contact_id is present, then communication ends in the lead
+    // table and continues in the contact table as a contact." A message DRAFTED to the LEAD (agent_client_messages with a
+    // recipient_lead_id and no recipient_contact_id — the lead action plan's proposals) is a scheduled lead send: left
+    // 'proposed' / 'approved', a later human approval or the plan's auto-release would still mail the LEAD row
+    // (lib/agents/agent-client-messages.ts approveClientMessage, LEAD branch) beside the contact's own journey — two competing
+    // records for one person. It is closed here as 'rejected' WITH the reason (send_error) — never deleted: the draft, its
+    // rationale and its lead_id stay as provenance. The update is COUNTED (.select) and a refusal is said, never silent.
+    try {
+      const { data: closed, error: closeErr } = await supabase
+        .from("agent_client_messages")
+        .update({ status: "rejected", send_error: "superseded on conversion: the lead converted to a contact — communication continues on the contact (owner ruling 15); kept as provenance" })
+        .eq("recipient_lead_id", leadId)
+        .is("recipient_contact_id", null)
+        .in("status", ["proposed", "approved"])
+        .select("id")
+      if (closeErr) console.error(`[deactivateLead] pending lead-addressed drafts NOT closed for ${leadId}: ${closeErr.message}`)
+      else if ((closed ?? []).length > 0) {
+        const ids = ((closed ?? []) as Array<{ id: string }>).map((r) => r.id)
+        console.log(`[deactivateLead] ${ids.length} pending lead-addressed draft(s) closed for ${leadId} (superseded on conversion)`)
+        // The "approve me" bell for a draft that can no longer be approved is a lie — cleared the way client-welcome clears it.
+        const { error: bellErr } = await supabase.from("notifications").delete()
+          .eq("entity_type", "agent_client_message").in("entity_id", ids).eq("type", "approval_needed")
+        if (bellErr) console.error(`[deactivateLead] stale approval alerts not cleared for ${leadId}: ${bellErr.message}`)
+      }
+    } catch (e) {
+      console.warn(`[deactivateLead] lead-addressed draft closure skipped:`, e)
+    }
+
+    console.log(`[v0] Lead ${leadId} deactivated (preserved for audit; ISA released; enrollments closed; lead drafts superseded)`)
 
     return { success: true }
 

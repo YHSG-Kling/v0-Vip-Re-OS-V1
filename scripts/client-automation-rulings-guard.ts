@@ -219,8 +219,14 @@ async function main() {
     check("a manually added contact is created", made.success && !!id, JSON.stringify(made).slice(0, 300))
     check("...and the automation invited it to the portal — one invite row, reported granted",
       rows(svc, "portal_contact_invites", (r) => r.contact_id === id).length === 1 && made.portalInvite?.granted === true, JSON.stringify(made.portalInvite))
-    check("...through the ONE welcome path (the email carries the portal door — welcome asked once)",
-      G.__94A.welcomes.filter((w: string) => w === id).length === 1)
+    // RE-ASSERTED (wave 145, lane 145E — owner ruling 17): the edge stub reports `agent_not_video_ready` (today's live default),
+    // and ruling 17 HOLDS such a welcome for a human-approved exception instead of sending it without the agent's video. The
+    // RULE is unchanged — the contact reaches the ONE welcome path exactly once: the welcome is asked once, OR it is held once
+    // (one `welcome_without_video` approval item), never both, never twice.
+    const asked = G.__94A.welcomes.filter((w: string) => w === id).length
+    const held = rows(svc, "approval_items", (r) => r.item_id === id && r.item_type === "welcome_without_video").length
+    check("...through the ONE welcome path (the email carries the portal door — welcome asked once, or held once for the human-approved exception when no video can ride it)",
+      asked + held === 1, JSON.stringify({ asked, held }))
 
     const noMail = await createContactManually({
       first_name: "Pho", last_name: "Only", phone: "5615550194", contact_type: "buyer", agent_id: AGENT, brokerage_id: BRK,

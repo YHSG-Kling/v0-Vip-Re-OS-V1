@@ -345,6 +345,10 @@ export async function ensureWelcomeAvatarVideo(
 }
 
 // ─── WAVE 144: THE VIDEO FOLLOWS THE WELCOME (owner ruling 13) ───────────────
+// WAVE 145 (owner ruling 17 reverses ruling 13's timing): a NEW conversion's welcome WAITS for the video and carries it
+// (lib/contact-promotion/conversion-welcome.ts decideWelcomeTiming → hold_for_video), so nothing new reaches the follow-up below.
+// It stays as the TRANSITION path for a row whose welcome already went under ruling 13 (classifyPendingWelcome's
+// welcomeState 'sent' arm) — the video still reaches that client once, never a second welcome.
 
 export type WelcomeVideoFollowUpState =
   /** A provider accepted the follow-up. */

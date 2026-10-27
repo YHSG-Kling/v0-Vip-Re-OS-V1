@@ -37,6 +37,10 @@
  *   · the DEADLINE (WELCOME_VIDEO_WAIT_MS, measured from the ledger row's own
  *     created_at, i.e. from conversion) is checked BEFORE the assembly gate, so a
  *     stuck Remotion render cannot hold the welcome past it.
+ *   · WAVE 145 (owner ruling 17): past the deadline the welcome is no longer sent
+ *     without the video on this route's own say — a HUMAN-APPROVED EXCEPTION is
+ *     filed (approval item `welcome_without_video`) and an APPROVED one is
+ *     released by releaseApprovedWelcomeExceptions at the end of each tick.
  *
  * ── STILL TRUE, AND STILL LOAD-BEARING ─────────────────────────────────────
  *
@@ -67,6 +71,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { ensureClientWelcome } from "@/lib/kernel/client-welcome"
 import {
   classifyPendingWelcome,
+  holdWelcomeForException,
+  releaseApprovedWelcomeExceptions,
   PENDING_WELCOME_STATUSES,
   WELCOME_VIDEO_WAIT_MS,
 } from "@/lib/contact-promotion/conversion-welcome"
@@ -154,9 +160,10 @@ export async function GET(req: NextRequest) {
 
     const ageMs = r.created_at ? now - new Date(r.created_at).getTime() : null
 
-    // WAVE 144 (lane 144F, owner ruling 13): the welcome no longer waits — it went at conversion. The welcome's OWN state (the
-    // survivor's tag) tells the classifier whether this row owes a video FOLLOW-UP (welcome sent), must wait behind a welcome held
-    // for approval, or is a pre-144 row whose welcome is still held. A refused read is null → the row waits, nothing is stamped.
+    // WAVE 145 (lane 145E, owner ruling 17 — reverses ruling 13's timing): the welcome WAITS for the video again, so a new row's
+    // welcome state is 'none' and the classifier releases the ONE welcome WITH the validated video, or past the deadline hands it
+    // to a person (hold_for_exception). The wave-144 follow-up arms (welcome already 'sent' / 'held' / 'failed') remain only for
+    // rows whose welcome went under ruling 13. A refused read is null → the row waits; past the deadline a person decides.
     const welcomeState = await readWelcomeState(svc, { contactId: r.contact_id, brokerageId: r.brokerage_id })
 
     const verdict = classifyPendingWelcome({
@@ -176,6 +183,27 @@ export async function GET(req: NextRequest) {
     }
     if (verdict.action === "skip") {
       results.push({ id: r.id, outcome: "skipped", reason: verdict.reason })
+      continue
+    }
+
+    // ── WAVE 145 (lane 145E, owner ruling 17): THE VIDEO FAILED → A PERSON DECIDES ──────────────────────
+    // The welcome is NOT sent without the video on the sweeper's own say. The ledger row is stamped with what happened to the
+    // video (COUNTED — an update matching nothing resolves like one that worked), and the human-approved exception is filed
+    // (idempotent per contact). An approved exception is released below by releaseApprovedWelcomeExceptions.
+    if (verdict.action === "hold_for_exception") {
+      if (verdict.ledgerStatus) {
+        const { data: stamped, error: stampError } = await svc
+          .from("agent_intro_videos")
+          .update({ status: verdict.ledgerStatus, error_message: verdict.reason })
+          .eq("id", r.id)
+          .select("id")
+        if (stampError || (stamped ?? []).length === 0) {
+          console.error(`[intro-video-email-backfill] exception stamp did not land for ${r.id}: ${stampError?.message ?? "0 rows matched"}`)
+        }
+      }
+      const filing = await holdWelcomeForException(svc, { brokerageId: r.brokerage_id, contactId: r.contact_id, agentId: r.agent_id, reason: verdict.reason })
+      if (!filing.filed) console.error(`[intro-video-email-backfill] welcome exception NOT filed for contact ${r.contact_id}: ${filing.error ?? "unknown"}`)
+      results.push({ id: r.id, outcome: filing.filed ? "held_for_exception" : "exception_not_filed", reason: filing.filed ? verdict.reason : (filing.error ?? verdict.reason) })
       continue
     }
 
@@ -298,12 +326,21 @@ export async function GET(req: NextRequest) {
     })
   }
 
+  // ── WAVE 145 (lane 145E, owner ruling 17): RELEASE THE WELCOMES A PERSON APPROVED WITHOUT THE VIDEO ──
+  // A held welcome's exception is an approval item; once a person APPROVES it the welcome goes out through the survivor
+  // (ensureClientWelcome — its idempotency tag refuses a second welcome). Pending / rejected items are never released.
+  const exceptions = await releaseApprovedWelcomeExceptions(svc, {}, {
+    ensureWelcome: (contact) => ensureClientWelcome(svc as any, contact),
+  })
+  if (exceptions.error) console.error(`[intro-video-email-backfill] approved welcome exceptions not released: ${exceptions.error}`)
+
   const anniversary = await deliverAnniversaryPortalCards(svc)
 
   return NextResponse.json({
     ran_at:    new Date().toISOString(),
-    processed: results.length + anniversary.length,
+    processed: results.length + exceptions.examined + anniversary.length,
     results,
+    approved_exceptions: exceptions,
     anniversary,
   })
 }

@@ -14,6 +14,29 @@
 // Idempotent: first_touched_at stamp is written atomically; a concurrent run
 // on the same row produces the "already_first_touched" skip at the policy layer.
 // Never throws the loop — per-row failures go to automation_errors.
+//
+// ── WAVE 145 (lane 145E) — SPEED-TO-LEAD IS CONSUMED BY THE ARBITER ─────────
+// OWNER RULING 16 (2026-10-27): "Speed to lead should be consumed by the
+// followup-arbiter and should be the arbiter decision." Measured at b364eb4b:
+// the CONTACT half already went sweep → engageContact('speed_to_lead') →
+// arbiter, but as a FIXED send the model never saw (wave 144); the LEAD half
+// never reached the arbiter at all — this sweeper dispatched its own fixed
+// email-then-mail cascade (firstTouchDecision → initiateAIISAEngagement with no
+// channel decision). Now:
+//   · firstTouchDecision stays the deterministic ELIGIBILITY (fresh, untouched,
+//     past the agent grace window, something permitted) — law 4: the rules
+//     decide what is possible;
+//   · LEADS: the arbiter (arbitrateSpeedToLead) decides the channel among the
+//     PERMITTED ones (verified email / verified mail — never SMS or a call); the
+//     decision is ledgered (recordArbitration) and the ONE lead door dispatches
+//     it (initiateAIISAEngagement forceChannel);
+//   · CONTACTS: engageContact runs the arbiter under the speed-to-lead PRIORITY
+//     (answer now, no wait; the channel or a person is the arbiter's call);
+//   · `first_touch_channel` records the channel that ACTUALLY went out (the
+//     engagement's own answer), no longer the eligibility's guess.
+// CONTRACT C2 (owner ruling 15): a lead carrying a contact_id is out of the lead
+// domain — excluded at the query, and re-checked per row (isInLeadDomain) so a
+// conversion that lands between the select and the send never fires a lead touch.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { firstTouchDecision, DEFAULT_AGENT_GRACE_MINUTES } from "@/lib/ai-isa/speed-to-lead-policy"
@@ -21,6 +44,10 @@ import type { FirstTouchConsentInput } from "@/lib/ai-isa/speed-to-lead-policy"
 import { initiateAIISAEngagement } from "@/app/actions/ai-isa/initiate-engagement"
 import { engageContact }           from "@/app/actions/ai-isa/engage-contact"
 import { excludeConvertedLeads }   from "@/lib/contact-promotion/conversion-finality"
+import { isInLeadDomain }          from "@/lib/contact-promotion/lead-domain-boundary"
+import { pickLeadOutreachChannel, LEAD_ALLOWED_CHANNELS } from "@/lib/ai-isa/lead-channel-policy"
+// Types only — the arbiter itself is loaded lazily inside the lead sweep (it is not needed on a sweep with no fresh lead).
+import type { SpeedToLeadArbitration, SpeedToLeadArbitrationInput, SpeedToLeadLeadChannel } from "@/lib/ai-isa/followup-arbiter"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -42,6 +69,27 @@ export interface SpeedToLeadDeps {
   supabase?: ReturnType<typeof createServiceClient>
   initiateEngagement?: typeof initiateAIISAEngagement
   contactEngagement?:  typeof engageContact
+  /** Wave 145: the arbiter's lead decision (the model call is behind it) — a seam for the proofs. */
+  arbitrateLead?: (input: SpeedToLeadArbitrationInput) => Promise<SpeedToLeadArbitration>
+}
+
+/**
+ * PURE. The channels the deterministic lead rule PERMITS for this lead, its default first (lib/ai-isa/lead-channel-policy.ts —
+ * the roster). The consent inputs are firstTouchDecision's own (a VERIFIED email not opted out; a VERIFIED mailing address not
+ * opted out); the address itself is re-checked by the one lead door at the send (initiateAIISAEngagement → dispatch).
+ */
+function permittedLeadChannels(lead: {
+  email_verified?: boolean | null; email_opt_out?: boolean | null
+  mailing_address_verified?: boolean | null; direct_mail_opt_out?: boolean | null
+  preferred_channel?: string | null
+}): SpeedToLeadLeadChannel[] {
+  const emailUsable = lead.email_verified === true && lead.email_opt_out !== true
+  const mailingVerified = lead.mailing_address_verified === true && lead.direct_mail_opt_out !== true
+  const first = pickLeadOutreachChannel({ requestedChannel: lead.preferred_channel ?? null, emailUsable, mailingVerified })
+  if (first === "no_outreach") return []
+  const usable: Record<SpeedToLeadLeadChannel, boolean> = { email: emailUsable, direct_mail: mailingVerified }
+  // The default first, then every other channel on THE lead roster that is usable (LEAD_ALLOWED_CHANNELS — never retyped).
+  return [first, ...LEAD_ALLOWED_CHANNELS.filter((c) => c !== first && usable[c])]
 }
 
 // ── Main entry ─────────────────────────────────────────────────────────────
@@ -83,8 +131,9 @@ export async function runSpeedToLead(
     supabase
       .from("leads")
       .select(
-        `id, brokerage_id, created_at, first_touched_at,
-       email_verified, email_opt_out, mailing_address_verified,
+        `id, brokerage_id, created_at, distributed_at, first_touched_at, contact_id,
+       email, email_verified, email_opt_out, mailing_address, mailing_address_verified, direct_mail_opt_out,
+       preferred_channel, lead_score, lead_temperature, timeline, source,
        ai_isa_owner, lifecycle_state`,
       )
       .eq("brokerage_id", brokerageId)
@@ -98,8 +147,20 @@ export async function runSpeedToLead(
     await logError(supabase, brokerageId, "speed_to_lead_leads_query", leadsError.message)
   }
 
+  // The arbiter + the tenant's follow-up policy are loaded ONCE per sweep, and only when a lead is actually due.
+  let arbiterMod: typeof import("@/lib/ai-isa/followup-arbiter") | null = null
+  let leadPolicy: import("@/lib/ai-isa/followup-policy").FollowupPolicy | null = null
+  const leadBudget = { remaining: 25 } // the sweep's model-decision ceiling (a 50-lead burst never becomes 50 model calls)
+
   for (const lead of leads ?? []) {
     try {
+      // CONTRACT C2 (ruling 15): re-checked per row — a conversion that landed after the select makes this a CONTACT's
+      // journey (its own sweep / engagement), never a lead touch.
+      if (!isInLeadDomain(lead as { id?: string | null; contact_id?: string | null })) {
+        skipped++
+        continue
+      }
+
       const consent: FirstTouchConsentInput = {
         email_verified:           !!(lead.email_verified),
         email_opt_out:            !!(lead.email_opt_out),
@@ -119,18 +180,49 @@ export async function runSpeedToLead(
         continue
       }
 
-      // Dispatch via the canonical entry — already consent/channel gated
+      // ── THE ARBITER DECIDES THE FIRST TOUCH (ruling 16) among what the lead rule PERMITS ──
+      const permitted = permittedLeadChannels(lead as Parameters<typeof permittedLeadChannels>[0])
+      arbiterMod = arbiterMod ?? await import("@/lib/ai-isa/followup-arbiter")
+      if (!leadPolicy) leadPolicy = (await (await import("@/lib/ai-isa/followup-policy")).loadFollowupPolicy(supabase, brokerageId)).policy
+      const arrivedAt = lead.distributed_at && lead.distributed_at > lead.created_at ? lead.distributed_at : lead.created_at
+      const arbInput: SpeedToLeadArbitrationInput = {
+        brokerageId, policy: leadPolicy, permitted, budget: leadBudget,
+        facts: {
+          leadTemperature: (lead.lead_temperature as string | null) ?? null,
+          leadScore: typeof lead.lead_score === "number" ? lead.lead_score : null,
+          timeline: (lead.timeline as string | null) ?? null,
+          source: (lead.source as string | null) ?? null,
+          minutesSinceArrival: arrivedAt ? Math.max(0, Math.round((now.getTime() - new Date(arrivedAt).getTime()) / 60_000)) : null,
+          hoursSinceLastOutreach: null, // a first touch: first_touched_at IS NULL is the sweep's own predicate
+          preferences: [],
+        },
+      }
+      const arb = await (deps.arbitrateLead ?? arbiterMod.arbitrateSpeedToLead)(arbInput)
+      if (!arb.channel) {
+        skipped++
+        continue
+      }
+      if (arb.decision) {
+        // LAW 5 — the decision is evidence before the send (one non-action row per lead per day; the send is its own row).
+        const rec = await arbiterMod.recordArbitration(supabase, {
+          brokerageId, subject: { type: "lead", id: lead.id }, decision: arb.decision, now, policyRef: null, systemSource: "speed_to_lead",
+        })
+        if (!rec.recorded && rec.error) console.warn(`[speed-to-lead] arbiter decision not ledgered for lead ${lead.id}: ${rec.error}`)
+      }
+
+      // Dispatch via the canonical entry — already consent/channel gated — on the ARBITER's channel.
       // Lane 86E: the cron has no session — it PRESENTS the internal secret
       // (the engagement door no longer treats the env var's presence as one).
-      const result = await doLeadEngagement(lead.id, { internalSecret: process.env.CRON_SECRET })
+      const result = await doLeadEngagement(lead.id, { internalSecret: process.env.CRON_SECRET, forceChannel: arb.channel })
 
       if (result?.success !== false) {
-        // Stamp first touch
+        // Stamp first touch — the channel the engagement actually used (its own answer), else the arbiter's.
+        const sentOn = typeof (result as { channel?: unknown } | null)?.channel === "string" ? (result as { channel: string }).channel : arb.channel
         const { error: firstTouchErr } = await supabase
           .from("leads")
           .update({
             first_touched_at:    now.toISOString(),
-            first_touch_channel: decision.channel,
+            first_touch_channel: sentOn,
             updated_at:          now.toISOString(),
           })
           .eq("id", lead.id)
@@ -206,20 +298,27 @@ export async function runSpeedToLead(
         continue
       }
 
+      // The ARBITER decides this first touch (ruling 16): engageContact runs it under the speed-to-lead PRIORITY — the hard stops
+      // lock first, no wait is offered, and the channel (or a person) is the arbiter's call over the readiness-checked channels.
       const result = await doContactEngagement({
         contactId:   contact.id,
         brokerageId: contact.brokerage_id,
         reason:      "speed_to_lead",
       })
+      // A PERSON was the arbiter's answer (notify human — the agent's task exists, engage-contact routeToAgent): the requirement is
+      // answered, so the claim is stamped `human_task` — otherwise this sweep would re-arbitrate the same contact every two minutes.
+      const answeredByPerson = result?.success === false && /^experience:agent_intervention:/.test(String(result?.reason ?? ""))
 
-      if (result?.success !== false) {
+      if (result?.success !== false || answeredByPerson) {
         await sentinelWrite(
           supabase,
           supabase
             .from("contacts")
             .update({
               first_touched_at:    now.toISOString(),
-              first_touch_channel: decision.channel,
+              // The channel the engagement ACTUALLY used (its own answer — the arbiter's decision, dispatched); `human_task` when a
+              // person answers. Never the eligibility's guess: the sweep picks no channel of its own (ruling 16).
+              first_touch_channel: answeredByPerson ? "human_task" : (result?.channel ?? null),
               updated_at:          now.toISOString(),
             })
             .eq("id", contact.id)
