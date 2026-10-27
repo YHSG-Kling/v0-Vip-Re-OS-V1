@@ -1216,6 +1216,35 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
       contact("C-text").first_touch_channel === "sms" && !!contact("C-person").first_touched_at && contact("C-person").first_touch_channel === "human_task" && r.contactsTouched === 2, JSON.stringify({ r, t: contact("C-text").first_touch_channel, p: contact("C-person").first_touch_channel }))
     const r2 = await runSpeedToLead(B, { now: NOW }, { supabase: db as never, arbitrateLead: async () => { throw new Error("a retried sweep must not re-arbitrate a touched lead") }, initiateEngagement: (async () => { throw new Error("no second touch") }) as never, contactEngagement: (async () => { throw new Error("no second touch") }) as never })
     check("W145 RETRY / DUPLICATE SWEEP: a second run touches nobody twice and asks the arbiter nothing (first_touched_at is the claim)", r2.leadsTouched === 0 && r2.contactsTouched === 0, JSON.stringify(r2))
+
+    // CLAIM BEFORE SEND (lane 145Z — lane E Outside-lane: the lead-created hook and the cron can run at once). A concurrent run
+    // that claims the row BETWEEN this run's read and its claim wins: this run's conditional claim matches nothing and NO
+    // engagement is dispatched. A send that fails, or throws, RELEASES this run's own claim so the next sweep retries.
+    const db3 = memSupabase({ leads: [leadRow("L-race", { mailing_address_verified: false, source: "race_probe" }), leadRow("L-fail", { mailing_address_verified: false }), leadRow("L-throw", { mailing_address_verified: false })], contacts: [], automation_errors: [], agent_action_ledger: [] }, { uuidIds: true, stampCreatedAt: true })
+    const OTHER_RUN = ago(0)
+    const sent3: string[] = []
+    const r3 = await runSpeedToLead(B, { now: NOW }, {
+      supabase: db3 as never,
+      arbitrateLead: async (input) => {
+        if (input.facts.source === "race_probe") { // the arbiter input carries no id — the row is marked by its source
+          const row = (db3.tables.leads ?? []).find((x) => x.id === "L-race"); if (row) { row.first_touched_at = OTHER_RUN; row.first_touch_channel = "email" }
+        }
+        return { channel: "email", skippedReason: null, decision: null } as never
+      },
+      initiateEngagement: (async (id: string) => {
+        sent3.push(id)
+        if (id === "L-fail") return { success: false, error: "provider refused" }
+        if (id === "L-throw") throw new Error("provider exploded")
+        return { success: true, channel: "email" }
+      }) as never,
+      contactEngagement: (async () => { throw new Error("no contacts here") }) as never,
+    })
+    const l3 = (id: string) => (db3.tables.leads ?? []).find((x) => x.id === id) ?? {}
+    const raceWasSeen = !sent3.includes("L-race") && l3("L-race").first_touched_at === OTHER_RUN
+    check("W145 CLAIM BEFORE SEND: a lead another run claimed between this run's read and its claim is NOT engaged (the conditional claim matched nothing) and the other run's stamp stands",
+      raceWasSeen, JSON.stringify({ sent3, race: l3("L-race").first_touched_at, r3 }))
+    check("W145 …a send that FAILS or THROWS releases this run's own claim (first_touched_at back to null) — the next sweep retries, never a silently 'touched' lead",
+      sent3.includes("L-fail") && sent3.includes("L-throw") && l3("L-fail").first_touched_at == null && l3("L-throw").first_touched_at == null && r3.leadsTouched === 0, JSON.stringify({ fail: l3("L-fail").first_touched_at, thr: l3("L-throw").first_touched_at, r3 }))
   }
 
   console.log("\n── 8e. LIFE-CHANGE / INTENT SIGNALS → a governed evaluation and next-best action (ruling 11) ──")

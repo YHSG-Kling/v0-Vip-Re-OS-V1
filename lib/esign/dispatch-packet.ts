@@ -27,7 +27,11 @@ import { supportsEmbeddedSend, providerPortalMode, getCatalogEntry } from "@/lib
 import type { SignatureTag } from "@/lib/integrations/providers/transaction-provider.interface"
 import { legalDescriptionGate } from "@/lib/forms/legal-description"
 
-export const FORMS_BUCKET = "brokerage-forms"
+// ONE bucket spelling (§6, wave 145 lane 145Z — lane 145A Outside-lane 6): this module re-spelled the literal; the
+// survivor is lib/forms/tenant-form-packets.ts FORM_PACKET_BUCKET (not server-only). Re-exported under the old name so
+// its importers keep one spelling.
+export { FORM_PACKET_BUCKET as FORMS_BUCKET } from "@/lib/forms/tenant-form-packets"
+import { FORM_PACKET_BUCKET as FORMS_BUCKET } from "@/lib/forms/tenant-form-packets"
 
 /** A packet document: a `brokerage-forms` object path (the FormWizard) OR an already-issued
  *  document URL the record carries (transaction_documents.storage_url — the transaction

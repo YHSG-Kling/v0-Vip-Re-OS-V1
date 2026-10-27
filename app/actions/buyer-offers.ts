@@ -779,6 +779,12 @@ export async function createOffer(
     }
   }
 
+  // THE FINANCING TERM (wave 145, lane 145Z — m871; lane 144A Outside-lane 1): a brokerage term is stored as its
+  // PLATFORM roll-up in financing_type (offer strength, the government-loan addendum and financingKindFor read it) and
+  // as itself in financing_subtype (written right after the insert, in its own tenant-pinned UPDATE).
+  const { resolveFinancingWrite, persistFinancingSubtype } = await import("@/lib/offers/financing-subtype")
+  const financing = await resolveFinancingWrite(supabase as any, brokerageId, form.financing_type)
+
   const { data: offer, error: offerError } = await supabase
     .from("offers")
     .insert({
@@ -792,7 +798,7 @@ export async function createOffer(
       earnest_money:               form.earnest_money,
       down_payment_amount:         form.down_payment_amount ?? null,
       down_payment_percent:        form.down_payment_percent ?? null,
-      financing_type:              form.financing_type,
+      financing_type:              financing.financing_type ?? form.financing_type,
       financing_contingency_days:  form.financing_contingency ? form.financing_contingency_days : null,
       inspection_period_days:      form.inspection_contingency ? form.inspection_period_days : null,
       appraisal_contingency_days:  form.appraisal_contingency ? form.appraisal_contingency_days : null,
@@ -829,6 +835,11 @@ export async function createOffer(
 
   if (offerError || !offer) {
     return { success: false, error: offerError?.message ?? "Failed to create offer" }
+  }
+
+  if (financing.financing_subtype) {
+    const sub = await persistFinancingSubtype(supabase as any, { table: "offers", id: offer.id, brokerageId, subtype: financing.financing_subtype })
+    if (!sub.ok) console.error(`[buyer-offers] offer ${offer.id}: the financing term "${financing.financing_subtype}" was not recorded — ${sub.error}`)
   }
 
   // ── OFFER_INTENT BRIDGE (m619) ──────────────────────────────────────────────

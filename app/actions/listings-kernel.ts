@@ -1049,8 +1049,14 @@ export async function sendListingAgreementForSignatureAction(params: {
   const providerWindow = docs.length === 0 && params.providerWindow ? params.providerWindow : null
   if (docs.length === 0 && !providerWindow) return { success: false, error: "Select and fill the listing agreement before sending it for signature.", blockerType: "no_documents" }
   if (docs.length > 0) {
+    // THE SEAT DOOR (wave 145, lane 145A Outside-lane 2): the forms actor is an ACTIVE STAFF SEAT resolved from the
+    // session user (resolvePacketActor) — the agent context alone admits a contact / vendor seat to the scope check.
+    const { resolvePacketActor } = await import("@/lib/forms/tenant-form-packets")
+    const seat = await resolvePacketActor(svc as never, ctx.userId)
+    if (!seat.ok) return { success: false, error: seat.error }
+    if (seat.actor.brokerageId !== ctx.brokerageId) return { success: false, error: "Listing not found" }
     const { checkFormPathsInScope } = await import("@/lib/forms/form-path-scope")
-    const scope = await checkFormPathsInScope(svc, docs.map((d) => d.storagePath), { brokerageId: ctx.brokerageId, teamId: ctx.teamId, userId: ctx.userId })
+    const scope = await checkFormPathsInScope(svc, docs.map((d) => d.storagePath), { brokerageId: seat.actor.brokerageId, teamId: seat.actor.teamId, userId: ctx.userId })
     if (!scope.ok) return { success: false, error: scope.error ?? `These forms are not in your library: ${scope.refused.join(", ")}` }
   }
 

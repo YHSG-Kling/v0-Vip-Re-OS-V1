@@ -10,7 +10,9 @@
  * the lead sweep, with dead ends, postponed-until, intent priority, memory, the ledger record and
  * fail-closed reads, executed on an in-memory client; and the property_sold writer.
  */
-import { permittedContactChannels, permittedLeadChannels, ageGroupChannelAffinity, decideNextChannel } from "../lib/ai-isa/next-best-touch"
+import { readFileSync as readFileSyncZ } from "node:fs"
+import { permittedContactChannels, permittedLeadChannels, NEUTRAL_TOUCH_CHANNEL_ORDER, decideNextChannel } from "../lib/ai-isa/next-best-touch"
+import { blankStrings as blankStringsZ, stripComments as stripCommentsZ } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -33,33 +35,39 @@ async function main() {
   check("a LEAD never gets sms/phone/voicedrop (TCPA floor)", !leadFull.some((c) => ["sms", "phone", "voicedrop"].includes(c)))
   check("lead with no usable email → no email/newsletter", (() => { const p = permittedLeadChannels({ emailUsable: false, mailingVerified: true }); return !p.includes("email") && !p.includes("newsletter") && p.includes("direct_mail") })())
   check("lead with nothing verified → empty (no_outreach upstream)", permittedLeadChannels({ emailUsable: false, mailingVerified: false }).length === 0)
-  // Leads run through the SAME decideNextChannel — cohort-aware rotation across the lead set.
-  check("gen-z LEAD → email first (no sms permitted), within the lead set", decideNextChannel({ permitted: leadFull, cohort: "gen_z" }).channel === "email")
-  check("LEAD rotates email→ another lead channel when email was last", decideNextChannel({ permitted: leadFull, cohort: "gen_z", lastChannel: "email" }).channel !== "email")
+  // Leads run through the SAME decideNextChannel — rotation across the lead set.
+  check("LEAD with no stated preference and no history → email first (the default order), within the lead set", decideNextChannel({ permitted: leadFull }).channel === "email")
+  check("LEAD rotates email→ another lead channel when email was last", decideNextChannel({ permitted: leadFull, lastChannel: "email" }).channel !== "email")
 
   console.log("\n[Newsletter — the late nurture/rotation pick (managers hand off to Campaign Orch.)]")
-  check("newsletter sits LATE in every cohort's affinity (never first)", (["gen_z","millennial","gen_x","boomer","silent","unknown"] as const).every((co) => ageGroupChannelAffinity(co)[0] !== "newsletter" && ageGroupChannelAffinity(co).includes("newsletter")))
+  check("newsletter sits LAST in the one default order (never first)", NEUTRAL_TOUCH_CHANNEL_ORDER[0] !== "newsletter" && NEUTRAL_TOUCH_CHANNEL_ORDER[NEUTRAL_TOUCH_CHANNEL_ORDER.length - 1] === "newsletter")
   // After the 1:1 channels were recently used, rotation reaches the newsletter as the downshift.
   check("contact rotates TO newsletter when its only alternative was last used",
-    decideNextChannel({ permitted: ["email", "newsletter"], cohort: "gen_x", lastChannel: "email" }).channel === "newsletter")
+    decideNextChannel({ permitted: ["email", "newsletter"], lastChannel: "email" }).channel === "newsletter")
 
-  console.log("\n[Age-group psychology — how each generation wants to be reached]")
-  check("gen-z leads with SMS (text-first, screens calls)", ageGroupChannelAffinity("gen_z")[0] === "sms")
-  check("boomer leads with PHONE", ageGroupChannelAffinity("boomer")[0] === "phone")
-  check("silent gen leads with phone, mail high", ageGroupChannelAffinity("silent")[0] === "phone" && ageGroupChannelAffinity("silent").includes("direct_mail"))
-  check("gen-x leads with email", ageGroupChannelAffinity("gen_x")[0] === "email")
-
-  console.log("\n[The decision — engagement → age → rotation, within consent]")
+  // RE-ASSERTED (wave 145, lane 145Z — owner ruling 18 supersedes the wave-age-group ruling): the four "how each generation
+  // wants to be reached" assertions pinned an AGE-ORDERED channel list (gen-z sms-first, boomer phone-first, …). Ruling 18:
+  // accessibility / channel preferences are "explicit, user-controllable fields … never inferred from age/demographics". The RULE
+  // is asserted instead: the stated preference leads, and no age input exists to move the order.
+  console.log("\n[Ruling 18 — the STATED preference leads; nothing orders the channel by age]")
+  const nbtSrc = blankStringsZ(stripCommentsZ(readFileSyncZ("lib/ai-isa/next-best-touch.ts", "utf8")))
+  check("no age-group channel ordering remains in the engine (ageGroupChannelAffinity / GenerationalCohort / cohort are gone from code)", !/\bageGroupChannelAffinity\b|\bGenerationalCohort\b|\bcohort\b/.test(nbtSrc))
+  check("POSITIVE CONTROL — the finder sees an age ordering in a specimen", /\bageGroupChannelAffinity\b/.test(blankStringsZ(stripCommentsZ("export function ageGroupChannelAffinity(c) { return [] }"))))
   const allFive = permittedContactChannels(consented)
-  check("gen-z + no history → SMS (age affinity)", decideNextChannel({ permitted: allFive, cohort: "gen_z" }).channel === "sms")
-  check("boomer + no history → phone", decideNextChannel({ permitted: allFive, cohort: "boomer" }).channel === "phone")
-  check("LEARNED engagement beats age affinity", decideNextChannel({ permitted: allFive, cohort: "gen_z", learnedRanked: ["email"] }).channel === "email")
+  check("a STATED sms preference leads (consented)", decideNextChannel({ permitted: allFive, statedChannel: "sms" }).channel === "sms")
+  check("a STATED phone preference leads, and the reason says it was stated", (() => { const d = decideNextChannel({ permitted: allFive, statedChannel: "phone" }); return d.channel === "phone" && /stated preference/.test(d.reason) })())
+  check("a stated channel consent does NOT permit is never chosen (consent floor beats the statement)", (() => { const p = permittedContactChannels({ ...consented, tcpa_consent: false }); return decideNextChannel({ permitted: p, statedChannel: "sms" }).channel === "email" })())
+
+  console.log("\n[The decision — stated → engagement → default → rotation, within consent]")
+  check("no statement + no history → email (the one default order, the same for everyone)", decideNextChannel({ permitted: allFive }).channel === NEUTRAL_TOUCH_CHANNEL_ORDER[0])
+  check("LEARNED engagement beats the default order", decideNextChannel({ permitted: allFive, learnedRanked: ["phone"] }).channel === "phone")
+  check("the STATED preference beats learned engagement", decideNextChannel({ permitted: allFive, statedChannel: "sms", learnedRanked: ["phone"] }).channel === "sms")
   check("ROTATION — won't repeat the last channel when an alternative exists",
-    decideNextChannel({ permitted: allFive, cohort: "boomer", lastChannel: "phone" }).channel !== "phone")
-  check("rotation reason is explained", /rotated off/.test(decideNextChannel({ permitted: allFive, cohort: "boomer", lastChannel: "phone" }).reason))
-  check("consent floor — gen-z with NO voice consent never gets sms/phone", (() => { const p = permittedContactChannels({ ...consented, tcpa_consent: false }); const d = decideNextChannel({ permitted: p, cohort: "gen_z" }); return !["sms", "phone", "voicedrop"].includes(d.channel) })())
-  check("only one permitted → that channel (no spurious rotation)", decideNextChannel({ permitted: ["email"], cohort: "gen_z", lastChannel: "email" }).channel === "email")
-  check("nothing permitted → no_channel", decideNextChannel({ permitted: [], cohort: "unknown" }).channel === "no_channel")
+    decideNextChannel({ permitted: allFive, lastChannel: "email" }).channel !== "email")
+  check("rotation reason is explained", /rotated off/.test(decideNextChannel({ permitted: allFive, lastChannel: "email" }).reason))
+  check("consent floor — NO voice consent never gets sms/phone", (() => { const p = permittedContactChannels({ ...consented, tcpa_consent: false }); const d = decideNextChannel({ permitted: p }); return !["sms", "phone", "voicedrop"].includes(d.channel) })())
+  check("only one permitted → that channel (no spurious rotation)", decideNextChannel({ permitted: ["email"], lastChannel: "email" }).channel === "email")
+  check("nothing permitted → no_channel", decideNextChannel({ permitted: [] }).channel === "no_channel")
 
 
   // ───────────────────────────────────────────────────────────────────────────

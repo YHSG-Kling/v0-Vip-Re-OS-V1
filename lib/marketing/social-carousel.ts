@@ -142,7 +142,7 @@ export async function runListingCarousels(svc: any): Promise<ListingCarouselsRes
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
 
   const { data: listings } = await svc.from("listings")
-    .select("id, brokerage_id, agent_id, address, city, state, list_price, bedrooms, bathrooms, sqft, public_remarks, photos, primary_photo_url, lifecycle_stage")
+    .select("id, brokerage_id, agent_id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, public_remarks, photos, primary_photo_url, lifecycle_stage")
     .in("lifecycle_stage", ["COMING_SOON_ACTIVE", "MLS_ACTIVE", "OPEN_HOUSE_MARKETING", "OPEN_HOUSE_EVENT"])
     .is("deleted_at", null).gte("created_at", since).limit(200)
 
@@ -167,14 +167,24 @@ export async function runListingCarousels(svc: any): Promise<ListingCarouselsRes
 
       const stage = String(l.lifecycle_stage ?? "").toUpperCase()
       const statusLine = stage.startsWith("OPEN_HOUSE") ? "OPEN HOUSE" : stage === "COMING_SOON_ACTIVE" ? "COMING SOON" : "JUST LISTED"
+      // OWNER RULING 1 (wave 145, lane 145Z — lane 145B Outside-lane 7): a COMING_SOON_ACTIVE carousel's slides and
+      // caption print only the line the address rule allows; remarks-derived highlights are scrubbed (redact mode).
+      // The caption below reads the slide title, so it follows. Fail closed inside the rule.
+      const comingSoon = stage === "COMING_SOON_ACTIVE"
+        ? await (await import("@/lib/marketing/listing-public-address")).resolveComingSoonCreativeAddress({ policyClient: svc, termsClient: svc, listing: l })
+        : null
+      const scrub = async (t: string): Promise<string> => comingSoon
+        ? (await import("@/lib/marketing/listing-public-address")).guardComingSoonCreativeText(t, l, comingSoon, "redact").text
+        : t
+      const highlights = await Promise.all(String(l.public_remarks ?? "").split(/[.\n]/).map((s: string) => s.trim()).filter((s: string) => s.length > 12 && s.length < 70).slice(0, 4).map(scrub))
       const facts: CarouselListingFacts = {
-        address: l.address ?? "",
-        cityState: [l.city, l.state].filter(Boolean).join(", "),
+        address: comingSoon ? comingSoon.addressLine : (l.address ?? ""),
+        cityState: comingSoon ? "" : [l.city, l.state].filter(Boolean).join(", "),
         price: l.list_price ? `$${Number(l.list_price).toLocaleString("en-US")}` : "",
         beds: String(l.bedrooms ?? ""), baths: String(l.bathrooms ?? ""),
         sqft: l.sqft ? Number(l.sqft).toLocaleString("en-US") : "",
         statusLine,
-        highlights: String(l.public_remarks ?? "").split(/[.\n]/).map((s: string) => s.trim()).filter((s: string) => s.length > 12 && s.length < 70).slice(0, 4),
+        highlights,
       }
 
       const gate = async (content: string) => {

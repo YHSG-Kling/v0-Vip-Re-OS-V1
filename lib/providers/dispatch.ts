@@ -669,6 +669,29 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     }
   }
 
+  // ── OUTCOME RECONCILIATION: open a PENDING claim, not a fact (wave 145, lane 145Z — lane 145I's open loop
+  // `outcome-claim-missing:email`). SendGrid's 202 says "accepted", not "delivered"; the claim is opened against the
+  // X-Message-Id it returned, and the EXISTING SendGrid Event Webhook (app/api/webhooks/sendgrid-events) proves or
+  // contradicts it through the same ledger SMS and direct mail use (lib/outcomes/reconciliation-ledger.ts). Only a send
+  // SendGrid carried is claimed: an agent-mailbox send (gmail / outlook) emits no SendGrid events, so a claim on it could
+  // never be proven. Fire-and-forget: a ledger failure must never fail a send that already happened.
+  if (result.success && result.messageId && result.providerKey === "sendgrid") {
+    const providerRef = result.messageId
+    void (async () => {
+      const { recordOutcomeClaim } = await import("@/lib/outcomes/reconciliation-ledger")
+      await recordOutcomeClaim({
+        brokerageId: params.brokerageId,
+        channel: "email",
+        providerRef,
+        claimedStatus: "processed",
+        entityType: "email",
+        contactId: params.contactId ?? null,
+        leadId: params.leadId ?? null,
+        claimedByManager: "campaign_orchestrator",
+      })
+    })().catch(() => {})
+  }
+
   // Record usage — fire and forget (non-blocking) — ONLY for a send the provider ACCEPTED.
   // Lane 93D live walk: a client-welcome refused `no_verified_sender` (nothing left the
   // building) still booked a SendGrid email to vendor_usage_tracking — and that ledger feeds

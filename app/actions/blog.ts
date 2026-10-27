@@ -260,15 +260,30 @@ export async function publishBlogPost(
   const supabase = await createClient()
   const { data: post } = await supabase
     .from("blog_posts")
-    .select("id, brokerage_id, slug, publish_status, publish_target")
+    .select("id, brokerage_id, slug, publish_status, publish_target, content")
     .eq("id", postId)
     .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
-  const p = post as { id: string; brokerage_id: string; slug: string; publish_status: string; publish_target: string } | null
+  const p = post as { id: string; brokerage_id: string; slug: string; publish_status: string; publish_target: string; content: string | null } | null
   if (!p) return { success: false, error: "Blog post not found" }
   if (p.publish_status !== "approved" && p.publish_status !== "published") {
     return { success: false, error: "Post must be approved before publishing" }
   }
+  // THE VERSION THAT WENT OUT (owner ruling 20 — wave 145, lane 145Z; lane 145G Outside-lane 4): after the post is live, its exact
+  // content is recorded against its humanized final — the person publishing an approved post is the approval evidence.
+  const recordOut = async (via: string) => {
+    try {
+      const { recordDoorPublication } = await import("@/lib/marketing/humanize-final")
+      const rec = await recordDoorPublication(supabase as any, {
+        brokerageId: actor.brokerageId, assetKind: "blog_post", assetTable: "blog_posts", assetId: p.id, content: String(p.content ?? ""),
+        approvedBy: actor.userId ?? null, approvedAt: new Date().toISOString(), via, ref: `${baseUrlForRecord}/blog/${p.slug}`,
+      })
+      if (!rec.ok) console.error(`[blog] post ${p.id} published, but the version that went out was NOT recorded: ${rec.error}`)
+    } catch (e) {
+      console.error(`[blog] post ${p.id}: version record threw: ${(e as Error)?.message ?? e}`)
+    }
+  }
+  const baseUrlForRecord = process.env.NEXT_PUBLIC_APP_URL ?? ""
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? ""
   const hostedUrl = `${baseUrl}/blog/${p.slug}`
@@ -279,6 +294,7 @@ export async function publishBlogPost(
       published_at:   new Date().toISOString(),
     }).eq("id", postId).eq("brokerage_id", actor.brokerageId)
     if (hostedPublishErr) return { success: false, error: `Could not mark the post published: ${hostedPublishErr.message}` }
+    await recordOut("blog_hosted")
     return { success: true, hostedUrl }
   }
 
@@ -292,6 +308,7 @@ export async function publishBlogPost(
       published_at:   new Date().toISOString(),
     }).eq("id", postId).eq("brokerage_id", actor.brokerageId)
     if (embedPublishErr) return { success: false, error: `Could not mark the post published: ${embedPublishErr.message}` }
+    await recordOut("blog_embed")
     return { success: true, hostedUrl: `${baseUrl}/embed/blog/${p.slug}` }
   }
 
@@ -305,6 +322,7 @@ export async function publishBlogPost(
     published_at:   new Date().toISOString(),
   }).eq("id", postId).eq("brokerage_id", actor.brokerageId)
   const wpResult = await publishToWordPress(userId, postId)
+  await recordOut(wpResult.success ? "blog_hosted+wordpress" : "blog_hosted")
   return {
     success:         true,
     hostedUrl,

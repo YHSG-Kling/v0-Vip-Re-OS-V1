@@ -47,7 +47,10 @@ export async function run() {
   // ── 2 · REFERRAL — internal agent (green) and OUTSIDE PARTNER (ruling 5) ──
   const rIn = newDeal(); tenants.push(rIn.B)
   const REFERRER = uuid(), REF_IN = uuid()
-  rIn.extra = { agents: [{ id: REFERRER, brokerage_id: rIn.B, user_id: uuid(), team_id: null }], referrals: [{ id: REF_IN, brokerage_id: rIn.B, agent_id: rIn.A, referring_agent_id: REFERRER, partner_id: null, referral_fee_pct: 25, status: "received", referred_contact_id: rIn.C, transaction_id: null, created_at: "2026-07-01T00:00:00Z" }] }
+  // OWNER RULING 9 (wave 145, lane 145Z — lane 145C Outside-lane 1): a referral payout requires an EXECUTED referral
+  // agreement on record. The fixture now carries one (executed before the deal date) — the fixture is fixed, never the
+  // rule: without it the payout correctly HOLDS ("no executed referral agreement is on record") and FINAL refuses.
+  rIn.extra = { agents: [{ id: REFERRER, brokerage_id: rIn.B, user_id: uuid(), team_id: null }], referrals: [{ id: REF_IN, brokerage_id: rIn.B, agent_id: rIn.A, referring_agent_id: REFERRER, partner_id: null, referral_fee_pct: 25, status: "received", referred_contact_id: rIn.C, transaction_id: null, created_at: "2026-07-01T00:00:00Z", referral_agreement_document_id: uuid(), referral_agreement_executed_on: "2026-06-30" }] }
   const ri = await runEngine(rIn); svcs.push(ri.svc)
   const riRef = rowsOf(ri.svc, "commission_distributions").filter((r) => r.distribution_type === "referral")
   const again = await runEngine(rIn, { svc: ri.svc })
@@ -58,7 +61,9 @@ export async function run() {
   // partner_type is the LIVE vocabulary's licensed-real-estate value (scripts/check-vocabularies.ts referral_partners.partner_type):
   // the first version wrote "agent", which the live CHECK refuses — the in-memory client does not enforce CHECKs, so the fixture
   // was an impossible row (found when lane 144D's RESPA §8 rule correctly refused it). company_name = the brokerage of record.
-  const partnerRow = { id: PARTNER, brokerage_id: rOut.B, partner_name: "Outside Referral Agent", company_name: "Other Realty LLC", partner_type: "real_estate_agent", active: true, referral_fee_flat: null, commission_split_percentage: 25 }
+  // Ruling 9 (wave 145, lane 145Z — lane 145C Outside-lane 1): the outside partner's standing EXECUTED referral agreement
+  // (m860 referral_partners.agreement_document_id), dated on or before the deal date.
+  const partnerRow = { id: PARTNER, brokerage_id: rOut.B, partner_name: "Outside Referral Agent", company_name: "Other Realty LLC", partner_type: "real_estate_agent", active: true, referral_fee_flat: null, commission_split_percentage: 25, agreement_document_id: uuid(), agreement_date: "2026-06-30" }
   rOut.extra = {
     referral_partners: [partnerRow],
     referrals: [{ id: REF_OUT, brokerage_id: rOut.B, agent_id: rOut.A, referring_agent_id: null, partner_id: PARTNER, referral_fee_pct: 25, status: "received", referred_contact_id: rOut.C, transaction_id: null, created_at: "2026-07-01T00:00:00Z" }],

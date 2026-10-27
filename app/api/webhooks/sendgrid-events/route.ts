@@ -76,6 +76,25 @@ export async function POST(request: NextRequest) {
       const kind = String(ev?.event ?? "")
       const status = STATUS_BY_EVENT[kind]
       const email = String(ev?.email ?? "").trim().toLowerCase()
+
+      // 0. RECONCILE THE OUTCOME CLAIM (wave 145, lane 145Z — the email half of the outcome loop SMS and direct mail
+      //    already close). lib/providers/dispatch.ts opens a pending claim against SendGrid's X-Message-Id; every event —
+      //    in-flight (processed / deferred), confirming (delivered / open / click) or contradicting (bounce / dropped /
+      //    spamreport / blocked) — is the provider's word on it. An unknown id no-ops inside the ledger (not ours to
+      //    record). The ledger row is the authority on whose touch this was, so it also scopes the reads below.
+      const claimRef = String(ev?.sg_message_id ?? "").split(".")[0]
+      let claimBrokerageId: string | null = null
+      if (claimRef && kind) {
+        const { ingestProviderTruth } = await import("@/lib/outcomes/reconciliation-ledger")
+        const at = Number.isFinite(Number(ev?.timestamp)) && Number(ev?.timestamp) > 0 ? new Date(Number(ev.timestamp) * 1000).toISOString() : new Date().toISOString()
+        const recon = await ingestProviderTruth({
+          channel: "email",
+          providerRef: claimRef,
+          truth: { status: kind, at, detail: ev?.reason || ev?.type ? { reason: String(ev?.reason ?? ""), type: String(ev?.type ?? "") } : null },
+        })
+        claimBrokerageId = recon.brokerageId ?? null
+      }
+
       if (!status || !email) continue
 
       // Suppression hygiene FIRST — a spam COMPLAINT never gets re-mailed
@@ -94,7 +113,8 @@ export async function POST(request: NextRequest) {
       // The provider id is the ONLY authoritative link between an event and a tenant.
       // Everything below is scoped to the brokerage it yields, because a recipient
       // email address is not unique across tenants.
-      let eventBrokerageId: string | null = null
+      // The outcome ledger's row (step 0) is an authoritative tenant link too; the messages row below refines it.
+      let eventBrokerageId: string | null = claimBrokerageId
       if (sgId) {
         const { data: exact } = await svc.from("messages")
           .select("id, status, brokerage_id")

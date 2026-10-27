@@ -88,7 +88,10 @@ export type TransferStep = (typeof TRANSFER_MIGRATION_STEPS)[number]
  *  a brokerage packet's licence is the source workspace's and it is shared with every agent of its brokerage — moving
  *  it would hand a licensed form to the whole adopting brokerage; the m853 CHECK pins its path under the source).
  *  A TEAM's packets (brokerage_form_library.team_id) are NOT a family either: they follow their TEAM in the membership
- *  step, the way the team itself does (same team id, same `teams/{teamId}/packets/…` path). */
+ *  step, the way the team itself does (same team id, same `teams/{teamId}/packets/…` path).
+ *  brokerage_required_documents is NOT a family either (owner ruling 21, wave 145 — lane 145H's carry, wired by lane
+ *  145Z): a moved team's rules are COPIED as the team's rules in the adopting brokerage by
+ *  lib/compliance/team-checklist-carry.ts carryTeamChecklistRules in the membership step; the source rows stay as history. */
 export const TRANSFER_DATA_FAMILIES: readonly { table: string; what: string }[] = [
   { table: "contacts", what: "the book — contacts (agents see contacts; §5)" },
   { table: "leads", what: "unconverted leads the tenant owned" },
@@ -126,6 +129,11 @@ export const TRANSFER_DATA_FAMILIES: readonly { table: string; what: string }[] 
   { table: "lead_capture_forms", what: "the website's landing pages / lead magnets (slug, copy and URL unchanged)" },
   { table: "form_submissions", what: "the capture history of those landing pages (form_id stays in ONE tenant)" },
   { table: "ai_search_landing_citation_observations", what: "AI-search citation history of those landing pages (form_id stays in ONE tenant)" },
+  // A BOOK DISTRIBUTED THROUGH ONE OF THOSE PAGES follows the page (wave 145, lane 145Z — owner ruling 19 + the landing-page
+  // zero-exception rule, scripts/brokerage-identity-guard.ts): book_projects.distribution_form_id → lead_capture_forms (m867).
+  // The subscriber's OWN book (its manuscript, chapters, publishing state) moves with its workspace; a PLATFORM-owned book has
+  // no source brokerage_id and is never selected (correct ownership — ruling 19).
+  { table: "book_projects", what: "the workspace's own book projects (a book distributed as a lead magnet keeps its Book entity)" },
   { table: "farm_territories", what: "farm territories served" },
   { table: "relationship_edges", what: "the knowledge graph edges" },
 ]
@@ -171,13 +179,16 @@ const CHILD_CLASS_GROUPS: ReadonlyArray<{ cls: ChildTransferClass; rule: string;
   { cls: "not_transferable", rule: "MONEY — commission, payout, earnest-money (trust), books, cost, invoice and referral-fee records stay with the brokerage that booked them; money never crosses tenants (m765; ruling 9: a referral obligation is the executing brokerage's)", tables: [
     "agent_commissions", "commission_adjustments", "commission_calculations", "commission_distributions", "commission_splits", "transaction_commissions",
     "closing_disclosure_agreement", "company_books_obligations", "deposits", "cost_breakdown_tracking", "transaction_cost_breakdown", "net_sheet_reconciliations",
-    "referrals", "listing_marketing_packages", "listing_marketing_services", "vendor_invoices"] },
+    "referrals", "listing_marketing_packages", "listing_marketing_services", "vendor_invoices",
+    // wave 145 (lane 145Z, from lane 145C Outside-lane 9): the partner's EXECUTED referral agreement (m860) is the
+    // executing brokerage's ruling-9 obligation and a confidential document — never moved.
+    "referral_partners"] },
   { cls: "not_transferable", rule: "BILLING / USAGE — metered usage and vendor spend are the source subscription's invoice lines", tables: ["usage_events", "vendor_usage_tracking"] },
   { cls: "not_transferable", rule: "SUPERVISION — the supervising broker's compliance file for the deal (record retention binds the brokerage that supervised); the target runs its own review", tables: ["compliance_alerts", "compliance_checklists", "compliance_flags", "compliance_tasks"] },
   { cls: "not_transferable", rule: "AD-ACCOUNT PROPERTY — campaigns, creatives and audiences live in the source's connected ad accounts (spend, platform terms); the target rebuilds them in its own", tables: ["ad_campaigns", "ad_creative_variations", "audience_members"] },
   { cls: "not_transferable", rule: "BEARER TOKENS / INVITES — never re-scoped to another tenant; the target re-issues them", tables: ["buyer_intake_tokens", "portal_contact_invites"] },
   // ── explicit transfer required ──
-  { cls: "explicit_transfer", rule: "EXECUTED AGREEMENT WITH THE SOURCE BROKERAGE — a listing / buyer-broker agreement is the client's contract with the brokerage, not the agent; it moves only on the client's executed assignment or release", tables: ["listing_agreements", "buyer_broker_agreements"] },
+  { cls: "explicit_transfer", rule: "EXECUTED AGREEMENT WITH THE SOURCE BROKERAGE — a listing / buyer-broker agreement is the client's contract with the brokerage, not the agent; it moves only on the client's executed assignment or release. A client-agreement FEE (m859, ruling 5) is a term of that agreement and follows it (lane 145C Outside-lane 9: 'ownership follows the agreement') — so it is never moved apart from it", tables: ["listing_agreements", "buyer_broker_agreements", "client_agreement_fees"] },
   { cls: "explicit_transfer", rule: "CONFIDENTIAL DEAL DOCUMENTS — third-party PII and signatures in the source's deal file; moved only on an explicit, evidenced release (ruling 24)", tables: ["transaction_documents", "generated_documents"] },
   { cls: "explicit_transfer", rule: "CONSENT AND PRIVACY RIGHTS — given to the source sender / controller and never assumed by another; fail-safe while unmoved (the target treats the person as unconsented until consent is re-obtained or a compliance-approved copy lands)", tables: ["contact_consent_events", "newsletter_subscribers", "data_subject_requests"] },
   { cls: "explicit_transfer", rule: "THE CLIENT'S OWN FINANCIAL DATA — credit, income, loan applications; moved only with the client's authorization (contacts see only their own financials — CLAUDE.md §5)", tables: ["buyer_financial_profiles", "credit_accounts", "credit_status", "lender_applications"] },
@@ -224,6 +235,10 @@ const CHILD_CLASS_GROUPS: ReadonlyArray<{ cls: ChildTransferClass; rule: string;
   { cls: "derived_readonly", rule: "PROVIDER ENRICHMENT, SCRAPES AND QUEUES — re-enriched under the target's own provider accounts (gap-only, ruling 12) or re-queued; never copied across accounts", tables: [
     "lead_enrichment_queue", "lead_osint_data", "lead_people_data", "lead_property_ownership", "lead_social_intelligence", "batchdata_motivated_sellers_raw",
     "raw_scraped_leads", "social_search_raw_results", "zenrows_property_search_raw", "video_generation_queue", "video_streaming_status"] },
+  // NOT NAMED HERE BY DESIGN (wave 145, lane 145Z): the ruling-12 research store (m864) is FIREWALLED — no lib/ or app/ module
+  // other than its store may name its table (lane 145F's rule). It declares its own class (derived_readonly, never moved) at
+  // lib/enrichment/protected-research-store.ts PROTECTED_RESEARCH_TRANSFER_CLASS; this rail never reads or moves it, and
+  // scripts/transfer-classification-guard.ts counts that self-declaration in the census.
   // ── ownership follows parent ──
   { cls: "follows_parent", rule: "THE DEAL FILE — milestones, deadlines, timeline, parties, inspections, repairs, closing prep and the deal's own lender / escrow details", tables: [
     "transaction_milestones", "transaction_deadlines", "transaction_timeline", "transaction_pending_actions", "transaction_closing_prep", "transaction_inspections",
@@ -241,6 +256,7 @@ const CHILD_CLASS_GROUPS: ReadonlyArray<{ cls: ChildTransferClass; rule: string;
     "blog_post_keywords", "campaign_calendar", "campaign_sequence_steps", "marketing_campaign_comments", "marketing_campaign_tasks", "marketing_campaign_triggers",
     "marketing_asset_qr_links", "qr_codes", "direct_mail_campaigns", "newsletter_campaigns", "newsletter_video_renders", "podcast_episodes", "social_posts",
     "video_scripts_library", "video_snippets", "training_videos", "calendar_sync_mappings", "calendar_sync_conflicts"] },
+  // book_projects (m867) is NOT classified here: it is a moved FAMILY (TRANSFER_DATA_FAMILIES — it follows its landing page).
 ]
 
 /** table → its class and the rule that decided it. Built from the groups (a table named twice is caught by the guard). */
@@ -378,6 +394,8 @@ export interface BrokerageTransferDeps {
   /** Proof seam for the owner-authorized follows_parent children (production reads TRANSFER_AUTHORIZED_FOLLOWING_CHILDREN).
    *  Verification still refuses any table here that is not follows_parent — the seam cannot move a protected class. */
   authorizedFollowingChildren?: readonly string[]
+  /** Proof seam for the team-checklist carry (production: lib/compliance/team-checklist-carry.ts carryTeamChecklistRules). */
+  carryTeamChecklist?: (svc: any, input: { sourceBrokerageId: string; targetBrokerageId: string; teamIds: string[]; includeWorkspaceRules: boolean; actorUserId: string; reason: string }) => Promise<{ ok: true; carried: number; held: unknown[] } | { ok: false; error: string }>
 }
 
 export interface TransferActor {
@@ -827,6 +845,26 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
           teamPacketNote = `, ${(pk ?? []).length} team form packet(s)`
         }
       }
+      // A TEAM'S REQUIRED-DOCUMENT CHECKLIST FOLLOWS THE TEAM (owner ruling 21, wave 145 — lane 145H's carry; lane 145H
+      // Outside-lane 1, wired by lane 145Z). NON-BLOCKING by design: the source rules stay as history either way, and a
+      // carry that cannot run is repaired from Settings → Required documents (the settings door carries on request) —
+      // so the detail SAYS it, and the adoption is never stalled over a checklist copy.
+      let teamChecklistNote = ""
+      if (movedTeamIds.length) {
+        try {
+          const carry = deps.carryTeamChecklist ?? (await import("@/lib/compliance/team-checklist-carry")).carryTeamChecklistRules
+          const c = await carry(svc, {
+            sourceBrokerageId: sourceId, targetBrokerageId: targetId, teamIds: movedTeamIds,
+            includeWorkspaceRules: req.target_role === "team_lead", actorUserId: actorUserId ?? req.initiated_by_user_id, reason: `adoption ${req.id}`,
+          })
+          if (c.ok) {
+            record.counts.team_checklist_rules = (record.counts.team_checklist_rules ?? 0) + c.carried
+            teamChecklistNote = `, ${c.carried} team checklist rule(s)${c.held.length ? `, ${c.held.length} held for a person` : ""}`
+          } else teamChecklistNote = `, team checklist not carried (${c.error}) — carry it from Settings → Required documents`
+        } catch (err) {
+          teamChecklistNote = `, team checklist not carried (${(err as Error)?.message ?? err}) — carry it from Settings → Required documents`
+        }
+      }
       // IMMEDIATE POST-CONDITION: no seat is left behind, and the subject sits in the target.
       const { data: left, error: leftErr } = await svc.from("users").select("id, user_type").eq("brokerage_id", sourceId).is("platform_role", null)
       if (leftErr) return { error: `post-condition read refused: ${leftErr.message}` }
@@ -834,7 +872,7 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
       if (stragglers.length) return { error: `post-condition failed: ${stragglers.length} seat(s) still in the source tenant` }
       const { data: subjNow } = await svc.from("users").select("brokerage_id").eq("id", req.subject_user_id).maybeSingle()
       if ((subjNow as { brokerage_id?: string } | null)?.brokerage_id !== targetId) return { error: "post-condition failed: the adopted owner is not in the target tenant" }
-      return { detail: `${moved} member(s), ${(teams ?? []).length} team(s)${teamPacketNote}` }
+      return { detail: `${moved} member(s), ${(teams ?? []).length} team(s)${teamPacketNote}${teamChecklistNote}` }
     })
     if (!okM) return stall("membership", "data_move_failed", `Membership migration stalled: ${record.last_error}. Retry from Settings → Users once the cause is fixed.`, true)
 

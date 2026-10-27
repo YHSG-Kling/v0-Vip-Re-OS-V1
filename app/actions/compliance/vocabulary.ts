@@ -107,6 +107,8 @@ export async function reportComingSoonPolicyAction(input: ComingSoonPolicyReport
       mlsName: clip(input?.mlsName, 80) ?? "",
       stateCodes: Array.isArray(input?.stateCodes) ? input.stateCodes.slice(0, 10).map((s) => String(s ?? "").slice(0, 2)) : [],
       permitted: bool(input?.permitted), showingsPermitted: bool(input?.showingsPermitted),
+      // Owner ruling 1 (wave 145, lane 145Z — lane 145B Outside-lane 13): the MLS's street-address rule (yes/no/unstated).
+      streetAddressDisclosurePermitted: bool(input?.streetAddressDisclosurePermitted),
       maxDays: input?.maxDays ?? null, mlsSubmissionWithinBusinessDays: input?.mlsSubmissionWithinBusinessDays ?? null,
       sourceUrl: clip(input?.sourceUrl, 500), ruleRef: clip(input?.ruleRef, 120), sourceTitle: clip(input?.sourceTitle, 200),
     },

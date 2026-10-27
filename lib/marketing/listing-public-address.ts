@@ -109,6 +109,14 @@ function redactStreetAddress(text: string, l: ListingAddressParts, replacement?:
   return { text: out, redactions: n }
 }
 
+/** PURE — is this listing in its PUBLIC Coming Soon period (the doors that print an address ask this ONE predicate;
+ *  wave 145, lane 145Z): `listings.status = 'coming_soon'` or a `COMING_SOON_*` lifecycle stage (prep creative is
+ *  Coming Soon creative too). A listing in any other state prints its address as before. */
+export function isPublicComingSoonListing(l: { status?: string | null; lifecycle_stage?: string | null } | null | undefined): boolean {
+  if (!l) return false
+  return String(l.status ?? "").trim().toLowerCase() === "coming_soon" || /^COMING_SOON_/.test(String(l.lifecycle_stage ?? "").trim().toUpperCase())
+}
+
 export interface ComingSoonCreativeAddress {
   decision: ComingSoonAddressDecision
   /** The ONLY address line public Coming Soon creative may print: the full address when disclosed, else the public location. */

@@ -37,6 +37,16 @@
 // CONTRACT C2 (owner ruling 15): a lead carrying a contact_id is out of the lead
 // domain — excluded at the query, and re-checked per row (isInLeadDomain) so a
 // conversion that lands between the select and the send never fires a lead touch.
+//
+// ── WAVE 145 (lane 145Z) — CLAIM BEFORE SEND (lane 145E Still open 1) ─────────
+// The first-touch ledger (first_touched_at) used to be stamped AFTER the send, so
+// two concurrent sweeps — the 2-minute cron and the lead-created reactor hook
+// (lib/kernel/event-reactor.ts, which now runs this sweep the moment a lead
+// lands) — could both touch one person. Now the row is CLAIMED first: a
+// conditional UPDATE … WHERE first_touched_at IS NULL, row-counted; only the run
+// whose claim matched sends. A send that does not go out RELEASES its own claim
+// (matched on the claim's stamp) so the next sweep retries; the channel actually
+// used replaces the claimed one when they differ.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { firstTouchDecision, DEFAULT_AGENT_GRACE_MINUTES } from "@/lib/ai-isa/speed-to-lead-policy"
@@ -152,6 +162,7 @@ export async function runSpeedToLead(
   let leadPolicy: import("@/lib/ai-isa/followup-policy").FollowupPolicy | null = null
   const leadBudget = { remaining: 25 } // the sweep's model-decision ceiling (a 50-lead burst never becomes 50 model calls)
 
+  let claimedLeadAt: string | null = null
   for (const lead of leads ?? []) {
     try {
       // CONTRACT C2 (ruling 15): re-checked per row — a conversion that landed after the select makes this a CONTACT's
@@ -210,30 +221,38 @@ export async function runSpeedToLead(
         if (!rec.recorded && rec.error) console.warn(`[speed-to-lead] arbiter decision not ledgered for lead ${lead.id}: ${rec.error}`)
       }
 
+      // CLAIM BEFORE SEND — only the run whose conditional claim matched the untouched row sends (no double first touch).
+      const claim = await claimFirstTouch(supabase, "leads", { id: lead.id, brokerageId, at: now, channel: arb.channel })
+      if (!claim.ok) {
+        if (claim.error) await logError(supabase, brokerageId, "speed_to_lead_lead_claim", claim.error, { leadId: lead.id })
+        skipped++
+        continue
+      }
+      claimedLeadAt = claim.at
+
       // Dispatch via the canonical entry — already consent/channel gated — on the ARBITER's channel.
       // Lane 86E: the cron has no session — it PRESENTS the internal secret
       // (the engagement door no longer treats the env var's presence as one).
       const result = await doLeadEngagement(lead.id, { internalSecret: process.env.CRON_SECRET, forceChannel: arb.channel })
 
       if (result?.success !== false) {
-        // Stamp first touch — the channel the engagement actually used (its own answer), else the arbiter's.
+        // The claim already holds the ledger; record the channel the engagement actually used when it differs from the claim.
         const sentOn = typeof (result as { channel?: unknown } | null)?.channel === "string" ? (result as { channel: string }).channel : arb.channel
-        const { error: firstTouchErr } = await supabase
-          .from("leads")
-          .update({
-            first_touched_at:    now.toISOString(),
-            first_touch_channel: sentOn,
-            updated_at:          now.toISOString(),
-          })
-          .eq("id", lead.id)
-          .is("first_touched_at", null)
-        if (firstTouchErr) console.error(`[speed-to-lead] first touch NOT stamped (speed-to-lead SLA will read as untouched): ${firstTouchErr.message}`) // idempotency guard at DB layer
-
+        if (sentOn !== arb.channel) {
+          const { error: chErr } = await supabase.from("leads").update({ first_touch_channel: sentOn, updated_at: now.toISOString() })
+            .eq("id", lead.id).eq("first_touched_at", claim.at)
+          if (chErr) console.error(`[speed-to-lead] first-touch channel NOT corrected for lead ${lead.id}: ${chErr.message}`)
+        }
+        claimedLeadAt = null
         leadsTouched++
       } else {
+        await releaseFirstTouch(supabase, "leads", lead.id, claim.at)
+        claimedLeadAt = null
         skipped++
       }
     } catch (err) {
+      // A claim whose send threw is released, so the next sweep retries the first touch (never a silently "touched" lead).
+      if (claimedLeadAt) { await releaseFirstTouch(supabase, "leads", lead.id, claimedLeadAt); claimedLeadAt = null }
       skipped++
       await logError(
         supabase,
@@ -270,6 +289,7 @@ export async function runSpeedToLead(
     await logError(supabase, brokerageId, "speed_to_lead_contacts_query", contactsError.message)
   }
 
+  let claimedContactAt: string | null = null
   for (const contact of contacts ?? []) {
     try {
       const consent: FirstTouchConsentInput = {
@@ -298,6 +318,15 @@ export async function runSpeedToLead(
         continue
       }
 
+      // CLAIM BEFORE SEND — only the run whose conditional claim matched the untouched contact engages it.
+      const claim = await claimFirstTouch(supabase, "contacts", { id: contact.id, brokerageId: contact.brokerage_id, at: now, channel: null })
+      if (!claim.ok) {
+        if (claim.error) await logError(supabase, brokerageId, "speed_to_lead_contact_claim", claim.error, { contactId: contact.id })
+        skipped++
+        continue
+      }
+      claimedContactAt = claim.at
+
       // The ARBITER decides this first touch (ruling 16): engageContact runs it under the speed-to-lead PRIORITY — the hard stops
       // lock first, no wait is offered, and the channel (or a person) is the arbiter's call over the readiness-checked channels.
       const result = await doContactEngagement({
@@ -315,28 +344,30 @@ export async function runSpeedToLead(
           supabase
             .from("contacts")
             .update({
-              first_touched_at:    now.toISOString(),
               // The channel the engagement ACTUALLY used (its own answer — the arbiter's decision, dispatched); `human_task` when a
               // person answers. Never the eligibility's guess: the sweep picks no channel of its own (ruling 16).
               first_touch_channel: answeredByPerson ? "human_task" : (result?.channel ?? null),
               updated_at:          now.toISOString(),
             })
             .eq("id", contact.id)
-            .is("first_touched_at", null), // idempotency guard
+            .eq("first_touched_at", claim.at), // this run's own claim
           {
             table: "contacts",
             flow: "speed_to_lead_first_touch_claim",
             brokerageId: contact.brokerage_id,
             reason:
-              "first-touch ledger claim, written AFTER the engagement already went out; the `.is(null)` guard means a lost claim only risks a second stand-down race with the drip lane, never an extra unconsented touch (dispatch re-gates every send)",
+              "first-touch CHANNEL stamp on this run's own claim (the claim itself was taken BEFORE the engagement); a lost stamp leaves the claim with no channel — the drip then reads it as a different channel and may add a second, never a duplicate same-channel hello",
           },
         )
-
+        claimedContactAt = null
         contactsTouched++
       } else {
+        await releaseFirstTouch(supabase, "contacts", contact.id, claim.at)
+        claimedContactAt = null
         skipped++
       }
     } catch (err) {
+      if (claimedContactAt) { await releaseFirstTouch(supabase, "contacts", contact.id, claimedContactAt); claimedContactAt = null }
       skipped++
       await logError(
         supabase,
@@ -352,6 +383,34 @@ export async function runSpeedToLead(
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────────
+
+/** CLAIM the first touch BEFORE the send: a conditional UPDATE that matches only an untouched row of this tenant, row-counted
+ *  (an UPDATE that matches nothing RESOLVES — CLAUDE.md §3). ok:false + no error = another run already holds the claim. */
+async function claimFirstTouch(
+  supabase: ReturnType<typeof createServiceClient>,
+  table: "leads" | "contacts",
+  input: { id: string; brokerageId: string; at: Date; channel: string | null },
+): Promise<{ ok: true; at: string } | { ok: false; error: string | null }> {
+  const at = input.at.toISOString()
+  const { data, error } = await supabase.from(table)
+    .update({ first_touched_at: at, first_touch_channel: input.channel, updated_at: at })
+    .eq("id", input.id).eq("brokerage_id", input.brokerageId).is("first_touched_at", null).select("id")
+  if (error) return { ok: false, error: `first-touch claim refused: ${error.message}` }
+  if (!data || data.length === 0) return { ok: false, error: null }
+  return { ok: true, at }
+}
+
+/** RELEASE this run's own claim (matched on its stamp, so a later run's claim is never undone) when the send did not go out. */
+async function releaseFirstTouch(
+  supabase: ReturnType<typeof createServiceClient>,
+  table: "leads" | "contacts",
+  id: string,
+  claimAt: string,
+): Promise<void> {
+  const { error } = await supabase.from(table).update({ first_touched_at: null, first_touch_channel: null })
+    .eq("id", id).eq("first_touched_at", claimAt)
+  if (error) console.error(`[speed-to-lead] first-touch claim on ${table} ${id} NOT released (the next sweep will read it as touched): ${error.message}`)
+}
 
 async function logError(
   supabase: ReturnType<typeof createServiceClient>,

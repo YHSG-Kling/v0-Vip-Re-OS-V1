@@ -1180,6 +1180,13 @@ async function stageOfferPacket(
     // never create a transaction. The two are cross-linked:
     //   documents.metadata.linked_offer_id  ↔  offers.metadata.linked_document_id
     const intake = extracted.intake
+    // The financing TERM (wave 145, lane 145Z — m871): the platform roll-up in financing_type, the brokerage's own term
+    // in financing_subtype (written after the insert, through the column's one writer).
+    const { resolveFinancingWrite, persistFinancingSubtype } = await import("@/lib/offers/financing-subtype")
+    const financingWrite = await resolveFinancingWrite(supabase as any, session.brokerage_id, intake.financingType.value)
+    // The contract subtype the intake asked in the ONE canonical list (lane 145H Outside-lane 5: the writerless
+    // offers.metadata.contract_subtype read by offerChecklistDimensions / submit-to-compliance gets its writer here).
+    const intakeContractSubtype = (intake.contractType?.value as string | null) ?? null
     const offerInsert: Record<string, any> = {
       brokerage_id:     session.brokerage_id,
       contact_id:       contactId,
@@ -1189,7 +1196,7 @@ async function stageOfferPacket(
                           .filter(Boolean).join(", ") || null,
       offer_price:      (intake.offerPrice.value as number | null) ?? 0,
       earnest_money:    (intake.earnestMoneyAmount.value as number | null) ?? null,
-      financing_type:   (intake.financingType.value as string | null) ?? null,
+      financing_type:   financingWrite.financing_type ?? (intake.financingType.value as string | null) ?? null,
       closing_date:     (intake.closeDate.value as string | null) ?? null,
       inspection_period_days:      (intake.inspectionDays.value as number | null) ?? null,
       appraisal_contingency_days:  (intake.appraisalDays.value as number | null) ?? null,
@@ -1201,6 +1208,7 @@ async function stageOfferPacket(
       form_source:      "in_app",
       ai_extracted_data: { intake_snapshot: intake, source: "voice_intake_elevenlabs" },
       ai_extraction_status: "completed",
+      ...(intakeContractSubtype ? { metadata: { contract_subtype: intakeContractSubtype } } : {}),
     }
     // tenant anchor (scope burn-down): pin the insert to the voice session's brokerage
     const { data: offerRow, error: offerInsertErr } = await supabase
@@ -1210,6 +1218,10 @@ async function stageOfferPacket(
       .maybeSingle()
     if (offerInsertErr) {
       console.warn("[voice/stageOfferPacket] offers row insert failed (continuing):", offerInsertErr.message)
+    }
+    if (offerRow?.id && financingWrite.financing_subtype) {
+      const sub = await persistFinancingSubtype(supabase as any, { table: "offers", id: offerRow.id, brokerageId: session.brokerage_id, subtype: financingWrite.financing_subtype })
+      if (!sub.ok) console.error(`[voice/stageOfferPacket] offer ${offerRow.id}: the financing term was not recorded — ${sub.error}`)
     }
 
     // Cross-link both rows so the webhook can find the offer from the

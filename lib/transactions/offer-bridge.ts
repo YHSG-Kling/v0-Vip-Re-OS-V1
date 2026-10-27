@@ -423,7 +423,20 @@ export async function createTransactionFromOffer(params: {
   if (txnError || !transaction) {
     throw new Error(`[offer-bridge] Failed to create transaction: ${txnError?.message}`)
   }
-  
+
+  // THE FINANCING TERM FOLLOWS THE OFFER (wave 145, lane 145Z — m871): the brokerage term the offer was written with is
+  // carried 1:1 onto the transaction beside its platform roll-up (financing_type, copied above with the contract terms).
+  // Through the column's one reader / writer — never in the insert or a select list, so a database without m871 still
+  // creates the deal. Non-fatal: the deal stands; a refused carry is logged with its reason.
+  {
+    const { readFinancingSubtype, persistFinancingSubtype } = await import("@/lib/offers/financing-subtype")
+    const fromOffer = await readFinancingSubtype(supabase as any, { table: "offers", id: params.offerId, brokerageId: params.brokerageId })
+    if (fromOffer.ok && fromOffer.subtype) {
+      const carried = await persistFinancingSubtype(supabase as any, { table: "transactions", id: transaction.id, brokerageId: params.brokerageId, subtype: fromOffer.subtype })
+      if (!carried.ok) console.error(`[offer-bridge] transaction ${transaction.id}: the offer's financing term was not carried — ${carried.error}`)
+    } else if (!fromOffer.ok) console.error(`[offer-bridge] transaction ${transaction.id}: the offer's financing term could not be read — ${fromOffer.error}`)
+  }
+
   // Log contract date set event via kernel
   await transitionLifecycle({
     brokerageId: params.brokerageId,

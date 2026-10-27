@@ -634,9 +634,20 @@ async function applyLogRows(svc: Svc, tx: TransactionRow, specs: LogRowSpec[]): 
 async function documentSpecs(svc: Svc, tx: TransactionRow): Promise<{ specs: LogRowSpec[]; unavailable: string | null; policyVersion: number | null }> {
   const contactIds = [tx.buyer_contact_id, tx.seller_contact_id, tx.contact_id]
   const dealType = tx.deal_type === "seller" || tx.deal_type === "dual" ? tx.deal_type : "buyer"
+  // The deal's financing TERM (wave 145, lane 145Z — m871): the brokerage term carried onto the transaction
+  // (transactions.financing_subtype) is resolved through the brokerage's vocabulary; without one, the platform roll-up.
+  // Read through the column's ONE reader (a database without m871 reads null — never a refused query).
+  const { readFinancingSubtype } = await import("@/lib/offers/financing-subtype")
+  const finTerm = await readFinancingSubtype(svc as any, { table: "transactions", id: tx.id, brokerageId: tx.brokerage_id })
+  let financing = financingKindFor(tx.financing_type)
+  if (finTerm.ok && finTerm.subtype) {
+    const { loadTenantVocabulary, financingTypeResolver } = await import("@/lib/compliance/adaptive-vocabulary")
+    const vocab = await loadTenantVocabulary(svc as any, tx.brokerage_id)
+    if (vocab.ok) financing = financingKindFor(finTerm.subtype, financingTypeResolver(vocab.vocabulary)) ?? financing
+  }
   const audit = await auditTransactionDocuments(svc, {
     transactionId: tx.id, brokerageId: tx.brokerage_id, offerId: tx.offer_id, listingId: tx.listing_id, contactIds,
-    dealType, stateCode: tx.property_state, stage: "closing", financing: financingKindFor(tx.financing_type),
+    dealType, stateCode: tx.property_state, stage: "closing", financing,
   })
   // An audit that could not run is a BLOCKING row: "nobody checked" must not read as "checked and fine".
   if (audit.unavailable_reason) {

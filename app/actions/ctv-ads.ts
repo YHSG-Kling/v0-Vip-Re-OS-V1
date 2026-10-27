@@ -34,6 +34,22 @@ export async function stageCtvCampaignAction(input: {
   const { actor, error } = await requireActor()
   if (!actor) return { success: false, error }
 
+  // A TOPIC SPOT goes through the topic lane (wave 145, lane 145Z — lane 145G Outside-lane 1, contract C5): stageTopicTvSpot
+  // checks the topic is approved FOR TV, the creative was made FROM it, runs the final personalization phase (contract C4)
+  // and records it, calls this SAME gateway under ledger evidence, and claims the topic for the spot. Called directly, the
+  // gateway would stage the spot without the final phase and without the topic claim.
+  if (input.topicId) {
+    const assetId = input.assetId ?? input.videoProjectId ?? null
+    if (!assetId) return { success: false, error: "a TV spot from a topic needs the video made from that topic" }
+    const { stageTopicTvSpot } = await import("@/lib/marketing/ctv-lane")
+    const spot = await stageTopicTvSpot({
+      brokerageId: actor.brokerageId, agentUserId: actor.userId, topicId: input.topicId, assetId,
+      dailyBudgetCents: input.dailyBudgetCents, targeting: input.targeting, campaignName: input.campaignName,
+    })
+    if (!spot.ok) return { success: false, error: spot.reason }
+    return { success: true, package: spot.package as CtvLaunchPackage | undefined }
+  }
+
   return stageCtvCampaign({
     brokerageId: actor.brokerageId,
     agentUserId: actor.userId,

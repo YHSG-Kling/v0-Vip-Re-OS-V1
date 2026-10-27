@@ -181,11 +181,20 @@ export async function approveClientMessage(
     if (m.recipient_lead_id && !m.recipient_contact_id) {
       // LEAD recipient (pre-conversion, no contact row) — email + direct mail ONLY. Leads carry
       // no phone-consent columns and have no portal surface, so other channels are rejected.
-      const { data: ld } = await supabase.from("leads")
-        .select("email, first_name, last_name, email_opt_out, direct_mail_opt_out, mailing_address, mailing_address_verified, mailing_city, mailing_state, mailing_zip")
+      const { data: ld, error: ldErr } = await supabase.from("leads")
+        .select("contact_id, email, first_name, last_name, email_opt_out, direct_mail_opt_out, mailing_address, mailing_address_verified, mailing_city, mailing_state, mailing_zip")
         .eq("id", m.recipient_lead_id).maybeSingle()
-      const lead = ld as { email?: string | null; first_name?: string | null; last_name?: string | null; email_opt_out?: boolean | null; direct_mail_opt_out?: boolean | null; mailing_address?: string | null; mailing_address_verified?: boolean | null; mailing_city?: string | null; mailing_state?: string | null; mailing_zip?: string | null } | null
+      // A refused read is a refusal (fail closed) — never "no lead" and never a send on a row we could not see.
+      if (ldErr) return await fail(supabase, messageId, `the recipient lead could not be read: ${ldErr.message}`)
+      const lead = ld as { contact_id?: string | null; email?: string | null; first_name?: string | null; last_name?: string | null; email_opt_out?: boolean | null; direct_mail_opt_out?: boolean | null; mailing_address?: string | null; mailing_address_verified?: boolean | null; mailing_city?: string | null; mailing_state?: string | null; mailing_zip?: string | null } | null
       if (!lead) return await fail(supabase, messageId, "no recipient lead for this channel")
+      // OWNER RULING 15 (wave 145, lane 145Z — lane 145E Outside-lane 4; contract C2): a lead with a contact_id is OUT of the
+      // lead domain — communication continues on the contact. Defence in depth beside the conversion deactivator
+      // (lib/contact-promotion/lead-deactivator.ts), which supersedes these messages; an approval that races it still refuses.
+      const { isInLeadDomain } = await import("@/lib/contact-promotion/lead-domain-boundary")
+      if (!isInLeadDomain({ id: m.recipient_lead_id, contact_id: lead.contact_id ?? null })) {
+        return await fail(supabase, messageId, "superseded: the lead converted to a contact — communication continues on the contact (ruling 15)")
+      }
 
       if (channel === "email") {
         const { canDispatchToContact } = await import("@/lib/compliance/contact-channel-gate")

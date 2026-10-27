@@ -21,6 +21,22 @@ import { decryptSecret, decryptSecretFields } from "@/lib/security/secret-crypto
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
 
+/** Record the exact text of a published social post as the version that went out (wave 145, lane 145Z). Never throws. */
+async function recordSocialPostOut(svc: any, post: any, via: string, ref: string | null): Promise<void> {
+  try {
+    const { recordDoorPublication } = await import("@/lib/marketing/humanize-final")
+    const tags = Array.isArray(post.hashtags) && post.hashtags.length ? `\n\n${post.hashtags.map((h: string) => `#${String(h).replace(/^#/, "")}`).join(" ")}` : ""
+    const r = await recordDoorPublication(svc, {
+      brokerageId: post.brokerage_id, assetKind: "social_post", assetTable: "social_posts", assetId: post.id,
+      content: `${String(post.content ?? "")}${tags}`, approvedBy: post.approved_by ?? null, approvedAt: post.approved_at ?? null,
+      via: `social:${via}`, ref,
+    })
+    if (!r.ok) console.error(`[publish-social-posts] post ${post.id} published, but the version that went out was NOT recorded: ${r.error}`)
+  } catch (e) {
+    console.error(`[publish-social-posts] post ${post.id}: version record threw: ${(e as Error)?.message ?? e}`)
+  }
+}
+
 export async function GET(request: Request) {
   // Cron auth — see lib/cron-auth.ts
   const unauth = verifyCronAuth(request)
@@ -242,6 +258,7 @@ export async function GET(request: Request) {
               }), { table: "social_publish_log", flow: "social_publish_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
             }
           }
+          if (anyOk) await recordSocialPostOut(supabase, post, "all", null)
           const { error: fanoutStatusErr } = await supabase.from("social_posts").update({
             status: anyOk ? "published" : "failed",
             published_at: anyOk ? new Date().toISOString() : null,
@@ -316,6 +333,10 @@ export async function GET(request: Request) {
             })
             .eq("id", post.id)
           if (publishedStatusErr) console.error(`[publish-social-posts] post published but NOT marked published (may be re-published): ${publishedStatusErr.message}`)
+
+          // THE VERSION THAT WENT OUT (owner ruling 20 — wave 145, lane 145Z; lane 145G Outside-lane 4): the exact text is
+          // recorded against the post's humanized final (or as its own version), with the post's approval as the evidence.
+          await recordSocialPostOut(supabase, post, post.platform, publishResult.externalPostId ?? null)
 
           // Wave 142 (lane 142F): a YouTube upload's id + url go BACK onto the asset it came from
           // (ai_video_projects.video_metadata.youtube + marketing_assets.metadata.youtube), so

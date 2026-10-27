@@ -405,7 +405,11 @@ export type FollowAgreedDateResult =
  */
 export async function followSellerAgreedMlsLiveDate(
   svc: Svc,
-  input: { brokerageId: string; listingId: string; actorUserId: string | null; via: "agreement" | "amendment"; amendmentVersion?: number | null; evidenceClient?: Svc },
+  input: {
+    brokerageId: string; listingId: string; actorUserId: string | null; via: "agreement" | "amendment"; amendmentVersion?: number | null; evidenceClient?: Svc
+    /** Seam for proofs — defaults to the ONE kernel emitter (lib/kernel/emit.ts emitKernelEvent). */
+    emit?: (e: { event: string; entityType: string; entityId: string; brokerageId: string; listingId?: string; actorUserId?: string | null; metadata?: Record<string, unknown> }) => Promise<unknown>
+  },
 ): Promise<FollowAgreedDateResult> {
   const sys = input.evidenceClient ?? svc
   const { governingListingAgreementTerms } = await import("./listing-agreement-terms")
@@ -451,6 +455,27 @@ export async function followSellerAgreedMlsLiveDate(
       + "This is the seller's planned date — the listing is not live on the MLS until the feed verifies it.",
   })
   reached.push("alert:listing_agent")
+
+  // THE KERNEL EVENT (wave 145, lane 145Z — lane 145B Outside-lane 14; lane 145I agreed it lands only WITH this emit):
+  // `listing_mls_live_date_changed` fans out through the ONE emitter — the seller's portal card (event-fanout
+  // PORTAL_UPDATE_TEMPLATES, audience seller) and the listing_concierge → campaign_orchestrator signal (event-reactor),
+  // so the marketing schedule's owner hears the new date. Best-effort AFTER the durable evidence + bell above: an
+  // emitter that cannot run is logged and named, never a reason to undo the recorded date.
+  try {
+    const emitKernelEvent = input.emit ?? (await import("@/lib/kernel/emit")).emitKernelEvent
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    await emitKernelEvent({
+      event: KernelEvent.LISTING_MLS_LIVE_DATE_CHANGED, entityType: "listing", entityId: input.listingId, brokerageId: input.brokerageId,
+      listingId: input.listingId, actorUserId: input.actorUserId,
+      metadata: {
+        planned: agreed, previous: rec.previous, via: input.via, amendment_version: input.amendmentVersion ?? null, verified_live: false,
+        via_label: input.via === "amendment" ? "the signed amendment to your listing agreement" : "your signed listing agreement",
+      },
+    })
+    reached.push("event:listing_mls_live_date_changed")
+  } catch (err) {
+    console.error(`[mls-live-date] listing ${input.listingId}: the MLS live-date kernel event was not emitted (${(err as Error)?.message ?? err}) — the evidence row and the bell stand`)
+  }
   return { ok: true, noop: false, planned: agreed, previous: rec.previous, reached, warnings }
 }
 

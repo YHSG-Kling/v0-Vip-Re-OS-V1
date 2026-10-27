@@ -13,7 +13,13 @@ interface ProfileUpdate {
   city?: string
   state?: string
   zip_code?: string
-  preferred_contact_method?: string
+  /**
+   * The person's STATED channel (wave 145, lane 145Z — lane 145H's found defect): the live contacts column is
+   * `preferred_channel` (scripts/schema-snapshot.ts); the form used to send `preferred_contact_method`, which is NOT a contacts
+   * column, so PostgREST refused the WHOLE update (PGRST204) — the name and language never saved either. The readers' words:
+   * email / sms / phone (lib/ai-isa/contact-channel-policy.ts resolveContactChannel). No CHECK pins it, so it is validated here.
+   */
+  preferred_channel?: string
   /**
    * ISO 639-1 code (lib/video/multilingual-reel.ts LOCALE_TO_ELEVENLABS_LANGUAGE
    * output — the ONE vocabulary, §6) the contact wants their avatar videos,
@@ -29,7 +35,7 @@ interface ProfileUpdate {
  *  file exports only async functions, CLAUDE.md §4). */
 const SELF_EDITABLE_PROFILE_FIELDS = [
   "first_name", "last_name", "email", "phone", "address", "city", "state", "zip_code",
-  "preferred_contact_method", "preferred_language", "metadata",
+  "preferred_channel", "preferred_language", "metadata",
 ] as const satisfies ReadonlyArray<keyof ProfileUpdate>
 
 export async function updateContactProfile(
@@ -54,6 +60,15 @@ export async function updateContactProfile(
     // score, enrichment_profile …) — a "use server" export's argument is attacker-controlled (§4).
     const payload: Record<string, unknown> = { updated_at: new Date().toISOString() }
     for (const k of SELF_EDITABLE_PROFILE_FIELDS) if (updates[k] !== undefined) payload[k] = updates[k]
+
+    // preferred_channel: one of the readers' words (email / sms / phone) — "text" from an older client is sms; anything else is
+    // refused (fail closed: never written as a value no reader understands, never silently dropped).
+    if (updates.preferred_channel !== undefined) {
+      const ch = String(updates.preferred_channel ?? "").trim().toLowerCase()
+      const canonical = ch === "text" ? "sms" : ch
+      if (!["email", "sms", "phone"].includes(canonical)) return { success: false, error: `"${updates.preferred_channel}" is not a contact channel (email, text or phone).` }
+      payload.preferred_channel = canonical
+    }
 
     // preferred_language: normalize through the ONE resolver's own mapper
     // (never trust the client sent an already-canonical code) and FAIL

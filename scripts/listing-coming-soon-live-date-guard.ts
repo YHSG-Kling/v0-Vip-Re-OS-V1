@@ -326,11 +326,18 @@ async function main() {
   const DOOR_CALL = /\b(resolveComingSoonCreativeAddress|guardComingSoonCreativeText|redactStreetAddress|publicComingSoonLocation|comingSoonCreativeAddressFor)\s*\(|listingAddress=\{comingSoonCreative\.addressLine\}/
   check("POSITIVE CONTROL: the door-call finder sees a call in a specimen and not in a bare address interpolation",
     DOOR_CALL.test("const r = guardComingSoonCreativeText(t, l, x, \"redact\")") && !DOOR_CALL.test("const caption = `${hook}: ${address}`"))
-  const DOORS: Array<{ file: string; door: string; owner: string; change: string }> = [
+  // A door whose prescribed wiring is NOT a call to the rule itself names its own finder (wave 145, lane 145Z): the
+  // command card's change is to hand the reviewed copy to activateComingSoon, which REFUSES it under the rule — the
+  // card is a client component and cannot call the server rule. Its finder must see exactly that hand-off.
+  const CARD_HANDOFF = /activateComingSoon\(\{[^}]*creative:\s*\{\s*socialPost,\s*emailBody\s*\}/
+  check("POSITIVE CONTROL: the card hand-off finder sees the reviewed copy passed to the activation door and not the bare activation",
+    CARD_HANDOFF.test("await activateComingSoon({ listingId, userId, brokerageId, role: resolvedRole, creative: { socialPost, emailBody } })")
+    && !CARD_HANDOFF.test("await activateComingSoon({ listingId, userId, brokerageId, role: resolvedRole })"))
+  const DOORS: Array<{ file: string; door: string; owner: string; change: string; wiredBy?: RegExp }> = [
     { file: "app/actions/seller-listing/execution-engine.ts", door: "prepareComingSoonAssets / activateComingSoon", owner: "145B", change: "wired" },
     { file: "app/dashboard/listings/[id]/lifecycle/page.tsx", door: "Coming Soon card's address line", owner: "145B", change: "wired" },
     { file: "app/actions/coming-soon-content.ts", door: "generateComingSoonContent (AI social + email teaser)", owner: "integrator (unowned)", change: "take listingId, resolve the line with resolveComingSoonCreativeAddress, guard the output in redact mode" },
-    { file: "app/components/dashboard/listings/lifecycle/coming-soon-command-card.tsx", door: "activation passes the reviewed copy", owner: "integrator (unowned)", change: "activateComingSoon({ …, creative: { socialPost, emailBody } })" },
+    { file: "app/components/dashboard/listings/lifecycle/coming-soon-command-card.tsx", door: "activation passes the reviewed copy", owner: "integrator (unowned)", change: "activateComingSoon({ …, creative: { socialPost, emailBody } })", wiredBy: CARD_HANDOFF },
     { file: "app/actions/social-media-automation.ts", door: "createListingPosts (coming soon posts)", owner: "integrator (unowned)", change: "guard contentOverride / generated text when the listing is coming soon" },
     { file: "app/actions/email-campaigns.ts", door: "prepareListingEmailCampaign campaignType coming_soon", owner: "integrator (unowned)", change: "guard bodyOverride / generated body for coming_soon" },
     { file: "lib/video/listing-promo-reactor.ts", door: "dispatchListingPromoVideo coming_soon facts", owner: "integrator (unowned)", change: "facts.address = resolved addressLine for coming_soon" },
@@ -344,8 +351,9 @@ async function main() {
   for (const dd of DOORS) {
     const src = code(dd.file)
     check(`census entry is real: ${dd.file} exists and still reads a coming-soon token`, existsSync(join(ROOT, dd.file)) && /coming[_ -]?soon|COMING_SOON|ComingSoon/i.test(raw(dd.file)))
-    if (dd.owner === "145B") check(`WIRED (this lane): ${dd.door} — ${dd.file}`, DOOR_CALL.test(src))
-    else outsideLane(`public Coming Soon creative door ${dd.door} — ${dd.file}`, DOOR_CALL.test(src), dd.owner, dd.change)
+    const wired = (dd.wiredBy ?? DOOR_CALL).test(src)
+    if (dd.owner === "145B") check(`WIRED (this lane): ${dd.door} — ${dd.file}`, wired)
+    else outsideLane(`public Coming Soon creative door ${dd.door} — ${dd.file}`, wired, dd.owner, dd.change)
   }
 
   console.log(`\n RESULT: ${passed} passed, ${failed} failed, ${pending.length} pending outside lane`)

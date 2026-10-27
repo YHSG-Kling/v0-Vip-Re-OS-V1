@@ -31,7 +31,8 @@ import {
   checkMaxTouches,
   checkUnderContractPause,
 } from '@/lib/ai-isa/isa-outreach-logger'
-import { evaluateOutbound } from '@/lib/kernel'
+// PURE CUT (wave 145, lane 145Z — test:proxy-graph-budget): the direct module, not the lib/kernel barrel (same export).
+import { evaluateOutbound } from '@/lib/kernel/compliance'
 import { dispatchEmail, dispatchSms } from '@/lib/providers/dispatch'
 import { loadBrandVoicePrompt, type BrandVoicePromptResult } from '@/lib/ai-isa/brand-voice-prompt'
 import { emitLifecycleEvent } from '@/lib/kernel/helpers'
@@ -363,18 +364,13 @@ export async function engageContact(
     }
 
     // ── 5. AUTONOMOUS NEXT-BEST CHANNEL — the manager DECIDES which channel this contact's
-    //    next touch uses (not just the static stored preference): the channel they actually
-    //    REPLY to, then their AGE-GROUP psychology (gen-z text/video-first, boomers answer the
-    //    phone, …), ROTATED off the last channel used — all within consent. resolveContactChannel
-    //    remains the floor when consent permits nothing the manager would choose. ──
+    //    next touch uses: the channel the person STATED they prefer, then the channel they
+    //    actually REPLY to, then the one neutral default order — ROTATED off the last channel
+    //    used, all within consent. Never ordered by age group (owner ruling 18, wave 145).
+    //    resolveContactChannel remains the floor when consent permits nothing the manager would choose. ──
     let resolvedChannel = resolveContactChannel(contact as Parameters<typeof resolveContactChannel>[0])
     try {
       const { permittedContactChannels, decideNextChannel } = await import('@/lib/ai-isa/next-best-touch')
-      const { cohortFromEnrichment } = await import('@/lib/ai-isa/adaptive-reengagement')
-      const cohort = cohortFromEnrichment({
-        age: (contact.enrichment_profile as { age?: number | null } | null)?.age ?? null,
-        age_range: (contact.age_range as string | null) ?? null,
-      })
       const { data: logRows } = await supabase.from('isa_outreach_log')
         .select('channel, replied_at').eq('contact_id', contact.id).order('sent_at', { ascending: false }).limit(60)
       const lastChannel = (logRows as Array<{ channel: string | null }> | null)?.[0]?.channel ?? null
@@ -387,7 +383,8 @@ export async function engageContact(
       const { rankChannelsByReplyRate } = await import('@/lib/campaign-sequences/channel-order')
       const ranked = rankChannelsByReplyRate([...byCh.entries()].map(([channel, v]) => ({ channel, sent: v.sent, replies: v.replies })))
       const nba = decideNextChannel({
-        permitted: permittedContactChannels(contact as Parameters<typeof permittedContactChannels>[0]), cohort,
+        permitted: permittedContactChannels(contact as Parameters<typeof permittedContactChannels>[0]),
+        statedChannel: ((contact as { preferred_channel?: string | null }).preferred_channel ?? null),
         learnedRanked: ranked.ranked.map((x) => x.channel), lastChannel,
       })
       if (nba.channel !== 'no_channel') resolvedChannel = nba.channel

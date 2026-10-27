@@ -100,11 +100,11 @@ async function main() {
     ok(kStamp.moment?.engagement_data?.followup?.kind === "refinance" && kVocab.moment?.engagement_data?.followup?.kind === "equity" && kUnknown.r.scanned === 0 && kUnknown.d.tables.transparency_updates.length === 0,
       "the kind is the responder's own stamp first, else the ONE vocabulary (LIFE_CHANGE_SIGNAL_KINDS); an unknown type is not guessed (nothing happens)")
     const refiSteps = steps(moment)
-    ok(["equity_estimate", "refinance_education", "professional_referral", "market_review"].every((x) => refiSteps.includes(x)) && !refiSteps.includes("listing_consultation"),
+    ok(["equity_estimate", "refinance_education", "professional_referral", "market_review"].every((x) => refiSteps.includes(x)) && !refiSteps.includes("listing_appointment"),
       `refinance playbook = estimate · refinance education · licensed-professional referral · market review (${refiSteps.join(", ")})`)
     const sale = await runWith({ signal_reactivations: [sig("s4", "home_value_seller_intent", { kind: "home_sale" })] })
     const saleSteps = ((sale.card?.metadata?.playbook ?? []) as Array<{ step: string }>).map((p) => p.step)
-    ok(steps(kVocab.moment).length === 5 && saleSteps.includes("listing_consultation") && !saleSteps.includes("refinance_education"), "equity carries all five steps; a home-sale signal carries the listing consultation, not refinance steps")
+    ok(steps(kVocab.moment).length === 5 && saleSteps.includes("listing_appointment") && !saleSteps.includes("refinance_education"), "equity carries all five steps; a home-sale signal carries the listing consultation, not refinance steps")
     const lifeEv = await runWith({ signal_reactivations: [sig("s5", "divorce_filing", null), sig("s6", "buying_intent", null)] })
     ok(lifeEv.r.scanned === 0 && lifeEv.d.tables.transparency_updates.length === 0 && lifeEv.d.tables.lifetime_customer_touchpoints.length === 0,
       "a life event / a buying signal is NOT an equity question — nothing runs (a service topic stays a person's; the returning-customer loop keeps it)")

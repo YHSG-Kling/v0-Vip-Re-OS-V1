@@ -194,6 +194,21 @@ async function main() {
     check("the CRM contact page renders the staff form (read through C3 after the gate)", /<AccessibilityPreferencesCard[\s\S]{0,80}mode=/.test(codeWithStrings("app/crm/contacts/[contactId]/page.tsx")) && /readAccessibilityPreferences\(createServiceClient\(\), brokerageId, contactId\)/.test(code("app/crm/contacts/[contactId]/page.tsx")))
     check("the portal settings page renders the self form", /<AccessibilityPreferencesCard/.test(code("app/components/portal/PortalSettingsPage.tsx")) && /readAccessibilityPreferences\(supabase, contact\.brokerage_id/.test(code("app/portal/[contactId]/settings/page.tsx")))
     check("C3 — readAccessibilityPreferences(svc, brokerageId, contactId) is exported with exactly that signature", /export async function readAccessibilityPreferences\(svc: Svc, brokerageId: string, contactId: string\)/.test(codeWithStrings("lib/contacts/accessibility-preferences.ts")))
+    {
+      // WAVE 145 (lane 145Z — lane H's preferred_contact_method defect): every column the portal self-edit may write is a
+      // LIVE contacts column (schema-snapshot, generated). PGRST204 refuses the WHOLE update when one key is absent, so one
+      // stale key (`preferred_contact_method`, which contacts never had) silently threw away the client's every edit.
+      const { SCHEMA_SNAPSHOT } = await import("./schema-snapshot")
+      const contactCols = new Set(SCHEMA_SNAPSHOT.contacts ?? [])
+      const fieldsOf = (src: string) => [...(/SELF_EDITABLE_PROFILE_FIELDS\s*=\s*\[([\s\S]*?)\]/.exec(src)?.[1] ?? "").matchAll(/"([a-z_]+)"/g)].map((m) => m[1])
+      const fields = fieldsOf(stripComments(read("app/actions/portal-settings.ts")))
+      const absent = fields.filter((f) => !contactCols.has(f))
+      const ctl = fieldsOf('const SELF_EDITABLE_PROFILE_FIELDS = [\n  "first_name", "preferred_contact_method",\n] as const').filter((f) => !contactCols.has(f))
+      check("the portal self-edit writes ONLY live contacts columns (SELF_EDITABLE_PROFILE_FIELDS ⊆ schema-snapshot contacts) — positive control: preferred_contact_method is caught",
+        contactCols.size > 50 && fields.length >= 5 && fields.includes("preferred_channel") && absent.length === 0 && ctl.join() === "preferred_contact_method", JSON.stringify({ fields: fields.length, absent, ctl }))
+      const ui = stripComments(read("app/components/portal/PortalSettingsPage.tsx"))
+      check("…and the settings form sends that column (preferred_channel), not the absent one", /preferred_channel/.test(ui) && !/preferred_contact_method/.test(ui))
+    }
     const opts = accessibilityPreferenceOptions()
     check("the form's options are the ONE vocabulary (passed as props, never retyped in the client)", sameSet(opts.formats.map((o) => o.value), COMMUNICATION_FORMATS) && sameSet(opts.flags.map((o) => o.value), ACCESSIBILITY_FLAGS)
       && !/"extra_large"|"screen_reader"/.test(codeWithStrings("app/components/contact/AccessibilityPreferencesCard.tsx")))

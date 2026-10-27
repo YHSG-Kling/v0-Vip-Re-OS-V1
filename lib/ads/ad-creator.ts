@@ -419,6 +419,26 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
         complianceResult = latestGate
       }
 
+      // ── 6b. THE FINAL PERSONALIZATION PHASE (owner ruling 20 / contract C4 — wave 145, lane 145Z; lane 145G Outside-lane 3):
+      //    the ad's body copy passes finalizeForDistribution (assetKind ad_creative — no tagline in an ad; the renderer places the
+      //    logo), machine phrasing removed and facts kept; the FINAL is what is stored and what the human approves (staged below
+      //    as the creative's version, the human told). A final that still carries a hard fair-housing finding or a brand-prohibited
+      //    word goes to the human as REJECTED with the finding, exactly as a compliance refusal does.
+      let adFinal: Awaited<ReturnType<typeof import("@/lib/marketing/humanize-final").finalizeForDistribution>> | null = null
+      if (complianceResult.allowed) {
+        try {
+          const { finalizeForDistribution, resolveTenantBrandForFinal } = await import("@/lib/marketing/humanize-final")
+          const { createServiceClient } = await import("@/lib/supabase/service")
+          const brand = await resolveTenantBrandForFinal(createServiceClient(), { brokerageId: context.brokerageId, agentUserId: userId })
+          adFinal = await finalizeForDistribution({ assetKind: "ad_creative", text: variation.primaryText, tenantBrand: brand.brand })
+          const hard = [...adFinal.fairHousing, ...adFinal.brandVoice.prohibited.map((w) => `prohibited by the brand voice: "${w}"`)]
+          if (hard.length) complianceResult = { ...complianceResult, allowed: false, violations: [...(complianceResult.violations ?? []), ...hard] as any, blockedReason: "final_phase" } as typeof complianceResult
+          else if (adFinal.text.trim() && adFinal.text.length <= 125) variation = { ...variation, primaryText: adFinal.text }
+        } catch (finalErr) {
+          console.error(`[ad-creator] the final personalization phase could not run — the gated draft goes to the human as written: ${(finalErr as Error)?.message ?? finalErr}`)
+        }
+      }
+
       // ── 7. Insert into ad_creative_variations ─────────────────────────────────
       const approvalStatus = complianceResult.allowed ? "draft" : "rejected"
 
@@ -437,6 +457,21 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
         })
         .select("id")
         .single()
+
+      // The staged FINAL — the version the human's approval covers, and the human is told it is ready (C4 version ledger).
+      if (!insertError && creativeRecord && complianceResult.allowed && adFinal) {
+        try {
+          const { stageDistributionFinal } = await import("@/lib/marketing/humanize-final")
+          const { createServiceClient } = await import("@/lib/supabase/service")
+          const staged = await stageDistributionFinal(createServiceClient(), {
+            brokerageId: context.brokerageId, assetTable: "ad_creative_variations", assetId: creativeRecord.id, final: adFinal,
+            createdBy: userId, notifyUserId: userId, storedAs: variation.primaryText,
+          })
+          if (!staged.ok) console.error(`[ad-creator] creative ${creativeRecord.id}: the humanized final was NOT recorded — ${staged.error}`)
+        } catch (stageErr) {
+          console.error(`[ad-creator] creative ${creativeRecord.id}: staging the final threw — ${(stageErr as Error)?.message ?? stageErr}`)
+        }
+      }
 
       if (!insertError && creativeRecord) {
         // If rejected due to compliance, log the reason

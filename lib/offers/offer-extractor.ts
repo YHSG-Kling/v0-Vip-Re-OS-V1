@@ -156,6 +156,10 @@ export async function applyExtractedOfferData(
 ): Promise<void> {
   const { offerId, brokerageId, listingId, extracted } = params
   {
+    // The financing TERM (wave 145, lane 145Z — m871): a brokerage term the contract names is stored as its platform
+    // roll-up in financing_type and as itself in financing_subtype (the column's one writer, after this update).
+    const { resolveFinancingWrite, persistFinancingSubtype } = await import("@/lib/offers/financing-subtype")
+    const financingWrite = await resolveFinancingWrite(supabase, brokerageId, extracted.financing_type)
     // UPDATE offers row with all extracted columns
     const extractedUpdate = {
       ai_extraction_status: "completed",
@@ -164,7 +168,7 @@ export async function applyExtractedOfferData(
       offer_price: extracted.offer_price,
       earnest_money: extracted.earnest_money,
       closing_date: extracted.closing_date,
-      financing_type: extracted.financing_type,
+      financing_type: financingWrite.financing_type ?? extracted.financing_type,
       down_payment_amount: extracted.down_payment_amount,
       down_payment_percent: extracted.down_payment_percent,
       appraisal_contingency_days: extracted.appraisal_contingency_days,
@@ -189,6 +193,10 @@ export async function applyExtractedOfferData(
       .eq("brokerage_id", brokerageId)
 
     if (updateError) throw new Error(updateError.message)
+    if (financingWrite.financing_subtype) {
+      const sub = await persistFinancingSubtype(supabase, { table: "offers", id: offerId, brokerageId, subtype: financingWrite.financing_subtype })
+      if (!sub.ok) console.error(`[offer-extractor] offer ${offerId}: the financing term was not recorded — ${sub.error}`)
+    }
 
     // lifecycle_events insert + kernel event
     // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare

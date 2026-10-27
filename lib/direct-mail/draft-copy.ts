@@ -357,7 +357,9 @@ export async function draftPostcardCopy(
   if (!parsed || !parsed.headline || !parsed.body || !parsed.cta) {
     return { ok: false, violations: ["model returned non-JSON or missing required keys"], complianceEventId }
   }
-  return { ok: true, copy: parsed, complianceEventId }
+  const finalBody = await finalizeMailText(ctx, parsed.body)
+  if (!finalBody.ok) return { ok: false, violations: finalBody.violations, complianceEventId }
+  return { ok: true, copy: { ...parsed, body: finalBody.text }, complianceEventId }
 }
 
 /** Wave 36.5 — pull the agent-tier distilled voice profile and format
@@ -468,7 +470,32 @@ export async function draftLetterCopy(
   if (!parsed || !parsed.body) {
     return { ok: false, violations: ["model returned non-JSON or missing required keys"], complianceEventId }
   }
-  return { ok: true, copy: parsed, complianceEventId }
+  const finalBody = await finalizeMailText(ctx, parsed.body)
+  if (!finalBody.ok) return { ok: false, violations: finalBody.violations, complianceEventId }
+  return { ok: true, copy: { ...parsed, body: finalBody.text }, complianceEventId }
+}
+
+/**
+ * THE FINAL PERSONALIZATION PHASE ON MAIL (owner ruling 20 / contract C4 — wave 145, lane 145Z; lane 145G Outside-lane 3): the
+ * AI-drafted body passes lib/marketing/humanize-final.ts finalizeForDistribution (assetKind direct_mail) — machine phrasing
+ * removed, facts kept; the tagline and logo are PLACED by the renderer (the kind's profile is "render"), never typed into the
+ * copy. A final that still carries what no approval waives (a hard fair-housing finding, a brand-prohibited word) refuses the AI
+ * copy — the caller falls back to the brokerage's static template, exactly as on a compliance failure. A phase that cannot run
+ * (the brand unreadable) keeps the gated draft and says so — the draft already passed the outbound compliance gate.
+ */
+async function finalizeMailText(ctx: DirectMailCopyContext, body: string): Promise<{ ok: true; text: string } | { ok: false; violations: string[] }> {
+  try {
+    const { finalizeForDistribution, resolveTenantBrandForFinal } = await import("@/lib/marketing/humanize-final")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const brand = await resolveTenantBrandForFinal(createServiceClient(), { brokerageId: ctx.brokerageId, teamId: ctx.teamId ?? null, agentUserId: ctx.agentUserId ?? null })
+    const final = await finalizeForDistribution({ assetKind: "direct_mail", text: body, tenantBrand: brand.brand })
+    const hard = [...final.fairHousing.map((f) => `fair housing: ${f}`), ...final.brandVoice.prohibited.map((w) => `prohibited by the brand voice: "${w}"`)]
+    if (hard.length) return { ok: false, violations: hard }
+    return { ok: true, text: final.text }
+  } catch (err) {
+    console.error(`[draft-copy] the final personalization phase could not run (the gated draft is kept): ${(err as Error)?.message ?? err}`)
+    return { ok: true, text: body }
+  }
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

@@ -97,9 +97,12 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   const authClient = await createClient()
   const { data: { user } } = await authClient.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
-  const { data: callerRow } = await authClient
-    .from("users").select("brokerage_id, team_id").eq("id", user.id).maybeSingle()
-  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+  // THE SEAT DOOR (wave 145, lane 145A Outside-lane 2): the caller is an ACTIVE STAFF SEAT resolved from the SESSION user
+  // (resolvePacketActor) — a contact / vendor seat, a suspended or removed account, a deactivated agent is refused.
+  const { resolvePacketActor } = await import("@/lib/forms/tenant-form-packets")
+  const seat = await resolvePacketActor(createServiceClient() as never, user.id)
+  if (!seat.ok) return { success: false, error: seat.error }
+  const actor = { brokerageId: seat.actor.brokerageId, teamId: seat.actor.teamId, userId: user.id }
   const userId = user.id
 
   // The packet's paths are checked against the SESSION tenant before anything else runs
@@ -107,9 +110,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   const packetDocs = (params.documents ?? []).filter((d) => d && typeof d.storagePath === "string" && d.storagePath.trim())
   if (packetDocs.length > 0) {
     const { checkFormPathsInScope } = await import("@/lib/forms/form-path-scope")
-    const scope = await checkFormPathsInScope(createServiceClient(), packetDocs.map((d) => d.storagePath), {
-      brokerageId: callerRow.brokerage_id as string, teamId: (callerRow.team_id as string | null) ?? null, userId,
-    })
+    const scope = await checkFormPathsInScope(createServiceClient(), packetDocs.map((d) => d.storagePath), actor)
     if (!scope.ok) return { success: false, error: scope.error ?? `These forms are not in your library: ${scope.refused.join(", ")}` }
   }
 
@@ -138,7 +139,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
 
   // Verify the offer belongs to caller's brokerage BEFORE pulling
   // platform_credentials with offer.brokerage_id.
-  if (offer.brokerage_id !== callerRow.brokerage_id) {
+  if (offer.brokerage_id !== actor.brokerageId) {
     return { success: false, error: "Forbidden" }
   }
 
@@ -301,7 +302,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
     : await dispatchEsignPacket(supabase as any, {
     brokerageId,
     userId,
-    teamId:            (callerRow.team_id as string | null) ?? null,
+    teamId:            actor.teamId,
     transactionType:   "purchase",
     propertyAddress,
     contactId:         (offer.contact_id as string | null) ?? null,
@@ -454,7 +455,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   {
     const stampedState: EsignPacketState = dispatch.status === "sent" ? "sent" : "pending"
     const hop = await recordEsignPacketHop(supabase, {
-      brokerageId: callerRow.brokerage_id as string, record: { table: "offers", id: offerId },
+      brokerageId: actor.brokerageId, record: { table: "offers", id: offerId },
       state: stampedState, source: "ui", actorUserId: userId, provider: dispatch.providerName ?? null, envelopeId: envelopeId ?? null,
     })
     if (!hop.ok) console.error(`[submit-for-signature] offer ${offerId} ${stampedState} hop not recorded: ${hop.reason}`)
@@ -469,7 +470,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   // the provider, so this is not a reason to fail the action — but it is
   // reported rather than dropped, because a status column that silently stopped
   // tracking is exactly what put this lane in the dark.
-  const sync = await syncOfferStatus(offerId, callerRow.brokerage_id as string)
+  const sync = await syncOfferStatus(offerId, actor.brokerageId)
   const statusSyncError = sync.success ? null : (sync.error ?? "offers.status could not be synced")
   if (statusSyncError) {
     console.error(`[submit-for-signature] offer ${offerId}: ${statusSyncError}`)

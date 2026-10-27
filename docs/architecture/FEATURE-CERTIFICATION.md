@@ -122,7 +122,7 @@ Wave 143, lane 143J. Live census read-only on 2026-10-23 (project hrvaqgvukzxfsk
 | ads_campaigns | R14 | NOT CONFIGURED | 1 |
 | competitor_monitor | R14 | NOT CONFIGURED | 1 |
 | content_performance_predictor | R14 | NOT CONFIGURED | 1 |
-| direct_mail | R12 | NOT CONFIGURED | 107 |
+| direct_mail | R12 | NOT CONFIGURED | 109 |
 | email_campaigns | R11 | NOT CONFIGURED | 12 |
 | listing_marketing_tiers | R01 | CERTIFIED | 2 |
 | marketing_studio | R19 | CERTIFIED | 1 |

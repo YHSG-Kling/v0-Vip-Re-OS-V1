@@ -489,6 +489,18 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     } catch (err) {
       console.error("[event-reactor] lead enrichment enqueue failed:", err)
     }
+
+    // SPEED TO LEAD, IMMEDIATELY (owner ruling 16 — wave 145, lane 145Z; lane 145E Outside-lane 2 / Still open 1): a fresh
+    // eligible lead goes to the ARBITER now, not on the next 2-minute sweep. The same sweep the cron runs
+    // (lib/ai-isa/speed-to-lead.ts runSpeedToLead — eligibility, the arbiter's decision, the one lead door), which now CLAIMS
+    // each first touch before it sends, so this run and the cron's can never both touch one person. Best-effort: lead
+    // creation never fails because of it, and the cron remains the safety net.
+    try {
+      const { runSpeedToLead } = await import("@/lib/ai-isa/speed-to-lead")
+      await runSpeedToLead(params.brokerageId, { now: new Date() })
+    } catch (err) {
+      console.error("[event-reactor] immediate speed-to-lead failed (the cron sweep will run it):", err)
+    }
   }
 
   // (E) Contact-agent-assignment intro video — when contacts.agent_id is set
@@ -2039,6 +2051,24 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           message:     "A listing agreement was initiated.",
           entityType:  params.entityType,
           entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 18b — the seller-agreed MLS live date changed under the executed listing agreement / an executed amendment
+    // (lib/listings/mls-live-date.ts followSellerAgreedMlsLiveDate; owner ruling 2, wave 145 lane 145Z). Listing
+    // Concierge tells the Campaign Orchestrator, whose scheduled Coming Soon / launch marketing names the date.
+    if (params.event === KernelEvent.LISTING_MLS_LIVE_DATE_CHANGED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "listing_concierge",
+          toManager:   "campaign_orchestrator",
+          signalType:  "listing_mls_live_date_changed",
+          message:     "The seller-agreed MLS live date changed (a planned date, not a verified MLS status).",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
         }, svc)
       } catch { /* best-effort */ }
     }

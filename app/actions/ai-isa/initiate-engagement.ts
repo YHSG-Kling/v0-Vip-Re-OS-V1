@@ -40,7 +40,8 @@ import {
   checkUnderContractPause,
 } from '@/lib/ai-isa/isa-outreach-logger'
 import { handleISAQualificationStarted } from '@/lib/kernel/lead-acquisition-handlers'
-import { evaluateOutbound } from '@/lib/kernel'
+// PURE CUT (wave 145, lane 145Z — test:proxy-graph-budget): the direct module, not the lib/kernel barrel (same export).
+import { evaluateOutbound } from '@/lib/kernel/compliance'
 import { dispatchEmail, dispatchSms } from '@/lib/providers/dispatch'
 import { hasReachablePhone } from '@/lib/communication/phone-reachability'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'

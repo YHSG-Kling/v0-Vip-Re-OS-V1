@@ -180,14 +180,19 @@ function AgentGovernance({ a, scans }: { a: AgentAgreementGovernanceView; scans:
 }
 
 export function AgreementGovernancePanel({ agents, scans }: { agents: AgentAgreementGovernanceView[]; scans: AgreementScanView[] }) {
-  if (agents.length === 0) return null
+  // An empty roster SAYS so (lane 145Z — test:rendered-empty-states: this panel returned null on [], the 34th self-hiding
+  // widget against a ratchet of 33). No agent agreement is not "nothing to show"; it is the fact the broker needs to read.
   return (
     <div className="space-y-4">
       <div>
         <h2 className="text-lg font-semibold">Executed agreements, start dates and verified terms</h2>
         <p className="text-sm text-muted-foreground">The executed agreement dictates the money: its effective date, the agent&apos;s start date and the commission terms — proposed from the signed paper, verified by you.</p>
       </div>
-      {agents.map((a) => <AgentGovernance key={a.agentId} a={a} scans={scans} />)}
+      {agents.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No agent agreements to govern yet — once an agent&apos;s agreement is executed, its start date and terms appear here for you to verify.</p>
+      ) : (
+        agents.map((a) => <AgentGovernance key={a.agentId} a={a} scans={scans} />)
+      )}
     </div>
   )
 }

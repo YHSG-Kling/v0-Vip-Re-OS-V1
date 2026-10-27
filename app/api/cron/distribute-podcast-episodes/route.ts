@@ -283,6 +283,22 @@ export async function GET(request: NextRequest) {
             .eq("id", episode.id), { table: "podcast_episodes", flow: "podcast_episodes_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         }
 
+        // THE VERSION THAT WENT OUT (owner ruling 20 — wave 145, lane 145Z; lane 145G Outside-lane 4): the episode's script (what
+        // the distributed audio speaks — storedAs) is recorded against its humanized final, the episode's approval as evidence.
+        if (anySucceeded) {
+          try {
+            const { recordDoorPublication } = await import("@/lib/marketing/humanize-final")
+            const rec = await recordDoorPublication(supabase as any, {
+              brokerageId: episode.brokerage_id, assetKind: "podcast_script", assetTable: "podcast_episodes", assetId: episode.id,
+              content: String(episode.script ?? ""), approvedBy: null, approvedAt: null,
+              via: `podcast:${allSucceeded ? "all_channels" : "some_channels"}`, ref: null,
+            })
+            if (!rec.ok) console.error(`[distribute-podcast] episode ${episode.id} distributed, but the version that went out was NOT recorded: ${rec.error}`)
+          } catch (e) {
+            console.error(`[distribute-podcast] episode ${episode.id}: version record threw: ${(e as Error)?.message ?? e}`)
+          }
+        }
+
       } catch (episodeError: any) {
         results.errors.push(`Episode ${episode.id}: ${episodeError.message}`)
       }

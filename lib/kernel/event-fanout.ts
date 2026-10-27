@@ -238,6 +238,16 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     responsibleParty: "agent",
     chatBody: "Coming Soon marketing is live — I'll let you know as buyer interest comes in.",
   },
+  // Owner ruling 2 (wave 145, lane 145Z — lane 145B Outside-lane 14): the seller is told the date follows THEIR signed
+  // agreement (or its signed amendment) — and that it is a plan, live only once the MLS feed confirms it. `{via_label}`
+  // and `{planned}` come from the emitter's metadata (lib/listings/mls-live-date.ts followSellerAgreedMlsLiveDate).
+  [KernelEvent.LISTING_MLS_LIVE_DATE_CHANGED]: {
+    audience: "seller",
+    title: "Your MLS go-live date changed",
+    plainLanguageSummary:
+      "Under {via_label}, your home is planned to go live on the MLS on {planned}. It is live only once the MLS feed confirms it.",
+    responsibleParty: "agent",
+  },
   [KernelEvent.LISTING_PUBLISHED]: {
     title: "Your home is live on the MLS!",
     plainLanguageSummary:

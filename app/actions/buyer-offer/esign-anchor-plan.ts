@@ -53,13 +53,13 @@ export async function buildEsignAnchorPlanAction(input: EsignAnchorPlanInput): P
   const svc = createServiceClient()
   // Same service-client read as prefillStorageFormAction, same tenant check (lane 88C):
   // the caller-named path must be in the SESSION's own scope before a byte is read.
-  const { data: me, error: meErr } = await authClient.from("users").select("brokerage_id, team_id").eq("id", user.id).maybeSingle()
-  if (meErr) return { success: false, error: `could not read your account: ${meErr.message}` }
-  if (!me?.brokerage_id) return { success: false, error: "unauthorized" }
+  // THE SEAT DOOR (wave 145, lane 145A Outside-lane 2): an ACTIVE STAFF SEAT from the SESSION user, never a raw users read.
+  const { resolvePacketActor } = await import("@/lib/forms/tenant-form-packets")
+  const seat = await resolvePacketActor(svc as never, user.id)
+  if (!seat.ok) return { success: false, error: seat.error }
+  const actor = { brokerageId: seat.actor.brokerageId, teamId: seat.actor.teamId, userId: user.id }
   const { checkFormPathsInScope } = await import("@/lib/forms/form-path-scope")
-  const scope = await checkFormPathsInScope(svc, [input.filledPath], {
-    brokerageId: me.brokerage_id as string, teamId: (me.team_id as string | null) ?? null, userId: user.id,
-  })
+  const scope = await checkFormPathsInScope(svc, [input.filledPath], actor)
   if (!scope.ok) return { success: false, error: scope.error ?? "that form is not in your library" }
   try {
     const { data: file, error } = await svc.storage.from(FORMS_BUCKET).download(input.filledPath)

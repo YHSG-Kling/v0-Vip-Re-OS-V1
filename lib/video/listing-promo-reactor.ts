@@ -159,6 +159,13 @@ export async function dispatchListingPromoVideo(
     return { ok: false, status: "skipped", reason: "tenant mismatch" }
   }
 
+  // OWNER RULING 1 (wave 145, lane 145Z — lane 145B Outside-lane 5): a coming_soon promo prints and speaks only the line
+  // the address rule allows ("City, ST" unless the seller AND the attested MLS rule permit the street). Resolved AFTER
+  // the tenant check above; fail closed inside the rule (an unreadable policy/agreement withholds the street).
+  const comingSoonAddress = input.eventType === "coming_soon"
+    ? await (await import("@/lib/marketing/listing-public-address")).resolveComingSoonCreativeAddress({ policyClient: svc as any, termsClient: svc as any, listing: { ...l, brokerage_id: input.brokerageId } })
+    : null
+
   // 1b. Wave 27 — policy + cooldown gate. The lifecycle-promo-policy
   //     resolver walks agent → team → brokerage → platform_default for
   //     the (event_type, scope) pair. If the resolved decision is
@@ -241,7 +248,7 @@ export async function dispatchListingPromoVideo(
   }
 
   // 4. Draft script + pre-flight compliance (broadcast shape — no contact).
-  const facts = buildFacts(l, input.eventType)
+  const facts = buildFacts(l, input.eventType, comingSoonAddress?.addressLine ?? null)
   let script: string
   try {
     const result = await runWithComplianceRedraft({
@@ -282,6 +289,11 @@ export async function dispatchListingPromoVideo(
       }
     }
     script = result.script
+    // The narration is AI-drafted: scrub any street the model added back (redact mode — wave 145, owner ruling 1).
+    if (comingSoonAddress) {
+      const { guardComingSoonCreativeText } = await import("@/lib/marketing/listing-public-address")
+      script = guardComingSoonCreativeText(script, l, comingSoonAddress, "redact").text
+    }
   } catch (err) {
     await sentinelWrite(svc, svc.from("listing_promo_videos")
       .update({ status: "failed", error_message: `script: ${(err as Error).message}` })
@@ -313,7 +325,7 @@ export async function dispatchListingPromoVideo(
       brokerage_id:   input.brokerageId,
       agent_id:       agentRecordId,
       listing_id:     input.listingId,
-      title:          `${promoEventLabel(input.eventType)} — ${l.address ?? "listing"}`,
+      title:          `${promoEventLabel(input.eventType)} — ${comingSoonAddress ? comingSoonAddress.addressLine : (l.address ?? "listing")}`,
       script_content: script,
       video_type:     "listing_promo",
       status:         "queued",
@@ -371,11 +383,12 @@ interface ListingFacts {
   property_type: string
 }
 
-function buildFacts(l: ListingRow, _event: ListingPromoEventType): ListingFacts {
+function buildFacts(l: ListingRow, _event: ListingPromoEventType, publicAddressLine: string | null = null): ListingFacts {
   // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usdOrEmpty
   const usd = usdOrEmpty
   return {
-    address:       l.address ?? "",
+    // A Coming Soon promo passes the address rule's line (wave 145, owner ruling 1); every other event the street.
+    address:       publicAddressLine ?? l.address ?? "",
     city_state:    [l.city, l.state].filter(Boolean).join(", "),
     list_price:    usd(l.list_price),
     bedrooms:      l.bedrooms != null ? String(l.bedrooms) : "",

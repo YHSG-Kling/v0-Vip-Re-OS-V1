@@ -56,10 +56,11 @@ import { createClient } from "@/lib/supabase/client"
 import { anchorsForProvider, type EsignProvider } from "@/lib/forms/esign-anchor-adapters"
 import type { EsignAnchor, SignerRole } from "@/lib/forms/esign-anchors"
 import { getContacts } from "@/app/actions/contacts"
-// The ONE TTL vocabulary for a persisted document URL — the same constant the
-// server-side signer uses (lib/storage/signed-doc-url.ts). Imported rather than
-// respelled so the wizard and the signer cannot drift.
-import { DOC_URL_TTL_SECONDS as FORM_URL_TTL_SECONDS } from "@/lib/storage/signed-doc-url"
+// SHORT-LIVED PREVIEW LINKS ONLY (wave 145, lane 145Z — lane 145A Outside-lane 3, ruling 23): the wizard's links are
+// VIEWS of a brokerage-forms object (the storage path is the form ref; the server re-mints at send), so they take the
+// forms bucket's preview TTL — never the 10-year persisted-document TTL (DOC_URL_TTL_SECONDS) they used to mint. One
+// bucket spelling too (§6): FORM_PACKET_BUCKET. Both from lib/forms/tenant-form-packets.ts (not server-only).
+import { FORM_PACKET_PREVIEW_TTL_SECONDS as FORM_URL_TTL_SECONDS, FORM_PACKET_BUCKET } from "@/lib/forms/tenant-form-packets"
 import { createOffer } from "@/app/actions/buyer-offers"
 import { createListingWithSellerContact, resolveListingIdByMlsAction, sendListingAgreementForSignatureAction } from "@/app/actions/listings-kernel"
 import { CommissionDisclosureDialog } from "@/app/components/offer/commission-disclosure-dialog"
@@ -514,7 +515,7 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
     const collected: typeof myForms = []
     await Promise.all(
       paths.map(async ({ prefix, scope }) => {
-        const { data } = await supabase.storage.from("brokerage-forms").list(prefix, { limit: 50 })
+        const { data } = await supabase.storage.from(FORM_PACKET_BUCKET).list(prefix, { limit: 50 })
         if (data) {
           for (const f of data) {
             if (f.name.endsWith(".pdf") || f.name.endsWith(".docx")) {
@@ -525,7 +526,7 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
               // when it cannot be signed — never downgraded to public.
               const objectPath = `${prefix}${f.name}`
               const { data: signed, error: signErr } = await supabase.storage
-                .from("brokerage-forms")
+                .from(FORM_PACKET_BUCKET)
                 .createSignedUrl(objectPath, FORM_URL_TTL_SECONDS)
               if (signErr || !signed?.signedUrl) continue
               collected.push({ name: f.name, url: signed.signedUrl, scope, path: objectPath })
@@ -1416,13 +1417,13 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
     try {
       const supabase = createClient()
       const storagePath = `agents/${agentUserId}/uploads/${Date.now()}-${file.name.replace(/[^\w.\-]/g, "_")}`
-      const { error: upErr } = await supabase.storage.from("brokerage-forms").upload(storagePath, file, { upsert: false })
+      const { error: upErr } = await supabase.storage.from(FORM_PACKET_BUCKET).upload(storagePath, file, { upsert: false })
       if (upErr) { setUploadError(upErr.message); return }
       // FAIL CLOSED — a form the agent just uploaded gets a TIME-LIMITED signed
       // URL, or the upload is reported as failed. It must never fall back to a
       // permanent public link (was getPublicUrl on a world-readable bucket).
       const { data: signed, error: signErr } = await supabase.storage
-        .from("brokerage-forms")
+        .from(FORM_PACKET_BUCKET)
         .createSignedUrl(storagePath, FORM_URL_TTL_SECONDS)
       if (signErr || !signed?.signedUrl) {
         setUploadError(signErr?.message ?? "The form uploaded but no secure link could be created for it.")

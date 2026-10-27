@@ -141,7 +141,7 @@ export interface StageTopicTvSpotDeps {
 }
 
 export type StageTopicTvSpotResult =
-  | { ok: true; campaignId: string; finalId: string; brief: ReturnType<typeof tvSpotBriefFromTopic>; warnings: string[] }
+  | { ok: true; campaignId: string; finalId: string; brief: ReturnType<typeof tvSpotBriefFromTopic>; warnings: string[]; package?: unknown }
   | { ok: false; reason: string }
 
 /**
@@ -238,7 +238,9 @@ export async function stageTopicTvSpot(input: StageTopicTvSpotInput, deps: Stage
     } catch (e) {
       warnings.push(`topic claim not recorded: ${(e as Error)?.message ?? String(e)}`)
     }
-    return { ok: true, campaignId: res.package.campaignId, finalId: staged.finalId, brief, warnings: [...warnings, ...(res.package.warnings ?? [])] }
+    // `package` = the gateway's own launch package, handed through so the Ads screen's action (app/actions/ctv-ads.ts) shows
+    // exactly what the Ads Manager staged (wave 145, lane 145Z — lane 145G Outside-lane 1).
+    return { ok: true, campaignId: res.package.campaignId, finalId: staged.finalId, brief, warnings: [...warnings, ...(res.package.warnings ?? [])], package: res.package }
   } catch (e) {
     return { ok: false, reason: `stageTopicTvSpot threw: ${(e as Error)?.message ?? String(e)}` }
   }

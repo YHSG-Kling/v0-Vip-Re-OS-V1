@@ -594,11 +594,13 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
       // writer in seller-open-house.ts was already corrected this way; this one
       // was missed.
       //
-      // contacts.preferred_contact_method has NO check constraint, but
+      // contacts.preferred_channel has NO check constraint, but
       // open_house_invitations.channel does — {both, email, in_app, sms}. A
       // contact whose preference is "phone" or "text" silently FAILED the
       // insert. Normalise to the vocabulary the column actually accepts.
-      const preference = String(contact?.preferred_contact_method ?? "").toLowerCase()
+      // Wave 145 (lane 145Z, §6): this read `preferred_contact_method`, which is NOT a contacts column (the star select never
+      // carried it — every invite fell to email). The live column is preferred_channel.
+      const preference = String(contact?.preferred_channel ?? "").toLowerCase()
       const channel: "email" | "sms" | "both" =
         preference === "sms" || preference === "text" || preference === "phone"
           ? "sms"

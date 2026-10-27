@@ -172,7 +172,11 @@ export const CHAINS: ChainSpec[] = [
         link: { kind: "fk", column: "agent_id" },
         // Lane 145C names the ONE writer (its notes, C6): setAgentStartDateFromAgreement; the m858 trigger
         // agents_start_date_from_agreement holds the column equal to the agreement's effective_date.
-        materialized: [{ table: "agents", column: "start_date", truth: "the executed agent agreement's effective date + amendment history (ruling 3, contract C6 — never account creation, first login or team join)", reconciler: { file: "lib/agreements/agent-agreements.ts", symbol: "setAgentStartDateFromAgreement" } }] },
+        materialized: [{ table: "agents", column: "start_date", truth: "the executed agent agreement's effective date + amendment history (ruling 3, contract C6 — never account creation, first login or team join)", reconciler: { file: "lib/agreements/agent-agreements.ts", symbol: "setAgentStartDateFromAgreement" } }],
+        // m858 (applied; caches regenerated at 59d2e18f) added agents.start_date_source → contract_signatures — the back-pointer
+        // naming WHICH executed agreement the start date came from (contract C6). Declared by lane 145Z: its ONE writer is the
+        // same door that writes the start date (lane 145C, C6 — "nobody else writes it").
+        bidirectional: { column: "start_date_source", writer: { file: "lib/agreements/agent-agreements.ts", symbol: "setAgentStartDateFromAgreement" } } },
     ],
   },
   {
@@ -384,7 +388,7 @@ const KNOWN_FINDINGS: Record<string, { owner: ManagerKey; route: string }> = {
   "materialized-column-missing:org.agent>agreement:agents.start_date": { owner: "recruiting_manager", route: "lane 145C (contract C6) — agents.start_date + agents.start_date_source (the executed agreement) land in m858–m861; burns when the integrator regenerates the schema caches" },
   "unreconciled:org.agent>agreement:agents.start_date": { owner: "recruiting_manager", route: "lane 145C (contract C6) — the ONE writer lib/agreements/agent-agreements.ts setAgentStartDateFromAgreement (145C's notes) is declared as the reconciler; this key BURNS when lane 145C's patch is merged (the symbol then exports)" },
   "edge-never-read:journey.decision>evaluation": { owner: "data_steward", route: "NOT A DEFECT — agent_outcome_evaluations.ledger_action_id is the idempotency key (m700 UNIQUE (ledger_action_id, outcome_ref); lib/agents/outcomes.ts reads 23505 as duplicate) and the per-arm readers aggregate on experiment_arm; no product read traverses delivery → evaluation. A per-action outcome view on the AI audit page (app/actions/flight-recorder.ts) would be the first traversal — a product decision, not built to move a number" },
-  "absent:content.topic>studio_idea": { owner: "campaign_orchestrator", route: "lane 145G / OWNER — app/actions/content-studio.ts content_ideas (125 live rows) carry no topic reference; ruling 22 says the topic bank feeds every content surface. Needs a nullable content_ideas.topic_id → content_topic_bank (migration in G's range) + the studio writer stamping it" },
+  "absent:content.topic>studio_idea": { owner: "campaign_orchestrator", route: "lane 145Z WROTE IT (wave 145): m872 adds content_ideas.topic_id → content_topic_bank (WRITTEN, NOT APPLIED) and app/actions/content-studio.ts generateContentIdeas now draws ideas from the tenant's live topics and stamps the offered topic id (its own tenant-pinned UPDATE). BURNS when the integrator applies m872, regenerates scripts/schema-fk-map.ts and re-declares this arrow as { kind: \"fk\", column: \"topic_id\" }" },
   "symbol-missing:provider:CHANNEL_PROVIDER_MATRIX": { owner: "campaign_orchestrator", route: "lane 145D (contract C1) creates lib/providers/channel-provider-matrix.ts; lane 145E replaces the arbiter's inline CHANNEL_PROVIDER_RULES with an import — burns when both land (step-unwired catches the second half)" },
   "symbol-missing:decision:isInLeadDomain": { owner: "ai_isa", route: "lane 145E (contract C2) exports lib/contact-promotion/lead-domain-boundary.ts isInLeadDomain / canonicalPartyFor" },
   "symbol-missing:humanize:finalizeForDistribution": { owner: "asset_manager", route: "lane 145G (contract C4) extends the 144H humanized-review survivor (lib/lead-magnets/book-editorial.ts scanAiTells / humanizedReviewState) into lib/marketing/humanize-final.ts finalizeForDistribution" },

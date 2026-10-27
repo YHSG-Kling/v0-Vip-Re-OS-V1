@@ -619,6 +619,23 @@ Lane 144J (wave 144). Fourteen IN-MEMORY canaries on the existing harness (`scri
 
 A capability with no survivor at HEAD is probed on STRIPPED source (`findLanded` in `scripts/canaries/_registry.ts`, positive + negative control in the graph canary); a landed file is evidence, never a pass — the step stays red until its behavioural assertion is wired at its `WAVE144 WIRE (integrator)` line. Where a lane's module has landed with a published contract (144A, 144C, 144D, 144E, 144G, 144H), the canary drives it through `landedModule` (`scripts/canaries/_harness.ts`): only a missing FILE reads as "not landed", and a file that fails to load throws. So the same step is red at the base commit and green on the landed behaviour, with no edit in between. The full per-step table and the counts are in the lane-144J notes.
 
+## Wave 145 owner-ruling canaries
+
+Lane 145J (wave 145). Eight IN-MEMORY canaries, one per area of the "Required proofs" list, on the SAME harness (`scripts/canaries/_harness.ts`, `_registry.ts` — `canary()`, `canaryClient`, `cleanupCanary`, `landedModule`, `rulingVerdict`, `findLanded`), run by `scripts/wave145-canaries.ts` (the wave-144 runner's selection, verdict table and RESULT line; roster `WAVE145_CANARY_KEYS` in `scripts/canaries/wave145-harness.ts`). Every step asserts an owner RULING of 2026-10-27 or a cross-lane CONTRACT (C1–C7) by its spec name — never a lane's internal shape. A ruling step is never pending: false is red-awaiting-lane-145X (the lane whose brief carries it) or red-defect; a step that waits on an OWNER decision is pending-owner (counted apart, never a pass, never a failure). A contract binds by FILE + exported NAMES (`bindContract`): absent file = red-awaiting with the contract named; a file that fails to load = red; landed = the canary drives it. Mode: IN-MEMORY (STATIC for the source-rule steps); no live payment, outreach, provider call or publication.
+
+| Canary | File | Rulings / contracts | HEAD verdict at b364eb4b | Integrated (lanes 145A–I patches applied) |
+|---|---|---|---|---|
+| security | `scripts/canaries/wave145-security.ts` | 23, 24 · §4 | red-awaiting-lane-145A×6, 145I×1, pending-owner×1 | green, pending-owner×2 (the live storage.objects policies — owner SQL editor, release-blocking; Step 0 authorization of the safety batch) |
+| listings | `scripts/canaries/wave145-listings.ts` | 1, 2 · C7 | red-awaiting-lane-145B×5, integrator×1 | red-awaiting-lane-integrator×1 (the MLS live-date kernel event — 145B / 145I Outside-lane) |
+| financial onboarding | `scripts/canaries/wave145-financial.ts`, `scripts/canaries/_commission-deal.ts` | 3–9 · C6, C7 | red-awaiting-lane-145C×10 | green, pending-owner×1 (m858–m861 applied) |
+| providers / channels | `scripts/canaries/wave145-providers.ts` | 13 · C1, C5 | red-awaiting-lane-145D×9, 145E×1 | red-awaiting-lane-145D×1 (email outcomes are ledgered but never claimed), pending-owner×1 (m862) |
+| lead / contact | `scripts/canaries/wave145-lead-contact.ts` | 15, 16, 17 · C2, C3 | red-awaiting-lane-145E×7, 145H×1 | green |
+| signals | `scripts/canaries/wave145-signals.ts` | 11, 12, 14 · C2 | red-awaiting-lane-145F×7, pending-owner×1 | green, pending-owner×1 (who reads the research store) |
+| marketing | `scripts/canaries/wave145-marketing.ts` | 19, 20, 22, 13/22 · C4, C5 | red-awaiting-lane-145G×7 | green |
+| compliance / UX | `scripts/canaries/wave145-compliance-ux.ts` | 18, 21, §6 · C3 | red-awaiting-lane-145H×7, 145E×1, pending-owner×1 | red-awaiting-lane-145E×1 (`ageGroupChannelAffinity`, routed by 145H), pending-owner×2 (m869; state preset citations) |
+
+Totals at b364eb4b: 83 ruling steps — 17 green, 63 red-awaiting-lane, 0 red-defect, 3 pending-owner (` RESULT: canaries 8, passed 0, failed 8; steps 19/82; hooks pending 0; pending owner decision 3; rows deleted 68`). Integrated, with all nine lane patches applied together: 89 ruling steps — 79 green, 3 red-awaiting-lane, 0 red-defect, 7 pending-owner (` RESULT: canaries 8, passed 5, failed 3; steps 81/84; hooks pending 0; pending owner decision 7; rows deleted 68`). The integrated run has more steps because a pending-owner step for a migration, and the per-lane new-table census, appear only once that lane's migration exists. The per-step table is in the lane-145J notes.
+
 ## Pending proofs
 
 Wave-143 lanes that are still building a proof. Recorded, not run. Each lands as `scripts/<name>.ts`; when the file exists, run it and add its rows here.
@@ -633,6 +650,7 @@ Wave-143 lanes that are still building a proof. Recorded, not run. Each lands as
 | 143F | `scripts/public-media-scope-guard.ts` | fair-housing scope negative guard, podcasts, book export, lead magnets, Remotion root cause | pending 143F |
 | 143J | `scripts/feature-certification-guard.ts` | advertised-feature certification, dead controls | pending 143J |
 | 144J | `scripts/wave144-canaries.ts` (`test:wave144-canaries`, key to register) | the fourteen wave-144 owner-ruling canaries (section "Wave 144 owner-ruling canaries") | written; package.json key + chain membership are the integrator's |
+| 145J | `scripts/wave145-canaries.ts` (`test:wave145-canaries`, key to register) | the eight wave-145 owner-ruling canaries (section "Wave 145 owner-ruling canaries") | written; package.json key is the integrator's — NOT in the guard chain until the verdict table reads green |
 
 ## Credential-gated proofs
 

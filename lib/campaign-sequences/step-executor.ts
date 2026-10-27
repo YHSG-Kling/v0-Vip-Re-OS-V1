@@ -26,7 +26,7 @@ import { registry }            from "@/lib/workflow/channel-registry"
 import type { StepContext, StepResult } from "@/lib/workflow/channel-registry"
 import { buildVariableContext, resolveVariables } from "@/lib/workflow/variables"
 import { checkSequenceAuthority }  from "./compliance-gate"
-import { decideFirstTouch, FIRST_TOUCH_OUTREACH_CHANNELS } from "./first-touch-coordination"
+import { decideFirstTouch, FIRST_TOUCH_DEFER_MINUTES, FIRST_TOUCH_OUTREACH_CHANNELS } from "./first-touch-coordination"
 import { recordSequenceTouchpoint } from "./touchpoint-bridge"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { isDeconflictDeferral, decideDeferral, MAX_DEFERS } from "./deferral-policy"
@@ -66,7 +66,7 @@ export async function executeSequenceStep(
   // ── Step 1: Fetch enrollment ───────────────────────────────────────────────
   const { data: enrollment, error: enrollErr } = await supabase
     .from("sequence_enrollments")
-    .select("id, sequence_id, contact_id, lead_id, current_step, status, brokerage_id, ab_variant, step_outputs")
+    .select("id, sequence_id, contact_id, lead_id, current_step, status, brokerage_id, ab_variant, step_outputs, enrolled_at")
     .eq("id", enrollmentId)
     .single()
 
@@ -274,7 +274,22 @@ export async function executeSequenceStep(
       stepChannel:          step.channel,
       firstTouchedAt:       ftRow?.first_touched_at ?? null,
       firstTouchChannel:    ftRow?.first_touch_channel ?? null,
+      enrolledAt:           (enrollment as { enrolled_at?: string | null }).enrolled_at ?? null,
     })
+
+    // OWNER RULING 16 (wave 145, lane 145Z — lane 145E Outside-lane 3): the FIRST hello is the arbiter's decision. Inside
+    // its window the welcome step WAITS (current_step unchanged, re-asked after one sweep) — never advanced, never sent.
+    if (decision === "defer_to_arbiter") {
+      const retryAt = new Date(Date.now() + FIRST_TOUCH_DEFER_MINUTES * 60_000).toISOString()
+      const { data: deferred, error: deferErr } = await supabase.from("sequence_enrollments")
+        .update({ next_step_at: retryAt }).eq("id", enrollmentId).eq("brokerage_id", brokerageId).select("id")
+      if (deferErr || (deferred ?? []).length === 0) {
+        // The wait could not be recorded — fail closed for THIS tick (no send that could double the arbiter's hello);
+        // the cron re-picks the still-due step next tick.
+        console.error(`[step-executor] first-touch deferral NOT saved for enrollment ${enrollmentId}: ${deferErr?.message ?? "matched no row"}`)
+      }
+      return { status: "skipped", reason: `first touch deferred to the arbiter's speed-to-lead (ruling 16) — re-asked at ${retryAt}` }
+    }
 
     if (decision === "skip_duplicate") {
       await logAndSkip(supabase, {

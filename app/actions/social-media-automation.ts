@@ -783,7 +783,7 @@ export async function createListingPosts(params: {
     // Fetch listing + first photo from listing_media for media_urls
     const { data: property } = await supabase
       .from("listings")
-      .select("address, city, list_price, bedrooms, bathrooms, sqft")
+      .select("id, brokerage_id, address, city, state, zip, status, lifecycle_stage, list_price, bedrooms, bathrooms, sqft")
       .eq("id", params.propertyId)
       .maybeSingle()
 
@@ -799,6 +799,20 @@ export async function createListingPosts(params: {
     if (!property) {
       return { success: false, error: "Property not found" }
     }
+
+    // OWNER RULING 1 (wave 145, lane 145Z — lane 145B Outside-lane 3): a Coming Soon listing's public posts print only
+    // the line the address rule allows. A person's reviewed copy is checked in REFUSE mode (they are told what to
+    // change); generated copy is prompted with the public line and scrubbed in REDACT mode. Fail closed inside the rule.
+    const listingRow = property as { id: string; brokerage_id: string; address: string | null; city: string | null; state: string | null; zip: string | null; status?: string | null; lifecycle_stage?: string | null }
+    const { isPublicComingSoonListing, resolveComingSoonCreativeAddress, guardComingSoonCreativeText } = await import("@/lib/marketing/listing-public-address")
+    const comingSoon = isPublicComingSoonListing(listingRow)
+      ? await resolveComingSoonCreativeAddress({ policyClient: createServiceClient() as any, termsClient: createServiceClient() as any, listing: listingRow })
+      : null
+    if (comingSoon && params.contentOverride?.trim()) {
+      const g = guardComingSoonCreativeText(params.contentOverride, listingRow, comingSoon, "refuse")
+      if (!g.ok) return { success: false, error: g.findings.join(" ") }
+    }
+    const promptProperty = comingSoon ? { ...property, address: comingSoon.addressLine } : property
 
     const results = []
 
@@ -823,9 +837,10 @@ export async function createListingPosts(params: {
         ? { text: reviewed, hashtags: [] }
         : await generatePlatformContent({
             platform,
-            property,
+            property: promptProperty,
             agentId: params.agentId,
           })
+      if (comingSoon && !reviewed) content.text = guardComingSoonCreativeText(content.text, listingRow, comingSoon, "redact").text
 
       // Schedule post for optimal time
       const optimalTime = getOptimalPostingTime(platform)

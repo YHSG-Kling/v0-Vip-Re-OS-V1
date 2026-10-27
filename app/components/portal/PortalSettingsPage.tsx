@@ -31,7 +31,8 @@ interface Contact {
   zip_code?: string
   avatar_url?: string
   contact_persona?: string
-  preferred_contact_method?: string
+  /** contacts.preferred_channel — the person's stated channel (email / sms / phone). */
+  preferred_channel?: string | null
   preferred_language?: string
   notes?: string
   metadata?: Record<string, any>
@@ -119,7 +120,8 @@ export default function PortalSettingsPage({ contact, contactId, languageOptions
   const [city, setCity] = useState(contact.city || "")
   const [state, setState] = useState(contact.state || "")
   const [zipCode, setZipCode] = useState(contact.zip_code || "")
-  const [preferredContact, setPreferredContact] = useState(contact.preferred_contact_method || "email")
+  // The live column is preferred_channel (wave 145, lane 145Z); the readers' word for text is "sms".
+  const [preferredContact, setPreferredContact] = useState(contact.preferred_channel === "sms" ? "text" : (contact.preferred_channel || "email"))
   // Owner ruling (wave 51): default is English wherever a language is
   // resolved and none is known — "en" here means "not yet set", matching
   // lib/video/multilingual-reel.ts DEFAULT_LANGUAGE, never a second literal.
@@ -169,7 +171,7 @@ export default function PortalSettingsPage({ contact, contactId, languageOptions
         city,
         state,
         zip_code: zipCode,
-        preferred_contact_method: preferredContact,
+        preferred_channel: preferredContact === "text" ? "sms" : preferredContact,
         preferred_language: preferredLanguage,
       })
 

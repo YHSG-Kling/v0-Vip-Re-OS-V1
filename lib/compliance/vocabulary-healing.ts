@@ -214,7 +214,7 @@ export async function reportComingSoonPolicy(
     brokerageId: input.brokerageId, subjectKind: "policy", subjectKey: COMING_SOON_POLICY_KEY, proposer: "human",
     proposedChange: {
       patch: { mls: { [v.entry.mls_slug]: v.entry } }, coming_soon_entry: v.entry, requires_compliance: true, changed_keys: [COMING_SOON_POLICY_KEY],
-      summary: `${v.entry.mls_name} (${v.entry.state_codes.join(", ")}): coming soon ${v.entry.permitted ? "permitted" : "not permitted"}${v.entry.max_days !== null ? `, max ${v.entry.max_days} days` : ""}, showings ${v.entry.showings_permitted ? "permitted" : "not permitted"}${v.entry.mls_submission_within_business_days !== null ? `, MLS within ${v.entry.mls_submission_within_business_days} business day(s) of public marketing` : ""} — ${v.entry.source.rule_ref}`,
+      summary: `${v.entry.mls_name} (${v.entry.state_codes.join(", ")}): coming soon ${v.entry.permitted ? "permitted" : "not permitted"}${v.entry.max_days !== null ? `, max ${v.entry.max_days} days` : ""}, showings ${v.entry.showings_permitted ? "permitted" : "not permitted"}${v.entry.mls_submission_within_business_days !== null ? `, MLS within ${v.entry.mls_submission_within_business_days} business day(s) of public marketing` : ""}, street address ${v.entry.street_address_disclosure_permitted === true ? "permitted" : v.entry.street_address_disclosure_permitted === false ? "withheld" : "unstated (withheld)"} — ${v.entry.source.rule_ref}`,
     },
     evidenceRefs: [{ kind: "mls_rule_report", reporter_user_id: input.reporterUserId, mls_name: v.entry.mls_name, source_url: v.entry.source.url, rule_ref: v.entry.source.rule_ref, at }],
     actor: null,
@@ -232,7 +232,7 @@ async function approveComingSoonProposal(svc: Svc, input: { brokerageId: string;
   const entry = (row.proposed_change ?? {}).coming_soon_entry as ComingSoonPolicyEntry | undefined
   const recheck = entry ? validateComingSoonPolicyReport({
     mlsName: entry.mls_name, stateCodes: entry.state_codes, permitted: entry.permitted, maxDays: entry.max_days, showingsPermitted: entry.showings_permitted,
-    mlsSubmissionWithinBusinessDays: entry.mls_submission_within_business_days, sourceUrl: entry.source?.url ?? null, ruleRef: entry.source?.rule_ref ?? null, sourceTitle: entry.source?.title ?? null,
+    mlsSubmissionWithinBusinessDays: entry.mls_submission_within_business_days, streetAddressDisclosurePermitted: entry.street_address_disclosure_permitted ?? null, sourceUrl: entry.source?.url ?? null, ruleRef: entry.source?.rule_ref ?? null, sourceTitle: entry.source?.title ?? null,
   }, at) : null
   if (!entry || !recheck?.ok) return { ok: false, error: "the proposal carries no valid coming-soon rule — reject it", errors: recheck && !recheck.ok ? recheck.errors : [] }
   const actor = { type: "user" as const, userId: approver.userId, isTenantAdmin: true, userType: approver.userType ?? null, reason: `MLS coming-soon rule approved: ${String(row.proposed_change?.summary ?? entry.mls_name)}`.slice(0, 500) }

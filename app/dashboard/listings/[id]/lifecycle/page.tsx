@@ -954,6 +954,7 @@ const { data: listingVendorBookings } = await supabase
               // The ONE address line public Coming Soon creative may print (wave 145, lane 145B — owner ruling 1): the
               // card feeds it to the AI copy and the posts, so the street address never reaches them unless disclosed.
               listingAddress={comingSoonCreative.addressLine}
+              plannedMlsLiveDate={listing.go_live_date ?? null}
               listingStatus={(listing as any).status ?? ""}
               mediaApproved={mediaApproved}
               transactionId={transactionId}

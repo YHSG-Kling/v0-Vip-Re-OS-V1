@@ -40,6 +40,26 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
   const supabase = createServiceClient()
 
   try {
+    // THE TOPIC BANK FEEDS THE STUDIO (owner ruling 22 — wave 145, lane 145Z; lane 145I open loop): the tenant's live topics (its
+    // own + platform rows, fresh, unexpired) are offered to the model by id; an idea drawn from one names it (content_ideas.topic_id,
+    // m872) so topic → idea → creative attribution joins through the studio board. A refused read is said and the ideas are still
+    // made (from the persona alone, with no lineage) — never a guessed topic.
+    const nowIso = new Date().toISOString()
+    const { data: topicRows, error: topicErr } = await supabase
+      .from("content_topic_bank")
+      .select("id, topic_title, value_angle")
+      .or(`brokerage_id.is.null,brokerage_id.eq.${auth.brokerageId}`)
+      .eq("status", "fresh")
+      .gte("expires_at", nowIso)
+      .order("engagement_score", { ascending: false })
+      .limit(8)
+    if (topicErr) console.error(`[content-studio] topic bank NOT read — ideas made without topic lineage: ${topicErr.message}`)
+    const topics = ((topicRows ?? []) as Array<{ id: string; topic_title: string | null; value_angle: string | null }>).filter((t) => t.id && t.topic_title)
+    const topicIds = new Set(topics.map((t) => t.id))
+    const topicBlock = topics.length
+      ? `\n      Draw each idea from ONE of these topics where it fits, and return that topic's id as "topic_id" (null when the idea is not from a topic — never invent an id):\n${topics.map((t) => `      - ${t.id}: ${t.topic_title}${t.value_angle ? ` (${t.value_angle})` : ""}`).join("\n")}\n`
+      : ""
+
     // Use AI to generate fresh content ideas
     const { text } = await generateText({
       brokerageId: auth.brokerageId,
@@ -47,13 +67,13 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
       model: "openai/gpt-4o-mini",
       prompt: `Generate 5 fresh, engaging content ideas for a real estate agent targeting ${persona || "general audience"}. 
       Focus on educational, empathy-driven content that follows the "Them First" philosophy.
-      
+      ${topicBlock}
       IMPORTANT: You must respond with ONLY valid JSON, no explanatory text.
       
       Return exactly this format:
       [
-        {"title": "Content Title", "description": "Brief description", "type": "video"},
-        {"title": "Another Title", "description": "Description text", "type": "social_post"}
+        {"title": "Content Title", "description": "Brief description", "type": "video", "topic_id": null},
+        {"title": "Another Title", "description": "Description text", "type": "social_post", "topic_id": null}
       ]
       
       Types must be one of: video, social_post, blog, tool`,
@@ -76,6 +96,22 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
       )
       .select()
     if (ideasSaveErr) console.error(`[content-studio] content ideas NOT saved: ${ideasSaveErr.message}`)
+
+    // LINEAGE — each saved idea's topic (only an id the bank OFFERED; anything else is null), in its own tenant-pinned UPDATE so a
+    // database without m872 keeps the ideas (42703 / PGRST204 = not applied, said once).
+    const saved = (data ?? []) as Array<{ id: string }>
+    for (let i = 0; i < saved.length; i++) {
+      const raw = (ideas[i] as { topic_id?: unknown } | undefined)?.topic_id
+      const topicId = typeof raw === "string" && topicIds.has(raw) ? raw : null
+      if (!topicId) continue
+      const { data: stamped, error: lineageErr } = await supabase.from("content_ideas").update({ topic_id: topicId })
+        .eq("id", saved[i].id).eq("brokerage_id", auth.brokerageId).select("id")
+      if (lineageErr) {
+        const code = String((lineageErr as { code?: string }).code ?? "")
+        console.error(`[content-studio] idea ${saved[i].id}: topic lineage NOT recorded${code === "42703" || code === "PGRST204" ? " (m872 not applied)" : ""}: ${lineageErr.message}`)
+        if (code === "42703" || code === "PGRST204") break
+      } else if ((stamped ?? []).length !== 1) console.error(`[content-studio] idea ${saved[i].id}: topic lineage matched no row`)
+    }
 
     revalidatePath("/content-studio")
     return { success: true, ideas: data }

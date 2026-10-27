@@ -208,7 +208,8 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
       // Wave 144 (144E): the bought answer is KEPT on the contact (the one writer, tenant-anchored, refresh — it was stale or absent).
       if (op.indicators) {
         boughtIndicators = { ...op.indicators }
-        const kept = await persistRealEstateIndicators(svc, { contactId: contact.id, brokerageId: contact.brokerage_id }, op.indicators, op.provenance, { refresh: true })
+        // Ruling 12 (wave 145, lane 145F Outside-lane 1 — wired by lane 145Z): protected fields → the segregated research store only.
+        const kept = await persistRealEstateIndicators(svc, { contactId: contact.id, brokerageId: contact.brokerage_id }, op.indicators, op.provenance, { refresh: true, protectedResearch: op.protectedResearch ?? [] })
         if (!kept.ok) result.warnings.push(`online presence: bought but not stored — ${kept.error}`)
       }
     } else if (contact.brokerage_id) {

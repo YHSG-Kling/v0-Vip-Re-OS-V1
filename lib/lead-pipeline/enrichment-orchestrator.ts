@@ -27,10 +27,9 @@ import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
 // imported DYNAMICALLY at their call sites (same reason as queueContactEnrichment
 // below: the rail's transports must not join this module's static graph, which
 // test:compliance-scope walks).
-import {
-  handleLeadScored,
-  processKernelEvent,
-} from '@/lib/kernel'
+// PURE CUT (wave 145, lane 145Z — test:proxy-graph-budget): the direct module, not the lib/kernel barrel (same export).
+import { handleLeadScored } from '@/lib/kernel/lead-acquisition-handlers'
+import { processKernelEvent } from '@/lib/kernel/notification-engine'
 import { KernelEvent } from '@/lib/kernel/events'
 import { MAX_RETRIES, enrichmentRetryOutcome, classifyEnrichmentFault, escalateConfigFaultOnce } from './enrichment-retry'
 import { isContactInLiveDeal } from '@/lib/enrichment/deal-suppression'

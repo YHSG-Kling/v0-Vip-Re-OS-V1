@@ -430,11 +430,15 @@ async function main() {
   }
 
   // ═══════════════════ G · migrations + wiring ═══════════════════
+  const LANE_OR_APPLIED: readonly RegExp[] = [/^-- ── APPLIED LIVE /, new RegExp("^-- " + "WRITTEN, NOT APPLIED \\(wave 145, lane 145G\\)")]
   section("G · m866 vocabularies equal the code's; every owned door runs the final phase")
   {
     const m866 = raw("supabase/migrations/m866-distribution-finals-humanized-final-versions.sql")
     const list = (name: string) => (new RegExp(`${name}\\s+CHECK\\s*\\(\\s*(?:\\w+ IS NULL OR )?\\w+\\s+IN\\s*\\(([^)]*)\\)`, "i").exec(m866)?.[1] ?? "").split(",").map((v) => v.trim().replace(/^'|'$/g, "")).filter(Boolean)
-    check("m866 line 1 is the lane stamp or the applied stamp", /^-- WRITTEN, NOT APPLIED \(wave 145, lane 145G\)/.test(m866.split("\n")[0]) || /^-- ── APPLIED LIVE /.test(m866.split("\n")[0]))
+    // (wave 145, lane 145Z) the stamp patterns live in LANE_OR_APPLIED below the label, so this proof's own source no longer
+    // reads to scripts/migration-claim-guard.ts as a prose claim that m866 is un-applied (it IS applied — the false positive
+    // that guard measured on the integrated tree).
+    check("m866 line 1 is the lane stamp or the applied stamp (the rule, not the waypoint)", LANE_OR_APPLIED.some((re) => re.test(m866.split("\n")[0])))
     check("distribution_finals' CHECKs equal the code: asset_kind = HUMANIZE_ASSET_KINDS, status = DISTRIBUTION_FINAL_STATUSES, approval_basis = DISTRIBUTION_APPROVAL_BASES",
       list("distribution_finals_asset_kind_check").join() === HUMANIZE_ASSET_KINDS.join() && list("distribution_finals_status_check").join() === DISTRIBUTION_FINAL_STATUSES.join() && list("distribution_finals_approval_basis_check").join() === DISTRIBUTION_APPROVAL_BASES.join(),
       JSON.stringify({ k: list("distribution_finals_asset_kind_check"), s: list("distribution_finals_status_check"), b: list("distribution_finals_approval_basis_check") }))
@@ -449,6 +453,59 @@ async function main() {
     const kernelLm = blankStrings(code("lib/kernel/lead-magnets.ts"))
     check("the lead-magnet PUBLISH door checks the version BEFORE activation and records it AFTER, over the ONE page-text composition (leadMagnetPublicText)",
       /leadMagnetPublicText\(pageRow/.test(kernelLm) && kernelLm.indexOf("checkDistributionPublication(") > 0 && kernelLm.indexOf("checkDistributionPublication(") < kernelLm.indexOf("withActionLedger<") && kernelLm.indexOf("recordDistributionPublication(") > kernelLm.indexOf("if (!activation.ok)"))
+    // WAVE 145 (lane 145Z — lane G Outside-lane items): the four publication doors OUTSIDE lane G record the version that
+    // went out through recordDoorPublication; the ad creator stages its creative's final; the Coming Soon copy and the
+    // direct-mail draft run the final phase. Census over comment-stripped source, with positive controls.
+    const DOORS: Array<[string, string, string]> = [
+      ["app/api/cron/publish-social-posts/route.ts", "social_post", "social_posts"],
+      ["app/api/cron/publish-newsletters/route.ts", "newsletter", "newsletter_campaigns"],
+      ["app/actions/blog.ts", "blog_post", "blog_posts"],
+      ["app/api/cron/distribute-podcast-episodes/route.ts", "podcast_script", "podcast_episodes"],
+    ]
+    const doorRecords = (src: string, kind: string, table: string) =>
+      /\brecordDoorPublication\s*\(/.test(src) && new RegExp(`assetKind:\\s*"${kind}",\\s*assetTable:\\s*"${table}"`).test(src)
+    const unrecorded = DOORS.filter(([f, k, t]) => !doorRecords(code(f), k, t)).map(([f]) => f)
+    const kindsKnown = DOORS.every(([, k]) => (HUMANIZE_ASSET_KINDS as readonly string[]).includes(k))
+    const ctlLive = 'await recordDoorPublication(svc, { brokerageId: b, assetKind: "blog_post", assetTable: "blog_posts" })'
+    check("the social publish cron, the newsletter send, the blog publish and the podcast distributor each RECORD the version that went out (recordDoorPublication, naming a HUMANIZE_ASSET_KINDS kind and their asset table) — controls: the live shape is counted, the same call inside a comment is not",
+      unrecorded.length === 0 && kindsKnown && doorRecords(ctlLive, "blog_post", "blog_posts") && !doorRecords(stripComments(`// ${ctlLive}`), "blog_post", "blog_posts"), unrecorded.join(", "))
+    {
+      const { recordDoorPublication } = await import("../lib/marketing/humanize-final")
+      const db = memSupabase({ distribution_finals: [], notifications: [] }, { uuidIds: true })
+      const AID = "22222222-2222-4222-8222-222222222222"
+      const rec = await recordDoorPublication(db as never, { brokerageId: B1, assetKind: "newsletter", assetTable: "newsletter_campaigns", assetId: AID, content: "October market letter.", approvedBy: null, approvedAt: null, via: "newsletter_send", ref: null, now: NOW })
+      const row = db.tables.distribution_finals.find((r) => r.asset_id === AID)
+      const empty = await recordDoorPublication(db as never, { brokerageId: B1, assetKind: "newsletter", assetTable: "newsletter_campaigns", assetId: AID, content: "  ", approvedBy: null, approvedAt: null, via: "newsletter_send", ref: null, now: NOW })
+      check("recordDoorPublication records the sent text as a PUBLISHED version under the caller's tenant (through recordDistributionPublication) and refuses an empty send rather than record nothing as something",
+        rec.ok && row?.status === "published" && row.brokerage_id === B1 && row.published_via === "newsletter_send" && !empty.ok, JSON.stringify({ rec, status: row?.status, via: row?.published_via, empty }))
+    }
+    {
+      // THE RECORD IS READ (lane 145Z — test:readerless-writes: final_text, tagline, logo_url, notified_*, approved_*, acknowledged
+      // were written by the doors and read by nothing). listDistributionFinals is the reader; the Content Approvals screen shows it.
+      const { listDistributionFinals, recordDoorPublication } = await import("../lib/marketing/humanize-final")
+      const db = memSupabase({ distribution_finals: [], notifications: [] }, { uuidIds: true })
+      const AID = "33333333-3333-4333-8333-333333333333"
+      const f = await finalizeForDistribution({ assetKind: "blog_post", text: "Riverbend spring market notes for sellers.", tenantBrand: null })
+      await stageDistributionFinal(db as never, { brokerageId: B1, assetTable: "blog_posts", assetId: AID, final: f, createdBy: U1, notifyUserId: U1, now: NOW })
+      await recordDoorPublication(db as never, { brokerageId: B1, assetKind: "blog_post", assetTable: "blog_posts", assetId: AID, content: f.text, approvedBy: U1, approvedAt: NOW.toISOString(), via: "wordpress", ref: "wp-9", now: NOW })
+      const mine = await listDistributionFinals(db as never, { brokerageId: B1 })
+      const theirs = await listDistributionFinals(db as never, { brokerageId: B2 })
+      const refused = await listDistributionFinals(memSupabase({}, { refuse: { distribution_finals: "RLS refused" } }) as never, { brokerageId: B1 })
+      const rec = mine.ok ? mine.finals.find((x) => x.assetId === AID) : undefined
+      check("THE RECORD IS READ: the version that went out comes back with its exact text, who was told and when, who approved it and what went out where — tenant-pinned (another brokerage reads none) and a refused read is an ERROR, never an empty record",
+        !!rec && rec.finalText === f.text && rec.notifiedUserId === U1 && !!rec.notifiedAt && rec.approvedBy === U1 && rec.status === "published" && rec.publishedVia === "wordpress" && rec.publishedRef === "wp-9"
+        && theirs.ok && theirs.finals.length === 0 && !refused.ok, JSON.stringify({ rec, theirs, refused }))
+      const act = raw("app/actions/content-final-versions.ts"), actCode = stripComments(act)
+      const panel = code("app/dashboard/content/approvals/final-versions-panel.tsx"), page = code("app/dashboard/content/approvals/page.tsx")
+      check("…its door: 'use server', one async export, the tenant from getAgentContext, the seat checked BEFORE the read, the SESSION client (m866's tenant-read policy); and the Content Approvals page mounts it",
+        /^"use server"/.test(act) && (actCode.match(/^export\s+async\s+function\s+\w+/gm) ?? []).length === 1 && !/^export\s+(?!async)/m.test(actCode)
+        && actCode.indexOf("TENANT_ADMIN_USER_TYPES.has(") > 0 && actCode.indexOf("TENANT_ADMIN_USER_TYPES.has(") < actCode.indexOf("listDistributionFinals(") && /createClient\(\)/.test(actCode) && !/createServiceClient/.test(actCode)
+        && /getDistributionFinalsAction\(/.test(panel) && /<FinalVersionsPanel \/>/.test(page))
+    }
+    const adc = code("lib/ads/ad-creator.ts"), dm = code("lib/direct-mail/draft-copy.ts"), csc = code("app/actions/coming-soon-content.ts")
+    check("the ad creator stages its creative's final against ad_creative_variations; the direct-mail draft finalizes the postcard AND letter bodies; the Coming Soon copy runs the listing_creative final phase",
+      /finalizeForDistribution\(\{\s*assetKind:\s*"ad_creative"/.test(adc) && /stageDistributionFinal\(/.test(adc) && /assetTable:\s*"ad_creative_variations"/.test(adc)
+      && (dm.match(/await finalizeMailText\(/g) ?? []).length >= 2 && /finalizeForDistribution\(\{\s*assetKind:\s*"listing_creative"/.test(csc))
     const promoter = blankStrings(code("lib/competitive-intel/promote-to-topic-bank.ts"))
     const copies = (src: string) => /topic_title:\s*\(?\s*ad\.ad_(?:headline|copy)|value_angle:\s*\(?\s*ad\.ad_copy|const title\s*=\s*\(?\s*ad\.ad_(?:headline|copy)|const valueAngle\s*=\s*\(?\s*ad\.ad_copy/.test(src)
     check("the COMPETITOR-AD promoter files the THEME (competitorAdTheme), never the rival's headline / copy — positive control: the old verbatim shape is detected",
@@ -466,11 +523,11 @@ async function main() {
     ...blind,
     "the tell list is short on purpose (phrases readers notice); prose that reads machine-made without a listed phrase passes — the human approval is the real review, the phase only removes the safe ones and points at the rest",
     "superlatives follow the Director's list (lib/video/director-eval-harness.ts); 'top' in 'top 5 tips' is flagged too — the human resolves or grounds it; the approving human's acceptance is recorded at the door (acknowledged)",
-    "the publication doors OUTSIDE this lane (newsletter send, blog publish, social publish cron, ad creative, listing creative) call recordDistributionPublication only once the integrator applies the Outside-lane lines — until then their sends are not proven against a final (the lead-magnet publish and the YouTube rail are wired here)",
+    "the publication doors OUTSIDE this lane: wired by lane 145Z (wave 145) — the social publish cron, the newsletter send, the blog publish and the podcast distributor record what went out through recordDoorPublication (→ recordDistributionPublication), the ad creator stages its creative's final, and the listing-creative (Coming Soon AI copy) and direct-mail drafting run the final phase; the direct-mail piece and the launched ad have no per-send record against a final yet (the mail orchestrator has no asset row; the ad launch is lane 145D's launch-assembler)",
     "topic intelligence reads this OS's own tables only (no provider call): an empty competitor watchlist, inbox, monitor or market table yields a published blind spot, not a topic; the pass runs inside the local-intelligence sweep, so a tenant with no active territory gets none yet",
     "engagement for competitor posts is the search provider's RANKING PROXY until a platform-authorised count exists (said on every row); viral = relative to the competitor's own median, never an absolute claim",
     "the C5 gateway itself (lib/ads/ctv-campaign.ts) is lane 145D's; this proof drives the lane with the gateway as a seam",
-    "distribution_finals and book_projects are WRITTEN, NOT APPLIED (m866/m867): until the integrator applies them a live insert is refused (42P01) — the creators then stage the piece WITHOUT a recorded final and say so (no ready-notification either), the TV lane refuses (closed), and STARTING A BOOK IS REFUSED: m867 must be applied before this code deploys",
+    "distribution_finals and book_projects are APPLIED LIVE since 2026-10-27 (m866/m867 headers stamped by the integrator); on a database without them a live insert is refused (42P01) — the creators then stage the piece WITHOUT a recorded final and say so (no ready-notification either), the TV lane refuses (closed), and starting a book is refused",
   ]) console.log(`   · ${b}`)
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(`\n✗ CONTENT_DISTRIBUTION_FAIL\n${failures.map((f) => `  - ${f}`).join("\n")}`); process.exit(1) }

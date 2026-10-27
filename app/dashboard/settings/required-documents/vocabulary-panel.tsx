@@ -73,6 +73,9 @@ export function VocabularyPanel({ dimensions, proposals, pendingAttestation, can
   const [csPermitted, setCsPermitted] = useState("")
   const [csMaxDays, setCsMaxDays] = useState("")
   const [csShowings, setCsShowings] = useState("")
+  // Owner ruling 1 (wave 145, lane 145Z — lane 145B Outside-lane 13): the MLS's own rule on the street address in
+  // Coming Soon advertising — yes / no / unstated. Unstated is recorded as null and the street stays withheld.
+  const [csStreet, setCsStreet] = useState("")
   const [csWithin, setCsWithin] = useState("")
   const [csUrl, setCsUrl] = useState("")
   const [csRule, setCsRule] = useState("")
@@ -125,6 +128,7 @@ export function VocabularyPanel({ dimensions, proposals, pendingAttestation, can
     start(async () => {
       const r = await reportComingSoonPolicyAction({
         mlsName: csMls, stateCodes: csStates.split(/[\s,]+/).filter(Boolean), permitted: yesNo(csPermitted), showingsPermitted: yesNo(csShowings),
+        streetAddressDisclosurePermitted: yesNo(csStreet),
         maxDays: csMaxDays || null, mlsSubmissionWithinBusinessDays: csWithin || null, sourceUrl: csUrl || null, ruleRef: csRule || null,
       })
       setAnswer(r.ok ? `${r.existing ? "Already proposed" : "Proposed"} (${r.status ?? "PROPOSED"}) — a compliance approver approves it.` : `Not proposed: ${r.error}${r.errors?.length ? ` (${r.errors.join("; ")})` : ""}`)
@@ -279,6 +283,9 @@ export function VocabularyPanel({ dimensions, proposals, pendingAttestation, can
             </select>
             <select className="border rounded px-2 py-1.5 text-sm" value={csShowings} onChange={(e) => setCsShowings(e.target.value)}>
               <option value="">Showings while coming soon?</option><option value="yes">Showings permitted</option><option value="no">No showings</option>
+            </select>
+            <select className="border rounded px-2 py-1.5 text-sm" value={csStreet} onChange={(e) => setCsStreet(e.target.value)} aria-label="Street address in Coming Soon advertising">
+              <option value="">Street address in Coming Soon ads? (unstated — withheld)</option><option value="yes">Rule permits the street address</option><option value="no">Rule forbids the street address</option>
             </select>
             <input className="border rounded px-2 py-1.5 text-sm" value={csMaxDays} onChange={(e) => setCsMaxDays(e.target.value)} placeholder="Max days (blank = rule states none)" />
             <input className="border rounded px-2 py-1.5 text-sm" value={csWithin} onChange={(e) => setCsWithin(e.target.value)} placeholder="MLS within N business days of marketing" />

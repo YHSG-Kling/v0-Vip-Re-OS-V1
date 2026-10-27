@@ -16,6 +16,39 @@ interface ListingPageProps {
   params: Promise<{ listingId: string }>
 }
 
+// ─── Coming Soon address rule (wave 145, lane 145Z — owner ruling 1; lane 145B Outside-lane 10) ──────────────────────
+// A PUBLIC page for a listing whose status is coming_soon prints only the line the address rule allows: the heading,
+// the location line, the metadata title, every alt/title attribute, and the remarks (scrubbed in redact mode). Any
+// other status prints the street as before. The rule's two reads (brokerage policy + executed listing agreement) need
+// the service client — the visitor is anonymous — and are pinned by the listing row's own brokerage; fail closed inside.
+interface PublicAddressDisplay { heading: string; locationLine: string; description: string | null; titleLine: string }
+async function publicAddressDisplay(listing: { id?: string | null; brokerage_id?: string | null; address: string | null; city: string | null; state: string | null; zip: string | null; status?: string | null; description?: string | null }): Promise<PublicAddressDisplay> {
+  const street: PublicAddressDisplay = {
+    heading: listing.address ?? "",
+    locationLine: [`${listing.city ?? ""}, ${listing.state ?? ""}`.replace(/^, |, $/g, ""), listing.zip ?? ""].filter(Boolean).join(" "),
+    description: listing.description ?? null,
+    titleLine: `${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}`,
+  }
+  if (listing.status !== "coming_soon") return street
+  const { resolveComingSoonCreativeAddress, guardComingSoonCreativeText } = await import("@/lib/marketing/listing-public-address")
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  if (!listing.id || !listing.brokerage_id) {
+    // No row identity to check the rule against → withhold (fail closed).
+    const loc = [listing.city, (listing.state ?? "").toUpperCase()].filter(Boolean).join(", ") || "this area"
+    return { heading: loc, locationLine: loc, description: null, titleLine: loc }
+  }
+  const row = { id: listing.id, brokerage_id: listing.brokerage_id, address: listing.address, city: listing.city, state: listing.state, zip: listing.zip }
+  const svc = createServiceClient()
+  const resolved = await resolveComingSoonCreativeAddress({ policyClient: svc as any, termsClient: svc as any, listing: row })
+  if (resolved.decision.disclose) return street
+  return {
+    heading: resolved.addressLine,
+    locationLine: resolved.publicLocation,
+    description: listing.description ? guardComingSoonCreativeText(listing.description, row, resolved, "redact").text : null,
+    titleLine: resolved.addressLine,
+  }
+}
+
 // ─── Metadata ────────────────────────────────────────────────────────────────
 
 export async function generateMetadata({ params }: ListingPageProps): Promise<Metadata> {
@@ -24,7 +57,7 @@ export async function generateMetadata({ params }: ListingPageProps): Promise<Me
 
   const { data: listing } = await service
     .from("listings")
-    .select("address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description:public_remarks")
+    .select("id, brokerage_id, status, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description:public_remarks")
     .eq("id", listingId)
     .in("status", ["active", "pending", "coming_soon", "sold"])
     .single()
@@ -37,9 +70,10 @@ export async function generateMetadata({ params }: ListingPageProps): Promise<Me
     ? `$${Number(listing.list_price).toLocaleString()}`
     : "Price on Request"
 
-  const title = `${listing.address}, ${listing.city}, ${listing.state} ${listing.zip} — ${price}`
+  const shown = await publicAddressDisplay(listing as any)
+  const title = `${shown.titleLine} — ${price}`
   const description =
-    listing.description ||
+    shown.description ||
     `${listing.bedrooms ?? "?"} bed, ${listing.bathrooms ?? "?"} bath home in ${listing.city}, ${listing.state}. ${price}.`
 
   return {
@@ -129,6 +163,8 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
     ? `$${Number(listing.list_price).toLocaleString()}`
     : "Price on Request"
 
+  const shown = await publicAddressDisplay(listing as any)
+
   const statusLabel =
     listing.status === "active"
       ? "For Sale"
@@ -176,7 +212,7 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
         {heroPhoto?.file_url || heroPhoto?.thumbnail_url ? (
           <Image
             src={heroPhoto.file_url || heroPhoto.thumbnail_url}
-            alt={`${listing.address} — hero photo`}
+            alt={`${shown.heading} — hero photo`}
             fill
             className="object-cover"
             priority
@@ -203,11 +239,11 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
                   {statusLabel}
                 </span>
                 <h1 className="text-2xl sm:text-4xl font-bold text-white drop-shadow-md leading-tight">
-                  {listing.address}
+                  {shown.heading}
                 </h1>
                 <p className="text-white/90 text-sm sm:text-base mt-1 flex items-center gap-1">
                   <MapPin className="h-4 w-4 shrink-0" />
-                  {listing.city}, {listing.state} {listing.zip}
+                  {shown.locationLine}
                 </p>
               </div>
               <div className="text-right shrink-0">
@@ -263,7 +299,7 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
                 <LandingVideo
                   src={video.file_url}
                   poster={video.thumbnail_url ?? null}
-                  title={`${listing.address ?? "Property"} video`}
+                  title={`${shown.heading || "Property"} video`}
                   className="w-full h-full object-cover"
                 />
               </div>
@@ -313,11 +349,11 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
           </section>
 
           {/* Description */}
-          {listing.description && (
+          {shown.description && (
             <section>
               <h2 className="text-lg font-semibold text-gray-900 mb-3">About This Property</h2>
               <p className="text-gray-700 leading-relaxed whitespace-pre-line">
-                {listing.description}
+                {shown.description}
               </p>
             </section>
           )}

@@ -312,6 +312,56 @@ async function main() {
   const pl = graded.find((l) => l.key === "seller_tax_proration")
   check("the computed proration is GRADED against the final statement's figure ($3,650 vs $3,620: Δ +$30, outside the exact band)", !!pl && pl.actual === 3_650 && pl.deltaFromMid === 30 && pl.withinBand === false)
 
+  // ══ H2 · the proration INPUT (wave 145, lane 145Z — lane 145C requirement 7; m873) ═══════════════════════════════
+  console.log("\n[H2 · the settlement agent's instruction, captured per deal — every term required, no default, the source required]")
+  {
+    const tp = await import("../lib/transactions/tax-proration")
+    const { memSupabase } = await import("./in-memory-supabase")
+    const full = { annualTax: "7,300", periodStart: "2026-01-01", timing: "arrears", closeDate: "2026-07-01", closingDayOwner: "buyer", dayBasis: "actual_365", source: "title's proration instruction (file 1234)" }
+    const okParse = tp.parseTaxProrationInstruction(full)
+    const noSource = tp.parseTaxProrationInstruction({ ...full, source: "  " })
+    const outsideP = tp.parseTaxProrationInstruction({ ...full, closeDate: "2027-02-01" })
+    const badDate = tp.parseTaxProrationInstruction({ ...full, periodStart: "2026-02-30" })
+    const stateOnly2 = tp.parseTaxProrationInstruction({})
+    check("the instruction parses only when EVERY term is present: a missing source, a closing date outside the period, an impossible date and an empty form are each refused BY NAME",
+      okParse.ok && okParse.value.annualTax === 7_300 && !noSource.ok && noSource.missing.some((m) => /source/.test(m)) && !outsideP.ok && outsideP.missing.some((m) => /inside the stated tax period/.test(m))
+      && !badDate.ok && badDate.missing.some((m) => /start date/.test(m)) && !stateOnly2.ok && stateOnly2.missing.length === 7, JSON.stringify({ noSource, outsideP, badDate, n: stateOnly2.ok ? 0 : stateOnly2.missing.length }))
+    const stored = okParse.ok ? okParse.value : null
+    const viaScreen = tp.prorationLineFor(stored, { salePrice: 400_000, state: "TX", closeDate: "2026-07-01" })
+    const movedClose = tp.prorationLineFor(stored, { salePrice: 400_000, state: "TX", closeDate: "2026-07-15T00:00:00Z" })
+    const none = tp.prorationLineFor(null, { salePrice: 400_000, state: "TX", closeDate: "2026-07-01" })
+    check("the screen's line IS the engine's ($3,620.00 for the same instruction as H); a deal whose closing date moved since is flagged to re-confirm (never silently re-dated); no instruction = the engine's pending line",
+      !!viaScreen.line && !viaScreen.line.pending && viaScreen.line.high === arrears.high && !viaScreen.closeDateDiffers && movedClose.closeDateDiffers && !!none.line?.pending && !none.closeDateDiffers, JSON.stringify({ viaScreen, movedClose: movedClose.closeDateDiffers }))
+    const TX1 = "11111111-1111-4111-8111-1111111111f3", B1 = "22222222-2222-4222-8222-2222222222f3", B2 = "33333333-3333-4333-8333-3333333333f3"
+    const db = memSupabase({ transactions: [{ id: TX1, brokerage_id: B1, purchase_price: 400_000, property_state: "TX", close_date: "2026-07-01", agent_id: "ag-1", tax_proration: null }] })
+    const w = await tp.persistTaxProration(db as never, { transactionId: TX1, brokerageId: B1, value: stored, recordedBy: "u-tc", now: new Date("2026-06-01T12:00:00Z") })
+    const foreign = await tp.persistTaxProration(db as never, { transactionId: TX1, brokerageId: B2, value: null, recordedBy: "u-x" })
+    const back = await tp.readTaxProration(db as never, { transactionId: TX1, brokerageId: B1 })
+    const foreignRead = await tp.readTaxProration(db as never, { transactionId: TX1, brokerageId: B2 })
+    check("ONE WRITER: tenant-pinned and row-counted (another brokerage's write matches nothing and is an ERROR, the instruction untouched); ONE READER: the instruction back with who recorded it, the deal facts beside it; another brokerage reads nothing",
+      w.ok && !foreign.ok && back.ok && back.instruction?.annualTax === 7_300 && back.instruction.recorded_by === "u-tc" && back.columnPresent && back.deal.state === "TX" && !foreignRead.ok,
+      JSON.stringify({ w, foreign, back: back.ok ? back.instruction : back, foreignRead }))
+    const absentCol: any = { from: () => ({ update: () => ({ eq: () => ({ eq: () => ({ select: async () => ({ data: null, error: { code: "PGRST204", message: "column tax_proration not found" } }) }) }) }) }) }
+    const na = await tp.persistTaxProration(absentCol, { transactionId: TX1, brokerageId: B1, value: stored, recordedBy: "u" })
+    const db0 = memSupabase({ transactions: [{ id: TX1, brokerage_id: B1, purchase_price: 400_000 }] })
+    const read0 = await tp.readTaxProration(db0 as never, { transactionId: TX1, brokerageId: B1 })
+    check("m873 NOT APPLIED is said, never thrown: the write reports notApplied, the read says the column is absent (and still returns the deal)",
+      !na.ok && (na as { notApplied?: boolean }).notApplied === true && read0.ok && !read0.columnPresent && read0.instruction === null)
+    const act = readFileSync(join(ROOT, "app/actions/transactions/tax-proration.ts"), "utf8"), actCode = stripComments(act)
+    const exportsList = [...actCode.matchAll(/^export\s+(async\s+function|function|const|let|class|interface|type)\s+(\w+)/gm)].filter((m) => !/^(interface|type)$/.test(m[1]))
+    check("the screen's doors: 'use server', EVERY runtime export an async function, the tenant from getAgentContext (never a brokerageId parameter), the seat checked before the write, the write through the ONE writer",
+      /^"use server"/.test(act) && exportsList.length === 2 && exportsList.every((m) => m[1] === "async function") && (actCode.match(/getAgentContext\(\)/g) ?? []).length === 2
+      && !/brokerageId\s*:\s*string/.test(actCode.split("export async function saveTaxProrationAction")[1]?.split(")")[0] ?? "brokerageId: string")
+      && actCode.indexOf("mayEdit(identity") < actCode.indexOf("persistTaxProration(") && /readTaxProration\(supabase/.test(actCode), JSON.stringify(exportsList.map((m) => `${m[1]} ${m[2]}`)))
+    const card = stripComments(readFileSync(join(ROOT, "app/dashboard/transactions/[id]/tax-proration-card.tsx"), "utf8"))
+    const detail = stripComments(readFileSync(join(ROOT, "app/dashboard/transactions/[id]/transaction-detail-client.tsx"), "utf8"))
+    check("the screen is MOUNTED on the deal (title & escrow tab) and its choices come from the server (view.options — the engine's vocabularies), never a list retyped in the client",
+      /<TaxProrationCard transactionId=\{transaction\.id\} \/>/.test(detail) && /view\.options\.timings/.test(card) && /view\.options\.closingDayOwners/.test(card) && /view\.options\.dayBases/.test(card) && /saveTaxProrationAction\(/.test(card))
+    const m873 = readFileSync(join(ROOT, "supabase/migrations/m873-deal-tax-proration-instruction.sql"), "utf8")
+    check("m873 line 1 is a lane stamp or an applied stamp (the rule, not the waypoint), and it adds transactions.tax_proration jsonb with an is-object CHECK",
+      /^-- (WRITTEN, NOT APPLIED \(wave 145, lane 145Z\)|APPLIED)/.test(m873.split("\n")[0]) && /ADD COLUMN IF NOT EXISTS tax_proration jsonb NULL/.test(m873) && /jsonb_typeof\(tax_proration\) = 'object'/.test(m873))
+  }
+
   // ══ I · one calculator ══════════════════════════════════════════════════════════════════════════
   console.log("\n[I · ONE calculator — the kernel recalculation runs the engine, never its own math]")
   const txk = code("lib/kernel/transactions.ts")

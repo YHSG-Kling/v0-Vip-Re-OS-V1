@@ -850,12 +850,16 @@ export interface VersiumOnlinePresenceLegResult {
   cost: number
   skipped: string | null
   provenance: VersiumProvenance | null
+  /** Wave 145 (lane 145F, owner ruling 12; wired by lane 145Z): the SAME paid row's protected fields, carried through
+   *  UNTOUCHED for the segregated research store (persistRealEstateIndicators opts.protectedResearch) — never merged into
+   *  `indicators`, never a targeting input. Empty when nothing protected came back. */
+  protectedResearch: readonly import("@/lib/external/versium-client").VersiumProtectedResearchField[]
 }
 
 /**
  * THE ONLINE-PRESENCE LEG — "Online Presence Indicator - Real Estate" and the other property / behaviour
- * indicators of the full demographic output, for ONE known person; protected characteristics never leave the
- * adapter. Books vendor "versium", usage "online_presence_append", capability person.enrich_online_presence.
+ * indicators of the full demographic output, for ONE known person; protected characteristics leave the adapter only
+ * in the segregated `protectedResearch` field, bound for the research store (owner ruling 12). Books vendor "versium", usage "online_presence_append", capability person.enrich_online_presence.
  * A research / intent signal — never a targeting segment (lib/kernel/lookalike-audience.ts carries the
  * ad-policy verdict). Never throws.
  */
@@ -869,7 +873,7 @@ export async function runVersiumOnlinePresenceLeg(
   },
   deps: VersiumLegDeps & { call?: VersiumFullDemographicCall } = {},
 ): Promise<VersiumOnlinePresenceLegResult> {
-  const none: VersiumOnlinePresenceLegResult = { answered: false, indicators: null, cost: 0, skipped: null, provenance: null }
+  const none: VersiumOnlinePresenceLegResult = { answered: false, indicators: null, cost: 0, skipped: null, provenance: null, protectedResearch: [] }
   // Worst case: the published full_demographic weight — 3 match credits per matched record (143D; it was asked as ONE credit).
   const pre = await versiumLegPreflight({ capability: "online_presence", brokerageId: req.brokerageId, worstCaseUsd: versiumCreditsUsd(VERSIUM_CREDIT_WEIGHTS.full_demographic), injectedCall: !!deps.call, deps })
   if (!pre.ok) return { ...none, skipped: pre.skipped }
@@ -888,7 +892,7 @@ export async function runVersiumOnlinePresenceLeg(
         attribution: req.attribution,
       })
     }
-    return { answered: !!r.indicators, indicators: r.indicators, cost: r.cost, skipped: r.error && !r.indicators ? `error: ${r.error}` : null, provenance: r.provenance }
+    return { answered: !!r.indicators, indicators: r.indicators, cost: r.cost, skipped: r.error && !r.indicators ? `error: ${r.error}` : null, provenance: r.provenance, protectedResearch: r.protectedResearch ?? [] }
   } catch (e) {
     return { ...none, skipped: `error: ${e instanceof Error ? e.message : String(e)}` }
   }

@@ -287,7 +287,14 @@ export async function dispatchLifecycleMail(
 
   // 6. Dispatch one piece per recipient via the orchestrator. Per-piece
   //    Fair Housing gate + de-conflict + Lob spend still all apply.
-  const propertyAddress = [l.address, l.city, l.state].filter(Boolean).join(", ")
+  // OWNER RULING 1 (wave 145, lane 145Z — lane 145B Outside-lane 9): a coming_soon postcard prints only the line the
+  // address rule allows ("City, ST" unless the seller AND the attested MLS rule permit the street). The listing was
+  // checked against this run's tenant above; fail closed inside the rule.
+  const propertyAddress = args.eventType === "coming_soon"
+    ? (await (await import("@/lib/marketing/listing-public-address")).resolveComingSoonCreativeAddress({
+        policyClient: svc as any, termsClient: svc as any, listing: { ...l, brokerage_id: args.brokerageId },
+      })).addressLine
+    : [l.address, l.city, l.state].filter(Boolean).join(", ")
   // WAVE 83C — THE PRINTED LIFECYCLE PIECE CARRIES A TRACKED QR (82D open item:
   // the reactor passed no qrScanUrl). ONE registered code per listing × event,
   // minted/reused through THE ONE minter, stamped with the listing so the QR

@@ -626,7 +626,7 @@ export async function getPublicPropertyByMlsNumber(mlsNumber: string): Promise<
 
   const { data, error } = await svc
     .from("listings")
-    .select("id, mls_number, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, status, public_remarks, year_built, lot_size, primary_photo_url, photos, listing_date, listing_agent_name, listing_agent_email")
+    .select("id, brokerage_id, mls_number, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, status, public_remarks, year_built, lot_size, primary_photo_url, photos, listing_date, listing_agent_name, listing_agent_email")
     .eq("mls_number", mls)
     .is("deleted_at", null)
     .in("status", PUBLICLY_MARKETED_STATUSES as unknown as string[])
@@ -652,22 +652,39 @@ export async function getPublicPropertyByMlsNumber(mlsNumber: string): Promise<
     ? Math.max(0, Math.floor((Date.now() - new Date(row.listing_date).getTime()) / 86_400_000))
     : null
 
+  // OWNER RULING 1 (wave 145, lane 145Z — lane 145B Outside-lane 11): a coming_soon result served on this PUBLIC page
+  // carries only the line the address rule allows (street + ZIP withheld, remarks scrubbed in redact mode) unless the
+  // seller AND the attested MLS rule permit it. The row's own brokerage pins both reads; fail closed inside the rule.
+  let address: string | null = row.address
+  let zip: string | null = row.zip
+  let description: string | null = row.public_remarks
+  if (row.status === "coming_soon") {
+    const { resolveComingSoonCreativeAddress, guardComingSoonCreativeText } = await import("@/lib/marketing/listing-public-address")
+    const csRow = { id: row.id as string, brokerage_id: (row as any).brokerage_id as string, address: row.address, city: row.city, state: row.state, zip: row.zip }
+    const resolved = await resolveComingSoonCreativeAddress({ policyClient: svc as any, termsClient: svc as any, listing: csRow })
+    if (!resolved.decision.disclose) {
+      address = resolved.addressLine
+      zip = null
+      description = description ? guardComingSoonCreativeText(description, csRow, resolved, "redact").text : description
+    }
+  }
+
   return {
     success: true,
     property: {
       listingId:         row.id,
       mlsNumber:         row.mls_number,
-      address:           row.address,
+      address,
       city:              row.city,
       state:             row.state,
-      zip:               row.zip,
+      zip,
       price:             row.list_price == null ? null : Number(row.list_price),
       beds:              row.bedrooms,
       baths:             row.bathrooms == null ? null : Number(row.bathrooms),
       sqft:              row.sqft,
       propertyType:      row.property_type,
       status:            row.status,
-      description:       row.public_remarks,
+      description,
       yearBuilt:         row.year_built,
       lotSize:           row.lot_size == null ? null : Number(row.lot_size),
       photos:            [...new Set(photos)],

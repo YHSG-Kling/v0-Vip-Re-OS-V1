@@ -101,15 +101,21 @@ export async function run() {
     }
 
     // 3 — an OLD SPELLING becomes an approved alias of the stable id; retiring the id for new work keeps history reading.
-    const r2 = await report({ dimension: "contract_subtype", label: "bank owned", kind: "missing", sameAs: "reo_bank_owned" })
+    // RE-ASSERTED (wave 145, lane 145Z): the fixture was "bank owned", and wave 145 lane H made that spelling a PLATFORM alias of
+    // reo_bank_owned (lib/compliance/checklist-dimensions.ts) — so the report was answered "already resolves", nothing was proposed and
+    // the step read red for a reason that is not the rule. The RULE is unchanged (a spelling the platform does NOT know becomes THIS
+    // brokerage's approved alias); the fixture is now one the platform does not know, and `platformUnknown` proves it stays so.
+    const OLD_SPELLING = "bank repo"
+    const r2 = await report({ dimension: "contract_subtype", label: OLD_SPELLING, kind: "missing", sameAs: "reo_bank_owned" })
     const a2 = await approve(pidOf(r2), BROKER)
     const r3 = await report({ dimension: "contract_subtype", label: "reo_bank_owned", kind: "obsolete", note: "retired for new listings" })
     const a3 = await approve(pidOf(r3), BROKER)
     const vAfter = await vocab(B)
-    const viaAlias = vAfter ? av.resolveVocabularyValue("contract_subtype", "bank owned", vAfter) : null
+    const viaAlias = vAfter ? av.resolveVocabularyValue("contract_subtype", OLD_SPELLING, vAfter) : null
     const viaId = vAfter ? av.resolveVocabularyValue("contract_subtype", "reo_bank_owned", vAfter) : null
-    const otherTenant = vB2 ? av.resolveVocabularyValue("contract_subtype", "bank owned", await vocab(B2)) : "unreadable"
+    const otherTenant = vB2 ? av.resolveVocabularyValue("contract_subtype", OLD_SPELLING, await vocab(B2)) : "unreadable"
     const alias = {
+      platformUnknown: av.resolveVocabularyValue("contract_subtype", OLD_SPELLING, av.EMPTY_TENANT_VOCABULARY) === null,
       aliasApproved: !!a2.ok && !!a2.verified, retired: !!a3.ok && !!a3.verified,
       aliasStillReads: viaAlias?.key === "reo_bank_owned" && viaAlias.usable === false, idStillReads: viaId?.key === "reo_bank_owned",
       hiddenForNewWork: !!vAfter && !av.vocabularyOptions("contract_subtype", vAfter).some((o: any) => o.value === "reo_bank_owned"), otherTenant: otherTenant === null,
@@ -139,7 +145,7 @@ export async function run() {
   // ── 3 · aliases resolve historical values forever ──
   const { normalizeEnumValue } = await import("../../lib/data-steward/value-normalizer")
   const aliasHits = ["REO", "bank owned", "probate", "estate sale"].map((raw) => ({ raw, viaChecklist: dims.asContractSubtype(raw), viaNormalizer: normalizeEnumValue("contract_subtype", raw).value }))
-  c.rule("144A", "ALIASES RESOLVE OLD STORED VALUES FOREVER (ruling 1: 'stable canonical IDs + aliases; never silently delete historical values'): an old spelling ('bank owned') becomes an APPROVED ALIAS of the stable id reo_bank_owned for that brokerage only; when reo_bank_owned is later retired for new work it leaves the picker, yet the alias AND the stored id still resolve (usable:false) — a historical contract or automation keyed on either keeps working, and nothing is deleted", allTrue(door?.alias), door ? `landed door: ${JSON.stringify(door.alias)}` : `HEAD: no alias mechanism — ${aliasHits.map((h) => `${h.raw}→${h.viaChecklist ?? h.viaNormalizer ?? "null"}`).join(", ")} (checklist narrowing + the data steward's synonym table)`)
+  c.rule("144A", "ALIASES RESOLVE OLD STORED VALUES FOREVER (ruling 1: 'stable canonical IDs + aliases; never silently delete historical values'): an old spelling the platform does not know ('bank repo') becomes an APPROVED ALIAS of the stable id reo_bank_owned for that brokerage only; when reo_bank_owned is later retired for new work it leaves the picker, yet the alias AND the stored id still resolve (usable:false) — a historical contract or automation keyed on either keeps working, and nothing is deleted", allTrue(door?.alias), door ? `landed door: ${JSON.stringify(door.alias)}` : `HEAD: no alias mechanism — ${aliasHits.map((h) => `${h.raw}→${h.viaChecklist ?? h.viaNormalizer ?? "null"}`).join(", ")} (checklist narrowing + the data steward's synonym table)`)
 
   // ── 4 · a NEW label through APPROVED CONFIGURATION, scoped to jurisdiction + brokerage ──
   const path = findLanded(["lib/taxonomy", "lib/compliance", "lib/kernel/tenant-policy.ts", "lib/kernel/healing-policy.ts", "lib/kernel/self-healing.ts", "lib/kernel/exceptions-first.ts", "lib/data-steward", "app/actions/compliance", "supabase/migrations"], /\b(vocabulary_(terms|entries|aliases|proposals?|labels)|taxonomy_(terms|entries|aliases|labels)|canonical_vocabulary\w*|proposeVocabulary\w*|vocabularyProposal\w*|VOCABULARY_PROPOSAL\w*|resolveVocabulary\w*|adaptiveVocabulary\w*)\b/)

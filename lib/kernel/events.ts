@@ -80,6 +80,10 @@ export enum KernelEvent {
   LISTING_OPEN_HOUSE_COMPLETED              = 'listing_open_house_completed',
   LISTING_SHOWING_COMPLETED                 = 'listing_showing_completed',
   LISTING_PUBLISHED                         = 'listing_published',
+  /** The seller-agreed MLS live date changed under the EXECUTED listing agreement or an executed amendment (owner
+   *  ruling 2, wave 145). A PLANNED date — never "live on the MLS" (only the feed verifies that). Emitted ONLY by
+   *  lib/listings/mls-live-date.ts followSellerAgreedMlsLiveDate. */
+  LISTING_MLS_LIVE_DATE_CHANGED             = 'listing_mls_live_date_changed',
 
   // ── Offer / Contract ──────────────────────────────────────────────────────
   OFFER_RECEIVED            = 'offer_received',

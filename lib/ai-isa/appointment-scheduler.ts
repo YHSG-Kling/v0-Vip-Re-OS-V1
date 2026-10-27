@@ -16,10 +16,9 @@ import "server-only"
 import { createServiceClient } from '@/lib/supabase/service'
 import { CalendarEventType } from '@/lib/kernel/calendar-types'
 import { KernelEvent } from '@/lib/kernel/events'
-import {
-  assertValidTransition,
-  processKernelEvent,
-} from '@/lib/kernel'
+// PURE CUT (wave 145, lane 145Z — test:proxy-graph-budget): the direct module, not the lib/kernel barrel (same export).
+import { assertValidTransition } from '@/lib/kernel/lead-acquisition-handlers'
+import { processKernelEvent } from '@/lib/kernel/notification-engine'
 
 export async function scheduleISAAppointment(params: {
   brokerageId: string

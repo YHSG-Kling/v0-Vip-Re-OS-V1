@@ -298,13 +298,13 @@ export const AD_PLATFORMS: Readonly<Record<AdPlatformKey, AdPlatformTruth>> = Ob
   google_ads: {
     key: "google_ads",
     label: "Google Ads",
-    verified: false,
+    verified: true,
     readinessRow: "google_ads",
     campaignPlatforms: ["google"],
     credential: "platform_credentials platform 'google_ads' (OAuth google_ads) + GOOGLE_ADS_DEVELOPER_TOKEN",
     adapter: "lib/ads/connectors/google.ts googleConnector (googleAds:mutate, Customer Match offline jobs, searchStream)",
     contract: "developers.google.com/google-ads/api (GOOGLE_ADS_API_VERSION in lib/agentic-os/connector-registry.ts)",
-    evidence: "NOT VERIFIED — the connector is real, but at b364eb4b no credential could be stored: the OAuth callback (app/api/integrations/oauth/[provider]/route.ts) wrote platform 'google', which the live platform_credentials_platform_check refuses (and the Connection OS folds 'google' onto gmail). Lane 145D: the callback and every reader now say 'google_ads' (adCredentialPlatform) and m862 admits it — WRITTEN, NOT APPLIED, so the live store still refuses it. Flips to verified once m862 is applied and the CHECK cache regenerated (test:channel-provider-matrix derives it and says so). lib/integrations/ad-campaign-vocabulary.ts still lists google in AD_PLATFORMS_WITHOUT_CONNECTIONS (display; Outside-lane). GOOGLE_ADS_DEVELOPER_TOKEN is WAITING_EXTERNAL.",
+    evidence: "VERIFIED (wave 145, lane 145Z): m862 is APPLIED LIVE and scripts/check-vocabularies.ts regenerated — the live platform_credentials CHECK admits 'google_ads', the OAuth callback (app/api/integrations/oauth/[provider]/route.ts) writes 'google_ads' and every reader asks for it (adCredentialPlatform); test:channel-provider-matrix derived it ('google_ads is now DERIVABLE as verified'). At b364eb4b the callback wrote 'google', which the live CHECK refused. Verified = the capability is real and its credential storable; GOOGLE_ADS_DEVELOPER_TOKEN is still WAITING_EXTERNAL (no live call is claimed).",
   },
   vibe_tv: {
     key: "vibe_tv",

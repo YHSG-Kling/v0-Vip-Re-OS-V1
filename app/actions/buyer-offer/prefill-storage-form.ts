@@ -23,12 +23,15 @@ import { prefillPropertyIntoPdf } from "@/lib/forms/prefill-property-into-pdf"
 import { fillPdfForm, readPdfTextFields, listPdfFields, type PdfFieldValue } from "@/lib/forms/pdf-form-fill"
 import { buildPartyPrefill, type DealParties } from "@/lib/forms/party-prefill"
 import { checkFormPathsInScope } from "@/lib/forms/form-path-scope"
-// ONE bucket name (§6): survivor lib/esign/dispatch-packet.ts::FORMS_BUCKET (lane 89E).
-import { FORMS_BUCKET } from "@/lib/esign/dispatch-packet"
+// ONE bucket name (§6): survivor lib/forms/tenant-form-packets.ts FORM_PACKET_BUCKET (wave 145, lane 145A item 6 —
+// lib/esign/dispatch-packet.ts FORMS_BUCKET now re-exports it). The seat door: resolvePacketActor (lane 145A item 2).
+import { FORM_PACKET_BUCKET as FORMS_BUCKET, resolvePacketActor } from "@/lib/forms/tenant-form-packets"
 import { resolveKnownPropertyFacts } from "@/lib/intelligence/offer-property-prefill-runner"
 import { legalDescriptionRequirement, typedLegalDescription, resolveLegalDescriptionForForm } from "@/lib/forms/legal-description"
 
-const FILLED_BUCKET = "brokerage-forms" // filled copies live alongside, under a filled/ prefix
+// TOMBSTONE (§6, wave 145 lane 145Z): `const FILLED_BUCKET = "brokerage-forms"` re-spelled the bucket. Filled copies live
+// alongside, under a filled/ prefix, in the ONE bucket — survivor lib/forms/tenant-form-packets.ts FORM_PACKET_BUCKET.
+const FILLED_BUCKET = FORMS_BUCKET
 
 export interface PrefillStorageFormInput {
   /** the storage path of the source form PDF in the brokerage-forms bucket. */
@@ -69,14 +72,14 @@ export async function prefillStorageFormAction(input: PrefillStorageFormInput): 
   if (!input.formPath || !input.formPath.toLowerCase().endsWith(".pdf")) {
     return { success: false, error: "a PDF form path is required" }
   }
-  const { data: me, error: meErr } = await authClient.from("users").select("brokerage_id, team_id").eq("id", user.id).maybeSingle()
-  if (meErr) return { success: false, error: `could not read your account: ${meErr.message}` }
-  if (!me?.brokerage_id) return { success: false, error: "unauthorized" }
-
+  // THE SEAT DOOR (wave 145, lane 145A Outside-lane 2): the actor is an ACTIVE STAFF SEAT resolved from the SESSION user —
+  // a contact / vendor seat, a suspended or removed account, a deactivated agent is refused here (fail closed), never
+  // admitted by a raw users read.
   const svc = createServiceClient()
-  const scope = await checkFormPathsInScope(svc, [input.formPath], {
-    brokerageId: me.brokerage_id as string, teamId: (me.team_id as string | null) ?? null, userId: user.id,
-  })
+  const seat = await resolvePacketActor(svc as never, user.id)
+  if (!seat.ok) return { success: false, error: seat.error }
+  const actor = { brokerageId: seat.actor.brokerageId, teamId: seat.actor.teamId, userId: user.id }
+  const scope = await checkFormPathsInScope(svc, [input.formPath], actor)
   if (!scope.ok) return { success: false, error: scope.error ?? "that form is not in your library" }
 
   try {
@@ -104,7 +107,7 @@ export async function prefillStorageFormAction(input: PrefillStorageFormInput): 
     const typedLegal = typedLegalDescription(input.fieldValues)
     if (requirement.required && (!requirement.satisfied || typedLegal)) {
       const legal = await resolveLegalDescriptionForForm(svc, {
-        brokerageId: me.brokerage_id as string, userId: user.id,
+        brokerageId: actor.brokerageId, userId: user.id,
         listingId: input.listingId ?? null, transactionId: input.transactionId ?? null,
         address: facts.address, city: facts.propertyCity, state: facts.propertyState, zip: facts.propertyZip,
         typedValue: typedLegal,
@@ -139,6 +142,10 @@ export async function prefillStorageFormAction(input: PrefillStorageFormInput): 
     const stamp = `${Date.now().toString(36)}`
     const base = input.formPath.replace(/^.*\//, "").replace(/\.pdf$/i, "")
     const filledPath = `filled/${input.offerId ?? user.id}/${base}-${stamp}.pdf`
+    // THE WRITE DESTINATION IS SCOPE-CHECKED TOO (wave 145, lane 145A Outside-lane 4): a foreign offerId would otherwise
+    // plant a file in another tenant's filled/{offerId}/ folder.
+    const dest = await checkFormPathsInScope(svc, [filledPath], actor)
+    if (!dest.ok) return { success: false, error: "that offer is not in your brokerage" }
     const { error: upErr } = await svc.storage.from(FILLED_BUCKET).upload(filledPath, Buffer.from(bytes), {
       contentType: "application/pdf", upsert: true,
     })

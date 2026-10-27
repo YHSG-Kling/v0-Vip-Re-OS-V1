@@ -19,11 +19,10 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import {
-  resolveProvider,
-  processKernelEvent,
-  KernelEvent,
-} from "@/lib/kernel"
+// PURE CUT (wave 145, lane 145Z — test:proxy-graph-budget): the direct module, not the lib/kernel barrel (same export).
+import { resolveProvider } from "@/lib/kernel/providers"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { KernelEvent } from "@/lib/kernel/events"
 import { mayUseFeature } from "@/lib/billing/billing-access"
 import { dispatchDirectMail } from "@/lib/providers/dispatch"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
@@ -821,9 +820,27 @@ export async function getResponses(campaignId: string) {
  */
 export async function sendCampaign(params: SendCampaignParams) {
   try {
-    if (!isValidUUID(params.campaignId) || !isValidUUID(params.actorUserId)) {
+    if (!isValidUUID(params.campaignId)) {
       return { success: false, error: "Invalid IDs" }
     }
+
+    // ── IDENTITY FROM THE SESSION (wave 145, lane 145Z — CLAUDE.md §4) ──
+    // A "use server" export: brokerageId and actorUserId arrive in a request body. The
+    // barrel cut (test:proxy-graph-budget) let test:tenant-scope SEE this door for the first
+    // time — it judges whole-object hand-offs only for `@/lib/kernel/*` imports, so the old
+    // `from "@/lib/kernel"` barrel hid params.brokerageId flowing into resolveProvider,
+    // processKernelEvent and the dispatcher. The session wins: a claimed foreign tenant is
+    // refused, and both ids are RE-KEYED from the session before any use. (The campaigns tab
+    // passed `campaign.agent_id` — an agents id — as actorUserId; the session users id
+    // replaces it, which is the class mayUseFeature takes.)
+    const actor = await getAgentContext()
+    if (!actor.isAuthenticated || !actor.userId || !actor.brokerageId) {
+      return { success: false, error: "Not signed in to a brokerage — a direct mail campaign is sent by a signed-in brokerage user" }
+    }
+    if (!decideClaimedTenant({ actingBrokerageId: actor.brokerageId, claimedBrokerageId: params.brokerageId }).ok) {
+      return { success: false, error: "That brokerage is not yours — a direct mail campaign is sent from your own brokerage" }
+    }
+    params = { ...params, brokerageId: actor.brokerageId, actorUserId: actor.userId }
 
     // ── Kernel Gate: canAccessFeature ──
     const access = await mayUseFeature(params.actorUserId, "direct_mail")
@@ -849,9 +866,13 @@ export async function sendCampaign(params: SendCampaignParams) {
       .from("direct_mail_campaigns")
       .select("*")
       .eq("id", params.campaignId)
+      .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
 
-    if (campaignError || !campaign) {
+    if (campaignError) {
+      return { success: false, error: `Could not read the campaign: ${campaignError.message}` }
+    }
+    if (!campaign) {
       return { success: false, error: "Campaign not found" }
     }
 
@@ -927,6 +948,7 @@ export async function sendCampaign(params: SendCampaignParams) {
         pieces_mailed: successCount,
       })
       .eq("id", params.campaignId)
+      .eq("brokerage_id", params.brokerageId)
 
     if (updateError) throw updateError
 

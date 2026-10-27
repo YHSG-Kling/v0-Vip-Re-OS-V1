@@ -530,14 +530,13 @@ export async function auditOfferDocuments(
 ): Promise<AuditResult> {
   let financing = params.financing ?? null
   if (financing === null && params.financing === undefined) {
-    const { data: offerRow, error: offerErr } = await supabase
-      .from("offers")
-      .select("financing_type")
-      .eq("id", params.offerId)
-      .eq("brokerage_id", params.brokerageId)
-      .maybeSingle()
-    if (!offerErr) {
-      const raw = (offerRow as { financing_type?: unknown } | null)?.financing_type
+    // Through the financing columns' ONE reader (wave 145, lane 145Z — m871): the brokerage's own term
+    // (offers.financing_subtype) when one was recorded, else the platform roll-up (financing_type). The term resolves
+    // through the brokerage's vocabulary below, so its kind is the term's own lineage — never a guess from the label.
+    const { readFinancingSubtype } = await import("@/lib/offers/financing-subtype")
+    const fin = await readFinancingSubtype(supabase as any, { table: "offers", id: params.offerId, brokerageId: params.brokerageId })
+    if (fin.ok) {
+      const raw: unknown = fin.subtype ?? fin.financingType
       // Wave 144A: a value that is not a platform financing type (a brokerage term written raw by an older
       // writer) is read through the brokerage's vocabulary, so a term that rolls up to `cash` stays cash.
       const tenant = typeof raw === "string" && raw.trim() && !platformFinancingType(raw) ? await loadTenantVocabulary(supabase, params.brokerageId) : null

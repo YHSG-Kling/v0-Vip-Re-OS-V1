@@ -175,16 +175,16 @@ The closure report names each table and its count. For each one, the Data Stewar
 ## Generated classification (do not edit by hand — `tsx --conditions=react-server scripts/transfer-classification-guard.ts --write`)
 
 <!-- BEGIN GENERATED: fk-child-classification (scripts/transfer-classification-guard.ts --write) -->
-Census: 432 FKs from 306 child tables into the 32 moved families (286 tables carry brokerage_id; 20 have no tenant column and follow their parent's tenancy implicitly). 59 further FKs run between families (follows_parent by construction).
+Census: 437 FKs from 309 child tables into the 33 moved families (288 tables carry brokerage_id; 21 have no tenant column and follow their parent's tenancy implicitly). 60 further FKs run between families (follows_parent by construction).
 
 | Class | Tables | FKs |
 |---|---|---|
 | `follows_parent` | 72 | 108 |
 | `shared_remains` | 13 | 19 |
 | `historical_immutable` | 101 | 153 |
-| `explicit_transfer` | 11 | 18 |
-| `not_transferable` | 27 | 34 |
-| `derived_readonly` | 82 | 100 |
+| `explicit_transfer` | 12 | 19 |
+| `not_transferable` | 28 | 37 |
+| `derived_readonly` | 83 | 101 |
 
 ### `follows_parent`
 
@@ -421,10 +421,11 @@ Census: 432 FKs from 306 child tables into the 32 moved families (286 tables car
 
 *another person's rights or the source brokerage's executed contract (consent, privacy requests, the client's own financial data, a listing / buyer-broker agreement, confidential deal documents) — it may move only by an explicit, evidenced, per-transfer human decision; this rail never moves it.*
 
-**EXECUTED AGREEMENT WITH THE SOURCE BROKERAGE — a listing / buyer-broker agreement is the client's contract with the brokerage, not the agent; it moves only on the client's executed assignment or release**
+**EXECUTED AGREEMENT WITH THE SOURCE BROKERAGE — a listing / buyer-broker agreement is the client's contract with the brokerage, not the agent; it moves only on the client's executed assignment or release. A client-agreement FEE (m859, ruling 5) is a term of that agreement and follows it (lane 145C Outside-lane 9: 'ownership follows the agreement') — so it is never moved apart from it**
 
 - `listing_agreements` — listing_id → listings, seller_contact_id → contacts · listing_concierge
 - `buyer_broker_agreements` — buyer_contact_id → contacts · shopping_agent
+- `client_agreement_fees` — amendment_document_id → documents · finance_manager
 
 **CONFIDENTIAL DEAL DOCUMENTS — third-party PII and signatures in the source's deal file; moved only on an explicit, evidenced release (ruling 24)**
 
@@ -451,7 +452,7 @@ Census: 432 FKs from 306 child tables into the 32 moved families (286 tables car
 **MONEY — commission, payout, earnest-money (trust), books, cost, invoice and referral-fee records stay with the brokerage that booked them; money never crosses tenants (m765; ruling 9: a referral obligation is the executing brokerage's)**
 
 - `agent_commissions` — transaction_id → transactions · finance_manager
-- `commission_adjustments` — transaction_id → transactions · finance_manager
+- `commission_adjustments` — offer_id → offers, transaction_id → transactions · finance_manager
 - `commission_calculations` — transaction_id → transactions · finance_manager
 - `commission_distributions` — transaction_id → transactions · finance_manager
 - `commission_splits` — transaction_id → transactions · finance_manager
@@ -462,10 +463,11 @@ Census: 432 FKs from 306 child tables into the 32 moved families (286 tables car
 - `cost_breakdown_tracking` — transaction_id → transactions · data_steward
 - `transaction_cost_breakdown` — transaction_id → transactions · deal_coordinator
 - `net_sheet_reconciliations` — offer_id → offers, transaction_id → transactions · deal_coordinator
-- `referrals` — referred_contact_id → contacts, referred_lead_id → leads, referrer_contact_id → contacts, transaction_id → transactions · sphere_of_influence
+- `referrals` — referral_agreement_document_id → documents, referred_contact_id → contacts, referred_lead_id → leads, referrer_contact_id → contacts, transaction_id → transactions · sphere_of_influence
 - `listing_marketing_packages` — transaction_id → transactions · listing_concierge
 - `listing_marketing_services` — transaction_id → transactions · listing_concierge
 - `vendor_invoices` — contact_id → contacts, listing_id → listings, transaction_id → transactions · data_steward
+- `referral_partners` — agreement_document_id → documents · sphere_of_influence
 
 **BILLING / USAGE — metered usage and vendor spend are the source subscription's invoice lines**
 
@@ -581,4 +583,8 @@ Census: 432 FKs from 306 child tables into the 32 moved families (286 tables car
 - `zenrows_property_search_raw` — lead_id → leads · no tenant column · no TABLE_MANAGER
 - `video_generation_queue` — project_id → ai_video_projects · no tenant column · asset_manager
 - `video_streaming_status` — video_project_id → ai_video_projects · no tenant column · asset_manager
+
+**RESEARCH-ONLY PROTECTED ATTRIBUTES (ruling 12) — vendor-modeled, held under the source tenant's access control and provenance for authorized research; never moved or copied across accounts (the target re-enriches gap-only under its own provider account); self-declared by its firewalled store**
+
+- `protected_research_attributes` — contact_id → contacts · no tenant column · data_steward
 <!-- END GENERATED: fk-child-classification -->

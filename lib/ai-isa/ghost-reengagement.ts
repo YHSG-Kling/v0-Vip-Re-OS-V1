@@ -346,9 +346,9 @@ export async function runGhostReengagement(
       //    keeps flowing for whenever they're ready. Phase 1/2 stay on 1:1 email (still warming).
       if (cadence.phase === 3 && lead.email && lead.email_verified === true && lead.email_opt_out !== true) {
         const { permittedLeadChannels, decideNextChannel } = await import('@/lib/ai-isa/next-best-touch')
-        const leadCohort = cohortFromEnrichment(lead.enrichment_profile as { age?: number | null; age_range?: string | null } | null)
+        // Never ordered by age group (owner ruling 18, wave 145): the one neutral default order, rotated off email.
         const permitted = permittedLeadChannels({ emailUsable: true, mailingVerified: false })
-        const nba = decideNextChannel({ permitted, cohort: leadCohort, lastChannel: 'email' })
+        const nba = decideNextChannel({ permitted, lastChannel: 'email' })
         if (nba.channel === 'newsletter') {
           const { publishManagerSignal } = await import('@/lib/kernel/manager-signals')
           await publishManagerSignal({

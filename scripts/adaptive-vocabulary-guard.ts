@@ -252,6 +252,44 @@ async function main() {
   section("D3 the new FINANCING type breaks nothing: pre-approval, offer strength, the government-loan addendum, the state form enum, reporting")
   const w = vocabularyWriteValue("financing_type", "FHA 203(k)", v1)
   check("a writer stores the ROLL-UP (fha) and keeps the brokerage term beside it (subtype fha_203_k)", w.value === "fha" && w.subtype === "fha_203_k")
+  {
+    // WAVE 145 (lane 145Z — m871, the typed column lane 145C decided): the ONE writer / reader of offers|transactions.financing_subtype.
+    const fs145 = await import("../lib/offers/financing-subtype")
+    const pair = fs145.financingWriteValues("FHA 203(k)", v1)
+    const platform = fs145.financingWriteValues("conventional", v1)
+    const unknown = fs145.financingWriteValues("seller-carried note", v1)
+    check("m871 WRITE VALUES: a brokerage term → financing_type = its roll-up AND financing_subtype = the term; a platform type has no subtype; an unknown label is KEPT as written (never nulled) with no subtype",
+      pair.financing_type === "fha" && pair.financing_subtype === "fha_203_k" && platform.financing_type === "conventional" && platform.financing_subtype === null
+      && unknown.financing_type === "seller-carried note" && unknown.financing_subtype === null, JSON.stringify({ pair, platform, unknown }))
+    const OF = "o-145z", OTHER_B = "b-other-145z"
+    const db145: any = memSupabase({ offers: [{ id: OF, brokerage_id: B, financing_type: "fha" }] })
+    const wrote = await fs145.persistFinancingSubtype(db145, { table: "offers", id: OF, brokerageId: B, subtype: "fha_203_k" })
+    const foreign = await fs145.persistFinancingSubtype(db145, { table: "offers", id: OF, brokerageId: OTHER_B, subtype: "va" })
+    const back = await fs145.readFinancingSubtype(db145, { table: "offers", id: OF, brokerageId: B })
+    check("m871 ONE WRITER: tenant-pinned and row-counted (another tenant's write matches nothing and is an error, never 'saved'); the ONE reader returns the term beside the roll-up",
+      wrote.ok && !foreign.ok && back.ok && back.subtype === "fha_203_k" && back.financingType === "fha", JSON.stringify({ wrote, foreign, back }))
+    const missing: any = { from: () => ({ update: () => ({ eq: () => ({ eq: () => ({ select: async () => ({ data: null, error: { code: "PGRST204", message: "column financing_subtype not found" } }) }) }) }) }) }
+    const notApplied = await fs145.persistFinancingSubtype(missing, { table: "offers", id: OF, brokerageId: B, subtype: "fha_203_k" })
+    check("m871 NOT APPLIED is said, never thrown: PGRST204 → { ok:false, notApplied:true } (the offer itself was written without the column)", !notApplied.ok && (notApplied as any).notApplied === true)
+    const kindViaTerm = financingKindFor(back.ok ? back.subtype : null, financingTypeResolver(v1))
+    check("the checklist resolver's read: the stored term resolves through the brokerage vocabulary to the SAME kind as its roll-up (financed)", kindViaTerm === "financed" && kindViaTerm === financingKindFor("fha"))
+    // SOURCE CENSUS (comment-stripped, strings blanked): every financing writer goes through the one writer, every
+    // checklist reader through the one reader, and no other file names the column as a write key.
+    const code145 = (p: string) => blankStrings(stripComments(read(p)))
+    const WRITERS = ["app/actions/buyer-offers.ts", "app/api/agent-assistant/tool-call/route.ts", "lib/offers/offer-extractor.ts", "lib/transactions/offer-bridge.ts"]
+    const READERS = ["lib/compliance/required-documents.ts", "lib/transactions/closing-compliance.ts"]
+    const writerMissing = WRITERS.filter((f) => !/\bpersistFinancingSubtype\s*\(/.test(code145(f)))
+    const readerMissing = READERS.filter((f) => !/\breadFinancingSubtype\s*\(/.test(code145(f)))
+    check("m871 WRITERS: createOffer, the assistant's offer tool, the offer extractor and the offer→transaction bridge each call persistFinancingSubtype", writerMissing.length === 0, writerMissing.join(", "))
+    check("m871 READERS: the offer checklist (required-documents) and the closing checklist (closing-compliance) each call readFinancingSubtype", readerMissing.length === 0, readerMissing.join(", "))
+    const rawKeyRe = /\bfinancing_subtype\s*:/
+    const rawWriters: string[] = []
+    const walk145 = (dir: string) => { for (const e of readdirSync(dir, { withFileTypes: true })) { const f = join(dir, e.name); if (e.isDirectory()) { if (e.name !== "node_modules") walk145(f) } else if (/\.(ts|tsx)$/.test(e.name) && f !== "lib/offers/financing-subtype.ts" && rawKeyRe.test(code145(f))) rawWriters.push(f) } }
+    walk145("app"); walk145("lib")
+    const ctl = blankStrings(stripComments('await svc.from("offers").update({ financing_subtype: "va" }) // financing_subtype: in a comment'))
+    check("m871 ONE WRITER (census): no file but lib/offers/financing-subtype.ts writes `financing_subtype:` as a key — control: a raw key IS caught and a commented one is not",
+      rawWriters.length === 0 && rawKeyRe.test(ctl) && !rawKeyRe.test(blankStrings(stripComments("// financing_subtype: only in a comment"))), rawWriters.join(", "))
+  }
   check("financingKindFor(stored) = financed; and a raw brokerage key read through the vocabulary is financed too", financingKindFor(w.value) === "financed" && financingKindFor("fha_203_k", financingTypeResolver(v1)) === "financed")
   check("offer strength scores it exactly as FHA (the reporting / multi-offer reader keeps its bucket)", scoreBuyerStrength({ financingType: w.value, downPaymentPercent: 10, contingencies: [], emd: 5000, offerPrice: 400000 }) === scoreBuyerStrength({ financingType: "fha", downPaymentPercent: 10, contingencies: [], emd: 5000, offerPrice: 400000 }))
   check("the government-loan amendatory addendum set still matches it, and the state form-field enum admits it", GOVERNMENT_BACKED_FINANCING_TYPES.includes(w.value as any) && fieldFinancing.includes(w.value as string))

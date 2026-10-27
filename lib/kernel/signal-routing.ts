@@ -206,6 +206,7 @@ export const STATIC_ROUTES: Record<string, { from: ManagerKey; to: ManagerKey }>
   stale_lead_alert:                  { from: "data_steward", to: "ai_isa" },
   price_alert_triggered:             { from: "listing_concierge", to: "campaign_orchestrator" },
   listing_agreement_initiated:       { from: "listing_concierge", to: "compliance_officer" },
+  listing_mls_live_date_changed:     { from: "listing_concierge", to: "campaign_orchestrator" },
   showing_requested:                 { from: "listing_concierge", to: "ai_isa" },
   esign_envelope_requested:          { from: "compliance_officer", to: "deal_coordinator" },
   marketing_campaign_ended:          { from: "ai_isa", to: "campaign_orchestrator" },

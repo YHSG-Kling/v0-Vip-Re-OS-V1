@@ -626,6 +626,85 @@ export async function recordDistributionPublication(
   }
 }
 
+/** One version as the record shows it — what was staged, who was told, who approved it, what they accepted, what went out. */
+export interface DistributionFinalRecord {
+  id: string
+  assetKind: string
+  assetTable: string
+  assetId: string
+  version: number
+  status: DistributionFinalStatus
+  finalText: string
+  tagline: string | null
+  logoUrl: string | null
+  blockers: string[]
+  approvalBasis: DistributionApprovalBasis | null
+  approvedBy: string | null
+  approvedAt: string | null
+  notifiedUserId: string | null
+  notifiedAt: string | null
+  acknowledged: string[]
+  publishedAt: string | null
+  publishedVia: string | null
+  publishedRef: string | null
+  createdAt: string | null
+}
+
+const RECORD_COLUMNS =
+  "id, asset_kind, asset_table, asset_id, version, status, final_text, tagline, logo_url, blockers, approval_basis, approved_by, approved_at, notified_user_id, notified_at, acknowledged, published_at, published_via, published_ref, created_at"
+
+/**
+ * THE READER of the final-version record (wave 145, lane 145Z — test:readerless-writes: the staged text, its brand line and
+ * logo, the notification stamp, the approval evidence and what the approver accepted were written by the doors above and read
+ * by nothing). The Content Approvals screen's "Final versions" tab shows it (app/actions/content-final-versions.ts). Tenant-
+ * pinned on the caller's client; a refused read is an error, never an empty record.
+ */
+export async function listDistributionFinals(
+  db: Db,
+  args: { brokerageId: string; status?: DistributionFinalStatus | null; limit?: number },
+): Promise<{ ok: true; finals: DistributionFinalRecord[] } | { ok: false; error: string }> {
+  if (!args.brokerageId) return { ok: false, error: "brokerageId is required" }
+  let q = db.from("distribution_finals").select(RECORD_COLUMNS).eq("brokerage_id", args.brokerageId)
+  if (args.status) q = q.eq("status", args.status)
+  const { data, error } = await q.order("created_at", { ascending: false }).limit(Math.max(1, Math.min(args.limit ?? 50, 200)))
+  if (error) return { ok: false, error: `distribution_finals read refused: ${error.message ?? "unknown"}` }
+  const str = (v: unknown) => (typeof v === "string" && v ? v : null)
+  const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [])
+  return {
+    ok: true,
+    finals: ((data ?? []) as Array<Record<string, unknown>>).map((r) => ({
+      id: String(r.id), assetKind: String(r.asset_kind ?? ""), assetTable: String(r.asset_table ?? ""), assetId: String(r.asset_id ?? ""),
+      version: Number(r.version ?? 0), status: r.status as DistributionFinalStatus, finalText: String(r.final_text ?? ""),
+      tagline: str(r.tagline), logoUrl: str(r.logo_url), blockers: list(r.blockers),
+      approvalBasis: (str(r.approval_basis) as DistributionApprovalBasis | null), approvedBy: str(r.approved_by), approvedAt: str(r.approved_at),
+      notifiedUserId: str(r.notified_user_id), notifiedAt: str(r.notified_at), acknowledged: list(r.acknowledged),
+      publishedAt: str(r.published_at), publishedVia: str(r.published_via), publishedRef: str(r.published_ref), createdAt: str(r.created_at),
+    })),
+  }
+}
+
+/**
+ * THE PUBLICATION DOORS' RECORD (wave 145, lane 145Z — lane 145G Outside-lane 4; owner ruling 20: "track the approved final version
+ * actually sent/published"). The social / newsletter / blog / podcast doors call this AFTER their external send succeeded, with the
+ * EXACT content that went out and their OWN approval gate's evidence (each door publishes only an `approval_status = approved` row,
+ * or a person's explicit publish of an approved post). Through recordDistributionPublication — the same check the lead-magnet door
+ * runs — so a matching staged final is marked published and anything else becomes its own version. Never throws and never undoes a
+ * send: a refused record is RETURNED for the door to log (the piece already went out).
+ */
+export async function recordDoorPublication(
+  db: Db,
+  input: {
+    brokerageId: string; assetKind: HumanizeAssetKind; assetTable: string; assetId: string; content: string
+    approvedBy: string | null; approvedAt: string | null; via: string; ref: string | null; now?: Date
+  },
+): Promise<{ ok: true; finalId: string; humanEdit: boolean } | { ok: false; error: string }> {
+  if (!input.brokerageId || !input.assetId || !String(input.content ?? "").trim()) return { ok: false, error: "nothing to record (no tenant, asset or content)" }
+  return recordDistributionPublication(db, {
+    brokerageId: input.brokerageId, assetKind: input.assetKind, assetTable: input.assetTable, assetId: input.assetId, content: input.content,
+    approval: { approved: true, by: input.approvedBy, at: input.approvedAt }, via: input.via, ref: input.ref, now: input.now,
+  })
+}
+
 /**
  * The tenant's brand for a final — logo + tagline from THE brand cascade (resolveBrandContext), prohibited / preferred
  * words from the brand-voice core (every scope, tenant-pinned on the caller's client). A refused voice read is said, never

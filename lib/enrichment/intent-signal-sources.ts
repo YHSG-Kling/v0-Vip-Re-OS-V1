@@ -26,6 +26,7 @@ import { realEstateIndicatorsFromProfile } from "@/lib/enrichment/online-presenc
 import { onlineAudienceSummary } from "@/lib/enrichment/online-audience-store"
 import { PROVIDER_FRESHNESS_DAYS, isFresh } from "@/lib/enrichment/provider-dedup"
 import { fieldProvenanceOf } from "@/lib/lead-pipeline/enrichment-column-map"
+import { canonicalPartyFor } from "@/lib/contact-promotion/lead-domain-boundary"
 
 export type IntentKind = "moving" | "home_sale" | "home_purchase" | "refinance" | "property_engagement" | "market_engagement" | "life_event" | "relationship_moment"
 export type SignalEntity = "raw_lead" | "lead" | "contact" | "lifetime_customer"
@@ -243,14 +244,17 @@ function intentFactProvenance(fact: ObservedIntentSignal, record: Parameters<typ
 type IntentParty = { type: "contact"; id: string } | { type: "lead"; id: string }
 
 /**
- * PURE (contract C2 — lane 145E's lib/contact-promotion/lead-domain-boundary.ts canonicalPartyFor is the named survivor; this is its
- * rule, inline until that module lands — see the lane notes): a lead with a contact_id is answered as that contact; an inactive
- * lead with none is out of every domain (nothing to answer); otherwise the lead itself.
+ * PURE (contract C2). TOMBSTONE (wave 145, lane 145Z — lane 145F Outside-lane 5): the inline lead/contact rule that stood here
+ * ("a lead with a contact_id is answered as that contact … otherwise the lead itself") is merged onto its named survivor,
+ * lib/contact-promotion/lead-domain-boundary.ts canonicalPartyFor. What this adapter KEEPS of its own: an INACTIVE lead with no
+ * contact is out of every domain (nothing to answer) — the boundary has no is_active input, so that half stays here.
  */
 function canonicalIntentParty(lead: { id: string; contact_id?: string | null; is_active?: boolean | null }): IntentParty | null {
-  if (lead.contact_id) return { type: "contact", id: lead.contact_id }
+  const party = canonicalPartyFor({ id: lead.id, contact_id: lead.contact_id ?? null })
+  if (party.type === "contact") return { type: "contact", id: party.id }
+  if (party.type !== "lead") return null
   if (lead.is_active === false) return null
-  return { type: "lead", id: lead.id }
+  return { type: "lead", id: party.id }
 }
 
 type IntentFactRoute = "routed" | "replayed" | "refused" | "not_a_change"

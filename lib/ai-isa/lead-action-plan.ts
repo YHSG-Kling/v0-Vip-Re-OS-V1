@@ -749,9 +749,9 @@ function planLeadTouchCore(input: PlanNextLeadTouchInput): CorePlan {
   // only gets to move a step forward when it would otherwise repeat the last rail.
   let chosen = eligible[0]
   if (input.lastChannel && eligible.length > 1) {
+    // Never ordered by age group (owner ruling 18, wave 145): the rotation reads the one neutral default order.
     const rotation = decideNextChannel({
       permitted: Array.from(permitted) as Array<"email" | "direct_mail" | "newsletter">,
-      cohort: input.cohort ?? "unknown",
       lastChannel: input.lastChannel,
     })
     const preferred = eligible.find((step) => wireChannelFor(step.channel) === rotation.channel)
@@ -1092,7 +1092,7 @@ async function leadStillSendable(args: {
   }
 
   // CONTENT COMPLIANCE — the kernel gate, on the exact bytes about to go out.
-  const { evaluateOutbound } = await import("@/lib/kernel")
+  const { evaluateOutbound } = await import("@/lib/kernel/compliance") // PURE CUT (wave 145, lane 145Z): the module, not the barrel
   const compliance = await evaluateOutbound({
     actorContext: { userId: brokerageId, role: "isa", brokerageId },
     journeyType: "buyer",

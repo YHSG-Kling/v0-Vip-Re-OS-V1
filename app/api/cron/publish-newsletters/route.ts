@@ -638,6 +638,20 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     .eq("id", c.id)
   if (sentStampErr) console.error(`[publish-newsletters] campaign sent but NOT marked sent (it stays 'sending'): ${sentStampErr.message}`)
 
+  // THE VERSION THAT WENT OUT (owner ruling 20 — wave 145, lane 145Z; lane 145G Outside-lane 4): the campaign's stored content
+  // (its sections, as the final was staged — storedAs) is recorded as published, with the campaign's approval as the evidence.
+  try {
+    const { recordDoorPublication } = await import("@/lib/marketing/humanize-final")
+    const sent = typeof c.content === "string" ? c.content : JSON.stringify(c.content ?? null)
+    const rec = await recordDoorPublication(svc as any, {
+      brokerageId: c.brokerage_id, assetKind: "newsletter", assetTable: "newsletter_campaigns", assetId: c.id, content: sent,
+      approvedBy: null, approvedAt: null, via: "newsletter_send", ref: null,
+    })
+    if (!rec.ok) console.error(`[publish-newsletters] campaign ${c.id} sent, but the version that went out was NOT recorded: ${rec.error}`)
+  } catch (e) {
+    console.error(`[publish-newsletters] campaign ${c.id}: version record threw: ${(e as Error)?.message ?? e}`)
+  }
+
   // ── CLOSE THE LEDGER ROW THE SCHEDULER OPENED ─────────────────────────────
   // newsletter_scheduled_sends is the send LEDGER: two schedulers
   // (app/actions/newsletter/schedule-newsletter.ts and

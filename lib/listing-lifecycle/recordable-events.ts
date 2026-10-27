@@ -142,7 +142,13 @@ export const RECORDABLE_EVENTS: Record<RecordableAction, RecordableEvent> = {
       // The PLANNED MLS live date (wave 143, lane 143A): a plan the agent and seller made, recorded as a plan — it is
       // verified later, from the MLS/IDX feed, never by being typed. Blank keeps the date already on the listing; none
       // is invented, and the listing waits at LISTING_AGREEMENT_SIGNED until one is set.
-      { key: "plannedMlsLiveDate", label: "Planned MLS live date (yyyy-mm-dd)", type: "text", required: false, help: "The day you plan to go live on the MLS. Leave blank to keep the date already on the listing (none is invented)." },
+      // Wave 145 (lane 145Z — lane 145B Outside-lane 12, owner ruling 2): the date is the one THE EXECUTED AGREEMENT
+      // states; the recorder stores it on the agreement (write-once) and the listing's plan follows it. The legacy key
+      // `plannedMlsLiveDate` is still read by the recorder as the same agreement field under its old name.
+      { key: "sellerRequestedMlsLiveDate", label: "MLS live date the seller requested (as stated on the agreement, yyyy-mm-dd)", type: "text", required: false, help: "The go-live date written on the signed listing agreement. Leave blank to keep the date already on the listing (none is invented). A later change needs an executed amendment." },
+      // Owner ruling 1: the seller's signed instruction for the street address in Coming Soon advertising. Blank = not
+      // recorded, and the street address stays withheld (the closed default).
+      { key: "comingSoonStreetAddress", label: "Street address in Coming Soon advertising (per the agreement)", type: "choice", required: false, options: ["withheld", "authorized"] },
       { key: "listingRate", label: "Listing side commission %", type: "number", required: false },
       { key: "buyerRate", label: "Buyer side commission %", type: "number", required: false },
       // Owner ruling (2026-08-27): "listing agreement total commission rate is

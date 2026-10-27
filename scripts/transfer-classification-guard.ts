@@ -55,6 +55,8 @@ import {
 } from "../lib/kernel/brokerage-transfer"
 import { FORM_LIBRARY_SEAT_USER_TYPES, FORM_PACKET_PREVIEW_TTL_SECONDS, PACKET_OVERSIGHT_USER_TYPES, issueTenantPacketUrl, resolvePacketActor, type PacketActor } from "../lib/forms/tenant-form-packets"
 import { checkFormPathsInScope } from "../lib/forms/form-path-scope"
+import { DOC_URL_TTL_SECONDS } from "../lib/storage/signed-doc-url"
+import { PROTECTED_RESEARCH_TRANSFER_CLASS } from "../lib/enrichment/protected-research-store"
 import { TENANT_ADMIN_USER_TYPES } from "../lib/auth/resolve-user-role"
 
 const ROOT = process.cwd()
@@ -79,8 +81,15 @@ console.log("\n[A · FK-child transfer classification (ruling 24)]")
 const FK = SCHEMA_FK_MAP as Record<string, Record<string, string>>
 const SNAP = SCHEMA_SNAPSHOT as unknown as Record<string, string[]>
 const families = new Set(TRANSFER_DATA_FAMILIES.map((f) => f.table))
+/** SELF-DECLARED classes (wave 145, lane 145Z): a FIREWALLED store whose table no other runtime module may name (ruling 12's
+ *  research store — lane 145F's rule) declares its own class beside its writer; the rail never names, reads or moves it. Only a
+ *  NON-MOVING class may be self-declared (asserted below), so a self-declaration can never ask the rail to move anything. */
+const SELF_DECLARED: Readonly<Record<string, { cls: ChildTransferClass; rule: string }>> = Object.freeze({
+  [PROTECTED_RESEARCH_TRANSFER_CLASS.table]: { cls: PROTECTED_RESEARCH_TRANSFER_CLASS.cls, rule: PROTECTED_RESEARCH_TRANSFER_CLASS.rule },
+})
+const ALL_CLASSIFIED: Readonly<Record<string, { cls: ChildTransferClass; rule: string }>> = { ...FK_CHILD_TRANSFER_CLASSIFICATION, ...SELF_DECLARED }
 /** The class of a child table's FKs onto a moved parent: a moved FAMILY is follows_parent by construction; null = unclassified. */
-const childTransferClass = (t: string): ChildTransferClass | null => (families.has(t) ? "follows_parent" : FK_CHILD_TRANSFER_CLASSIFICATION[t]?.cls ?? null)
+const childTransferClass = (t: string): ChildTransferClass | null => (families.has(t) ? "follows_parent" : ALL_CLASSIFIED[t]?.cls ?? null)
 type Edge = { child: string; col: string; parent: string; tenant: boolean }
 const censusOf = (fk: Record<string, Record<string, string>>, fams: ReadonlySet<string>) => {
   const all: Edge[] = []
@@ -95,13 +104,16 @@ console.log(`    (published) census from scripts/schema-fk-map.ts: ${census.all.
 {
   const unclassifiedEdges = census.childEdges.filter((e) => childTransferClass(e.child) === null)
   check(`A1 EVERY child FK onto a moved family has a class (${census.childEdges.length - unclassifiedEdges.length}/${census.childEdges.length} FKs, ${childTables.length} tables)`, unclassifiedEdges.length === 0, unclassifiedEdges.slice(0, 12).map((e) => `${e.child}.${e.col}→${e.parent}`).join(", "))
-  check("A1 the 286 brokerage_id-carrying children are all classified (the owner's census, re-derived — never listed by hand)", tenantChildTables.length > 0 && tenantChildTables.every((t) => !!FK_CHILD_TRANSFER_CLASSIFICATION[t]), `${tenantChildTables.length} found`)
+  check("A1 the 286 brokerage_id-carrying children are all classified (the owner's census, re-derived — never listed by hand)", tenantChildTables.length > 0 && tenantChildTables.every((t) => !!ALL_CLASSIFIED[t]), `${tenantChildTables.length} found`)
+  check("A1 a SELF-DECLARED class is a firewalled store's, NON-MOVING (never follows_parent), and the rail does not also name the table (exactly once)",
+    Object.entries(SELF_DECLARED).every(([t, v]) => v.cls !== "follows_parent" && !FK_CHILD_TRANSFER_CLASSIFICATION[t] && !stripComments(raw("lib/kernel/brokerage-transfer.ts")).includes(`"${t}"`)),
+    Object.keys(SELF_DECLARED).join(","))
   // positive control: a new child appearing in the cache is caught
   const fakeFk = { ...FK, zz_new_child_table: { contact_id: "contacts" } }
   const fakeCensus = censusOf(fakeFk, families)
   control("a NEW FK child in the cache (zz_new_child_table.contact_id → contacts) reads as unclassified", fakeCensus.childEdges.some((e) => e.child === "zz_new_child_table" && childTransferClass(e.child) === null))
   const classified = Object.keys(FK_CHILD_TRANSFER_CLASSIFICATION)
-  const stale = classified.filter((t) => !childTables.includes(t))
+  const stale = [...classified, ...Object.keys(SELF_DECLARED)].filter((t) => !childTables.includes(t))
   check("A2 the classification names no table outside the census (a stale or misspelt name would read as 'classified' while matching nothing)", stale.length === 0, stale.join(","))
   check(`A2 every table is named EXACTLY once across the rule groups (${FK_CHILD_CLASS_NAMINGS} namings = ${classified.length} tables)`, FK_CHILD_CLASS_NAMINGS === classified.length)
   check("A2 no moved FAMILY is classified as a child (a family is follows_parent by construction)", classified.every((t) => !families.has(t)))
@@ -248,7 +260,7 @@ function renderBlock(): string {
   lines.push("|---|---|---|")
   for (const c of CHILD_TRANSFER_CLASSES) lines.push(`| \`${c}\` | ${childTables.filter((t) => childTransferClass(t) === c).length} | ${census.childEdges.filter((e) => childTransferClass(e.child) === c).length} |`)
   const groups = new Map<string, { cls: ChildTransferClass; tables: string[] }>()
-  for (const [t, v] of Object.entries(FK_CHILD_TRANSFER_CLASSIFICATION)) { const g = groups.get(v.rule) ?? { cls: v.cls, tables: [] }; g.tables.push(t); groups.set(v.rule, g) }
+  for (const [t, v] of Object.entries(ALL_CLASSIFIED)) { const g = groups.get(v.rule) ?? { cls: v.cls, tables: [] }; g.tables.push(t); groups.set(v.rule, g) }
   for (const c of CHILD_TRANSFER_CLASSES) {
     lines.push("")
     lines.push(`### \`${c}\``)
@@ -388,7 +400,7 @@ const DOORS: Array<{ file: string; fn: string; ops: Record<string, number>; gate
   { file: "lib/forms/platform-form-packets.ts", fn: "registerPlatformPacket", ops: { upload: 1, remove: 1 }, gate: /parsePlatformPacketPath|platform/, why: "superadmin catalogue writer — the caller gates requireSuperadmin (asserted below)" },
   { file: "app/api/admin/transaction-forms/route.ts", fn: "GET", ops: { createSignedUrl: 1 }, gate: /authAdmin\(\)[\s\S]*parsePlatformPacketPath\(/, why: "catalogue preview for a tenant admin, a well-formed platform path only" },
   { file: "app/api/form-wizard/form-packets/route.ts", fn: "GET", ops: { createSignedUrl: 1 }, gate: /resolvePacketActor\([\s\S]*listFormPacketsForActor\(/, why: "the seat-resolved actor's visible packets only" },
-  { file: "app/actions/buyer-offer/prefill-storage-form.ts", fn: "prefillStorageFormAction", ops: { download: 1, upload: 1, createSignedUrl: 1 }, gate: /checkFormPathsInScope\(/, why: "fill action — source path scope-checked (destination: outside-lane item)" },
+  { file: "app/actions/buyer-offer/prefill-storage-form.ts", fn: "prefillStorageFormAction", ops: { download: 1, upload: 1, createSignedUrl: 1 }, gate: /checkFormPathsInScope\(/, why: "fill action — source path AND the filled/{offerId} write destination scope-checked (wave 145, lane 145Z)" },
   { file: "app/actions/buyer-offer/esign-anchor-plan.ts", fn: "buildEsignAnchorPlanAction", ops: { download: 1 }, gate: /checkFormPathsInScope\(/, why: "anchor plan read, scope-checked" },
 ]
 {
@@ -410,13 +422,19 @@ const DOORS: Array<{ file: string; fn: string; ops: Record<string, number>; gate
   const sa = stripComments(raw("app/actions/superadmin/platform-form-packets.ts"))
   check("B3 the catalogue writer is reached only after requireSuperadmin()", /requireSuperadmin\(\)/.test(sa) && sa.indexOf("requireSuperadmin()") < sa.indexOf("registerPlatformPacket("))
   // TTL — no long-lived URL minted or persisted for the bucket
-  const TTL_CONST: Record<string, number> = { FORM_PACKET_PREVIEW_TTL_SECONDS: 900, PLATFORM_PACKET_PREVIEW_TTL_SECONDS: 900, FORM_URL_TTL_SECONDS: 60 * 60 * 24 * 365 * 10 }
+  // RE-ASSERTED (wave 145, lane 145Z): FORM_URL_TTL_SECONDS was pinned to the 10-year value the FormWizard USED to import
+  // (DOC_URL_TTL_SECONDS) — a waypoint the outside-lane fix (lane 145A item 3) moves. The alias's value is now DERIVED from
+  // whatever constant the wizard imports under that name, read from the code's own exports.
+  const WIZARD_TTL_SOURCES: Record<string, number> = { FORM_PACKET_PREVIEW_TTL_SECONDS, DOC_URL_TTL_SECONDS }
+  const wizardTtlName = /import \{[^}]*\b(\w+) as FORM_URL_TTL_SECONDS\b/.exec(raw("app/components/form-wizard/FormWizard.tsx"))?.[1] ?? null
+  const TTL_CONST: Record<string, number> = { FORM_PACKET_PREVIEW_TTL_SECONDS, PLATFORM_PACKET_PREVIEW_TTL_SECONDS: 900, ...(wizardTtlName && wizardTtlName in WIZARD_TTL_SOURCES ? { FORM_URL_TTL_SECONDS: WIZARD_TTL_SOURCES[wizardTtlName] } : {}) }
   const ttlOf = (expr: string): number | null => { const e = expr.trim(); if (e in TTL_CONST) return TTL_CONST[e]; if (/^[\d\s*]+$/.test(e)) return e.split("*").reduce((a, x) => a * Number(x.trim()), 1); return null }
   const signs = ops.filter((o) => o.op === "createSignedUrl").map((o) => { const after = o.src.slice(o.index); const m = /createSignedUrl\(\s*[^,]+,\s*([^)]+)\)/.exec(after); return { o, ttl: m ? ttlOf(m[1]) : null, expr: m?.[1] ?? "?" } })
-  check("B3 the TTL constants the census evaluates are the code's own (positive: FORM_PACKET_PREVIEW_TTL_SECONDS = 900)", FORM_PACKET_PREVIEW_TTL_SECONDS === 900 && /import \{ DOC_URL_TTL_SECONDS as FORM_URL_TTL_SECONDS \}/.test(raw("app/components/form-wizard/FormWizard.tsx")) === (TTL_CONST.FORM_URL_TTL_SECONDS > 0))
+  check("B3 the TTL constants the census evaluates are the code's own (positive: FORM_PACKET_PREVIEW_TTL_SECONDS = 900; the wizard's FORM_URL_TTL_SECONDS alias resolves to a known constant)", FORM_PACKET_PREVIEW_TTL_SECONDS === 900 && wizardTtlName !== null && (TTL_CONST.FORM_URL_TTL_SECONDS ?? 0) > 0, `wizard alias source: ${wizardTtlName ?? "none"}`)
   const longLived = signs.filter((s) => s.ttl === null || s.ttl > 3600)
-  // RATCHET: the FormWizard's own-folder links use DOC_URL_TTL_SECONDS (10 years) — outside this lane's domain; may only shrink.
-  const KNOWN_LONG_TTL = new Set(["app/components/form-wizard/FormWizard.tsx:loadStep2", "app/components/form-wizard/FormWizard.tsx:handleUpload"])
+  // RATCHET (shrink-only): the FormWizard's own-folder links used DOC_URL_TTL_SECONDS (10 years). SHRUNK TO EMPTY in wave 145
+  // (lane 145Z — lane 145A Outside-lane 3): the wizard now mints the 15-minute preview TTL. Nothing may be re-added.
+  const KNOWN_LONG_TTL = new Set<string>([])
   const newLong = longLived.filter((s) => !KNOWN_LONG_TTL.has(`${s.o.file}:${s.o.fn}`))
   console.log(`    (published) signed-URL TTLs: ${signs.map((s) => `${s.o.fn}=${s.ttl ?? s.expr}`).join(" · ")} — long-lived (> 1 h): ${longLived.map((s) => `${s.o.file}:${s.o.fn}`).join(", ") || "none"} (known outside-lane: ${KNOWN_LONG_TTL.size})`)
   check("B3 no NEW door mints a link that outlives one hour (the two FormWizard own-folder links are a published outside-lane ratchet)", newLong.length === 0, newLong.map((s) => `${s.o.file}:${s.o.fn}=${s.expr}`).join(", "))
@@ -427,7 +445,9 @@ const DOORS: Array<{ file: string; fn: string; ops: Record<string, number>; gate
   const route = stripComments(raw("app/api/admin/transaction-forms/route.ts"))
   check("B3 the library route mints every packet link per view through the ONE door (issueTenantPacketUrl), and never writes pdf_url", /issueTenantPacketUrl\(/.test(route) && !/update\(\{\s*pdf_url/.test(route))
   // THE SEAT DOOR: a door that builds its FormPathActor from a raw users read instead of resolvePacketActor. RATCHET (outside-lane).
-  const KNOWN_RAW_ACTOR_DOORS = new Set(["app/actions/buyer-offer/prefill-storage-form.ts", "app/actions/buyer-offer/esign-anchor-plan.ts", "app/actions/buyer-offer/submit-for-signature.ts", "app/actions/listings-kernel.ts"])
+  // SHRUNK TO EMPTY in wave 145 (lane 145Z — lane 145A Outside-lane 2): all four doors resolve the actor through
+  // resolvePacketActor. Shrink-only — nothing may be re-added.
+  const KNOWN_RAW_ACTOR_DOORS = new Set<string>([])
   const scopeCallers = [...walk("app"), ...walk("lib")].filter((f) => f !== "lib/forms/form-path-scope.ts" && /checkFormPathsInScope\(/.test(stripComments(raw(f))))
   const rawActorDoors = scopeCallers.filter((f) => !/resolvePacketActor\(/.test(stripComments(raw(f))))
   const newRaw = rawActorDoors.filter((f) => !KNOWN_RAW_ACTOR_DOORS.has(f))

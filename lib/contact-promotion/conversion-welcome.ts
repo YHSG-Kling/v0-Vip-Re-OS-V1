@@ -175,6 +175,7 @@ import { resolveWelcomeManagers, welcomeJourneyFor } from "@/lib/kernel/client-w
 import { grantPortalAccessForPromotedContact } from "./portal-access"
 import { ensureWelcomeAvatarVideo, type WelcomeAvatarVideoReason } from "./welcome-avatar-video"
 import type { WelcomeOrigin } from "./welcome-situation"
+import { applyTenantScope, platformScope } from "@/lib/kernel/tenant-scope"
 
 export type { WelcomeOrigin } from "./welcome-situation"
 
@@ -620,7 +621,7 @@ export async function holdWelcomeForException(
  */
 export async function releaseApprovedWelcomeExceptions(
   svc: { from: (t: string) => any },
-  opts: { now?: Date; windowDays?: number; limit?: number; brokerageId?: string | null },
+  opts: { now?: Date; windowDays?: number; limit?: number },
   /** THE SWEEPER'S survivor call (the cron passes lib/kernel/client-welcome.ts ensureClientWelcome) — this module keeps exactly one
    *  call site of the survivor (deliverConversionWelcome), so the release is the sweeper's own send, never a third path. */
   deps: { ensureWelcome: (contact: { id: string; brokerageId: string; contactType: string | null; firstName: string | null; lastName: string | null }) => Promise<{ state: string; reason?: string | null }> },
@@ -629,9 +630,15 @@ export async function releaseApprovedWelcomeExceptions(
   const out = { examined: 0, released: 0, results: [] as Array<{ contactId: string; outcome: string; reason?: string | null }>, error: null as string | null }
   try {
     const since = new Date(now.getTime() - (opts.windowDays ?? 14) * 86_400_000).toISOString()
-    let q = svc.from("approval_items").select("id, brokerage_id, item_id, reviewed_at")
-      .eq("item_type", WELCOME_EXCEPTION_ITEM_TYPE).eq("status", "approved").gte("reviewed_at", since)
-    if (opts.brokerageId) q = q.eq("brokerage_id", opts.brokerageId)
+    // PLATFORM SCOPE, WRITTEN DOWN (lane 145Z — test:conditional-tenant-predicate): this is the cron sweeper's cross-tenant
+    // read. The optional `brokerageId` narrowing it carried (`if (opts.brokerageId) q = q.eq(…)`) had NO caller and made an
+    // absent id mean "every tenant" — the conflation lib/kernel/tenant-scope.ts exists to end; it is removed, not kept as a
+    // door. Every item is then read and released under its OWN brokerage_id (readWelcomeState / ensureWelcome below).
+    const q = applyTenantScope(
+      svc.from("approval_items").select("id, brokerage_id, item_id, reviewed_at")
+        .eq("item_type", WELCOME_EXCEPTION_ITEM_TYPE).eq("status", "approved").gte("reviewed_at", since),
+      platformScope("the welcome sweeper (/api/cron/intro-video-email-backfill, CRON_SECRET verified at the route) releases approved welcome exceptions across every tenant; each item is released under its own brokerage_id"),
+    )
     const { data, error } = await q.order("reviewed_at", { ascending: true }).limit(Math.max(1, Math.min(opts.limit ?? 50, 200)))
     if (error) return { ...out, error: `approval_items read refused: ${error.message ?? "unknown"} — nothing released` }
     // Lazy: the sweeper is the only caller, and the converters' module graph never needs the welcome-state reader.

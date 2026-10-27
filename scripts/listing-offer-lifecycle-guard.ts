@@ -520,7 +520,11 @@ async function main() {
     /MLS Live — planned/.test(code("app/components/dashboard/listings/lifecycle/stage-timeline.tsx")) && /MLS Live — verified/.test(code("app/components/dashboard/listings/lifecycle/stage-timeline.tsx")) && /Listing agreement executed/.test(code("app/components/dashboard/listings/lifecycle/stage-timeline.tsx")) && /setSaveError\(result\.error/.test(code("app/components/dashboard/listings/lifecycle/stage-timeline.tsx"))
     && /computeDaysOnMarketForListing\(listing\)/.test(code("app/components/dashboard/listings/lifecycle/stage-timeline.tsx")) && /dom\.basis === "verified"/.test(code("app/components/dashboard/listings/lifecycle/stage-timeline.tsx")))
   check("the compliance loop reads the planned date through the ONE resolver and records its basis; the recordable-events card collects it at the agreement signature",
-    /resolveMlsLiveDates\(/.test(lcl) && /mls_start_date_basis:\s*"planned"/.test(lcl) && /key: "plannedMlsLiveDate"/.test(code("lib/listing-lifecycle/recordable-events.ts")) && /plannedMlsLiveDate:\s*str\("plannedMlsLiveDate"\)/.test(code("app/actions/seller-listing/record-lifecycle-event.ts")))
+    // RE-ASSERTED (wave 145, lane 145Z): the card's KEY was pinned literally ("plannedMlsLiveDate"); lane 145B's Outside-lane
+    // 12 renamed it to the agreement's own term (sellerRequestedMlsLiveDate). The RULE — the card collects the date and
+    // the recorder reads THAT key — is asserted on whichever key the card declares (derived, not restated).
+    /resolveMlsLiveDates\(/.test(lcl) && /mls_start_date_basis:\s*"planned"/.test(lcl)
+    && ((k) => !!k && new RegExp(`${k}:\\s*str\\("${k}"\\)`).test(code("app/actions/seller-listing/record-lifecycle-event.ts")))(/key: "(sellerRequestedMlsLiveDate|plannedMlsLiveDate)"/.exec(code("lib/listing-lifecycle/recordable-events.ts"))?.[1]))
   check("m796 exists, is honestly stamped, adds the four columns and the three CHECKs; its vocabularies EQUAL the code's (derived, never restated) — 'an actual date cannot exist without its evidence' is a table CHECK",
     /^-- (WRITTEN, NOT APPLIED \(wave 143, lane 143A\)|── APPLIED LIVE )/.test(m796)
     && ["mls_live_date_actual", "mls_live_date_basis", "go_live_confirmed_source", "mls_live_timezone"].every((c) => new RegExp(`ADD COLUMN IF NOT EXISTS ${c}\\b`).test(m796))

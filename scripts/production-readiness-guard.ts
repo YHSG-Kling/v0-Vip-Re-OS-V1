@@ -517,6 +517,10 @@ console.log(`    pending-lane doorless rulings: ${Object.entries(DOORLESS_BY_DES
 const DOOR_FRONTS: Record<string, string[]> = {
   person_identities: ["lib/contacts/contact-brief.ts", "lib/kernel/crm.ts", "lib/contact-pipeline/contact-capture.ts"],
   person_identity_evidence: ["lib/contacts/contact-brief.ts", "lib/kernel/crm.ts", "lib/contact-pipeline/contact-capture.ts"],
+  // wave 145 (lane 145Z; m866, lane 145G contract C4): the humanized final's version ledger is persisted by
+  // lib/marketing/humanize-final.ts; a PERSON reaches it through the lead-magnet publish door (app/actions/lead-magnets-actions.ts
+  // → publishLeadMagnet records the approved final that went live) — the kernel front named here, never discovered.
+  distribution_finals: ["lib/kernel/lead-magnets.ts"],
 }
 const doors = new Map(windowTables.map((t) => [t, doorOf(tableUse.get(t)!, userLayer, importEdges, DOOR_FRONTS[t] ?? [])]))
 const doorless = windowTables.filter((t) => tableUse.get(t)!.length > 0 && !doors.get(t))

@@ -50,6 +50,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 import { resolveLedTeamId, resolveUserTeam } from "@/lib/kernel/resolve-user-team"
 import { listPdfFields } from "./pdf-form-fill"
 
@@ -88,7 +89,8 @@ function formLibrarySeatRefusal(u: { user_type?: string | null; status?: string 
   if (!u) return "your account could not be found"
   if (u.deleted_at) return "your account was removed"
   if ((u.status ?? "active") !== "active") return `your account is ${u.status} — form packets are closed to it`
-  if (u.platform_role === "superadmin") return null
+  // THE ONE platform discriminator (lib/platform/platform-staff-roster.ts — test:platform-discriminator), never a re-spelling.
+  if (isPlatformSuperadminIdentity(u.user_type ?? null, u.platform_role ?? null)) return null
   if (!FORM_LIBRARY_SEAT_USER_TYPES.has(String(u.user_type ?? ""))) return "form packets are for the brokerage's staff seats (agents, team leads, transaction coordinators and the brokerage's admins) — not for this account type"
   return null
 }

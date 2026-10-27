@@ -527,9 +527,23 @@ console.log("\n[E · registration, derived vocabularies, wiring]")
   // generated FK cache that carries brokerage_id; the exclusions are the families themselves. Money (commission_*,
   // agent_commissions) is MEANT to stay (m765's rationale: money never crosses tenants); the remainder is deal /
   // contact state that the owner has not yet ruled on — see lane 143G notes "Still open".
-  const FROZEN_UNMOVED_FK_CHILDREN = 286
+  // RAISED DELIBERATELY 286 → 288 (wave 145, lane 145Z), naming each: two tables born AFTER the freeze carry an FK onto a moved
+  // family and are NOT moved by RULING — client_agreement_fees (m859; explicit_transfer, a term of the client's agreement with
+  // the source brokerage) and protected_research_attributes (m864; derived_readonly, self-declared by its firewalled research
+  // store). The third new child, book_projects (m867), became a moved FAMILY instead (it follows its landing page). Owner
+  // ruling 24 ("do NOT move all 286 … classify each") makes the rule below the binding one: every unmoved child has a class.
+  const FROZEN_UNMOVED_FK_CHILDREN = 288
   const debt = unmovedChildren(famSet)
   check(`FK-closure debt does not GROW: ${debt.length} unmoved child tables (frozen ceiling ${FROZEN_UNMOVED_FK_CHILDREN}; lower the ceiling when a family is added — a count that moves is the finding)`, debt.length <= FROZEN_UNMOVED_FK_CHILDREN, `grew by ${debt.length - FROZEN_UNMOVED_FK_CHILDREN}: ${debt.slice(0, 8).join(",")}`)
+  {
+    // RULING 24: every unmoved child carries a ruling-24 class — the rail's classification, or (for a firewalled store that no
+    // other module may name) the store's own self-declared class. Positive control: an invented child table reads unclassified.
+    const { FK_CHILD_TRANSFER_CLASSIFICATION } = await import("../lib/kernel/brokerage-transfer")
+    const { PROTECTED_RESEARCH_TRANSFER_CLASS } = await import("../lib/enrichment/protected-research-store")
+    const classOf = (t: string) => FK_CHILD_TRANSFER_CLASSIFICATION[t]?.cls ?? (t === PROTECTED_RESEARCH_TRANSFER_CLASS.table ? PROTECTED_RESEARCH_TRANSFER_CLASS.cls : null)
+    const unclassified = debt.filter((t) => !classOf(t))
+    check(`every unmoved FK-closure child carries a ruling-24 class (${debt.length - unclassified.length}/${debt.length})`, unclassified.length === 0 && classOf("zz_invented_child") === null, unclassified.slice(0, 12).join(","))
+  }
   console.log(`    (published) FK-closure census: ${Object.keys(SCHEMA_FK_MAP).filter((t) => (SCHEMA_SNAPSHOT[t] ?? []).includes("brokerage_id")).length} tables in the FK cache carry brokerage_id; ${famSet.size} are moved families; ${debt.length} are unmoved children of a moved family; ${debt.filter((t) => /commission/.test(t)).length} of those are commission money that stays by design.`)
   // (3) THE DEBT HAS ACCOUNTABLE OWNERS (wave 144, lane 144I; owner ruling 18 — "every workflow exception has an
   // accountable registered owner"). Which unmoved children are history vs state is still the OWNER's ruling

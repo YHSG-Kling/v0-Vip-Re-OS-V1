@@ -1,7 +1,8 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
 import { CalendarEventType } from '@/lib/kernel/calendar-types'
-import { processKernelEvent } from '@/lib/kernel'
+// PURE CUT (wave 145, lane 145Z — test:proxy-graph-budget): the direct module, not the lib/kernel barrel (same export).
+import { processKernelEvent } from '@/lib/kernel/notification-engine'
 import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 
 // ── The touch cap, in ONE place ───────────────────────────────────────────────

@@ -27,6 +27,9 @@ interface ComingSoonCommandCardProps {
   listingStatus: string
   mediaApproved: boolean
   transactionId?: string | null
+  /** The seller-agreed MLS live date (listings.go_live_date, from the executed listing agreement — owner ruling 2).
+   *  When set it replaces the slider's default; the slider is only a fallback when no date is recorded. */
+  plannedMlsLiveDate?: string | null
 }
 
 type Phase = "prep" | "active" | "complete"
@@ -53,6 +56,7 @@ export function ComingSoonCommandCard({
   listingStatus,
   mediaApproved,
   transactionId,
+  plannedMlsLiveDate,
 }: ComingSoonCommandCardProps) {
   const phase = computePhase(currentStage)
 
@@ -61,7 +65,13 @@ export function ComingSoonCommandCard({
   const [isGenerating, startGenerating] = useTransition()
   const [isSendingEmail, startSendingEmail] = useTransition()
 
-  const [daysUntilLaunch, setDaysUntilLaunch] = useState(7)
+  // Owner ruling 2 (wave 145, lane 145Z): the default is the seller-agreed date, not a constant week.
+  const agreedDays = (() => {
+    if (!plannedMlsLiveDate) return null
+    const t = new Date(`${String(plannedMlsLiveDate).slice(0, 10)}T12:00:00`).getTime()
+    return Number.isNaN(t) ? null : Math.max(0, Math.ceil((t - Date.now()) / 86_400_000))
+  })()
+  const [daysUntilLaunch, setDaysUntilLaunch] = useState(agreedDays ?? 7)
   const [socialPost, setSocialPost] = useState("")
   const [emailBody, setEmailBody] = useState("")
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(["facebook", "instagram"])
@@ -105,7 +115,7 @@ export function ComingSoonCommandCard({
     startGenerating(async () => {
       const result = await generateComingSoonContent({
         agentId: userId,
-        listingAddress,
+        listingId,
         daysUntilLaunch,
         launchDateStr,
       })
@@ -121,7 +131,9 @@ export function ComingSoonCommandCard({
 
   function handleActivate() {
     startActivating(async () => {
-      const result = await activateComingSoon({ listingId, userId, brokerageId, role: resolvedRole })
+      // Owner ruling 1 (wave 145, lane 145Z — lane 145B Outside-lane 2): the person-reviewed copy rides the activation,
+      // which REFUSES it when it names the street without the seller's authorization AND the attested MLS rule.
+      const result = await activateComingSoon({ listingId, userId, brokerageId, role: resolvedRole, creative: { socialPost, emailBody } })
 
       if (!result.success) {
         showToast("error", result.error ?? "Activation failed.")

@@ -317,8 +317,9 @@ export interface FeatureAccessCheck {
 // ─── EDUCATION & PORTAL ───────────────────────────────────────────────────────
 
 // TOMBSTONE (orphan doctrine §1.3, 2026-08-31): EducationDeliveryConfig deleted — the
-// age-segment delivery matrix it documented lives in lib/kernel/education.ts:129 as
-// DeliveryConfig (the survivor: DELIVERY_MATRIX + getEducationDelivery consume it), with a
+// age-segment delivery matrix it documented lived in lib/kernel/education.ts as
+// DeliveryConfig. Wave 145 (lane 145H, owner ruling 18): the age matrix is itself tombstoned — the survivor is now
+// DEFAULT_DELIVERY + applyStatedAccessibility (lib/kernel/education.ts) reading the person's STATED preferences, with a
 // richer, different shape (primaryFormat/secondaryFormat, readingLevel 'simplified' not
 // 'simple', maxLessonMinutes, autoPlay, quiz gating). Its one extra idea, preferredChannel,
 // was NOT merged: the live system deliberately answers the channel from the CONTACT's own

@@ -24,6 +24,19 @@ type Svc = { from: (table: string) => any }
 
 const TABLE = "protected_research_attributes"
 
+/**
+ * The store's own transfer class (owner ruling 24 × ruling 12 — wave 145, lane 145Z). The brokerage-transfer rail must NOT name
+ * this table (the firewall above), so the store declares its class itself: derived_readonly — vendor-modeled research held under
+ * the SOURCE tenant's access control and provenance; never moved or copied across accounts; the adopting tenant re-enriches
+ * gap-only under its own provider account. scripts/transfer-classification-guard.ts counts it in the FK-child census.
+ * @proofSeam read only by scripts/transfer-classification-guard.ts (no runtime reader — the rail never touches the table).
+ */
+export const PROTECTED_RESEARCH_TRANSFER_CLASS = Object.freeze({
+  table: TABLE,
+  cls: "derived_readonly" as const,
+  rule: "RESEARCH-ONLY PROTECTED ATTRIBUTES (ruling 12) — vendor-modeled, held under the source tenant's access control and provenance for authorized research; never moved or copied across accounts (the target re-enriches gap-only under its own provider account); self-declared by its firewalled store",
+})
+
 export interface ProtectedResearchWrite {
   ok: boolean
   inserted: number

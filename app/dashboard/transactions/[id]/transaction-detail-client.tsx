@@ -5,6 +5,7 @@ import { useState, useTransition, useEffect } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { ClosingCostActualInput } from "./closing-cost-actual-input"
+import { TaxProrationCard } from "./tax-proration-card"
 import { RepairCoPilotPanel } from "@/app/components/features/transactions/repair-copilot-panel"
 import { resolveInterventionAction, rescanDealHealthAction } from "@/app/actions/deal-health-actions"
 import { analyzeTransactionHealth } from "@/app/actions/ai-transaction-coordinator"
@@ -3167,6 +3168,8 @@ export function TransactionDetailClient({
                   </div>
                 </CardContent>
               </Card>
+              {/* WAVE 145 (lane 145Z — m873): the settlement agent's proration instruction and the line it produces. */}
+              <TaxProrationCard transactionId={transaction.id} />
             </TabsContent>
 
             {/* Deposits Tab */}

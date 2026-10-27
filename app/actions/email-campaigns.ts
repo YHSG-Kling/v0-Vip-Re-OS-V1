@@ -670,6 +670,21 @@ export async function prepareListingEmailCampaign(params: {
 
     const listing = transaction.listings
 
+    // OWNER RULING 1 (wave 145, lane 145Z — lane 145B Outside-lane 4): a Coming Soon campaign prints only the line the
+    // address rule allows — subject, hero alt text and body. A person's reviewed body is checked in REFUSE mode; the
+    // generated body and subject are scrubbed in REDACT mode. Fail closed inside the rule.
+    const csListing = listing as { id: string; brokerage_id: string; address: string | null; city: string | null; state: string | null; zip: string | null }
+    const { resolveComingSoonCreativeAddress, guardComingSoonCreativeText } = await import("@/lib/marketing/listing-public-address")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const comingSoon = params.campaignType === "coming_soon"
+      ? await resolveComingSoonCreativeAddress({ policyClient: createServiceClient() as any, termsClient: createServiceClient() as any, listing: csListing })
+      : null
+    if (comingSoon && params.bodyOverride?.trim()) {
+      const g = guardComingSoonCreativeText(params.bodyOverride, csListing, comingSoon, "refuse")
+      if (!g.ok) return { success: false, error: g.findings.join(" ") }
+    }
+    const publicAddress: string = comingSoon ? comingSoon.addressLine : String(listing.address ?? "")
+
     // MEDIA PAIRING (owner rule: nothing ships bare) — a listing email
     // without the listing's photo is a text blast. Hero (is_primary first,
     // else primary_photo_url, else the first photo by MLS order) rides at the
@@ -693,14 +708,14 @@ export async function prepareListingEmailCampaign(params: {
       (listing as any).primary_photo_url ??
       photoRows.find((p) => p.file_url)?.file_url ?? null
     const heroHtml = heroUrl
-      ? `<img src="${heroUrl}" alt="${String(listing.address ?? "Listing").replace(/"/g, "&quot;")}" style="width:100%;max-width:640px;border-radius:8px;display:block;margin:0 auto 16px;" />`
+      ? `<img src="${heroUrl}" alt="${String(publicAddress || "Listing").replace(/"/g, "&quot;")}" style="width:100%;max-width:640px;border-radius:8px;display:block;margin:0 auto 16px;" />`
       : ""
 
     const reviewedBody = params.bodyOverride?.trim()
     let generatedSubject: string | undefined
     let generatedBody: string | undefined
     if (reviewedBody) {
-      generatedSubject = `${LISTING_CAMPAIGN_SUBJECT[params.campaignType]}: ${listing.address}`
+      generatedSubject = `${LISTING_CAMPAIGN_SUBJECT[params.campaignType]}: ${publicAddress}`
       generatedBody = plainTextToEmailHtml(reviewedBody)
     } else {
       const emailContent = await generateEmail({
@@ -714,6 +729,10 @@ export async function prepareListingEmailCampaign(params: {
       }
       generatedSubject = emailContent.data?.subject
       generatedBody = emailContent.data?.generated_content
+      if (comingSoon) {
+        generatedSubject = generatedSubject ? guardComingSoonCreativeText(generatedSubject, csListing, comingSoon, "redact").text : generatedSubject
+        generatedBody = generatedBody ? guardComingSoonCreativeText(generatedBody, csListing, comingSoon, "redact").text : generatedBody
+      }
     }
 
     const recipients = await getListingCampaignRecipients(params.transactionId, params.campaignType, listing)
@@ -722,7 +741,7 @@ export async function prepareListingEmailCampaign(params: {
     if (!brokerageId) {
       return { success: false, error: "Could not resolve brokerage for campaign" }
     }
-    const emailSubject = generatedSubject || `New Listing: ${listing.address}`
+    const emailSubject = generatedSubject || `New Listing: ${publicAddress}`
 
     // email_campaigns: subject_line NOT NULL; campaign_format (CHECK one_off|drip|...) replaces
     // phantom campaign_type; audience_filter jsonb replaces phantom target_segment.

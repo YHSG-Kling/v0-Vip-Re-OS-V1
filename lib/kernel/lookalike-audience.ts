@@ -170,7 +170,9 @@ async function enrichSeedOnlinePresence(
       out.costUsd += r.cost
       if (r.indicators) {
         out.answered += 1
-        const w = await persistRealEstateIndicators(svc, { contactId: m.contactId, brokerageId }, r.indicators, r.provenance)
+        // Ruling 12 (wave 145, lane 145F Outside-lane 1 — wired by lane 145Z): the SAME paid row's protected fields go to the
+        // segregated research store through the one writer; never onto the contact, never a targeting input.
+        const w = await persistRealEstateIndicators(svc, { contactId: m.contactId, brokerageId }, r.indicators, r.provenance, { protectedResearch: r.protectedResearch ?? [] })
         if (w.ok && w.wrote) {
           out.persisted += 1
           m.contact.enrichment_profile = { ...((m.contact.enrichment_profile as Record<string, unknown> | null) ?? {}), [REAL_ESTATE_INDICATORS_KEY]: { provider: "versium", ...r.indicators } }

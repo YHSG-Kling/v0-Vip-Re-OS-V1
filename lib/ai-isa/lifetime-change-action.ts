@@ -59,7 +59,9 @@ const VALUE_CARD_TYPES = [EQUITY_CHECK_UPDATE_TYPE, "equity_trigger"] as const
 /** The client-education module that teaches refinancing for a lifetime client (lib/education/client-education-curriculum.ts). */
 const REFINANCE_EDUCATION_MODULE = "persona_lifetime_equity"
 
-type LifetimePlaybookStep = "equity_estimate" | "refinance_education" | "professional_referral" | "market_review" | "listing_consultation"
+// §6 (wave 145, lane 145Z): the listing-consultation step speaks the ONE spelling of a listing consultation — the calendar's
+// "listing_appointment" (lib/kernel/calendar-types.ts folds the retired "listing_consultation" onto it).
+type LifetimePlaybookStep = "equity_estimate" | "refinance_education" | "professional_referral" | "market_review" | "listing_appointment"
 
 interface LifetimePlaybookItem {
   step: LifetimePlaybookStep
@@ -118,7 +120,7 @@ function lifetimePlaybookFor(kind: LifeChangeKind, a: { hasEstimate: boolean; ha
     })
   }
   out.push({ step: "market_review", available: a.hasAgent, why: "a market review of their home and neighbourhood with their agent", via: "the market_update experience, chosen by the arbiter" })
-  if (kind !== "refinance") out.push({ step: "listing_consultation", available: a.hasAgent, why: "a no-pressure listing consultation if they are thinking about selling", via: "the Listing Concierge (returning-customer re-engagement / listing appointment)" })
+  if (kind !== "refinance") out.push({ step: "listing_appointment", available: a.hasAgent, why: "a no-pressure listing consultation if they are thinking about selling", via: "the Listing Concierge (returning-customer re-engagement / listing appointment)" })
   return out
 }
 
@@ -139,8 +141,8 @@ function composeEquityCheckCard(a: { firstName: string | null; estimate: Lifetim
   if (steps.has("refinance_education") || steps.has("professional_referral")) {
     lines.push("Thinking about refinancing or borrowing against your equity? A short guide in your learning center explains the costs and the break-even, and your agent can introduce you to a licensed mortgage professional of your choosing — only a lender can quote a rate or confirm what you qualify for, and rates change until they are locked.")
   }
-  if (steps.has("market_review") || steps.has("listing_consultation")) {
-    lines.push(steps.has("listing_consultation")
+  if (steps.has("market_review") || steps.has("listing_appointment")) {
+    lines.push(steps.has("listing_appointment")
       ? "Your agent can walk you through a market review — or a no-pressure listing consultation if you are thinking about selling."
       : "Your agent can walk you through a market review of your home and neighbourhood.")
   }

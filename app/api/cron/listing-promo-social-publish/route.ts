@@ -86,6 +86,7 @@ interface PromoRow {
     address:        string | null
     city:           string | null
     state:          string | null
+    zip?:           string | null
     list_price:     number | null
   } | null
 }
@@ -101,7 +102,7 @@ export async function GET(req: NextRequest) {
     .select(`
       id, brokerage_id, listing_id, agent_id, video_project_id, event_type, created_at,
       project:ai_video_projects!listing_promo_videos_video_project_id_fkey(video_url, thumbnail_url, status),
-      listing:listings!listing_promo_videos_listing_id_fkey(address, city, state, list_price)
+      listing:listings!listing_promo_videos_listing_id_fkey(address, city, state, zip, list_price)
     `)
     .eq("status", "rendering")
     .not("video_project_id", "is", null)
@@ -145,8 +146,20 @@ export async function GET(req: NextRequest) {
 
     // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usdOrEmpty
     const usd = usdOrEmpty
-    const address  = r.listing?.address ?? ""
-    const cityState = [r.listing?.city, r.listing?.state].filter(Boolean).join(", ")
+    let address  = r.listing?.address ?? ""
+    let cityState = [r.listing?.city, r.listing?.state].filter(Boolean).join(", ")
+    // OWNER RULING 1 (wave 145, lane 145Z — lane 145B Outside-lane 6): a coming_soon promo caption prints only the line
+    // the address rule allows (the line already carries the city, so the separate city/state is dropped). The row's own
+    // brokerage pins both reads; fail closed inside the rule.
+    if (r.event_type === "coming_soon" && r.listing) {
+      const { resolveComingSoonCreativeAddress } = await import("@/lib/marketing/listing-public-address")
+      const resolved = await resolveComingSoonCreativeAddress({
+        policyClient: svc as any, termsClient: svc as any,
+        listing: { id: r.listing_id, brokerage_id: r.brokerage_id, address: r.listing.address, city: r.listing.city, state: r.listing.state, zip: r.listing.zip ?? null },
+      })
+      address = resolved.addressLine
+      cityState = ""
+    }
     const price    = usd(r.listing?.list_price)
     // TOMBSTONE (§1/§6): the private `hookByEvent` map that stood here — three
     // entries plus a "New Listing" default — was a SECOND spelling of

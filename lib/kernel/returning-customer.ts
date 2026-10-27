@@ -133,6 +133,10 @@ export function summarizePriorDeals(txns: PriorDealTxn[], contactId: string, now
 export function reEngagementManager(signalType: string | null | undefined, memory: DealMemory): ManagerKey {
   const s = (signalType ?? "").toLowerCase()
   if (/buy|search|criteria|property|showing|tour/.test(s)) return "shopping_agent"
+  // OWNER RULING 14 (wave 145, lane 145F Outside-lane 3 — wired by lane 145Z): a refinance / equity signal is the SPHERE's —
+  // the lifetime change action (lib/ai-isa/lifetime-change-action.ts) runs the in-app equity check + homeowner playbook — never a
+  // listing pitch. Tested BEFORE the seller pattern, which also matches "equity" / "value".
+  if (/refinanc|equity/.test(s)) return "sphere_of_influence"
   if (/sell|list|cma|valuation|equity|value/.test(s)) return "listing_concierge"
   if (memory.role === "buyer") return "shopping_agent"
   if (memory.role === "seller") return "listing_concierge"
@@ -275,6 +279,10 @@ export async function runReturningCustomerReengagement(
     signal_data: Record<string, unknown> | null
   }>) {
     res.scanned += 1
+    // The LIFETIME CHANGE ACTION already opened this signal's governed moment (ruling 14, lane 145F — its stamp
+    // signal_data.lifetime_action.moment_id): the relationship is in the Sphere's playbook, so this loop never re-engages it.
+    const lifetimeAction = (sig.signal_data as { lifetime_action?: { moment_id?: string | null } } | null)?.lifetime_action
+    if (lifetimeAction?.moment_id) { res.deduped += 1; continue }
     // A refused consume leaves the signal unprocessed, so the next scan re-reads it
     // (harmless), but it is logged instead of vanishing.
     const markProcessed = async () => {

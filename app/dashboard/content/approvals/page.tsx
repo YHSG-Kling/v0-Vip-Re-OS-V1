@@ -14,6 +14,7 @@ import {
 } from "@/app/actions/content-approval-workflow"
 import { createClient } from "@/lib/supabase/client"
 import { ApprovalToolsPanel } from "./approval-tools-panel"
+import { FinalVersionsPanel } from "./final-versions-panel"
 
 interface ApprovalStats {
   total_decisions: number
@@ -160,6 +161,10 @@ export default function ContentApprovalsPage() {
             <CheckCircle2 className="h-4 w-4 mr-1.5" />
             History
           </TabsTrigger>
+          <TabsTrigger value="finals">
+            <FileText className="h-4 w-4 mr-1.5" />
+            Final versions
+          </TabsTrigger>
           <TabsTrigger value="tools">
             <FileText className="h-4 w-4 mr-1.5" />
             Routing tools
@@ -245,6 +250,11 @@ export default function ContentApprovalsPage() {
               </div>
             </Card>
           )}
+        </TabsContent>
+
+        {/* WAVE 145 (lane 145Z — owner ruling 20): the final version of every AI piece, and what actually went out. */}
+        <TabsContent value="finals" className="mt-4">
+          <FinalVersionsPanel />
         </TabsContent>
 
         <TabsContent value="tools" className="mt-4">
