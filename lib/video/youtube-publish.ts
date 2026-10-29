@@ -48,6 +48,7 @@
  * brand prohibits refuses the queue (no approval waives them).
  */
 import { classifyPublicVideo, readVideoAutoPublishPolicy, VIDEO_AUTO_PUBLISH_POLICY_KEY } from "./public-video"
+import { stagedPublicationVerdict } from "./video-staging"
 import { getPublishedPostUrl } from "@/lib/social/get-published-post-url"
 import { finalizeForDistribution, recordDistributionPublication, resolveTenantBrandForFinal, stageDistributionFinal, type TenantBrandForFinal } from "@/lib/marketing/humanize-final"
 
@@ -127,6 +128,11 @@ export async function queueYouTubeAutoPublish(svc: any, videoId: string, deps: {
 
     const verdict = classifyPublicVideo(p)
     if (!verdict.public) return { queued: false, reason: `not a public marketing video: ${verdict.reason}` }
+    // WAVE 146 (lane 146F — owner ruling 4): a NON-LISTING video reaches the rail only STAGED — rights + branding checked, the
+    // youtube channel chosen under the tenant's policy, and approved BY the approver the authority hierarchy assigned (C5).
+    // The queue holds only approved public non-personal video; a listing video keeps its own rail (stagedPublicationVerdict).
+    const stagingVerdict = stagedPublicationVerdict(p, "youtube")
+    if (!stagingVerdict.ok) return { queued: false, reason: stagingVerdict.reason }
 
     const policy = await readVideoAutoPublishPolicy(svc, p.brokerage_id)
     if (!policy.readable) return { queued: false, reason: `tenant policy ${VIDEO_AUTO_PUBLISH_POLICY_KEY} unreadable — refusing to publish on a guess: ${policy.reason}` }

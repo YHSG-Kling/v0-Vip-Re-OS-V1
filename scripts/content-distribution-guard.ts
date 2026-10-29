@@ -351,7 +351,12 @@ async function main() {
   section("E · the community / event video door — on the YouTube survivor")
   {
     const TOPIC = "55555555-5555-4555-8555-555555555555", VID = "66666666-6666-4666-8666-666666666666", AGENT = "00000000-0000-4000-8000-0000000000d2"
-    const vid = (o: Record<string, unknown> = {}) => ({ id: VID, brokerage_id: B1, agent_id: AGENT, listing_id: null, marketing_campaign_id: null, title: "Riverbend Fall Festival this Saturday", video_type: "social_reel", audience_type: "customer_facing", usage_intent: "public_marketing", contact_id: null, learning_module_id: null, approval_status: "approved", approved_by: U1, approved_at: day(-1), status: "completed", compliance_status: "passed", video_url: "https://cdn/fest.mp4", script_content: "In today's fast-paced world, the Riverbend Fall Festival returns on Saturday, Nov 1.", video_metadata: {}, ...o })
+    // WAVE 146 (lane 146F — ruling 4): a community reel is a NON-LISTING broadcast video, so the YouTube survivor takes it only
+    // STAGED (rights + branding checked, the youtube channel chosen, the approver assigned) and approved BY that approver. The
+    // fixture now carries the staging record lib/video/video-staging.ts writes; the door's own rule is unchanged, and the
+    // unstaged case is asserted below.
+    const staged = { staging: { version: 1, staged_at: day(-2), playable: { ok: true, basis: "finished + hosted" }, rights: { ok: true, checks: [] }, branding: { ok: true, violations: [], basis: "seam" }, audience: "public_marketing", channels: ["landing_page", "youtube"], approver: { user_ids: [U1], basis: "seam", assigned_at: day(-2) }, blockers: [] } }
+    const vid = (o: Record<string, unknown> = {}) => ({ id: VID, brokerage_id: B1, agent_id: AGENT, listing_id: null, marketing_campaign_id: null, title: "Riverbend Fall Festival this Saturday", video_type: "social_reel", audience_type: "customer_facing", usage_intent: "public_marketing", contact_id: null, learning_module_id: null, approval_status: "approved", approved_by: U1, approved_at: day(-1), status: "completed", compliance_status: "passed", video_url: "https://cdn/fest.mp4", script_content: "In today's fast-paced world, the Riverbend Fall Festival returns on Saturday, Nov 1.", video_metadata: staged, ...o })
     const seed = (items: Array<Record<string, unknown>>, v = vid(), uses = [{ id: "u1", brokerage_id: B1, topic_id: TOPIC, asset_id: VID, asset_type: "situational_reel" }]) => memSupabase({
       approval_items: items, ai_video_projects: [v], content_topic_uses: uses, agents: [{ id: AGENT, brokerage_id: B1, user_id: U1 }],
       social_media_accounts: [{ id: "acct-yt", brokerage_id: B1, agent_id: AGENT, platform: "youtube", is_active: true }], social_posts: [], brokerage_settings: [], marketing_assets: [], distribution_finals: [], notifications: [],
@@ -367,6 +372,9 @@ async function main() {
     check("an approved topic with a video NOT made from it does not publish", !p2.ok && /not made from this topic/.test(p2.reason))
     const p3 = await publishCommunityVideo(input, { client: seed([idea("approved")], vid({ approval_status: "pending_review" })) as never, brand, now: NOW })
     check("a video a person has not approved does not publish", !p3.ok && /not an approved public marketing video/.test(p3.reason))
+    const unstagedDb = seed([idea("approved")], vid({ video_metadata: {} }))
+    const p4 = await publishCommunityVideo(input, { client: unstagedDb as never, brand, now: NOW })
+    check("ruling 4 (wave 146): an approved community reel that was never STAGED does not publish — the rail refuses, nothing queued", !p4.ok && /not staged/.test(p4.reason) && unstagedDb.tables.social_posts.length === 0, JSON.stringify(p4))
     const db = seed([idea("approved")])
     const ok = await publishCommunityVideo(input, { client: db as never, brand, now: NOW })
     const postRow = db.tables.social_posts[0]

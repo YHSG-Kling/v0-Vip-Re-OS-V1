@@ -33,6 +33,7 @@ import { MagnetDraftReview } from "@/app/components/features/lead-magnets/Magnet
 import { QRCodeGenerator } from "@/app/components/features/lead-magnets/QRCodeGenerator"
 import { PerformanceDashboard } from "@/app/components/features/lead-magnets/PerformanceDashboard"
 import { PublishGuideToGbp } from "@/app/components/features/lead-magnets/PublishGuideToGbp"
+import { PromisesPanel } from "./promises-panel"
 import type { CreateLeadMagnetInput } from "@/lib/kernel/lead-magnets"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -263,6 +264,8 @@ export default function LeadMagnetsPage() {
               setView("new")
             }}
           />
+          {/* Wave 146 (146F, ruling 10): what a magnet promised and has not delivered — retry or record a hand delivery. */}
+          <PromisesPanel />
           <MagnetLibrary
             key={refreshKey}
             brokerageId={ctx.brokerageId}

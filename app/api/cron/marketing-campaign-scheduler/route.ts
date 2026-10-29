@@ -75,11 +75,24 @@ export async function GET(request: NextRequest) {
       if (metrics) measureResults.push(metrics)
     }
 
+    // 3. PROMISED LEAD-MAGNET DELIVERABLES (wave 146, lane 146F — owner ruling 10, contract C4): retry every promise whose
+    // back-off elapsed and raise every overdue one to the arbiter (lead_magnet_promise_undelivered). The capture makes the
+    // first attempt; this tick is the retry driver. Each promise is delivered under its own brokerage_id; bounded; the
+    // sweep never throws and its refusals are counted below, never swallowed.
+    const { sweepUndeliveredPromises } = await import("@/lib/lead-magnets/promised-deliverables")
+    const promises = await sweepUndeliveredPromises(svc)
+    if (promises.errors.length > 0) console.error("[marketing-campaign-scheduler] promise sweep:", promises.errors.slice(0, 10).join(" | "))
+
     const summary = {
       candidates_for_launch: ready.length,
       launches_succeeded:    launchResults.filter(r => r.ok).length,
       launches_failed:       launchResults.filter(r => !r.ok).length,
       campaigns_measured:    measureResults.length,
+      promises_examined:     promises.examined,
+      promises_delivered:    promises.delivered,
+      promises_still_open:   promises.stillOpen,
+      promises_escalated:    promises.escalated,
+      promise_errors:        promises.errors.length,
     }
 
     await recordCronSuccessAction({

@@ -1299,33 +1299,37 @@ export async function captureFormSubmission(
     }
   }
 
-  // DELIVER THE MAGNET — generate the deliverable copy the contact asked for (gated, Fair-Housing-safe)
-  // and record it so the enrolled sequence/messaging path ships it. The thing a lead magnet was always
-  // missing: it now actually DELIVERS the guide/report. Best-effort; never blocks the capture.
+  // DELIVER WHAT THE MAGNET PROMISED (wave 146, lane 146F — owner ruling 10, contract C4). The request's promise is RECORDED
+  // first (lib/lead-magnets/promised-deliverables.ts — source form + campaign, the contact + resolved person, the promised
+  // asset, the consent basis, the due time; one promise per request), then delivered: the asset must exist and be approved,
+  // it goes out through a permitted channel (the governed email, the secure portal card), and only a verified delivery is
+  // recorded as delivered — a guide that did not render, a held copy or a refused send is asset_missing / failed, retried by
+  // the sweep and raised to the arbiter (lead_magnet_promise_undelivered). Replaces the runner's deliverMagnet, which wrote
+  // "delivered" before anything was sent (tombstone in lib/marketing/lead-magnet-delivery-runner.ts). Best-effort: the
+  // capture already landed, and a promise that could not even be recorded is said loudly.
   const magnetType = ((form as any).magnet_type ?? "generic_form") as
     "home_valuation" | "buyer_guide" | "seller_guide" | "market_report" | "listing_alert" | "open_house" | "generic_form"
   if (contactId) {
     try {
-      // lead_capture_forms.agent_id FKs agents(id); deliverMagnet's agentUserId is a USERS id (it lands
-      // on compliance_events.actor_user_id and activities.agent_user_id, both FK users). agents.id and
-      // users.id are DISJOINT (CLAUDE.md §3) — handing it the agents.id refused both writes with 23503
-      // on every submission (wave 93 live walk, lane 93D). Cross via agents.user_id.
-      let agentUserId: string | null = null
-      if (form.agent_id) {
-        const { data: formAgent, error: formAgentErr } = await supabase
-          .from("agents").select("user_id").eq("id", form.agent_id).eq("brokerage_id", input.brokerageId).maybeSingle()
-        if (formAgentErr) console.warn("[lead-magnets] form agent lookup refused:", formAgentErr.message)
-        agentUserId = (formAgent as { user_id?: string | null } | null)?.user_id ?? null
-      }
-      const { deliverMagnet } = await import("@/lib/marketing/lead-magnet-delivery-runner")
       // Wave 142: a magnet that DISTRIBUTES a FINISHED BOOK (wave 145: the book's own row — book_projects, read through
-      // loadDistributedBook) delivers that PDF; the deliverable records the magnet + document refs so follow-up can find it.
-      // An unreadable book is said and the booklet path stands in (the capture itself already landed).
+      // loadDistributedBook) promises that book; an unreadable book is said and the GUIDE is what was promised.
       const distributedBook = await loadDistributedBook(supabase as never, input.brokerageId, input.formId, (form as { settings?: Record<string, unknown> | null }).settings ?? null)
-      if (distributedBook.error) console.warn("[lead-magnets] distributed book unreadable — the booklet path delivers instead:", distributedBook.error)
-      await deliverMagnet({ brokerageId: input.brokerageId, contactId, agentUserId, magnetType, magnetId: input.formId, book: leadMagnetBookRefOf({ book: distributedBook.book?.project ?? null }), ctx: { area: data.city ?? null } }, supabase)
+      if (distributedBook.error) console.warn("[lead-magnets] distributed book unreadable — the guide is promised instead:", distributedBook.error)
+      const book = leadMagnetBookRefOf({ book: distributedBook.book?.project ?? null })
+      const { recordPromisedDeliverable, deliverPromised } = await import("@/lib/lead-magnets/promised-deliverables")
+      const promise = await recordPromisedDeliverable(supabase, {
+        brokerageId: input.brokerageId, formId: input.formId, submissionId: submission.id, contactId, personId,
+        magnetType, book, tcpaConsentGiven: input.tcpaConsentGiven === true,
+        campaignId: verifiedCampaignId, attribution: attribution ? { ...attribution, touchpointId } : null,
+      })
+      if (!promise.ok) console.error(`[lead-magnets] the deliverable promise for submission ${submission.id} was NOT recorded: ${promise.error}`)
+      else if (promise.promised && !promise.reused) {
+        const delivered = await deliverPromised(supabase, { brokerageId: input.brokerageId, promiseId: promise.promiseId }, { book })
+        if (!delivered.ok) console.error(`[lead-magnets] promise ${promise.promiseId} delivery errored: ${delivered.error}`)
+        else if (delivered.status !== "delivered") console.warn(`[lead-magnets] promise ${promise.promiseId} not delivered yet (${delivered.status}): ${delivered.reason}`)
+      }
     } catch (err) {
-      console.warn("[lead-magnets] deliverable failed:", err)
+      console.warn("[lead-magnets] deliverable promise failed:", err)
     }
 
     // MANAGER HANDOFF BY INTENT — capture → the right manager. home_valuation already got the stronger

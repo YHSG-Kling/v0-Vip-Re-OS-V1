@@ -1,10 +1,18 @@
 // lib/marketing/lead-magnet-delivery-runner.ts
 //
-// Live side of LEAD-MAGNET DELIVERY — when a contact fills out a lead-magnet form, generate the
-// deliverable they asked for (the guide/report copy), CLEAR THE COMPLIANCE GATE (Fair Housing / brand
-// voice), and record the delivery as an activity so it's auditable and the existing enrolled sequence/
-// messaging path ships it. The deterministic copy is Fair-Housing-safe by construction; an injected AI
-// generator may personalize within the same safe frame. Best-effort; never throws into the caller.
+// Live side of LEAD-MAGNET DELIVERY — when a contact fills out a lead-magnet form, PREPARE the
+// deliverable they asked for (the guide/report copy, the designed booklet PDF, or the finished book's
+// hosted PDF) and CLEAR THE COMPLIANCE GATE (Fair Housing / brand voice). The deterministic copy is
+// Fair-Housing-safe by construction; an injected AI generator may personalize within the same safe
+// frame. Best-effort; never throws into the caller.
+//
+// WAVE 146 (lane 146F — owner ruling 10, contract C4): PREPARING IS NOT DELIVERING. This module used to
+// write the `lead_magnet_delivered` activity the moment the COPY was prepared — before anything was sent,
+// and also when a guide's booklet failed to render ("copy-only delivery is still a delivery"). Nothing
+// ever sent it: the activity told the AI ISA "Delivered" for a guide nobody received. Now
+// prepareMagnetDelivery only PREPARES (and says which asset exists), and recordMagnetDelivery is called by
+// THE PROMISE LEDGER (lib/lead-magnets/promised-deliverables.ts deliverPromised) only AFTER the asset was
+// verified and a permitted channel accepted it. The tombstone for the old one-step deliverMagnet is below.
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -25,11 +33,12 @@ interface DeliveredCreativeRefs {
   title: string
 }
 
-/** Record the magnet delivery as an auditable activity on the contact. Best-effort. */
-// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
-async function recordMagnetDelivery(
-  args: { brokerageId: string; contactId: string; agentUserId?: string | null; magnetType: MagnetType; deliverable: MagnetDeliverable; refs: DeliveredCreativeRefs }, client?: Svc,
-): Promise<{ ok: boolean }> {
+/** Record the VERIFIED magnet delivery as an auditable activity on the contact (the AI ISA's timeline reads it —
+ *  lib/ai-isa/customer-context-tools.ts deliveredAssets). Called ONLY by the promise ledger after the asset went out
+ *  (lib/lead-magnets/promised-deliverables.ts deliverPromised); its error is returned, never swallowed. */
+export async function recordMagnetDelivery(
+  args: { brokerageId: string; contactId: string; agentUserId?: string | null; magnetType: MagnetType; deliverable: MagnetDeliverable; refs: DeliveredCreativeRefs & { promise_id?: string | null; delivered_via?: string | null } }, client?: Svc,
+): Promise<{ ok: boolean; error?: string }> {
   const svc = client ?? createServiceClient()
   const { error } = await svc.from("activities").insert({
     brokerage_id: args.brokerageId, contact_id: args.contactId, agent_user_id: args.agentUserId ?? null,
@@ -39,12 +48,32 @@ async function recordMagnetDelivery(
     // the asset refs ride beside the prose — magnet, the hosted PDF, the document-library row, the kind.
     metadata: { magnet_type: args.magnetType, subject: args.deliverable.subject, body: args.deliverable.body, ...args.refs },
   })
-  return { ok: !error }
+  return error ? { ok: false, error: error.message } : { ok: true }
 }
 
-/** Convenience: prepare + record the deliverable for a captured magnet lead — BUILT from the real
- *  demand topics, AI-written, and compliance-gated. Best-effort. */
-export async function deliverMagnet(
+/** What prepareMagnetDelivery hands the promise ledger: the copy (null when the compliance gate held it), the asset that
+ *  exists (the hosted PDF + its document-library row, or none) and the refs the delivery activity will carry. */
+export interface PreparedMagnetDelivery {
+  deliverable: MagnetDeliverable | null
+  fromTopics: boolean
+  pdfUrl: string | null
+  documentId: string | null
+  deliverableKind: "book" | "booklet" | "copy"
+  refs: DeliveredCreativeRefs
+  /** Why nothing could be prepared (the compliance gate held the copy), when it could not. */
+  heldReason?: string
+}
+
+// TOMBSTONE (wave 146, lane 146F): `deliverMagnet` — prepare + record "lead_magnet_delivered" in one step, with NO send — is
+// split. Its preparation half survives below as prepareMagnetDelivery (same steps, same booklet / book handling, same gate);
+// its record half is recordMagnetDelivery above, now called only after a verified delivery by
+// lib/lead-magnets/promised-deliverables.ts deliverPromised, which also SENDS (email through dispatchEmail, the portal card)
+// and refuses to call a promise delivered without its asset. Its one caller (lib/kernel/lead-magnets.ts captureFormSubmission)
+// records the promise and calls deliverPromised instead.
+
+/** PREPARE the deliverable for a captured magnet lead — BUILT from the real demand topics, AI-written, and
+ *  compliance-gated. Records nothing and sends nothing (the promise ledger does both). Best-effort; never throws. */
+export async function prepareMagnetDelivery(
   args: {
     brokerageId: string; contactId: string; agentUserId?: string | null; magnetType: MagnetType; ctx?: CopyContext
     /** Wave 142: the magnet row, so the delivery activity names it. */
@@ -53,7 +82,7 @@ export async function deliverMagnet(
      *  instead of rendering the 5-chapter booklet. */
     book?: { pdfUrl: string; documentId: string | null; title: string; chapters: number } | null
   }, client?: Svc,
-): Promise<{ delivered: boolean; fromTopics: boolean; pdfUrl?: string | null; deliverableKind?: "book" | "booklet" | "copy" }> {
+): Promise<PreparedMagnetDelivery> {
   const svc = client ?? createServiceClient()
 
   // 1. What are buyers/sellers actually asking? (gated web-search rail → ranked topics)
@@ -77,8 +106,20 @@ export async function deliverMagnet(
     }
   }
 
-  const deliverable = await prepareMagnetDeliverable(args.magnetType, args.ctx, { topics, copyGenerator: realCopyGenerator, gate }).catch(() => null)
-  if (!deliverable) return { delivered: false, fromTopics: false }
+  let gateHeld: string | null = null
+  const heldGate = async (content: string) => {
+    const r = await gate(content)
+    if (!r.allowed) gateHeld = r.violations.join("; ") || "the compliance gate refused the copy"
+    return r
+  }
+  const deliverable = await prepareMagnetDeliverable(args.magnetType, args.ctx, { topics, copyGenerator: realCopyGenerator, gate: heldGate }).catch(() => null)
+  if (!deliverable) {
+    return {
+      deliverable: null, fromTopics: false, pdfUrl: null, documentId: null, deliverableKind: "copy",
+      refs: { magnet_id: args.magnetId ?? null, pdf_url: null, document_id: null, deliverable_kind: "copy", title: args.book?.title ?? args.magnetType },
+      heldReason: gateHeld ?? `no deliverable copy for a ${args.magnetType} magnet`,
+    }
+  }
 
   // 3. Guide magnets get the DESIGNED BOOKLET: a real branded PDF (cover +
   //    chapters + agent attribution) hosted on our storage, with the download
@@ -133,9 +174,15 @@ export async function deliverMagnet(
         deliverableKind = "booklet"
         deliverable.body = `${deliverable.body}\n\nDownload your full guide (PDF): ${produced.pdfUrl}`
       }
-    } catch { /* copy-only delivery is still a delivery */ }
+    } catch (e) {
+      // WAVE 146: a guide whose booklet did not render is NOT delivered with its cover note — deliverableKind stays "copy"
+      // and the promise ledger records the guide as MISSING (retried, then escalated), never as sent.
+      console.warn(`[lead-magnet-delivery] booklet render failed for ${args.magnetType}: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
-  const r = await recordMagnetDelivery({ ...args, deliverable, refs: { magnet_id: args.magnetId ?? null, pdf_url: pdfUrl, document_id: documentId, deliverable_kind: deliverableKind, title: args.book?.title ?? deliverable.title } }, svc)
-  return { delivered: r.ok, fromTopics: topics.length > 0, pdfUrl, deliverableKind }
+  return {
+    deliverable, fromTopics: topics.length > 0, pdfUrl, documentId, deliverableKind,
+    refs: { magnet_id: args.magnetId ?? null, pdf_url: pdfUrl, document_id: documentId, deliverable_kind: deliverableKind, title: args.book?.title ?? deliverable.title },
+  }
 }

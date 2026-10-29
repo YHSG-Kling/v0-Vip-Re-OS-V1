@@ -749,3 +749,75 @@ export async function generateQRCodeAction(input: { magnetId: string; url: strin
 // wrapped) — a second public door to the same capture, imported by nothing. SURVIVOR:
 // app/actions/lead-magnet-capture.ts captureFormSubmissionAction — the public capture every form imports, which
 // runs the full kernel flow (lib/kernel/lead-magnets.ts captureFormSubmission; scripts/lead-magnet-flow-simulator.ts).
+
+// ─── PROMISED DELIVERABLES (wave 146, lane 146F — owner ruling 10, contract C4) ──────────────────────────────────────
+// The Promises panel's doors onto lib/lead-magnets/promised-deliverables.ts. Tenant from the SESSION only. The admin roster
+// (isAdminOrBroker) sees and acts on the brokerage's promises; an agent only on the promises of THEIR OWN magnets
+// (lead_capture_forms.agent_id = their agents.id). Every door re-reads the promise in the session tenant before acting.
+
+/** The promise's magnet, read in the session tenant, and whether this session may act on it. */
+async function promiseScopeFor(promiseId: string): Promise<{ ok: true; brokerageId: string; userId: string } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId || !ctx.userId) return { ok: false, error: "Not authenticated" }
+  const svc = createServiceClient()
+  const { data, error } = await svc.from("lead_magnet_promises").select("id, form_id").eq("id", promiseId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+  if (error) return { ok: false, error: `promise unreadable: ${error.message}` }
+  if (!data) return { ok: false, error: "Not found" }
+  if (isAdminOrBroker({ user_type: ctx.role })) return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId }
+  if (!ctx.agentId || !(data as { form_id: string | null }).form_id) return { ok: false, error: "Forbidden" }
+  const { data: form, error: formErr } = await svc.from("lead_capture_forms").select("agent_id").eq("id", (data as { form_id: string }).form_id).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+  if (formErr) return { ok: false, error: `magnet unreadable: ${formErr.message}` }
+  if ((form as { agent_id?: string | null } | null)?.agent_id !== ctx.agentId) return { ok: false, error: "Forbidden" }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId }
+}
+
+/** Every promise of the session tenant (or the agent's own magnets) that is NOT delivered — overdue first. */
+export async function listUndeliveredPromisesAction() {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
+    const svc = createServiceClient()
+    const { undeliveredPromisesFor } = await import("@/lib/lead-magnets/promised-deliverables")
+    const res = await undeliveredPromisesFor(svc, { brokerageId: ctx.brokerageId })
+    if (res.error) return { success: false as const, error: res.error }
+    let promises = res.promises
+    if (!isAdminOrBroker({ user_type: ctx.role })) {
+      if (!ctx.agentId) return { success: true as const, promises: [] }
+      const { data: mine, error: mineErr } = await svc.from("lead_capture_forms").select("id").eq("brokerage_id", ctx.brokerageId).eq("agent_id", ctx.agentId)
+      if (mineErr) return { success: false as const, error: `magnets unreadable: ${mineErr.message}` }
+      const own = new Set(((mine ?? []) as Array<{ id: string }>).map((m) => m.id))
+      promises = promises.filter((p) => p.formId !== null && own.has(p.formId))
+    }
+    return { success: true as const, promises }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to list promises" }
+  }
+}
+
+/** Try ONE promise now (the same governed delivery the capture and the sweep run; idempotent). */
+export async function retryPromisedDeliveryAction(promiseId: string) {
+  try {
+    const scope = await promiseScopeFor(promiseId)
+    if (!scope.ok) return { success: false as const, error: scope.error }
+    const { deliverPromised } = await import("@/lib/lead-magnets/promised-deliverables")
+    const r = await deliverPromised(createServiceClient(), { brokerageId: scope.brokerageId, promiseId })
+    if (!r.ok) return { success: false as const, error: r.error }
+    return { success: true as const, status: r.status, detail: r.status === "delivered" ? `delivered via ${r.via}` : r.reason }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to deliver" }
+  }
+}
+
+/** A person delivered the promised asset themselves — recorded ONLY with the document (this contact's, this tenant's). */
+export async function attestPromiseDeliveredAction(promiseId: string, documentId: string) {
+  try {
+    const scope = await promiseScopeFor(promiseId)
+    if (!scope.ok) return { success: false as const, error: scope.error }
+    const { attestPromiseDelivered } = await import("@/lib/lead-magnets/promised-deliverables")
+    const r = await attestPromiseDelivered(createServiceClient(), { brokerageId: scope.brokerageId, promiseId, actorUserId: scope.userId, documentId })
+    if (!r.ok) return { success: false as const, error: r.error }
+    return { success: true as const, reused: r.reused }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to record the delivery" }
+  }
+}

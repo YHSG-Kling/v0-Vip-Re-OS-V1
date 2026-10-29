@@ -123,6 +123,14 @@ export async function reactToVideoReady(
     entity_type: "video",
     entity_id: project.row.id,
   }, out)
+  // WAVE 146 (lane 146F — owner ruling 4): a rendered NON-LISTING broadcast video is STAGED the moment it is playable —
+  // rights + branding checked, audience + channels chosen under the tenant's policy, the approver ASSIGNED from the authority
+  // hierarchy (C5) and told at once (lib/video/video-staging.ts). Listing and personal videos keep their own rails (the stager
+  // says so and writes nothing). Its refusal is recorded on this reaction, never thrown.
+  const { stageVideoForPublication } = await import("@/lib/video/video-staging")
+  const staged = await stageVideoForPublication(svc, { brokerageId, videoId: project.row.id })
+  if (!staged.ok) out.skipped.push(`staging refused: ${staged.error}`)
+  else if (staged.staged) out.written.push(`staging (${staged.stage}${[...staged.blockers, ...staged.waitingOn].length ? ` — ${[...staged.blockers, ...staged.waitingOn].join("; ")}` : ""})`)
   return out
 }
 

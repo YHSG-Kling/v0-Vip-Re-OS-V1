@@ -118,20 +118,32 @@ export async function publishVideoProjectLanding(args: {
 }): Promise<PublishResult> {
   const svc = createServiceClient()
 
-  const { data: project } = await svc.from("ai_video_projects")
-    .select("id, brokerage_id, agent_id, listing_id, title, video_type, status, compliance_status, approval_status, video_url, public_slug, is_published")
+  const { data: project, error: projectErr } = await svc.from("ai_video_projects")
+    .select("id, brokerage_id, agent_id, listing_id, title, video_type, status, compliance_status, approval_status, approved_by, video_url, public_slug, is_published, audience_type, usage_intent, contact_id, learning_module_id, video_metadata")
     .eq("id", args.projectId)
     .eq("brokerage_id", args.brokerageId)
     .maybeSingle()
+  if (projectErr) return { ok: false, reason: `reel read refused: ${projectErr.message}` }
   const p = project as {
     id: string; brokerage_id: string; agent_id: string | null; listing_id: string | null; title: string | null; video_type: string | null;
-    status: string; compliance_status: string; approval_status: string;
+    status: string; compliance_status: string; approval_status: string; approved_by: string | null;
     video_url: string | null; public_slug: string | null; is_published: boolean
+    audience_type: string | null; usage_intent: string | null; contact_id: string | null; learning_module_id: string | null; video_metadata: Record<string, unknown> | null
   } | null
   if (!p) return { ok: false, reason: "reel not found or tenant mismatch" }
 
   // Idempotent — already public.
   if (p.is_published && p.public_slug) return { ok: true, slug: p.public_slug }
+
+  // WAVE 146 (lane 146F — owner rulings 4 + 6): A PUBLIC PAGE IS BROADCAST, SO ONLY A BROADCAST VIDEO GETS ONE. This door never
+  // asked lib/video/public-video.ts classifyPublicVideo, so an APPROVED PERSONAL video — an agent intro or a home-anniversary
+  // clip filed for ONE contact (usage_intent 'public_marketing'), a client explainer, a welcome video — became a public /v page
+  // on the next geo-reel-autopublish tick. Now the ONE verdict decides (personal / client / in-house / MLS / unapproved are
+  // refused by name), and a NON-LISTING video must also be STAGED with the landing-page channel chosen and approved by its
+  // assigned approver (lib/video/video-staging.ts stagedPublicationVerdict). Live census 2026-10-29: 0 rows — exposed, not leaked.
+  const { stagedPublicationVerdict } = await import("@/lib/video/video-staging")
+  const broadcast = stagedPublicationVerdict(p, "landing_page")
+  if (!broadcast.ok) return { ok: false, reason: `reel not publishable as a public page — ${broadcast.reason}` }
 
   // The gate — finished + compliance-passed + broker-approved + has artifact.
   if (!isAutoPublishEligible({

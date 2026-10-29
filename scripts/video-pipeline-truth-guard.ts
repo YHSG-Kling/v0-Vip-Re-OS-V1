@@ -21,6 +21,10 @@
  *      list), the tenant switch (default on; an unreadable read refuses), queue idempotency and
  *      every refusal on an in-memory client, the write-back of the YouTube id onto the asset, the
  *      approval / render-landed / cron wiring, and no-unapproved-publish on the rail.
+ *   D9. WAVE 146 (lane 146F — owner ruling 4, contract C5): NON-LISTING VIDEOS ARE STAGED — generated → playable →
+ *      rights/branding → audience/channel → approver (C5) → approved → published (lib/video/video-staging.ts); the YouTube
+ *      queue and the /v landing door publish a non-listing video only staged and approved BY its assigned approver; a
+ *      personal video never reaches a public page.
  *   E. REGISTRATION: package.json key + chain MEMBERSHIP (never a position), MAINTENANCE_DOMAINS.
  *
  * Pure: readFileSync + stripped source (scripts/strip-comments.ts) + scripts/in-memory-supabase.ts.
@@ -50,6 +54,10 @@ import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { classifyCoordination } from "../lib/kernel/coordination-kind"
 import { TENANT_POLICY_SETTINGS_KEYS } from "../lib/kernel/tenant-policy"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
+import {
+  NON_LISTING_PUBLIC_VIDEO_TYPES, LISTING_VIDEO_TYPES, VIDEO_STAGES, stagedPublicationVerdict, stageVideoForPublication,
+  approveStagedVideo, listStagedVideos,
+} from "../lib/video/video-staging"
 
 const ROOT = process.cwd()
 const raw = (p: string) => readFileSync(join(ROOT, p), "utf8")
@@ -475,6 +483,130 @@ async function main() {
     check("the page reads the YouTube write-back (https only) and hands the player title + youtubeUrl", /video_metadata\?\.youtube as \{ url\?: unknown \}/.test(pageV) && /\^https:\\\/\\\//.test(pageV) && /title=\{data\.title\}/.test(pageV) && /youtubeUrl=\{data\.youtubeUrl\}/.test(pageV))
     const publicBare = ["app/lm", "app/site", "app/listings", "app/listing", "app/components/public-site", "app/components/listings", "app/v"].flatMap((d) => { const out: string[] = []; const walkDir = (x: string) => { for (const n of readdirSync(join(ROOT, x))) { const p = `${x}/${n}`; if (statSync(join(ROOT, p)).isDirectory()) walkDir(p); else if (/\.tsx$/.test(n)) out.push(p) } }; try { walkDir(d) } catch { /* directory absent */ } return out }).filter((f) => /<video[\s>]/.test(code(f)) && f !== "app/components/public-site/LandingVideo.tsx")
     check(`NO public landing surface (lm / site / listings / public-site / v) renders a bare <video> outside the slot itself (${publicBare.length} found)`, publicBare.length === 0, publicBare.join(", "))
+  }
+
+  // ═══════════════════════════ D9 · WAVE 146 (lane 146F) — RULING 4: NON-LISTING VIDEOS ARE STAGED ═══════════════════════════
+  section("D9 · ruling 4 — generated → playable → rights/branding → audience/channel → approver (C5) → approved → published")
+  {
+    const NL = new Set<string>(NON_LISTING_PUBLIC_VIDEO_TYPES), LI = new Set<string>(LISTING_VIDEO_TYPES)
+    check("the non-listing broadcast kinds are DERIVED: public minus listing, disjoint, together exactly the public set", [...NL].every((t) => (PUBLIC_MARKETING_VIDEO_TYPES as readonly string[]).includes(t)) && [...LI].every((t) => (PUBLIC_MARKETING_VIDEO_TYPES as readonly string[]).includes(t)) && [...NL].every((t) => !LI.has(t)) && NL.size + LI.size === PUBLIC_MARKETING_VIDEO_TYPES.length && NL.has("market_update") && NL.has("education") && !NL.has("just_listed"))
+    check("the stage ladder is the ruling's order", VIDEO_STAGES.join(">") === "generated>playable>rights_branding_checked>audience_channel_chosen>approver_assigned>approved>published")
+    const APPROVER = "00000000-0000-4000-8000-0000000000e9", OTHER = "00000000-0000-4000-8000-0000000000ef"
+    const NLV = "66666666-6666-4666-8666-666666666666"
+    const nonListing = (patch: Record<string, unknown> = {}) => ({
+      id: NLV, brokerage_id: B, agent_id: A, listing_id: null, marketing_campaign_id: null, title: "Rates this week, explained", video_type: "market_update",
+      audience_type: "customer_facing", usage_intent: "public_marketing", contact_id: null, approval_status: "draft", approved_by: null, status: "completed",
+      compliance_status: "passed", video_url: "https://cdn/rates.mp4", video_provider: "did", script_content: "Here is what moved mortgage rates this week, and what it means if you are planning a move.", video_metadata: {}, ...patch,
+    })
+    const stagingFor = (channels: string[], approvers: string[]) => ({ staging: { version: 1, staged_at: "2026-10-29T12:00:00Z", playable: { ok: true, basis: "x" }, rights: { ok: true, checks: [] }, branding: { ok: true, violations: [], basis: "x" }, audience: "public_marketing", channels, approver: { user_ids: approvers, basis: "seam", assigned_at: "2026-10-29T12:00:00Z" }, blockers: [] } })
+    // ── the pure verdict every automatic door calls
+    check("a LISTING video keeps its own rail: approved + public → ok, unstaged by design", (() => { const v = stagedPublicationVerdict({ ...project() }, "youtube"); return v.ok && !v.staged })())
+    check("a NON-LISTING video approved through a queue that records no approver, never staged → REFUSED (not staged)", (() => { const v = stagedPublicationVerdict(nonListing({ approval_status: "approved" }), "youtube"); return !v.ok && /not staged/.test(v.reason) })())
+    check("staged + approved BY an assigned approver → ok on a chosen channel", stagedPublicationVerdict(nonListing({ approval_status: "approved", approved_by: APPROVER, video_metadata: stagingFor(["landing_page", "youtube"], [APPROVER]) }), "youtube").ok)
+    check("…approved with NO recorded approver → refused, and the reason says where to approve", (() => { const v = stagedPublicationVerdict(nonListing({ approval_status: "approved", approved_by: null, video_metadata: stagingFor(["youtube"], [APPROVER]) }), "youtube"); return !v.ok && /without a recorded approver/.test(v.reason) })())
+    check("…approved by someone the hierarchy did NOT assign → refused", (() => { const v = stagedPublicationVerdict(nonListing({ approval_status: "approved", approved_by: OTHER, video_metadata: stagingFor(["youtube"], [APPROVER]) }), "youtube"); return !v.ok && /did not assign/.test(v.reason) })())
+    check("…a channel the staging did not choose → refused (the tenant switched YouTube off)", (() => { const v = stagedPublicationVerdict(nonListing({ approval_status: "approved", approved_by: APPROVER, video_metadata: stagingFor(["landing_page"], [APPROVER]) }), "youtube"); return !v.ok && /did not choose the youtube channel/.test(v.reason) })())
+    check("POSITIVE CONTROL — a PERSONAL / ADDRESSED video is refused on every door even when 'staged' and approved", ["welcome", "home_anniversary"].every((t) => !stagedPublicationVerdict(nonListing({ video_type: t, approval_status: "approved", approved_by: APPROVER, video_metadata: stagingFor(["landing_page"], [APPROVER]) }), "landing_page").ok) && !stagedPublicationVerdict(nonListing({ contact_id: "22222222-2222-4222-8222-222222222222", approval_status: "approved", approved_by: APPROVER, video_metadata: stagingFor(["landing_page"], [APPROVER]) }), "landing_page").ok)
+    {
+      const board = await listStagedVideos(memSupabase({ ai_video_projects: [nonListing(), nonListing({ id: "77777777-7777-4777-8777-777777777777", status: "generating", video_url: null }), project()] }), { brokerageId: B })
+      const stageOfId = (id: string) => board.videos.find((v) => v.id === id)?.stage
+      check("the staging board walks the ladder: a draft render is 'playable' (not staged), an unrendered one 'generated'; listing videos are not on it", !board.error && stageOfId(NLV) === "playable" && stageOfId("77777777-7777-4777-8777-777777777777") === "generated" && !board.videos.some((v) => v.id === VID), JSON.stringify(board))
+    }
+
+    // ── staging on an in-memory client (the brand survivor and C5 are seams; the bell is real)
+    const seedNL = (patch: Record<string, unknown> = {}, extra: Record<string, any[]> = {}) => memSupabase({
+      ai_video_projects: [nonListing(patch)], agents: [{ id: A, brokerage_id: B, user_id: U, team_id: "team-1" }],
+      social_media_accounts: [{ id: "acct-yt", brokerage_id: B, agent_id: A, platform: "youtube", is_active: true }], social_posts: [], brokerage_settings: [], marketing_assets: [], notifications: [],
+      ...extra,
+    }, { uuidIds: true })
+    const asked: any[] = []
+    const approverFor = async (req: any) => { asked.push(req); return { ok: true, userIds: [APPROVER], basis: "seam: approverFor" } }
+    const brandOk = async (): Promise<{ passed: boolean; violations: string[] }> => { return { passed: true, violations: [] } }
+    {
+      const mem = seedNL()
+      const st = await stageVideoForPublication(mem, { brokerageId: B, videoId: NLV }, { approverFor, brand: brandOk })
+      const row = mem.tables.ai_video_projects[0]
+      const s = row.video_metadata?.staging
+      check("STAGING a rendered market update: rights + branding recorded, audience public, channels per policy (landing page + YouTube), the approver from C5, the row enters the ONE queue (pending_review)", st.ok && st.staged && s?.audience === "public_marketing" && s?.channels.join() === "landing_page,youtube" && s?.approver?.user_ids?.[0] === APPROVER && s?.rights?.checks?.some((c: any) => c.key === "likeness_consent") && row.approval_status === "pending_review" && (st as any).stage === "approver_assigned", JSON.stringify({ st, s }))
+      check("…C5 was asked with the asset kind 'video' and the video's own agent as the owner scope (in this tenant)", asked.length === 1 && asked[0].brokerageId === B && asked[0].assetKind === "video" && asked[0].scope.agentId === A && asked[0].scope.teamId === undefined)
+      check("…the ASSIGNED approver is told at once (one bell, video_staged_for_approval, on the video); re-staging rings no second bell", mem.tables.notifications.length === 1 && mem.tables.notifications[0].user_id === APPROVER && mem.tables.notifications[0].type === "video_staged_for_approval" && mem.tables.notifications[0].entity_id === NLV
+        && (await stageVideoForPublication(mem, { brokerageId: B, videoId: NLV }, { approverFor, brand: brandOk })).ok && mem.tables.notifications.length === 1)
+      const before = await queueYouTubeAutoPublish(mem, NLV)
+      check("NOTHING publishes before the assigned approver approves (the YouTube queue refuses a staged, unapproved video)", !before.queued && mem.tables.social_posts.length === 0, JSON.stringify(before))
+      const released: string[] = []
+      const wrong = await approveStagedVideo(mem, { brokerageId: B, videoId: NLV, approverUserId: OTHER }, { release: async (id) => { released.push(id); return { ok: true } } })
+      check("a person the hierarchy did NOT assign cannot approve it (nothing written, no cascade)", !wrong.ok && /not an approver/.test((wrong as { error: string }).error) && mem.tables.ai_video_projects[0].approval_status === "pending_review" && released.length === 0)
+      const revoked = await approveStagedVideo(mem, { brokerageId: B, videoId: NLV, approverUserId: APPROVER }, { approverFor: async () => ({ ok: true, userIds: [OTHER], basis: "seam: authority changed" }), release: async (id) => { released.push(id); return { ok: true } } })
+      check("authority is re-read AT approval: an approver assigned at staging whose authority was revoked since cannot approve", !revoked.ok && /no longer an approver/.test((revoked as { error: string }).error) && mem.tables.ai_video_projects[0].approval_status === "pending_review" && released.length === 0)
+      const ok = await approveStagedVideo(mem, { brokerageId: B, videoId: NLV, approverUserId: APPROVER }, { approverFor, release: async (id) => { released.push(id); return { ok: true } } })
+      check("the ASSIGNED approver approves: approved_by + approved_at recorded, the ONE approval cascade runs once", ok.ok && mem.tables.ai_video_projects[0].approval_status === "approved" && mem.tables.ai_video_projects[0].approved_by === APPROVER && !!mem.tables.ai_video_projects[0].approved_at && released.join() === NLV)
+      const after = await queueYouTubeAutoPublish(mem, NLV)
+      check("…and NOW the YouTube queue takes it (approved public non-personal, staged, the youtube channel chosen)", after.queued && mem.tables.social_posts.length === 1, JSON.stringify(after))
+    }
+    {
+      const mem = seedNL({ approval_status: "approved", approved_by: null })
+      await stageVideoForPublication(mem, { brokerageId: B, videoId: NLV }, { approverFor, brand: brandOk })
+      const r = await queueYouTubeAutoPublish(mem, NLV)
+      check("a video approved in a queue that records no approver stays OFF the rail until the assigned approver approves it on the staging screen", !r.queued && /without a recorded approver/.test(r.reason) && mem.tables.social_posts.length === 0, JSON.stringify(r))
+    }
+    {
+      const mem = seedNL({ video_type: "testimonial" })
+      const st = await stageVideoForPublication(mem, { brokerageId: B, videoId: NLV }, { approverFor, brand: brandOk })
+      check("RIGHTS: a testimonial without the client's verified consent on record is BLOCKED (and nobody is asked to approve it)", st.ok && st.staged && st.blockers.some((b) => /verified consent/.test(b)) && mem.tables.notifications.length === 0)
+      mem.tables.ai_video_projects[0].video_metadata = { ...mem.tables.ai_video_projects[0].video_metadata, testimonial_consent: { verified: true, recorded_at: "2026-10-20" } }
+      const st2 = await stageVideoForPublication(mem, { brokerageId: B, videoId: NLV }, { approverFor, brand: brandOk })
+      check("…with the consent recorded the rights check passes and the approver is told", st2.ok && st2.staged && st2.blockers.length === 0 && mem.tables.notifications.length === 1)
+    }
+    {
+      const mem = seedNL()
+      const st = await stageVideoForPublication(mem, { brokerageId: B, videoId: NLV }, { approverFor, brand: async () => ({ passed: false, violations: ["Public-marketing video missing brokerage verbal disclosure — required by real-estate advertising law"] }) })
+      check("BRANDING: the brand survivor's violation (verbal disclosure / overlay) BLOCKS staging — no bell, the reason recorded", st.ok && st.staged && st.blockers.some((b) => /verbal disclosure/.test(b)) && mem.tables.notifications.length === 0 && mem.tables.ai_video_projects[0].video_metadata?.staging?.branding?.ok === false)
+    }
+    {
+      const mem = seedNL()
+      const st = await stageVideoForPublication(mem, { brokerageId: B, videoId: NLV }, { approverFor: async () => ({ ok: false, userIds: [], basis: "seam", reason: "no delegated approver for this team" }), brand: brandOk })
+      check("no approver from the hierarchy → blocked at 'audience_channel_chosen', never auto-approved", st.ok && st.staged && st.stage === "audience_channel_chosen" && st.blockers.some((b) => /no approver assigned/.test(b)) && mem.tables.ai_video_projects[0].approval_status === "pending_review")
+    }
+    {
+      const listing = memSupabase({ ai_video_projects: [project()] })
+      const personal = memSupabase({ ai_video_projects: [nonListing({ video_type: "welcome", contact_id: "22222222-2222-4222-8222-222222222222" })] })
+      const l = await stageVideoForPublication(listing, { brokerageId: B, videoId: VID }, { approverFor, brand: brandOk })
+      const p = await stageVideoForPublication(personal, { brokerageId: B, videoId: NLV }, { approverFor, brand: brandOk })
+      check("a LISTING video and a PERSONAL video are not staged for broadcast — nothing written to either", l.ok && !l.staged && p.ok && !p.staged && !listing.tables.ai_video_projects[0].video_metadata?.staging && !personal.tables.ai_video_projects[0].video_metadata?.staging)
+      const foreign = await stageVideoForPublication(seedNL(), { brokerageId: "00000000-0000-4000-8000-0000000000b2", videoId: NLV }, { approverFor, brand: brandOk })
+      check("another tenant cannot stage this tenant's video (tenant-pinned read)", !foreign.ok)
+    }
+    {
+      // THE REAL C5 (lib/kernel/approval-authority.ts approverFor — lane 146E) on the in-memory tenant: the video's own agent is
+      // ASKED (primary), their team lead and the brokerage roster may approve as oversight; another agent / tenant never.
+      const users = [{ id: "u-admin", brokerage_id: B, user_type: "broker_owner" }, { id: "u-agent", brokerage_id: B, user_type: "agent" }, { id: "u-other", brokerage_id: "00000000-0000-4000-8000-0000000000b2", user_type: "broker" }]
+      const c5 = memSupabase({
+        ai_video_projects: [nonListing()], agents: [{ id: A, brokerage_id: B, user_id: U }], users, user_role_assignments: [],
+        team_members: [{ team_id: "team-1", agent_id: A, brokerage_id: B, is_active: true }], teams: [{ id: "team-1", brokerage_id: B, team_lead_id: "u-lead", deleted_at: null }],
+        brokerage_settings: [], notifications: [],
+      }, { uuidIds: true })
+      const d = await stageVideoForPublication(c5, { brokerageId: B, videoId: NLV }, { brand: brandOk })
+      const ids = d.ok && d.staged ? [...d.approverUserIds].sort().join() : ""
+      check("C5 WIRED: the owner agent (asked — the only bell), their team lead and the brokerage roster may approve; never another agent, never another tenant", ids === ["u-admin", "u-lead", U].sort().join() && c5.tables.notifications.length === 1 && c5.tables.notifications[0].user_id === U, JSON.stringify({ d, bells: c5.tables.notifications }))
+      const reqd = memSupabase({
+        ai_video_projects: [nonListing()], agents: [{ id: A, brokerage_id: B, user_id: U }], users, user_role_assignments: [], team_members: [], teams: [],
+        brokerage_settings: [{ brokerage_id: B, settings: { publication_approval: { require_brokerage_approval: { video: { basis: "brokerage_policy" } } } } }], notifications: [],
+      }, { uuidIds: true })
+      const r2 = await stageVideoForPublication(reqd, { brokerageId: B, videoId: NLV }, { brand: brandOk })
+      check("…the BROKERAGE is the approver only where the tenant's policy says so (ruling 9): with the policy set, only the roster", r2.ok && r2.staged && r2.approverUserIds.join() === "u-admin")
+      const refusedRoster = memSupabase({ ai_video_projects: [nonListing()], agents: [{ id: A, brokerage_id: B, user_id: U }], brokerage_settings: [], notifications: [] }, { refuse: { users: "RLS" } })
+      const r = await stageVideoForPublication(refusedRoster, { brokerageId: B, videoId: NLV }, { brand: brandOk })
+      check("…an unreadable roster assigns NOBODY (fail closed: no approver, no publication)", r.ok && r.staged && r.approverUserIds.length === 0 && r.blockers.some((b) => /no approver assigned/.test(b)), JSON.stringify(r))
+    }
+    // ── the other automatic door and the hook
+    const landing = code("lib/geo/publish-video-landing.ts")
+    const fn = landing.slice(landing.indexOf("export async function publishVideoProjectLanding"))
+    check("the /v landing door asks stagedPublicationVerdict(p, 'landing_page') BEFORE it flips is_published (a personal video never becomes a public page)", /stagedPublicationVerdict\(p, "landing_page"\)/.test(fn) && fn.indexOf("stagedPublicationVerdict(p,") < fn.indexOf("is_published: true") && /contact_id/.test(fn.slice(0, fn.indexOf("stagedPublicationVerdict(p,"))))
+    check("the render-landed reaction (video.generated) STAGES the video and records a refusal on the reaction", /stageVideoForPublication\(svc, \{ brokerageId, videoId: project\.row\.id \}\)/.test(code("lib/video/video-event-reactions.ts")))
+    check("the YouTube queue asks stagedPublicationVerdict(p, 'youtube') after the public classification", /stagedPublicationVerdict\(p, "youtube"\)/.test(code("lib/video/youtube-publish.ts")))
+    check("the staging screen's doors take the tenant and the approver from the SESSION", /approveStagedVideo\(createServiceClient\(\), \{ brokerageId: ctx\.brokerageId, videoId, approverUserId: ctx\.userId \}\)/.test(code("app/dashboard/marketing/video-staging/actions.ts")))
+    blind.push("ruling 4's approver is contract C5 (lib/kernel/approval-authority.ts approverFor — lane 146E's file): most checks drive it as a seam; the C5-WIRED checks run the real module on the in-memory tenant, so this proof needs lane 146E's file in the tree")
+    blind.push("the human 'Publish to web' door for RENDERS (lib/geo/publish-video-landing.ts publishVideoLanding) and app/actions/video/distribute-video.ts are HUMAN publish actions, not automatic — not staged here (the person publishing is the decision)")
   }
 
   // ═══════════════════════════ E · REGISTRATION ═══════════════════════════

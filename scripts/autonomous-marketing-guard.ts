@@ -298,8 +298,14 @@ async function main() {
     ref?.pdfUrl === `${ORIGIN}/b.pdf` && ref?.documentId === "doc-1" && ref?.title === "The Book" && ref?.chapters === 3
     && leadMagnetBookRefOf({ book: { stage: "layout", pdf_url: `${ORIGIN}/b.pdf` } }) === null && leadMagnetBookRefOf({ book: { stage: "ready_for_review", pdf_url: null } }) === null && leadMagnetBookRefOf(null) === null && leadMagnetBookRefOf({}) === null)
   const kernelSrc = code("lib/kernel/lead-magnets.ts"), delivery = code("lib/marketing/lead-magnet-delivery-runner.ts")
+  // RE-ASSERTED (wave 146, lane 146F — ruling 10): the capture no longer calls the one-step deliverMagnet (it wrote "delivered"
+  // before anything was sent). The RULE is unchanged — the finished book + the magnet id reach delivery, the hosted PDF ships,
+  // the activity carries the refs — and is now held on its new path: capture → the promise ledger (the book read through
+  // leadMagnetBookRefOf, handed to deliverPromised) → the runner's prepareMagnetDelivery (magnetId + book).
+  const ledgerSrc = code("lib/lead-magnets/promised-deliverables.ts")
   check("D2 the capture hands the finished book + the magnet id to delivery; the delivery ships the hosted PDF (no re-render) and records magnet / pdf / document / kind on the activity the AI ISA's readers see",
-    /deliverMagnet\(\{[^}]*magnetId:\s*input\.formId[^}]*book:\s*leadMagnetBookRefOf\(/.test(kernelSrc) && /args\.book\?\.pdfUrl/.test(delivery) && /deliverableKind = "book"/.test(delivery)
+    /const book = leadMagnetBookRefOf\(/.test(kernelSrc) && /recordPromisedDeliverable\(supabase,\s*\{[^}]*formId:\s*input\.formId[^}]*book,/.test(kernelSrc) && /deliverPromised\(supabase,[^)]*\{ book \}\)/.test(kernelSrc)
+    && /prepareMagnetDelivery\(\{[^}]*magnetId:\s*a\.magnetId,\s*book:\s*a\.book/.test(ledgerSrc) && /args\.book\?\.pdfUrl/.test(delivery) && /deliverableKind = "book"/.test(delivery)
     && /metadata:\s*\{[^}]*\.\.\.args\.refs/.test(delivery) && /magnet_id:\s*args\.magnetId/.test(delivery) && /document_id:\s*documentId/.test(delivery)
     && /from\("activities"\)/.test(code("lib/ai-isa/tools.ts")))
   check("D3 the book is a document-library row (produceClientDocument documentType 'book'); blind spot published: generated_documents.document_type carries no live CHECK",
