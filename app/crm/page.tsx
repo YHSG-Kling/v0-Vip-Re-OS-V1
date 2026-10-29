@@ -115,21 +115,19 @@ import { FormWizard } from "@/app/components/form-wizard/FormWizard"
 
 import { isLifetimeCustomerType } from "@/lib/contact-types"
 
-// Import all 10 Contact OS components
-import {
-  ContactPulsePanel,
-  CommunicationHealthPanel,
-  NextBestActionPanel,
-  ValueDeliveredPanel,
-  TimelineContextPanel,
-  RelationshipAiChatPanel,
-  SmartNoteComposer,
-  BuyerMatchPanel,
-  QualificationSummaryCard,
-  ConversionForecastPanel,
-  type IsaHandoffBriefShape,
-} from "./components/os"
-
+// Imported from the defining modules, not the `./components/os` barrel (wave 146, proxy-graph budget): the barrel
+// re-exports thirteen panels; this page mounts ten.
+import { ContactPulsePanel } from "./components/os/contact-pulse-panel"
+import { CommunicationHealthPanel } from "./components/os/communication-health-panel"
+import { NextBestActionPanel } from "./components/os/next-best-action-panel"
+import { ValueDeliveredPanel } from "./components/os/value-delivered-panel"
+import { TimelineContextPanel } from "./components/os/timeline-context-panel"
+import { RelationshipAiChatPanel } from "./components/os/relationship-ai-chat-panel"
+import { SmartNoteComposer } from "./components/os/smart-note-composer"
+import { BuyerMatchPanel } from "./components/os/buyer-match-panel"
+import { QualificationSummaryCard } from "./components/os/qualification-summary-card"
+import { ConversionForecastPanel } from "./components/os/conversion-forecast-panel"
+import type { IsaHandoffBriefShape } from "./components/os/qualification-summary-card"
 interface Contact {
   id: string
   first_name: string

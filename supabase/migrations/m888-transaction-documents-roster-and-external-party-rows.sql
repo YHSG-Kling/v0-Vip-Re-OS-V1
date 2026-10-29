@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 146, lane 146Z) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-29 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 146, lane 146Z; the DROP POLICY IF EXISTS of two policies that did not yet exist was skipped where the MCP would have held the batch ──
 --
 -- m888 — THE DEAL-DOCUMENT ROW ADMITS THE TENANT ROSTER, AND AN ASSIGNED VENDOR / LENDER / TITLE PARTY
 --         CAN FILE (AND READ BACK) ITS OWN DOCUMENT ON THE DEAL IT IS ASSIGNED TO

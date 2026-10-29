@@ -23,13 +23,11 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from '@/lib/supabase/service'
 import { collectError } from '@/lib/errors/collect-error'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
-import {
-  generatePersonalizedEmail,
-  logEmailActivity,
-  embedVideoInEmail,
-  shouldTriggerDirectMail,
-  triggerDirectMailCampaign,
-} from '@/lib/ai-isa'
+// Imported from the defining modules, not the `@/lib/ai-isa` barrel (wave 146, proxy-graph budget): the barrel
+// re-exports six modules and every app entry that reaches this file paid for all six.
+import { generatePersonalizedEmail, logEmailActivity } from "@/lib/ai-isa/email-generator"
+import { embedVideoInEmail } from "@/lib/ai-isa/video-generator"
+import { shouldTriggerDirectMail, triggerDirectMailCampaign } from "@/lib/ai-isa/direct-mail-trigger"
 import { publishManagerSignal } from '@/lib/kernel/manager-signals'
 import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
 import { pickLeadOutreachChannel, channelRefusalForRecipient } from '@/lib/ai-isa/lead-channel-policy'
