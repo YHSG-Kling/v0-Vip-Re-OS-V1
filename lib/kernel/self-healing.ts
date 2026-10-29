@@ -29,11 +29,23 @@
 // boundary, credential, legal loosening, destructive canonical change, an external action that could
 // repeat) instead of acting. A failed remediation keeps its evidence on the self_heal_events row and
 // escalates (proposal + human) on the last allowed attempt; a hard stop escalates at once.
+//
+// Wave 146 (lane 146G, owner ruling 14 — "managers … can heal the playbook; code edits stay governed"): every
+// incident now runs the ruling's whole lifecycle DETECT → DIAGNOSE → OWNER → SAFE REPAIR / PROPOSAL → VERIFY →
+// NOTIFY / ESCALATE on these same rails. OWNER is the accountable REGISTERED manager (DETECTOR_OWNER — the
+// TABLE_MANAGER steward of the survivor table the detector reads; the proof re-derives it), carried on every
+// result and incident row. A diagnosis whose fix is a PRODUCTION SOURCE EDIT (rootCause code_defect) is a
+// CONSEQUENTIAL change (lib/kernel/improvement-proposals.ts GOVERNED_CHANGE_CLASSES): no playbook runs; ONE
+// change request (openChangeRequest → the one healing-proposal writer, kind `change_request`, never on the
+// auto-applier's SAFE_KINDS) carries the change-control requirements for platform staff, and the incident
+// escalates. No manager, healer or runtime path edits code, commits, deploys or applies a migration.
 
 import { z } from "zod"
-import type { HealthDetector, HealthIncident } from "@/lib/kernel/os-health"
+import { decideRecovery, type HealthDetector, type HealthIncident } from "@/lib/kernel/os-health"
 import { HEALING_POLICY_DEFAULTS, HEALING_POLICY_KEY, type HealingPolicy } from "@/lib/kernel/healing-policy"
 import type { TenantOperatingBaselineResult } from "@/lib/kernel/tenant-operating-baseline"
+import type { ManagerKey } from "@/lib/kernel/manager-registry"
+import { CHANGE_CONTROL_HOW, CHANGE_CONTROL_REQUIREMENTS, governedChangeVerdict, type GovernedChangeVerdict } from "@/lib/kernel/improvement-proposals"
 
 type Svc = any
 
@@ -120,6 +132,79 @@ export const DETECTOR_DOMAIN: Readonly<Record<HealthDetector, PlaybookDomain>> =
   portal_invites: "portal", esign_requests: "esign", direct_mail_returns: "direct_mail", sequence_send_failures: "sequences",
   transaction_deadlines: "transactions", payments_sync: "accounting_sync",
   tenant_readiness: "provisioning",
+}
+
+/**
+ * Wave 146 (146G, ruling 14 OWNER) — every detector's SUBJECT STEWARD: the TABLE_MANAGER steward of the survivor
+ * table the detector reads (lib/kernel/os-health.ts names it in its header line for that detector). Typed over
+ * HEALTH_DETECTORS, so a new detector without one does not compile; DERIVED, not invented —
+ * scripts/manager-governance-change-guard.ts re-derives `manager` from TABLE_MANAGER[table] for every row and
+ * checks the os-health header names the table. incidentOwner uses it when the recovery policy routes the incident
+ * to a human (so the owner is never "nobody").
+ * @proofSeam the proof re-derives every owner from the registry
+ */
+export const DETECTOR_OWNER: Readonly<Record<HealthDetector, { table: string; manager: ManagerKey }>> = {
+  provider_failures: { table: "api_response_logs", manager: "data_steward" },
+  stale_missions: { table: "missions", manager: "campaign_orchestrator" },
+  stuck_workflows: { table: "workflow_runs", manager: "campaign_orchestrator" },
+  failed_webhooks: { table: "tenant_webhook_deliveries", manager: "data_steward" },
+  missing_reconciliations: { table: "reaper_runs", manager: "data_steward" },
+  usage_inconsistencies: { table: "meter_readings", manager: "data_steward" },
+  billing_drift: { table: "reaper_runs", manager: "data_steward" },
+  event_backlog: { table: "manager_signals", manager: "campaign_orchestrator" },
+  ai_anomalies: { table: "ai_tool_usage", manager: "cron_manager" },
+  media_render_failures: { table: "remotion_composition_renders", manager: "asset_manager" },
+  compliance_flags: { table: "compliance_flags", manager: "compliance_officer" },
+  portal_invites: { table: "portal_contact_invites", manager: "data_steward" },
+  esign_requests: { table: "signature_requests", manager: "deal_coordinator" },
+  direct_mail_returns: { table: "direct_mail_recipients", manager: "campaign_orchestrator" },
+  sequence_send_failures: { table: "sequence_step_executions", manager: "campaign_orchestrator" },
+  transaction_deadlines: { table: "transaction_deadlines", manager: "deal_coordinator" },
+  payments_sync: { table: "accounting_sync_log", manager: "finance_manager" },
+  tenant_readiness: { table: "brokerage_settings", manager: "data_steward" },
+}
+
+/**
+ * PURE — the incident's ACCOUNTABLE REGISTERED MANAGER (ruling 14 OWNER). The recovery policy's own routing
+ * decides first (decideRecovery: Finance for money, Compliance for compliance, the Data Steward for a data
+ * conflict, the Cron Manager for retry / backoff / failover, the Campaign Orchestrator for a resumable chain);
+ * when the policy says "a human decides", the owner is the detector's subject steward — a human decides, a
+ * registered manager is still accountable for following it up.
+ */
+export function incidentOwner(i: HealthIncident): ManagerKey {
+  const routed = decideRecovery(i, { priorAttempts: 0 }).routedTo
+  return routed !== "human" ? routed : (DETECTOR_OWNER[i.detector]?.manager ?? "cron_manager")
+}
+
+/**
+ * PURE — the ruling-14 class of what a DIAGNOSIS says the fix is. A code defect's fix is a production source edit
+ * (consequential — a change request, never an action); money / tenant boundary / security / deletion are already
+ * hard-gated (classifyForbidden) and are named here so the evidence says which consequential class held them;
+ * everything else is an approved self-healing repair on a declared playbook (safe).
+ */
+export function governedChangeForDiagnosis(d: { rootCause: string; touches?: { money?: boolean; tenantBoundary?: boolean; security?: boolean; dataDeletion?: boolean } | null }): GovernedChangeVerdict {
+  const t = d.touches ?? {}
+  if (t.money) return governedChangeVerdict("money_movement", "the diagnosis touches money")
+  if (t.tenantBoundary) return governedChangeVerdict("rls_security", "the diagnosis crosses the tenant boundary")
+  if (t.security) return governedChangeVerdict("credentials", "the diagnosis is a security / credential matter")
+  if (t.dataDeletion) return governedChangeVerdict("destructive_schema", "the diagnosis involves deleting data")
+  if (d.rootCause === "code_defect") return governedChangeVerdict("production_source_edit", "the root cause is a code defect — the fix is a production source edit")
+  return governedChangeVerdict("self_healing_repair", `root cause ${d.rootCause} — a declared playbook may repair it`)
+}
+
+/** Ruling 14's six stages, as recorded on the incident's evidence (self_heal_events.detail.lifecycle / the result). */
+export interface IncidentLifecycle {
+  detect: { detector: HealthDetector; class: string; subject: string }
+  diagnose: { rootCause: string; confidence: number } | null
+  owner: ManagerKey
+  remedy: { kind: "playbook" | "healing_proposal" | "change_request" | "none"; ref: string | null; change: { class: string; verdict: "safe" | "consequential" } | null }
+  verify: { verified: boolean; detail: string } | null
+  notify: "recovered" | "handed_off" | "escalated"
+}
+
+/** PURE — compose the lifecycle record from what the engine already knows (one shape for every exit). */
+export function incidentLifecycle(i: HealthIncident, x: { diagnosis: { rootCause: string; confidence: number } | null; remedy: IncidentLifecycle["remedy"]; verify: IncidentLifecycle["verify"]; notify: IncidentLifecycle["notify"] }): IncidentLifecycle {
+  return { detect: { detector: i.detector, class: i.class, subject: i.subjectKey }, diagnose: x.diagnosis ? { rootCause: x.diagnosis.rootCause, confidence: x.diagnosis.confidence } : null, owner: incidentOwner(i), remedy: x.remedy, verify: x.verify, notify: x.notify }
 }
 
 // ── 2. The hard gate (runs FIRST) ────────────────────────────────────────────────────────────
@@ -326,15 +411,22 @@ export interface TroubleshootDeps extends BoundedModelDeps {
   services?: RemediationServices
   /** Bell a human (the supervisor's notifier). */
   notify?: (svc: Svc, i: HealthIncident, reason: string) => Promise<void>
-  /** The healing-proposal writer (connector-healer recordHealingProposal). */
-  propose?: (p: { connector: string; signature: string; summary: string; payload: Record<string, unknown>; sample: unknown[] }) => Promise<{ id: string | null; error: string | null }>
+  /** The healing-proposal writer (connector-healer recordHealingProposal). `kind` defaults to playbook_exhausted;
+   *  146G's change request passes `change_request` (neither is on the auto-applier's SAFE_KINDS). */
+  propose?: (p: { connector: string; signature: string; summary: string; payload: Record<string, unknown>; sample: unknown[]; kind?: HealingProposalKind }) => Promise<{ id: string | null; error: string | null }>
   ledger?: typeof import("@/lib/kernel/action-ledger").withActionLedger
   emit?: (input: Record<string, unknown>) => Promise<{ error: string | null }>
 }
 
-type TroubleshootResult =
-  | { kind: "escalate"; reason: string; diagnosis: Diagnosis | null; gate: HardStop | null; proposalId: string | null; costUsd: number }
+/** The two proposal kinds this engine writes — both wait for platform staff (never auto-applied). */
+export const ENGINE_PROPOSAL_KINDS = ["playbook_exhausted", "change_request"] as const
+type HealingProposalKind = (typeof ENGINE_PROPOSAL_KINDS)[number]
+
+/** Every exit carries its accountable OWNER and the ruling-14 lifecycle record (146G). */
+type TroubleshootResult = (
+  | { kind: "escalate"; reason: string; diagnosis: Diagnosis | null; gate: HardStop | null; proposalId: string | null; costUsd: number; change?: GovernedChangeVerdict }
   | { kind: "playbook"; playbook: PlaybookKey; acts: boolean; ok: boolean; outcome: string; diagnosis: Diagnosis; costUsd: number }
+) & { owner?: ManagerKey; lifecycle?: IncidentLifecycle }
 
 /** The executors this module performs itself (each re-checks the tenant and counts what it moved). */
 function selfExecutors(deps: TroubleshootDeps): Partial<Record<PlaybookKey, PlaybookExecutor>> {
@@ -777,6 +869,7 @@ function incidentPrompt(i: HealthIncident, domain: PlaybookDomain, offered: Play
     "You are the VIP Agents OS self-healing troubleshooter. Diagnose ONE operational incident from its evidence. " +
     "You may only SELECT one playbook from the offered list and fill only its declared parameters. " +
     "Never propose SQL, code, credentials, deletions, refunds or any money movement. Flag touches.* honestly. " +
+    "If the fault is in the platform's own code, say rootCause code_defect — a human change request follows; never attempt a code fix. " +
     "If no offered playbook fits, select notify_owner_manager when offered, else read_only_diagnosis."
   const lib = offered.map((k) => `- ${k}: ${SELF_HEAL_PLAYBOOKS[k].label}; params ${JSON.stringify(SELF_HEAL_PLAYBOOKS[k].params)}`).join("\n")
   const prompt =
@@ -819,17 +912,54 @@ async function engineTools(svc: Svc, i: HealthIncident, ctx: EngineCtx, deps: Tr
       },
       { client: svc },
     )
-  /** The ONE healing-proposal writer; the proposal carries the incident's evidence (+ the failed attempt's). */
-  const proposeToHuman = async (reason: string, failedAttempt: Record<string, unknown> | null) => {
+  /** The ONE healing-proposal writer; the proposal carries the incident's evidence (+ the failed attempt's) and,
+   *  from 146G, its accountable owner. `kind` change_request carries the ruling-14 change-control requirements. */
+  const proposeToHuman = async (reason: string, failedAttempt: Record<string, unknown> | null, kind: HealingProposalKind = "playbook_exhausted", extra: Record<string, unknown> = {}) => {
     const propose = deps.propose ?? (async (p) => {
       const { recordHealingProposal } = await import("@/lib/agentic-os/connector-healer")
-      return recordHealingProposal(svc, { connector: p.connector, failure_signature: p.signature, failure_sample: p.sample, proposal_kind: "playbook_exhausted", proposal_summary: p.summary, proposal_payload: p.payload, docs_evidence: [], confidence: 0 })
+      // Each kind is spelled once as a literal (both wait for platform staff; neither is on the auto-applier's SAFE_KINDS).
+      const kindField = p.kind === "change_request" ? { proposal_kind: "change_request" } : { proposal_kind: "playbook_exhausted" }
+      return recordHealingProposal(svc, { connector: p.connector, failure_signature: p.signature, failure_sample: p.sample, ...kindField, proposal_summary: p.summary, proposal_payload: p.payload, docs_evidence: [], confidence: 0 })
     })
-    const r = await step("propose", { reason }, () => propose({ connector: subject, signature: `${i.detector}: ${i.summary}`.slice(0, 300), summary: reason, payload: { brokerage_id: i.brokerageId, domain, detector: i.detector, subject: i.subjectKey, class: i.class, ...(failedAttempt ? { failed_attempt: failedAttempt } : {}) }, sample: [{ summary: i.summary, evidence: i.evidence }] }),
-      (x) => ({ ok: !!x?.id, note: x?.id ? `proposal ${x.id}` : `proposal not written: ${x?.error ?? "no result"}` }))
+    // ONE step name ("propose") and ONE outcome spelling ("proposal <id>") for both kinds: the healing console
+    // (lib/kernel/self-heal-ledger.ts foldHealingIncidents) links an incident to its proposal by exactly these.
+    const r = await step("propose", { reason, proposal_kind: kind }, () => propose({ connector: subject, signature: `${i.detector}: ${i.summary}`.slice(0, 300), summary: reason, kind, payload: { brokerage_id: i.brokerageId, domain, detector: i.detector, subject: i.subjectKey, class: i.class, owner: incidentOwner(i), ...(failedAttempt ? { failed_attempt: failedAttempt } : {}), ...extra }, sample: [{ summary: i.summary, evidence: i.evidence }] }),
+      (x) => ({ ok: !!x?.id, note: x?.id ? `proposal ${x.id} (${kind})` : `proposal not written (${kind}): ${x?.error ?? "no result"}` }))
     return r?.id ?? null
   }
   return { subject, keyFor, step, emit, proposeToHuman }
+}
+
+/**
+ * Wave 146 (146G, ruling 14) — a CONSEQUENTIAL fix (a production source edit, from a code-defect diagnosis) becomes
+ * ONE change request for platform staff through the one healing-proposal writer — kind `change_request`, never on
+ * the auto-applier's SAFE_KINDS — carrying the change class, the four change-control requirements and how each is
+ * met, the accountable owner and the diagnosis. Deduped: an open (pending) change request for the same incident
+ * subject is reused, never a second ticket per tick (a refused dedupe read is said, and the request is still
+ * written — a lost ticket is worse than a duplicate one). Nothing is changed: no code, commit, deploy or migration.
+ */
+async function openChangeRequest(svc: Svc, tools: EngineTools, change: GovernedChangeVerdict, diagnosis: Diagnosis): Promise<{ id: string | null; reused: boolean; note: string }> {
+  const { data: open, error } = await svc.from("connector_healing_proposals").select("id").eq("connector", tools.subject).eq("proposal_kind", "change_request").eq("status", "pending").limit(1)
+  const existing = !error && Array.isArray(open) && open.length > 0 ? String((open[0] as { id: unknown }).id) : null
+  if (existing) return { id: existing, reused: true, note: `open change request ${existing} reused` }
+  const reason = `CHANGE REQUEST (${change.class}) — ${diagnosis.diagnosis.slice(0, 300)}`.slice(0, 480)
+  const id = await tools.proposeToHuman(reason, null, "change_request", {
+    change_class: change.class,
+    change_control: CHANGE_CONTROL_REQUIREMENTS.map((r) => ({ requirement: r, how: CHANGE_CONTROL_HOW[r] })),
+    diagnosis: { root_cause: diagnosis.rootCause, confidence: diagnosis.confidence, diagnosis: diagnosis.diagnosis.slice(0, 500) },
+    manager_may: change.managerMay,
+  })
+  return { id, reused: false, note: error ? `dedupe read refused (${error.message}) — request written anyway` : "" }
+}
+
+/** Attach the OWNER + lifecycle to a result (one place, every exit). */
+function withLifecycle(i: HealthIncident, r: TroubleshootResult, extra: { verify?: IncidentLifecycle["verify"] } = {}): TroubleshootResult {
+  const change = r.kind === "escalate" ? r.change ?? null : r.diagnosis ? governedChangeForDiagnosis(r.diagnosis) : null
+  const remedy: IncidentLifecycle["remedy"] = r.kind === "playbook"
+    ? { kind: "playbook", ref: r.playbook, change: change ? { class: change.class, verdict: change.verdict } : null }
+    : { kind: r.change?.class === "production_source_edit" ? "change_request" : r.proposalId ? "healing_proposal" : "none", ref: r.proposalId, change: change ? { class: change.class, verdict: change.verdict } : null }
+  const notify: IncidentLifecycle["notify"] = r.kind === "playbook" ? (r.ok && r.acts ? "recovered" : r.ok ? "handed_off" : "escalated") : "escalated"
+  return { ...r, owner: incidentOwner(i), lifecycle: incidentLifecycle(i, { diagnosis: r.diagnosis, remedy, verify: extra.verify ?? null, notify }) }
 }
 
 type EngineTools = Awaited<ReturnType<typeof engineTools>>
@@ -864,12 +994,19 @@ async function runSelectedPlaybook(
   const outcome = run
     ? `${run.outcome}${verification ? ` · verify ${verification.verified ? "OK" : "FAILED"}: ${verification.detail}` : verifyRequired ? " · verify FAILED: the executor returned no verification" : ""}`.slice(0, 800)
     : "replayed — already recorded for this attempt"
+  // 146G (ruling 14): the OWNER and the six-stage lifecycle ride the same row (DETECT → DIAGNOSE → OWNER → REPAIR →
+  // VERIFY → NOTIFY / ESCALATE), so the Exception Center reads who is accountable and what each stage did.
+  const lifecycle = incidentLifecycle(i, {
+    diagnosis, verify: verification ?? (verifyRequired ? { verified: false, detail: "the executor returned no verification" } : null),
+    remedy: { kind: "playbook", ref: sel.playbook, change: { class: "self_healing_repair", verdict: "safe" } },
+    notify: ok && spec.acts ? "recovered" : ok ? "handed_off" : "escalated",
+  })
   // incident ↔ evidence ↔ action (ledger key) ↔ attempt ↔ outcome (+ verification) on ONE Exception-Center row.
   const { error: rowErr } = await svc.from("self_heal_events").insert({
     brokerage_id: i.brokerageId, domain: "data_flow", subject, action: `os_health_playbook:${sel.playbook}`,
     outcome: !ok ? "failed" : !spec.acts ? "escalated" : "healed",
     detail: { flow: `os_health_${i.detector}`, class: i.class, playbook: sel.playbook, params: sel.params, rail: spec.rail, outcome, diagnosis: diagnosis.diagnosis.slice(0, 500), root_cause: diagnosis.rootCause, confidence: diagnosis.confidence, cost_usd: costUsd, attempt: attemptNo,
-      attempt_ceiling: attemptCap, evidence: i.evidence, verification, hard_stop: hardStop, ledger_key: keyFor(`playbook_${sel.playbook}`) },
+      attempt_ceiling: attemptCap, evidence: i.evidence, verification, hard_stop: hardStop, ledger_key: keyFor(`playbook_${sel.playbook}`), owner: lifecycle.owner, lifecycle },
   })
   if (rowErr) console.error(`[self-healing] incident row refused for ${subject}: ${rowErr.message}`)
   const ev = await emit({
@@ -882,14 +1019,14 @@ async function runSelectedPlaybook(
   // 6. A FAILED REMEDIATION keeps its evidence (the row above) and ESCALATES: a hard stop at once (a human,
   //    never retried); otherwise on the LAST allowed attempt (proposal + human) — earlier failures retry next tick.
   if (!ok && run) {
-    if (hardStop) return { kind: "escalate", reason: `hard stop (${hardStop}) — ${outcome}${attach}`.slice(0, 1200), diagnosis, gate: hardStop, proposalId: null, costUsd }
+    if (hardStop) return { kind: "escalate", reason: `hard stop (${hardStop}) — ${outcome}${attach}`.slice(0, 1200), diagnosis, gate: hardStop, proposalId: null, costUsd, owner: lifecycle.owner, lifecycle: { ...lifecycle, notify: "escalated" } }
     if (attemptNo >= attemptCap) {
       const reason = `remediation ${sel.playbook} failed on the last allowed attempt (${attemptNo}/${attemptCap}, policy) — ${outcome}`.slice(0, 900)
       const proposalId = await proposeToHuman(reason, { playbook: sel.playbook, params: sel.params, outcome, verification, ledger_key: keyFor(`playbook_${sel.playbook}`) })
-      return { kind: "escalate", reason: `${reason}${attach}`.slice(0, 1200), diagnosis, gate: null, proposalId, costUsd }
+      return { kind: "escalate", reason: `${reason}${attach}`.slice(0, 1200), diagnosis, gate: null, proposalId, costUsd, owner: lifecycle.owner, lifecycle: { ...lifecycle, remedy: { kind: "healing_proposal", ref: proposalId, change: lifecycle.remedy.change }, notify: "escalated" } }
     }
   }
-  return { kind: "playbook", playbook: sel.playbook, acts: spec.acts, ok, outcome, diagnosis, costUsd }
+  return { kind: "playbook", playbook: sel.playbook, acts: spec.acts, ok, outcome, diagnosis, costUsd, owner: lifecycle.owner, lifecycle }
 }
 
 /**
@@ -897,9 +1034,15 @@ async function runSelectedPlaybook(
  * gate again on the model's own flags → validate the selection → run the declared playbook through its
  * executor. Every step is ledgered; a playbook run lands a self_heal_events row and an event. Anything
  * not run returns `escalate` with the reason (and the diagnosis) for the supervisor's escalation path.
- * Never throws.
+ * 146G: every exit carries its accountable OWNER and the ruling-14 lifecycle; a code-defect diagnosis opens a
+ * change request instead of running anything. Never throws.
  */
 export async function troubleshootIncident(svc: Svc, i: HealthIncident, ctx: EngineCtx, deps: TroubleshootDeps = {}): Promise<TroubleshootResult> {
+  const r = await troubleshootUnowned(svc, i, ctx, deps)
+  return r.lifecycle ? r : withLifecycle(i, r)
+}
+
+async function troubleshootUnowned(svc: Svc, i: HealthIncident, ctx: EngineCtx, deps: TroubleshootDeps): Promise<TroubleshootResult> {
   const domain = DETECTOR_DOMAIN[i.detector]
   const tools = await engineTools(svc, i, ctx, deps, domain)
   const { step, proposeToHuman } = tools
@@ -937,7 +1080,15 @@ export async function troubleshootIncident(svc: Svc, i: HealthIncident, ctx: Eng
   if (gate0.forbidden) return { kind: "escalate", reason: `${gate0.reason}${attach}`, diagnosis, gate: gate0.class, proposalId: null, costUsd }
   if (!diagnosis) return { kind: "escalate", reason: `AI diagnosis unavailable (${dx && !dx.ok ? dx.reason : "no result"}) — a human decides`, diagnosis: null, gate: null, proposalId: null, costUsd }
   const gate1 = classifyForbidden(i, diagnosis.touches)
-  if (gate1.forbidden) return { kind: "escalate", reason: `${gate1.reason} (flagged by the diagnosis)${attach}`, diagnosis, gate: gate1.class, proposalId: null, costUsd }
+  if (gate1.forbidden) return { kind: "escalate", reason: `${gate1.reason} (flagged by the diagnosis)${attach}`, diagnosis, gate: gate1.class, proposalId: null, costUsd, change: governedChangeForDiagnosis(diagnosis) }
+  // 3c. RULING 14 (146G) — a fix that is a CONSEQUENTIAL change (a code defect → a production source edit) is never
+  //     a playbook, at any confidence: ONE change request for platform staff (human approval, versioned change,
+  //     tests, deployment authorization) and the incident escalates to its owner + a human.
+  const change = governedChangeForDiagnosis(diagnosis)
+  if (change.verdict === "consequential") {
+    const cr = await openChangeRequest(svc, tools, change, diagnosis)
+    return { kind: "escalate", reason: `ruling 14: ${change.class} is a CONSEQUENTIAL change — no playbook runs; ${cr.id ? `change request ${cr.id}${cr.reused ? " (already open)" : ""}` : "change request NOT written"} awaits human approval (${CHANGE_CONTROL_REQUIREMENTS.join(", ")}); owner ${incidentOwner(i)}${cr.note ? ` · ${cr.note}` : ""}${attach}`.slice(0, 1500), diagnosis, gate: null, proposalId: cr.id, costUsd, change }
+  }
   if (diagnosis.confidence < policy.autoFixMinConfidence) return { kind: "escalate", reason: `diagnosis confidence ${Math.round(diagnosis.confidence * 100)}% below the auto-fix threshold ${Math.round(policy.autoFixMinConfidence * 100)}% (policy) — a human approves${attach}`, diagnosis, gate: null, proposalId: null, costUsd }
 
   // 4. VALIDATE — the model selected; the library decides.
@@ -959,6 +1110,11 @@ export async function troubleshootIncident(svc: Svc, i: HealthIncident, ctx: Eng
  * verification, Exception-Center row, ledger, event and escalation. Never throws.
  */
 export async function runDeclaredPlaybook(svc: Svc, i: HealthIncident, sel: { playbook: string; params?: Record<string, unknown> | null }, ctx: EngineCtx, deps: TroubleshootDeps = {}): Promise<TroubleshootResult> {
+  const r = await runDeclaredUnowned(svc, i, sel, ctx, deps)
+  return r.lifecycle ? r : withLifecycle(i, r)
+}
+
+async function runDeclaredUnowned(svc: Svc, i: HealthIncident, sel: { playbook: string; params?: Record<string, unknown> | null }, ctx: EngineCtx, deps: TroubleshootDeps): Promise<TroubleshootResult> {
   const domain = DETECTOR_DOMAIN[i.detector]
   const tools = await engineTools(svc, i, ctx, deps, domain)
 

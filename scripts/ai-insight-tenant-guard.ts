@@ -1557,7 +1557,14 @@ const W24_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> =
   { file: "lib/fatigue/fatigue-calculator.ts", table: "smart_assistant_suggestions", floor: 1 },
   { file: "lib/property-alerts/alert-notifier.ts", table: "smart_assistant_suggestions", floor: 1 },
   { file: "lib/campaign-sequences/step-executor.ts", table: "sequence_step_executions", floor: 4 },
-  { file: "app/actions/open-house-automation.ts", table: "open_house_attendees", floor: 2 },
+  // DELIBERATE LIST UPDATE (wave 146, lane 146G — owner ruling 15). open-house-automation.ts held TWO
+  // open_house_attendees writers: recordVisitor and a twin checkInAttendee with no importer, which defaulted
+  // tcpa_consent to true. The twin is RETIRED with its eight-step proof (scripts/manager-duplicate-proof-guard.ts,
+  // row checkInAttendee) and a tombstone naming app/actions/seller-open-house.ts:661. The check-in writer did not
+  // "disappear rather than being stamped": it is the kiosk check-in in seller-open-house.ts, whose floor below now
+  // holds it (event-derived brokerage_id at the top level of the row).
+  { file: "app/actions/open-house-automation.ts", table: "open_house_attendees", floor: 1 },
+  { file: "app/actions/seller-open-house.ts", table: "open_house_attendees", floor: 1 },
   { file: "lib/kernel/cron-logging.ts", table: "cron_execution_logs", floor: 2 },
   // DELIBERATE LIST UPDATE (dead-import tranche). `app/api/cron/health-check/
   // route.ts` no longer writes `cron_execution_logs` at all — its two hand-rolled

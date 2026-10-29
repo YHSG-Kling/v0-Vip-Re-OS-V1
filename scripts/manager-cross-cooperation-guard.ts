@@ -161,6 +161,46 @@ check("every collaboration domain is co-signed by ≥1 maintenance domain OR car
 check("ratchet — prose-declared entries without coOwners stay at 0", v.proseWithoutStructure.length === 0)
 check("ratchet — at least the 152 pairs measured 2026-09-23 are structured (a lane cannot un-declare a cooperation to move a number)", v.pairs >= 152, `now ${v.pairs}`)
 
+// ─── Ruling 14 (wave 146, lane 146G): ONE coordinating team across every area ───────────
+// "Managing managers coordinate across platform ops, providers, lead acquisition, CRM, ISA, listings/offers, compliance,
+// finance, marketing/ads, video/assets, education, support, vendors, intelligence — through the kernel bus." The bus
+// admits a referral only on a licensed edge (canRefer), so coordination across the OS is possible only if the licensed
+// graph is CONNECTED. Each area's accountable managers are DERIVED from the registry (MAINTENANCE_DOMAINS keys of that
+// area → their accountable manager), never declared here.
+// BLIND SPOT: an area is matched by key tokens; a domain keyed without the area's word is not counted for it.
+console.log("\n[ruling 14 — one coordinating team: the licensed bus connects every manager, every area has an owner]")
+/** Connected components of `keys` under `refer` (BFS) — pure, used on the real registry and on the control. */
+function components(keys: readonly string[], refer: (a: string, b: string) => boolean): string[][] {
+  const seen = new Set<string>(); const out: string[][] = []
+  for (const k of keys) {
+    if (seen.has(k)) continue
+    const comp = [k]; seen.add(k); const q = [k]
+    while (q.length) { const a = q.shift()!; for (const b of keys) if (!seen.has(b) && refer(a, b)) { seen.add(b); comp.push(b); q.push(b) } }
+    out.push(comp)
+  }
+  return out
+}
+const comps = components(KEYS, (a, b) => canRefer(a, b))
+check(`the licensed referral graph is ONE component — every one of the ${KEYS.length} managers can reach every other through the bus (${comps.length} component${comps.length === 1 ? "" : "s"})`,
+  comps.length === 1, comps.map((c) => c.join(",")).join(" | "))
+check("CONTROL an isolated manager is caught (a two-component fixture)", components(["a", "b", "c"], (x, y) => (x === "a" && y === "b") || (x === "b" && y === "a")).length === 2)
+const COORDINATION_AREAS: Record<string, RegExp> = {
+  "platform ops": /^(cron|os_health|platform_|production_readiness|self_healing|healing)/, providers: /provider/, "lead acquisition": /^lead|_lead/,
+  CRM: /contact|crm/, ISA: /isa/, "listings/offers": /listing|offer/, compliance: /compliance|fair_housing/, finance: /commission|finance|billing/,
+  "marketing/ads": /campaign|marketing|^ads_|_ads_|ads$/, "video/assets": /video|asset|media/, education: /education/, support: /support/,
+  vendors: /vendor/, intelligence: /intel|signal/,
+}
+const areaOwners = Object.entries(COORDINATION_AREAS).map(([area, re]) => {
+  const n = new Map<ManagerKey, number>()
+  for (const [k, d] of Object.entries(MAINTENANCE_DOMAINS)) if (re.test(k)) n.set(d.manager, (n.get(d.manager) ?? 0) + 1)
+  return { area, owners: [...n].sort((x, y) => y[1] - x[1]).map(([m]) => m) }
+})
+for (const a of areaOwners) console.log(`  · ${a.area}: ${a.owners.length ? a.owners.map((m) => MANAGERS[m].label).join(", ") : "NO OWNER"}`)
+check(`every one of the ruling's ${areaOwners.length} coordination areas resolves to ≥1 registered accountable manager (derived from MAINTENANCE_DOMAINS)`,
+  areaOwners.every((a) => a.owners.length > 0 && a.owners.every((m) => !!MANAGERS[m])), areaOwners.filter((a) => !a.owners.length).map((a) => a.area).join(", "))
+check("every area's owners sit in the one licensed component (any area can hand work to any other through the bus)",
+  comps.length === 1 && areaOwners.every((a) => a.owners.every((m) => comps[0].includes(m))))
+
 // ─── Registration ───────────────────────────────────────────────────────────
 console.log("\n[registration]")
 import { readFileSync } from "node:fs"

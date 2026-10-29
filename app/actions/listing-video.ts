@@ -410,26 +410,12 @@ export async function trackVideoView(
 // GET VIDEO PROJECTS
 // ============================================
 
-export async function getVideoProjects(agentId: string) {
-  if (!isValidUUID(agentId)) {
-    return []
-  }
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from('ai_video_projects')
-    .select('*')
-    .eq('agent_id', agentId)
-    .order('created_at', { ascending: false })
-
-  if (error) {
-    console.error('Get video projects error:', error)
-    return []
-  }
-
-  return data || []
-}
+// TOMBSTONE (wave 146, lane 146G — owner ruling 15; eight-step proof row `getVideoProjects` in
+// scripts/manager-duplicate-proof-guard.ts): getVideoProjects(agentId) DELETED here → survivor
+// app/actions/video/create-video-project.ts:490 getVideoProjects(_brokerageId, agentId) — the same read of
+// ai_video_projects filtered by agent, but session-gated (requireCaller), pinned to the SESSION's brokerage and
+// bounded (50, newest first). This twin had no importer; it took a caller-supplied agent id with no session gate
+// and no tenant predicate, and returned an unbounded list — nothing in it was worth merging.
 
 // ============================================
 // HELPER FUNCTIONS — DELETED (merged, 2026-08-27)

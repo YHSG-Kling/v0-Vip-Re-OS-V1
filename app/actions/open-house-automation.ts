@@ -1648,88 +1648,12 @@ function parseTime(timeStr: string): number {
 // DIGITAL CHECK-IN
 // ============================================
 
-export async function checkInAttendee(params: {
-  eventId: string
-  contactEmail: string
-  contactName: string
-  contactPhone?: string
-  interestLevel?: string
-  specificQuestions?: string[]
-  optInFollowUp?: boolean
-}) {
-  if (!isValidUUID(params.eventId)) {
-    return { success: false, error: "Invalid event ID" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    // Check if attendee already checked in
-    const { data: existing } = await supabase
-      .from("open_house_attendees")
-      .select("id")
-      .eq("event_id", params.eventId)
-      .eq("email", params.contactEmail)
-      .maybeSingle()
-
-    if (existing) {
-      return { success: false, error: "Already checked in" }
-    }
-
-    // TENANT: the EVENT'S brokerage — the record this attendee is filed against.
-    // Nothing else in this function's scope carries one (it takes no caller
-    // context at all), and `endOpenHouseEvent` pairs `event_id` with the caller's
-    // brokerage when it reads attendees back, so the event is the only anchor
-    // that can make this row readable by the surface that owns it.
-    const { data: event, error: eventErr } = await supabase
-      .from("open_house_events")
-      .select("id, brokerage_id")
-      .eq("id", params.eventId)
-      .maybeSingle()
-    if (eventErr) {
-      return { success: false, error: `Could not verify the open house: ${eventErr.message}` }
-    }
-    if (!event) {
-      return { success: false, error: "Open house event not found" }
-    }
-
-    // Create attendee record.
-    //
-    // THE INSERT IS DESTRUCTURED, AND IT MATTERS MORE HERE THAN THE STAMP:
-    // `open_house_attendees.contact_id` is NOT NULL on the live schema and this
-    // writer sends no contact at all, so every call has been refused 23502 —
-    // while `const { data: attendee }` read the refusal as "no row returned" and
-    // the function returned `{ success: true, data: null }`. Resolving an email
-    // to a contact (or creating one, the way the public sign-in route does) is a
-    // product decision, so it is NAMED here rather than guessed at: this action
-    // currently has no callers in the tree, and the check-in surface uses
-    // `app/actions/seller-open-house.ts:checkInAttendee` instead.
-    const { data: attendee, error: attendeeErr } = await supabase
-      .from("open_house_attendees")
-      .insert({
-        event_id: params.eventId,
-        brokerage_id: event.brokerage_id,
-        email: params.contactEmail,
-        name: params.contactName,
-        phone: params.contactPhone ?? null,
-        interest_level: mapInterestLevelText(params.interestLevel),
-        check_in_time: new Date().toISOString(),
-        arrival_time: new Date().toISOString(),
-        working_with_agent: false,
-        tcpa_consent: params.optInFollowUp !== false,
-        ai_lead_score: 0,
-      })
-      .select()
-      .maybeSingle()
-
-    if (attendeeErr) {
-      return { success: false, error: attendeeErr.message }
-    }
-
-    revalidatePath("/dashboard/open-house")
-    return { success: true, data: attendee }
-  } catch (error) {
-    console.error("Check-in attendee error:", error)
-    return { success: false, error: "Failed to check in" }
-  }
-}
+// TOMBSTONE (wave 146, lane 146G — owner ruling 15; eight-step proof row `checkInAttendee` in
+// scripts/manager-duplicate-proof-guard.ts): checkInAttendee DELETED here → survivor
+// app/actions/seller-open-house.ts:661 checkInAttendee — the kiosk check-in the event-day tab calls: event-derived
+// brokerage, refuses a completed / cancelled event, REQUIRES TCPA consent, dedupes on (event, email), records the
+// consent on contact_consent_events and emits OPEN_HOUSE_ATTENDEE_CAPTURED. This twin had no importer. Its only
+// behaviours the survivor lacks were not merged, on purpose: it DEFAULTED tcpa_consent to true when optInFollowUp was
+// omitted (consent without an affirmative act — the survivor refuses that), and it stamped an interest level at
+// sign-in, which the survivor deliberately leaves NULL ("at sign-in we have not assessed them yet"; the follow-up
+// path scores interest). mapInterestLevelText stays — recordVisitor above still uses it.

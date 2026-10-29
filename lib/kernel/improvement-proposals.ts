@@ -34,7 +34,7 @@ import type { AuthorityLevel } from "@/lib/ai-isa/persona-tool-policy"
 import type { AutonomyDecision } from "@/lib/managers/autonomy-gate"
 // Wave 108 (lane 108G): the optimizer's bounds — the classes it may touch and the surfaces it may NEVER touch —
 // are classified here, in the ONE proposal kernel, at propose / evaluate / decide / promote (whoever the actor is).
-import { classifyProposalSurface, loadSelfOptimizationPolicy, OPTIMIZATION_CLASS_AUTHORITY, type SurfaceVerdict, type OptimizationEvalDeps } from "@/lib/kernel/self-optimization"
+import { classifyProposalSurface, loadSelfOptimizationPolicy, OPTIMIZATION_CLASS_AUTHORITY, type SurfaceVerdict, type OptimizationEvalDeps, type OptimizationClass } from "@/lib/kernel/self-optimization"
 
 // Wave 106 (lane 106A, m721 — additive widening): `allocation` = a RESOURCE ALLOCATION recommendation
 // (lib/kernel/resource-allocation.ts — lead assignment / marketing budget) a human approves; proposer
@@ -162,6 +162,125 @@ export function canTransition(from: ProposalStatus, to: ProposalStatus): boolean
   return PROPOSAL_TRANSITIONS[from]?.includes(to) ?? false
 }
 
+// ── WAVE 146 (lane 146G, owner ruling 14) — SAFE ADAPTATION vs CONSEQUENTIAL CHANGE ─────────────────
+// "Managers should be allowed to change policies if they align with the business process and can heal the
+// playbook; code edits stay governed." ONE rule, stated once, over the rails that already carry each change —
+// nothing here is a new approval system (LAW 1/2):
+//   · SAFE operational adaptation — a manager may PROPOSE and APPLY it within its authority, with evidence:
+//     the optimization classes + variant / threshold / experiment proposals on THIS kernel (rung 4, the
+//     tenant's human-set autonomous list, the autonomy gate, withActionLedger), and the declared self-healing
+//     playbooks (lib/kernel/self-healing.ts: hard gate, healing policy, validated selection, verified outcome).
+//   · CONSEQUENTIAL change — a manager may only PROPOSE it; a HUMAN approves, the change is VERSIONED, TESTED
+//     and its DEPLOYMENT is human-authorized (CHANGE_CONTROL_REQUIREMENTS). Production source, credentials,
+//     destructive schema and RLS / security have NO runtime writer at all — a manager's diagnosis of one becomes
+//     a change request for platform staff (self-healing.ts openChangeRequest), never an action.
+// The class is DERIVED from the change itself (classifyGovernedChange), never from the row's stored
+// authority_required — a row written with a low rung by another path cannot smuggle a consequential change
+// past promotionDecision. Anything not on the safe list is consequential (fail closed: "unlisted").
+
+/** Ruling 14's SAFE list, in its own words. */
+export const SAFE_ADAPTATION_CLASSES = ["playbook_parameters", "provider_failover", "retry", "notification_routing", "content_channel_selection", "self_healing_repair"] as const
+/** Ruling 14's CONSEQUENTIAL list, in its own words. */
+export const CONSEQUENTIAL_CHANGE_CLASSES = ["financial_calculation", "legal_compliance", "rls_security", "tenant_authority", "production_source_edit", "credentials", "destructive_schema", "money_movement"] as const
+export type SafeAdaptationClass = (typeof SAFE_ADAPTATION_CLASSES)[number]
+export type ConsequentialChangeClass = (typeof CONSEQUENTIAL_CHANGE_CLASSES)[number]
+/** `unlisted` = on neither list — treated as CONSEQUENTIAL (a human decides). */
+export type GovernedChangeClass = SafeAdaptationClass | ConsequentialChangeClass | "unlisted"
+
+/** What every CONSEQUENTIAL change needs before it is live (ruling 14). */
+export const CHANGE_CONTROL_REQUIREMENTS = ["human_approval", "versioned_change", "tests", "deployment_authorization"] as const
+export type ChangeControlRequirement = (typeof CHANGE_CONTROL_REQUIREMENTS)[number]
+/** How each requirement is met on the survivors (printed on every change request — never a promise of a new system). */
+export const CHANGE_CONTROL_HOW: Readonly<Record<ChangeControlRequirement, string>> = Object.freeze({
+  human_approval: "a human decides: the tenant admin roster (decideProposal) for tenant policy, a compliance approver for a compliance-scoped change, platform staff (approveProposalAction, applied_by = a user id, never 'auto') for a change request",
+  versioned_change: "the change is a version: tenant policy through appendTenantPolicyVersion (tenant_policy_versions, append-only, revert = a NEW version); code / schema / RLS as a reviewed commit or a migration file WRITTEN, NOT APPLIED until the integrator applies it",
+  tests: "the owning domain's proofs and the full guard chain pass (GUARD_EXIT=0) before the change ships; a tenant policy change is evaluated deterministically first (evaluateImprovement)",
+  deployment_authorization: "a human-authorized deploy (CI build green) — no manager, healer or runtime path deploys, commits or applies a migration",
+})
+
+export interface GovernedChangeClassDef {
+  label: string
+  verdict: "safe" | "consequential"
+  /** The survivor rail that carries (safe) or holds for a human (consequential) this class — `file symbol`. */
+  rail: string
+}
+
+/** @proofSeam scripts/manager-governance-change-guard.ts proves each rail's symbol exists in its file (stripped). */
+export const GOVERNED_CHANGE_CLASSES: Readonly<Record<SafeAdaptationClass | ConsequentialChangeClass, GovernedChangeClassDef>> = Object.freeze({
+  playbook_parameters: { label: "Approved playbook parameters", verdict: "safe", rail: "lib/kernel/self-optimization.ts OPTIMIZATION_CLASS_DEFS" },
+  provider_failover: { label: "Provider failover", verdict: "safe", rail: "lib/ai-isa/property-lookup-rail.ts routeCapability" },
+  retry: { label: "Retry", verdict: "safe", rail: "lib/kernel/os-health.ts decideRecovery" },
+  notification_routing: { label: "Notification routing (hand the incident to its accountable owner)", verdict: "safe", rail: "lib/kernel/self-healing.ts notify_owner_manager" },
+  content_channel_selection: { label: "Content / channel selection", verdict: "safe", rail: "lib/kernel/experiment-pipeline.ts EXPERIMENT_CLASSES" },
+  self_healing_repair: { label: "Approved self-healing repair", verdict: "safe", rail: "lib/kernel/self-healing.ts validatePlaybookSelection" },
+  financial_calculation: { label: "Financial calculation", verdict: "consequential", rail: "lib/kernel/self-optimization.ts financial_rule" },
+  legal_compliance: { label: "Legal / compliance", verdict: "consequential", rail: "lib/kernel/law-rule-healing.ts applyLawRuleProposal" },
+  rls_security: { label: "RLS / security", verdict: "consequential", rail: "lib/kernel/self-healing.ts classifyForbidden" },
+  tenant_authority: { label: "Tenant authority", verdict: "consequential", rail: "lib/kernel/self-optimization.ts authority_policy" },
+  production_source_edit: { label: "Production source edit", verdict: "consequential", rail: "lib/kernel/self-healing.ts openChangeRequest" },
+  credentials: { label: "Credentials", verdict: "consequential", rail: "lib/kernel/self-healing.ts refresh_token_prompt" },
+  destructive_schema: { label: "Destructive schema", verdict: "consequential", rail: "lib/kernel/self-healing.ts data_deletion" },
+  money_movement: { label: "Money movement", verdict: "consequential", rail: "lib/kernel/os-health.ts halt_and_route_finance" },
+})
+
+/** Each SELF-OPTIMIZATION class → the ruling-14 safe class it is an instance of (typed over the class list). */
+const OPTIMIZATION_SAFE_CLASS: Readonly<Record<OptimizationClass, SafeAdaptationClass>> = Object.freeze({
+  campaign_sequencing: "content_channel_selection",
+  creative_choice: "content_channel_selection",
+  education_intervention: "content_channel_selection",
+  property_recommendation: "content_channel_selection",
+  followup_timing: "playbook_parameters",
+  model_routing: "playbook_parameters",
+  transaction_reminder_timing: "playbook_parameters",
+  provider_selection: "provider_failover",
+})
+
+export interface GovernedChangeVerdict {
+  class: GovernedChangeClass
+  verdict: "safe" | "consequential"
+  /** safe → a governed manager may apply it within its authority; consequential → it proposes, a human decides. */
+  managerMay: "apply_within_authority" | "propose_only"
+  /** consequential only — what must happen before it is live. */
+  changeControl: readonly ChangeControlRequirement[]
+  reason: string
+}
+
+/** PURE — the verdict for a class (one constructor, so safe / consequential can never disagree with the table). */
+export function governedChangeVerdict(cls: GovernedChangeClass, reason: string): GovernedChangeVerdict {
+  const safe = cls !== "unlisted" && GOVERNED_CHANGE_CLASSES[cls].verdict === "safe"
+  return safe
+    ? { class: cls, verdict: "safe", managerMay: "apply_within_authority", changeControl: [], reason }
+    : { class: cls, verdict: "consequential", managerMay: "propose_only", changeControl: CHANGE_CONTROL_REQUIREMENTS, reason }
+}
+
+/**
+ * PURE — WHICH ruling-14 class is this proposed change? Derived from the change (its surface, kind and payload),
+ * never from the stored authority. Safe only when it is provably on the safe list: a self-optimization class
+ * (its allowed fields only), a sequence / media variant, a predictor threshold, or an experiment (whose spend is
+ * the human-set experiment envelope). Every forbidden surface, every law rule / allocation / strategy / prompt,
+ * every compliance-scoped change and every whole-policy edit is consequential.
+ */
+export function classifyGovernedChange(row: { subject_kind: string; subject_key: string; proposer?: string | null; proposed_change: Record<string, unknown> | null }): GovernedChangeVerdict {
+  const change = row.proposed_change ?? {}
+  if (change.requires_compliance === true) return governedChangeVerdict("legal_compliance", "a compliance-scoped change (requires_compliance) — a human compliance approver decides")
+  const surf = classifyProposalSurface(row)
+  if (surf.scope === "forbidden") {
+    const cls: GovernedChangeClass = surf.surface === "financial_rule" ? "financial_calculation" : surf.surface === "compliance_boundary" ? "legal_compliance" : surf.surface === "authority_policy" ? "tenant_authority" : "unlisted"
+    return governedChangeVerdict(cls, `forbidden surface ${surf.surface}: ${surf.reason}`)
+  }
+  if (surf.scope === "optimizable") return governedChangeVerdict(OPTIMIZATION_SAFE_CLASS[surf.class], `optimization class ${surf.class} (allowed fields only: ${surf.paths.join(", ")})`)
+  switch (row.subject_kind) {
+    case "variant": return governedChangeVerdict("content_channel_selection", `a ${row.subject_key.split(":")[0]} variant — the measured winner is selected`)
+    case "experiment": return governedChangeVerdict("content_channel_selection", "an experiment adopts a measured arm; its spend is the human-set experiment envelope")
+    case "threshold": return governedChangeVerdict("playbook_parameters", "a predictor threshold re-derived from the record")
+    case "law_rule": return governedChangeVerdict("legal_compliance", "a federal / state law rule — the compliance officer decides")
+    case "allocation": return String(change.kind ?? "") === "lead_assignment"
+      ? governedChangeVerdict("tenant_authority", "who receives a lead is the brokerage's authority — a human decides")
+      : governedChangeVerdict("money_movement", "a marketing budget allocation moves spend — a human decides")
+    default: return governedChangeVerdict("unlisted", `a ${row.subject_kind} change is not on ruling 14's safe list — consequential by default; a human decides`)
+  }
+}
+
 // ── PURE: the promotion decision ────────────────────────────────────────────────────────────
 
 /**
@@ -182,6 +301,10 @@ export function promotionDecision(input: {
   /** Wave 108G — the proposal's surface (classifyProposalSurface) and, for a non-human promoter of an
    *  optimization, the tenant's autonomous class list (policy key self_optimization; null = unread → none). */
   optimization?: { surface: SurfaceVerdict; autonomousClasses?: readonly string[] | null } | null
+  /** Wave 146 (146G, ruling 14) — the change's class, derived by classifyGovernedChange from the ROW (the kernel's
+   *  own doors always pass it). A consequential class is never promoted by a manager / the system, whatever the
+   *  stored authority_required says. Absent = a pure caller that judges authority only (unchanged rule). */
+  governedChange?: GovernedChangeVerdict | null
 }): { allow: boolean; reason: string } {
   if (input.status !== "APPROVED") return { allow: false, reason: `proposal is ${input.status} — only an APPROVED proposal promotes` }
   // A FORBIDDEN SURFACE is refused for EVERY actor — a human approving it does not make it optimizable.
@@ -189,6 +312,9 @@ export function promotionDecision(input: {
   if (surf?.scope === "forbidden") return { allow: false, reason: `forbidden surface ${surf.surface}: ${surf.reason}` }
   if (input.actor.type === "agent") return { allow: false, reason: "an AI agent never promotes a change to the OS (LAW 4) — a human or a governed manager decides" }
   if (input.verdict === "fail") return { allow: false, reason: "the evaluation FAILED — a failed proposal is never promoted" }
+  if (input.actor.type !== "user" && input.governedChange?.verdict === "consequential") {
+    return { allow: false, reason: `ruling 14: ${input.governedChange.class} is a CONSEQUENTIAL change — a manager proposes it, a human approves it (${CHANGE_CONTROL_REQUIREMENTS.join(", ")}); APPROVAL_REQUIRED` }
+  }
   if (surf?.scope === "optimizable" && input.actor.type !== "user" && !(input.optimization?.autonomousClasses ?? []).includes(surf.class)) {
     return { allow: false, reason: `${surf.class} is not on this brokerage's autonomous optimization list — APPROVAL_REQUIRED: a human promotes it` }
   }
@@ -540,7 +666,7 @@ export async function decideProposal(
     const optimization = await optimizationContext(svc, row, input.actor)
     if (optimization.surface.scope === "forbidden") return { ok: false, error: `forbidden surface ${optimization.surface.surface}: ${optimization.surface.reason}` }
     if (input.actor.type !== "user") {
-      const d = promotionDecision({ status: "APPROVED", verdict: row.evaluation?.verdict ?? null, authorityRequired: row.authority_required, actor: input.actor, gate: input.gate, optimization })
+      const d = promotionDecision({ status: "APPROVED", verdict: row.evaluation?.verdict ?? null, authorityRequired: row.authority_required, actor: input.actor, gate: input.gate, optimization, governedChange: classifyGovernedChange(row) })
       if (!d.allow) return { ok: false, error: d.reason }
     }
   }
@@ -734,7 +860,7 @@ export async function promoteProposal(
   if (!got.ok) return got
   const row = got.row
   const optimization = await optimizationContext(svc, row, input.actor)
-  const d = promotionDecision({ status: row.status, verdict: row.evaluation?.verdict ?? null, authorityRequired: row.authority_required, actor: input.actor, gate: input.gate, optimization })
+  const d = promotionDecision({ status: row.status, verdict: row.evaluation?.verdict ?? null, authorityRequired: row.authority_required, actor: input.actor, gate: input.gate, optimization, governedChange: classifyGovernedChange(row) })
   if (!d.allow) return { ok: false, held: true, error: d.reason }
   return ledgered(svc, row, input.actor, "promote")
 }
@@ -770,7 +896,9 @@ async function ledgered(svc: Svc, row: ImprovementProposalRow, actor: ProposalAc
         riskClass: "LOW_RISK_WRITE",
         systemSource: "controlled_learning",
         policyKey,
-        detail: { subject_kind: row.subject_kind, subject_key: row.subject_key, proposer: row.proposer, proposed_change: row.proposed_change, evaluation: row.evaluation ? { evaluator: row.evaluation.evaluator, verdict: row.evaluation.verdict, score: row.evaluation.score } : null },
+        detail: { subject_kind: row.subject_kind, subject_key: row.subject_key, proposer: row.proposer, proposed_change: row.proposed_change, evaluation: row.evaluation ? { evaluator: row.evaluation.evaluator, verdict: row.evaluation.verdict, score: row.evaluation.score } : null,
+          // 146G (ruling 14, LAW 5): which class of change this was — safe adaptation or consequential (human-approved).
+          governed_change: (() => { const g = classifyGovernedChange(row); return { class: g.class, verdict: g.verdict } })() },
       },
       async () => ({ ok: true as const, applied: await applyChange(svc, row, policyActor, direction) }),
       {

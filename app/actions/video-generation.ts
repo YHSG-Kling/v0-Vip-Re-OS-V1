@@ -628,14 +628,12 @@ export async function createScriptVariation(data: {
 //     queue row → provider job, for the "I have a script" entry point.
 // Nothing was ported: a stub that returns an error string has no capability to move.
 
-export async function getVideoQueue(_agentId: string) {
-  // SCHEMA DRIFT: video_generation_queue has no agent_id column in live
-  // schema. Auth gate added to prevent unauthenticated probing while we
-  // resolve the drift. Returns empty until the queue model is reconciled.
-  const auth = await requireCaller()
-  if (!auth.ok) return []
-  return []
-}
+// TOMBSTONE (wave 146, lane 146G — owner ruling 15; eight-step proof row `getVideoQueue` in
+// scripts/manager-duplicate-proof-guard.ts): getVideoQueue DELETED here → survivor
+// app/actions/link-to-video.ts:507 getVideoQueue — the session-gated, tenant-scoped reader of
+// video_generation_queue (brokerage + its teams, with the project's rendered file embedded). This twin had
+// no importer and no unique behaviour: after its auth gate it always returned [] (its own note: the queue has
+// no agent_id column), so nothing was merged.
 
 // ============================================
 // VIDEO PERFORMANCE TRACKING — LAYER 8.5
