@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 146, lane 146E) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-29 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 146, lane 146E ──
 --
 -- m881 — THE TWO TV CONNECTIONS HAVE NAMES THE DATABASE ADMITS (wave 146, lane 146E; owner ruling 8, 2026-10-29:
 -- "groundtruth (https://api-docs.groundtruth.com/) and stackadapt are 2 tv connections").
