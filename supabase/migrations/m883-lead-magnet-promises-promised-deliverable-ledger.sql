@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 146, lane 146F) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-29 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 146, lane 146F ──
 --
 -- m883 — lead_magnet_promises: THE PROMISE LEDGER. Every lead-magnet request that promised an asset (a guide, a book, a
 -- report, an agent-prepared home value) is recorded with what was promised, to whom, on what consent, through which
