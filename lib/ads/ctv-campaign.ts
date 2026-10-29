@@ -52,9 +52,31 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { VIBE_HOME_URL, dispatchCtvCampaign, type CtvDispatchResult } from "@/lib/providers/vibe"
+import { GROUNDTRUTH_HOME_URL } from "@/lib/providers/groundtruth-ads"
+import { STACKADAPT_HOME_URL } from "@/lib/providers/stackadapt-ads"
 import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
 import { classifyPublicVideo } from "@/lib/video/public-video"
 import { tvSpotOf, TV_SPOT_SPEC } from "@/lib/video/tv-spot"
+import { TV_AD_CAMPAIGN_PLATFORMS } from "@/lib/integrations/ad-campaign-vocabulary"
+
+// ─── THE TV CONNECTIONS (wave 146, lane 146E — owner ruling 8, 2026-10-29) ─────────────────────────────────
+// "groundtruth (https://api-docs.groundtruth.com/) and stackadapt are 2 tv connections." They are ADAPTERS on this
+// ONE gateway, not a second TV subsystem: the same staging (approved public video, the TV judge, the approved topic),
+// the same broadcast gate at the authoritative write (ensureCtvBroadcastReady) and the same human launch approval;
+// only the provider the staged row names differs. vibe_ctv stays the default and its launch path is unchanged.
+// The provider-side facts each one publishes live beside its connector (lib/providers/groundtruth-ads.ts
+// GROUNDTRUTH_DECLARATION, lib/providers/stackadapt-ads.ts STACKADAPT_DECLARATION).
+export const CTV_TV_PLATFORMS = TV_AD_CAMPAIGN_PLATFORMS
+export type CtvTvPlatform = (typeof CTV_TV_PLATFORMS)[number]
+function isCtvTvPlatform(p: unknown): p is CtvTvPlatform {
+  return typeof p === "string" && (CTV_TV_PLATFORMS as readonly string[]).includes(p)
+}
+/** Where a human finishes or inspects a spot on each TV connection (the launch package's link). */
+const TV_PROVIDER_HOME: Readonly<Record<CtvTvPlatform, { label: string; url: string }>> = Object.freeze({
+  vibe_ctv: { label: "Vibe", url: VIBE_HOME_URL },
+  groundtruth: { label: "GroundTruth", url: GROUNDTRUTH_HOME_URL },
+  stackadapt: { label: "StackAdapt", url: STACKADAPT_HOME_URL },
+})
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -81,12 +103,21 @@ export interface StageCtvCampaignInput {
   campaignName?: string
   dailyBudgetCents: number
   targeting: CtvTargeting
+  /** Wave 146 (ruling 8): WHICH TV connection runs the spot — vibe_ctv (default), groundtruth or stackadapt. */
+  tvPlatform?: CtvTvPlatform | null
+  /** Wave 146: the CPM bid in USD a GroundTruth / StackAdapt launch needs (both bid per thousand impressions; a 0 bid
+   *  never delivers). Recorded on the staged row; Vibe ignores it. */
+  bidCpmUsd?: number | null
   /** The caller's client (the autonomous staging passes its own; default the service client). */
   client?: ReturnType<typeof createServiceClient>
 }
 
 export interface CtvLaunchPackage {
   campaignId: string
+  /** The TV connection the spot is staged on (wave 146). */
+  tvPlatform: CtvTvPlatform
+  /** The provider's own home link (named vibeDeepLink before the second and third TV connection existed; the
+   *  field keeps its name for the lane UI and carries the STAGED provider's link). */
   vibeDeepLink: string
   creativeUrl: string
   creativeDurationSeconds: number | null
@@ -320,6 +351,17 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
   if (!videoProjectId && !listingId) {
     return { success: false, error: "Pick a video (videoProjectId) or a listing to source one from" }
   }
+  const tvPlatform: CtvTvPlatform = input.tvPlatform ?? "vibe_ctv"
+  if (!isCtvTvPlatform(tvPlatform)) {
+    return { success: false, error: `'${String(input.tvPlatform)}' is not a TV connection (${CTV_TV_PLATFORMS.join(", ")})` }
+  }
+  const bidCpmUsd = input.bidCpmUsd == null ? null : Number(input.bidCpmUsd)
+  if (bidCpmUsd != null && !(Number.isFinite(bidCpmUsd) && bidCpmUsd > 0)) {
+    return { success: false, error: "bidCpmUsd must be a positive CPM in USD" }
+  }
+  if (tvPlatform !== "vibe_ctv" && bidCpmUsd == null) {
+    return { success: false, error: `${TV_PROVIDER_HOME[tvPlatform].label} bids per thousand impressions — give the CPM bid (bidCpmUsd) when staging` }
+  }
 
   const supabase = input.client ?? createServiceClient()
 
@@ -387,12 +429,13 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
       agent_user_id: agentUserId,
       created_by: agentUserId,
       campaign_name: campaignName,
-      platform: "vibe_ctv",
+      platform: tvPlatform,
       objective: "awareness",
       status: "draft",
       daily_budget: Math.round(dailyBudgetCents) / 100,
       targeting_config: {
         play: "ctv",
+        ...(bidCpmUsd != null ? { bid_cpm_usd: bidCpmUsd } : {}),
         dmas,
         cities,
         zips,
@@ -415,10 +458,11 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
     // surface the honest reason + the exact migration instead of a cryptic 23514.
     const msg = insertError.message ?? ""
     if (insertError.code === "23514" || /platform.*check|check.*platform/i.test(msg)) {
+      const migration = tvPlatform === "vibe_ctv" ? "m271-ad-campaigns-vibe-ctv-platform.sql" : "m881-tv-connections-groundtruth-stackadapt.sql"
       return {
         success: false,
         error:
-          `Database rejected platform 'vibe_ctv' (${msg}). The ad_campaigns.platform CHECK has not been widened yet — apply supabase/migrations/m271-ad-campaigns-vibe-ctv-platform.sql, then stage again.`,
+          `Database rejected platform '${tvPlatform}' (${msg}). The ad_campaigns.platform CHECK has not been widened yet — apply supabase/migrations/${migration}, then stage again.`,
       }
     }
     return { success: false, error: `Failed to stage campaign: ${msg}` }
@@ -427,19 +471,23 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
     return { success: false, error: "Failed to stage campaign: no row returned" }
   }
 
-  // ── Launch package — the real steps a human runs on vibe.co ────────────────
+  // ── Launch package — the real steps a human runs on the provider ───────────
   const durationLabel = video.duration_seconds != null ? `${video.duration_seconds}s` : "15s/30s"
+  const provider = TV_PROVIDER_HOME[tvPlatform]
   const checklist = [
-    `Sign in at vibe.co with the brokerage's Vibe account (create one if this is the first streaming-TV campaign).`,
+    tvPlatform === "vibe_ctv"
+      ? `Sign in at vibe.co with the brokerage's Vibe account (create one if this is the first streaming-TV campaign).`
+      : `Connect the brokerage's ${provider.label} account in Settings → Connections (${provider.label} issues API credentials on request) — the in-app launch runs the same TV gate and is refused until it is connected.`,
     broadcast.source === "tv_master"
-      ? `Create a new campaign in Vibe and upload the TV MASTER (${durationLabel}, ${TV_MASTER_SUMMARY}; spec ${broadcast.specVersion}): ${broadcast.url}`
+      ? `Create a new campaign in ${provider.label} and upload the TV MASTER (${durationLabel}, ${TV_MASTER_SUMMARY}; spec ${broadcast.specVersion}): ${broadcast.url}`
       : `Make the TV master first (Video → TV master) — then upload THAT file, never the social reel. The launch here is refused until it reads READY.`,
     ...(topic ? [`Topic: "${topic.title || topic.topicId}" — approved for TV${topic.approvedAt ? ` on ${topic.approvedAt.slice(0, 10)}` : ""}; the spot's claims must match the topic's source.`] : []),
     `Set geographic targeting to: ${targetingSummary}.`,
-    `Set the daily budget to ${budgetSummary} — confirm it meets Vibe's current platform minimum before launching.`,
+    `Set the daily budget to ${budgetSummary} — confirm it meets ${provider.label}'s current platform minimum before launching.`,
+    ...(bidCpmUsd != null ? [`CPM bid: $${bidCpmUsd.toFixed(2)} per thousand impressions.`] : []),
     `Real-estate compliance: keep targeting Fair-Housing-safe — geography only, no demographic narrowing.`,
     CTV_RIGHTS_CHECK,
-    `Launch on Vibe, then return to the Ads Manager Streaming TV lane and press "Mark as launched" so this campaign leaves draft.`,
+    `Launch on ${provider.label}, then return to the Ads Manager Streaming TV lane and press "Mark as launched" so this campaign leaves draft.`,
     ...warnings.map((w) => `Verify before upload: ${w}`),
   ]
 
@@ -447,7 +495,8 @@ export async function stageCtvCampaign(input: StageCtvCampaignInput): Promise<St
     success: true,
     package: {
       campaignId: campaign.id,
-      vibeDeepLink: VIBE_HOME_URL,
+      tvPlatform,
+      vibeDeepLink: provider.url,
       creativeUrl: broadcast.url,
       creativeDurationSeconds: video.duration_seconds,
       targetingSummary,
@@ -554,7 +603,8 @@ export async function ensureCtvBroadcastReady(input: {
   if (error) return { ok: false, reason: `campaign read refused: ${error.message}` }
   const campaign = c as { id: string; platform: string; targeting_config: Record<string, unknown> | null } | null
   if (!campaign) return { ok: false, reason: "campaign not found in this brokerage" }
-  if (campaign.platform !== "vibe_ctv") return { ok: false, reason: `campaign platform is '${campaign.platform}', not 'vibe_ctv'` }
+  // Every TV connection rides THIS gate (wave 146, ruling 8): vibe_ctv, groundtruth, stackadapt — nothing else.
+  if (!isCtvTvPlatform(campaign.platform)) return { ok: false, reason: `campaign platform is '${campaign.platform}', not a TV connection (${CTV_TV_PLATFORMS.join(", ")})` }
   const cfg = campaign.targeting_config ?? {}
   // Contract C5: a TOPIC spot re-reads its approval at the authoritative write — an approval revoked (or a topic
   // rejected) after staging never broadcasts. Both launch doors run this gate.
@@ -582,6 +632,61 @@ export async function ensureCtvBroadcastReady(input: {
     if (moveErr || !moved?.length) return { ok: false, reason: `the TV master could not be set as the creative: ${moveErr?.message ?? "no row matched"}` }
   }
   return { ok: true, creativeUrl: verdict.url }
+}
+
+// ─── LAUNCH ON ANY TV CONNECTION — the one router (wave 146, lane 146E — ruling 8) ─────────────────────
+//
+// The action door (app/actions/ctv-ads.ts dispatchCtvCampaignAction) and the Ads Manager executor
+// (lib/ads/ad-manager.ts launch_ad_campaign) call THIS for a staged TV row. vibe_ctv goes to its existing path
+// (launchCtvCampaignOnVibe — unchanged); groundtruth / stackadapt go through the ONE ad-connector registry, whose
+// publish runs ensureCtvBroadcastReady before the provider is asked. The row flips to live ONLY on the provider's
+// confirmation, counted (§3), with the provider id as external_campaign_id (the key the performance ingest reads).
+
+export interface TvLaunchResult { dispatched: boolean; reason: string; externalCampaignId?: string; platform?: CtvTvPlatform }
+
+export async function launchTvCampaign(input: Omit<LaunchCtvInput, "launchedVia"> & { launchedVia: "provider_api" | "ads_manager" }): Promise<TvLaunchResult> {
+  const svc = input.client ?? createServiceClient()
+  const { data: campaign, error } = await svc
+    .from("ad_campaigns").select("id, platform, targeting_config, status")
+    .eq("id", input.campaignId).eq("brokerage_id", input.brokerageId).maybeSingle()
+  if (error) return { dispatched: false, reason: `campaign read refused: ${error.message}` }
+  const row = campaign as { id: string; platform: string; targeting_config: Record<string, unknown> | null; status: string } | null
+  if (!row) return { dispatched: false, reason: "Campaign not found in this brokerage" }
+  if (!isCtvTvPlatform(row.platform)) return { dispatched: false, reason: `campaign platform is '${row.platform}', not a TV connection` }
+  if (row.platform === "vibe_ctv") {
+    const r = await launchCtvCampaignOnVibe({ campaignId: input.campaignId, brokerageId: input.brokerageId, actorUserId: input.actorUserId, launchedVia: input.launchedVia === "ads_manager" ? "ads_manager" : "vibe_api", client: svc })
+    return { dispatched: r.dispatched, reason: r.reason, externalCampaignId: r.vibeCampaignId, platform: "vibe_ctv" }
+  }
+  if (["live", "launching"].includes(String(row.status))) return { dispatched: false, reason: `campaign is already ${row.status}`, platform: row.platform }
+
+  const { getConnector, loadConnectorCredential } = await import("@/lib/ads/connectors/registry")
+  const connector = getConnector(row.platform)
+  if (!connector) return { dispatched: false, reason: `no connector for '${row.platform}'`, platform: row.platform }
+  const cred = await loadConnectorCredential(input.brokerageId, row.platform, svc)
+  if (!cred) return { dispatched: false, reason: `${TV_PROVIDER_HOME[row.platform].label} is not connected — the spot stays staged; connect it in Settings → Connections`, platform: row.platform }
+  const pub = await connector.publishCampaign({ structure: { campaign_id: input.campaignId }, cred })
+  if (!pub.ok || !pub.externalCampaignId) return { dispatched: false, reason: pub.error ?? "the provider returned no campaign id", platform: row.platform }
+
+  // Re-read the row: the gate may have pointed creative_video_url at the TV master (a counted update of its own).
+  const { data: fresh, error: freshErr } = await svc.from("ad_campaigns").select("targeting_config").eq("id", input.campaignId).eq("brokerage_id", input.brokerageId).maybeSingle()
+  if (freshErr) console.error("[ctv-campaign] post-publish re-read refused — flipping on the staged config:", freshErr.message)
+  const cfg = ((fresh as { targeting_config?: Record<string, unknown> | null } | null)?.targeting_config ?? row.targeting_config ?? {}) as Record<string, unknown>
+  const nowIso = new Date().toISOString()
+  const { data: flipped, error: flipError } = await svc
+    .from("ad_campaigns")
+    .update({ status: "live", updated_at: nowIso, targeting_config: { ...cfg, launched_via: input.launchedVia, launched_at: nowIso, external_campaign_id: pub.externalCampaignId } })
+    .eq("id", input.campaignId).eq("brokerage_id", input.brokerageId)
+    .select("id")
+  if (flipError || !flipped?.length) {
+    return { dispatched: true, externalCampaignId: pub.externalCampaignId, platform: row.platform, reason: `Submitted to ${TV_PROVIDER_HOME[row.platform].label} (${pub.externalCampaignId}) but the row did NOT flip to live: ${flipError?.message ?? "no row matched"} — mark it launched by hand` }
+  }
+  const kernelEmit = await import("@/lib/kernel/emit")
+  const { error: eventError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+    brokerageId: input.brokerageId, entityType: "ad_campaign", entityId: input.campaignId, event: "ad_campaign_launched", actorUserId: input.actorUserId,
+    metadata: { platform: row.platform, launched_via: input.launchedVia, external_campaign_id: pub.externalCampaignId }, auditOnly: true,
+  }))
+  if (eventError) console.error("[ctv-campaign] launch ledger refused:", eventError.message)
+  return { dispatched: true, externalCampaignId: pub.externalCampaignId, platform: row.platform, reason: `Submitted to ${TV_PROVIDER_HOME[row.platform].label} (${pub.externalCampaignId})` }
 }
 
 // ─── AUTONOMOUS STAGING — a finished promotable video becomes a TV draft ─────

@@ -64,6 +64,18 @@ export async function isAdPlatformConnected(
     const r = await resolveOpenaiAdsCredential(brokerageId)
     return r.status === "connected" ? { connected: true } : { connected: false, reason: `${r.reason} — add the Ads API key (ads.openai.com → Settings) in Settings → Connections` }
   }
+  // The two TV connections (wave 146, lane 146E — owner ruling 8). Credentials are issued by the vendor on request:
+  // until the tenant enters them, the answer is "not connected" with the vendor's own words, never a fake connection.
+  if (provider === "groundtruth") {
+    const { resolveGroundtruthCredential } = await import("@/lib/providers/groundtruth-ads")
+    const r = await resolveGroundtruthCredential(brokerageId)
+    return r.status === "connected" ? { connected: true } : { connected: false, reason: `${r.reason} — GroundTruth issues API credentials on request; enter X-GT-API-KEY, X-GT-USER-ID and the account id in Settings → Connections` }
+  }
+  if (provider === "stackadapt") {
+    const { resolveStackadaptCredential } = await import("@/lib/providers/stackadapt-ads")
+    const r = await resolveStackadaptCredential(brokerageId)
+    return r.status === "connected" ? { connected: true } : { connected: false, reason: `${r.reason} — StackAdapt issues GraphQL API tokens on request; enter the token and the advertiser id in Settings → Connections` }
+  }
   if (provider) return { connected: false, reason: `${campaignPlatform} is connected through provider '${provider}', which this precheck does not resolve yet` }
   const platform = adCredentialPlatform(campaignPlatform)
   const conns = await getAdConnections(brokerageId, client)

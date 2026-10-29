@@ -234,7 +234,7 @@ The wave-141 final report closed with nine owner blockers (fifteen items). `scri
 | Observability | `@vercel/analytics` mounted · `collectError` → `automation_errors` · connector health from `api_response_logs` · root `app/error.tsx` present · app/global-error.tsx ABSENT · instrumentation.ts ABSENT (R-5 stays open) | app/layout.tsx, lib/errors/collect-error.ts:115 |
 | Liveness endpoint | **none** — no unauthenticated health route exists for an external uptime monitor (finding F-4); `/api/admin/health-status` is gated | app/api/ |
 | Database access | PostgREST only (supabase-js over HTTPS; no `DATABASE_URL`, no pooled connection string in code) — no connection-pool exhaustion mode from serverless fan-out | lib/supabase/service.ts:4 |
-| Migrations | 646 files, highest m873; **4** headers claim WRITTEN, NOT APPLIED (m739, m771, m795, m855). Applied by the integrator through the Supabase MCP, never by CI or Vercel | supabase/migrations/ |
+| Migrations | 647 files, highest m879; **5** headers claim WRITTEN, NOT APPLIED (m739, m771, m795, m855, m879). Applied by the integrator through the Supabase MCP, never by CI or Vercel | supabase/migrations/ |
 | Live schema cache | 789 relations in `scripts/live-tables.ts` (a cache of the live database; regenerate, never hand-edit) | scripts/live-tables.ts:33 |
 <!-- GENERATED:hosting-facts:END -->
 

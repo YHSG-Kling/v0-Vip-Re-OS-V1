@@ -290,8 +290,12 @@ console.log("\n═══ 3. The screen and the schema share one dictionary ═�
   // status and approval_status are two axes; conflating them broke every
   // approval-required post.
   const social = code(read("app/actions/social-media-automation.ts"))
+  // RE-ASSERTED (wave 146, lane 146E): this pinned the client flag's NAME (`requiresBrokerApproval ? "draft" …`). Contract
+  // C5 now decides the need server-side (approverFor), so the RULE is asserted on whatever ONE variable decides it: the
+  // same condition makes the post a draft AND its approval_status pending — the two axes move together.
+  const twoAxes = /const initialStatus = (\w+) \? "draft" : "scheduled"/.exec(social)
   ok("an approval-required social post is a DRAFT with approval_status pending,\n    not a status the CHECK refuses",
-    /requiresBrokerApproval \? "draft" : "scheduled"/.test(social) &&
+    !!twoAxes && new RegExp(`approval_status: ${twoAxes[1]} \\? "pending" : "approved"`).test(social) &&
     !/status[^\n]*===\s*"pending_approval"/.test(social))
 
   // The business-card scanner, the case this section started from.

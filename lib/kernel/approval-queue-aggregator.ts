@@ -856,7 +856,15 @@ async function cascade(
     case "em":
       return updateApprovalStatus("email_campaigns", "email")
     case "acv": {
-      // ad_creative_variations doesn't have agent_id; brokerage scope only
+      // ad_creative_variations doesn't have agent_id. CONTRACT C5 (wave 146, lane 146E — owner ruling 9): an APPROVAL is
+      // decided by the real authority hierarchy (lib/kernel/approval-authority.ts) — the campaign's owner, their team lead
+      // / the brokerage as oversight, the brokerage only where policy or a recorded legal requirement requires it. Before
+      // this, any seat in the brokerage could approve any ad creative. A rejection stays brokerage-scoped (it publishes nothing).
+      if (outcome === "approved") {
+        const { requirePublishApprover } = await import("@/lib/kernel/approval-authority")
+        const authority = await requirePublishApprover({ brokerageId: ctx.brokerageId, assetKind: "ad_creative", assetTable: "ad_creative_variations", assetId: targetId, approverUserId: ctx.reviewerUserId, client: svc })
+        if (!authority.ok) return { success: false, error: authority.reason }
+      }
       const { error } = await svc
         .from("ad_creative_variations")
         .update({
@@ -954,7 +962,13 @@ async function cascade(
       return { success: true, type: "property_alert", targetId }
     }
     case "": {
-      // Bare uuid — legacy approval_items row
+      // Bare uuid — legacy approval_items row.
+      // CONTRACT C2 + C5 (wave 146, lane 146E): an AI-requested ad re-engagement audience (item_type
+      // ad_audience_reengagement) is decided only by a permitted approver of that audience, and an approval moves the
+      // draft audience to 'approved' (the state the audience sync reads) — lib/ads/audience-reengagement.ts.
+      const { settleReengagementFromQueue } = await import("@/lib/ads/audience-reengagement")
+      const before = await settleReengagementFromQueue(svc, { brokerageId: ctx.brokerageId, approvalItemId: targetId, outcome, reviewerUserId: ctx.reviewerUserId, phase: "before" })
+      if (!before.ok) return { success: false, error: before.error }
       let q = svc
         .from("approval_items")
         .update({
@@ -968,6 +982,10 @@ async function cascade(
       if (ctx.agentScopeId) q = q.eq("agent_id", ctx.agentScopeId)
       const { error } = await q
       if (error) return { success: false, error: error.message }
+      if (before.applies) {
+        const after = await settleReengagementFromQueue(svc, { brokerageId: ctx.brokerageId, approvalItemId: targetId, outcome, reviewerUserId: ctx.reviewerUserId, phase: "after" })
+        if (!after.ok) return { success: false, error: `decision recorded, but ${after.error}` }
+      }
       return { success: true, type: "legacy", targetId }
     }
     default:

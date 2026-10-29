@@ -11,6 +11,8 @@ import { metaConnector } from "./meta"
 import { googleConnector } from "./google"
 import { vibeCtvConnector } from "./vibe-ctv"
 import { chatgptConnector } from "./chatgpt"
+import { groundtruthConnector } from "./groundtruth"
+import { stackadaptConnector } from "./stackadapt"
 import { decryptSecret } from "@/lib/security/secret-crypto"
 import { adCredentialPlatform } from "@/lib/ads/connection-status"
 
@@ -26,6 +28,11 @@ const CONNECTORS: Record<string, AdConnector> = {
   // see loadConnectorCredential. (Until 2026-09-07 this read "no public API";
   // the owner linked the quickstart and ruled build.)
   chatgpt:   chatgptConnector,
+  // The two TV connections the owner ruled on 2026-10-29 (ruling 8). Same fabric, same TV gate
+  // (ensureCtvBroadcastReady) as vibe_ctv; credentials resolved by the Connection OS under provider
+  // 'groundtruth' / 'stackadapt' (lib/providers/groundtruth-ads.ts, lib/providers/stackadapt-ads.ts).
+  groundtruth: groundtruthConnector,
+  stackadapt:  stackadaptConnector,
 }
 
 export function getConnector(platform: string): AdConnector | null {
@@ -54,6 +61,25 @@ export async function loadConnectorCredential(
     const r = await resolveOpenaiAdsCredential(brokerageId)
     if (r.status !== "connected") {
       if (r.status === "unreadable") console.error("[ad-connectors] openai_ads credential unreadable:", r.reason)
+      return null
+    }
+    return { accessToken: r.conn.apiKey as string, accountId: r.conn.accountId, config: r.conn.config ?? {}, brokerageId }
+  }
+  if (platform === "groundtruth") {
+    const { resolveGroundtruthCredential } = await import("@/lib/providers/groundtruth-ads")
+    const r = await resolveGroundtruthCredential(brokerageId)
+    if (r.status !== "connected") {
+      if (r.status === "unreadable") console.error("[ad-connectors] groundtruth credential unreadable:", r.reason)
+      return null
+    }
+    // X-GT-USER-ID rides the config under the same key the Vibe projection uses for its secret half.
+    return { accessToken: r.conn.apiKey as string, accountId: r.conn.accountId, config: { ...r.conn.config, api_secret: r.conn.apiSecret }, brokerageId }
+  }
+  if (platform === "stackadapt") {
+    const { resolveStackadaptCredential } = await import("@/lib/providers/stackadapt-ads")
+    const r = await resolveStackadaptCredential(brokerageId)
+    if (r.status !== "connected") {
+      if (r.status === "unreadable") console.error("[ad-connectors] stackadapt credential unreadable:", r.reason)
       return null
     }
     return { accessToken: r.conn.apiKey as string, accountId: r.conn.accountId, config: r.conn.config ?? {}, brokerageId }

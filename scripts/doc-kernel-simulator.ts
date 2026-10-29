@@ -3229,7 +3229,13 @@ async function main() {
           && src("lib/kernel/transactions.ts").includes('.eq("status", "fail")')
           && src("lib/intelligence/predictor-outcome-resolver.ts").includes('.neq("status", "consumed")')
           && src("lib/kernel/consult-outcome-resolver.ts").includes('.neq("status", "consumed")')
-          && src("lib/ads/facebook-audience-sync.ts").includes('status: "synced"')
+          // RE-ASSERTED (wave 146, lane 146E): this pinned the literal `status: "synced"` in approveAudience — the fix for
+          // its CHECK-rejected 'active'. Approval no longer claims the live state at all (it writes 'approved', which the
+          // cron sync reads; it never uploaded anything), so the RULE is: that door never writes 'active' again (every
+          // other literal is held by the vocabOffenders scan above), and the live state 'synced' keeps its writer — the
+          // upload itself (lib/kernel/ads.ts syncAudience), on provider acceptance. Stripped source (CLAUDE.md §2).
+          && !/status:\s*["']active["']/.test(stripComments(src("lib/ads/facebook-audience-sync.ts")))
+          && /status:\s*\w+\s*===\s*"completed"\s*\?\s*"synced"/.test(stripComments(src("lib/kernel/ads.ts")))
           && src("lib/audiences/audience-sync.ts").includes('.eq("status", "synced")')
           && src("app/actions/admin/get-admin-stats.ts").includes("['requested', 'uploaded']"))
       }

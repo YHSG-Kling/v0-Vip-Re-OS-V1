@@ -355,7 +355,29 @@ export async function scheduleSocialPost(params: {
     // has never accepted, so EVERY post from a brokerage that requires broker
     // approval failed to insert. A post awaiting approval is not scheduled —
     // it is a draft until the broker releases it.
-    const initialStatus = params.requiresBrokerApproval ? "draft" : "scheduled"
+    //
+    // CONTRACT C5 ON THE REQUEST SIDE (wave 146, lane 146E — owner ruling 9; lane 146H Outside-lane 3): whether the post
+    // needs someone else's approval is decided HERE, server-side, by the one authority answer (approverFor) — never by a
+    // client-supplied flag. The scheduler who is a permitted approver of their own post (the owner agent, or the team
+    // lead / brokerage as oversight) approves it by scheduling it, and that approval is RECORDED (approved_by / _at);
+    // anyone else — or anyone at all where the tenant's recorded policy or a legal requirement makes the brokerage the
+    // approver — files it as a draft awaiting the people approverFor names. `requiresBrokerApproval` can only TIGHTEN
+    // (a person may always ask for review), never loosen. No answer = no post (fail closed). The legacy
+    // `global_settings.additional_settings.social_requires_broker_approval` key is merged onto the survivor
+    // `brokerage_settings.settings.publication_approval.require_brokerage_approval.social_post` (one vocabulary, §6):
+    // it has no writer in code and 0 live rows (read 2026-10-29), so there is nothing to migrate.
+    const { approverFor } = await import("@/lib/kernel/approval-authority")
+    const approver = await approverFor({
+      brokerageId,
+      assetKind: "social_post",
+      scope: effectiveAgentId ? { agentId: effectiveAgentId } : { agentUserId: userId },
+      client: createServiceClient(),
+    })
+    if (!approver.ok) return { success: false, error: `Nobody can approve this post, so it was not created: ${approver.reason}` }
+    const selfApproved = approver.permittedUserIds.includes(userId) && params.requiresBrokerApproval !== true
+    const needsApproval = !selfApproved
+    const initialStatus = needsApproval ? "draft" : "scheduled"
+    const nowIso = new Date().toISOString()
 
     // INSERT social_posts — tenant fields are session-derived
     const { data: post, error: insertError } = await supabase
@@ -373,7 +395,8 @@ export async function scheduleSocialPost(params: {
         social_account_id: params.socialAccountId,
         listing_id: params.listingId || null,
         status: initialStatus,
-        approval_status: params.requiresBrokerApproval ? "pending" : "approved",
+        approval_status: needsApproval ? "pending" : "approved",
+        ...(needsApproval ? {} : { approved_by: userId, approved_at: nowIso }),
         brand_compliance_passed: null,
         ai_generated: false,
         created_at: new Date().toISOString(),
@@ -382,19 +405,16 @@ export async function scheduleSocialPost(params: {
       .select()
       .maybeSingle()
 
-    // If broker approval required, notify broker via notifications table
-    if (params.requiresBrokerApproval && post) {
-      const { data: brokerUsers } = await supabase
-        .from("users")
-        .select("id")
-        .eq("brokerage_id", brokerageId)
-        .in("user_type", ["broker", "admin"])
-        .is("deleted_at", null)
-        .limit(5)
+    // Approval needed → tell the people approverFor NAMES (the owner, or whoever the policy names; the oversight chain
+    // only when the primary is the scheduler themself) — not a hard-coded broker/admin list.
+    if (needsApproval && post) {
+      const primary = approver.primaryUserIds.filter((id) => id !== userId)
+      const askees = (primary.length > 0 ? primary : approver.permittedUserIds.filter((id) => id !== userId)).slice(0, 5)
+      if (askees.length === 0) console.warn("[social-media-automation.ts] post filed for approval but nobody else is permitted to approve it — it waits for the scheduler's own approval")
 
-      for (const broker of brokerUsers ?? []) {
+      for (const askee of askees) {
         const { error: notifyError } = await supabase.from("notifications").insert({
-          user_id: broker.id,
+          user_id: askee,
           brokerage_id: brokerageId,
           type: "social_post_pending_approval",
           title: "Social Post Awaiting Approval",
@@ -473,6 +493,14 @@ export async function approveSocialPost(postId: string, _approverUserId?: string
 
   const ownsPost = await verifySocialPostInBrokerage(postId, auth.brokerageId)
   if (!ownsPost.ok) return { success: false, error: "Forbidden" }
+
+  // CONTRACT C5 (wave 146, lane 146E — owner ruling 9: "the tenants approve their own ads/posts"): the approver is
+  // chosen from the real authority hierarchy — the post's owner, their team lead / the brokerage as oversight, and the
+  // brokerage ONLY where the tenant's policy (or a recorded legal requirement) requires it. Session user + session
+  // tenant only; a refused read refuses the approval (fail closed).
+  const { requirePublishApprover } = await import("@/lib/kernel/approval-authority")
+  const authority = await requirePublishApprover({ brokerageId: auth.brokerageId, assetKind: "social_post", assetTable: "social_posts", assetId: postId, approverUserId: auth.userId, client: createServiceClient() })
+  if (!authority.ok) return { success: false, error: authority.reason }
 
   const supabase = await createClient()
 

@@ -546,6 +546,14 @@ export async function approveCreativeVariation(
     return { success: true }
   }
 
+  // ── 1b. WHO may approve (contract C5 — owner ruling 9, wave 146 lane 146E) ──
+  // The creative's campaign owner approves their own; the team lead / brokerage approve as oversight; the brokerage
+  // is REQUIRED only where the tenant's policy or a recorded legal requirement says so. Session user + tenant only.
+  const { requirePublishApprover } = await import("@/lib/kernel/approval-authority")
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const authority = await requirePublishApprover({ brokerageId, assetKind: "ad_creative", assetTable: "ad_creative_variations", assetId: variationId, approverUserId: userId, client: createServiceClient() })
+  if (!authority.ok) return { success: false, error: authority.reason }
+
   // ── 2. Compliance gate — must pass before approval is granted ───────────────
   // Reconstruct the ad copy text from the stored variation for compliance eval.
   const combinedText = [

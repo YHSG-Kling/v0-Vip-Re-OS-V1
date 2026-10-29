@@ -427,3 +427,23 @@ Real-estate software anchors — <https://www.followupboss.com/pricing>, <https:
 - **No negotiated discounts, no taxes, no FX, no card-network surcharges** are modelled. Provider prices change without notice; every row carries its read date.
 - **No live database access.** `plan_limits` live values for metrics other than AI tokens, video minutes and seats were not read; the repo's seeds are cited as such.
 - **Usage (not price) is assumed** in the companion document; this report contains no usage claims except the scheduler invocation count taken from the repo's own census.
+
+## 12. Customer 360 (wave 146, lane 146D — owner rulings 11 / 12 / 13; prices read 2026-10-29)
+
+The full sourced comparison is in [`CUSTOMER-360-PROVIDER-COMPARISON.md`](./CUSTOMER-360-PROVIDER-COMPARISON.md). This section
+covers only what it changes about cost.
+
+| Item | Verified price (2026-10-29) | Effect on this report |
+|---|---|---|
+| Customer 360 read + first-party intent watcher (`lib/enrichment/customer-360.ts`, `lib/enrichment/first-party-intent-watcher.ts`) | **$0 vendor.** Compute only, on the existing 15-minute enrichment-processor tick, with **no new cron** (cron cost unchanged) | none. It never calls a provider, and every routed change is one `agent_action_ledger` event |
+| PeopleData (person profile) | Pro "starting at $98/mo"; per-credit tiers as §3.3; API index refreshed **monthly** | unchanged ($0.25 / match booked) |
+| Versium (Full Demographic: Online Presence Indicator – Real Estate) | credit packages $0.05 – $0.02 per credit × 3 credits = **$0.06 – $0.15** per matched record | unchanged ($0.05 / credit booked) |
+| Celebrus · FullContact · Revaluate · Likely.ai · Offrs / SmartZip | **not published** | not added |
+| DealMachine | $99 / $149 per seat per month · $599 per 100k-record package | not added. Its terms are internal-use and non-sublicensable |
+| USPS NCOA via TrueNCOA | **$20 per file processed** | OPTIONAL, counsel first. It would be P (platform) or T (tenant) per list owner, never pooled across tenants |
+
+**New UNKNOWN (§8), contract and not price:** storage rights. Versium's standard terms (§3.3 (c), (g), (j) and §7.3, "Last
+Updated: June 2026") and PDL's Services Subscription Agreement ("Cached Data" clause, read through a third-party quotation) both
+restrict persistent caching on a multi-tenant product and require deletion on termination. A negotiated Ordering Document or
+Enterprise licence is needed. **Resolve with:** Versium account management and PDL sales. Ask for persistent storage on tenant
+profiles, multi-tenant (service-bureau) use, display to each tenant's users, and post-termination retention or a defined purge.

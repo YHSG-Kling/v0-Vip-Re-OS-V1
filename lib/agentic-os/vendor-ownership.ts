@@ -59,6 +59,9 @@ export const USER_CONNECTED_VENDORS = new Set<string>([
   // the three was named by any source the readiness registry derives from, so getBrokerageProviderReadiness had NO row
   // for them and the arbiter's ads check could only ever see Meta (lib/providers/channel-provider-matrix.ts).
   "google_ads", "vibe", "openai_ads",
+  // The two TV connections (wave 146, lane 146E — owner ruling 8): tenant-owned ad accounts, tenant-paid spend; the
+  // vendor issues the API credential on request (lib/providers/groundtruth-ads.ts, lib/providers/stackadapt-ads.ts).
+  "groundtruth", "stackadapt",
 ])
 
 /** Classify a vendor. Unknown vendors default to `platform` (conservative — anything

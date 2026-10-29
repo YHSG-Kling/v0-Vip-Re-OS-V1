@@ -108,6 +108,10 @@ export interface CtvGatewayInput {
   campaignName?: string
   dailyBudgetCents: number
   targeting: { dmas?: string[]; cities?: string[]; zips?: string[] }
+  /** Wave 146 (ruling 8): which TV connection runs the spot (the gateway's CTV_TV_PLATFORMS; default vibe_ctv) and
+   *  the CPM bid GroundTruth / StackAdapt need. Passed through untouched — the gateway validates both. */
+  tvPlatform?: "vibe_ctv" | "groundtruth" | "stackadapt" | null
+  bidCpmUsd?: number | null
   client?: unknown
 }
 export type CtvGateway = (input: CtvGatewayInput) => Promise<{ success: boolean; error?: string; package?: { campaignId: string; warnings?: string[] } }>
@@ -129,6 +133,9 @@ export interface StageTopicTvSpotInput {
   dailyBudgetCents: number
   targeting: { dmas?: string[]; cities?: string[]; zips?: string[] }
   campaignName?: string
+  /** Wave 146: the TV connection + CPM bid, passed to the ONE gateway (see CtvGatewayInput). */
+  tvPlatform?: CtvGatewayInput["tvPlatform"]
+  bidCpmUsd?: number | null
 }
 
 export interface StageTopicTvSpotDeps {
@@ -205,6 +212,7 @@ export async function stageTopicTvSpot(input: StageTopicTvSpotInput, deps: Stage
     const gwInput: CtvGatewayInput = {
       brokerageId: input.brokerageId, agentUserId: input.agentUserId, topicId: input.topicId, assetId: input.assetId, videoProjectId: input.assetId,
       campaignName: input.campaignName ?? `TV — ${topic.topic_title}`.slice(0, 120), dailyBudgetCents: input.dailyBudgetCents, targeting: input.targeting, client: deps.client,
+      ...(input.tvPlatform ? { tvPlatform: input.tvPlatform } : {}), ...(input.bidCpmUsd != null ? { bidCpmUsd: input.bidCpmUsd } : {}),
     }
     const call = () => (deps.gateway ?? defaultGateway)(gwInput)
     let res: Awaited<ReturnType<CtvGateway>>

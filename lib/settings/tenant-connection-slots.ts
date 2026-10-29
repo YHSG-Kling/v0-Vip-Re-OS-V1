@@ -11,4 +11,8 @@ export const TENANT_CONNECTION_SLOTS = [
   // the Connection OS; until this wave nothing could WRITE them.
   { key: "openai_ads", label: "ChatGPT Ads (OpenAI Advertiser API)", fields: ["api_key"], note: "The Ads API key from ads.openai.com → Settings (one key per ad account). Once connected, approved ChatGPT campaigns launch from the ads workspace and the Ads Manager proposes launches automatically." },
   { key: "vibe", label: "Vibe streaming TV (Vibe Developer Platform)", fields: ["api_key", "api_secret", "account_id"], note: "Your Vibe app's client_id (API key) and client_secret, and the advertiser id to launch under. Once connected, staged TV spots launch on Vibe from the ads workspace." },
+  // The two TV connections (wave 146, lane 146E — owner ruling 8; m881 admits both names). Readers:
+  // lib/providers/groundtruth-ads.ts / lib/providers/stackadapt-ads.ts through the Connection OS.
+  { key: "groundtruth", label: "GroundTruth streaming TV (GroundTruth public API)", fields: ["api_key", "api_secret", "account_id"], note: "GroundTruth issues API credentials on request. Enter the X-GT-API-KEY as the key, the X-GT-USER-ID as the secret half, and the GroundTruth account id to launch under. Once connected, staged TV spots launch on GroundTruth (CTV only) from the ads workspace." },
+  { key: "stackadapt", label: "StackAdapt streaming TV (StackAdapt GraphQL API)", fields: ["api_key", "account_id"], note: "StackAdapt issues GraphQL API tokens on request (the older REST key does not work). Enter the token and the StackAdapt advertiser id. Once connected, staged TV spots launch on StackAdapt (CTV only) and consented CRM audiences can sync as hashed segments." },
 ] as const

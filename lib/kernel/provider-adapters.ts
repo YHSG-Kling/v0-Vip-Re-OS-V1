@@ -287,6 +287,12 @@ const ADAPTER_FACTS: Readonly<Record<string, AdapterFacts>> = {
   // ── ad platforms (wave 139, 139B: every egress now a callConnector site — the exceptions are gone) ──
   openai_ads: { serviceKeys: ["openai_ads"], aliases: ["chatgpt_ads"], outputs: "ChatGPT ad campaign launch", transport: "rest", version: "v1", baseUrl: "https://api.ads.openai.com/v1", docsUrl: "https://developers.openai.com/ads/api-quickstart", ledger: "tenant_account", booking: TENANT("OpenAI Ads account (ad spend is the tenant's)"), geography: "global", capabilities: ["ads_launch"], gateway: true },
   vibe: { serviceKeys: ["vibe"], outputs: "streaming-TV (CTV) ad campaign launch", transport: "rest", version: "X-Vibe-Revision", baseUrl: "https://api.vibe.co", docsUrl: "https://developers.vibe.co", ledger: "tenant_account", booking: TENANT("Vibe account (ad spend is the tenant's)"), capabilities: ["ads_launch"], gateway: true },
+  // Wave 146 (lane 146E — owner ruling 8: "groundtruth and stackadapt are 2 tv connections"). Tenant-owned accounts,
+  // credentials issued by the vendor on request (WAITING_EXTERNAL); every egress is a callConnector site in the provider
+  // file; capability declarations: lib/providers/groundtruth-ads.ts GROUNDTRUTH_DECLARATION /
+  // lib/providers/stackadapt-ads.ts STACKADAPT_DECLARATION (read from the vendors' docs 2026-10-29).
+  groundtruth: { serviceKeys: ["groundtruth"], outputs: "streaming-TV (CTV) ad campaign launch, status + totals readback (REST)", transport: "rest", version: "public API (no version segment; pages dated 2025-08-12)", baseUrl: "https://api-public.groundtruth.com", docsUrl: "https://api-docs.groundtruth.com", ledger: "tenant_account", booking: TENANT("GroundTruth account (ad spend is the tenant's)"), capabilities: ["ads_launch"], gateway: true },
+  stackadapt: { serviceKeys: ["stackadapt"], outputs: "streaming-TV (CTV) ad campaign launch, CRM segment sync, status + delivery readback (GraphQL)", transport: "rest", version: "GraphQL public API (@stackadapt/pa-typescript-sdk 0.73.0 schema)", baseUrl: "https://api.stackadapt.com", docsUrl: "https://docs.stackadapt.com", ledger: "tenant_account", booking: TENANT("StackAdapt account (ad spend is the tenant's)"), capabilities: ["ads_launch"], gateway: true },
   // Wave 140 (140I): ONE version constant (GOOGLE_ADS_API_VERSION, connector-registry.ts) read here and
   // by lib/ads/connectors/google.ts; v17 was past its 2025 sunset. deprecatedAfter is the published
   // (tentative) sunset month — decideProviderHeal proposes an endpoint_change once it passes.

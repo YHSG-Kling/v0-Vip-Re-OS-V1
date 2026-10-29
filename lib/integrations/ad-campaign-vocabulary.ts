@@ -20,11 +20,22 @@ export const AD_CAMPAIGN_PLATFORMS = [
   // chatgpt"). m607 widened the live CHECK. Connected through the OpenAI
   // Advertiser API key (provider 'openai_ads', lib/providers/openai-ads.ts).
   "chatgpt",
+  // "groundtruth" / "stackadapt" — the two TV connections (owner ruling 8, 2026-10-29; wave 146, lane 146E).
+  // m881 widens the live ad_campaigns_platform_check. Connected through provider credentials (below).
+  "groundtruth", "stackadapt",
 ] as const
 // TOMBSTONE (§1.3, 2026-08-31, lane M4): derived type `AdCampaignPlatform`
 // deleted — never named by any consumer (validators call the type-guard /
 // membership check on AD_CAMPAIGN_PLATFORMS, the live const). Re-derive when
 // a typed consumer arrives.
+
+/**
+ * The ad_campaigns.platform values that are TV CONNECTIONS (wave 146, lane 146E — owner ruling 8: "groundtruth …
+ * and stackadapt are 2 tv connections"; Vibe was the first). Every one rides the ONE streaming-TV gateway
+ * (lib/ads/ctv-campaign.ts: staging, the broadcast gate, the launch router). Client-safe, so the Ads Manager and the
+ * gateway read ONE list (§6) without pulling a server-only provider into a plain-tsx proof.
+ */
+export const TV_AD_CAMPAIGN_PLATFORMS = ["vibe_ctv", "groundtruth", "stackadapt"] as const satisfies readonly (typeof AD_CAMPAIGN_PLATFORMS)[number][]
 
 /** ad_campaigns.status — the full ladder. */
 export const AD_CAMPAIGN_STATUSES = [
@@ -60,7 +71,7 @@ export const CONNECTABLE_AD_PLATFORMS = ["facebook", "instagram", "linkedin"] as
  * Neither of the two lists above nor below may name these — a platform is in
  * exactly one class (§6).
  */
-export const PROVIDER_CONNECTED_AD_PLATFORMS = { vibe_ctv: "vibe", chatgpt: "openai_ads" } as const
+export const PROVIDER_CONNECTED_AD_PLATFORMS = { vibe_ctv: "vibe", chatgpt: "openai_ads", groundtruth: "groundtruth", stackadapt: "stackadapt" } as const
 
 /**
  * Ad platforms a campaign may name that have NO account connection in the

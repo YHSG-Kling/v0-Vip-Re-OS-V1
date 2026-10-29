@@ -10,10 +10,13 @@ import { createClient } from "@/lib/supabase/server"
 import {
   stageCtvCampaign,
   launchCtvCampaignOnVibe,
+  launchTvCampaign,
+  CTV_TV_PLATFORMS,
   type CtvLaunchPackage,
   type CtvTargeting,
+  type CtvTvPlatform,
+  type TvLaunchResult,
 } from "@/lib/ads/ctv-campaign"
-import type { CtvDispatchResult } from "@/lib/providers/vibe"
 import { requireAdsActor as requireActor } from "@/lib/auth/require-caller"
 
 // TOMBSTONE: local requireActor merged onto lib/auth/require-caller.ts
@@ -30,9 +33,16 @@ export async function stageCtvCampaignAction(input: {
   campaignName?: string
   dailyBudgetCents: number
   targeting: CtvTargeting
+  /** Wave 146 (ruling 8): the TV connection — vibe_ctv (default), groundtruth or stackadapt — and the CPM bid the
+   *  latter two need. The gateway validates both; the tenant is still the session's. */
+  tvPlatform?: CtvTvPlatform | null
+  bidCpmUsd?: number | null
 }): Promise<{ success: boolean; error?: string; package?: CtvLaunchPackage }> {
   const { actor, error } = await requireActor()
   if (!actor) return { success: false, error }
+  if (input.tvPlatform != null && !(CTV_TV_PLATFORMS as readonly string[]).includes(input.tvPlatform)) {
+    return { success: false, error: `'${String(input.tvPlatform)}' is not a TV connection` }
+  }
 
   // A TOPIC SPOT goes through the topic lane (wave 145, lane 145Z — lane 145G Outside-lane 1, contract C5): stageTopicTvSpot
   // checks the topic is approved FOR TV, the creative was made FROM it, runs the final personalization phase (contract C4)
@@ -45,6 +55,7 @@ export async function stageCtvCampaignAction(input: {
     const spot = await stageTopicTvSpot({
       brokerageId: actor.brokerageId, agentUserId: actor.userId, topicId: input.topicId, assetId,
       dailyBudgetCents: input.dailyBudgetCents, targeting: input.targeting, campaignName: input.campaignName,
+      tvPlatform: input.tvPlatform ?? null, bidCpmUsd: input.bidCpmUsd ?? null,
     })
     if (!spot.ok) return { success: false, error: spot.reason }
     return { success: true, package: spot.package as CtvLaunchPackage | undefined }
@@ -60,6 +71,8 @@ export async function stageCtvCampaignAction(input: {
     campaignName: input.campaignName,
     dailyBudgetCents: input.dailyBudgetCents,
     targeting: input.targeting,
+    tvPlatform: input.tvPlatform ?? null,
+    bidCpmUsd: input.bidCpmUsd ?? null,
   })
 }
 
@@ -85,7 +98,7 @@ export async function markCtvCampaignLaunchedAction(
     .maybeSingle()
   if (fetchError) return { success: false, error: fetchError.message }
   if (!campaign) return { success: false, error: "Campaign not found" }
-  if (campaign.platform !== "vibe_ctv") {
+  if (!(CTV_TV_PLATFORMS as readonly string[]).includes(String(campaign.platform))) {
     return { success: false, error: "Not a streaming-TV campaign" }
   }
   if (campaign.status !== "draft") {
@@ -107,9 +120,9 @@ export async function markCtvCampaignLaunchedAction(
     event: "ad_campaign_launched",
     actorUserId: actor.userId,
     metadata: {
-      platform: "vibe_ctv",
+      platform: campaign.platform,
       campaign_name: campaign.campaign_name,
-      launched_via: "human_confirmation_vibe_dashboard",
+      launched_via: campaign.platform === "vibe_ctv" ? "human_confirmation_vibe_dashboard" : `human_confirmation_${campaign.platform}_dashboard`,
     },
     auditOnly: true,
   }))
@@ -129,7 +142,7 @@ export async function markCtvCampaignLaunchedAction(
  */
 export async function dispatchCtvCampaignAction(
   campaignId: string,
-): Promise<CtvDispatchResult | { dispatched: false; reason: string }> {
+): Promise<TvLaunchResult | { dispatched: false; reason: string }> {
   const { actor, error } = await requireActor()
   if (!actor) return { dispatched: false, reason: error ?? "Not authenticated" }
 
@@ -137,7 +150,7 @@ export async function dispatchCtvCampaignAction(
   const supabase = await createClient()
   const { data: campaign, error: fetchError } = await supabase
     .from("ad_campaigns")
-    .select("id")
+    .select("id, platform")
     .eq("id", campaignId)
     .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
@@ -147,10 +160,22 @@ export async function dispatchCtvCampaignAction(
   // Dispatch + flip-to-live + ledger live in ONE place, shared with the Ads
   // Manager executor (lib/ads/ctv-campaign.ts::launchCtvCampaignOnVibe). The
   // flip used to be re-spelled here; it moved onto the survivor (2026-09-07).
-  return launchCtvCampaignOnVibe({
+  if (campaign.platform === "vibe_ctv") {
+    const r = await launchCtvCampaignOnVibe({
+      campaignId: campaign.id as string,
+      brokerageId: actor.brokerageId,
+      actorUserId: actor.userId,
+      launchedVia: "vibe_api",
+    })
+    return { dispatched: r.dispatched, reason: r.reason, externalCampaignId: r.vibeCampaignId, platform: "vibe_ctv" }
+  }
+  // Wave 146 (ruling 8): the two other TV connections (groundtruth / stackadapt) run
+  // the SAME broadcast gate through the ad-connector registry — the one router
+  // lib/ads/ctv-campaign.ts::launchTvCampaign flips the row only on the provider's word.
+  return launchTvCampaign({
     campaignId: campaign.id as string,
     brokerageId: actor.brokerageId,
     actorUserId: actor.userId,
-    launchedVia: "vibe_api",
+    launchedVia: "provider_api",
   })
 }

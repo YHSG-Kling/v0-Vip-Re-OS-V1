@@ -222,8 +222,14 @@ function main() {
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[1 · ONE roster — the TS union, the runtime list and the kernel agree]")
 
-  check("the roster holds exactly 15 types (the number syncAudience declared)",
-    SOURCE_RULE_TYPES.length === 15, `got ${SOURCE_RULE_TYPES.length}`)
+  // RE-ASSERTED (wave 146, lane 146E — contract C2): the roster gained `reengagement_parties`. The RULE is not "15" (a
+  // waypoint) but "the 15 syncAudience declared are all still here, and every member added since is NAMED with its
+  // contract" — a type cannot slip into the roster unreviewed.
+  const ORIGINAL_FIFTEEN = ["website_visitors", "contact_list", "engagement", "lifetime_customers", "qualified_leads", "active_buyers", "active_sellers", "consultations_completed", "open_house_attendees", "high_engagement_contacts", "investor_contacts", "in_pipeline", "lookalike_seed", "exclusion_active_pipeline", "persona_segment"]
+  const ADDED_SINCE: Record<string, string> = { reengagement_parties: "wave 146 contract C2 — the named, consented parties of a re-engagement request" }
+  check("the roster holds the 15 syncAudience declared + only members added with a named contract",
+    ORIGINAL_FIFTEEN.every((t) => (SOURCE_RULE_TYPES as readonly string[]).includes(t)) && SOURCE_RULE_TYPES.filter((t) => !ORIGINAL_FIFTEEN.includes(t)).every((t) => !!ADDED_SINCE[t]),
+    `got ${SOURCE_RULE_TYPES.length}: ${SOURCE_RULE_TYPES.filter((t) => !ORIGINAL_FIFTEEN.includes(t)).join(",")}`)
   check("every member is unique",
     new Set(SOURCE_RULE_TYPES).size === SOURCE_RULE_TYPES.length)
 
@@ -267,6 +273,7 @@ function main() {
     lookalike_seed: {},
     exclusion_active_pipeline: {},
     persona_segment: { personas: ["first_time"] },
+    reengagement_parties: { contact_ids: ["00000000-0000-4000-8000-000000000001"] },
   }
   const defined = new Set<string>()
   const refused = new Set<string>()
@@ -280,8 +287,10 @@ function main() {
   check("the three REFUSED types are exactly website_visitors / engagement / consultations_completed",
     JSON.stringify([...refused].sort()) === JSON.stringify(["consultations_completed", "engagement", "website_visitors"]),
     [...refused].join(","))
-  check("…so TWELVE types now have a real narrowing where TWO did (the count that moved, CLAUDE.md §2)",
-    defined.size === 12, `defined=${defined.size}`)
+  // RE-ASSERTED (wave 146, lane 146E): DERIVED — every roster member except the three refused ones is defined (12 of
+  // the original fifteen + reengagement_parties = 13 today). The count moved UP by the one C2 member, which narrows by id.
+  check("…so every type except the three refused has a real narrowing (12 of the original 15 where TWO did, + the C2 member)",
+    defined.size === SOURCE_RULE_TYPES.length - 3 && defined.has("reengagement_parties"), `defined=${defined.size}`)
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[3 · POSITIVE CONTROL PER RULE TYPE — each one EXCLUDES somebody]")

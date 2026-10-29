@@ -70,6 +70,8 @@ export async function GET(request: Request) {
     leadsTopUp?: number
     /** Wave 145 (145F): new intent facts the watcher routed for this tenant this tick. */
     factsRouted?: number
+    /** Wave 146 (146D): first-party starts / resumptions the first-party watcher routed for this tenant this tick. */
+    firstPartyRouted?: number
     error?: string
   }> = []
 
@@ -145,7 +147,23 @@ export async function GET(request: Request) {
       } catch (err) {
         console.error(`[EnrichmentProcessor] ${brokerage.id} fact watcher failed:`, err)
       }
-      results.push({ brokerageId: brokerage.id, ...summary, leadsTopUp, factsRouted })
+      // ── THE FIRST-PARTY HALF OF THE WATCHER (wave 146, lane 146D — owner ruling 11: "Enrichment should be customer360 which drives
+      // the outreach") ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+      // The person's own actions (saved homes, property views, site sessions, portal visits) are written in real time; this tick
+      // reads them with an overlapping cursor and routes a START or a RESUMPTION after the tenant's dormancy window — never every
+      // click — as one durable, consumed-once event that reads the party's Customer 360 (contract C6) and hands the change to the
+      // ONE life-change responder (lib/enrichment/first-party-intent-watcher.ts watchFirstPartyIntent). No provider is called; no
+      // new cron. Additive: a failure never undoes the drain or the provider watcher above.
+      let firstPartyRouted = 0
+      try {
+        const { watchFirstPartyIntent } = await import('@/lib/enrichment/first-party-intent-watcher')
+        const fp = await watchFirstPartyIntent(supabase, brokerage.id)
+        firstPartyRouted = fp.routed
+        for (const e of fp.errors.slice(0, 3)) console.error(`[EnrichmentProcessor] ${brokerage.id} first-party watcher: ${e}`)
+      } catch (err) {
+        console.error(`[EnrichmentProcessor] ${brokerage.id} first-party watcher failed:`, err)
+      }
+      results.push({ brokerageId: brokerage.id, ...summary, leadsTopUp, factsRouted, firstPartyRouted })
     } catch (err) {
       results.push({
         brokerageId: brokerage.id,
@@ -163,6 +181,7 @@ export async function GET(request: Request) {
   const totalFreeLane = results.reduce((s, r) => s + (r.freeLaneRuns ?? 0), 0)
   const totalPaidWithheld = results.reduce((s, r) => s + (r.paidWithheld ?? 0), 0)
   const totalFactsRouted = results.reduce((s, r) => s + (r.factsRouted ?? 0), 0)
+  const totalFirstPartyRouted = results.reduce((s, r) => s + (r.firstPartyRouted ?? 0), 0)
 
   await recordCronSuccessAction({
     context_id: contextId,
@@ -172,7 +191,7 @@ export async function GET(request: Request) {
       brokerages: results.length, totalProcessed, totalSucceeded,
       // Lane split, so a run that leaned on the free lane (or that withheld paid
       // spend against an exhausted budget) is legible from the cron ledger alone.
-      totalFreeLane, totalPaidWithheld, totalFactsRouted,
+      totalFreeLane, totalPaidWithheld, totalFactsRouted, totalFirstPartyRouted,
       duration_ms: Date.now() - startedAt,
     },
   })

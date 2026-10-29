@@ -212,6 +212,22 @@ export async function publishLaunchingCampaigns(
         continue
       }
       published++
+      // THE VERSION THAT WENT OUT IS RECORDED (wave 146, lane 146E — ruling 9 / contract C4 version ledger): each
+      // approved creative's copy is recorded against its final (published_via ads_<platform>, ref = the provider id).
+      // Best-effort AFTER the provider accepted — a refused record is said, never silent, and never un-publishes.
+      try {
+        const { data: approved, error: apErr } = await supabase.from("ad_creative_variations").select("id, primary_text, updated_at")
+          .eq("ad_campaign_id", c.id).eq("brokerage_id", brokerageId).eq("approval_status", "approved")
+        if (apErr) console.error(`[ad-publish] campaign ${c.id}: approved creatives unreadable — publication not recorded: ${apErr.message}`)
+        const { recordDoorPublication } = await import("@/lib/marketing/humanize-final")
+        for (const cr of (approved ?? []) as Array<{ id: string; primary_text: string | null; updated_at: string | null }>) {
+          if (!cr.primary_text?.trim()) continue
+          const rec = await recordDoorPublication(supabase as never, { brokerageId, assetKind: "ad_creative", assetTable: "ad_creative_variations", assetId: cr.id, content: cr.primary_text, approvedBy: null, approvedAt: cr.updated_at, via: `ads_${c.platform}`, ref: res.externalCampaignId ?? null })
+          if (!rec.ok) console.error(`[ad-publish] creative ${cr.id}: the published version was NOT recorded — ${rec.error}`)
+        }
+      } catch (e) {
+        console.error(`[ad-publish] campaign ${c.id}: publication record threw — ${(e as Error)?.message ?? e}`)
+      }
     } else {
       const { error: errStampErr } = await supabase.from("ad_campaigns").update({
         targeting_config: { ...tc, last_publish_error: res.error ?? "publish failed" },

@@ -622,6 +622,8 @@ const CATEGORY_OVERRIDES: Record<string, ProviderCategory> = {
   // The other ad accounts share Meta's paid-acquisition shelf (wave 145, lane 145D — they were not rows at all before;
   // lib/agentic-os/vendor-ownership.ts USER_CONNECTED_VENDORS now names them).
   google_ads: "leadgen", vibe: "leadgen", openai_ads: "leadgen",
+  // Wave 146 (lane 146E — owner ruling 8): the two TV connections share the paid-acquisition shelf with Vibe.
+  groundtruth: "leadgen", stackadapt: "leadgen",
   batchdata: "enrichment",    // owner vocabulary: enrichment, not scraper
   rentcast: "enrichment",
   geoapify: "enrichment",

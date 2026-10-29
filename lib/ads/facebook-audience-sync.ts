@@ -239,8 +239,10 @@ export async function syncAudience(
 }
 
 /**
- * approveAudience — sets facebook_custom_audiences.status = 'synced' (live on Meta).
- * Business rule: only audiences in 'pending_review' or 'draft' state can be approved.
+ * approveAudience — sets facebook_custom_audiences.status = 'approved' (the state the audience sync reads; the
+ * upload itself writes 'synced' — live on the platform — only when the provider accepted it).
+ * Business rule: only audiences in 'pending_review' or 'draft' state can be approved, and only by a permitted
+ * approver (contract C5, lib/kernel/approval-authority.ts).
  * Input: userId string, audienceId string, brokerageId string
  * Output: { success, error? }
  * Table written: facebook_custom_audiences
@@ -278,20 +280,42 @@ export async function approveAudience(
   }
 
   // CHECK vocabulary (pass 6): 'synced' is the live-on-Meta state ('active'
-  // was silently rejected — this update never landed).
-  if (audience.status === "synced") {
+  // was silently rejected — this update never landed). Already approved or
+  // already live = nothing to approve (no write).
+  if (audience.status === "synced" || audience.status === "approved") {
     return { success: true }
   }
 
-  const { error: updateError } = await supabase
+  // CONTRACT C5 (wave 146, lane 146E — owner ruling 9): WHO may approve an audience is the real authority hierarchy
+  // (lib/kernel/approval-authority.ts) — its owner, their team lead / the brokerage as oversight, the brokerage only
+  // where the tenant's policy or a recorded legal requirement requires it. Before this, any seat could approve any.
+  const { requirePublishApprover } = await import("@/lib/kernel/approval-authority")
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const authority = await requirePublishApprover({ brokerageId, assetKind: "ad_audience", assetTable: "facebook_custom_audiences", assetId: audienceId, approverUserId: userId, client: svc })
+  if (!authority.ok) return { success: false, error: authority.reason }
+
+  // NO FALSE "SYNCED" (wave 146, lane 146E): approval used to stamp 'synced' — the live-on-Meta state — although nothing
+  // was uploaded, and the six-hourly sync (app/api/cron/sync-facebook-audiences selects status 'approved') then never
+  // picked the audience up. Approval now records 'approved' — the state the sync reads — and the upload itself writes
+  // 'synced' only when the provider accepted it (lib/kernel/ads.ts syncAudience). Counted (§3).
+  const { data: flipped, error: updateError } = await supabase
     .from("facebook_custom_audiences")
-    .update({ status: "synced", updated_at: new Date().toISOString() })
+    .update({ status: "approved", updated_at: new Date().toISOString() })
     .eq("id", audienceId)
     .eq("brokerage_id", brokerageId)
+    .select("id")
 
   if (updateError) {
     return { success: false, error: updateError.message }
   }
+  if (!flipped?.length) return { success: false, error: "Audience not approved — no row matched" }
+
+  // An AI-requested re-engagement audience (contract C2) carries its request on approval_items — record the decision
+  // there too, so the request is never left pending after a person decided it.
+  const { recordReengagementDecision } = await import("@/lib/ads/audience-reengagement")
+  const settled = await recordReengagementDecision(svc, { brokerageId, audienceId, outcome: "approved", reviewerUserId: userId })
+  if (!settled.ok) console.error("[facebook-audience-sync] approveAudience: the re-engagement request was not settled —", settled.error)
 
   return { success: true }
 }

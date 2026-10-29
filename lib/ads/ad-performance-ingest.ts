@@ -76,6 +76,25 @@ export async function ingestAdPerformance(
     const cred = credCache.get(c.platform)
     if (!cred) { skipped++; continue }
 
+    // THE PROVIDER'S OWN STATUS (wave 146, lane 146E — ruling 8 "submission/status, approval" readback): a connector
+    // that publishes one (GroundTruth, StackAdapt) is asked each pass and its word is RECORDED on the campaign
+    // (targeting_config.provider_status) — never mapped onto our status ladder silently. A refused read is recorded as
+    // such, not as a state. Best-effort: the performance pull below runs either way.
+    if (connector.fetchStatus) {
+      try {
+        const st = await connector.fetchStatus({ campaignExternalId: externalId, cred })
+        const providerStatus = st.ok
+          ? { state: st.state, review: st.review, read_at: new Date().toISOString() }
+          : { state: null, review: null, read_error: st.reason, read_at: new Date().toISOString() }
+        const nextCfg = { ...(c.targeting_config ?? {}), provider_status: providerStatus }
+        const { error: statusErr } = await supabase.from("ad_campaigns").update({ targeting_config: nextCfg }).eq("id", c.id).eq("brokerage_id", brokerageId)
+        if (statusErr) console.error("[ad-performance-ingest] provider_status write refused:", statusErr.message)
+        else c.targeting_config = nextCfg
+      } catch (e) {
+        console.error("[ad-performance-ingest] provider status read failed for", c.id, (e as Error).message)
+      }
+    }
+
     const providerState = (c.targeting_config?.provider_state as Record<string, unknown> | undefined) ?? undefined
     let perf: PerformanceFetchResult
     try {

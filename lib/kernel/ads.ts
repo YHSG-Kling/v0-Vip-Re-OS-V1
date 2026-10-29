@@ -205,6 +205,14 @@ export interface SourceRule {
     seed_audience_id?: string         // for lookalike_seed
     seed_country?: string             // for lookalike (default 'US')
     seed_lookalike_size_pct?: number  // 1-10 (FB's lookalike size scale)
+    // ── reengagement_parties (wave 146, lane 146E — contract C2) ──
+    /** contacts.id of the identity-matched, consented people the request named (lib/ads/audience-reengagement.ts). */
+    contact_ids?: string[]
+    /** The request's basis (REENGAGEMENT_BASES) — WHY these people, never a characteristic of them. (The request's
+     *  idempotency key rides the rule's top level, `source_rule.request_key`, so jsonb @> finds the open request.) */
+    reengagement_basis?: string
+    /** Optional creative direction for the human who approves (the creative itself rides the ONE approval queue). */
+    creative_hint?: string | null
   }
 }
 
@@ -1223,6 +1231,17 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
     })()
     if (personaBasisRefusal) {
       return { success: false, error: personaBasisRefusal }
+    }
+
+    // ── AN AI-REQUESTED RE-ENGAGEMENT AUDIENCE UPLOADS ONLY AFTER A PERSON APPROVED IT (contract C2 + C5) ──
+    // requestAudienceReengagement (lib/ads/audience-reengagement.ts) files the request for a human; THIS is the upload
+    // door, so it re-reads the decision: the latest decision on the request is 'approved' AND the reviewer is a
+    // permitted approver (lib/kernel/approval-authority.ts). Pending, rejected, unreadable or approved by the wrong
+    // seat → refused before a single contact is read. Every other audience is unchanged.
+    if ((audience.source_rule as { type?: unknown } | null)?.type === "reengagement_parties") {
+      const { reengagementApprovalGate } = await import("@/lib/ads/audience-reengagement")
+      const gate = await reengagementApprovalGate(supabase, { brokerageId: ctx.brokerageId, audienceId })
+      if (!gate.ok) return { success: false, errorKind: "input", error: `[audience-reengagement] REFUSED: ${gate.reason}` }
     }
 
     // ── WHO THIS AUDIENCE ACTUALLY RESOLVES TO ────────────────────────────────

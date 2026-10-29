@@ -397,6 +397,16 @@ export async function approveContentSource(
   if (!row) return { ok: false, error: "not found" }
   if (!ctx.isSuperadmin && ctx.brokerageId && (row as any).brokerage_id !== ctx.brokerageId) return { ok: false, error: "outside your brokerage" }
 
+  // CONTRACT C5 (wave 146, lane 146E — owner ruling 9: "the tenants approve their own ads/posts, etc. assets"): an ad
+  // creative's RELEASE is decided by the real authority hierarchy (lib/kernel/approval-authority.ts) on the ROW's own
+  // tenant — the campaign owner, their team lead / the brokerage as oversight, the brokerage only where policy or a
+  // recorded legal requirement requires it. Platform staff are not a tenant's approver.
+  if (queue === "ad_creative") {
+    const { requirePublishApprover } = await import("@/lib/kernel/approval-authority")
+    const authority = await requirePublishApprover({ brokerageId: (row as { brokerage_id: string }).brokerage_id, assetKind: "ad_creative", assetTable: "ad_creative_variations", assetId: id, approverUserId: ctx.userId, client: svc })
+    if (!authority.ok) return { ok: false, error: authority.reason }
+  }
+
   // Marketing-asset releases (newsletter/blog/podcast/direct_mail) ride the ONE
   // canonical transition (applyMarketingAssetApproval) — the SAME function A's
   // /approvals cascade and the marketing-approvals surface use. It sets

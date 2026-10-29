@@ -81,6 +81,10 @@ export const SOURCE_RULE_TYPES = [
   "lookalike_seed",
   "exclusion_active_pipeline",
   "persona_segment",
+  // Wave 146 (lane 146E — owner ruling 2 / contract C2): the 1:1 re-engagement audience — EXACTLY the identity-matched,
+  // consented contacts a request named (lib/ads/audience-reengagement.ts requestAudienceReengagement), never a slice
+  // chosen by a characteristic. Narrowed by id below; the consent floor and every gate in syncAudience still run.
+  "reengagement_parties",
 ] as const
 
 export type SourceRuleType = (typeof SOURCE_RULE_TYPES)[number]
@@ -859,7 +863,36 @@ const NARROWERS: Record<SourceRuleType, Narrower> = {
     uploadsContacts: true,
     narrowedByPersonaGate: false,
   }),
+
+  // ── THE NAMED PARTIES (1) — contract C2 (wave 146, lane 146E) ─────────────
+  // A re-engagement audience is the set of people a request NAMED — each one already identity-matched and
+  // consent-checked by requestAudienceReengagement, and re-checked here by the population query's own consent floor.
+  // An empty, oversized or malformed id list is REFUSED: "no ids" is never "everyone".
+  reengagement_parties: (filters) => {
+    const ids = nonEmptyStringArray(filters.contact_ids)
+    if (!ids || ids.length > REENGAGEMENT_MAX_PARTIES || !ids.every((id) => UUID_RE.test(id))) {
+      return refuse(
+        "reengagement_parties",
+        "underspecified",
+        `promises the contacts a re-engagement request named, but \`filters.contact_ids\` is not a list of 1–${REENGAGEMENT_MAX_PARTIES} ` +
+          "contact ids. An absent, empty or malformed list is not 'everyone' — it is no basis at all.",
+      )
+    }
+    return {
+      ok: true,
+      ruleType: "reengagement_parties",
+      label: `the ${ids.length} named contact(s) of a re-engagement request (identity-matched, consented, approved by a person)`,
+      predicates: [{ column: "id", op: "in", value: ids, says: `one of the ${ids.length} named contacts` }],
+      join: null,
+      uploadsContacts: true,
+      narrowedByPersonaGate: false,
+    }
+  },
 }
+
+/** The most parties one re-engagement request may name (a 1:1 follow-up, never a list upload in disguise). */
+export const REENGAGEMENT_MAX_PARTIES = 500
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 // ─── THE ENTRY POINT ──────────────────────────────────────────────────────────
 

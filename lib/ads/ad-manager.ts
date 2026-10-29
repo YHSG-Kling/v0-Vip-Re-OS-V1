@@ -25,6 +25,11 @@
  */
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
+import { TV_AD_CAMPAIGN_PLATFORMS } from "@/lib/integrations/ad-campaign-vocabulary"
+
+/** The TV connections OTHER than Vibe (wave 146, ruling 8) — Vibe keeps its own branch (its launch path predates the
+ *  router and stays unchanged); these two launch through the ONE TV router. Derived, never re-spelled (§6). */
+const TV_CONNECTION_PLATFORMS: ReadonlySet<string> = new Set(TV_AD_CAMPAIGN_PLATFORMS.filter((p) => p !== "vibe_ctv"))
 
 // ── Hard guardrails (server-enforced) ───────────────────────────────────────
 export const MAX_AD_DAILY_BUDGET_USD = 500     // an action may never set a daily budget above this
@@ -234,7 +239,7 @@ export async function proposeAdLaunches(
   // A draft is a launch candidate ONLY on the streaming-TV lane (its approval
   // is the action itself); every other platform must be 'approved' first.
   const rows = ((data ?? []) as Array<{ id: string; platform: string; status: string; daily_budget: number | null; targeting_config: Record<string, unknown> | null; campaign_name: string | null }>)
-    .filter((c) => c.status === "approved" || ((c.platform === "vibe_ctv" || c.platform === "chatgpt") && c.status === "draft"))
+    .filter((c) => c.status === "approved" || ((c.platform === "vibe_ctv" || c.platform === "chatgpt") && c.status === "draft") || (TV_CONNECTION_PLATFORMS.has(c.platform) && c.status === "draft"))
   if (rows.length === 0) return { candidates: 0, proposed: 0 }
 
   let vibeConnected: boolean | null = null
@@ -260,6 +265,13 @@ export async function proposeAdLaunches(
       }
       ready = vibeConnected === true
       why = `Streaming-TV spot "${c.campaign_name ?? c.id}" is staged with a TV-ready video and the Vibe account is connected — launch it at $${Number(c.daily_budget).toFixed(0)}/day.`
+    } else if (TV_CONNECTION_PLATFORMS.has(c.platform)) {
+      // The two other TV connections (wave 146, ruling 8): same staged-draft rule as Vibe — the approval of THIS
+      // action is the human gate, the connector's publish re-runs the broadcast gate, and the account must be connected.
+      if (!c.targeting_config?.creative_video_url) continue
+      const { isAdPlatformConnected } = await import("@/lib/ads/connection-status")
+      ready = (await isAdPlatformConnected(brokerageId, c.platform, supabase)).connected
+      why = `Streaming-TV spot "${c.campaign_name ?? c.id}" is staged on ${c.platform} with a TV-ready video and the account is connected — launch it at $${Number(c.daily_budget).toFixed(0)}/day.`
     } else {
       const { count } = await supabase.from("ad_creative_variations").select("id", { count: "exact", head: true })
         .eq("ad_campaign_id", c.id).eq("approval_status", "approved")
@@ -400,11 +412,38 @@ async function runAdHandler(
         if (!r.dispatched) return { status: "skipped", result: { campaign_id: campaignId, reason: r.reason } }
         return { status: "succeeded", result: { campaign_id: campaignId, status: "live", external_campaign_id: r.openaiCampaignId, review_status: r.reviewStatus ?? null, launched_via: "ads_manager" } }
       }
+      // ── The two other TV connections (GroundTruth / StackAdapt — wave 146, ruling 8) ──
+      // Same shape as Vibe: the staged TV master is the creative, the human gate is the approval of THIS action, and
+      // the ONE TV router publishes through the connector whose publish re-runs the broadcast gate first.
+      if (TV_CONNECTION_PLATFORMS.has(campaign.platform)) {
+        if (!["draft", "approved"].includes(campaign.status)) return { status: "skipped", result: { reason: `campaign is ${campaign.status}, nothing to launch` } }
+        if (currentDaily > MAX_AD_DAILY_BUDGET_USD) return { status: "failed", result: { error: `daily budget $${currentDaily} exceeds cap $${MAX_AD_DAILY_BUDGET_USD}` } }
+        const { launchTvCampaign } = await import("@/lib/ads/ctv-campaign")
+        const r = await launchTvCampaign({ campaignId, brokerageId, actorUserId: null, launchedVia: "ads_manager", client: svc })
+        if (!r.dispatched) return { status: "skipped", result: { campaign_id: campaignId, reason: r.reason } }
+        return { status: "succeeded", result: { campaign_id: campaignId, status: "live", external_campaign_id: r.externalCampaignId ?? null, platform: campaign.platform, launched_via: "ads_manager" } }
+      }
       if (campaign.status !== "approved") return { status: "skipped", result: { reason: `campaign is ${campaign.status}, must be approved` } }
       // Must have at least one APPROVED creative before any spend.
       const { count } = await svc.from("ad_creative_variations").select("id", { count: "exact", head: true })
         .eq("ad_campaign_id", campaignId).eq("approval_status", "approved")
       if ((count ?? 0) === 0) return { status: "skipped", result: { reason: "no approved creative — cannot launch" } }
+      // THE APPROVED VERSION IS WHAT PUBLISHES (wave 146, lane 146E — owner ruling 9 + contract C4's version ledger;
+      // closes 145Z's "the launched ad has no publication check against its final"). Each approved creative's copy must
+      // be the final a person approved (lib/marketing/humanize-final.ts checkDistributionPublication) — an edit after
+      // staging is re-audited for what no approval waives (fair housing, prohibited words, carried disclosures). A
+      // refused read of the version ledger refuses the launch (fail closed).
+      {
+        const { data: approvedCreatives, error: acErr } = await svc.from("ad_creative_variations").select("id, primary_text")
+          .eq("ad_campaign_id", campaignId).eq("brokerage_id", brokerageId).eq("approval_status", "approved")
+        if (acErr) return { status: "skipped", result: { reason: `approved creatives could not be read: ${acErr.message}` } }
+        const { checkDistributionPublication } = await import("@/lib/marketing/humanize-final")
+        for (const cr of (approvedCreatives ?? []) as Array<{ id: string; primary_text: string | null }>) {
+          if (!cr.primary_text?.trim()) continue
+          const v = await checkDistributionPublication(svc as never, { brokerageId, assetKind: "ad_creative", assetTable: "ad_creative_variations", assetId: cr.id, content: cr.primary_text, approval: { approved: true, by: null, at: null } })
+          if (!v.ok) return { status: "skipped", result: { reason: `approved creative ${cr.id} is not publishable as approved: ${v.reason}` } }
+        }
+      }
       // Provider connection required before spend (business rule #9): no fake launch
       // on a platform with no connected ad account.
       const { isAdPlatformConnected } = await import("@/lib/ads/connection-status")

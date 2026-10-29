@@ -129,7 +129,10 @@ check("…and for chatgpt only with approved copy (the one queue) — never a dr
 check("the read refusal is logged, not reported as zero candidates", /launch-candidate read refused/.test(MANAGER))
 
 console.log("\n── TV 6 · one vocabulary class per platform ──")
-check("vibe_ctv and chatgpt are provider-connected (vibe / openai_ads) …", /PROVIDER_CONNECTED_AD_PLATFORMS = \{ vibe_ctv: "vibe", chatgpt: "openai_ads" \}/.test(VOCAB))
+// RE-ASSERTED (wave 146, lane 146E): the class gained the two TV connections (groundtruth / stackadapt, owner ruling 8),
+// so the RULE is membership — vibe_ctv → vibe and chatgpt → openai_ads are in the provider-connected class — never the
+// exact two-entry literal (a waypoint that could only pass while the class held exactly two platforms).
+check("vibe_ctv and chatgpt are provider-connected (vibe / openai_ads) …", /PROVIDER_CONNECTED_AD_PLATFORMS = \{[^}]*\bvibe_ctv: "vibe"[^}]*\}/.test(VOCAB) && /PROVIDER_CONNECTED_AD_PLATFORMS = \{[^}]*\bchatgpt: "openai_ads"[^}]*\}/.test(VOCAB))
 check("…and in neither of the other two lists", !/CONNECTABLE_AD_PLATFORMS = \[[^\]]*vibe_ctv/.test(VOCAB) && !/AD_PLATFORMS_WITHOUT_CONNECTIONS = \[[^\]]*vibe_ctv/.test(VOCAB))
 check("…and chatgpt is in neither of the other two lists", !/CONNECTABLE_AD_PLATFORMS = \[[^\]]*chatgpt/.test(VOCAB) && !/AD_PLATFORMS_WITHOUT_CONNECTIONS = \[[^\]]*chatgpt/.test(VOCAB))
 check("the launch precheck reads that class and asks the Vibe resolver", /PROVIDER_CONNECTED_AD_PLATFORMS as Record[\s\S]{0,300}resolveVibeCredential\(brokerageId\)/.test(CONN))
