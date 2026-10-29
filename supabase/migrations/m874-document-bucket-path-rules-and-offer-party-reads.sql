@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 146, lane 146A) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-29 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 146, lane 146A ──
 --
 -- m874 — THE FOUR PRIVATE DOCUMENT BUCKETS' PATH RULES, THE OFFER ROW'S PARTY READS, AND A LIVE POLICY-READINESS READ
 -- (wave 146, lane 146A — owner ruling 20 priority 1: "the Supabase access-control exposure").
