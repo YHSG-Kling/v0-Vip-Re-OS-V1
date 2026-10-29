@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1880 of 1955 pairs) — storing them would be
+ * overwhelming majority (1886 of 1961 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 2053 edges across 741 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1955 unordered
+ * MEASURED AT GENERATION: 2059 edges across 742 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1961 unordered
  * table pairs carry at least one FK; 75
  * carry more than one and are listed below. 18 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-27
+ * generated: 2026-10-29
  * source: public.live_foreign_keys_json()
- * body-sha256: b76c265329b12c5546a7e1095fad04cb2bcd7b02366db82012728a68531d35d7
+ * body-sha256: c938204ec225f52e92e731c6d744785039bb28e25726988ff9c12bd099a712f1
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -440,6 +440,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "lead_idx_property_interactions": { "brokerage_id": "brokerages", "contact_id": "contacts", "lead_id": "leads" },
   "lead_imports": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "lead_intelligence": { "brokerage_id": "brokerages", "lead_id": "leads" },
+  "lead_magnet_promises": { "brokerage_id": "brokerages", "campaign_id": "marketing_campaigns", "contact_id": "contacts", "form_id": "lead_capture_forms", "person_id": "person_identities", "submission_id": "form_submissions" },
   "lead_magnet_submissions": { "brokerage_id": "brokerages", "form_id": "lead_magnets" },
   "lead_magnets": { "brokerage_id": "brokerages" },
   "lead_osint_data": { "brokerage_id": "brokerages", "lead_id": "leads" },

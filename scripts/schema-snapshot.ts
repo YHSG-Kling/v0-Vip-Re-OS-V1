@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 737 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 738 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-27
+ * generated: 2026-10-29
  * source: public.live_schema_json()
- * body-sha256: 536d0613fc0c9c99a539eeff0229463c5262110bbea92b9383d8a407f810cb32
+ * body-sha256: 01f8a38bebaf12594ce3239eccf4e7c3aa0fbd9fe53fe7272d758d9c643a9a17
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -366,6 +366,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   lead_idx_property_interactions: ["brokerage_id", "contact_id", "created_at", "id", "interaction_metadata", "interaction_type", "lead_id", "mls_number", "notes", "occurred_at", "property_address", "property_details", "property_id", "requested_showing", "saved", "shared", "view_duration_seconds"],
   lead_imports: ["agent_id", "brokerage_id", "completed_at", "created_at", "created_count", "error_details", "failed_count", "field_map", "file_name", "file_url", "id", "list_cost_usd", "merged_count", "skipped_count", "status", "total_rows"],
   lead_intelligence: ["ai_summary", "brokerage_id", "buyer_seller_type", "created_at", "current_housing", "data_sources", "deal_breakers", "financial_readiness", "id", "identified_interests", "last_analyzed_at", "last_enriched_at", "lead_id", "location_preferences", "motivation_score", "must_haves", "nice_to_haves", "pre_approval_amount", "pre_approved", "price_range", "property_preferences", "property_type", "qualification_score", "readiness_score", "reason_for_move", "timeline", "updated_at"],
+  lead_magnet_promises: ["asset_kind", "asset_ref", "asset_title", "asset_version", "attempts", "attribution", "brokerage_id", "campaign_id", "channels", "consent_basis", "contact_id", "created_at", "delivered_at", "delivered_via", "due_at", "escalated_at", "evidence", "form_id", "fulfilment", "id", "last_attempt_at", "last_error", "magnet_type", "next_attempt_at", "person_id", "status", "submission_id", "updated_at"],
   lead_osint_data: ["brokerage_id", "confidence_score", "data_content", "data_source", "data_type", "enriched_at", "id", "lead_id"],
   lead_people_data: ["brokerage_id", "contact_enrichment", "created_at", "data_source", "demographic_data", "employment_data", "enriched_at", "financial_indicators", "id", "last_enriched_at", "lead_id", "life_events", "social_presence", "updated_at"],
   lead_property_ownership: ["brokerage_id", "created_at", "data_source", "equity_estimate", "estimated_value", "id", "is_primary_residence", "lead_id", "mortgage_data", "motivation_indicators", "ownership_length_months", "property_address", "property_details", "property_tax", "purchase_date", "updated_at"],

@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 465 tables, 866 columns.
+ * MEASURED AT GENERATION: 466 tables, 871 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-27
+ * generated: 2026-10-29
  * source: public.live_check_constraints_json()
- * body-sha256: 17729622ba03d5779d895e4cd6e2dedce5a715c9917cca5dd33049797a08c43c
+ * body-sha256: c399b8d8d7d8aee192b3318ee0656b31abdaa81ae1ec5279d75b2991e7cd7416
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -37,7 +37,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     sync_type: ["commission", "expense", "full", "invoice", "journal"],
   },
   ad_campaigns: {
-    platform: ["chatgpt", "facebook", "google", "instagram", "linkedin", "tiktok", "vibe_ctv"],
+    platform: ["chatgpt", "facebook", "google", "groundtruth", "instagram", "linkedin", "stackadapt", "tiktok", "vibe_ctv"],
     status: ["approved", "draft", "ended", "failed", "launching", "live", "paused", "pending_review"],
     visibility_scope: ["agent", "brokerage", "multi_location", "platform", "team"],
   },
@@ -782,7 +782,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     audience_type: ["custom", "engagement", "listing_visitors", "lookalike", "newsletter_openers", "persona_segment", "portal_visitors", "video_viewers", "website_visitors"],
     scope_type: ["agent", "brokerage", "multi_location", "platform", "team"],
     status: ["approved", "deleted", "draft", "failed", "pending_review", "synced"],
-    target_platform: ["facebook", "google", "instagram", "linkedin", "tiktok"],
+    target_platform: ["facebook", "google", "instagram", "linkedin", "stackadapt", "tiktok"],
   },
   fatigue_alerts: {
     alert_type: ["disengagement_risk", "fatigue_threshold_crossed", "re_engagement_needed", "search_stalled"],
@@ -850,6 +850,13 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   lead_intelligence: {
     timeline: ["1-3_months", "12+_months", "3-6_months", "6-12_months", "immediate", "researching"],
+  },
+  lead_magnet_promises: {
+    asset_kind: ["book", "checklist", "guide", "report", "valuation", "video"],
+    consent_basis: ["requested_by_form", "requested_with_tcpa_consent"],
+    delivered_via: ["email", "email_and_portal", "human_attested", "portal"],
+    fulfilment: ["human", "system"],
+    status: ["asset_missing", "awaiting_human", "cancelled", "delivered", "delivering", "failed", "promised"],
   },
   lead_magnets: {
     status: ["archived", "draft", "published"],
@@ -1246,7 +1253,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   platform_credentials: {
     owner_type: ["agent", "brokerage", "contact", "platform", "team", "vendor"],
-    platform: ["authentisign", "bandwidth", "brokermint", "buffer", "did", "docusign", "dotloop", "facebook", "followupboss", "formsimplicity", "gmail", "gohighlevel", "google_ads", "google_calendar", "google_flow", "hubspot", "idxbroker", "instagram", "linkedin", "listhub", "lob", "lofty", "mailgun", "mls", "mls_direct", "opcity", "openai_ads", "outlook", "pexels", "plaid", "platform_quickbooks", "platform_social_facebook", "platform_social_instagram", "platform_social_linkedin", "platform_social_tiktok", "platform_social_x", "platform_social_youtube", "platform_zoom", "plivo", "postmark", "quickbooks", "realtor_com", "resend", "sendgrid", "showingtime", "sinch", "skyslope", "stripe", "telnyx", "twilio", "twilio_a2p", "twilio_byo", "twilio_subaccount", "vibe", "zillow", "zoom"],
+    platform: ["authentisign", "bandwidth", "brokermint", "buffer", "did", "docusign", "dotloop", "facebook", "followupboss", "formsimplicity", "gmail", "gohighlevel", "google_ads", "google_calendar", "google_flow", "groundtruth", "hubspot", "idxbroker", "instagram", "linkedin", "listhub", "lob", "lofty", "mailgun", "mls", "mls_direct", "opcity", "openai_ads", "outlook", "pexels", "plaid", "platform_quickbooks", "platform_social_facebook", "platform_social_instagram", "platform_social_linkedin", "platform_social_tiktok", "platform_social_x", "platform_social_youtube", "platform_zoom", "plivo", "postmark", "quickbooks", "realtor_com", "resend", "sendgrid", "showingtime", "sinch", "skyslope", "stackadapt", "stripe", "telnyx", "twilio", "twilio_a2p", "twilio_byo", "twilio_subaccount", "vibe", "zillow", "zoom"],
     scope: ["agent", "brokerage", "platform", "team"],
     test_status: ["fail", "pass", "pending"],
   },

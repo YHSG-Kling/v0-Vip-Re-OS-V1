@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 146, lane 146B) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL-editor
+-- ── APPLIED LIVE 2026-10-29 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 146, lane 146B ──
 --
 -- m876 — ONE INBOUND RECORD PER (tenant, provider, provider reference) ON THE CONTACT TIMELINE
 --
