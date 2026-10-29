@@ -357,9 +357,11 @@ async function main() {
     (SPINE.calls[0].situation?.complianceDirectives.length ?? 0) > WELCOME_FAIR_HOUSING_DIRECTIVES.length,
     JSON.stringify(SPINE.calls[0]?.situation?.complianceDirectives?.length),
   )
+  // RE-ASSERTED (wave 146, lane 146C — owner ruling 6 overrules "in the email AND the portal"): "put the welcome personal video
+  // in-app contact portal so the contact sees it right away". The welcome email goes at conversion and never carries this clip.
   check(
-    "2.4 delivery is BOTH — the ruling asks for the clip in the email AND the portal",
-    SPINE.calls[0].delivery === "both",
+    "2.4 delivery is the PORTAL — the clip lives in the contact's portal; the welcome email already went (owner ruling 6)",
+    SPINE.calls[0].delivery === "portal",
   )
   check(
     "2.5 the agents-class id is passed straight through (agents.id ≠ users.id)",
@@ -397,19 +399,27 @@ async function main() {
     JSON.stringify(refused),
   )
 
-  // 2d. THE CONTACT'S OWN CHOICE.
+  // 2d. A CHANNEL OPT-OUT DOES NOT STOP THE PORTAL WELCOME VIDEO.
+  // RE-ASSERTED (wave 146, lane 146C — owner ruling 6: "Welcome video is automatically sent in the portal regardless of the
+  // contact's preferences"): video_opt_out is a CHANNEL opt-out (counted beside email / sms / mail opt-outs), and the portal
+  // video is an in-app part of the contact's portal journey, not a channel message — so this module no longer refuses before
+  // the spine. The spine's OWN gate still answers 'suppressed' until lane 146F exempts the portal welcome (Outside-lane); that
+  // answer is reported honestly, never as "the contact's final choice", and lib/portal/welcome-video.ts recovers it.
   SPINE.calls = []
+  SPINE.answer = async () => ({ ok: true, status: "suppressed", reason: "video_opt_out" })
   const optOut = await ensureWelcomeAvatarVideo(
     contactsClient({ data: { ...RICH_CONTACT, video_opt_out: true }, error: null }) as any,
     P,
   )
+  SPINE.answer = async () => ({ ok: true, status: "rendering", videoProjectId: "vp-1" })
   check(
-    "2.9 video_opt_out refuses BEFORE the spine — their choice costs nothing",
-    optOut.reason === "video_opt_out" && SPINE.calls.length === 0,
+    "2.9 a channel opt-out does NOT refuse the portal welcome video before the spine — the spine is ASKED (owner ruling 6)",
+    SPINE.calls.length === 1 && SPINE.calls[0].delivery === "portal",
   )
   check(
-    "2.10 …and it says the portal invite is unaffected (the video must never cost them the portal)",
-    optOut.warnings.some((w) => /portal invite is unaffected/i.test(w)),
+    "2.10 …and when the SPINE's own gate still suppresses it, that is reported as such (naming ruling 6), never as a silent 'their choice'",
+    optOut.reason === "video_opt_out" && !optOut.commissioned && optOut.warnings.some((w) => /suppressed the portal welcome video/i.test(w) && /ruling 6/.test(w)),
+    JSON.stringify(optOut.warnings),
   )
 
   // 2e. A COUNTERPARTY IS NOT A CLIENT.

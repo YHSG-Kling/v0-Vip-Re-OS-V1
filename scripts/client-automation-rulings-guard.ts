@@ -219,14 +219,14 @@ async function main() {
     check("a manually added contact is created", made.success && !!id, JSON.stringify(made).slice(0, 300))
     check("...and the automation invited it to the portal — one invite row, reported granted",
       rows(svc, "portal_contact_invites", (r) => r.contact_id === id).length === 1 && made.portalInvite?.granted === true, JSON.stringify(made.portalInvite))
-    // RE-ASSERTED (wave 145, lane 145E — owner ruling 17): the edge stub reports `agent_not_video_ready` (today's live default),
-    // and ruling 17 HOLDS such a welcome for a human-approved exception instead of sending it without the agent's video. The
-    // RULE is unchanged — the contact reaches the ONE welcome path exactly once: the welcome is asked once, OR it is held once
-    // (one `welcome_without_video` approval item), never both, never twice.
+    // RE-ASSERTED (wave 146, lane 146C — owner ruling 6 OVERRULES ruling 17): the edge stub reports `agent_not_video_ready`
+    // (today's live default), and the welcome is SENT NOW anyway — it never waits for, or is held over, the agent's video (the
+    // video lives in the portal). The RULE is unchanged and now strict: the contact reaches the ONE welcome path exactly once,
+    // and nothing is ever filed in place of it (the ruling-17 `welcome_without_video` approval item is retired — 0 must exist).
     const asked = G.__94A.welcomes.filter((w: string) => w === id).length
     const held = rows(svc, "approval_items", (r) => r.item_id === id && r.item_type === "welcome_without_video").length
-    check("...through the ONE welcome path (the email carries the portal door — welcome asked once, or held once for the human-approved exception when no video can ride it)",
-      asked + held === 1, JSON.stringify({ asked, held }))
+    check("...through the ONE welcome path (the email carries the portal door — the welcome is asked exactly once, NOW, and never held over its video)",
+      asked === 1 && held === 0, JSON.stringify({ asked, held }))
 
     const noMail = await createContactManually({
       first_name: "Pho", last_name: "Only", phone: "5615550194", contact_type: "buyer", agent_id: AGENT, brokerage_id: BRK,

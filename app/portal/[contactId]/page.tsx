@@ -5,6 +5,9 @@ import LifetimeHome from "./lifetime-home"
 import BuyerHome from "./buyer-home"
 import { DualJourneyTabs } from "./components/DualJourneyTabs"
 import { DualDependencyBanner } from "./components/DualDependencyBanner"
+// WAVE 146 (lane 146C — owner ruling 6, contract C3): the contact's personal welcome video lives at the top of their portal
+// home on EVERY layout (buyer / seller / dual / lifetime) — the moment it is validated, the contact sees it here.
+import { PortalWelcomeVideo } from "./components/PortalWelcomeVideo"
 
 export default async function PortalHomePage({
   params,
@@ -48,6 +51,7 @@ export default async function PortalHomePage({
     return (
       <div className="min-h-screen bg-background">
         <div className="max-w-2xl mx-auto px-4 pt-6 pb-12 space-y-4">
+          <PortalWelcomeVideo contactId={contactId} />
           {showBanner && dual.dependency && (
             <DualDependencyBanner dependency={dual.dependency} />
           )}
@@ -65,16 +69,19 @@ export default async function PortalHomePage({
   // ── Non-dual: the previous single-journey behavior, plus the lifetime home below
   //    when the kernel also lists it (wave 95) ─────────────────────────────────
 
+  // The welcome video sits above the single-journey home, in the same column the homes use.
+  const welcomeVideo = <PortalWelcomeVideo contactId={contactId} className="max-w-2xl mx-auto px-4 pt-6" />
+
   // Render seller home if seller view
   if (dual.primary === "seller") {
-    return <><SellerHome contactId={contactId} />{lifetimeBelow}</>
+    return <>{welcomeVideo}<SellerHome contactId={contactId} />{lifetimeBelow}</>
   }
 
   // Render lifetime home if lifetime view
   if (dual.primary === "lifetime") {
-    return <LifetimeHome contactId={contactId} />
+    return <>{welcomeVideo}<LifetimeHome contactId={contactId} /></>
   }
 
   // Default buyer view
-  return <><BuyerHome contactId={contactId} />{lifetimeBelow}</>
+  return <>{welcomeVideo}<BuyerHome contactId={contactId} />{lifetimeBelow}</>
 }

@@ -22,10 +22,11 @@
  * that makes the finder demonstrate it can still see the defect it was written
  * for, CLAUDE.md §2):
  *
- *   (WAVE 145, owner ruling 17 — REVERSES wave 144's ruling 13: the ONE welcome WAITS
- *   for the agent's personal video and is auto-sent with it; a video that cannot be
- *   produced or selected HOLDS it for a human-approved exception. Layers 1-2 assert
- *   that rule; the wave-144 follow-up arms stay for rows whose welcome already went.)
+ *   (WAVE 146, owner ruling 6 — OVERRULES wave 145's ruling 17: the ONE welcome goes
+ *   NOW for every video outcome and the agent's personal video lives in the contact's
+ *   PORTAL (lib/portal/welcome-video.ts, contract C3). Layers 1-2 assert that rule;
+ *   Layer 10 proves ruling 17's exception doors retired; Layer 11 drives the portal
+ *   video end to end — the read, the readback, recovery, the first-touch claim.)
  *   Layer 1  THE WAIT RULE. Only a render actually in flight arms the wait; an
  *            agent with no voice profile (live: 0 rows — the DEFAULT case today)
  *            sends immediately. An unknown reason must NOT wait.
@@ -68,10 +69,10 @@ import { stripComments } from "./strip-comments"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import {
   decideWelcomeTiming,
-  classifyPendingWelcome,
   PENDING_WELCOME_STATUSES,
   WELCOME_VIDEO_WAIT_MS,
 } from "../lib/contact-promotion/conversion-welcome"
+import { classifyPortalWelcomeVideo } from "../lib/portal/welcome-video"
 import {
   resolveWelcomeManagers,
   welcomeJourneyFor,
@@ -107,175 +108,103 @@ function check(name: string, cond: boolean, detail?: string) {
 
 const HOUR = 60 * 60 * 1000
 
-// ─── LAYER 1 — THE WAIT RULE ─────────────────────────────────────────────────
+// ─── LAYER 1 — THE TIMING RULE: THE WELCOME NEVER WAITS (owner ruling 6, wave 146) ──
 
 function layer1_waitRule() {
-  console.log("\nLayer 1 — the ONE welcome WAITS for the agent's video; a failure is a human-approved exception (owner ruling 17, wave 145)")
+  console.log("\nLayer 1 — the ONE welcome goes NOW for every video outcome; the video lives in the portal (owner ruling 6, wave 146)")
 
-  // WAVE 145 (lane 145E) — the RULE re-asserted, not the waypoint: owner ruling 17 (2026-10-27) — "the welcome email with the
-  // login info for the newly converted contact has to wait for the avatar welcome email from the agent to finish and auto send
-  // after" — REVERSED ruling 13's "the welcome goes now and the video follows". A render in flight HOLDS the welcome again; a
-  // video that cannot be produced or selected HOLDS it for a person (never sent without it on its own). The contact's own choices
-  // (video off, a stated no-video format) and a type that gets no video still send at once.
-  check("a freshly commissioned render HOLDS the one welcome for the video (hold_for_video)",
-    decideWelcomeTiming({ commissioned: true, reason: "commissioned" }).action === "hold_for_video")
-
-  check("a render already commissioned on an earlier attempt holds it too\n    (a retried conversion must not race the sweeper with a second send)",
-    decideWelcomeTiming({ commissioned: true, reason: "already_commissioned" }).action === "hold_for_video")
-
-  // THE DEFAULT CASE ON THIS PLATFORM. agent_voice_profiles holds ZERO rows, so
-  // the reactor's honest refusal is what every conversion hits right now.
-  const noProfile = decideWelcomeTiming({ commissioned: false, reason: "agent_not_video_ready" })
-  check("an agent with NO voice/avatar profile and no standing video HOLDS the welcome\n    for a human-approved exception — never sent without the video on its own",
-    noProfile.action === "hold_for_exception")
-  check("...and it SAYS why, so the agent can fix it",
-    /voice \/ avatar|voice\/avatar/.test(noProfile.reason) && noProfile.reason.length > 40)
-  check("...unless the agent's STANDING personal video is ready (selected + validated): then the welcome goes now WITH it",
-    decideWelcomeTiming({ commissioned: false, reason: "agent_not_video_ready", standingVideoReady: true }).action === "send_now")
-
-  check("a contact who turned video off sends immediately (their choice)",
-    decideWelcomeTiming({ commissioned: false, reason: "video_opt_out" }).action === "send_now")
-  check("a STATED accessibility preference for a format without video sends immediately — even with a render in flight (contract C3)",
-    decideWelcomeTiming({ commissioned: true, reason: "commissioned", statedNoVideo: true }).action === "send_now")
-  check("an excluded contact type sends immediately",
-    decideWelcomeTiming({ commissioned: false, reason: "excluded_contact_type" }).action === "send_now")
-  check("a hard refusal (compliance / provider) HOLDS for a human exception",
-    decideWelcomeTiming({ commissioned: false, reason: "refused" }).action === "hold_for_exception")
-  check("an unavailable spine HOLDS for a human exception",
-    decideWelcomeTiming({ commissioned: false, reason: "unavailable" }).action === "hold_for_exception")
-
-  // FAIL CLOSED: a reason nobody has written yet is never "send without the video" and never a silent wait — a PERSON decides.
-  check("an UNKNOWN reason HOLDS for a human exception — never falsely sent, never an unbounded silent wait",
-    decideWelcomeTiming({ commissioned: false, reason: "a_reason_invented_next_year" }).action === "hold_for_exception")
-
-  // POSITIVE CONTROL: the finder can still see the defect. If the rule were
-  // "always wait" or "always send", the assertions above would be vacuous.
+  // WAVE 146 (lane 146C) — the RULE re-asserted, not the waypoint: owner ruling 6 (2026-10-29) — "Welcome email shouldn't wait
+  // for a video so send welcome email out right away and put the welcome personal video in-app contact portal" — OVERRULES
+  // ruling 17 (wave 145), which held the welcome for the video (hold_for_video) or for a human exception (hold_for_exception).
+  // Every outcome now sends at once; the outcome only says where the video goes.
   const everyReason = [
     "commissioned", "already_commissioned", "video_opt_out", "agent_not_video_ready",
-    "excluded_contact_type", "unavailable", "refused",
+    "excluded_contact_type", "unavailable", "refused", "a_reason_invented_next_year",
   ] as const
-  const waiters = everyReason.filter((r) => decideWelcomeTiming({ commissioned: r === "commissioned", reason: r }).action === "hold_for_video")
-  check("CONTROL: EXACTLY TWO of the seven reasons hold the welcome for a video in flight — not all, not none",
-    waiters.length === 2, `held: ${waiters.join(", ") || "none"}`)
-  const sendsNow = everyReason.filter((r) => decideWelcomeTiming({ commissioned: r === "commissioned", reason: r }).action === "send_now")
-  check("CONTROL: only the contact's own choice and the excluded type send at once without a standing video (2 of 7)",
-    sendsNow.length === 2 && sendsNow.includes("video_opt_out") && sendsNow.includes("excluded_contact_type"), `send_now: ${sendsNow.join(", ")}`)
-  check("NO outcome sends the welcome without the video on the system's own say: every failure reason — and an unknown one — is a human exception",
-    (["agent_not_video_ready", "unavailable", "refused", "a_reason_invented_next_year"] as const).every((r) => decideWelcomeTiming({ commissioned: false, reason: r }).action === "hold_for_exception"))
-
-  // A `commissioned` reason that did NOT actually commission cannot arm the wait:
-  // there would be no agent_intro_videos row for the sweeper to find.
-  check("CONTROL: reason 'commissioned' with commissioned=false does NOT wait for a video —\n    the wait is armed by the LEDGER ROW existing, not by a label (it becomes a human exception)",
-    decideWelcomeTiming({ commissioned: false, reason: "commissioned" }).action === "hold_for_exception")
+  const verdicts = everyReason.map((r) => decideWelcomeTiming({ commissioned: r === "commissioned" || r === "already_commissioned", reason: r }))
+  check("EVERY video outcome — in flight, refused, impossible, opted out, excluded, unknown — sends the welcome NOW (send_now)",
+    verdicts.every((v) => v.action === "send_now"), verdicts.map((v, i) => `${everyReason[i]}→${v.action}`).join(" "))
+  check("...including a render in flight (the ruling-17 hold is gone) and a stated no-video format (it shapes playback, never timing)",
+    decideWelcomeTiming({ commissioned: true, reason: "commissioned" }).action === "send_now"
+    && decideWelcomeTiming({ commissioned: true, reason: "commissioned", statedNoVideo: true }).action === "send_now")
+  check("the reason says WHERE THE VIDEO GOES — the portal — and that the email never waits",
+    verdicts.every((v) => /never waits/.test(v.reason))
+    && /portal/.test(decideWelcomeTiming({ commissioned: true, reason: "commissioned" }).reason)
+    && /standing personal video shows in the portal/.test(decideWelcomeTiming({ commissioned: false, reason: "agent_not_video_ready", standingVideoReady: true }).reason))
+  check("a video that could not be commissioned says the portal shows nothing false and the manager retries or tells a person",
+    /nothing false[\s\S]*retries or tells a person/.test(decideWelcomeTiming({ commissioned: false, reason: "refused" }).reason))
+  // POSITIVE CONTROL: the finder still sees the overruled shape — a timing type that admits a hold would make the rule vacuous.
+  const conv = src("lib/contact-promotion/conversion-welcome.ts")
+  check("the timing vocabulary has ONE value: no hold arm survives in code (hold_for_video / hold_for_exception)",
+    !/"hold_for_video"|"hold_for_exception"/.test(conv) && /\|\s*"send_now"/.test(conv))
+  check("CONTROL: the hold finder still recognises the overruled ruling-17 union",
+    /"hold_for_video"|"hold_for_exception"/.test('export type WelcomeTimingAction = | "send_now" | "hold_for_video" | "hold_for_exception"'))
 }
 
-// ─── LAYER 2 — THE SWEEPER ───────────────────────────────────────────────────
+// ─── LAYER 2 — THE SWEEPER: THE VIDEO GOES TO THE PORTAL, AND NOTHING WAITS FOREVER ──
 
 function layer2_sweeper() {
-  console.log("\nLayer 2 — the sweeper releases the welcome, and NOTHING waits forever")
+  console.log("\nLayer 2 — the sweeper places the validated video in the portal (classifyPortalWelcomeVideo), and nothing waits forever")
 
-  // The HELD-welcome branch (welcomeState 'none' — a pre-wave-144 row whose welcome never went): released exactly as before.
   const base = {
     status: "rendering" as string | null,
     ageMs: 5 * 60 * 1000,
     composite: "landed" as "not_requested" | "pending" | "landed" | "abandoned" | null,
     hasRenderedUrl: true,
-    videoOptOut: false,
-    hasEmail: true,
-    welcomeState: "none" as "sent" | "held" | "failed" | "none" | null | undefined,
   }
-
-  check("a landed assembly with a rendered URL releases the welcome WITH the video",
-    classifyPendingWelcome(base).action === "send_with_video")
-  check("...and stamps 'delivered'",
-    classifyPendingWelcome(base).ledgerStatus === "delivered")
-
+  check("a landed assembly with a rendered URL is PLACED in the portal (read back, then stamped 'delivered')",
+    classifyPortalWelcomeVideo(base).action === "place" && classifyPortalWelcomeVideo(base).ledgerStatus === "delivered")
   check("a render still in flight WAITS",
-    classifyPendingWelcome({ ...base, hasRenderedUrl: false, composite: null }).action === "wait")
-  check("an assembly still pending WAITS — mailing the bare avatar track is the\n    defect the assembly step exists to fix",
-    classifyPendingWelcome({ ...base, composite: "pending" }).action === "wait")
-  check("an ABANDONED assembly does NOT wait — the D-ID cut ships rather than the\n    welcome never arriving",
-    classifyPendingWelcome({ ...base, composite: "abandoned" }).action === "send_with_video")
+    classifyPortalWelcomeVideo({ ...base, hasRenderedUrl: false, composite: null }).action === "wait")
+  check("an assembly still pending WAITS — the bare avatar track is never shown as the welcome",
+    classifyPortalWelcomeVideo({ ...base, composite: "pending" }).action === "wait")
+  check("an ABANDONED assembly does NOT wait — the D-ID cut is placed rather than the video never arriving",
+    classifyPortalWelcomeVideo({ ...base, composite: "abandoned" }).action === "place")
 
   // THE DEADLINE, AND ITS POSITION IN THE ORDER.
   const overdue = { ...base, composite: "pending" as const, ageMs: WELCOME_VIDEO_WAIT_MS + 1 }
-  // WAVE 145 (ruling 17) — RE-ASSERTED: past the deadline the welcome is no longer sent without the video; a PERSON decides.
-  check("past the deadline the welcome is HELD for a human-approved exception EVEN THOUGH the\n    assembly is still 'pending' — the deadline is checked BEFORE the assembly\n    gate (nothing stalls), and nothing is sent without the video on the sweeper's own say",
-    classifyPendingWelcome(overdue).action === "hold_for_exception")
+  check("past the deadline the render FAILS (handed to recovery) EVEN THOUGH the assembly is still 'pending' — the deadline is\n    checked BEFORE the assembly gate, so nothing stalls",
+    classifyPortalWelcomeVideo(overdue).action === "fail")
   check("...and the ledger records 'failed' with the timeout as the reason",
-    classifyPendingWelcome(overdue).ledgerStatus === "failed"
-    && /has not landed within \d+ minutes/.test(classifyPendingWelcome(overdue).reason))
-  check("CONTROL: one millisecond INSIDE the deadline still waits — the boundary\n    is real, not a regex that matches everything",
-    classifyPendingWelcome({ ...overdue, ageMs: WELCOME_VIDEO_WAIT_MS }).action === "wait")
-  check("an unknown age is treated as FRESH, never as overdue — a null created_at\n    must not mail a welcome the instant the sweeper first sees the row",
-    classifyPendingWelcome({ ...base, composite: "pending", ageMs: null }).action === "wait")
+    classifyPortalWelcomeVideo(overdue).ledgerStatus === "failed" && /has not landed within \d+ minutes/.test(classifyPortalWelcomeVideo(overdue).reason))
+  check("CONTROL: one millisecond INSIDE the deadline still waits — the boundary is real",
+    classifyPortalWelcomeVideo({ ...overdue, ageMs: WELCOME_VIDEO_WAIT_MS }).action === "wait")
+  check("an unknown age is treated as FRESH, never as overdue",
+    classifyPortalWelcomeVideo({ ...base, composite: "pending", ageMs: null }).action === "wait")
 
-  // A LATE OPT-OUT BEATS A FINISHED VIDEO.
-  const lateOptOut = { ...base, videoOptOut: true }
-  check("a contact who turned video off DURING the render still gets the welcome —\n    without the video",
-    classifyPendingWelcome(lateOptOut).action === "send_without_video")
-  check("...recorded as 'suppressed', not 'failed' — their choice is not an incident",
-    classifyPendingWelcome(lateOptOut).ledgerStatus === "suppressed")
+  // RULING 6: no email / opt-out input exists — the portal video is not a channel message and the email already went.
+  const sweeperSrc = src("lib/portal/welcome-video.ts")
+  const sig = sweeperSrc.slice(sweeperSrc.indexOf("export function classifyPortalWelcomeVideo"), sweeperSrc.indexOf("}): PortalWelcomeVideoVerdict"))
+  check("the classifier takes NO email, opt-out or welcome-state input — the portal video is the contact's in-app welcome, not a\n    marketing message, and the welcome email is not its business any more (ruling 6)",
+    sig.length > 50 && !/hasEmail|videoOptOut|welcomeState/.test(sig))
+  check("CONTROL: that finder still sees the wave-145 classifier's channel inputs",
+    /hasEmail|videoOptOut|welcomeState/.test("export function classifyPendingWelcome(input: { status: string | null; videoOptOut: boolean; hasEmail: boolean; welcomeState?: string"))
 
-  // NO EMAIL: the welcome still resolves (the survivor writes the portal rail).
-  check("no email address still RELEASES the welcome (the survivor routes it to the\n    portal rail and tells the agent) rather than leaving the row pending forever",
-    classifyPendingWelcome({ ...base, hasEmail: false }).action === "send_without_video")
-
-  // TERMINAL ROWS ARE NOT RE-SENT. This is the no-double-send guard at the sweep.
+  // TERMINAL ROWS ARE NOT RE-PLACED.
   for (const terminal of ["delivered", "failed", "suppressed"]) {
-    check(`a '${terminal}' row is SKIPPED — the sweeper never re-sends a resolved welcome`,
-      classifyPendingWelcome({ ...base, status: terminal }).action === "skip")
+    check(`a '${terminal}' row is SKIPPED — the sweeper never re-places a resolved video`,
+      classifyPortalWelcomeVideo({ ...base, status: terminal }).action === "skip")
   }
-  check("a null status is skipped too",
-    classifyPendingWelcome({ ...base, status: null }).action === "skip")
+  check("a null status is skipped too", classifyPortalWelcomeVideo({ ...base, status: null }).action === "skip")
 
-  // THE SET THE SWEEPER SELECTS IS EXACTLY THE NON-TERMINAL VOCABULARY, DERIVED
-  // FROM THE LIVE CHECK — not a hardcoded list that a future status would escape.
+  // THE SET IS THE NON-TERMINAL VOCABULARY, DERIVED FROM THE LIVE CHECK — not a hardcoded list a future status would escape.
   const liveStatuses = CHECK_VOCABULARIES.agent_intro_videos?.status ?? []
-  check("CONTROL: the live agent_intro_videos.status vocabulary is readable — a\n    guard that cannot see the vocabulary it judges reports zero and reads clean",
+  check("CONTROL: the live agent_intro_videos.status vocabulary is readable — a guard that cannot see the vocabulary it judges\n    reports zero and reads clean",
     liveStatuses.length > 0, `read ${liveStatuses.length} values`)
   const terminalByRule = liveStatuses.filter((s) => !PENDING_WELCOME_STATUSES.includes(s))
-  check("every PENDING status is in the live CHECK vocabulary — the sweeper cannot\n    select a value the database would never store",
-    PENDING_WELCOME_STATUSES.every((s) => liveStatuses.includes(s)),
-    `pending: ${PENDING_WELCOME_STATUSES.join(",")} vs live: ${liveStatuses.join(",")}`)
-  check("every status the classifier can WRITE is in the live CHECK vocabulary —\n    'abandoned' is refused by the live constraint (23514, proved against\n    hrvaqgvukzxfskkcrwbt), so a timed-out render is recorded as 'failed'",
-    (["delivered", "failed", "suppressed"] as const).every((s) => liveStatuses.includes(s)))
-  check("CONTROL: 'abandoned' is NOT in the live vocabulary, so the classifier must\n    never produce it",
-    !liveStatuses.includes("abandoned"))
-  check("every terminal status derived from the live vocabulary is SKIPPED by the\n    classifier — the rule is asserted, the list is derived (§2: no waypoints)",
-    terminalByRule.every((s) => classifyPendingWelcome({ ...base, status: s }).action === "skip"),
-    `terminal by rule: ${terminalByRule.join(",")}`)
-
-  // ── WAVE 144: THE WELCOME ALREADY WENT — THE VIDEO FOLLOWS IT, OR IS CLOSED ──
-  const sent = { ...base, welcomeState: "sent" as const }
-  check("W144 welcome SENT + a landed assembly → ONE video FOLLOW-UP (never a second welcome), stamped 'delivered' on a real send",
-    classifyPendingWelcome(sent).action === "send_video_follow_up" && classifyPendingWelcome(sent).ledgerStatus === "delivered")
-  check("W144 …still in flight / assembly pending → wait (the bare avatar track is never mailed)",
-    classifyPendingWelcome({ ...sent, hasRenderedUrl: false, composite: null }).action === "wait" && classifyPendingWelcome({ ...sent, composite: "pending" }).action === "wait")
-  check("W144 …past the deadline → CLOSED, 'failed', and NO mail (the welcome already went; no late video email)",
-    classifyPendingWelcome({ ...sent, composite: "pending", ageMs: WELCOME_VIDEO_WAIT_MS + 1 }).action === "close_video_follow_up" && classifyPendingWelcome({ ...sent, ageMs: WELCOME_VIDEO_WAIT_MS + 1 }).ledgerStatus === "failed")
-  check("W144 …a late video opt-out → closed 'suppressed'; no email on file → closed 'failed' (the video stays on the portal card)",
-    classifyPendingWelcome({ ...sent, videoOptOut: true }).ledgerStatus === "suppressed" && classifyPendingWelcome({ ...sent, videoOptOut: true }).action === "close_video_follow_up"
-    && classifyPendingWelcome({ ...sent, hasEmail: false }).action === "close_video_follow_up")
-  check("W144 a welcome HELD for approval → the video waits BEHIND it (never precedes it), and is closed past the deadline",
-    classifyPendingWelcome({ ...base, welcomeState: "held" }).action === "wait" && classifyPendingWelcome({ ...base, welcomeState: "held", ageMs: WELCOME_VIDEO_WAIT_MS + 1 }).action === "close_video_follow_up")
-  check("W144 a FAILED / rejected welcome → closed: a video never goes out without its welcome",
-    classifyPendingWelcome({ ...base, welcomeState: "failed" }).action === "close_video_follow_up")
-  check("W144 FAIL CLOSED: a caller that does not say (undefined) or could not read (null) the welcome's state RELEASES NOTHING and stamps nothing — a deduped welcome must never read as a delivered video",
-    classifyPendingWelcome({ ...base, welcomeState: undefined }).action === "wait" && classifyPendingWelcome({ ...base, welcomeState: undefined }).ledgerStatus === null
-    && classifyPendingWelcome({ ...base, welcomeState: null }).action === "wait")
-  check("W145 …and an unstated state past the deadline stamps the row 'failed' and HOLDS the welcome for a person — nothing hangs silently, nothing is sent on a guess, 'delivered' is never stamped without the state",
-    classifyPendingWelcome({ ...base, welcomeState: undefined, ageMs: WELCOME_VIDEO_WAIT_MS + 1 }).action === "hold_for_exception" && classifyPendingWelcome({ ...base, welcomeState: undefined, ageMs: WELCOME_VIDEO_WAIT_MS + 1 }).ledgerStatus === "failed")
-  check("W144 CONTROL: the same row with the state stated DOES release — the fail-closed arm is not a classifier that always waits",
-    classifyPendingWelcome({ ...base, welcomeState: "none" }).action === "send_with_video" && classifyPendingWelcome(sent).action === "send_video_follow_up")
-  check("W144 a terminal row is skipped whatever the welcome's state",
-    (["sent", "held", "failed", "none", undefined] as const).every((w) => classifyPendingWelcome({ ...base, status: "delivered", welcomeState: w }).action === "skip"))
+  check("every PENDING status is in the live CHECK vocabulary",
+    PENDING_WELCOME_STATUSES.every((s) => liveStatuses.includes(s)), `pending: ${PENDING_WELCOME_STATUSES.join(",")} vs live: ${liveStatuses.join(",")}`)
+  check("every status the classifier can WRITE is in the live CHECK vocabulary ('abandoned' is refused live — a timeout is 'failed')",
+    (["delivered", "failed"] as const).every((s) => liveStatuses.includes(s)) && !liveStatuses.includes("abandoned"))
+  check("every terminal status derived from the live vocabulary is SKIPPED — the rule is asserted, the list is derived (§2)",
+    terminalByRule.every((s) => classifyPortalWelcomeVideo({ ...base, status: s }).action === "skip"), `terminal by rule: ${terminalByRule.join(",")}`)
+  check("the portal delivery channel the commission asks for is in the live CHECK vocabulary",
+    (CHECK_VOCABULARIES.agent_intro_videos?.delivery_channel ?? []).includes("portal"))
 
   // THE BOUND IS NOT A SECOND NUMBER (§6).
-  check("the welcome's wait bound IS the video pipeline's existing bound — one\n    vocabulary per function, not a second timeout constant",
+  check("the video's bound IS the video pipeline's existing bound — one vocabulary per function, not a second timeout constant",
     WELCOME_VIDEO_WAIT_MS === COMPOSITE_WAIT_MS)
-  check("...and it is a real, finite, hours-scale bound",
-    WELCOME_VIDEO_WAIT_MS > 0 && WELCOME_VIDEO_WAIT_MS <= 24 * HOUR)
+  check("...and it is a real, finite, hours-scale bound", WELCOME_VIDEO_WAIT_MS > 0 && WELCOME_VIDEO_WAIT_MS <= 24 * HOUR)
 }
 
 // ─── LAYER 3 — ONE EMAIL, NEVER TWO AND NEVER ZERO ───────────────────────────
@@ -648,9 +577,13 @@ function layer6_wiring() {
   const grantAt = body.indexOf("grantPortalAccessForPromotedContact(")
   const videoAt = body.indexOf("ensureWelcomeAvatarVideo(")
   const timingAt = body.indexOf("decideWelcomeTiming(")
+  // WAVE 146 (owner ruling 6): the WELCOME is sent before the video is commissioned — nothing a render does can delay it.
+  const sendAt = body.indexOf("ensureClientWelcome(")
   check("the portal GRANT runs BEFORE the video is commissioned — a render that\n    fails or is suppressed can never cost a contact their portal access",
     grantAt > -1 && videoAt > grantAt)
-  check("...and before the email timing is even decided",
+  check("W146 ...and the ONE welcome email is SENT before the video is commissioned (ruling 6: the welcome never waits)",
+    sendAt > grantAt && videoAt > sendAt)
+  check("...and the timing is stated only after the video outcome is known (it says where the video goes)",
     timingAt > videoAt)
   check("the grant is NOT gated on the video outcome — no early return between them",
     !/return[\s\S]{0,400}?ensureWelcomeAvatarVideo\(/.test(body.slice(grantAt, videoAt + 40)))
@@ -666,8 +599,10 @@ function layer6_wiring() {
   // THE CRON AUTHORS NOTHING.
   check("the cron no longer authors client-facing copy — its hardcoded subject and\n    body are gone",
     !/a quick intro from your agent/.test(cron) && !/I wanted to introduce myself/.test(cron))
-  check("the cron delegates to the ONE welcome composer instead",
-    /ensureClientWelcome\(/.test(cron))
+  // WAVE 146 (owner ruling 6) — RE-ASSERTED: the cron used to RELEASE the one welcome through the composer (ruling 17's wait).
+  // The welcome goes at conversion now, so the rule is stronger: the cron sends no welcome and no email at all.
+  check("W146 the cron sends NO welcome and NO email — the welcome went at conversion; the cron places the video in the portal",
+    !/ensureClientWelcome\(|dispatchEmail\(/.test(cron) && /placePortalWelcomeVideo\(svc/.test(cron))
   check("the cron no longer embeds a video into its own email body",
     !/embedVideoInEmail\(/.test(cron))
   check("CONTROL: embedVideoInEmail is still the ONE embed helper, used by the\n    survivor — the capability moved, it was not deleted",
@@ -678,8 +613,10 @@ function layer6_wiring() {
     !/\.eq\("status", "rendering"\)[\s\S]{0,200}?contact_agent_assigned/.test(cron))
 
   // THE SURVIVOR CARRIES WHAT WAS MERGED ONTO IT.
-  check("the survivor accepts the sweeper's already-resolved composite URL\n    (`videoOverride`) — the cron's one piece of knowledge with no home here",
-    /videoOverride/.test(welcome) && /videoOverride/.test(cron))
+  // WAVE 146 — RE-ASSERTED: the composite URL the cron can already see no longer rides a welcome `videoOverride` (the cron
+  // sends no welcome); it is the deliverable the portal placement expects to read back.
+  check("W146 the cron hands its already-resolved composite URL to the portal placement as the expected deliverable",
+    /expectedUrl:\s*compositeUrl \?\? r\.project\?\.video_url/.test(cron))
   check("the survivor builds its copy from the ONE situation resolver — no second\n    personalizer was written",
     /buildWelcomeSituation\(/.test(welcome))
   check("...and passes its fair-housing directives INTO the writing prompt (§5)",
@@ -1055,10 +992,12 @@ function layer9_formsAndOpenHouse() {
 
   // ── deliverConversionWelcome CARRIES origin TO BOTH THE VIDEO AND THE EMAIL ──
   const conversionWelcomeSrc = src("lib/contact-promotion/conversion-welcome.ts")
-  check("deliverConversionWelcome forwards `origin` to ensureWelcomeAvatarVideo\n    (the video 'may mention the visit', per the ruling)",
-    /ensureWelcomeAvatarVideo\(supabase,\s*\{[\s\S]{0,200}?origin:\s*params\.origin/.test(conversionWelcomeSrc))
-  check("...and to ensureClientWelcome (the email)",
-    /ensureClientWelcome\(supabase,\s*\{[\s\S]{0,300}?\},\s*\{\s*origin:\s*params\.origin/.test(conversionWelcomeSrc))
+  // WAVE 146 — RE-ASSERTED (the call shape moved behind proof seams; the RULE — origin reaches both — is also proved
+  // BEHAVIOURALLY in Layer 11 by recording what each seam received).
+  check("deliverConversionWelcome forwards `origin` to the video commission (ensureWelcomeAvatarVideo by default)\n    (the video 'may mention the visit', per the ruling)",
+    /const videoArgs = \{[\s\S]{0,200}?origin:\s*params\.origin/.test(conversionWelcomeSrc) && /ensureWelcomeAvatarVideo\(supabase, videoArgs\)/.test(conversionWelcomeSrc))
+  check("...and to the welcome email (ensureClientWelcome by default)",
+    /send\(supabase,\s*\{[\s\S]{0,300}?\},\s*\{\s*origin:\s*params\.origin/.test(conversionWelcomeSrc) && /deps\.sendWelcome \?\?[\s\S]{0,200}ensureClientWelcome\(svc, contact, opts\)/.test(conversionWelcomeSrc))
 
   // ── DEFAULT LANGUAGE: "en", from the ONE shared constant (§6 — never a second
   //    copy), wherever the welcome resolves a language and none is known ──────
@@ -1073,54 +1012,27 @@ function layer9_formsAndOpenHouse() {
     buildWelcomeSituation(null).language === buildWelcomeSituation(null, { language: "" }).language)
 }
 
-// ─── LAYER 10 — WAVE 145 (lane 145E): THE HUMAN-APPROVED EXCEPTION, ITS RELEASE, AND THE STATED FORMAT ──────
+// ─── LAYER 10 — CONTRACT C3 (wave 145): THE STATED FORMAT; THE RULING-17 EXCEPTION IS RETIRED ──────
 //
-// Owner ruling 17: "Failure = visible pending/recoverable state with a human-approved exception, never falsely sent, never
-// silently pending forever." Driven at RUNTIME against the in-memory client (scripts/in-memory-supabase.ts), every arm with a
-// refusal control; the wiring read from STRIPPED source with a positive control per matcher (CLAUDE.md §2).
+// WAVE 146 (lane 146C) — RE-ASSERTED: this layer proved ruling 17's human-approved exception (approval_items
+// `welcome_without_video`, holdWelcomeForException / releaseApprovedWelcomeExceptions). Owner ruling 6 OVERRULES that: the
+// welcome is never held over its video, so the exception's doors are retired (measured live first: 0 such items). The RULE that
+// survives — a failed video is a visible, recoverable state told to a person, never a false complete — is proved in Layer 11 on
+// its survivor (lib/portal/welcome-video.ts). The C3 accessibility read is unchanged and still proved here.
 async function layer10_exceptionAndFormat() {
-  console.log("\nLayer 10 — ruling 17's human-approved exception + its release; contract C3's stated format (runtime + STRIPPED source)")
+  console.log("\nLayer 10 — contract C3's stated format (runtime); ruling 17's exception doors are retired (STRIPPED source)")
   const { memSupabase } = await import("./in-memory-supabase")
   const cw = await import("../lib/contact-promotion/conversion-welcome")
-  const B = "b-145", OTHER = "b-other", NOW = new Date("2026-10-27T15:00:00Z")
+  const B = "b-145"
 
-  // FILING — one PENDING approval item per contact, tenant-pinned, counted; a retry never files a second.
-  const svc = memSupabase({ approval_items: [] })
-  const f1 = await cw.holdWelcomeForException(svc as never, { brokerageId: B, contactId: "c1", agentId: "ag1", reason: "no avatar on file", now: NOW })
-  const f2 = await cw.holdWelcomeForException(svc as never, { brokerageId: B, contactId: "c1", agentId: "ag1", reason: "no avatar on file", now: NOW })
-  const items = (svc.tables.approval_items ?? []).filter((r) => r.item_type === cw.WELCOME_EXCEPTION_ITEM_TYPE)
-  check("W145 a held welcome files ONE pending approval item (item_type welcome_without_video, item_id = the contact, its tenant, its agent) — the visible, recoverable state",
-    f1.filed && !f1.existing && items.length === 1 && items[0].status === "pending" && items[0].item_id === "c1" && items[0].brokerage_id === B && items[0].agent_id === "ag1"
-    && /Approve:/.test(String(JSON.parse(String(items[0].review_notes)).excerpt)), JSON.stringify({ f1, n: items.length }))
-  check("W145 …a retried conversion / sweep files NO second item (idempotent per contact)", f2.filed && f2.existing && items.length === 1)
-  const refusedFile = await cw.holdWelcomeForException(memSupabase({}, { refuse: { approval_items: "RLS refused" } }) as never, { brokerageId: B, contactId: "c9", agentId: null, reason: "x" })
-  check("W145 a REFUSED approval read files nothing and SAYS so (supabase-js resolves a refusal — fail closed, never 'filed')", !refusedFile.filed && /refused/.test(refusedFile.error ?? ""))
-
-  // RELEASE — only APPROVED items inside the window, only for contacts not yet welcomed, through the sweeper's survivor call.
-  const recent = new Date(NOW.getTime() - 2 * HOUR).toISOString(), old = new Date(NOW.getTime() - 30 * 24 * HOUR).toISOString()
-  const rel = memSupabase({
-    approval_items: [
-      { id: "a1", brokerage_id: B, item_type: cw.WELCOME_EXCEPTION_ITEM_TYPE, item_id: "c1", status: "approved", reviewed_at: recent },
-      { id: "a2", brokerage_id: B, item_type: cw.WELCOME_EXCEPTION_ITEM_TYPE, item_id: "c2", status: "approved", reviewed_at: recent },
-      { id: "a3", brokerage_id: B, item_type: cw.WELCOME_EXCEPTION_ITEM_TYPE, item_id: "c3", status: "pending", reviewed_at: null },
-      { id: "a4", brokerage_id: B, item_type: cw.WELCOME_EXCEPTION_ITEM_TYPE, item_id: "c4", status: "rejected", reviewed_at: recent },
-      { id: "a5", brokerage_id: B, item_type: cw.WELCOME_EXCEPTION_ITEM_TYPE, item_id: "c5", status: "approved", reviewed_at: old },
-      { id: "a6", brokerage_id: OTHER, item_type: cw.WELCOME_EXCEPTION_ITEM_TYPE, item_id: "c6", status: "approved", reviewed_at: recent },
-      { id: "a7", brokerage_id: B, item_type: "local_campaign_idea", item_id: "c7", status: "approved", reviewed_at: recent },
-    ],
-    contacts: ["c1", "c2", "c3", "c4", "c5", "c6", "c7"].map((id) => ({ id, brokerage_id: B, contact_type: "buyer", first_name: id, last_name: "Test" })),
-    agent_client_messages: [{ id: "m2", brokerage_id: B, recipient_contact_id: "c2", rationale: "client_welcome_v1 — buyer", status: "sent" }],
-  })
-  const sent: string[] = []
-  const out = await cw.releaseApprovedWelcomeExceptions(rel as never, { now: NOW }, { ensureWelcome: async (c) => { sent.push(c.id); return { state: "sent", reason: null } } })
-  check("W145 an APPROVED exception is released through the sweeper's survivor call — exactly once, for the contact with no welcome yet",
-    out.error === null && sent.length === 1 && sent[0] === "c1" && out.released === 1, `sent=${sent.join(",")} err=${out.error} results=${JSON.stringify(out.results)}`)
-  check("W145 …an already-welcomed contact is NOT sent a second welcome; a PENDING or REJECTED item, a stale approval and another item type are never released",
-    out.results.some((r) => r.contactId === "c2" && r.outcome === "already_welcomed") && !sent.includes("c3") && !sent.includes("c4") && !sent.includes("c5") && !sent.includes("c7"))
-  check("W145 …and an item whose tenant does not own the contact is refused at the contact read (tenant-pinned), never sent",
-    !sent.includes("c6") && out.results.some((r) => r.contactId === "c6" && r.outcome === "skipped"), JSON.stringify(out.results))
-  const refusedRel = await cw.releaseApprovedWelcomeExceptions(memSupabase({}, { refuse: { approval_items: "RLS refused" } }) as never, { now: NOW }, { ensureWelcome: async (c) => { sent.push(c.id); return { state: "sent" } } })
-  check("W145 a REFUSED approval read releases NOTHING and reports the refusal (a broken read is not an empty queue)", !!refusedRel.error && refusedRel.released === 0 && sent.length === 1)
+  // THE RETIREMENT — absent from code, present only in the tombstones that name the survivor.
+  const conv = src("lib/contact-promotion/conversion-welcome.ts"), convRaw = raw("lib/contact-promotion/conversion-welcome.ts")
+  const cronSrc = src("app/api/cron/intro-video-email-backfill/route.ts")
+  const retired = ["holdWelcomeForException", "releaseApprovedWelcomeExceptions", "WELCOME_EXCEPTION_ITEM_TYPE", "welcome_without_video"]
+  check("W146 ruling 17's exception doors are GONE from code (conversion entry point and the sweeper) — nothing is held over a video",
+    retired.every((n) => !conv.includes(n) && !cronSrc.includes(n)) && !("holdWelcomeForException" in cw) && !("releaseApprovedWelcomeExceptions" in cw))
+  check("W146 CONTROL: the tombstone still names them AND the survivor (raw source — a tombstone is not a call site)",
+    retired.every((n) => convRaw.includes(n)) && /lib\/portal\/welcome-video\.ts recoverPortalWelcomeVideo/.test(convRaw))
 
   // CONTRACT C3 — the welcome's view of the contact's STATED preferences (read through lane 145H's reader; never inferred).
   const pref = memSupabase({ contacts: [
@@ -1131,27 +1043,263 @@ async function layer10_exceptionAndFormat() {
   const a1 = await cw.readWelcomeAccessibility(pref, { brokerageId: B, contactId: "p1" })
   const a2 = await cw.readWelcomeAccessibility(pref, { brokerageId: B, contactId: "p2" })
   const a3 = await cw.readWelcomeAccessibility(memSupabase({}, { refuse: { contacts: "RLS refused" } }), { brokerageId: B, contactId: "p1" })
-  check("W145 C3: a STATED text format means no video wait; captions → the transcript; large text → larger type; the language is carried",
+  check("W145 C3: a STATED text format is read (it now opens the portal's transcript first — never a wait); captions → the transcript; large text → larger type; the language is carried",
     !!a1.accessibility && a1.accessibility.statedNoVideo && a1.accessibility.transcript && a1.accessibility.largeText && a1.accessibility.language === "es" && a1.accessibility.stated, JSON.stringify(a1))
   check("W145 C3 (control): NOTHING stated → the defaults, nothing guessed about the person", !!a2.accessibility && !a2.accessibility.stated && !a2.accessibility.statedNoVideo && !a2.accessibility.largeText, JSON.stringify(a2))
   check("W145 C3: an unreadable preference read returns NO preferences plus the reason — the defaults apply, never an invented need", a3.accessibility === null && !!a3.blindSpot, JSON.stringify(a3))
   const a4 = await cw.readWelcomeAccessibility(pref, { brokerageId: B, contactId: "p3" })
-  check("W145 C3 (H's one table): a screen-reader portal means a transcript; a stated VIDEO format still waits for the video (only 'text' skips it)",
+  check("W145 C3 (H's one table): a screen-reader portal means a transcript; a stated VIDEO format is not a no-video format",
     !!a4.accessibility && a4.accessibility.transcript && !a4.accessibility.statedNoVideo && !a4.accessibility.largeText, JSON.stringify(a4))
 
   // WIRING (STRIPPED source).
-  const cron = src("app/api/cron/intro-video-email-backfill/route.ts")
-  const conv = src("lib/contact-promotion/conversion-welcome.ts")
   const comp = src("lib/kernel/client-welcome.ts")
-  const entry = conv.slice(conv.indexOf("export async function deliverConversionWelcome"))
-  check("W145 WIRED: the sweeper files the exception on hold_for_exception and releases APPROVED ones through ensureClientWelcome",
-    /verdict\.action === "hold_for_exception"[\s\S]{0,1200}holdWelcomeForException\(svc/.test(cron) && /releaseApprovedWelcomeExceptions\(svc[\s\S]{0,200}ensureClientWelcome\(/.test(cron))
-  check("W145 WIRED: the conversion entry point files the exception and RETURNS before the send when no video can ride the welcome",
-    /if \(timing\.action === "hold_for_exception"\)[\s\S]{0,600}holdWelcomeForException\(supabase[\s\S]{0,1600}return out/.test(entry) && entry.indexOf('timing.action === "hold_for_exception"') < entry.indexOf("ensureClientWelcome"))
   check("W145 WIRED (C3): the composer reads the stated preferences through the one reader when the caller did not, and renders large text / the transcript",
     /readWelcomeAccessibility\(svc/.test(comp) && /largeText: accessibility\?\.largeText === true/.test(comp) && /script_content/.test(comp))
-  check("(control) the exception-wiring matcher rejects a sweeper that sends without the video past the deadline",
-    !/verdict\.action === "hold_for_exception"[\s\S]{0,1200}holdWelcomeForException\(svc/.test('if (verdict.action === "send_without_video") { await ensureClientWelcome(svc, c) }'))
+  const entry = conv.slice(conv.indexOf("export async function deliverConversionWelcome"))
+  check("W146 WIRED: the conversion entry point hands the stated preferences to the welcome composer and NO stated format stops the commission",
+    /accessibility:\s*access\.accessibility/.test(entry) && !/statedNoVideo\s*\?/.test(entry))
+  check("(control) the stops-the-commission finder recognises the wave-145 shape",
+    /statedNoVideo\s*\?/.test("const video = statedNoVideo ? { commissioned: false } : await ensureWelcomeAvatarVideo(supabase, p)"))
+}
+
+// ─── LAYER 11 — WAVE 146 (lane 146C, owner ruling 6, contract C3): THE PORTAL WELCOME VIDEO ─────────────────────────────
+//
+// "send welcome email out right away and put the welcome personal video in-app contact portal so the contact sees it right
+// away" — "automatically sent in the portal regardless of the contact's preferences." Driven at RUNTIME on the in-memory client
+// (scripts/in-memory-supabase.ts — supabase-js refusal semantics, UNIQUE on the action ledger's idempotency key), every arm with
+// a refusal / mutation control; the wiring read from STRIPPED source with a positive control per matcher (CLAUDE.md §2).
+async function layer11_portalWelcomeVideo() {
+  console.log("\nLayer 11 — ruling 6: the welcome is immediate, the video lives in the portal; readback, recovery, first touch (runtime + STRIPPED source)")
+  const { memSupabase } = await import("./in-memory-supabase")
+  const wv = await import("../lib/portal/welcome-video")
+  const cw = await import("../lib/contact-promotion/conversion-welcome")
+  const ftc = await import("../lib/campaign-sequences/first-touch-coordination")
+  const B = "b-146", OTHER = "b-other", NOW = new Date("2026-10-29T15:00:00Z")
+  const ago = (min: number) => new Date(NOW.getTime() - min * 60_000).toISOString()
+  type Row = Record<string, unknown>
+  const project = (id: string, agent: string, over: Row = {}): Row => ({ id, brokerage_id: B, agent_id: agent, status: "completed", video_url: `https://cdn.test/${id}.mp4`, thumbnail_url: `https://cdn.test/${id}.jpg`, compliance_status: "passed", provider_metadata: {}, completed_at: ago(5), script_content: `Hi — a personal hello (${id}).`, audience_type: "customer_facing", video_type: "agent_intro", created_at: ago(5), ...over })
+  const intro = (id: string, contact: string, agent: string, status: string, over: Row = {}): Row => ({ id, brokerage_id: B, contact_id: contact, agent_id: agent, trigger: "contact_agent_assigned", status, delivery_channel: "portal", video_project_id: null, error_message: null, created_at: ago(10), delivered_at: null, ...over })
+  const NO_AVATAR = "agent has no voice/avatar profile — Settings → Voice & Avatar"
+  const world = () => memSupabase({
+    contacts: [
+      { id: "c1", brokerage_id: B, agent_id: "ag1", contact_type: "buyer", accessibility_preferences: { captions: true }, preferred_language: null },
+      { id: "c2", brokerage_id: B, agent_id: "ag1", contact_type: "buyer", accessibility_preferences: {} },
+      { id: "c3", brokerage_id: OTHER, agent_id: "ag1", contact_type: "buyer", accessibility_preferences: {} },
+      { id: "c4", brokerage_id: B, agent_id: "ag1", contact_type: "vendor", accessibility_preferences: {} },
+      { id: "c5", brokerage_id: B, agent_id: null, contact_type: "buyer", accessibility_preferences: {} },
+      { id: "c6", brokerage_id: B, agent_id: "ag6", contact_type: "seller", accessibility_preferences: {} },
+      { id: "c7", brokerage_id: B, agent_id: "ag7", contact_type: "buyer", accessibility_preferences: {} },
+      { id: "c8", brokerage_id: B, agent_id: "ag8", contact_type: "buyer", accessibility_preferences: {} },
+      { id: "c9", brokerage_id: B, agent_id: "ag9", contact_type: "buyer", accessibility_preferences: {} },
+      { id: "c10", brokerage_id: B, agent_id: "ag10", contact_type: "buyer", accessibility_preferences: {} },
+    ],
+    agent_intro_videos: [
+      intro("r1", "c1", "ag1", "rendering", { video_project_id: "vp1" }),
+      intro("rA", "c1", "ag1", "delivered", { trigger: "home_anniversary", video_project_id: "vpA", created_at: ago(1) }),
+      intro("r6", "c6", "ag6", "failed", { error_message: NO_AVATAR }),
+      intro("r7", "c7", "ag7", "queued"),
+      intro("r8", "c8", "ag8", "rendering", { created_at: ago(180) }),
+      intro("r9", "c9", "ag9", "failed", { error_message: NO_AVATAR }),
+      intro("r10", "c10", "ag-old", "delivered", { video_project_id: "vpOld" }),
+    ],
+    ai_video_projects: [project("vp1", "ag1"), project("vpA", "ag1", { video_type: "just_sold" }), project("sv9", "ag9", { video_type: "welcome" }), project("vpOld", "ag-old")],
+    agents: [{ id: "ag6", brokerage_id: B, user_id: "u6" }, { id: "ag8", brokerage_id: B, user_id: "u8" }],
+    users: [{ id: "u6", brokerage_id: B }, { id: "u8", brokerage_id: B }],
+    agent_voice_profiles: [], agent_action_ledger: [], automation_errors: [], error_resolution_log: [], notifications: [],
+  }, { unique: { agent_action_ledger: [["idempotency_key"]] }, uuidIds: true })
+
+  // ── A · THE C3 READ: validated video for this contact; never a false state; never across contacts / tenants ──
+  const svc = world()
+  const read = (b: string, c: string, s: unknown = svc) => wv.portalWelcomeVideoFor(s as never, b, c, { now: NOW })
+  const v1 = await read(B, "c1")
+  check("W146 C3 a VALIDATED render made for this contact by their CURRENT agent is READY in the portal (contact_personal) — the moment it is validated, before any sweep stamps it",
+    v1.state === "ready" && v1.scope === "contact_personal" && v1.videoProjectId === "vp1" && v1.videoUrl === "https://cdn.test/vp1.mp4" && v1.introVideoId === "r1", JSON.stringify(v1))
+  check("W146 C3 …with its transcript (the video's own script, tenant-pinned) and the person's STATED captions opening it — never autoplay",
+    v1.state === "ready" && v1.transcript === "Hi — a personal hello (vp1)." && v1.playback.transcriptOpen && v1.playback.captionsRequested && v1.playback.autoplay === false && v1.playback.timedCaptions === false)
+  const v2 = await read(B, "c2")
+  check("W146 C3 NO CROSS-CONTACT ACCESS: a contact of the same agent with no welcome render never sees another contact's video", v2.state === "none" && !("videoUrl" in v2), JSON.stringify(v2))
+  const v3 = await read(B, "c3"), v3x = await read(OTHER, "c1")
+  check("W146 C3 NO CROSS-TENANT ACCESS: another brokerage's contact read under this brokerage, and this contact read under another brokerage, are `none`",
+    v3.state === "none" && v3x.state === "none", `${v3.state} / ${v3x.state}`)
+  const v4 = await read(B, "c4"), v5 = await read(B, "c5")
+  check("W146 C3 a counterparty type and a contact with no agent get no welcome video (said, not hidden)", v4.state === "none" && v5.state === "none" && /counterparty/.test(v4.reason) && /no assigned agent/.test(v5.reason))
+  const v6 = await read(B, "c6"), v7 = await read(B, "c7"), v8 = await read(B, "c8"), v9 = await read(B, "c9"), v10 = await read(B, "c10")
+  check("W146 C3 a render still in flight is `preparing`; past its deadline it is `failed` — NEVER `ready` without a playable cut (no false complete)",
+    v7.state === "preparing" && v8.state === "failed" && /has not landed within/.test(v8.reason), `${v7.state} / ${v8.state}`)
+  check("W146 C3 a failed render with nothing standing in is `failed` WITH the ledger's own agent-actionable reason", v6.state === "failed" && /Voice & Avatar/.test(v6.reason), JSON.stringify(v6))
+  check("W146 C3 the agent's STANDING personal video stands in for a failed render (agent_personal) — the portal still works",
+    v9.state === "ready" && v9.scope === "agent_personal" && v9.videoProjectId === "sv9", JSON.stringify(v9))
+  check("W146 C3 a REASSIGNED contact never sees the PREVIOUS agent's clip (the render must be the current agent's)", v10.state === "none", JSON.stringify(v10))
+  check("W146 C3 an anniversary clip is never served as the welcome (trigger-filtered ledger)", v1.state === "ready" && v1.videoProjectId !== "vpA")
+  const refused = await read(B, "c1", memSupabase({}, { refuse: { contacts: "RLS refused" } }))
+  const refusedLedger = await read(B, "c1", memSupabase({ contacts: [{ id: "c1", brokerage_id: B, agent_id: "ag1", contact_type: "buyer" }] }, { refuse: { agent_intro_videos: "RLS refused" } }))
+  check("W146 C3 FAIL CLOSED: a refused contact read or ledger read is `unavailable` — never `ready`, never 'nothing to see'",
+    refused.state === "unavailable" && refusedLedger.state === "unavailable", `${refused.state} / ${refusedLedger.state}`)
+  check("W146 C3 (control) an empty brokerage / contact is refused before any read", (await read("", "c1")).state === "unavailable" && (await read(B, "")).state === "unavailable")
+
+  // ── B · THE READBACK: recorded delivered only when the portal's own reader shows THIS render ──
+  const p1 = await wv.placePortalWelcomeVideo(svc as never, { introVideoId: "r1", brokerageId: B, contactId: "c1", videoProjectId: "vp1", expectedUrl: "https://cdn.test/vp1.mp4", now: NOW })
+  const r1 = (svc.tables.agent_intro_videos ?? []).find((r) => r.id === "r1")
+  const placeRows = (svc.tables.agent_action_ledger ?? []).filter((r) => r.action === "welcome_video.portal.place")
+  check("W146 READBACK: the render is read back through the portal's reader, THEN stamped 'delivered' (with delivered_at), and the evidence is ONE executed ledger row carrying the readback",
+    p1.placed && p1.readback === "ready" && r1?.status === "delivered" && !!r1?.delivered_at && placeRows.length === 1 && placeRows[0].status === "executed"
+    && (placeRows[0].detail as Row)?.readback !== undefined, JSON.stringify({ p1, status: r1?.status, rows: placeRows.length }))
+  const p1b = await wv.placePortalWelcomeVideo(svc as never, { introVideoId: "r1", brokerageId: B, contactId: "c1", videoProjectId: "vp1", now: NOW })
+  check("W146 READBACK is idempotent: a second sweep tick records nothing more (one evidence row per render)",
+    p1b.placed && (svc.tables.agent_action_ledger ?? []).filter((r) => r.action === "welcome_video.portal.place").length === 1)
+  const p7 = await wv.placePortalWelcomeVideo(svc as never, { introVideoId: "r7", brokerageId: B, contactId: "c7", videoProjectId: null, now: NOW })
+  const pMismatch = await wv.placePortalWelcomeVideo(svc as never, { introVideoId: "r9", brokerageId: B, contactId: "c9", videoProjectId: "sv9", now: NOW })
+  const pRefused = await wv.placePortalWelcomeVideo(svc as never, { introVideoId: "r1", brokerageId: B, contactId: "c1", videoProjectId: "vp1", now: NOW }, { read: async () => ({ state: "unavailable", reason: "refused", introVideoId: null }) })
+  check("W146 NO FALSE COMPLETE: a render the portal does not show (still preparing), a STANDING stand-in (not this contact's render) and a refused readback are NEVER stamped delivered",
+    !p7.placed && (svc.tables.agent_intro_videos ?? []).find((r) => r.id === "r7")?.status === "queued"
+    && !pMismatch.placed && (svc.tables.agent_intro_videos ?? []).find((r) => r.id === "r9")?.status === "failed"
+    && !pRefused.placed, JSON.stringify({ p7: p7.reason, mismatch: pMismatch.reason }))
+
+  // ── C · FAILURE: recorded, retried safely (bounded), told to a person once ──
+  const D = wv.decidePortalWelcomeRecovery
+  check("W146 RECOVERY (pure): a refused read defers; a validated stand-in needs nobody; a render back in flight is left alone",
+    D({ readerState: "unavailable", failureKind: "timeout", agentVideoReady: null, retryDoor: true }).action === "defer"
+    && D({ readerState: "ready", failureKind: "refused", agentVideoReady: null, retryDoor: true }).action === "covered_by_standing_video"
+    && D({ readerState: "preparing", failureKind: "timeout", agentVideoReady: null, retryDoor: true }).action === "in_flight")
+  check("W146 RECOVERY (pure): a SAFE retry only — transient (timeout / unavailable) or FIXED (no avatar → the agent has one now), and only through the spine's door",
+    D({ readerState: "failed", failureKind: "timeout", agentVideoReady: null, retryDoor: true }).action === "retry"
+    && D({ readerState: "failed", failureKind: "unavailable", agentVideoReady: null, retryDoor: true }).action === "retry"
+    && D({ readerState: "failed", failureKind: "no_avatar", agentVideoReady: true, retryDoor: true }).action === "retry")
+  check("W146 RECOVERY (pure): a refusal, the channel gate, an agent still without an avatar, or no retry door → a PERSON (never a blind re-spend)",
+    D({ readerState: "failed", failureKind: "refused", agentVideoReady: true, retryDoor: true }).action === "escalate"
+    && D({ readerState: "failed", failureKind: "channel_gate", agentVideoReady: true, retryDoor: true }).action === "escalate"
+    && D({ readerState: "failed", failureKind: "no_avatar", agentVideoReady: false, retryDoor: true }).action === "escalate"
+    && D({ readerState: "failed", failureKind: "timeout", agentVideoReady: null, retryDoor: false }).action === "escalate")
+  check("W146 failure kinds read from what was recorded (the spine's no-avatar text, a suppression, a timeout, a commission reason)",
+    wv.failureKindOf({ status: "failed", errorMessage: NO_AVATAR }) === "no_avatar" && wv.failureKindOf({ status: "suppressed" }) === "channel_gate"
+    && wv.failureKindOf({ status: "failed", errorMessage: "the personal welcome video has not landed within 120 minutes of conversion" }) === "timeout"
+    && wv.failureKindOf({ commissionReason: "unavailable" }) === "unavailable" && wv.failureKindOf({ status: "failed", errorMessage: "compliance violations: x" }) === "refused")
+
+  const covered = await wv.recoverPortalWelcomeVideo(svc as never, { brokerageId: B, contactId: "c9", agentId: "ag9", introVideoId: "r9", failureKind: "no_avatar", reason: NO_AVATAR, now: NOW }, { retryDoor: null })
+  check("W146 a failed render whose agent has a validated standing video is COVERED — nothing escalated, nothing spent",
+    covered.action === "covered_by_standing_video" && (svc.tables.automation_errors ?? []).length === 0, JSON.stringify(covered))
+  const e1 = await wv.recoverPortalWelcomeVideo(svc as never, { brokerageId: B, contactId: "c6", agentId: "ag6", introVideoId: "r6", failureKind: "no_avatar", reason: NO_AVATAR, now: NOW }, { retryDoor: null })
+  const errs = (svc.tables.automation_errors ?? []).filter((r) => r.workflow_name === wv.PORTAL_WELCOME_VIDEO_WORKFLOW)
+  const notes = (svc.tables.notifications ?? []).filter((r) => r.type === "welcome_video_not_ready")
+  check("W146 ESCALATION: a failure nothing covers is told to a PERSON — the error console (tenant-anchored; a setup gap is 'medium') AND the contact's agent (users.id via agents.user_id, entity = the contact)",
+    e1.action === "escalate" && e1.outcome === "escalated" && errs.length === 1 && errs[0].brokerage_id === B && errs[0].severity === "medium"
+    && notes.length === 1 && notes[0].user_id === "u6" && notes[0].entity_id === "c6" && notes[0].brokerage_id === B, JSON.stringify({ e1, errs: errs.length, notes: notes.length }))
+  const e2 = await wv.recoverPortalWelcomeVideo(svc as never, { brokerageId: B, contactId: "c6", agentId: "ag6", introVideoId: "r6", failureKind: "no_avatar", reason: NO_AVATAR, now: NOW }, { retryDoor: null })
+  check("W146 …ONCE per contact: the next sweep tick tells nobody twice (the action ledger replays the escalation)",
+    e2.outcome === "already_escalated" && (svc.tables.automation_errors ?? []).filter((r) => r.workflow_name === wv.PORTAL_WELCOME_VIDEO_WORKFLOW).length === 1
+    && (svc.tables.notifications ?? []).filter((r) => r.type === "welcome_video_not_ready").length === 1, JSON.stringify(e2))
+  const doorCalls: string[] = []
+  const door = async (i: { introVideoId: string }) => { doorCalls.push(i.introVideoId); return { ok: false, reason: "provider down" } }
+  const t1 = await wv.recoverPortalWelcomeVideo(svc as never, { brokerageId: B, contactId: "c8", agentId: "ag8", introVideoId: "r8", failureKind: "timeout", reason: "stalled", now: NOW }, { retryDoor: door })
+  const t2 = await wv.recoverPortalWelcomeVideo(svc as never, { brokerageId: B, contactId: "c8", agentId: "ag8", introVideoId: "r8", failureKind: "timeout", reason: "stalled", now: NOW }, { retryDoor: door })
+  check("W146 SAFE RETRY is BOUNDED: a stalled render is re-rendered ONCE through the spine's door; a refused retry and every later tick go to a person — the door is never called twice",
+    doorCalls.length === 1 && doorCalls[0] === "r8" && t1.action === "escalate" && t2.action === "escalate"
+    && (svc.tables.agent_action_ledger ?? []).filter((r) => r.action === "welcome_video.portal.retry").length === 1, JSON.stringify({ doorCalls, t1, t2 }))
+  const okCalls: string[] = []
+  const okWorld = world()
+  const ok1 = await wv.recoverPortalWelcomeVideo(okWorld as never, { brokerageId: B, contactId: "c8", agentId: "ag8", introVideoId: "r8", failureKind: "timeout", reason: "stalled", now: NOW }, { retryDoor: async (i) => { okCalls.push(i.introVideoId); return { ok: true } } })
+  check("W146 …an ACCEPTED retry escalates nobody (the portal shows the video the moment it is validated)", ok1.outcome === "retry_accepted" && okCalls.length === 1 && (okWorld.tables.automation_errors ?? []).length === 0, JSON.stringify(ok1))
+  const refusedRec = await wv.recoverPortalWelcomeVideo(memSupabase({}, { refuse: { contacts: "RLS refused" } }) as never, { brokerageId: B, contactId: "c6", agentId: "ag6", introVideoId: "r6", failureKind: "refused", reason: "x", now: NOW }, { retryDoor: door })
+  check("W146 a refused read DEFERS — nothing escalated or retried on a guess", refusedRec.action === "defer" && doorCalls.length === 1, JSON.stringify(refusedRec))
+  const noDoorYet = await wv.recoverPortalWelcomeVideo(world() as never, { brokerageId: B, contactId: "c8", agentId: "ag8", introVideoId: "r8", failureKind: "timeout", reason: "stalled", now: NOW })
+  check("W146 the spine's retry door is bound by NAME (lib/video/intro-video-reactor.ts retryAssignmentIntroVideo — lane 146F); absent or unloadable, the failure goes to a person instead of a guess",
+    noDoorYet.action === "escalate", JSON.stringify(noDoorYet))
+
+  // The sweeper's second pass: the spine's own failed / suppressed rows inside the window go through the ONE recovery.
+  const sweepWorld = world()
+  const swept = await wv.recoverFailedPortalWelcomeVideos(sweepWorld as never, { now: NOW }, { retryDoor: null })
+  check("W146 the sweeper recovers the spine's failed welcome renders (each under its own brokerage): the stand-in covers c9, c6 is escalated",
+    !swept.error && swept.results.some((r) => r.contactId === "c9" && r.action === "covered_by_standing_video") && swept.results.some((r) => r.contactId === "c6" && r.action === "escalate"), JSON.stringify(swept))
+  const sweptRefused = await wv.recoverFailedPortalWelcomeVideos(memSupabase({}, { refuse: { agent_intro_videos: "RLS refused" } }) as never, { now: NOW })
+  check("W146 a refused failed-render read recovers NOTHING and says so", !!sweptRefused.error && sweptRefused.examined === 0)
+
+  // ── D · THE WELCOME IS IMMEDIATE, THE FIRST TOUCH IS ITS OWN, AND NOTHING IS SENT TWICE ──
+  const order: string[] = []
+  const sendOk = async () => { order.push("send"); return { state: "sent", reason: null, situationWarnings: [] } }
+  const pendingVideo = async () => { order.push("commission"); return { commissioned: true, reason: "commissioned" as const, videoProjectId: "vpK", situational: true, language: "en", warnings: [] } }
+  const conv = memSupabase({ contacts: [
+    { id: "k1", brokerage_id: B, agent_id: "agK", contact_type: "buyer", first_touched_at: null, first_touch_channel: null, accessibility_preferences: {} },
+    { id: "k2", brokerage_id: B, agent_id: "agK", contact_type: "buyer", first_touched_at: null, first_touch_channel: null, accessibility_preferences: {} },
+    { id: "k3", brokerage_id: B, agent_id: "agK", contact_type: "buyer", first_touched_at: null, first_touch_channel: null, accessibility_preferences: {} },
+  ], agents: [] })
+  const params = (id: string) => ({ contactId: id, agentId: "agK", brokerageId: B, contactType: "buyer", firstName: "Kim", lastName: "Lee", origin: null })
+  const k1 = await cw.deliverConversionWelcome(conv, params("k1"), { sendWelcome: sendOk, commissionVideo: pendingVideo as never, now: () => NOW })
+  const k1row = (conv.tables.contacts ?? []).find((r) => r.id === "k1")
+  check("W146 IMMEDIATE: the welcome email is SENT before the video is even commissioned — a render in flight never delays it",
+    order.join(">") === "send>commission" && k1.emailState === "sent" && k1.timing === "send_now" && k1.portalVideo.commissioned, `${order.join(">")} · ${k1.emailState} · ${k1.timing}`)
+  check("W146 FIRST TOUCH: the welcome CLAIMS the converted contact's first touch on the shared ledger (email) — ownership is the contact's journey now",
+    k1.firstTouch.claimed && k1.firstTouch.channel === "email" && k1row?.first_touched_at === NOW.toISOString() && k1row?.first_touch_channel === "email", JSON.stringify(k1.firstTouch))
+  const stl = await ftc.claimFirstTouch(conv, "contacts", { id: "k1", brokerageId: B, at: new Date(NOW.getTime() + 6 * 60_000), channel: "email" })
+  check("W146 NO DUPLICATE FIRST TOUCH: speed-to-lead's own claim on that contact (minutes later) matches NOTHING — it stands down",
+    stl.ok === false && stl.error === null && k1row?.first_touched_at === NOW.toISOString(), JSON.stringify(stl))
+  const again = await cw.deliverConversionWelcome(conv, params("k1"), { sendWelcome: async () => ({ state: "skipped", reason: null }), commissionVideo: pendingVideo as never, now: () => new Date(NOW.getTime() + 60_000) })
+  check("W146 a RETRIED conversion (the survivor dedupes the welcome) claims nothing new and moves no stamp", !again.firstTouch.claimed && k1row?.first_touched_at === NOW.toISOString())
+  const recovered: string[] = []
+  const k2 = await cw.deliverConversionWelcome(conv, params("k2"), {
+    sendWelcome: async () => ({ state: "send_failed", reason: "provider refused" }),
+    commissionVideo: (async () => ({ commissioned: false, reason: "agent_not_video_ready" as const, videoProjectId: null, situational: false, language: null, warnings: [] })) as never,
+    recoverVideo: async (_s, p) => { recovered.push(`${p.contactId}:${p.reason}`); return { action: "escalate", outcome: "escalated" } },
+    now: () => NOW,
+  })
+  check("W146 CONTROL: a welcome that FAILED claims no first touch (the contact arbiter may still answer them), and the welcome still never waited",
+    !k2.firstTouch.claimed && (conv.tables.contacts ?? []).find((r) => r.id === "k2")?.first_touched_at === null && k2.timing === "send_now")
+  check("W146 a video that could not be commissioned is RECOVERED at conversion (recorded, retried or told) — never silently absent",
+    recovered.length === 1 && recovered[0] === "k2:agent_not_video_ready" && k2.portalVideo.recovery === "escalate:escalated", JSON.stringify(k2.portalVideo))
+  const k3 = await cw.deliverConversionWelcome(conv, params("k3"), { sendWelcome: async () => ({ state: "held_for_approval", reason: "posture" }), commissionVideo: pendingVideo as never, now: () => NOW })
+  check("W146 a welcome the owning manager's posture HOLDS for a person still owns the first touch (no other manager jumps the queue)",
+    k3.firstTouch.claimed && (conv.tables.contacts ?? []).find((r) => r.id === "k3")?.first_touch_channel === "email")
+  const foreign = await ftc.claimFirstTouch(conv, "contacts", { id: "k2", brokerageId: OTHER, at: NOW, channel: "email" })
+  check("W146 the first-touch claim is TENANT-PINNED: another brokerage's claim on a contact matches nothing", foreign.ok === false && (conv.tables.contacts ?? []).find((r) => r.id === "k2")?.first_touched_at === null)
+  const claimRefused = await ftc.claimFirstTouch(memSupabase({}, { refuse: { contacts: "RLS refused" } }), "contacts", { id: "k9", brokerageId: B, at: NOW, channel: "email" })
+  check("W146 a REFUSED claim says so (never read as 'someone else holds it')", claimRefused.ok === false && /refused/.test(String(claimRefused.error)))
+  let passedOrigin: unknown = "unset"
+  await cw.deliverConversionWelcome(memSupabase({ contacts: [{ id: "k4", brokerage_id: B, agent_id: "agK", contact_type: "buyer", first_touched_at: null }] }),
+    { ...params("k4"), origin: { kind: "open_house" } as never },
+    { sendWelcome: async (_s, _c, o) => { passedOrigin = o.origin; return { state: "sent" } }, commissionVideo: (async (_s: unknown, p: { origin?: unknown }) => { order.push(`origin:${JSON.stringify(p.origin)}`); return { commissioned: true, reason: "commissioned", videoProjectId: "v", situational: true, language: "en", warnings: [] } }) as never, now: () => NOW })
+  check("W146 the open-house origin still reaches BOTH the email and the video (behavioural — the seams record it)",
+    JSON.stringify(passedOrigin) === JSON.stringify({ kind: "open_house" }) && order.includes(`origin:${JSON.stringify({ kind: "open_house" })}`))
+
+  // ── E · THE WIRING (STRIPPED source; a positive control per matcher) ──
+  const comp = src("app/portal/[contactId]/components/PortalWelcomeVideo.tsx")
+  check("W146 WIRED: the portal component GATES on the session (requireContactAccess) BEFORE the service read, and reads with the gate's brokerage — never a body / param tenant",
+    comp.indexOf("requireContactAccess(contactId)") > -1 && comp.indexOf("requireContactAccess(contactId)") < comp.indexOf("portalWelcomeVideoFor(")
+    && /portalWelcomeVideoFor\(svc,\s*access\.brokerageId,\s*contactId\)/.test(comp) && /if \(!access\.ok\) return null/.test(comp))
+  check("W146 WIRED: the CONTACT sees nothing until the video is ready (no promise, no failure tile); staff see the honest state",
+    /if \(video\.state !== "ready"\)\s*\{[\s\S]{0,200}if \(access\.isContactSelf\) return null/.test(comp))
+  check("W146 WIRED: ONE player — the component renders CardVideoPlayer and no <video> of its own", /<CardVideoPlayer\b/.test(comp) && !/<video\b/.test(comp))
+  const player = src("app/portal/[contactId]/components/CardVideoPlayer.tsx")
+  const AUTOPLAY = /\bautoPlay\b|\bautoplay\b/
+  check("W146 NO FORCED AUTOPLAY: the one portal player carries no autoplay attribute, preloads metadata only, and offers the transcript",
+    !AUTOPLAY.test(player) && /preload="metadata"/.test(player) && /<details\b[\s\S]{0,200}open=\{transcriptOpen === true\}/.test(player) && (player.match(/<video\b/g) ?? []).length === 1)
+  check("(control) the autoplay finder recognises an autoplaying player", AUTOPLAY.test("<video autoPlay muted controls />"))
+  const page = src("app/portal/[contactId]/page.tsx")
+  check("W146 WIRED: the portal home mounts the welcome video on the dual layout AND the single-journey layouts", (page.match(/<PortalWelcomeVideo\b/g) ?? []).length >= 2 && /\{welcomeVideo\}<SellerHome/.test(page) && /\{welcomeVideo\}<BuyerHome/.test(page) && /\{welcomeVideo\}<LifetimeHome/.test(page))
+  const feed = src("app/portal/[contactId]/components/RecentUpdatesFeed.tsx"), feedRaw = raw("app/portal/[contactId]/components/RecentUpdatesFeed.tsx")
+  check("W146 ONE SURFACE: the feed's welcome-card video slot is retired onto the portal welcome video (no second rendering of the same clip)",
+    !/welcome_video_url/.test(feed) && /PortalWelcomeVideo\.tsx/.test(feedRaw))
+  const cron = src("app/api/cron/intro-video-email-backfill/route.ts")
+  check("W146 WIRED (the sweeper): classify → place (readback) / fail → recover; then the spine's failed rows are recovered — and it sends NO email",
+    /classifyPortalWelcomeVideo\(\{/.test(cron) && /placePortalWelcomeVideo\(svc/.test(cron) && /recoverPortalWelcomeVideo\(svc/.test(cron) && /recoverFailedPortalWelcomeVideos\(svc/.test(cron)
+    && !/ensureClientWelcome\(|dispatchEmail\(|deliverWelcomeVideoFollowUp\(/.test(cron))
+  check("(control) the no-email finder recognises a sweeper that still mails", /ensureClientWelcome\(|dispatchEmail\(|deliverWelcomeVideoFollowUp\(/.test("await ensureClientWelcome(svc, c, { videoOverride })"))
+  const failStamp = cron.slice(cron.indexOf('verdict.action === "fail"'), cron.indexOf("recoverPortalWelcomeVideo(svc"))
+  check("W146 the failure stamp is guarded on the pending status it was read in and COUNTED before recovery runs",
+    /\.in\("status", PENDING_WELCOME_STATUSES/.test(failStamp) && /\.select\("id"\)/.test(failStamp) && /\(stamped \?\? \[\]\)\.length === 0/.test(failStamp))
+  const conv2 = src("lib/contact-promotion/conversion-welcome.ts")
+  const entry = conv2.slice(conv2.indexOf("export async function deliverConversionWelcome"))
+  check("W146 WIRED (conversion): grant → the welcome SENT → the first-touch claim → the video commissioned → recovery — in that order",
+    entry.indexOf("grantPortalAccessForPromotedContact(") > -1 && entry.indexOf("grantPortalAccessForPromotedContact(") < entry.indexOf("ensureClientWelcome(")
+    && entry.indexOf("ensureClientWelcome(") < entry.indexOf("claimFirstTouch(") && entry.indexOf("claimFirstTouch(") < entry.indexOf("ensureWelcomeAvatarVideo(")
+    && entry.indexOf("ensureWelcomeAvatarVideo(") < entry.indexOf("recoverPortalWelcomeVideo("))
+  const wav = src("lib/contact-promotion/welcome-avatar-video.ts")
+  check("W146 the commission asks for the PORTAL delivery and no longer refuses on the channel opt-out before the spine (ruling 6)",
+    /delivery:\s*"portal"/.test(wav) && !/contact\.video_opt_out === true/.test(wav))
+  check("(control) the opt-out finder recognises the wave-145 pre-gate", /contact\.video_opt_out === true/.test("if (contact.video_opt_out === true) { out.reason = 'video_opt_out'; return out }"))
+  const retired = ["deliverWelcomeVideoFollowUp", "readWelcomeState", "classifyPendingWelcome", "holdWelcomeForException", "releaseApprovedWelcomeExceptions"]
+  const liveFiles = ["lib/contact-promotion/conversion-welcome.ts", "lib/contact-promotion/welcome-avatar-video.ts", "app/api/cron/intro-video-email-backfill/route.ts", "lib/portal/welcome-video.ts"]
+  check("W146 RETIRED (tombstoned, survivor named): the ruling-13 follow-up mail, the welcome-state reader, the ruling-17 release classifier and exception doors — absent from every live file",
+    retired.every((n) => liveFiles.every((f) => !src(f).includes(n))))
+  check("(control) the retirement finder still sees them in the raw tombstones", retired.every((n) => liveFiles.some((f) => raw(f).includes(n))))
 }
 
 async function main() {
@@ -1168,6 +1316,7 @@ async function main() {
   layer8_fourthConverter()
   layer9_formsAndOpenHouse()
   await layer10_exceptionAndFormat()
+  await layer11_portalWelcomeVideo()
   console.log("\n──────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {
@@ -1184,9 +1333,9 @@ async function main() {
   // doc-kernel-simulator, which asserts two specific ones by name and not this.
   // So this line makes the failure and success verdicts findable in a 700-script
   // sweep log; it does not make the proof any more or less enforced.
-  console.log(" ✅ CONVERSION_WELCOME_PASS — ONE welcome email: the portal grant is immediate,")
-  console.log("    the welcome WAITS for the agent's personal video and is auto-sent with it")
-  console.log("    (wave 145, ruling 17); a video that cannot ride it is a human-approved")
-  console.log("    exception — never falsely sent, never silently pending, never a second welcome.")
+  console.log(" ✅ CONVERSION_WELCOME_PASS — ONE welcome email: the portal grant is immediate and the")
+  console.log("    welcome is SENT NOW (wave 146, ruling 6); the agent's personal video lives in the")
+  console.log("    contact's portal the moment it is validated (read back, never a false complete), a")
+  console.log("    failure is retried safely and told to a person once, and the welcome owns the first touch.")
 }
 main().catch((e) => { console.error(e); process.exit(1) })

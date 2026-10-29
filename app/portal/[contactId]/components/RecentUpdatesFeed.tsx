@@ -28,16 +28,14 @@ const SHAREABLE_UPDATE_TYPES = new Set(["listing_marketing_week", "listing_launc
 // this surface).
 const MEETING_RECAP_UPDATE_TYPE = "meeting_recap"
 
-// THE WELCOME PACKAGE (owner ruling): the personal video from the assigned agent
-// must be visible "in the emila and in the portal". The email half rides in the
-// send; THIS is the portal half. lib/kernel/client-welcome.ts writes the same
-// transparency_updates card every other approved agent message uses and puts the
-// resolved, bucket-hosted URL on metadata.welcome_video_url.
-//
-// `welcome_video_url` is null whenever the agent had no finished personal video,
-// and the card then renders with NO video affordance at all — never a "coming
-// soon" tile, which would imply a recording the agent never made.
-const WELCOME_UPDATE_TYPE = "client_welcome"
+// TOMBSTONE (wave 146, lane 146C — owner ruling 6; §1.1, merged onto the survivor): the `client_welcome` row of
+// CARD_VIDEO_KEYS (WELCOME_UPDATE_TYPE, metadata.welcome_video_url) is gone. That slot showed the welcome video only when it
+// rode the welcome EMAIL — i.e. only if a video was already finished at send time — and only once a send had written the card.
+// Under ruling 6 the welcome goes at once and the video arrives later, "in-app … so the contact sees it right away" and
+// "regardless of the contact's preferences", whether or not an email went. Its survivor is
+// app/portal/[contactId]/components/PortalWelcomeVideo.tsx (mounted at the top of the portal home on every layout), reading
+// lib/portal/welcome-video.ts portalWelcomeVideoFor — the same ONE player (CardVideoPlayer), the same engagement events, and
+// still never a "coming soon" tile for the contact. The welcome card keeps rendering its text here.
 
 // THE ANNIVERSARY VIDEO, SAME AFFORDANCE. lib/kernel/anniversary-equity.ts
 // pushes the equity_report card and then commissions the agent's anniversary
@@ -60,12 +58,6 @@ const WELCOME_UPDATE_TYPE = "client_welcome"
 // project. A card without the stamp (written before the id existed) plays
 // untracked rather than fabricating an id.
 const CARD_VIDEO_KEYS: Record<string, { url: string; poster: string; projectId: string; caption: string }> = {
-  [WELCOME_UPDATE_TYPE]: {
-    url:       "welcome_video_url",
-    poster:    "welcome_video_thumbnail_url",
-    projectId: "welcome_video_project_id",
-    caption:   "A personal hello from your agent",
-  },
   equity_report: {
     url:       "anniversary_video_url",
     poster:    "anniversary_video_thumbnail_url",

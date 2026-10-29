@@ -1371,48 +1371,32 @@ async function section8Wave144(c: Pick<Ctx, "policyMod" | "arb" | "lap" | "lead"
     check("the old 'format' union that was really a channel list is gone from the stripped source", !/"blog"\s*\|\s*"social"\s*\|\s*"newsletter"\s*\|\s*"video"\s*\|\s*"podcast"/.test(src("lib/content-intel/market-leadership.ts")))
   }
 
-  // RE-ASSERTED (wave 145, lane 145E): the two checks below pinned ruling 13's TIMING ("the welcome goes now; the video follows"),
-  // which owner ruling 17 (2026-10-27) REVERSED — "the welcome email … has to wait for the avatar welcome email from the agent to
-  // finish and auto send after". The RULE asserted now: a render in flight HOLDS the one welcome (the sweeper sends it with the
-  // video); no possible video HOLDS it for a human-approved exception; the hold branches RETURN before the send.
-  console.log("\n── 8g. THE ONE WELCOME WAITS FOR THE AGENT'S VIDEO; a failure is a human-approved exception (ruling 17) ──")
+  // RE-ASSERTED (wave 146, lane 146C): §8g pinned ruling 17's TIMING (wave 145 — "the welcome … has to wait for the avatar
+  // welcome email from the agent to finish and auto send after") and the wave-144 video follow-up mail. Owner ruling 6
+  // (2026-10-29) OVERRULES both — "Welcome email shouldn't wait for a video so send welcome email out right away and put the
+  // welcome personal video in-app contact portal so the contact sees it right away." The RULE asserted now: the welcome goes NOW
+  // for every video outcome; the entry point SENDS it before it commissions the video; the video lives in the PORTAL (the sweeper
+  // places it after a readback and fails it to recovery past its deadline) and no mail ever carries or follows it.
+  console.log("\n── 8g. THE ONE WELCOME GOES NOW; THE AGENT'S VIDEO LIVES IN THE PORTAL (ruling 6, wave 146) ──")
   {
-    const wav = await import("../lib/contact-promotion/welcome-avatar-video")
     const cw = await import("../lib/contact-promotion/conversion-welcome")
-    check("the welcome WAITS for a render in flight (hold_for_video), and with no possible video it is HELD for a human exception — never sent without it on its own",
-      cw.decideWelcomeTiming({ commissioned: true, reason: "commissioned" }).action === "hold_for_video" && cw.decideWelcomeTiming({ commissioned: false, reason: "agent_not_video_ready" }).action === "hold_for_exception")
+    const wv = await import("../lib/portal/welcome-video")
+    check("the welcome is SENT NOW for a render in flight AND for no possible video — it never waits for, or is held over, the video",
+      cw.decideWelcomeTiming({ commissioned: true, reason: "commissioned" }).action === "send_now" && cw.decideWelcomeTiming({ commissioned: false, reason: "agent_not_video_ready" }).action === "send_now")
     const body = src("lib/contact-promotion/conversion-welcome.ts")
     const entry = body.slice(body.indexOf("export async function deliverConversionWelcome"))
-    const holdAt = entry.indexOf('if (timing.action === "hold_for_video")')
-    const block = entry.slice(holdAt, entry.indexOf("ensureClientWelcome"))
-    check("the conversion entry point does NOT send while the video is pending — the hold branch returns before the send", holdAt > -1 && block.length > 50 && /return out/.test(block) && entry.indexOf("ensureClientWelcome") > entry.indexOf("decideWelcomeTiming("))
-    check("(control) the early-return finder rejects the wave-144 send-anyway shape", !/return out/.test('if (timing.action === "send_now_video_follows") { warnings.push("x") }'))
-    const sends: Array<Record<string, any>> = []
-    const svc = memSupabase({
-      contacts: [{ id: "c1", brokerage_id: B, first_name: "Pat", email: "pat@example.test", email_opt_out: false, email_unsubscribed: false, contact_type: "buyer", agent_id: "ag1", video_opt_out: false },
-        { id: "c2", brokerage_id: B, first_name: "Sam", email: "sam@example.test", email_opt_out: true, email_unsubscribed: false, contact_type: "buyer", agent_id: "ag1", video_opt_out: false }],
-      agents: [{ id: "ag1", brokerage_id: B, user_id: "u1" }],
-      agent_client_messages: [{ id: "m1", brokerage_id: B, recipient_contact_id: "c1", rationale: "client_welcome_v1 — buyer", status: "sent" }, { id: "m2", brokerage_id: B, recipient_contact_id: "c2", rationale: "client_welcome_v1 — buyer", status: "proposed" }],
-    })
-    const note = async () => ({ subject: "Your video from Alex", body: "Hi Pat — I recorded a quick personal video for you. Reply with any question.", generated: true })
-    const ok = await wav.deliverWelcomeVideoFollowUp(svc, { contactId: "c1", brokerageId: B, videoUrl: "https://cdn.example.test/v.mp4", videoProjectId: "vp1" }, { message: note, dispatchEmail: async (p) => { sends.push(p); return { success: true, messageId: "e1" } } })
-    check("FOLLOW-UP: ONE email through the governed dispatcher, the video embedded, from the agent (users.id via agents.user_id), the OWNING welcome manager's posture, the once-per-contact ledger cycle",
-      ok.state === "sent" && sends.length === 1 && String(sends[0].html).includes("https://cdn.example.test/v.mp4") && sends[0].userId === "u1" && sends[0].managerKey === "shopping_agent" && sends[0].ledger?.cycle === "welcome_video_follow_up" && sends[0].ledger?.reasonCode === "CONTACT_WELCOME")
-    const n0 = sends.length
-    const unwritten = await wav.deliverWelcomeVideoFollowUp(svc, { contactId: "c1", brokerageId: B, videoUrl: "https://cdn.example.test/v.mp4" }, { message: async () => ({ subject: "x", body: "y", generated: false }), dispatchEmail: async (p) => { sends.push(p); return { success: true } } })
-    check("an UNWRITTEN note is retried, never replaced by the neutral fallback", unwritten.state === "retry" && sends.length === n0)
-    const optedOut = await wav.deliverWelcomeVideoFollowUp(svc, { contactId: "c2", brokerageId: B, videoUrl: "https://cdn.example.test/v.mp4" }, { message: note, dispatchEmail: async (p) => { sends.push(p); return { success: true } } })
-    const foreign = await wav.deliverWelcomeVideoFollowUp(svc, { contactId: "c1", brokerageId: "OTHER", videoUrl: "https://cdn.example.test/v.mp4" }, { message: note, dispatchEmail: async (p) => { sends.push(p); return { success: true } } })
-    check("an email opt-out and another tenant's contact are REFUSED — nothing sent", optedOut.state === "refused" && foreign.state === "refused" && sends.length === n0)
-    const held = await wav.deliverWelcomeVideoFollowUp(svc, { contactId: "c1", brokerageId: B, videoUrl: "https://cdn.example.test/v.mp4" }, { message: note, dispatchEmail: async () => ({ success: false, providerKey: "autonomy_gate", error: "held" }) })
-    check("the owning manager's posture can HOLD it for approval (held, not failed)", held.state === "held")
-    const st = await Promise.all([wav.readWelcomeState(svc, { contactId: "c1", brokerageId: B }), wav.readWelcomeState(svc, { contactId: "c2", brokerageId: B }), wav.readWelcomeState(svc, { contactId: "c9", brokerageId: B }), wav.readWelcomeState(memSupabase({}, { refuse: { agent_client_messages: "RLS" } } as never), { contactId: "c1", brokerageId: B })])
-    check("the welcome's own state comes from the survivor's tag: sent / held / none — and a REFUSED read is null (the sweeper then waits, stamps nothing)", st[0] === "sent" && st[1] === "held" && st[2] === "none" && st[3] === null, st.join(","))
+    const sendAt = entry.indexOf("ensureClientWelcome("), videoAt = entry.indexOf("ensureWelcomeAvatarVideo(")
+    check("the conversion entry point SENDS the welcome before it commissions the video, with no hold branch anywhere in it",
+      sendAt > -1 && videoAt > sendAt && !/hold_for_video|hold_for_exception/.test(entry))
+    check("(control) the hold finder rejects the wave-145 hold shape", /hold_for_video|hold_for_exception/.test('if (timing.action === "hold_for_video") { return out }'))
+    check("the sweeper PLACES a landed video in the portal and FAILS one past its deadline to the manager's recovery — never a mail",
+      wv.classifyPortalWelcomeVideo({ status: "rendering", ageMs: 60_000, composite: "landed", hasRenderedUrl: true }).action === "place"
+      && wv.classifyPortalWelcomeVideo({ status: "rendering", ageMs: 10 * 3_600_000, composite: "pending", hasRenderedUrl: false }).action === "fail")
     const cronRaw = src("app/api/cron/intro-video-email-backfill/route.ts")
-    check("WIRED (the sweeper): it reads the welcome's state BEFORE classifying, passes it, sends the follow-up on send_video_follow_up, and stamps 'delivered' only on a provider accept",
-      cronRaw.indexOf("readWelcomeState(svc") > -1 && cronRaw.indexOf("readWelcomeState(svc") < cronRaw.indexOf("classifyPendingWelcome({") && /welcomeState,/.test(cronRaw)
-      && /verdict\.action === "send_video_follow_up"[\s\S]{0,200}deliverWelcomeVideoFollowUp\(svc/.test(cronRaw) && /fu\.state === "sent" \? "delivered" : "failed"/.test(cronRaw))
-    check("(control) the sweeper finder rejects a sweep that never reads the state", !/readWelcomeState\(svc/.test("const verdict = classifyPendingWelcome({ status })"))
+    const wav = src("lib/contact-promotion/welcome-avatar-video.ts")
+    check("WIRED (the sweeper): no welcome release and no video follow-up mail — the portal placement reads the video back first",
+      !/ensureClientWelcome\(|deliverWelcomeVideoFollowUp\(|dispatchEmail\(/.test(cronRaw) && /placePortalWelcomeVideo\(svc/.test(cronRaw) && !/deliverWelcomeVideoFollowUp|readWelcomeState/.test(wav))
+    check("(control) the sweeper finder rejects a sweep that still mails the video", /ensureClientWelcome\(|deliverWelcomeVideoFollowUp\(|dispatchEmail\(/.test("await deliverWelcomeVideoFollowUp(svc, { videoUrl })"))
   }
 
   console.log("\n── 8h. EDUCATION: the person's preference leads; a band never excludes the rail they asked for ──")

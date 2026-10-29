@@ -102,6 +102,22 @@
  * compliance redraft of one, was unbilled and uncapped. That is fixed at the
  * reactor (it is the spender, so it is the booker); this module's contract is
  * only that it never asks for a draft it has not already deduped.
+ *
+ * ── WAVE 146 (lane 146C) — THE VIDEO LIVES IN THE PORTAL, REGARDLESS OF CHANNEL PREFERENCES ──
+ *
+ * Owner ruling 6: "put the welcome personal video in-app contact portal so the
+ * contact sees it right away" — "automatically sent in the portal regardless of
+ * the contact's preferences." So this commission (a) asks for delivery 'portal'
+ * (lib/portal/welcome-video.ts reads it; the welcome EMAIL already went at
+ * conversion and never carries a follow-up video mail), and (b) no longer
+ * refuses on `contacts.video_opt_out` before the spine: that is a CHANNEL
+ * opt-out (lib/marketing/campaign-publisher.ts counts it beside email / sms /
+ * mail opt-outs), and the portal video is an in-app part of the contact's
+ * portal journey, not a channel message. The spine's OWN opt-out gate
+ * (lib/video/intro-video-reactor.ts step 1) still applies until lane 146F
+ * exempts the portal welcome (Outside-lane in lane 146C's notes); its
+ * 'suppressed' answer is reported as `video_opt_out` and recovered (the agent's
+ * standing video stands in, or a person is told).
  */
 
 import {
@@ -117,7 +133,8 @@ export type WelcomeAvatarVideoReason =
   | "commissioned"
   /** The reactor deduped it — a video for this contact+agent already exists. */
   | "already_commissioned"
-  /** The contact turned video off. Their choice, recorded, not an error. */
+  /** The SPINE suppressed it on the contact's video channel opt-out. Wave 146 (ruling 6): the portal welcome video is not a
+   *  channel message, so this is recovered (lib/portal/welcome-video.ts), not accepted as the contact's final answer. */
   | "video_opt_out"
   /** The agent has no cloned voice / avatar. Agent-actionable, not a failure of ours. */
   | "agent_not_video_ready"
@@ -205,7 +222,7 @@ export async function ensureWelcomeAvatarVideo(
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
     .select(
-      "id, contact_type, contact_persona, timeline, city, state, property_type, budget_min, budget_max, beds, video_opt_out",
+      "id, contact_type, contact_persona, timeline, city, state, property_type, budget_min, budget_max, beds",
     )
     .eq("id", params.contactId)
     .eq("brokerage_id", params.brokerageId)
@@ -246,17 +263,10 @@ export async function ensureWelcomeAvatarVideo(
     return out
   }
 
-  // The reactor gates on this too and records a 'suppressed' ledger row. Reading
-  // it here as well is not duplication — it lets the conversion report the
-  // contact's own choice as a fact rather than as a failed video.
-  if (contact.video_opt_out === true) {
-    out.reason = "video_opt_out"
-    out.warnings.push(
-      `no welcome video for contact ${params.contactId}: they have video_opt_out set. The portal ` +
-        `invite is unaffected.`,
-    )
-    return out
-  }
+  // TOMBSTONE (wave 146, lane 146C — owner ruling 6): the `video_opt_out` refusal that stood here is gone. The portal welcome
+  // video is sent "regardless of the contact's preferences" — video_opt_out is a CHANNEL opt-out and the portal video is not a
+  // channel message. The spine still applies its own gate (lib/video/intro-video-reactor.ts) until lane 146F exempts the portal
+  // welcome; its 'suppressed' answer comes back below as `video_opt_out`, and lib/portal/welcome-video.ts recovers it.
 
   // ── THE SITUATION. Compliance-screened BEFORE it can reach a prompt. ──────
   const situation: WelcomeSituationResult = buildWelcomeSituation(contact, { origin: params.origin ?? null })
@@ -286,9 +296,9 @@ export async function ensureWelcomeAvatarVideo(
       brokerageId: params.brokerageId,
       contactId: params.contactId,
       agentId: params.agentId,
-      // BOTH: the clip belongs in the welcome email AND on the portal card —
-      // that is the ruling's "in the emila and in the portal".
-      delivery: "both",
+      // WAVE 146 (owner ruling 6): the clip lives in the PORTAL — "put the welcome personal video in-app contact portal so the
+      // contact sees it right away". The welcome email went at conversion; no mail ever waits on, or follows with, this clip.
+      delivery: "portal",
       language,
       situation: {
         facts: situation.facts,
@@ -305,7 +315,12 @@ export async function ensureWelcomeAvatarVideo(
       return out
     }
     if (dispatch.status === "suppressed") {
+      // The SPINE's channel gate (contacts.video_opt_out) refused it — reported as such; recovered by lib/portal/welcome-video.ts.
       out.reason = "video_opt_out"
+      out.warnings.push(
+        `the avatar spine suppressed the portal welcome video for contact ${params.contactId} on the contact's video channel ` +
+          `opt-out — owner ruling 6 sends it regardless of channel preferences; recovered (standing video or a person).`,
+      )
       return out
     }
     if (dispatch.ok) {
@@ -344,126 +359,10 @@ export async function ensureWelcomeAvatarVideo(
   }
 }
 
-// ─── WAVE 144: THE VIDEO FOLLOWS THE WELCOME (owner ruling 13) ───────────────
-// WAVE 145 (owner ruling 17 reverses ruling 13's timing): a NEW conversion's welcome WAITS for the video and carries it
-// (lib/contact-promotion/conversion-welcome.ts decideWelcomeTiming → hold_for_video), so nothing new reaches the follow-up below.
-// It stays as the TRANSITION path for a row whose welcome already went under ruling 13 (classifyPendingWelcome's
-// welcomeState 'sent' arm) — the video still reaches that client once, never a second welcome.
-
-export type WelcomeVideoFollowUpState =
-  /** A provider accepted the follow-up. */
-  | "sent"
-  /** The owning manager's posture holds it for approval (it is in the approval queue — not a refusal). */
-  | "held"
-  /** The note could not be written / the gate deferred it — try again on the sweeper's next tick (inside the deadline). */
-  | "retry"
-  /** Not sendable (no email, opted out, foreign contact, no owning manager, the gate refused) — said, never pretended. */
-  | "refused"
-
-export interface WelcomeVideoFollowUpResult {
-  state: WelcomeVideoFollowUpState
-  reason: string
-  messageId?: string | null
-}
-
-const escAttr = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-const escText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-
-/**
- * THE ONE FOLLOW-UP THAT CARRIES THE AGENT'S PERSONAL VIDEO, sent after the welcome already went (wave 144: "dispatch the
- * immediately available welcome and follow with the video when the real asset is ready"). Called by the welcome sweeper
- * (/api/cron/intro-video-email-backfill) for a `send_video_follow_up` verdict — never at conversion.
- *
- * NO SECOND RAIL. The note is written by THE client-message writer (lib/agents/generate-client-message.ts — compliance redraft,
- * brand voice, no figures) and travels through THE governed dispatcher (dispatchEmail: consent, suppression, de-confliction,
- * the OWNING welcome manager's autonomy posture, the budget pre-flight) from the assigned agent's own sender, with the video
- * embedded by THE embed helper the welcome itself uses (lib/ai-isa/video-generator.ts embedVideoInEmail). The writer's neutral
- * fallback is NEVER sent: an unwritten note is `retry`.
- *
- * ONCE, EVER: the dispatcher's action-ledger cycle `welcome_video_follow_up` (one per contact) replays a retried tick instead of
- * mailing twice; the sweeper stamps the agent_intro_videos row terminal only on a provider accept. NEVER THROWS.
- * @proofSeam the caller is /api/cron/intro-video-email-backfill (wave 144 Outside-lane note); scripts/conversion-welcome-simulator.ts drives every arm with recorder seams.
- */
-export async function deliverWelcomeVideoFollowUp(
-  svc: { from: (t: string) => any },
-  p: { contactId: string; brokerageId: string; agentId?: string | null; videoUrl: string; videoProjectId?: string | null; posterUrl?: string | null },
-  deps: {
-    message?: (brief: Record<string, unknown>) => Promise<{ subject: string; body: string; generated: boolean }>
-    dispatchEmail?: (params: Record<string, unknown>) => Promise<{ success: boolean; providerKey?: string; messageId?: string; error?: string }>
-  } = {},
-): Promise<WelcomeVideoFollowUpResult> {
-  try {
-    if (!p.contactId || !p.brokerageId || !p.videoUrl) return { state: "refused", reason: "missing contact, brokerage or video" }
-    const { data: c, error } = await svc.from("contacts")
-      .select("id, first_name, email, email_opt_out, email_unsubscribed, contact_type, agent_id, video_opt_out")
-      .eq("id", p.contactId).eq("brokerage_id", p.brokerageId).maybeSingle()
-    if (error) return { state: "retry", reason: `contact read refused: ${error.message}` }
-    if (!c) return { state: "refused", reason: "contact not in this brokerage" }
-    if (!c.email || c.email_opt_out || c.email_unsubscribed) return { state: "refused", reason: "no usable email (missing or opted out) — the video stays on the portal card" }
-    if (c.video_opt_out === true) return { state: "refused", reason: "the contact turned video off" }
-
-    const { resolveWelcomeManagers } = await import("@/lib/kernel/client-welcome")
-    const owningManager = resolveWelcomeManagers(c.contact_type)[0]
-    if (!owningManager) return { state: "refused", reason: `contact_type '${c.contact_type ?? "null"}' is picked up by no welcome manager` }
-
-    // agents.id → users.id only through agents.user_id (the two id spaces are disjoint).
-    const agentId = p.agentId ?? c.agent_id ?? null
-    let agentUserId: string | null = null
-    if (agentId) {
-      const { data: ag, error: agErr } = await svc.from("agents").select("user_id").eq("id", agentId).eq("brokerage_id", p.brokerageId).maybeSingle()
-      if (agErr) return { state: "retry", reason: `agent read refused: ${agErr.message}` }
-      agentUserId = (ag as { user_id?: string | null } | null)?.user_id ?? null
-    }
-
-    const write = deps.message ?? (async (b) => (await import("@/lib/agents/generate-client-message")).generateClientMessage(b as never))
-    const note = await write({
-      brokerageId: p.brokerageId, agentUserId, audience: c.contact_type === "seller" ? "seller" : "buyer", recipientFirstName: c.first_name ?? null,
-      purpose: "Two or three warm sentences that FOLLOW the client's welcome email: their agent recorded a short personal video for them — invite them to watch it below and to reply with any question. No sales pitch, no figures, no promises.",
-      fallback: { subject: "A personal video from your agent", body: "I recorded a short video for you — it is below." },
-    })
-    if (!note.generated || !note.body.trim()) return { state: "retry", reason: "the note could not be written (gateway / compliance redraft failed) — the neutral fallback is never sent" }
-
-    const { embedVideoInEmail } = await import("@/lib/ai-isa/video-generator")
-    const html = await embedVideoInEmail(`<p>${escText(note.body).replace(/\n/g, "<br>")}</p>[Video will be embedded here]`, escAttr(p.videoUrl), p.posterUrl ? escAttr(p.posterUrl) : null)
-    const send = deps.dispatchEmail ?? (async (params) => (await import("@/lib/providers/dispatch")).dispatchEmail(params as never))
-    const r = await send({
-      brokerageId: p.brokerageId, contactId: p.contactId, userId: agentUserId, agentId: agentId ?? undefined, sendAsAgentUserId: agentUserId,
-      to: c.email, subject: note.subject, html, text: `${note.body}\n\n${p.videoUrl}`,
-      channelPurpose: "conversation", systemSource: "client_welcome", managerKey: owningManager,
-      ledger: { reasonCode: "CONTACT_WELCOME", cycle: "welcome_video_follow_up", reasonDetail: "the personal welcome video, following the welcome (wave 144)" },
-      metadata: { welcome_video_follow_up: true, welcome_video_project_id: p.videoProjectId ?? null },
-    })
-    if (r.success) return { state: "sent", reason: "the personal video followed the welcome", messageId: r.messageId ?? null }
-    if (r.providerKey === "autonomy_gate") return { state: "held", reason: r.error ?? "held for approval" }
-    if (r.providerKey && /deconflict/i.test(r.providerKey)) return { state: "retry", reason: r.error ?? "deferred by de-confliction" }
-    return { state: "refused", reason: r.error ?? "the send gate refused" }
-  } catch (e) {
-    return { state: "retry", reason: `threw: ${e instanceof Error ? e.message : String(e)}` }
-  }
-}
-
-// ─── WAVE 144: THE WELCOME'S OWN STATE, FOR THE SWEEPER ──────────────────────
-
-/**
- * Has this contact's ONE welcome gone out? Read from the survivor's own idempotency tag
- * (agent_client_messages.rationale `client_welcome_v1…`, lib/kernel/client-welcome.ts WELCOME_RATIONALE_TAG) — the
- * same row ensureClientWelcome dedupes on, so the sweeper and the composer can never disagree about "already welcomed".
- * Tenant-pinned (a service client: the brokerage on the query is the only pin). A REFUSED read returns null, and
- * classifyPendingWelcome then waits and stamps nothing (fail closed — supabase-js resolves a refusal).
- * @proofSeam the caller is /api/cron/intro-video-email-backfill (wave 144 Outside-lane note in $S/lane144F-notes.md: the sweeper passes this state to classifyPendingWelcome and sends deliverWelcomeVideoFollowUp on `send_video_follow_up`); scripts/conversion-welcome-simulator.ts drives every state.
- */
-export async function readWelcomeState(
-  svc: { from: (t: string) => any },
-  a: { contactId: string; brokerageId: string },
-): Promise<import("./conversion-welcome").WelcomeMessageState | null> {
-  if (!a.contactId || !a.brokerageId) return null
-  const { WELCOME_RATIONALE_TAG } = await import("@/lib/kernel/client-welcome")
-  const { data, error } = await svc.from("agent_client_messages").select("id, status")
-    .eq("brokerage_id", a.brokerageId).eq("recipient_contact_id", a.contactId).ilike("rationale", `${WELCOME_RATIONALE_TAG}%`).limit(5)
-  if (error) return null
-  const rows = (data ?? []) as Array<{ status: string | null }>
-  if (rows.length === 0) return "none"
-  if (rows.some((r) => r.status === "sent")) return "sent"
-  if (rows.some((r) => r.status === "proposed" || r.status === "approved")) return "held"
-  return "failed"
-}
+// TOMBSTONE (wave 146, lane 146C — owner ruling 6; §1.3, the functionality moved): `deliverWelcomeVideoFollowUp`,
+// `WelcomeVideoFollowUpState`, `WelcomeVideoFollowUpResult` and `readWelcomeState`. The first mailed the agent's personal video
+// as ONE follow-up after a welcome that went under ruling 13 (wave 144); the second read the welcome's own state so the sweeper
+// could choose between releasing a HELD welcome (ruling 17) and that follow-up. Under ruling 6 the welcome is never held and the
+// video never travels by mail — it appears in the contact's portal (lib/portal/welcome-video.ts portalWelcomeVideoFor; the
+// sweeper's decision is classifyPortalWelcomeVideo there). Measured before retiring (hrvaqgvukzxfskkcrwbt, 2026-10-29):
+// agent_intro_videos = 0 rows and client_welcome_v1 messages = 0 — no ruling-13 welcome awaits a follow-up.

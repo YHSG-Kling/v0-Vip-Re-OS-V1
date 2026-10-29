@@ -10,6 +10,11 @@
  *     conversion → invite → avatar video → validated → ONE welcome (secure activation link, never a password) + the approved video →
  *     auto-delivered when ready; a failure is a visible, recoverable state with a human-approved exception — never falsely sent,
  *     never silently pending forever. The welcome format reads accessibility preferences through C3.
+ *   WAVE 146 (lane 146C) — RULING 17 IS OVERRULED by wave-146 owner ruling 6: "Welcome email shouldn't wait for a video so send
+ *     welcome email out right away and put the welcome personal video in-app contact portal so the contact sees it right away."
+ *     Steps 5–7b are re-asserted to it on the same survivors (decideWelcomeTiming → send_now; lib/portal/welcome-video.ts —
+ *     classifyPortalWelcomeVideo places a validated render in the portal / fails an overdue one to recovery; the failure is told
+ *     to a person through ONE idempotent door). Ruling 17's exception doors are retired (0 live items, measured).
  *
  * Through the survivors at b364eb4b: lib/ai-isa/speed-to-lead.ts runSpeedToLead (driven in memory with recorder seams),
  * lib/contact-promotion/lead-deactivator.ts deactivateLead (the conversion paths' suppression door — lib/kernel/crm.ts and
@@ -34,13 +39,15 @@ import { CONTRACTS, bindContract, canary145, quiet, type Contract } from "./wave
 // releaseApprovedWelcomeExceptions · WELCOME_EXCEPTION_ITEM_TYPE; C3 readWelcomeAccessibility (through H's readAccessibilityPreferences).
 const SUPPRESSION: Contract = { id: "145E ruling-15 suppression", lane: "145E", file: "lib/contact-promotion/lead-deactivator.ts", exports: ["deactivateLead"] }
 const ARBITER_LEAD: Contract = { id: "145E speed-to-lead arbiter (leads)", lane: "145E", file: "lib/ai-isa/followup-arbiter.ts", exports: ["arbitrateSpeedToLead"] }
-const WELCOME_EXCEPTION: Contract = { id: "145E welcome exception", lane: "145E", file: "lib/contact-promotion/conversion-welcome.ts", exports: ["holdWelcomeForException", "releaseApprovedWelcomeExceptions", "WELCOME_EXCEPTION_ITEM_TYPE"] }
+// WAVE 146 (lane 146C): ruling 17's exception contract (holdWelcomeForException / releaseApprovedWelcomeExceptions /
+// WELCOME_EXCEPTION_ITEM_TYPE) is RETIRED with its ruling; the failure door that replaces it is contract C3's.
+const PORTAL_WELCOME_VIDEO: Contract = { id: "146C portal welcome video (C3)", lane: "145E", file: "lib/portal/welcome-video.ts", exports: ["portalWelcomeVideoFor", "classifyPortalWelcomeVideo", "recoverPortalWelcomeVideo"] }
 const WELCOME_C3: Contract = { id: "145E welcome accessibility (C3)", lane: "145E", file: "lib/contact-promotion/conversion-welcome.ts", exports: ["readWelcomeAccessibility"] }
 
 const LEAD_CHANNELS_ALLOWED = new Set(["email", "direct_mail"]) // an unconsented lead: verified email / verified mail — never SMS or a call
 
 export async function run() {
-  const c = canary145("Lead/contact: leads evaluated only without contact_id (C2) · speed-to-lead is the arbiter's decision · ONE welcome waits for the validated avatar video, auto-sends, fails visibly to a human · activation link never a password · accessibility via C3")
+  const c = canary145("Lead/contact: leads evaluated only without contact_id (C2) · speed-to-lead is the arbiter's decision · ONE welcome sent NOW, the avatar video in the portal when validated, a failure told to a person (wave 146 ruling 6) · activation link never a password · accessibility via C3")
   if (LIVE) return c.report([], 0, "refused in CANARY_LIVE mode: in-memory only")
   const B = "B", B2 = "B2"
 
@@ -124,7 +131,11 @@ export async function run() {
     return { ok: LEAD_CHANNELS_ALLOWED.has(String(parked.channel)) && LEAD_CHANNELS_ALLOWED.has(String(sms.channel)) && contactDoor && finderControl, evidence: `a 'wait 48h' answer → first touch on ${parked.channel ?? "NOTHING"} now; an SMS pick → ${sms.channel ?? "nothing"}; contact door passes the speed-to-lead priority ${contactDoor} (finder control ${finderControl})` }
   })
 
-  // ── 5–7 · ruling 17 on the pure welcome survivors ──
+  // ── 5–7 · WAVE 146 (lane 146C): ruling 6 OVERRULES ruling 17 — re-asserted on the same pure survivors ──
+  // Owner ruling 6 (2026-10-29): "Welcome email shouldn't wait for a video so send welcome email out right away and put the welcome
+  // personal video in-app contact portal so the contact sees it right away." The steps that pinned ruling 17's wait / exception now
+  // assert ruling 6: the welcome goes NOW for every video outcome; the video is PLACED in the portal when validated; a failed /
+  // overdue video is a recorded failure handed to the manager's recovery (retry safely / tell a person), never a false complete.
   const cw = await quiet(async () => import("../../lib/contact-promotion/conversion-welcome")) as unknown as Record<string, any>
   const timing = (v: Record<string, unknown>) => cw.decideWelcomeTiming(v) as { action: string; reason: string }
   const inFlight = timing({ commissioned: true, reason: "commissioned" })
@@ -132,33 +143,31 @@ export async function run() {
   const standing = timing({ commissioned: false, reason: "agent_not_video_ready", standingVideoReady: true })
   const statedNo = timing({ commissioned: true, reason: "commissioned", statedNoVideo: true })
   const isSend = (a: { action?: unknown }) => /^send/.test(String(a.action))
-  c.rule("145E", "THE WELCOME WAITS FOR THE AVATAR VIDEO (ruling 17: 'has to wait for the avatar welcome email from the agent to finish and auto send after'): with the agent's personal video commissioned and rendering, the welcome is HELD — never sent now with the video to follow; with no personal video possible it is raised to a HUMAN (never sent without it unattended, never left waiting); controls: an agent's standing video ready to be selected, or a person who STATED no video (C3), sends at once", !isSend(inFlight) && !isSend(noVideo) && /human|exception|approv/i.test(`${noVideo.action} ${noVideo.reason}`) && isSend(standing) && isSend(statedNo), `commissioned → ${inFlight.action}; no video possible → ${noVideo.action}; standing video → ${standing.action}; stated no video → ${statedNo.action}`)
-  const ready = cw.classifyPendingWelcome({ status: "rendering", ageMs: 10 * 60_000, composite: "landed", hasRenderedUrl: true, videoOptOut: false, hasEmail: true, welcomeState: "none" }) as Record<string, any>
-  c.rule("145E", "ONE WELCOME CARRYING THE VALIDATED VIDEO, AUTO-SENT WHEN READY (ruling 17: 'ONE welcome email with a secure activation link + the approved video → auto-delivered when ready'): once the rendered, assembled video exists and the welcome has not gone, the sweeper's verdict releases ONE welcome WITH the video — not a welcome plus a second video note", String(ready.action) === "send_with_video", `ready + welcome unsent → ${ready.action} (${String(ready.reason).slice(0, 90)})`)
-  const overdue = cw.classifyPendingWelcome({ status: "rendering", ageMs: 10 * 60 * 60_000, composite: "pending", hasRenderedUrl: false, videoOptOut: false, hasEmail: true, welcomeState: "none" }) as Record<string, any>
-  c.rule("145E", "A FAILED / OVERDUE VIDEO IS A VISIBLE, RECOVERABLE STATE WITH A HUMAN-APPROVED EXCEPTION (ruling 17: 'never falsely sent, never silently pending forever'): a render that has not landed long past its window does NOT auto-release the welcome without the video, does NOT keep waiting and is NOT recorded as sent — the verdict raises the exception to a human (who may approve sending without it)", !isSend(overdue) && String(overdue.action) !== "wait" && overdue.ledgerStatus !== "sent" && /human|exception|escalat|approv/i.test(`${overdue.action} ${overdue.reason}`), `overdue → ${overdue.action}, ledger ${overdue.ledgerStatus ?? "∅"} (${String(overdue.reason).slice(0, 110)})`)
+  c.rule("145E", "THE WELCOME IS IMMEDIATE (wave 146 ruling 6 — overrules ruling 17's wait: 'send welcome email out right away'): with the agent's personal video commissioned and rendering, with no personal video possible, with a standing video, and for a person who STATED no video (C3), the ONE welcome is sent NOW — never held behind the video and never raised to a human in its place", isSend(inFlight) && isSend(noVideo) && isSend(standing) && isSend(statedNo) && !/hold/.test(`${inFlight.action}${noVideo.action}`), `commissioned → ${inFlight.action}; no video possible → ${noVideo.action}; standing video → ${standing.action}; stated no video → ${statedNo.action}`)
+  const wvMod = await quiet(async () => import("../../lib/portal/welcome-video")) as unknown as Record<string, any>
+  const ready = wvMod.classifyPortalWelcomeVideo({ status: "rendering", ageMs: 10 * 60_000, composite: "landed", hasRenderedUrl: true }) as Record<string, any>
+  c.rule("145E", "THE VALIDATED VIDEO APPEARS IN THE CONTACT'S PORTAL (wave 146 ruling 6: 'put the welcome personal video in-app contact portal so the contact sees it right away'): once the rendered, assembled video exists the sweeper's verdict PLACES it in the portal (read back through the portal's own reader before it is recorded delivered) — it never releases or sends a mail", String(ready.action) === "place" && !/send|mail/.test(String(ready.action)), `ready → ${ready.action} (${String(ready.reason).slice(0, 90)})`)
+  const overdue = wvMod.classifyPortalWelcomeVideo({ status: "rendering", ageMs: 10 * 60 * 60_000, composite: "pending", hasRenderedUrl: false }) as Record<string, any>
+  c.rule("145E", "A FAILED / OVERDUE VIDEO IS A VISIBLE, RECOVERABLE STATE (ruling 6: 'failure: portal still works, failure recorded, the existing manager retries safely, human escalation, never a false video-complete state'): a render that has not landed long past its window does NOT keep waiting and is NOT recorded delivered — it is recorded 'failed' and handed to the manager's recovery (a safe retry or a person)", String(overdue.action) === "fail" && overdue.ledgerStatus === "failed" && /retries or a person is told|retries|person/i.test(String(overdue.reason)), `overdue → ${overdue.action}, ledger ${overdue.ledgerStatus ?? "∅"} (${String(overdue.reason).slice(0, 110)})`)
 
-  // ── 7b · the human-approved exception is a real, idempotent, tenant-pinned door ──
-  const exc = await bindContract(WELCOME_EXCEPTION)
-  await c.check("145E", "THE HUMAN-APPROVED EXCEPTION IS ONE REAL, IDEMPOTENT, TENANT-PINNED DOOR (ruling 17: 'a human-approved exception … one idempotent workflow'): holding a welcome files ONE pending approval item for the contact (a second hold files nothing more); the release sends a held welcome ONLY for an item a person APPROVED recently, whose contact has no welcome yet and belongs to the item's brokerage — a pending, rejected, stale or already-welcomed item, or a contact of another brokerage, never sends", async () => {
-    if (!exc.mod) return { ok: false, evidence: exc.evidence }
-    const TYPE = String(exc.mod.WELCOME_EXCEPTION_ITEM_TYPE)
-    const hold = memSupabase({ approval_items: [], agent_action_ledger: [] }, { uuidIds: true, stampCreatedAt: true })
-    const h1 = await quiet(async () => exc.mod!.holdWelcomeForException(hold, { brokerageId: B, contactId: "C-7", agentId: "A-1", reason: "the agent has no avatar" })) as Record<string, any>
-    const h2 = await quiet(async () => exc.mod!.holdWelcomeForException(hold, { brokerageId: B, contactId: "C-7", agentId: "A-1", reason: "the agent has no avatar" })) as Record<string, any>
-    const items = (hold.tables.approval_items ?? []).filter((r) => r.item_type === TYPE && r.item_id === "C-7" && r.brokerage_id === B)
-    const { WELCOME_RATIONALE_TAG } = await quiet(async () => import("../../lib/kernel/client-welcome"))
-    const day = (d: number) => new Date(NOW.getTime() - d * 86_400_000).toISOString()
-    const item = (id: string, contactId: string, status: string, reviewedDaysAgo: number | null) => ({ id, brokerage_id: B, item_type: TYPE, item_id: contactId, status, reviewed_at: reviewedDaysAgo === null ? null : day(reviewedDaysAgo) })
-    const contact = (id: string, brokerage = B) => ({ id, contact_id: id, brokerage_id: brokerage, contact_type: "buyer", first_name: "Pat", last_name: id })
-    const rel = memSupabase({
-      approval_items: [item("a1", "C-1", "approved", 1), item("a2", "C-2", "pending", null), item("a3", "C-3", "rejected", 1), item("a4", "C-4", "approved", 30), item("a5", "C-5", "approved", 1), item("a6", "C-6", "approved", 1)],
-      contacts: [contact("C-1"), contact("C-2"), contact("C-3"), contact("C-4"), contact("C-5"), contact("C-6", B2)],
-      agent_client_messages: [{ id: "w5", brokerage_id: B, recipient_contact_id: "C-5", rationale: `${WELCOME_RATIONALE_TAG} welcome`, status: "sent" }],
-    }, { uuidIds: true })
-    const ensured: string[] = []
-    const r = await quiet(async () => exc.mod!.releaseApprovedWelcomeExceptions(rel, { now: NOW }, { ensureWelcome: async (ct: { id: string }) => { ensured.push(ct.id); return { state: "sent" } } })) as Record<string, any>
-    return { ok: h1.filed === true && h2.filed === true && h2.existing === true && items.length === 1 && items[0].status === "pending" && !r.error && ensured.join(",") === "C-1", evidence: `hold → filed ${h1.filed}, again → existing ${h2.existing}; pending items for the contact ${items.length}; release sent for ${ensured.join(",") || "nobody"} (approved+recent C-1 only; pending C-2, rejected C-3, stale C-4, welcomed C-5, other-tenant C-6 held)${r.error ? `; error ${r.error}` : ""}` }
+  // ── 7b · the failure is told to a person through ONE real, idempotent, tenant-pinned door (C3 — lane 146C) ──
+  const portalVideo = await bindContract(PORTAL_WELCOME_VIDEO)
+  await c.check("145E", "THE FAILED PORTAL VIDEO IS TOLD TO A PERSON THROUGH ONE REAL, IDEMPOTENT, TENANT-PINNED DOOR (wave 146 ruling 6, contract C3 — lane 146C): a failed render nothing stands in for is escalated ONCE (the error console + the contact's agent) — a second sweep tells nobody twice; the portal read of another brokerage's contact is `none`; a refused read is `unavailable`, never `ready`", async () => {
+    if (!portalVideo.mod) return { ok: false, evidence: portalVideo.evidence }
+    const contacts = [{ id: "C-7", contact_id: "C-7", brokerage_id: B, agent_id: "A-1", contact_type: "buyer", accessibility_preferences: {} }, { id: "C-8", contact_id: "C-8", brokerage_id: B2, agent_id: "A-1", contact_type: "buyer", accessibility_preferences: {} }]
+    const s = memSupabase({
+      contacts,
+      agent_intro_videos: [{ id: "IV-7", brokerage_id: B, contact_id: "C-7", agent_id: "A-1", trigger: "contact_agent_assigned", status: "failed", video_project_id: null, error_message: "agent has no voice/avatar profile — Settings → Voice & Avatar", created_at: NOW.toISOString() }],
+      ai_video_projects: [], agents: [{ id: "A-1", brokerage_id: B, user_id: "U-1" }], users: [{ id: "U-1", brokerage_id: B }],
+      agent_voice_profiles: [], agent_action_ledger: [], automation_errors: [], error_resolution_log: [], notifications: [],
+    }, { uuidIds: true, unique: { agent_action_ledger: [["idempotency_key"]] } })
+    const read = async (b: string, id: string, svc: unknown = s) => (await quiet(async () => portalVideo.mod!.portalWelcomeVideoFor(svc, b, id, { now: NOW }))) as Record<string, any>
+    const failed = await read(B, "C-7"), foreign = await read(B, "C-8"), refusedRead = await read(B, "C-7", memSupabase({ contacts }, { refuse: { contacts: "permission denied for table contacts" } }))
+    const rec = (async () => quiet(async () => portalVideo.mod!.recoverPortalWelcomeVideo(s, { brokerageId: B, contactId: "C-7", agentId: "A-1", introVideoId: "IV-7", failureKind: "no_avatar", reason: "no avatar", now: NOW }, { retryDoor: null }))) as () => Promise<Record<string, any>>
+    const r1 = await rec(), r2 = await rec()
+    const errs = (s.tables.automation_errors ?? []).filter((r) => r.brokerage_id === B), notes = (s.tables.notifications ?? []).filter((r) => r.entity_id === "C-7")
+    return { ok: failed.state === "failed" && foreign.state === "none" && refusedRead.state === "unavailable" && r1.outcome === "escalated" && r2.outcome === "already_escalated" && errs.length === 1 && notes.length === 1 && notes[0].user_id === "U-1",
+      evidence: `failed render → ${failed.state}; another brokerage's contact → ${foreign.state}; refused read → ${refusedRead.state}; recover ×2 → ${r1.outcome}, ${r2.outcome}; console rows ${errs.length}, agent notifications ${notes.length}` }
   })
 
   // ── 8 · a secure activation link, never a password (green — preserve) ──
@@ -184,6 +193,6 @@ export async function run() {
     return { ok: readers.length > 0 && t.accessibility?.statedNoVideo === true && cap.accessibility?.transcript === true && sr.accessibility?.transcript === true && big.accessibility?.largeText === true && cap.accessibility?.statedNoVideo !== true && denied.accessibility === null && !!denied.blindSpot, evidence: `readers ${readers.join(", ")}; text → no video ${t.accessibility?.statedNoVideo}; captions → transcript ${cap.accessibility?.transcript}; screen reader → transcript ${sr.accessibility?.transcript}; large → ${big.accessibility?.largeText}; refused read → ${denied.accessibility === null ? `null + blind spot (${String(denied.blindSpot).slice(0, 60)})` : "READ"}` }
   })
 
-  c.blind("The speed-to-lead sweep ran on the in-memory client with recorder seams at every door and the arbiter's seam answering (no engagement executed, no model, no provider); the arbiter itself is driven only on its lead half (arbitrateSpeedToLead with a scripted model answer) — the contact half's arbitrateAndRecordExperience is read as source (the priority handed over), not run. The ruling-15 door ran in memory (no RLS); its reach is read as stripped source in two conversion paths. The end-to-end conversion (convertLeadToContact for an agent with no avatar → no welcome + one pending exception item) is lane 145E's own proof (test:conversion-finality / the conversion-welcome simulator), not run here.")
+  c.blind("The speed-to-lead sweep ran on the in-memory client with recorder seams at every door and the arbiter's seam answering (no engagement executed, no model, no provider); the arbiter itself is driven only on its lead half (arbitrateSpeedToLead with a scripted model answer) — the contact half's arbitrateAndRecordExperience is read as source (the priority handed over), not run. The ruling-15 door ran in memory (no RLS); its reach is read as stripped source in two conversion paths. The end-to-end conversion (convertLeadToContact for an agent with no avatar → the welcome sent now, no exception item, the video failure recovered) is lane 146C's own proof (test:conversion-welcome Layer 11 / test:conversion-finality §8), not run here.")
   return c.report([], 0)
 }

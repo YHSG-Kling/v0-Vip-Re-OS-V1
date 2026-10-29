@@ -47,6 +47,15 @@
 // whose claim matched sends. A send that does not go out RELEASES its own claim
 // (matched on the claim's stamp) so the next sweep retries; the channel actually
 // used replaces the claimed one when they differ.
+//
+// ── WAVE 146 (lane 146C) — THE CONVERSION WELCOME IS A CONVERTED CONTACT'S FIRST TOUCH ─────────
+// Owner ruling 6 sends the welcome email the moment a lead becomes a contact. Before this, the contact
+// half below would greet that same person AGAIN once the grace window elapsed (the welcome never
+// stamped the ledger, and contact-creator only carries the LEAD's stamp). The welcome now claims
+// contacts.first_touched_at through the same conditional write (lib/campaign-sequences/
+// first-touch-coordination.ts claimFirstTouch — moved there from this file), so this sweep's
+// `first_touched_at IS NULL` predicate stands down: one first touch, owned by the welcome; the
+// contact arbiter owns every follow-up after it.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { firstTouchDecision, DEFAULT_AGENT_GRACE_MINUTES } from "@/lib/ai-isa/speed-to-lead-policy"
@@ -59,6 +68,7 @@ import { pickLeadOutreachChannel, LEAD_ALLOWED_CHANNELS } from "@/lib/ai-isa/lea
 // Types only — the arbiter itself is loaded lazily inside the lead sweep (it is not needed on a sweep with no fresh lead).
 import type { SpeedToLeadArbitration, SpeedToLeadArbitrationInput, SpeedToLeadLeadChannel } from "@/lib/ai-isa/followup-arbiter"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { claimFirstTouch, releaseFirstTouch } from "@/lib/campaign-sequences/first-touch-coordination"
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -384,33 +394,11 @@ export async function runSpeedToLead(
 
 // ── Internal helpers ───────────────────────────────────────────────────────
 
-/** CLAIM the first touch BEFORE the send: a conditional UPDATE that matches only an untouched row of this tenant, row-counted
- *  (an UPDATE that matches nothing RESOLVES — CLAUDE.md §3). ok:false + no error = another run already holds the claim. */
-async function claimFirstTouch(
-  supabase: ReturnType<typeof createServiceClient>,
-  table: "leads" | "contacts",
-  input: { id: string; brokerageId: string; at: Date; channel: string | null },
-): Promise<{ ok: true; at: string } | { ok: false; error: string | null }> {
-  const at = input.at.toISOString()
-  const { data, error } = await supabase.from(table)
-    .update({ first_touched_at: at, first_touch_channel: input.channel, updated_at: at })
-    .eq("id", input.id).eq("brokerage_id", input.brokerageId).is("first_touched_at", null).select("id")
-  if (error) return { ok: false, error: `first-touch claim refused: ${error.message}` }
-  if (!data || data.length === 0) return { ok: false, error: null }
-  return { ok: true, at }
-}
-
-/** RELEASE this run's own claim (matched on its stamp, so a later run's claim is never undone) when the send did not go out. */
-async function releaseFirstTouch(
-  supabase: ReturnType<typeof createServiceClient>,
-  table: "leads" | "contacts",
-  id: string,
-  claimAt: string,
-): Promise<void> {
-  const { error } = await supabase.from(table).update({ first_touched_at: null, first_touch_channel: null })
-    .eq("id", id).eq("first_touched_at", claimAt)
-  if (error) console.error(`[speed-to-lead] first-touch claim on ${table} ${id} NOT released (the next sweep will read it as touched): ${error.message}`)
-}
+// TOMBSTONE (wave 146, lane 146C — orphan doctrine §1.1, merged onto the survivor): the file-local `claimFirstTouch` /
+// `releaseFirstTouch` that stood here MOVED, unchanged in behaviour, to lib/campaign-sequences/first-touch-coordination.ts
+// (claimFirstTouch / releaseFirstTouch, imported above) — the ONE home of the shared first-touch ledger — because the
+// conversion welcome (owner ruling 6: the welcome goes right away) now claims the same ledger and must not hold a second
+// spelling of the conditional write.
 
 async function logError(
   supabase: ReturnType<typeof createServiceClient>,

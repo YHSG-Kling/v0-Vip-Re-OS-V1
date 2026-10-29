@@ -1,108 +1,79 @@
 /**
  * app/api/cron/intro-video-email-backfill/route.ts
  *
- * THE WELCOME SWEEPER. It releases the ONE welcome email once the personal video
- * has landed — or once the wait rule says it never will.
+ * THE WELCOME VIDEO SWEEPER. It puts the agent's personal welcome video into the contact's PORTAL once it is validated, and
+ * hands a render that will not land to the manager's recovery. (The path keeps its historical name: lib/kernel/cron-dispatch.ts
+ * schedules it and renaming a cron route is a deploy change, not a code change.)
  *
- * ── WHAT THIS ROUTE USED TO BE, AND WHY IT IS NOT THAT ANY MORE ─────────────
+ * ── WAVE 146 (lane 146C) — OWNER RULING 6: THE WELCOME IS IMMEDIATE; THE VIDEO LIVES IN THE PORTAL ──
  *
- * It used to AUTHOR AND SEND ITS OWN EMAIL — "a quick intro from your agent",
- * with its own hardcoded body — which made it the SECOND, LATER mail a converted
- * contact received, after the invite core's generic magic-link one. The owner's
- * ruling collapses those into one:
+ * "Welcome email shouldn't wait for a video so send welcome email out right away and put the welcome personal video in-app
+ * contact portal so the contact sees it right away." The ONE welcome email now goes at CONVERSION
+ * (lib/contact-promotion/conversion-welcome.ts deliverConversionWelcome → lib/kernel/client-welcome.ts ensureClientWelcome). So
+ * this route sends NO email at all any more and writes no client-facing copy. For each pending welcome render it:
+ *   · asks the assembly gate (resolveAvatarCompositeState) and the PURE decision (lib/portal/welcome-video.ts
+ *     classifyPortalWelcomeVideo — the deadline checked BEFORE the assembly gate, so nothing waits forever);
+ *   · on `place`, reads the video BACK through the portal's own reader (portalWelcomeVideoFor — what the portal renders from)
+ *     and only then records it delivered, with evidence (placePortalWelcomeVideo — never a false video-complete state);
+ *   · on `fail` (past the deadline), records 'failed' (counted) and runs the manager's recovery (recoverPortalWelcomeVideo: the
+ *     agent's standing video stands in, one bounded re-render through the spine's retry door, or a person is told once);
+ * and then recovers the renders the SPINE itself recorded failed / suppressed (recoverFailedPortalWelcomeVideos).
  *
- *   "the welcome email is the first on conversion that has the welcome with
- *    portal info to also inclue the embedded personal video."
- *
- * So this route no longer writes a single word of client-facing copy. It decides
- * WHEN, and lib/kernel/client-welcome.ts::ensureClientWelcome — the survivor,
- * chosen because it alone carried portal info, the agent signature, the video
- * block and the compliance gating — decides WHAT. One composer, one send, one
- * compliance rail, one idempotency tag.
- *
- * ── THE WAIT RULE LIVES IN ONE PURE FUNCTION, NOT IN THIS LOOP ──────────────
- *
- * `classifyPendingWelcome` (lib/contact-promotion/conversion-welcome.ts) is the
- * whole decision with no I/O, so every arm — including the ones a live database
- * would almost never produce — is provable without a network. This loop only
- * gathers its inputs and carries out its verdict.
- *
- * ── NOTHING WAITS FOREVER ──────────────────────────────────────────────────
- *
- * Two changes make that true, and both were failures of the old sweep:
- *   · the SET is widened from status='rendering' to every NON-TERMINAL status
- *     (PENDING_WELCOME_STATUSES). A row left at 'queued' by a crashed process was
- *     previously invisible to this cron forever, and with the welcome email now
- *     waiting on it that would mean a contact who is never welcomed at all.
- *   · the DEADLINE (WELCOME_VIDEO_WAIT_MS, measured from the ledger row's own
- *     created_at, i.e. from conversion) is checked BEFORE the assembly gate, so a
- *     stuck Remotion render cannot hold the welcome past it.
- *   · WAVE 145 (owner ruling 17): past the deadline the welcome is no longer sent
- *     without the video on this route's own say — a HUMAN-APPROVED EXCEPTION is
- *     filed (approval item `welcome_without_video`) and an APPROVED one is
- *     released by releaseApprovedWelcomeExceptions at the end of each tick.
+ * TOMBSTONES (wave 146 — §1.3, the functionality moved / was overruled), each measured live before retiring
+ * (hrvaqgvukzxfskkcrwbt, 2026-10-29: agent_intro_videos 0, welcome_without_video items 0, client_welcome_v1 messages 0):
+ *   · the welcome RELEASE (`ensureClientWelcome` with a `videoOverride`, wave 145 ruling 17 — the welcome waited for the video):
+ *     the welcome goes at conversion now; survivor lib/contact-promotion/conversion-welcome.ts deliverConversionWelcome;
+ *   · the wave-144 video FOLLOW-UP mail (`deliverWelcomeVideoFollowUp`, `readWelcomeState`): the video never travels by mail now;
+ *     survivor lib/portal/welcome-video.ts (the portal is the delivery);
+ *   · the `hold_for_exception` filing and `releaseApprovedWelcomeExceptions` (ruling 17's `welcome_without_video` approval item):
+ *     nothing is held any more; a failed video is recovered / told to a person by lib/portal/welcome-video.ts
+ *     recoverPortalWelcomeVideo / escalatePortalWelcomeVideo.
  *
  * ── STILL TRUE, AND STILL LOAD-BEARING ─────────────────────────────────────
  *
- * The deliverable is the ASSEMBLED cut, not the raw D-ID talking head. Both land
- * on `ai_video_projects.video_url` — poll-did-videos writes the avatar track and
- * render-composition overwrites it with the branded composite minutes later — so
- * "video_url is populated" alone mails the un-assembled track. The composite gate
- * (lib/video/avatar-render-orchestrator::resolveAvatarCompositeState) is what
- * distinguishes them, and when it has landed we hand its own output URL to the
- * welcome as `videoOverride` rather than waiting another tick for the stamp.
+ * The deliverable is the ASSEMBLED cut, not the raw D-ID talking head. Both land on `ai_video_projects.video_url` —
+ * poll-did-videos writes the avatar track and render-composition overwrites it with the branded composite minutes later — so
+ * "video_url is populated" alone would surface the un-assembled track. The composite gate is what distinguishes them; when it
+ * has landed its own output URL is the deliverable the placement expects the portal to read back.
  *
  * ── THE SECOND SWEEP: THE ANNIVERSARY, WHICH IS PORTAL-ONLY ────────────────
  *
- * `agent_intro_videos` carries BOTH triggers and this cron is the only consumer
- * of its `delivery_channel`. The welcome sweep above takes
- * trigger='contact_agent_assigned'; `deliverAnniversaryPortalCards` at the
- * bottom of this file takes trigger='home_anniversary' and stamps the finished
- * clip onto the contact's existing equity_report portal card. Before it, the
- * anniversary rows this cron filtered out sat at 'rendering' forever and their
- * paid D-ID render reached no client surface at all — see that function's own
- * header for the measurement.
+ * `agent_intro_videos` carries BOTH triggers and this cron is the only consumer of its delivery. The welcome sweep above takes
+ * trigger='contact_agent_assigned'; `deliverAnniversaryPortalCards` at the bottom of this file takes
+ * trigger='home_anniversary' and stamps the finished clip onto the contact's existing equity_report portal card. Before it, the
+ * anniversary rows this cron filtered out sat at 'rendering' forever and their paid D-ID render reached no client surface at
+ * all — see that function's own header for the measurement.
  *
  * Auth: CRON_SECRET — same pattern as the rest of the cron fleet.
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
-import { ensureClientWelcome } from "@/lib/kernel/client-welcome"
+import { PENDING_WELCOME_STATUSES, WELCOME_VIDEO_WAIT_MS } from "@/lib/contact-promotion/conversion-welcome"
 import {
-  classifyPendingWelcome,
-  holdWelcomeForException,
-  releaseApprovedWelcomeExceptions,
-  PENDING_WELCOME_STATUSES,
-  WELCOME_VIDEO_WAIT_MS,
-} from "@/lib/contact-promotion/conversion-welcome"
-import { readWelcomeState, deliverWelcomeVideoFollowUp } from "@/lib/contact-promotion/welcome-avatar-video"
+  classifyPortalWelcomeVideo,
+  placePortalWelcomeVideo,
+  recoverPortalWelcomeVideo,
+  recoverFailedPortalWelcomeVideos,
+  PORTAL_WELCOME_VIDEO_TRIGGER,
+} from "@/lib/portal/welcome-video"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
 
-interface BackfillRow {
+interface PendingWelcomeRow {
   id:                  string
   brokerage_id:        string
   contact_id:          string
   agent_id:            string
   video_project_id:    string | null
-  delivery_channel:    string
   status:              string | null
   created_at:          string | null
-  contact: {
-    first_name:    string | null
-    last_name:     string | null
-    contact_type:  string | null
-    email:         string | null
-    video_opt_out: boolean | null
-  } | null
   project: {
     video_url:         string | null
     status:            string | null
-    title:             string | null
     provider_metadata: Record<string, unknown> | null
     completed_at:      string | null
   } | null
@@ -114,21 +85,17 @@ export async function GET(req: NextRequest) {
 
   const svc = createServiceClient()
 
-  // Up to 50 pending welcomes per tick — drains backlog across runs.
-  //
-  // `.in("status", PENDING_WELCOME_STATUSES)` — NOT `.eq("status","rendering")`.
-  // A ledger row that never left 'queued' still owes somebody a welcome, and the
-  // deadline below is what eventually releases it.
+  // Up to 50 pending welcome renders per tick — drains backlog across runs. Every NON-TERMINAL status (a row left at 'queued'
+  // by a crashed process still owes the contact a portal video, and the deadline below is what eventually hands it on). Any
+  // delivery_channel: every welcome render lives in the portal now (owner ruling 6), whatever it was commissioned under.
   const { data: rows, error } = await svc
     .from("agent_intro_videos")
     .select(`
-      id, brokerage_id, contact_id, agent_id, video_project_id, delivery_channel, status, created_at,
-      contact:contacts(first_name, last_name, contact_type, email, video_opt_out),
-      project:ai_video_projects!agent_intro_videos_video_project_id_fkey(video_url, status, title, provider_metadata, completed_at)
+      id, brokerage_id, contact_id, agent_id, video_project_id, status, created_at,
+      project:ai_video_projects!agent_intro_videos_video_project_id_fkey(video_url, status, provider_metadata, completed_at)
     `)
     .in("status", PENDING_WELCOME_STATUSES as string[])
     .eq("trigger", "contact_agent_assigned")
-    .in("delivery_channel", ["email", "both"])
     .order("created_at", { ascending: true })
     .limit(50)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -136,10 +103,10 @@ export async function GET(req: NextRequest) {
   const results: Array<{ id: string; outcome: string; reason?: string }> = []
   const now = Date.now()
 
-  for (const r of (rows ?? []) as unknown as BackfillRow[]) {
+  for (const r of (rows ?? []) as unknown as PendingWelcomeRow[]) {
     // ── THE ASSEMBLY GATE ────────────────────────────────────────────────────
-    // Only asked once a project exists AND its avatar track has landed; without a
-    // project there is nothing to classify and the row is simply still in flight.
+    // Only asked once a project exists AND its avatar track has landed; without a project there is nothing to classify and the
+    // row is simply still in flight.
     let composite: "not_requested" | "pending" | "landed" | "abandoned" | null = null
     let compositeUrl: string | null = null
     let compositeReason: string | undefined
@@ -160,20 +127,11 @@ export async function GET(req: NextRequest) {
 
     const ageMs = r.created_at ? now - new Date(r.created_at).getTime() : null
 
-    // WAVE 145 (lane 145E, owner ruling 17 — reverses ruling 13's timing): the welcome WAITS for the video again, so a new row's
-    // welcome state is 'none' and the classifier releases the ONE welcome WITH the validated video, or past the deadline hands it
-    // to a person (hold_for_exception). The wave-144 follow-up arms (welcome already 'sent' / 'held' / 'failed') remain only for
-    // rows whose welcome went under ruling 13. A refused read is null → the row waits; past the deadline a person decides.
-    const welcomeState = await readWelcomeState(svc, { contactId: r.contact_id, brokerageId: r.brokerage_id })
-
-    const verdict = classifyPendingWelcome({
+    const verdict = classifyPortalWelcomeVideo({
       status:         r.status,
       ageMs,
       composite,
       hasRenderedUrl: !!r.project?.video_url,
-      videoOptOut:    r.contact?.video_opt_out === true,
-      hasEmail:       !!r.contact?.email,
-      welcomeState,
       waitMs:         WELCOME_VIDEO_WAIT_MS,
     })
 
@@ -186,161 +144,55 @@ export async function GET(req: NextRequest) {
       continue
     }
 
-    // ── WAVE 145 (lane 145E, owner ruling 17): THE VIDEO FAILED → A PERSON DECIDES ──────────────────────
-    // The welcome is NOT sent without the video on the sweeper's own say. The ledger row is stamped with what happened to the
-    // video (COUNTED — an update matching nothing resolves like one that worked), and the human-approved exception is filed
-    // (idempotent per contact). An approved exception is released below by releaseApprovedWelcomeExceptions.
-    if (verdict.action === "hold_for_exception") {
-      if (verdict.ledgerStatus) {
-        const { data: stamped, error: stampError } = await svc
-          .from("agent_intro_videos")
-          .update({ status: verdict.ledgerStatus, error_message: verdict.reason })
-          .eq("id", r.id)
-          .select("id")
-        if (stampError || (stamped ?? []).length === 0) {
-          console.error(`[intro-video-email-backfill] exception stamp did not land for ${r.id}: ${stampError?.message ?? "0 rows matched"}`)
-        }
-      }
-      const filing = await holdWelcomeForException(svc, { brokerageId: r.brokerage_id, contactId: r.contact_id, agentId: r.agent_id, reason: verdict.reason })
-      if (!filing.filed) console.error(`[intro-video-email-backfill] welcome exception NOT filed for contact ${r.contact_id}: ${filing.error ?? "unknown"}`)
-      results.push({ id: r.id, outcome: filing.filed ? "held_for_exception" : "exception_not_filed", reason: filing.filed ? verdict.reason : (filing.error ?? verdict.reason) })
-      continue
-    }
-
-    // ── WAVE 144: THE VIDEO FOLLOWS THE WELCOME (or the follow-up is closed) ──
-    // ONE short note carrying the finished video (lib/contact-promotion/welcome-avatar-video.ts deliverWelcomeVideoFollowUp — the
-    // client-message writer, the governed dispatcher, once per contact on the ledger). The row is stamped 'delivered' ONLY on a
-    // provider accept; a hold for approval or an unwritten note leaves it pending (the deadline closes it), anything else 'failed'.
-    if (verdict.action === "send_video_follow_up" || verdict.action === "close_video_follow_up") {
-      const fu = verdict.action === "send_video_follow_up"
-        ? await deliverWelcomeVideoFollowUp(svc, {
-            contactId: r.contact_id, brokerageId: r.brokerage_id, agentId: r.agent_id,
-            videoUrl: compositeUrl ?? (r.project?.video_url as string), videoProjectId: r.video_project_id,
-          })
-        : null
-      if (fu && (fu.state === "retry" || fu.state === "held")) {
-        results.push({ id: r.id, outcome: fu.state === "held" ? "video_follow_up_held" : "video_follow_up_retry", reason: fu.reason })
+    // ── PAST THE DEADLINE: RECORDED, THEN THE MANAGER'S RECOVERY ─────────────
+    // The stamp is guarded on the pending status it was read in and COUNTED (an UPDATE that matches nothing resolves like one
+    // that worked). The portal never showed a false video; recovery decides stand-in / one re-render / a person.
+    if (verdict.action === "fail") {
+      const { data: stamped, error: stampError } = await svc
+        .from("agent_intro_videos")
+        .update({ status: "failed", error_message: verdict.reason })
+        .eq("id", r.id)
+        .eq("brokerage_id", r.brokerage_id)
+        .in("status", PENDING_WELCOME_STATUSES as string[])
+        .select("id")
+      if (stampError || (stamped ?? []).length === 0) {
+        console.error(`[intro-video-email-backfill] failure stamp did not land for ${r.id}: ${stampError?.message ?? "0 rows matched"}`)
+        results.push({ id: r.id, outcome: "failure_not_stamped", reason: stampError?.message ?? "0 rows matched — re-read next tick" })
         continue
       }
-      const followStatus = !fu ? verdict.ledgerStatus : fu.state === "sent" ? "delivered" : "failed"
-      if (followStatus) {
-        const { data: stamped, error: stampError } = await svc
-          .from("agent_intro_videos")
-          .update({
-            status:        followStatus,
-            error_message: fu?.state === "sent" ? null : (fu?.reason ?? verdict.reason),
-            ...(followStatus === "delivered" ? { delivered_at: new Date().toISOString() } : {}),
-          })
-          .eq("id", r.id)
-          .select("id")
-        if (stampError || (stamped ?? []).length === 0) {
-          console.error(`[intro-video-email-backfill] follow-up stamp did not land for ${r.id}: ${stampError?.message ?? "0 rows matched"}`)
-        }
-      }
-      results.push({
-        id: r.id,
-        outcome: fu ? (fu.state === "sent" ? "video_followed" : "video_follow_up_refused") : "video_follow_up_closed",
-        reason: fu?.reason ?? verdict.reason,
+      const recovery = await recoverPortalWelcomeVideo(svc, {
+        brokerageId: r.brokerage_id, contactId: r.contact_id, agentId: r.agent_id, introVideoId: r.id,
+        failureKind: "timeout", reason: verdict.reason,
       })
+      results.push({ id: r.id, outcome: `failed:${recovery.action}:${recovery.outcome}`, reason: recovery.reason })
       continue
     }
 
-    // ── RELEASE THE ONE WELCOME ──────────────────────────────────────────────
-    // The survivor owns the copy, the portal block, the agent signature, the
-    // compliance gating and the per-contact idempotency tag. It is safe to call
-    // twice: a contact who already has a welcome ledger row gets 'skipped', and
-    // an UNREADABLE ledger fails closed rather than risking a duplicate.
-    //
-    // When the assembly landed we hand it the composite's own output URL — the
-    // stamp onto ai_video_projects.video_url may be a moment behind, and waiting
-    // another tick for a URL we can already see is a delay with no reader.
-    const videoOverride =
-      verdict.action === "send_with_video"
-        ? {
-            videoUrl:       compositeUrl ?? (r.project?.video_url as string),
-            thumbnailUrl:   null,
-            scope:          "contact_personal",
-            videoProjectId: r.video_project_id ?? "",
-          }
-        : null
-
-    const welcome = await ensureClientWelcome(
-      svc as any,
-      {
-        id:          r.contact_id,
-        brokerageId: r.brokerage_id,
-        contactType: r.contact?.contact_type ?? null,
-        firstName:   r.contact?.first_name ?? null,
-        lastName:    r.contact?.last_name ?? null,
-      },
-      { videoOverride },
-    )
-
-    // THE LEDGER RECORDS WHAT HAPPENED TO THE VIDEO, NOT WHAT WE HOPED.
-    // A send the provider refused must not leave the row reading 'delivered' —
-    // that is the "sent" claim backed by nothing the survivor's own contract
-    // refuses to make.
-    const wentOut = welcome.state === "sent"
-    const ledgerStatus = wentOut
-      ? verdict.ledgerStatus
-      : welcome.state === "skipped"
-        ? // Already welcomed (or not a welcome-bearing contact type). The video's
-          // job here is done either way; recording 'failed' would file an incident
-          // for a correctly-deduped welcome.
-          verdict.ledgerStatus
-        : "failed"
-    const errorMessage = wentOut
-      ? verdict.action === "send_with_video"
-        ? null
-        : verdict.reason
-      : `welcome not sent (${welcome.state}): ${welcome.reason ?? verdict.reason}`
-
-    // `status` is NOT NULL and CHECK-constrained. A null here would be refused
-    // ENTIRELY (23514/23502) and the row would silently stay pending forever, so
-    // the release branches are the only ones that stamp — never a bare `null`.
-    if (ledgerStatus) {
-      const { error: stampError } = await svc
-        .from("agent_intro_videos")
-        .update({
-          status:        ledgerStatus,
-          error_message: errorMessage,
-          ...(ledgerStatus === "delivered" ? { delivered_at: new Date().toISOString() } : {}),
-        })
-        .eq("id", r.id)
-      if (stampError) {
-        console.error(`[intro-video-email-backfill] ledger stamp refused for ${r.id}: ${stampError.message}`)
-      }
-    } else {
-      console.error(
-        `[intro-video-email-backfill] no ledger status resolved for ${r.id} — row left pending rather than ` +
-          `stamped with a value the CHECK would refuse`,
-      )
-    }
-
-    results.push({
-      id:      r.id,
-      outcome: wentOut
-        ? verdict.action === "send_with_video" ? "delivered" : "delivered_without_video"
-        : welcome.state,
-      reason:  wentOut ? verdict.reason : (welcome.reason ?? verdict.reason),
+    // ── PLACE IT: READ BACK THROUGH THE PORTAL'S OWN READER, THEN RECORD IT DELIVERED ──
+    // The composite's own output URL is the deliverable when the assembly landed (the stamp onto ai_video_projects.video_url
+    // may be a moment behind); it rides the evidence as what the portal is expected to show.
+    const placed = await placePortalWelcomeVideo(svc, {
+      introVideoId:   r.id,
+      brokerageId:    r.brokerage_id,
+      contactId:      r.contact_id,
+      videoProjectId: r.video_project_id,
+      expectedUrl:    compositeUrl ?? r.project?.video_url ?? null,
     })
+    results.push({ id: r.id, outcome: placed.placed ? "in_portal" : `not_placed:${placed.readback}`, reason: placed.reason })
   }
 
-  // ── WAVE 145 (lane 145E, owner ruling 17): RELEASE THE WELCOMES A PERSON APPROVED WITHOUT THE VIDEO ──
-  // A held welcome's exception is an approval item; once a person APPROVES it the welcome goes out through the survivor
-  // (ensureClientWelcome — its idempotency tag refuses a second welcome). Pending / rejected items are never released.
-  const exceptions = await releaseApprovedWelcomeExceptions(svc, {}, {
-    ensureWelcome: (contact) => ensureClientWelcome(svc as any, contact),
-  })
-  if (exceptions.error) console.error(`[intro-video-email-backfill] approved welcome exceptions not released: ${exceptions.error}`)
+  // ── THE RENDERS THE SPINE ITSELF RECORDED FAILED / SUPPRESSED (never pending, so never in the set above) ──
+  const recovered = await recoverFailedPortalWelcomeVideos(svc, {})
+  if (recovered.error) console.error(`[intro-video-email-backfill] failed portal welcome videos not recovered: ${recovered.error}`)
 
   const anniversary = await deliverAnniversaryPortalCards(svc)
 
   return NextResponse.json({
     ran_at:    new Date().toISOString(),
-    processed: results.length + exceptions.examined + anniversary.length,
+    processed: results.length + recovered.examined + anniversary.length,
+    trigger:   PORTAL_WELCOME_VIDEO_TRIGGER,
     results,
-    approved_exceptions: exceptions,
+    recovered,
     anniversary,
   })
 }

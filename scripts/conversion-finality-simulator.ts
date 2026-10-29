@@ -413,6 +413,50 @@ console.log("\n══ 7. WAVE 145 CONTRACT C2 — isInLeadDomain / canonicalPart
   check("C2 retry: a second conversion pass (duplicate event) changes nothing more and still succeeds", d2.success && msg("m-prop").status === "rejected" && msg("m-other").status === "proposed")
 }
 
+console.log("\n══ 8. WAVE 146 (lane 146C, owner ruling 6) — OWNERSHIP SHIFTS LEAD → CONTACT AT THE FIRST TOUCH ══")
+{
+  // The converted person's journey: the LEAD is out of the lead domain (provenance kept), and the CONTACT's first touch is the
+  // welcome (sent now) — claimed on the ONE shared ledger, so neither speed-to-lead's contact half nor the welcome drip greets
+  // them a second time. Driven in memory with the real survivors (deactivateLead, deliverConversionWelcome with its send /
+  // commission seams, claimFirstTouch — the conditional write all three managers share).
+  const { memSupabase } = await import("./in-memory-supabase")
+  const { deactivateLead } = await import("../lib/contact-promotion/lead-deactivator")
+  const { deliverConversionWelcome } = await import("../lib/contact-promotion/conversion-welcome")
+  const { claimFirstTouch, decideFirstTouch } = await import("../lib/campaign-sequences/first-touch-coordination")
+  const { isInLeadDomain } = await import("../lib/contact-promotion/lead-domain-boundary")
+  const NOW = new Date("2026-10-29T15:00:00Z")
+  const mem = memSupabase({
+    leads: [{ id: "L8", brokerage_id: "B8", is_active: true, ai_isa_owner: true, contact_id: "C8", first_touched_at: null }],
+    contacts: [{ id: "C8", brokerage_id: "B8", agent_id: "AG8", contact_type: "buyer", first_touched_at: null, first_touch_channel: null, accessibility_preferences: {} }],
+    sequence_enrollments: [], agent_client_messages: [], notifications: [], agents: [],
+  })
+  const quiet = console.log; console.log = () => {}
+  const deact = await deactivateLead(mem, "L8")
+  const sent: string[] = []
+  const welcome = await deliverConversionWelcome(mem, { contactId: "C8", agentId: "AG8", brokerageId: "B8", contactType: "buyer", firstName: "Ana", lastName: "Ruiz" }, {
+    sendWelcome: async (_s, c) => { sent.push(c.id); return { state: "sent" } },
+    commissionVideo: (async () => ({ commissioned: true, reason: "commissioned", videoProjectId: "vp8", situational: true, language: "en", warnings: [] })) as never,
+    now: () => NOW,
+  })
+  console.log = quiet
+  const lead = (mem.tables.leads ?? []).find((r) => r.id === "L8") ?? {}
+  const contact = (mem.tables.contacts ?? []).find((r) => r.id === "C8") ?? {}
+  check("OWNERSHIP: the converted lead is OUT of the lead domain (contact_id set) and deactivated — is_active false, ai_isa_owner false — the row kept as provenance",
+    deact.success && !isInLeadDomain(lead as never) && lead.is_active === false && lead.ai_isa_owner === false && (mem.tables.leads ?? []).length === 1, JSON.stringify(lead))
+  check("OWNERSHIP: the CONTACT's first touch is the welcome — sent once, now, and claimed on the shared ledger (email)",
+    sent.length === 1 && welcome.emailState === "sent" && welcome.timing === "send_now" && welcome.firstTouch.claimed && contact.first_touched_at === NOW.toISOString() && contact.first_touch_channel === "email",
+    JSON.stringify({ sent, firstTouch: welcome.firstTouch, contact }))
+  const later = await claimFirstTouch(mem, "contacts", { id: "C8", brokerageId: "B8", at: new Date(NOW.getTime() + 6 * 60_000), channel: "sms" })
+  check("NO DUPLICATE FIRST TOUCH: speed-to-lead's contact half, minutes later, cannot claim the same person (the conditional write matches nothing)",
+    later.ok === false && later.error === null && contact.first_touch_channel === "email")
+  check("NO DUPLICATE FIRST TOUCH: the welcome drip's first EMAIL step stands down (skip_duplicate), a genuinely different channel may still follow",
+    decideFirstTouch({ isFirstStep: true, sequenceTriggerEvent: "contact_captured", stepChannel: "email", firstTouchedAt: String(contact.first_touched_at), firstTouchChannel: "email", now: NOW }) === "skip_duplicate"
+    && decideFirstTouch({ isFirstStep: true, sequenceTriggerEvent: "contact_captured", stepChannel: "sms", firstTouchedAt: String(contact.first_touched_at), firstTouchChannel: "email", now: NOW }) === "send")
+  const control = memSupabase({ contacts: [{ id: "C9", brokerage_id: "B8", first_touched_at: null }] })
+  const free = await claimFirstTouch(control, "contacts", { id: "C9", brokerageId: "B8", at: NOW, channel: "email" })
+  check("(control) an UNTOUCHED contact IS claimable — the no-duplicate finder is not a write that always refuses", free.ok === true)
+}
+
 // ─── MEASUREMENT: denominator and blind spots ────────────────────────────────
 console.log("\n══ DENOMINATOR AND EXCLUSIONS ══")
 console.log(`  files audited for guard wiring : ${SITES.length}`)

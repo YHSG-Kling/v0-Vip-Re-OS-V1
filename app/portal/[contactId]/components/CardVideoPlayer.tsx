@@ -42,9 +42,23 @@ interface Props {
   url: string
   poster?: string
   caption: string
+  /**
+   * WAVE 146 (lane 146C — the portal welcome video, contract C3): the words the video speaks, offered as the TEXT
+   * ALTERNATIVE under the player (WCAG 1.2.1 — there is no timed caption track for an avatar render, so the transcript is
+   * how captions / transcript / screen-reader preferences are answered; never invented — absent when unknown).
+   */
+  transcript?: string | null
+  /** Open the transcript by default — the person STATED captions / a transcript / a screen-reader portal / a text format. */
+  transcriptOpen?: boolean
+  /** The player's accessible name (defaults to the caption). */
+  label?: string
 }
 
-export function CardVideoPlayer({ contactId, videoProjectId, url, poster, caption }: Props) {
+/**
+ * NEVER AUTOPLAYS (owner ruling 6, wave 146: "no forced autoplay with sound"): no `autoPlay`, `preload="metadata"` (nothing
+ * plays or downloads the whole clip until the person presses play), `playsInline` so a phone does not hijack the page.
+ */
+export function CardVideoPlayer({ contactId, videoProjectId, url, poster, caption, transcript, transcriptOpen, label }: Props) {
   const viewSent = useRef(false)
 
   const sendEvent = (eventType: "view" | "pause" | "complete" | "cta_click", watchSeconds: number) => {
@@ -79,6 +93,9 @@ export function CardVideoPlayer({ contactId, videoProjectId, url, poster, captio
     <div className="pt-2">
       <video
         controls
+        preload="metadata"
+        playsInline
+        aria-label={label ?? caption}
         poster={poster}
         className="w-full max-w-md rounded-lg border"
         onPlay={(e) => {
@@ -105,9 +122,15 @@ export function CardVideoPlayer({ contactId, videoProjectId, url, poster, captio
         </a>
       </video>
       <p className="text-[11px] text-muted-foreground pt-1 flex items-center gap-1">
-        <Video className="h-3 w-3" />
+        <Video className="h-3 w-3" aria-hidden="true" />
         {caption}
       </p>
+      {transcript ? (
+        <details className="mt-2 max-w-md rounded-md border bg-muted/30 p-2 text-sm" open={transcriptOpen === true}>
+          <summary className="cursor-pointer font-medium text-foreground min-h-6">Transcript</summary>
+          <p className="pt-2 whitespace-pre-line text-foreground">{transcript}</p>
+        </details>
+      ) : null}
     </div>
   )
 }

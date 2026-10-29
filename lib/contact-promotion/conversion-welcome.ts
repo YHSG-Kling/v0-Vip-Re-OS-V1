@@ -168,6 +168,39 @@
  * read through lib/contacts/accessibility-preferences.ts, never inferred).
  * The wave-144 follow-up arms below stay only for rows whose welcome already
  * went under ruling 13 (a transition path; nothing new reaches them).
+ *
+ * ── WAVE 146 (lane 146C) — THE WELCOME IS IMMEDIATE; THE VIDEO LIVES IN THE PORTAL ──
+ *
+ * OWNER RULING 6 (2026-10-29), which OVERRULES ruling 17 above: "Welcome email
+ * shouldn't wait for a video so send welcome email out right away and put the
+ * welcome personal video in-app contact portal so the contact sees it right
+ * away." — "Welcome video is automatically sent in the portal regardless of the
+ * contact's preferences." The one sequence now, in this order:
+ *
+ *   CONVERSION → lead-domain sends suppressed (the converter's deactivateLead,
+ *   before this runs) → relationship confirmed (contacts.agent_id) → portal
+ *   invite (portal_contact_invites — the access, FIRST) → the ONE welcome email
+ *   SENT NOW (lib/kernel/client-welcome.ts — the portal door, a one-time sign-in
+ *   link, never a password; a standing personal video rides it only if one is
+ *   already validated) → the welcome CLAIMS the contact's first touch (the
+ *   shared ledger, lib/campaign-sequences/first-touch-coordination.ts — so
+ *   speed-to-lead's contact half and the welcome drip never greet them twice)
+ *   → the agent's personal video COMMISSIONED, after the send (the one avatar
+ *   spine, delivery 'portal') → it appears in THIS contact's portal the moment it
+ *   is validated (lib/portal/welcome-video.ts portalWelcomeVideoFor — contract
+ *   C3) → the sweeper reads it back through that reader and records it delivered.
+ *
+ * Nothing the video does can hold, cancel or follow the welcome: no
+ * `hold_for_video`, no `welcome_without_video` approval item, no follow-up mail.
+ * Channel preferences (video_opt_out) and a stated no-video format no longer
+ * stop the commission — the portal video is a standard part of the contact's
+ * portal journey, not a marketing message; accessibility preferences shape its
+ * PLAYBACK (transcript open, never autoplay). A video that fails is recorded,
+ * retried safely and told to a person (lib/portal/welcome-video.ts
+ * recoverPortalWelcomeVideo); the portal never shows a false complete.
+ * Live on 2026-10-29 (hrvaqgvukzxfskkcrwbt): agent_intro_videos 0 rows,
+ * welcome_without_video items 0, client_welcome_v1 messages 0, converted leads
+ * 0 — nothing held under ruling 17 needs a transition, so its doors are retired.
  */
 
 import { COMPOSITE_WAIT_MS } from "@/lib/video/avatar-render-orchestrator"
@@ -175,266 +208,73 @@ import { resolveWelcomeManagers, welcomeJourneyFor } from "@/lib/kernel/client-w
 import { grantPortalAccessForPromotedContact } from "./portal-access"
 import { ensureWelcomeAvatarVideo, type WelcomeAvatarVideoReason } from "./welcome-avatar-video"
 import type { WelcomeOrigin } from "./welcome-situation"
-import { applyTenantScope, platformScope } from "@/lib/kernel/tenant-scope"
+import { claimFirstTouch } from "@/lib/campaign-sequences/first-touch-coordination"
 
 export type { WelcomeOrigin } from "./welcome-situation"
 
 /**
- * How long the ONE welcome email may wait for a personal video before going
- * without it, measured from the moment the render was commissioned.
+ * How long the agent's personal welcome render may take, measured from the moment it was commissioned, before the portal
+ * stops reading it as "preparing" and the manager's recovery takes it (lib/portal/welcome-video.ts). Under owner ruling 6 the
+ * welcome EMAIL never waits on it.
  *
- * Deliberately the SAME constant the assembly reader already bounds on — see the
- * header. A welcome that has not arrived within two hours of conversion has
- * stopped being a welcome.
+ * Deliberately the SAME constant the assembly reader already bounds on — §6: one vocabulary per function, not a second timeout.
  */
 export const WELCOME_VIDEO_WAIT_MS = COMPOSITE_WAIT_MS
 
-// ─── DECISION 1: does the email wait at all? (PURE) ──────────────────────────
+// ─── DECISION 1: does the email wait? (PURE) — WAVE 146: NEVER ──────────────
 
 export type WelcomeTimingAction =
-  /** Nothing to wait for: the contact's own choice (video off / a stated no-video format), a type that gets no video, or the
-   *  agent's standing personal video is SELECTED (ready + validated) and rides the welcome now. */
+  /** The ONE welcome goes NOW, whatever the video does (owner ruling 6). The only value. */
   | "send_now"
-  /** Wave 145 (ruling 17): a render is in flight — the ONE welcome WAITS; the sweeper auto-sends it WITH the video once validated. */
-  | "hold_for_video"
-  /** Wave 145 (ruling 17): no personal video can be generated or selected — the welcome is HELD (never sent without the video on
-   *  its own) and a human-approved exception is filed (approval item `welcome_without_video`). */
-  | "hold_for_exception"
+
+// TOMBSTONE (wave 146, lane 146C — owner ruling 6 OVERRULES ruling 17): the `hold_for_video` and `hold_for_exception` arms of
+// WelcomeTimingAction are gone. The welcome no longer waits for, or is held over, the agent's video; the video's own lifecycle
+// (preparing → validated → in the portal, or failed → retried / told to a person) lives in lib/portal/welcome-video.ts
+// (portalWelcomeVideoFor / classifyPortalWelcomeVideo / recoverPortalWelcomeVideo — contract C3).
 
 export interface WelcomeTiming {
   action: WelcomeTimingAction
-  /** Operator-readable justification. Always populated. */
+  /** Operator-readable justification: where the video goes instead. Always populated. */
   reason: string
 }
 
 /**
- * THE WAIT RULE (owner ruling 17, wave 145), as a pure function of the commissioning outcome.
- *
- * A render in flight HOLDS the welcome (the sweeper finds its `agent_intro_videos` row and sends the one welcome with the video).
- * The contact's own choices send now: video opt-out, a stated accessibility preference for a format without video. A contact
- * type that gets no video sends now. When no render can be produced, the agent's STANDING personal video, if one is ready and
- * validated, is SELECTED and the welcome goes now with it. Anything else — no avatar on file, a refused render, an unavailable
- * spine, a reason this function has never seen — HOLDS the welcome for a human-approved exception: fail closed means never
- * falsely sent, and the exception means never silently pending (the approval queue shows it, a person decides).
+ * THE TIMING RULE (owner ruling 6, wave 146), as a pure function of the commissioning outcome: the welcome is sent NOW for every
+ * outcome — a render in flight, a refused or impossible render, the contact's channel opt-out, a stated no-video format, an
+ * excluded type, a reason nobody has written yet. The outcome only decides what the REASON says about the portal video.
  */
 export function decideWelcomeTiming(video: {
   commissioned: boolean
   reason: WelcomeAvatarVideoReason | string
-  /** The agent's standing personal video is ready and validated (lib/kernel/welcome-personal-video.ts, scope agent_personal). */
+  /** The agent's standing personal video is ready and validated — it shows in the portal (and may ride the email) now. */
   standingVideoReady?: boolean | null
-  /** Contract C3: the contact STATED a communication format without video (never inferred). */
+  /** Contract C3 (wave 145): the contact STATED a format without video — the portal opens its transcript first; never a wait. */
   statedNoVideo?: boolean | null
 }): WelcomeTiming {
-  if (video.statedNoVideo) {
-    return { action: "send_now", reason: "the contact's stated accessibility preference is a format without video — the welcome goes now, as they asked" }
-  }
-  if (video.reason === "commissioned" && video.commissioned) {
-    return { action: "hold_for_video", reason: "the agent's personal video is rendering — the ONE welcome waits for it and is sent with it automatically once it is validated" }
-  }
-  if (video.reason === "already_commissioned") {
-    return { action: "hold_for_video", reason: "a personal video for this contact was already commissioned — the ONE welcome waits for it and is sent with it automatically" }
-  }
-  if (video.reason === "video_opt_out") {
-    return { action: "send_now", reason: "the contact turned video off — there is nothing to wait for" }
-  }
-  if (video.reason === "excluded_contact_type") {
-    return { action: "send_now", reason: "this contact type gets no welcome video — there is nothing to wait for" }
-  }
-  if (video.standingVideoReady) {
-    return { action: "send_now", reason: `no personal render for this contact (${video.reason || "unknown"}) — the agent's standing personal video is selected (ready, validated) and rides the welcome now` }
-  }
-  if (video.reason === "agent_not_video_ready") {
-    return {
-      action: "hold_for_exception",
-      reason:
-        "the assigned agent has no cloned voice / avatar and no standing personal video on file — the welcome is HELD for a person: " +
-        "set up the avatar (Settings → Voice & Avatar) so the welcome goes with the video, or approve sending it without one",
-    }
-  }
-  return {
-    action: "hold_for_exception",
-    reason: `the personal video could not be produced (${video.reason || "unknown"}) — the welcome is HELD for a person to approve sending it without the video, never sent without it on its own`,
-  }
+  const portal = video.commissioned
+    ? "the agent's personal video is rendering and appears in the contact's portal the moment it is validated"
+    : video.reason === "excluded_contact_type"
+      ? "this contact type gets no welcome video"
+      : video.standingVideoReady
+        ? `no personal render for this contact (${video.reason || "unknown"}) — the agent's standing personal video shows in the portal now`
+        : `the personal video could not be commissioned (${video.reason || "unknown"}) — the portal shows nothing false; the manager retries or tells a person`
+  const format = video.statedNoVideo ? " (their stated text format opens the transcript first)" : ""
+  return { action: "send_now", reason: `the welcome email goes now and never waits for a video (owner ruling 6); ${portal}${format}` }
 }
 
-// ─── DECISION 2: what does the SWEEPER do with a pending welcome? (PURE) ─────
+// ─── THE SWEEPER'S SET ───────────────────────────────────────────────────────
 
-export type PendingWelcomeAction =
-  /** The render is still coming and the deadline has not passed. Leave it. */
-  | "wait"
-  /** Release the welcome WITH the finished video embedded (a pre-wave-144 row whose welcome is still held). */
-  | "send_with_video"
-  /** Release the welcome WITHOUT a video — ONLY for the contact's own reasons (no email: the portal rail; a late video opt-out). */
-  | "send_without_video"
-  /** Wave 145 (ruling 17): the video ran out of time / its state cannot be read — the welcome stays HELD and a human-approved
-   *  exception is filed (never auto-sent without the video, never left pending silently). */
-  | "hold_for_exception"
-  /** Wave 144: the welcome already went — send the ONE follow-up carrying the finished video. */
-  | "send_video_follow_up"
-  /** Wave 144: the welcome already went and the video will not follow (opt-out, no email, deadline) — stamp, send nothing. */
-  | "close_video_follow_up"
-  /** Nothing to do: this ledger row is already terminal. */
-  | "skip"
-
-/**
- * Wave 144: the welcome's OWN state, read from the survivor's idempotency tag (agent_client_messages, rationale
- * `client_welcome_v1…` — lib/kernel/client-welcome.ts WELCOME_RATIONALE_TAG):
- *   sent    a provider accepted it → the video FOLLOWS it
- *   held    proposed / approved, not yet sent → the video waits behind it (never precedes it)
- *   failed  failed / rejected → no video mail without a welcome; the agent was told
- *   none    no welcome row → a pre-144 row whose welcome is still held: release it as before
- */
-export type WelcomeMessageState = "sent" | "held" | "failed" | "none"
-
-export interface PendingWelcomeVerdict {
-  action: PendingWelcomeAction
-  /**
-   * What to stamp on `agent_intro_videos.status` once the action is carried out.
-   * NULL while waiting or skipping. Every value is in the live
-   * `agent_intro_videos_status_check` vocabulary — there is no 'abandoned' arm to
-   * write, so a timed-out render is recorded as 'failed' with the reason in
-   * `error_message` rather than inventing a value the CHECK would refuse (23514).
-   */
-  ledgerStatus: "delivered" | "failed" | "suppressed" | null
-  reason: string
-}
-
-/** The non-terminal `agent_intro_videos.status` values — the sweeper's whole set. */
+/** The non-terminal `agent_intro_videos.status` values — the welcome sweeper's whole set. */
 export const PENDING_WELCOME_STATUSES: readonly string[] = ["queued", "rendering"]
 
-/**
- * THE SWEEPER'S DECISION, with no I/O so both sides of every arm can be proved.
- *
- * ORDER IS THE DESIGN, not an accident:
- *
- *   1. a terminal row is skipped — the welcome for it has already resolved;
- *   2. no email address → release anyway (the survivor writes the portal rail and
- *      tells the agent), and record why the video never shipped;
- *   3. a LATE opt-out beats everything still pending — the contact changed their
- *      mind during the render and that answer is theirs;
- *   4. THE DEADLINE IS CHECKED BEFORE THE ASSEMBLY GATE. If it were checked after,
- *      an assembly stuck in 'pending' would hold the welcome forever — which is
- *      the exact failure this whole rule exists to prevent;
- *   5. only then may the assembly hold it;
- *   6. and only then does the absence of a rendered URL hold it.
- */
-export function classifyPendingWelcome(input: {
-  /** agent_intro_videos.status */
-  status: string | null
-  /** Milliseconds since agent_intro_videos.created_at. Null = unknown → treated as fresh. */
-  ageMs: number | null
-  /** The assembly gate's answer, or null when no project row exists yet. */
-  composite: "not_requested" | "pending" | "landed" | "abandoned" | null
-  /** ai_video_projects.video_url (or the composite's own URL) is populated. */
-  hasRenderedUrl: boolean
-  videoOptOut: boolean
-  hasEmail: boolean
-  /**
-   * Wave 144: the welcome's own state (readWelcomeState). UNDEFINED / NULL — a caller that did not (or could not) say — WAITS and
-   * stamps nothing: under the immediate-welcome rule a released "send_with_video" against a welcome that already went would be
-   * deduped by the survivor and the row stamped 'delivered' for a video nobody sent. Fail closed: nobody checked ≠ checked and fine.
-   */
-  welcomeState?: WelcomeMessageState | null
-  /** Override for the simulator. Production always uses WELCOME_VIDEO_WAIT_MS. */
-  waitMs?: number
-}): PendingWelcomeVerdict {
-  const waitMs = input.waitMs ?? WELCOME_VIDEO_WAIT_MS
+// TOMBSTONE (wave 146, lane 146C — §1.3, the functionality moved): `classifyPendingWelcome`, `PendingWelcomeAction`,
+// `PendingWelcomeVerdict` and `WelcomeMessageState`. They decided when the sweeper RELEASED the welcome email with or without
+// the video (ruling 17), sent the wave-144 video follow-up mail (ruling 13) or filed the `welcome_without_video` exception.
+// Under owner ruling 6 the welcome went at conversion and the video lives in the portal, so the sweeper's one decision is now
+// lib/portal/welcome-video.ts classifyPortalWelcomeVideo (wait / place / fail / skip — the deadline still checked BEFORE the
+// assembly gate). Live on 2026-10-29: agent_intro_videos 0 rows — no held welcome or pending follow-up needed a transition.
 
-  if (!input.status || !PENDING_WELCOME_STATUSES.includes(input.status)) {
-    return {
-      action: "skip",
-      ledgerStatus: null,
-      reason: `agent_intro_videos.status '${input.status ?? "null"}' is terminal — this welcome already resolved`,
-    }
-  }
-
-  if (input.welcomeState === undefined || input.welcomeState === null) {
-    // Past the deadline the row is CLOSED 'failed' (the video was never delivered — true whatever the welcome did) and — wave 145,
-    // ruling 17 — the welcome is handed to a PERSON (the exception): whether it already went cannot be read, so nothing is sent on a
-    // guess, and nothing hangs silently. The exception's release goes through the survivor, whose own idempotency tag refuses a
-    // second welcome. A 'delivered' is never stamped without the state.
-    if (input.ageMs !== null && input.ageMs > waitMs) {
-      return { action: "hold_for_exception", ledgerStatus: "failed", reason: `the personal video did not land within ${Math.round(waitMs / 60000)} minutes and the welcome's state could not be read — held for a person to decide, never sent on a guess` }
-    }
-    return {
-      action: "wait",
-      ledgerStatus: null,
-      reason: "the welcome's own state was not read — nothing is released or stamped until the sweeper says whether the welcome already went (wave 144)",
-    }
-  }
-
-  // ── WAVE 144: THE WELCOME WENT FIRST; THE VIDEO FOLLOWS IT (or is closed) ──
-  if (input.welcomeState !== "none") {
-    const overdue144 = input.ageMs !== null && input.ageMs > waitMs
-    if (input.welcomeState === "failed") {
-      return { action: "close_video_follow_up", ledgerStatus: "failed", reason: "the welcome itself failed or was rejected (the agent was told) — a video never goes out without its welcome" }
-    }
-    if (input.welcomeState === "held") {
-      return overdue144
-        ? { action: "close_video_follow_up", ledgerStatus: "failed", reason: `the welcome is still awaiting approval past ${Math.round(waitMs / 60000)} minutes — the video stays on the portal card; no mail goes ahead of the welcome` }
-        : { action: "wait", ledgerStatus: null, reason: "the welcome is awaiting brokerage approval — the video follows it, never precedes it" }
-    }
-    if (!input.hasEmail) {
-      return { action: "close_video_follow_up", ledgerStatus: "failed", reason: "contact has no email — the video stays on the portal card; no follow-up mail" }
-    }
-    if (input.videoOptOut) {
-      return { action: "close_video_follow_up", ledgerStatus: "suppressed", reason: "the contact turned video off — the welcome already went; no video follows" }
-    }
-    if (overdue144) {
-      return { action: "close_video_follow_up", ledgerStatus: "failed", reason: `the personal video has not landed within ${Math.round(waitMs / 60000)} minutes of conversion — the welcome already went; no late video mail` }
-    }
-    if (input.composite === "pending") {
-      return { action: "wait", ledgerStatus: null, reason: "the Remotion assembly has not landed — mailing the bare avatar track is the defect it exists to fix" }
-    }
-    if (!input.hasRenderedUrl) return { action: "wait", ledgerStatus: null, reason: "the render is still in flight" }
-    return { action: "send_video_follow_up", ledgerStatus: "delivered", reason: "the finished personal video is ready — it follows the welcome as one short note" }
-  }
-
-  if (!input.hasEmail) {
-    return {
-      action: "send_without_video",
-      ledgerStatus: "failed",
-      reason: "contact has no email at send time — the welcome goes to the portal rail instead",
-    }
-  }
-
-  if (input.videoOptOut) {
-    return {
-      action: "send_without_video",
-      ledgerStatus: "suppressed",
-      reason: "the contact turned video off during the render — the welcome still goes, without it",
-    }
-  }
-
-  const overdue = input.ageMs !== null && input.ageMs > waitMs
-  if (overdue) {
-    // WAVE 145 (ruling 17): no longer "send without it" — the welcome waits for the video, and when the video fails a PERSON
-    // approves the exception (never falsely sent; never silently pending — the approval item is the visible state).
-    return {
-      action: "hold_for_exception",
-      ledgerStatus: "failed",
-      reason:
-        `the personal video has not landed within ${Math.round(waitMs / 60000)} minutes of conversion — ` +
-        `the welcome is held for a person to approve sending it without the video (or to fix the video)`,
-    }
-  }
-
-  if (input.composite === "pending") {
-    return {
-      action: "wait",
-      ledgerStatus: null,
-      reason: "the Remotion assembly has not landed — mailing the bare avatar track is the defect it exists to fix",
-    }
-  }
-
-  if (!input.hasRenderedUrl) {
-    return { action: "wait", ledgerStatus: null, reason: "the render is still in flight" }
-  }
-
-  return { action: "send_with_video", ledgerStatus: "delivered", reason: "the finished personal video is ready to embed" }
-}
-
-// ─── THE LIVE ENTRY POINT BOTH CONVERTERS CALL ───────────────────────────────
+// ─── THE LIVE ENTRY POINT EVERY CONVERTER CALLS ──────────────────────────────
 
 export interface ConversionWelcomeParams {
   /** contacts.id — the PRIMARY key (contacts also carries a secondary `contact_id`). */
@@ -483,20 +323,23 @@ export interface ConversionWelcomeResult {
    */
   welcomeJourney: string | null
   videoReason: WelcomeAvatarVideoReason
+  /** Wave 146: always "send_now" — the welcome never waits for the video (owner ruling 6). */
   timing: WelcomeTimingAction
-  /** Why the email waited, or why it did not. Always populated. */
+  /** Where the video goes instead. Always populated. */
   timingReason: string
-  /** `WelcomeSendState` when the welcome was sent on this call; null when deferred. */
+  /** `WelcomeSendState` of the welcome sent on this call; null when no welcome is due (or it could not be attempted). */
   emailState: string | null
-  /** Wave 145 (ruling 17): the human-approved exception filed for a welcome held without a possible video (null = none needed). */
-  exception: WelcomeExceptionFiling | null
+  /** Wave 146: the welcome CLAIMED the contact's first touch on the shared ledger (contacts.first_touched_at). */
+  firstTouch: { claimed: boolean; channel: string | null; reason: string }
+  /** Wave 146 (contract C3): the portal welcome video as commissioned on this call — it lives in the portal, never in a mail. */
+  portalVideo: { commissioned: boolean; reason: WelcomeAvatarVideoReason; videoProjectId: string | null; recovery: string | null }
   /** Wave 145 (contract C3): the contact's STATED accessibility preferences the welcome honours (null = unread; defaults apply). */
   accessibility: WelcomeAccessibility | null
   /** Everything the operator needs. NEVER a reason to unwind a committed conversion. */
   warnings: string[]
 }
 
-// ─── CONTRACT C3: THE CONTACT'S STATED ACCESSIBILITY PREFERENCES ─────────────
+// ─── CONTRACT C3 (wave 145): THE CONTACT'S STATED ACCESSIBILITY PREFERENCES ──
 
 /**
  * What the welcome honours from the contact's OWN stated preferences (owner ruling 18 — explicit, user-controllable fields;
@@ -504,7 +347,8 @@ export interface ConversionWelcomeResult {
  * (lib/contacts/accessibility-preferences.ts readAccessibilityPreferences — contract C3); this is the welcome's view of it.
  */
 export interface WelcomeAccessibility {
-  /** The contact stated a communication format WITHOUT video (text / written) — the welcome does not wait for, or carry, a video. */
+  /** The contact stated a communication format WITHOUT video (text / written). Wave 146: it shapes the PORTAL's playback (the
+   *  transcript opens first) — it no longer stops the commission or delays anything (owner ruling 6). */
   statedNoVideo: boolean
   /** Captions / a transcript were asked for — the welcome carries the video's own script as text under it. */
   transcript: boolean
@@ -522,8 +366,8 @@ export interface WelcomeAccessibility {
  * lib/contacts/accessibility-preferences.ts readAccessibilityPreferences) and H's ONE adaptation table (accessibilityAdaptations —
  * "what every reader applies"; no second parser of the stored vocabulary here, §6). NEVER THROWS: an absent module / column
  * (m868 not applied), a refused read or a throw returns null plus the reason, and the welcome uses the defaults (nothing
- * inferred). Used by deliverConversionWelcome (does the welcome wait for a video?) and by the composer
- * lib/kernel/client-welcome.ts ensureClientWelcome (large text / the transcript) — every welcome path reads the same answer.
+ * inferred). Used by deliverConversionWelcome and by the composer lib/kernel/client-welcome.ts ensureClientWelcome (large text /
+ * the transcript) — every welcome path reads the same answer.
  *   statedNoVideo ← communication_format 'text' (the person asked for written communication)
  *   transcript    ← captions OR transcript OR a screen-reader portal (H's table) — the welcome carries the video's own script as
  *                   text; burnt-in captions are not something this path can guarantee (a published blind spot)
@@ -554,145 +398,58 @@ export async function readWelcomeAccessibility(
   }
 }
 
-// ─── RULING 17: THE HUMAN-APPROVED EXCEPTION ─────────────────────────────────
+// TOMBSTONE (wave 146, lane 146C — owner ruling 6 OVERRULES ruling 17; §1.3, the functionality is gone by ruling and its
+// remaining duty moved): `WELCOME_EXCEPTION_ITEM_TYPE` ('welcome_without_video'), `WelcomeExceptionFiling`,
+// `holdWelcomeForException` and `releaseApprovedWelcomeExceptions`. They HELD a welcome no video could ride and released it
+// only after a person approved an approval_items row. The welcome is never held over its video now, so there is nothing to
+// approve; a video that cannot be produced is recorded, retried safely and told to a person by
+// lib/portal/welcome-video.ts recoverPortalWelcomeVideo / escalatePortalWelcomeVideo (the error console + the agent, once per
+// contact). Measured before retiring (hrvaqgvukzxfskkcrwbt, 2026-10-29): approval_items with item_type 'welcome_without_video'
+// = 0 (pending 0, approved 0), so no held welcome is stranded.
 
-/** approval_items.item_type of a welcome held because no personal video can ride it (item_id = contacts.id — one per contact). */
-export const WELCOME_EXCEPTION_ITEM_TYPE = "welcome_without_video"
-
-export interface WelcomeExceptionFiling {
-  /** A pending approval item now exists for this contact's held welcome (filed on this call, or already there). */
-  filed: boolean
-  /** It already existed (pending / approved / rejected) — a retried conversion or sweep never files a second. */
-  existing: boolean
-  error: string | null
+/** Seams for the proofs (the real doors are the defaults). */
+export interface ConversionWelcomeDeps {
+  /** THE welcome survivor (lib/kernel/client-welcome.ts ensureClientWelcome). */
+  sendWelcome?: (
+    supabase: any,
+    contact: { id: string; brokerageId: string; contactType: string | null; firstName: string | null; lastName: string | null },
+    opts: { origin: WelcomeOrigin | null; accessibility: WelcomeAccessibility | null },
+  ) => Promise<{ state: string; reason?: string | null; situationWarnings?: string[] }>
+  /** THE avatar commission (./welcome-avatar-video ensureWelcomeAvatarVideo). */
+  commissionVideo?: typeof ensureWelcomeAvatarVideo
+  /** THE portal welcome video's recovery (lib/portal/welcome-video.ts recoverPortalWelcomeVideo). */
+  recoverVideo?: (supabase: any, p: { brokerageId: string; contactId: string; agentId: string | null; introVideoId: string | null; reason: WelcomeAvatarVideoReason; detail: string }) => Promise<{ action: string; outcome: string }>
+  now?: () => Date
 }
 
 /**
- * File the HUMAN-APPROVED EXCEPTION for a welcome that cannot carry the agent's video (ruling 17): one PENDING approval item in the
- * ONE approval queue (approval_items → lib/kernel/approval-queue-aggregator.ts — the agent's / broker's approvals feed), plus the
- * decision on the action ledger. Idempotent per contact (any prior item, whatever its status, is never re-filed). Tenant-pinned;
- * every read is read for its error; the insert is COUNTED. Nothing is sent here. NEVER THROWS.
- */
-export async function holdWelcomeForException(
-  svc: { from: (t: string) => any },
-  p: { brokerageId: string; contactId: string; agentId: string | null; reason: string; now?: Date },
-): Promise<WelcomeExceptionFiling> {
-  const now = p.now ?? new Date()
-  try {
-    if (!p.brokerageId || !p.contactId) return { filed: false, existing: false, error: "no brokerage / contact" }
-    const { data: prior, error: priorErr } = await svc.from("approval_items").select("id, status")
-      .eq("brokerage_id", p.brokerageId).eq("item_type", WELCOME_EXCEPTION_ITEM_TYPE).eq("item_id", p.contactId).limit(1)
-    if (priorErr) return { filed: false, existing: false, error: `approval_items read refused: ${priorErr.message ?? "unknown"}` }
-    if ((prior ?? []).length > 0) return { filed: true, existing: true, error: null }
-    const { data: ins, error: insErr } = await svc.from("approval_items").insert({
-      brokerage_id: p.brokerageId, agent_id: p.agentId ?? null, item_type: WELCOME_EXCEPTION_ITEM_TYPE, item_id: p.contactId,
-      status: "pending", submitted_at: now.toISOString(),
-      // The reviewer's view (the queue decodes `excerpt`): what is held, why, and what each answer does.
-      review_notes: JSON.stringify({
-        violations: [],
-        excerpt: `Welcome email HELD — ${p.reason}. Approve: the welcome (with the portal sign-in link) is sent now without the personal video. Reject: nothing is sent; fix the video and it goes with it.`.slice(0, 500),
-      }),
-    }).select("id")
-    if (insErr) return { filed: false, existing: false, error: `approval_items insert refused: ${insErr.message ?? "unknown"}` }
-    if ((ins ?? []).length !== 1) return { filed: false, existing: false, error: `approval_items insert returned ${(ins ?? []).length} rows` }
-    try {
-      const { recordNonAction } = await import("@/lib/kernel/action-ledger")
-      const rec = await recordNonAction({
-        brokerageId: p.brokerageId, domain: "welcome_video", decision: "wait", actor: { type: "system" },
-        subject: { type: "contact", id: p.contactId }, reasonCode: "CONTACT_WELCOME",
-        reasonDetail: `held for a human-approved exception: ${p.reason}`.slice(0, 500), cycle: "conversion_exception",
-      }, { client: svc as never })
-      if (!rec.recorded && rec.error) console.warn(`[conversion-welcome] exception not ledgered for ${p.contactId}: ${rec.error}`)
-    } catch (e) {
-      console.warn(`[conversion-welcome] exception not ledgered for ${p.contactId}: ${(e as Error).message}`)
-    }
-    return { filed: true, existing: false, error: null }
-  } catch (e) {
-    return { filed: false, existing: false, error: `holdWelcomeForException threw: ${e instanceof Error ? e.message : String(e)}` }
-  }
-}
-
-/**
- * THE ONLY RELEASE of a held welcome a PERSON approved (ruling 17's "human-approved exception … auto-send after"): approved
- * `welcome_without_video` items reviewed inside the last `windowDays`, for contacts with no welcome yet, are sent through THE
- * survivor (lib/kernel/client-welcome.ts ensureClientWelcome — its idempotency tag refuses a second welcome, and it still embeds a
- * personal video if one has become ready since). A pending or rejected item is never released. Called by the welcome sweeper
- * (/api/cron/intro-video-email-backfill). NEVER THROWS.
- */
-export async function releaseApprovedWelcomeExceptions(
-  svc: { from: (t: string) => any },
-  opts: { now?: Date; windowDays?: number; limit?: number },
-  /** THE SWEEPER'S survivor call (the cron passes lib/kernel/client-welcome.ts ensureClientWelcome) — this module keeps exactly one
-   *  call site of the survivor (deliverConversionWelcome), so the release is the sweeper's own send, never a third path. */
-  deps: { ensureWelcome: (contact: { id: string; brokerageId: string; contactType: string | null; firstName: string | null; lastName: string | null }) => Promise<{ state: string; reason?: string | null }> },
-): Promise<{ examined: number; released: number; results: Array<{ contactId: string; outcome: string; reason?: string | null }>; error: string | null }> {
-  const now = opts.now ?? new Date()
-  const out = { examined: 0, released: 0, results: [] as Array<{ contactId: string; outcome: string; reason?: string | null }>, error: null as string | null }
-  try {
-    const since = new Date(now.getTime() - (opts.windowDays ?? 14) * 86_400_000).toISOString()
-    // PLATFORM SCOPE, WRITTEN DOWN (lane 145Z — test:conditional-tenant-predicate): this is the cron sweeper's cross-tenant
-    // read. The optional `brokerageId` narrowing it carried (`if (opts.brokerageId) q = q.eq(…)`) had NO caller and made an
-    // absent id mean "every tenant" — the conflation lib/kernel/tenant-scope.ts exists to end; it is removed, not kept as a
-    // door. Every item is then read and released under its OWN brokerage_id (readWelcomeState / ensureWelcome below).
-    const q = applyTenantScope(
-      svc.from("approval_items").select("id, brokerage_id, item_id, reviewed_at")
-        .eq("item_type", WELCOME_EXCEPTION_ITEM_TYPE).eq("status", "approved").gte("reviewed_at", since),
-      platformScope("the welcome sweeper (/api/cron/intro-video-email-backfill, CRON_SECRET verified at the route) releases approved welcome exceptions across every tenant; each item is released under its own brokerage_id"),
-    )
-    const { data, error } = await q.order("reviewed_at", { ascending: true }).limit(Math.max(1, Math.min(opts.limit ?? 50, 200)))
-    if (error) return { ...out, error: `approval_items read refused: ${error.message ?? "unknown"} — nothing released` }
-    // Lazy: the sweeper is the only caller, and the converters' module graph never needs the welcome-state reader.
-    const { readWelcomeState } = await import("./welcome-avatar-video")
-    for (const item of (data ?? []) as Array<{ brokerage_id: string | null; item_id: string | null }>) {
-      if (!item.brokerage_id || !item.item_id) continue
-      out.examined++
-      const contactId = item.item_id
-      const state = await readWelcomeState(svc, { contactId, brokerageId: item.brokerage_id })
-      if (state === null) { out.results.push({ contactId, outcome: "skipped", reason: "the welcome's state could not be read — nothing sent on a guess" }); continue }
-      if (state !== "none") { out.results.push({ contactId, outcome: "already_welcomed", reason: `the welcome is already '${state}'` }); continue }
-      const { data: c, error: cErr } = await svc.from("contacts").select("id, contact_type, first_name, last_name")
-        .eq("id", contactId).eq("brokerage_id", item.brokerage_id).maybeSingle()
-      if (cErr) { out.results.push({ contactId, outcome: "skipped", reason: `contact read refused: ${cErr.message}` }); continue }
-      if (!c) { out.results.push({ contactId, outcome: "skipped", reason: "contact not in this brokerage" }); continue }
-      const row = c as { contact_type?: string | null; first_name?: string | null; last_name?: string | null }
-      const welcome = await deps.ensureWelcome({ id: contactId, brokerageId: item.brokerage_id, contactType: row.contact_type ?? null, firstName: row.first_name ?? null, lastName: row.last_name ?? null })
-      if (welcome.state === "sent") out.released++
-      out.results.push({ contactId, outcome: welcome.state === "sent" ? "released_without_video" : welcome.state, reason: welcome.reason ?? null })
-    }
-    return out
-  } catch (e) {
-    return { ...out, error: `releaseApprovedWelcomeExceptions threw: ${e instanceof Error ? e.message : String(e)}` }
-  }
-}
-
-/**
- * Grant the portal, commission the personal video, and either send the ONE
- * welcome email now or hand it to the sweeper.
+ * Grant the portal, SEND the one welcome email NOW, claim the first touch, then commission the personal video for the portal.
  *
  * NEVER THROWS.
  */
 export async function deliverConversionWelcome(
   supabase: any,
   params: ConversionWelcomeParams,
+  deps: ConversionWelcomeDeps = {},
 ): Promise<ConversionWelcomeResult> {
   const warnings: string[] = []
+  const now = deps.now ?? (() => new Date())
 
   // WILL AN AGENT-SIGNED WELCOME GO OUT AT ALL? Asked FIRST, because it decides
   // whether the portal invite must carry its own magic-link mail as the delivery.
   // One function answers it here and inside the survivor (§6).
   //
   // It answers with the SET OF MANAGERS that pick this welcome up — seller →
-  // listing_concierge, buyer → shopping_agent, both → BOTH, lifetime customer →
-  // sphere_of_influence (owner ruling). This lane only needs the SIZE of that set:
-  // non-empty means a welcome is coming and carries the portal door; empty means the
-  // magic link is the only thing that will ever tell them the portal exists.
+  // listing_concierge, buyer → shopping_agent, both → BOTH (owner ruling). This lane
+  // only needs the SIZE of that set: non-empty means a welcome is coming and carries
+  // the portal door; empty means the magic link is the only thing that will ever
+  // tell them the portal exists.
   const welcomeManagers = resolveWelcomeManagers(params.contactType)
   const welcomeJourney = welcomeJourneyFor(welcomeManagers)
 
   // ── STEP 1: THE ACCESS GRANT. IMMEDIATE, AND FIRST. ───────────────────────
-  // The portal_contact_invites row IS the access. It is created before any video
-  // is commissioned and before any email decision, so no render outcome can cost
-  // a contact their portal.
+  // The portal_contact_invites row IS the access. It is created before the email and before any video, so no render outcome
+  // can cost a contact their portal.
   const portal = await grantPortalAccessForPromotedContact(supabase, {
     contactId: params.contactId,
     agentId: params.agentId,
@@ -705,43 +462,10 @@ export async function deliverConversionWelcome(
   warnings.push(...portal.warnings)
 
   // ── STEP 1b (wave 145, contract C3): THE CONTACT'S STATED ACCESSIBILITY PREFERENCES ──
-  // Read through lane 145H's one reader. A stated format without video means no render is commissioned (no spend on a video
-  // the contact asked not to get) and the welcome does not wait. Unread → the defaults, said; never inferred.
+  // Read through lane 145H's one reader for the composer (larger type, the transcript). Wave 146: a stated no-video format no
+  // longer stops the portal video — it opens the portal's transcript first (lib/portal/welcome-video.ts playback).
   const access = await readWelcomeAccessibility(supabase, { brokerageId: params.brokerageId, contactId: params.contactId })
   if (access.blindSpot) warnings.push(access.blindSpot)
-  const statedNoVideo = access.accessibility?.statedNoVideo === true
-
-  // ── STEP 2: COMMISSION THE PERSONAL VIDEO ─────────────────────────────────
-  // Second on purpose. It is the step that can be refused for a dozen legitimate
-  // reasons; ordering it after the grant means a refusal can never cost the portal.
-  const video: Awaited<ReturnType<typeof ensureWelcomeAvatarVideo>> = statedNoVideo
-    ? { commissioned: false, reason: "video_opt_out", videoProjectId: null, situational: false, language: null, warnings: [] }
-    : await ensureWelcomeAvatarVideo(supabase, {
-        contactId: params.contactId,
-        agentId: params.agentId,
-        brokerageId: params.brokerageId,
-        origin: params.origin ?? null,
-      })
-  warnings.push(...video.warnings)
-
-  // ── STEP 2b (wave 145, ruling 17): no render for THIS contact → can the agent's STANDING personal video be SELECTED? ──
-  // Only asked when nothing is in flight and the reason is not the contact's own choice. Validated by the one reader
-  // (lib/kernel/welcome-personal-video.ts → resolvePlayableVideo: finished, customer-facing, compliance-passed).
-  let standingVideoReady = false
-  const failedRender = !video.commissioned && !statedNoVideo && video.reason !== "video_opt_out" && video.reason !== "excluded_contact_type"
-  if (failedRender && welcomeManagers.length > 0 && params.agentId) {
-    try {
-      const { resolveWelcomePersonalVideo } = await import("@/lib/kernel/welcome-personal-video")
-      const standing = await resolveWelcomePersonalVideo(supabase, { brokerageId: params.brokerageId, contactId: params.contactId, agentRecordId: params.agentId })
-      standingVideoReady = standing.state === "ready"
-      if (standing.state !== "ready") warnings.push(`no standing personal video can be selected for contact ${params.contactId}: ${standing.reason}`)
-    } catch (e) {
-      warnings.push(`the agent's standing personal video could not be checked (${(e as Error).message}) — treated as none`)
-    }
-  }
-
-  // ── STEP 3: DOES THE EMAIL WAIT? ──────────────────────────────────────────
-  const timing = decideWelcomeTiming({ ...video, standingVideoReady, statedNoVideo })
 
   const out: ConversionWelcomeResult = {
     portalGranted: portal.granted,
@@ -749,15 +473,21 @@ export async function deliverConversionWelcome(
     magicLinkSent: portal.emailSent,
     welcomeManagers: [...welcomeManagers],
     welcomeJourney,
-    videoReason: video.reason,
-    timing: timing.action,
-    timingReason: timing.reason,
+    videoReason: "unavailable",
+    timing: "send_now",
+    timingReason: "",
     emailState: null,
-    exception: null,
+    firstTouch: { claimed: false, channel: null, reason: "no welcome was sent on this call" },
+    portalVideo: { commissioned: false, reason: "unavailable", videoProjectId: null, recovery: null },
     accessibility: access.accessibility,
     warnings,
   }
 
+  // ── STEP 2 (WAVE 146, owner ruling 6): THE ONE WELCOME EMAIL GOES NOW — before any video work ──
+  // Dynamic import: client-welcome pulls the governed egress rail, and a static
+  // import would drag it into every module graph reaching the converters —
+  // including the plain `tsx` simulators. Same reason portal-access defers the
+  // invite core.
   if (welcomeManagers.length === 0) {
     // No agent-signed welcome is due for this contact type. The magic link above
     // was the delivery; saying so is what keeps "one email" auditable.
@@ -765,96 +495,90 @@ export async function deliverConversionWelcome(
       `no agent-signed welcome for contact ${params.contactId}: contact_type '${params.contactType ?? "null"}' ` +
         `is picked up by no manager, so the portal invite's magic link is the delivery.`,
     )
-    return out
-  }
-
-  if (timing.action === "hold_for_video") {
-    // WAVE 145 (ruling 17): the ONE welcome WAITS for the agent's video. The wait is recorded once per conversion (the cycle) as
-    // the decision it is, with its deadline, so the Command Center can see a welcome is owed and by when. Never a send.
-    // /api/cron/intro-video-email-backfill releases the welcome WITH the validated video, or — past the deadline — files the
-    // human-approved exception (never a silent send without it, never a silent forever-pending).
-    warnings.push(
-      `the ${welcomeJourney} welcome email for contact ${params.contactId} WAITS for the agent's personal video ` +
-        `(${timing.reason}). /api/cron/intro-video-email-backfill sends it with the video when the render is validated, or ` +
-        `hands it to a person after ${Math.round(WELCOME_VIDEO_WAIT_MS / 60000)} minutes.`,
-    )
+  } else {
     try {
-      const { recordNonAction } = await import("@/lib/kernel/action-ledger")
-      const rec = await recordNonAction({
+      const send = deps.sendWelcome ?? (async (svc, contact, opts) => (await import("@/lib/kernel/client-welcome")).ensureClientWelcome(svc, contact, opts))
+      const welcome = await send(supabase, {
+        id: params.contactId,
         brokerageId: params.brokerageId,
-        domain: "welcome_video",
-        decision: "wait",
-        actor: { type: "system" },
-        subject: { type: "contact", id: params.contactId },
-        reasonCode: "CONTACT_WELCOME",
-        reasonDetail: timing.reason,
-        cycle: "conversion",
-        until: new Date(Date.now() + WELCOME_VIDEO_WAIT_MS).toISOString(),
-      })
-      if (!rec.recorded && rec.error) warnings.push(`welcome wait not ledgered: ${rec.error}`)
-    } catch (e) {
-      warnings.push(`welcome wait not ledgered: ${(e as Error).message}`)
-    }
-    return out
-  }
+        contactType: params.contactType ?? null,
+        firstName: params.firstName ?? null,
+        lastName: params.lastName ?? null,
+      }, { origin: params.origin ?? null, accessibility: access.accessibility })
+      out.emailState = welcome.state
+      warnings.push(...(welcome.situationWarnings ?? []))
+      if (welcome.state !== "sent" && welcome.state !== "skipped") {
+        warnings.push(`the welcome email for contact ${params.contactId} did not send: ${welcome.reason ?? welcome.state}`)
+      }
 
-  if (timing.action === "hold_for_exception") {
-    // WAVE 145 (ruling 17): no personal video can ride the welcome — it is HELD, and a PERSON decides (approve: it goes without
-    // the video; reject: nothing goes). The approval item IS the visible, recoverable state; the sweeper releases an approved one.
-    const exception = await holdWelcomeForException(supabase, {
-      brokerageId: params.brokerageId, contactId: params.contactId, agentId: params.agentId ?? null, reason: timing.reason,
-    })
-    out.exception = exception
-    warnings.push(
-      exception.filed
-        ? `the ${welcomeJourney} welcome email for contact ${params.contactId} is HELD for a person (${timing.reason}) — ` +
-            `approval item '${WELCOME_EXCEPTION_ITEM_TYPE}'${exception.existing ? " (already filed)" : ""}; the portal invite is unaffected.`
-        : `the welcome for contact ${params.contactId} is HELD but its exception could NOT be filed (${exception.error ?? "unknown"}) — ` +
-            `it is not sent without the video; an automation error was filed so a person sees it.`,
-    )
-    if (!exception.filed) {
-      // Never silently pending: the failed filing itself lands on the error console (automation_errors, tenant-anchored).
-      try {
-        const { collectError } = await import("@/lib/errors/collect-error")
-        await collectError({
-          workflowName: "conversion_welcome_exception", severity: "high", brokerageId: params.brokerageId, client: supabase,
-          errorMessage: `welcome held for contact ${params.contactId} but its approval item could not be filed: ${exception.error ?? "unknown"}`,
-          context: { contactId: params.contactId, agentId: params.agentId ?? null, reason: timing.reason },
-        })
-      } catch { /* the warning above still travels to the converter */ }
-    }
-    return out
-  }
-
-  // ── STEP 4: SEND IT NOW (nothing to wait for — the contact's own choice, no video for this type, or the standing video). ──
-  // Dynamic import: client-welcome pulls the governed egress rail, and a static
-  // import would drag it into every module graph reaching the converters —
-  // including the plain `tsx` simulators. Same reason portal-access defers the
-  // invite core.
-  try {
-    const { ensureClientWelcome } = await import("@/lib/kernel/client-welcome")
-    const welcome = await ensureClientWelcome(supabase, {
-      id: params.contactId,
-      brokerageId: params.brokerageId,
-      contactType: params.contactType ?? null,
-      firstName: params.firstName ?? null,
-      lastName: params.lastName ?? null,
-    }, { origin: params.origin ?? null, accessibility: access.accessibility })
-    out.emailState = welcome.state
-    warnings.push(...welcome.situationWarnings)
-    if (welcome.state !== "sent" && welcome.state !== "skipped") {
+      // ── STEP 2b (WAVE 146): THE WELCOME IS THIS CONTACT'S FIRST TOUCH — CLAIM IT ON THE SHARED LEDGER ──
+      // A welcome that went (or that the owning manager's posture holds for a human to release) owns the first hello; so does
+      // one that already exists (a retried conversion). speed-to-lead's contact half (`first_touched_at IS NULL`) and the
+      // welcome drip's first email step (skip_duplicate) then stand down — no second first touch. A welcome that FAILED, had no
+      // agent or no inbox claims nothing: the contact arbiter may still answer them. Claimed AFTER the outcome is known (never
+      // a "touched" stamp with no welcome behind it); the conditional write never overwrites a first touch already on record.
+      const welcomeOwnsFirstTouch =
+        welcome.state === "sent" || welcome.state === "held_for_approval" || (welcome.state === "skipped" && !welcome.reason)
+      if (welcomeOwnsFirstTouch) {
+        const claim = await claimFirstTouch(supabase, "contacts", { id: params.contactId, brokerageId: params.brokerageId, at: now(), channel: "email" })
+        out.firstTouch = claim.ok
+          ? { claimed: true, channel: "email", reason: `the welcome (${welcome.state}) is the contact's first touch` }
+          : { claimed: false, channel: null, reason: claim.error ?? "a first touch was already on record for this contact" }
+        if (!claim.ok && claim.error) warnings.push(`the welcome's first-touch claim for contact ${params.contactId} was refused: ${claim.error}`)
+      } else {
+        out.firstTouch = { claimed: false, channel: null, reason: `the welcome is '${welcome.state}' — no first touch is claimed for it` }
+      }
+    } catch (e: any) {
+      out.emailState = "send_failed"
       warnings.push(
-        `the welcome email for contact ${params.contactId} did not send: ${welcome.reason ?? welcome.state}`,
+        `the welcome email for contact ${params.contactId} could not be attempted: ` +
+          `${e?.message ?? "the welcome package is unavailable"}. The portal invite is unaffected.`,
       )
     }
-  } catch (e: any) {
-    out.emailState = "send_failed"
-    warnings.push(
-      `the welcome email for contact ${params.contactId} could not be attempted: ` +
-        `${e?.message ?? "the welcome package is unavailable"}. The portal invite is unaffected.`,
-    )
   }
 
+  // ── STEP 3 (WAVE 146): THE PORTAL WELCOME VIDEO — commissioned AFTER the send, regardless of channel preferences ──
+  // The ONE avatar spine renders it asynchronously (delivery 'portal'); lib/portal/welcome-video.ts shows it in the contact's
+  // portal the moment it is validated. It is commissioned after the email on purpose: nothing the render does — a model draft,
+  // a refusal, a provider outage — can delay the welcome.
+  const videoArgs = {
+    contactId: params.contactId,
+    agentId: params.agentId,
+    brokerageId: params.brokerageId,
+    origin: params.origin ?? null,
+  }
+  const video = deps.commissionVideo
+    ? await deps.commissionVideo(supabase, videoArgs)
+    : await ensureWelcomeAvatarVideo(supabase, videoArgs)
+  warnings.push(...video.warnings)
+  out.videoReason = video.reason
+  out.portalVideo = { commissioned: video.commissioned, reason: video.reason, videoProjectId: video.videoProjectId, recovery: null }
+
+  // ── STEP 3b: A VIDEO THAT COULD NOT BE COMMISSIONED IS RECORDED, RECOVERED, TOLD — never silently absent ──
+  // The manager's recovery (the agent's standing video stands in, one safe re-render, or a person is told once per contact).
+  // An excluded counterparty type gets no welcome video by design — nothing to recover.
+  if (!video.commissioned && video.reason !== "excluded_contact_type") {
+    try {
+      const recover = deps.recoverVideo ?? (async (svc, p) => {
+        const wv = await import("@/lib/portal/welcome-video")
+        return wv.recoverPortalWelcomeVideo(svc, {
+          brokerageId: p.brokerageId, contactId: p.contactId, agentId: p.agentId, introVideoId: p.introVideoId,
+          failureKind: wv.failureKindOf({ commissionReason: p.reason }), reason: p.detail,
+        })
+      })
+      const rec = await recover(supabase, {
+        brokerageId: params.brokerageId, contactId: params.contactId, agentId: params.agentId ?? null, introVideoId: null,
+        reason: video.reason, detail: `the personal welcome video could not be commissioned (${video.reason})`,
+      })
+      out.portalVideo.recovery = `${rec.action}:${rec.outcome}`
+    } catch (e) {
+      warnings.push(`the portal welcome video's recovery could not run for contact ${params.contactId}: ${(e as Error).message}`)
+    }
+  }
+
+  // ── THE TIMING, STATED: the welcome never waited; this is where the video goes instead. ──
+  const timing = decideWelcomeTiming(video)
+  out.timing = timing.action
+  out.timingReason = timing.reason
   return out
 }
-

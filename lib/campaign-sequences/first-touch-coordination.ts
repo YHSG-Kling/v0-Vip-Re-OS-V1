@@ -99,3 +99,42 @@ export function decideFirstTouch(input: FirstTouchInput): FirstTouchAction {
   }
   return "send"
 }
+
+// ── THE CLAIM — the ONE conditional write on the shared first-touch ledger (wave 146, lane 146C) ──────────────────────
+// MOVED HERE from lib/ai-isa/speed-to-lead.ts (its file-local claimFirstTouch / releaseFirstTouch — tombstone there names
+// this file) because a THIRD manager now makes a first touch: the conversion welcome (owner ruling 6, wave 146 — "send
+// welcome email out right away") is a converted contact's first hello, so lib/contact-promotion/conversion-welcome.ts claims
+// the ledger with it and speed-to-lead's contact sweep (`first_touched_at IS NULL`) stands down instead of greeting the same
+// person a second time minutes later. One write, three callers, one meaning (§6). PURE of imports beyond the client shape,
+// so the converters' graph and the plain-tsx proofs can reach it without the speed-to-lead engagement doors.
+
+/** The minimal client the claim needs (a supabase-js client or the in-memory proof client). */
+type FirstTouchLedgerClient = { from: (table: string) => any }
+
+/** CLAIM the first touch: a conditional UPDATE that matches only an untouched row of this tenant, row-counted (an UPDATE that
+ *  matches nothing RESOLVES — CLAUDE.md §3). ok:false + no error = another manager already holds the first touch. */
+export async function claimFirstTouch(
+  supabase: FirstTouchLedgerClient,
+  table: "leads" | "contacts",
+  input: { id: string; brokerageId: string; at: Date; channel: string | null },
+): Promise<{ ok: true; at: string } | { ok: false; error: string | null }> {
+  const at = input.at.toISOString()
+  const { data, error } = await supabase.from(table)
+    .update({ first_touched_at: at, first_touch_channel: input.channel, updated_at: at })
+    .eq("id", input.id).eq("brokerage_id", input.brokerageId).is("first_touched_at", null).select("id")
+  if (error) return { ok: false, error: `first-touch claim refused: ${error.message}` }
+  if (!data || data.length === 0) return { ok: false, error: null }
+  return { ok: true, at }
+}
+
+/** RELEASE this run's own claim (matched on its stamp, so a later run's claim is never undone) when the send did not go out. */
+export async function releaseFirstTouch(
+  supabase: FirstTouchLedgerClient,
+  table: "leads" | "contacts",
+  id: string,
+  claimAt: string,
+): Promise<void> {
+  const { error } = await supabase.from(table).update({ first_touched_at: null, first_touch_channel: null })
+    .eq("id", id).eq("first_touched_at", claimAt)
+  if (error) console.error(`[first-touch] claim on ${table} ${id} NOT released (the next sweep will read it as touched): ${error.message}`)
+}
