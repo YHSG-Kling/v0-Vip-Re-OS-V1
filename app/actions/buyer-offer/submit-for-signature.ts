@@ -228,6 +228,19 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
     }
   }
 
+  // AGENT-CONCESSION GATE (wave 146, lane 146I — owner ruling 4, wave 144: "ask permission FIRST … block unauthorized
+  // commitment"). An offer that goes out for signature while an agent concession promised on its chain still awaits the
+  // broker's decision commits the brokerage's money before the broker answered. The ONE check is the concession module's;
+  // a refused read refuses (fail closed).
+  {
+    const { unauthorizedConcessionsOnOfferChain, unauthorizedConcessionRefusal } = await import("@/lib/commission/agent-concession")
+    const pending = await unauthorizedConcessionsOnOfferChain(supabase as any, { brokerageId, offerId })
+    if (!pending.ok) return { success: false, error: pending.error, blockerType: "agent_concession_unverified" }
+    if (pending.unauthorized.length > 0) {
+      return { success: false, error: unauthorizedConcessionRefusal(pending.unauthorized, "This offer's signature request"), blockerType: "agent_concession_pending_approval" }
+    }
+  }
+
   // COMPLIANCE GATE: Must pass before requesting signatures.
   //
   // ⚠ READ THIS BEFORE "FIXING" THE TEST BELOW. `checkCompliancePassed` returns

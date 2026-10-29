@@ -63,6 +63,16 @@ export async function respondToCounter(params: RespondToCounterParams) {
   // separate times below, one round-trip per insert, for the same answer.)
   const actorAgentId = await resolveAgentId(supabase as any, userId)
 
+  // AGENT-CONCESSION GATE (wave 146, lane 146I — owner ruling 4: "block unauthorized commitment"). Accepting the counter makes
+  // the contract and countering back sends the chain's terms on; either commits an agent concession that still awaits the
+  // broker's decision. A rejection commits nothing and is never held. A refused read refuses (fail closed).
+  if (response === "accept" || response === "counter_back") {
+    const { unauthorizedConcessionsOnOfferChain, unauthorizedConcessionRefusal } = await import("@/lib/commission/agent-concession")
+    const pending = await unauthorizedConcessionsOnOfferChain(supabase as any, { brokerageId, offerId })
+    if (!pending.ok) return { success: false, error: pending.error }
+    if (pending.unauthorized.length > 0) return { success: false, error: unauthorizedConcessionRefusal(pending.unauthorized, response === "accept" ? "Accepting this counter" : "This counter-back") }
+  }
+
   // Count counter rounds (max 5) — scoped by brokerage.
   // Keyed on contact_id (not entity_type), so re-keying the writes below to the
   // offer does not change what this counts. Canonical event names.

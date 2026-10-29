@@ -347,6 +347,17 @@ async function main() {
     check("the first run notified once, with a blocking item", notifications[n - 1]?.blocking === true)
     await runClosingCompliance(f.db, { transactionId: f.tx, brokerageId: B1, trigger: "settlement_scanned" }, deps)
     check("an unchanged re-run does not notify again", notifications.length === n)
+    {
+      // LAW 5 (wave 146, lane 146I — 143B Outside-lane 10): the real notifier (the seam above replaces it here) sends each closing
+      // notice INSIDE the ONE ledger wrapper with reason COMPLIANCE_NOTICE on the transaction. Stripped source; POSITIVE CONTROL:
+      // a notifier that sends outside the wrapper is caught.
+      const { stripComments } = await import("./strip-comments")
+      const cc = stripComments(readFileSync(`${process.cwd()}/lib/transactions/closing-compliance.ts`, "utf8"))
+      const body = (s: string) => s.slice(s.indexOf("const notifyOpenFindings"), s.indexOf("const auditClosingRun"))
+      const ledgered = (s: string) => { const w = s.indexOf("withActionLedger<"), n = s.indexOf("notifyComplianceFlag(svc"); return w >= 0 && n > w && /reasonCode:\s*"COMPLIANCE_NOTICE"/.test(s) && /subject:\s*\{\s*type:\s*"transaction"/.test(s) }
+      check("each closing notice leaves a ledger row: notifyComplianceFlag runs inside withActionLedger (COMPLIANCE_NOTICE, subject the transaction) — POSITIVE CONTROL: a notice sent outside the wrapper is caught",
+        ledgered(body(cc)) && !ledgered(`const notifyOpenFindings = 1\nawait notifyComplianceFlag(svc, {})\nwithActionLedger<X>({ reasonCode: "COMPLIANCE_NOTICE", subject: { type: "transaction" } })\nconst auditClosingRun = 2`))
+    }
     // A human waives the price row; the numbers do not move → the waiver stands.
     price!.status = "waived"; price!.resolution_notes = "title will reissue"
     const waived = await runClosingCompliance(f.db, { transactionId: f.tx, brokerageId: B1, trigger: "settlement_scanned" }, deps)

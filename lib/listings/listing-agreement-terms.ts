@@ -22,8 +22,8 @@
 // agreement precedes an amendment, then the higher version number; an explicit null in an amendment is a deliberate
 // STRIKE; a superseded value is kept beside the governing one as a CONFLICT — nothing is mutated, so the original
 // signed terms are preserved by construction. The offer-side resolver iterates the OFFER vocabulary only, so this is
-// the same rule over a different key set (Outside-lane: lane 145C may parametrise resolveGoverningTerms by key set and
-// this resolver becomes one call).
+// the same rule over a different key set — since wave 146 (lane 146I) literally the same function:
+// lib/offers/governing-terms-rule.ts foldTermsByPrecedence, called with this key set and this rail's source rank.
 //
 // WHAT "MLS LIVE" IS NOT. The governed date is the SELLER-AGREED INTENDED live date — never the agreement's execution
 // date, never the coming-soon period, never the actual MLS activation and never a VERIFIED MLS status. A verified live
@@ -35,7 +35,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { ymdOf } from "./compute-dom"
 import { isAtOrPastAllSigned } from "@/lib/esign/packet-states"
-import { signaturesPresent } from "@/lib/offers/governing-terms-rule"
+import { foldTermsByPrecedence, signaturesPresent } from "@/lib/offers/governing-terms-rule"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -95,23 +95,22 @@ function listingTermValueProblem(key: ListingAgreementTermKey, value: unknown): 
  * drives ordering, ties, strikes and conflicts through that reader on seeded rows).
  */
 function resolveListingAgreementTerms(versions: ListingTermVersion[]): ResolvedListingTerms {
+  // THE ONE PRECEDENCE FOLD (wave 146, lane 146I — closes 145B Outside-lane 16): the contract rail's
+  // lib/offers/governing-terms-rule.ts foldTermsByPrecedence, over this vocabulary and this rail's source rank (the
+  // original agreement precedes an amendment on a same-instant tie). The inline copy of the loop that stood here is gone.
   const rank = (s: ListingTermSource) => (s === "listing_agreement" ? 0 : 1)
-  const ordered = [...versions].sort((a, b) =>
-    String(a.executedAt ?? "").localeCompare(String(b.executedAt ?? "")) || rank(a.source) - rank(b.source) || a.versionNo - b.versionNo)
+  const fold = foldTermsByPrecedence(versions as Array<ListingTermVersion & { terms: Record<string, unknown> }>, LISTING_AGREEMENT_TERM_KEYS, rank)
   const terms: ResolvedListingTerms["terms"] = {}
-  const conflicts: ListingTermConflict[] = []
-  for (const v of ordered) {
-    for (const key of LISTING_AGREEMENT_TERM_KEYS) {
-      if (!Object.prototype.hasOwnProperty.call(v.terms, key)) continue
-      const value = v.terms[key]
-      const prior = terms[key]
-      if (prior && JSON.stringify(prior.value) !== JSON.stringify(value)) {
-        conflicts.push({ key, superseded: { source: prior.source, versionNo: prior.versionNo, value: prior.value }, governing: { source: v.source, versionNo: v.versionNo, value } })
-      }
-      terms[key] = { key, value, source: v.source, versionNo: v.versionNo, executedAt: v.executedAt, documentId: v.documentId }
-    }
+  for (const key of Object.keys(fold.won) as ListingAgreementTermKey[]) {
+    const w = fold.won[key]!
+    terms[key] = { key, value: w.value, source: w.version.source, versionNo: w.version.versionNo, executedAt: w.version.executedAt, documentId: w.version.documentId }
   }
-  return { terms, conflicts, versions: ordered }
+  const conflicts: ListingTermConflict[] = fold.conflicts.map((c) => ({
+    key: c.key,
+    superseded: { source: c.superseded.version.source, versionNo: c.superseded.version.versionNo, value: c.superseded.value },
+    governing: { source: c.governing.version.source, versionNo: c.governing.version.versionNo, value: c.governing.value },
+  }))
+  return { terms, conflicts, versions: fold.ordered }
 }
 
 /** A refused read that means "m856 is not applied yet" (the column / anchor does not exist) — not a tenant refusal. */

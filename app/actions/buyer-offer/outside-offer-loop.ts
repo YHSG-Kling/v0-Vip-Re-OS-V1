@@ -110,6 +110,14 @@ export async function sendOutsideOffer(params: {
   const decision = decideOutsideSend({ kind, offer: { id: row.id, listing_id: chain.root.listing_id }, buyerSigned, recipient: { email: recipient, verifiedBy }, documents: docs })
   if (!decision.ok) return { success: false, error: decision.reason }
 
+  // ── no unauthorized agent concession leaves with it (wave 146, lane 146I — owner ruling 4: ask the broker FIRST) ───────────
+  {
+    const { unauthorizedConcessionsOnOfferChain, unauthorizedConcessionRefusal } = await import("@/lib/commission/agent-concession")
+    const pending = await unauthorizedConcessionsOnOfferChain(svc as any, { brokerageId: caller.brokerageId, offerId: row.id })
+    if (!pending.ok) return { success: false, error: pending.error }
+    if (pending.unauthorized.length > 0) return { success: false, error: unauthorizedConcessionRefusal(pending.unauthorized, kind === "counter_back" ? "This counter" : "This offer") }
+  }
+
   // ── secure expiring links (the governed egress carries no attachments) ──────────────────────────
   const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
   const links: Array<{ name: string; url: string }> = []

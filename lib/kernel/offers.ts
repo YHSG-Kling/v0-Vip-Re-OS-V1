@@ -362,6 +362,17 @@ export async function issueCounterOffer(params: {
   if (!offer) return { success: false, error: "Offer not found" }
   if (params.listingId !== undefined && (offer as any).listing_id !== params.listingId) return { success: false, error: "Forbidden" }
 
+  // AGENT-CONCESSION GATE (wave 146, lane 146I — owner ruling 4: "block unauthorized commitment"). A counter carries the chain's
+  // terms forward; while an agent concession promised on that chain awaits the broker's decision, the counter would commit it.
+  // The offer is already proven to be in this brokerage (the read above is brokerage-pinned), so the concession ledger — a
+  // finance table an agent's own client may not read — is read on the service client, tenant-pinned; a refused read refuses.
+  {
+    const { unauthorizedConcessionsOnOfferChain, unauthorizedConcessionRefusal } = await import("@/lib/commission/agent-concession")
+    const pending = await unauthorizedConcessionsOnOfferChain(createServiceClient() as any, { brokerageId, offerId })
+    if (!pending.ok) return { success: false, error: pending.error }
+    if (pending.unauthorized.length > 0) return { success: false, error: unauthorizedConcessionRefusal(pending.unauthorized, "This counter") }
+  }
+
   const nextRound = ((offer as any).current_round ?? 1) + 1
   const now = new Date().toISOString()
 
@@ -509,6 +520,16 @@ export async function acceptOffer(params: {
     .single()
 
   if (!offer) return { success: false, error: "Offer not found" }
+
+  // AGENT-CONCESSION GATE (wave 146, lane 146I — owner ruling 4): accepting makes the contract, so an agent concession on the
+  // chain that still awaits the broker's decision would be committed by it. Tenant-pinned on the caller's brokerage; a refused
+  // read refuses (fail closed). Read on the service client (the concession ledger is a finance table).
+  {
+    const { unauthorizedConcessionsOnOfferChain, unauthorizedConcessionRefusal } = await import("@/lib/commission/agent-concession")
+    const pending = await unauthorizedConcessionsOnOfferChain(createServiceClient() as any, { brokerageId, offerId })
+    if (!pending.ok) return { success: false, error: pending.error }
+    if (pending.unauthorized.length > 0) return { success: false, error: unauthorizedConcessionRefusal(pending.unauthorized, "Accepting this offer") }
+  }
 
   const { error } = await supabase
     .from("offers")

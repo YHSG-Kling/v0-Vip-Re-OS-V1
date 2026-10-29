@@ -169,6 +169,20 @@ console.log("\n── SOURCE: the AMD voice-drop is wired at the ONE outbound do
       body.length > 0 && body.includes("renderVoiceDrop(") && !body.includes("hostRenderedMedia") && !body.includes('await import("@/lib/voice/elevenlabs-tts")'))
   }
 
+  // LAW 5 — EVIDENCE (wave 146, lane 146I; closes 145D Still open 5): the ringless drop's provider call runs INSIDE the ONE
+  // ledger wrapper (claimed → run → settled on agent_action_ledger), with the channel, the risk class and the provider job id
+  // as the settled reference. Stripped source; positive control: a call made outside the wrapper is caught.
+  {
+    const stripped = blankComments(voicedropLib)
+    const body = stripped.slice(stripped.indexOf("export async function orchestrateVoicedropSend"))
+    const insideLedger = (s: string) => {
+      const w = s.indexOf("withActionLedger<"), c = s.indexOf('connector: "voicedrop"')
+      return w >= 0 && c > w && /action:\s*"comms\.voice_drop\.send"/.test(s) && /channel:\s*"voice_drop"/.test(s) && /riskClass:\s*"COMMUNICATION"/.test(s) && /providerRef:\s*r\.data\?\.job_id/.test(s)
+    }
+    check("LAW 5: the voice drop leaves an agent_action_ledger row — the provider call runs inside withActionLedger (action comms.voice_drop.send, channel voice_drop, COMMUNICATION, the job id settled as provider_ref); POSITIVE CONTROL: a call outside the wrapper is caught",
+      insideLedger(body) && !insideLedger(`await callConnector({ connector: "voicedrop" })\nawait withActionLedger<X>({ action: "comms.voice_drop.send", channel: "voice_drop", riskClass: "COMMUNICATION" }, run, { settle: (r) => ({ providerRef: r.data?.job_id }) })`))
+  }
+
   // Internal voice-tts route: no hand-rolled literal.
   const ttsRoute = src("app/api/internal/voice-tts/route.ts")
   check("app/api/internal/voice-tts/route.ts: model resolved via elevenLabsModelForLane(\"phone_realtime\") + ELEVENLABS_REALISM_VOICE_SETTINGS — no hand-rolled voiceSettings literal",

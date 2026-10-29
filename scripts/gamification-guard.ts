@@ -285,8 +285,20 @@ function wiringLayer() {
   check("agent-onboarding emits ONBOARDING_COMPLETED on the false→true completion edge (entity agent_onboarding) and awards nothing itself", /if \(isComplete && !wasAlreadyComplete\) \{[\s\S]*?KernelEvent\.ONBOARDING_COMPLETED/.test(onboardingSrc) && /entityType: "agent_onboarding"/.test(onboardingSrc) && !/awardAgentPoints/.test(onboardingSrc))
   const remaining = ["app/actions/contact-reassignment.ts", "lib/recruiting/challenge-runner.ts"].filter((f) => /awardAgentPoints\(/.test(src(f)))
   check("exactly two call-site awards remain, both UNRESOLVED by design (CONTACT_ASSIGNED: the canonical CONTACT_AGENT_ASSIGNED is the welcome trigger and A→B→A repeats; CHALLENGE_PRIZE: no event, data-driven points)", remaining.length === 2 && !/awardAgentPoints\(/.test(src("lib/application/listing-lifecycle.ts")) && !/awardAgentPoints\(/.test(src("lib/kernel/agent-onboarding.ts")))
-  check("anniversaries key on agents.anniversary_date with created_at fallback (pure anniversaryStartDate) and the roster read selects it",
-    anniversaryStartDate({ created_at: "2024-01-01", anniversary_date: "2023-06-01" }) === "2023-06-01" && anniversaryStartDate({ created_at: "2024-01-01", anniversary_date: null }) === "2024-01-01" && /select\("id, created_at, anniversary_date"\)/.test(src("lib/gamification/work-anniversaries.ts")))
+  // RE-ASSERTED (wave 146, lane 146I): the old pin was the literal select("id, created_at, anniversary_date") — a waypoint the
+  // agreement-sourced start date (agents.start_date, m858, wave 145 contract C6) had to move. The RULE: the start date of
+  // record wins, then the seat stamp, then created_at, and the roster read selects every column the rule reads (derived).
+  {
+    const ann = src("lib/gamification/work-anniversaries.ts")
+    const cols = (ann.match(/ANNIVERSARY_ROSTER_COLUMNS\s*=\s*"([^"]+)"/)?.[1] ?? "").split(",").map((c) => c.trim())
+    const ruleReads = ["start_date", "anniversary_date", "created_at"]
+    check("anniversaries count from the executed agreement's start date (agents.start_date), else the seat stamp, else created_at — and the roster read selects every column the rule reads (POSITIVE CONTROL: a list missing start_date is caught)",
+      anniversaryStartDate({ created_at: "2024-01-01", anniversary_date: "2023-06-01", start_date: "2022-03-15" }) === "2022-03-15"
+      && anniversaryStartDate({ created_at: "2024-01-01", anniversary_date: "2023-06-01", start_date: null }) === "2023-06-01"
+      && anniversaryStartDate({ created_at: "2024-01-01", anniversary_date: null }) === "2024-01-01"
+      && ruleReads.every((c) => cols.includes(c)) && /\.select\(ANNIVERSARY_ROSTER_COLUMNS\)/.test(ann)
+      && !ruleReads.every((c) => ["id", "created_at", "anniversary_date"].includes(c)))
+  }
   // The doors are derived (the files that still INSERT an agents row); wave 140F converged the recruiting
   // route onto lib/kernel/users.ts, so a converged door drops out instead of failing a pinned list.
   const seatDoors = ["lib/kernel/users.ts", "app/actions/agents.ts", "app/api/recruiting/provision-agent/route.ts"].filter((f) => /from\("agents"\)[\s\S]{0,400}?\.(insert|upsert)\(/.test(src(f)))

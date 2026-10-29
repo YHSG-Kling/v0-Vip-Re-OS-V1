@@ -511,6 +511,15 @@ async function main() {
   check("INTAKE: createListingRecord validates then records the planned date through the ONE writer; createListingWithSellerContact accepts and forwards it; the readiness gate and launchListing read the planned date; launch records the launch day as a PLAN only when none exists",
     /plannedMlsLiveDate\?:\s*string/.test(kernel) && /recordPlannedMlsLiveDate\(createServiceClient\(\) as any/.test(kernel) && /plannedMlsLiveDate:\s*params\.plannedMlsLiveDate/.test(act)
     && /plannedMlsLiveDateLaunchBlocker\(supabase as any, input\.listingId\)/.test(kernel) && /if \(!\(listing as any\)\?\.go_live_date\)/.test(kernel) && /source: "launch"/.test(kernel))
+  {
+    // wave 146 (lane 146I — closes 143A Still open 2): the OTHER door to MLS_ACTIVE (activateMLS) asks the same rule BEFORE its
+    // transition, so the two doors cannot disagree. Positive control: the finder rejects a door that transitions first.
+    const ee = code("app/actions/seller-listing/execution-engine.ts")
+    const body = ee.slice(ee.indexOf("export async function activateMLS"))
+    const asksFirst = (src: string) => { const g = src.indexOf("plannedMlsLiveDateLaunchBlocker("), t = src.indexOf("transitionLifecycle("); return g >= 0 && t > g }
+    check("BOTH doors to MLS_ACTIVE ask the planned-date rule before they act: launchListing (readiness gate) and activateMLS (before transitionLifecycle) — POSITIVE CONTROL: a door that transitions first is caught",
+      asksFirst(body) && !asksFirst(`await transitionLifecycle({})\nawait plannedMlsLiveDateLaunchBlocker(s, id)`))
+  }
   check("VERIFICATION: the session action delegates to the shared core (no inline feed code survives — POSITIVE CONTROL: the core has it); the cron sweep (step 8b) is wired; the action never calls the feeds itself",
     /verifyAndRecordMlsLive\(/.test(act) && !/searchRentcastSaleListings|IDXBrokerClient/.test(act) && /searchRentcastSaleListings/.test(code("lib/listings/mls-live-verification.ts")) && /runMlsLiveVerificationSweep\(/.test(cron))
   check("the timeline editor: `field` is allow-listed at RUNTIME (a public endpoint — the TS union is erased), the session's brokerage is the predicate, the rows are COUNTED, the planned date goes through the one writer, and the verified date has NO edit path (read-only card)",

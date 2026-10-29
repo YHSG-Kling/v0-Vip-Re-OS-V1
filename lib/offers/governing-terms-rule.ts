@@ -112,6 +112,35 @@ export function canonicalTerms(raw: Record<string, unknown> | null | undefined):
 }
 
 /**
+ * PURE — THE ONE PRECEDENCE FOLD over any versioned term vocabulary (wave 146, lane 146I — closes lane 145B Outside-lane 16:
+ * "one precedence function"). The contract rail (below) and the listing-agreement rail (lib/listings/listing-agreement-terms.ts)
+ * each held a copy of this loop; both now call it with their own key set and source rank, so the two can never order executions
+ * differently. Executed versions only: ordered by executedAt, then the caller's source rank (on a same-instant tie the original
+ * precedes what amends it), then versionNo; a version NAMES a term by carrying its key (an explicit null is a strike and
+ * governs as null); a later different value supersedes and the earlier one is returned as a conflict, never deleted.
+ */
+export function foldTermsByPrecedence<K extends string, V extends { versionNo: number; executedAt: string | null; source: string; terms: Record<string, unknown> }>(
+  executedVersions: readonly V[],
+  keys: readonly K[],
+  rank: (source: V["source"]) => number,
+): { ordered: V[]; won: Partial<Record<K, { value: unknown; version: V }>>; conflicts: Array<{ key: K; superseded: { value: unknown; version: V }; governing: { value: unknown; version: V } }> } {
+  const ordered = [...executedVersions].sort((a, b) =>
+    String(a.executedAt ?? "").localeCompare(String(b.executedAt ?? "")) || rank(a.source) - rank(b.source) || a.versionNo - b.versionNo)
+  const won: Partial<Record<K, { value: unknown; version: V }>> = {}
+  const conflicts: Array<{ key: K; superseded: { value: unknown; version: V }; governing: { value: unknown; version: V } }> = []
+  for (const v of ordered) {
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(v.terms, key)) continue
+      const value = v.terms[key]
+      const prior = won[key]
+      if (prior && JSON.stringify(prior.value) !== JSON.stringify(value)) conflicts.push({ key, superseded: prior, governing: { value, version: v } })
+      won[key] = { value, version: v }
+    }
+  }
+  return { ordered, won, conflicts }
+}
+
+/**
  * PURE — THE PRECEDENCE RULE. See the header. `versions` may arrive in any order and may mix derived and recorded rows;
  * a `void` version is ignored, a `proposed` one never governs (it is reported under `pending`).
  */
@@ -121,22 +150,18 @@ export function resolveGoverningTerms(versions: TermsVersion[]): GoverningTerms 
   // original, then its counters, then an addendum, then an amendment — an addendum amends a contract that already exists, so on a
   // tie it follows. Version numbers are per-source sequences and cannot be compared across sources.
   const rank = (s: TermVersionSource) => (TERM_VERSION_SOURCES as readonly string[]).indexOf(s)
-  const executed = ordered
-    .filter((v) => v.status === "executed")
-    .sort((a, b) => String(a.executedAt ?? "").localeCompare(String(b.executedAt ?? "")) || rank(a.source) - rank(b.source) || a.versionNo - b.versionNo)
+  const fold = foldTermsByPrecedence(ordered.filter((v) => v.status === "executed"), GOVERNING_TERM_KEYS, rank)
+  const executed = fold.ordered
   const terms: GoverningTerms["terms"] = {}
-  const conflicts: TermConflict[] = []
-  for (const v of executed) {
-    for (const key of GOVERNING_TERM_KEYS) {
-      if (!Object.prototype.hasOwnProperty.call(v.terms, key)) continue
-      const value = v.terms[key]
-      const prior = terms[key]
-      if (prior && JSON.stringify(prior.value) !== JSON.stringify(value)) {
-        conflicts.push({ key, superseded: { versionNo: prior.versionNo, source: prior.source, value: prior.value }, governing: { versionNo: v.versionNo, source: v.source, value } })
-      }
-      terms[key] = { key, value, versionNo: v.versionNo, source: v.source, offerId: v.offerId, executedAt: v.executedAt }
-    }
+  for (const key of Object.keys(fold.won) as GoverningTermKey[]) {
+    const w = fold.won[key]!
+    terms[key] = { key, value: w.value, versionNo: w.version.versionNo, source: w.version.source, offerId: w.version.offerId, executedAt: w.version.executedAt }
   }
+  const conflicts: TermConflict[] = fold.conflicts.map((c) => ({
+    key: c.key,
+    superseded: { versionNo: c.superseded.version.versionNo, source: c.superseded.version.source, value: c.superseded.value },
+    governing: { versionNo: c.governing.version.versionNo, source: c.governing.version.source, value: c.governing.value },
+  }))
   const values: GoverningTerms["values"] = {}
   for (const k of Object.keys(terms) as GoverningTermKey[]) values[k] = terms[k]!.value
   return {

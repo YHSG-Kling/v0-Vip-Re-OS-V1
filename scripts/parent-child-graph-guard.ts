@@ -24,6 +24,20 @@
  * the humanized final (ruling 20, contract C4). A cross-lane contract that has not landed is a KEYED finding routed
  * to its lane — it burns when the lane lands; the guard never pins the waypoint.
  *
+ * WAVE 146 (lane 146I — "audit the chains: parent→child, event→consumer, writer→reader, action→result,
+ * provider→capability→inbound/outbound, form→capture→delivered promise, contact→signal→arbiter→follow-up,
+ * creative→approval→publication, agreement→financial rule→closing/payout, tenant→portal→user permission"). The
+ * table chains and the existing symbol chains already carry parent→child, writer→reader (per arrow), event (emitter),
+ * action→result (orphan actions), agreement→rule→payout (FINANCE) and contact→signal→arbiter (JOURNEY + decision);
+ * this wave adds what none of them asked: CONTENT gains BOOK → DISTRIBUTION FORM (book_projects.distribution_form_id,
+ * m867) and CREATIVE → HUMANIZED FINAL (distribution_finals asset_table / asset_id, m866) — the two arrows 145I
+ * routed here when the caches caught up; and the wave-146 cross-lane contracts become SYMBOL CHAINS named by their
+ * contract names (C1 inbound record, C2 audience re-engagement on syncAudience, C3 portal welcome video behind the
+ * portal gate, C4 promised deliverables, C5 approver from the authority hierarchy, C6 Customer 360 read by the
+ * arbiter) plus the RECEIVE half of the provider chain (C7: every channel row of the matrix declares what it can
+ * hear, and a declared webhook door exists on disk). Each unlanded contract is a KEYED finding routed to its lane
+ * (146B/C/D/E/F) — it BURNS when the lane lands; nothing pins the waypoint.
+ *
  * ── WHAT THIS IS, AND WHAT IT IS NOT (CLAUDE.md §1 — no fourth instrument) ──────────────────────────
  * The whole-repo instruments already exist and are NOT re-implemented here; this guard composes them
  * and adds only the EDGE-level, CHAIN-scoped questions none of them asks:
@@ -81,6 +95,8 @@ import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 import { LIVE_TABLES } from "./live-tables"
 import { MANAGERS, TABLE_MANAGER, canRefer, type ManagerKey } from "../lib/kernel/manager-registry"
 import { EXCEPTION_CATEGORIES } from "../lib/kernel/exceptions-first"
+// The matrix module has no imports on purpose (the arbiter reads it on every evaluation), so reading its data here is safe.
+import { CHANNEL_PROVIDER_TRUTH } from "../lib/providers/channel-provider-matrix"
 
 const ROOT = process.cwd()
 const SQL_MODE = process.argv.includes("--sql")
@@ -315,6 +331,16 @@ export const CHAINS: ChainSpec[] = [
         link: { kind: "fk", column: "marketing_campaign_id" } },
       { id: "content.post>publication", parentNode: "CREATIVE (social post)", childNode: "PUBLICATION (publish log)", parent: "social_posts", child: "social_publish_log",
         link: { kind: "fk", column: "social_post_id" } },
+      // WAVE 146 (lane 146I; routed by 145I's entity-conflated:book key, which burned when m866 / m867 were applied and the
+      // caches regenerated): the humanized final a human approved, per creative, is a POLYMORPHIC child of the creative
+      // (distribution_finals.asset_table / asset_id — no FK by design, the final covers seven creative tables); the social
+      // post is the arrow audited here because it is the one creative with a separate publication log beside its final.
+      { id: "content.post>final", parentNode: "CREATIVE (social post)", childNode: "HUMANIZED FINAL (the approved version + what went out)", parent: "social_posts", child: "distribution_finals",
+        link: { kind: "soft", holder: "child", columns: ["asset_table", "asset_id"], via: "lib/marketing/humanize-final.ts stageDistributionFinal / recordDoorPublication (asset_table = the creative's table, asset_id = its row) — checkDistributionPublication and listDistributionFinals read it back",
+          polymorphic: { typeColumn: "asset_table", idColumn: "asset_id", typeValue: "social_posts", writerShapes: ["assetTable\\s*:\\s*[\"'`]social_posts[\"'`]"] } } },
+      // A book is its own entity (ruling 19, m867); a lead magnet only DISTRIBUTES it. The FK lives on the book row.
+      { id: "content.book>magnet", parentNode: "BOOK", childNode: "DISTRIBUTION (lead-magnet form)", parent: "book_projects", child: "lead_capture_forms",
+        link: { kind: "reverse_fk", column: "distribution_form_id" } },
     ],
   },
 ]
@@ -369,7 +395,93 @@ export const SYMBOL_CHAINS: SymbolChainSpec[] = [
       { node: "HUMANIZED FINAL (every public AI asset)", file: "lib/marketing/humanize-final.ts", symbol: "finalizeForDistribution", why: "lane 145G extends the 144H survivor into the one final phase" },
     ],
   },
+  // ── WAVE 146 (lane 146I) — the cross-lane contracts C1–C6 by their contract names (WAVE146_SPEC "CROSS-LANE CONTRACTS").
+  // A step is a real export of the named file; `after` only where the contract itself names the wire.
+  {
+    key: "inbound", label: "PROVIDER RECEIVE → ONE CANONICAL INBOUND RECORD (ruling 3, contract C1)",
+    steps: [
+      { node: "INBOUND RECORD (contract C1)", file: "lib/communications/inbound-record.ts", symbol: "recordInboundCommunication", why: "lane 146B builds it on the existing communication-history survivor, idempotent on (provider, providerRef)" },
+    ],
+  },
+  {
+    key: "reengage", label: "1:1 AD RE-ENGAGEMENT REQUEST → A PERMITTED PERSON APPROVES → AUDIENCE SYNC UPLOADS (ruling 2, contract C2)",
+    // The wire runs the way the code runs: the request files for a human and never uploads; the ONE upload door
+    // (syncAudience) names the approval gate and refuses until a permitted person approved. Lane 146E's published patch
+    // names syncAudience only in prose in audience-reengagement.ts, so a `requestAudienceReengagement after syncAudience`
+    // wire would have read UNWIRED on integration — the real call is ads.ts → reengagementApprovalGate.
+    steps: [
+      { node: "RE-ENGAGEMENT REQUEST (contract C2)", file: "lib/ads/audience-reengagement.ts", symbol: "requestAudienceReengagement", why: "lane 146E — a draft audience of named, consented contacts for a first-party WHY, ONE approval request, never an upload" },
+      { node: "APPROVAL GATE (the latest decision is 'approved' by a permitted seat)", file: "lib/ads/audience-reengagement.ts", symbol: "reengagementApprovalGate", why: "lane 146E — re-read by the upload door, fail closed on pending / rejected / unreadable / wrong seat" },
+      { node: "AUDIENCE SYNC (the governed upload door: consent, identity match, fair housing)", file: "lib/kernel/ads.ts", symbol: "syncAudience", after: "reengagementApprovalGate", why: "lane 146E — syncAudience refuses a reengagement_parties audience until the gate passes" },
+    ],
+  },
+  {
+    key: "portal", label: "TENANT → PORTAL GATE → THE CONTACT'S OWN ASSET (ruling 6, contract C3)",
+    steps: [
+      { node: "PORTAL GATE (the contact's own access, tenant from the session)", file: "lib/portal/require-contact-access.ts", symbol: "requireContactAccess" },
+      { node: "PORTAL WELCOME VIDEO (contract C3)", file: "lib/portal/welcome-video.ts", symbol: "portalWelcomeVideoFor", why: "lane 146C — the personal video appears in that contact's portal once validated, visible only to that contact and the agent / tenant" },
+    ],
+  },
+  {
+    key: "promise", label: "FORM → CAPTURE → PROMISE RECORDED → DELIVERED (ruling 10, contract C4)",
+    steps: [
+      { node: "PROMISE RECORDED", file: "lib/lead-magnets/promised-deliverables.ts", symbol: "recordPromisedDeliverable", why: "lane 146F — the promise ledger (source form, asset + version, recipient, consent basis)" },
+      { node: "DELIVERED (asset verified first, never 'delivered' without it)", file: "lib/lead-magnets/promised-deliverables.ts", symbol: "deliverPromised" },
+      { node: "UNDELIVERED (the arbiter's high-priority moment)", file: "lib/lead-magnets/promised-deliverables.ts", symbol: "undeliveredPromisesFor" },
+    ],
+  },
+  {
+    key: "approval", label: "CREATIVE → APPROVER FROM THE REAL AUTHORITY HIERARCHY → PUBLICATION (ruling 9, contract C5)",
+    steps: [
+      { node: "APPROVER (contract C5)", file: "lib/kernel/approval-authority.ts", symbol: "approverFor", why: "lane 146E — on the approvals survivor (approval_items + authority / policy); the brokerage approves only where policy or law says so" },
+    ],
+  },
+  {
+    key: "c360", label: "CUSTOMER 360 → ARBITER CONTEXT → NEXT-BEST ACTION (ruling 11, contract C6)",
+    steps: [
+      { node: "CUSTOMER 360 READ (contract C6)", file: "lib/enrichment/customer-360.ts", symbol: "customer360For", why: "lane 146D — a read over the canonical graph with field provenance, consent and freshness; never a second store" },
+      { node: "ARBITER reads its context through C6", file: "lib/ai-isa/followup-arbiter.ts", symbol: "arbitrateAndRecordExperience", after: "customer360For", why: "the contract: 'lane B's arbiter … read context through it'" },
+    ],
+  },
 ]
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// RECEIVE TRUTH (wave 146, lane 146I — ruling 3, contract C7): the provider chain's INBOUND half. Every channel row of
+// lib/providers/channel-provider-matrix.ts CHANNEL_PROVIDER_TRUTH declares `receive: { supported, via, events, route? }`
+// (a channel with no receiving end says so: supported false / via "none"), and a declared webhook route exists on disk.
+// Pure over the module's own data; the route check reads the file tree. Keys: receive-undeclared:matrix (one key for
+// the whole matrix, so the count can fall without minting new keys), receive-route-missing:<channel>.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+export interface ReceiveDecl { supported?: unknown; via?: unknown; events?: unknown; route?: unknown }
+export function receiveProblems(truth: Record<string, { receive?: ReceiveDecl }>, routeExists: (route: string) => boolean): { undeclared: string[]; routeMissing: Array<{ channel: string; route: string }>; malformed: string[] } {
+  const undeclared: string[] = [], malformed: string[] = [], routeMissing: Array<{ channel: string; route: string }> = []
+  for (const [ch, row] of Object.entries(truth)) {
+    const r = row?.receive
+    if (!r) { undeclared.push(ch); continue }
+    const viaOk = r.via === "webhook" || r.via === "poll" || r.via === "none"
+    if (typeof r.supported !== "boolean" || !viaOk || !Array.isArray(r.events) || (r.supported === false && r.via !== "none") || (r.supported === true && r.via === "none")) { malformed.push(ch); continue }
+    if (r.supported && r.via === "webhook") {
+      if (typeof r.route !== "string" || !r.route.startsWith("/")) { malformed.push(ch); continue }
+      if (!routeExists(r.route)) routeMissing.push({ channel: ch, route: r.route })
+    }
+  }
+  return { undeclared, routeMissing, malformed }
+}
+/** "/api/webhooks/x" → does app/api/webhooks/x/route.ts exist? Dynamic segments are matched by a single [..] directory. */
+function appRouteExists(route: string): boolean {
+  const segs = route.replace(/^\/+/, "").replace(/\/+$/, "").split("/")
+  let dirs = [join(ROOT, "app")]
+  for (const seg of segs) {
+    const next: string[] = []
+    for (const d of dirs) {
+      if (existsSync(join(d, seg))) next.push(join(d, seg))
+      else if (existsSync(d)) for (const e of readdirSync(d)) if (/^\[.+\]$/.test(e)) next.push(join(d, e))
+    }
+    dirs = next
+    if (!dirs.length) return false
+  }
+  return dirs.some((d) => existsSync(join(d, "route.ts")) || existsSync(join(d, "route.js")))
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 // KNOWN FINDINGS AT 967a4866 — the wire list (owner + route). A NEW key fails; a BURNED key is printed.
@@ -386,14 +498,32 @@ const KNOWN_FINDINGS: Record<string, { owner: ManagerKey; route: string }> = {
   // lib/marketing/touchpoint-recorder.ts ref + lib/kernel/marketing.ts distributeVideoAsset) and
   // event-never-emitted:deal.transaction>cda:CDA_GENERATED (closed by 144Z item 3 — app/actions/cda-portal.ts emitCdaGenerated).
   // ── wave 145 (lane 145I) — measured at b364eb4b on the new chains; each routed to the lane / owner that closes it ──
-  "materialized-column-missing:org.agent>agreement:agents.start_date": { owner: "recruiting_manager", route: "lane 145C (contract C6) — agents.start_date + agents.start_date_source (the executed agreement) land in m858–m861; burns when the integrator regenerates the schema caches" },
-  "unreconciled:org.agent>agreement:agents.start_date": { owner: "recruiting_manager", route: "lane 145C (contract C6) — the ONE writer lib/agreements/agent-agreements.ts setAgentStartDateFromAgreement (145C's notes) is declared as the reconciler; this key BURNS when lane 145C's patch is merged (the symbol then exports)" },
+  // BURNED at bf67aa63 and removed (wave 146, lane 146I — the run printed each as BURNED; the closing change named):
+  //   materialized-column-missing:org.agent>agreement:agents.start_date and unreconciled:org.agent>agreement:agents.start_date
+  //     — m858–m861 applied live and the caches regenerated (59d2e18f); the reconciler setAgentStartDateFromAgreement exports;
+  //   symbol-missing:provider:CHANNEL_PROVIDER_MATRIX — lib/providers/channel-provider-matrix.ts (145D) imported by the arbiter (145E);
+  //   symbol-missing:decision:isInLeadDomain — lib/contact-promotion/lead-domain-boundary.ts (145E);
+  //   symbol-missing:humanize:finalizeForDistribution — lib/marketing/humanize-final.ts (145G);
+  //   entity-conflated:book — book_projects live (m867) and in live-tables.ts; its two arrows are now in the CONTENT chain
+  //     (content.book>magnet, content.post>final — the route the key named);
+  //   outcome-claim-missing:email — lib/providers/dispatch.ts recordOutcomeClaim + app/api/webhooks/sendgrid-events ingestProviderTruth (145Z, lane D).
   "edge-never-read:journey.decision>evaluation": { owner: "data_steward", route: "NOT A DEFECT — agent_outcome_evaluations.ledger_action_id is the idempotency key (m700 UNIQUE (ledger_action_id, outcome_ref); lib/agents/outcomes.ts reads 23505 as duplicate) and the per-arm readers aggregate on experiment_arm; no product read traverses delivery → evaluation. A per-action outcome view on the AI audit page (app/actions/flight-recorder.ts) would be the first traversal — a product decision, not built to move a number" },
-  "symbol-missing:provider:CHANNEL_PROVIDER_MATRIX": { owner: "campaign_orchestrator", route: "lane 145D (contract C1) creates lib/providers/channel-provider-matrix.ts; lane 145E replaces the arbiter's inline CHANNEL_PROVIDER_RULES with an import — burns when both land (step-unwired catches the second half)" },
-  "symbol-missing:decision:isInLeadDomain": { owner: "ai_isa", route: "lane 145E (contract C2) exports lib/contact-promotion/lead-domain-boundary.ts isInLeadDomain / canonicalPartyFor" },
-  "symbol-missing:humanize:finalizeForDistribution": { owner: "asset_manager", route: "lane 145G (contract C4) extends the 144H humanized-review survivor (lib/lead-magnets/book-editorial.ts scanAiTells / humanizedReviewState) into lib/marketing/humanize-final.ts finalizeForDistribution" },
-  "entity-conflated:book": { owner: "asset_manager", route: "lane 145G (ruling 19) — a book is lead_capture_forms.settings.book on a lead-magnet row; 145G's m867 creates book_projects (platform / brokerage / team / agent owned, distribution_form_id → lead_capture_forms), so this key BURNS when m867 is applied and live-tables.ts is regenerated (BOOK_TABLE already names book_projects). Then add the arrow book_projects → lead_capture_forms (fk distribution_form_id) and distribution_finals (m866, asset_table / asset_id) to the CONTENT chain" },
-  "outcome-claim-missing:email": { owner: "campaign_orchestrator", route: "lane 145D's matrix (contract C1) — email is SendGrid on the platform key (mailgun / resend / postmark are inbound-only). dispatchEmail is ledgered but opens no recordOutcomeClaim, so an email's outcome is 'handed to the provider'; app/api/webhooks/sendgrid-events mirrors messages.status but never calls ingestProviderTruth. Closing it = a claim at dispatchEmail (channel 'email', providerRef = the sg_message_id the webhook already correlates on) + ingestProviderTruth in the SendGrid webhook (lib/providers/** is 145D's; the webhook route is in no lane's domain this wave)" },
+  // ── wave 146 (lane 146I) — the wave's cross-lane contracts, measured at bf67aa63 before any lane landed; each routed to the
+  // lane that owns it in WAVE146_SPEC and BURNS when that lane's patch is merged under the contract name ──
+  "symbol-missing:inbound:recordInboundCommunication": { owner: "ai_isa", route: "lane 146B (contract C1) — lib/communications/inbound-record.ts recordInboundCommunication on the existing communication-history survivor, idempotent on (provider, providerRef); webhook doors, lane E's ad responses and lane D's first-party events call it by that name" },
+  "symbol-missing:reengage:requestAudienceReengagement": { owner: "ads_manager", route: "lane 146E (contract C2) — lib/ads/audience-reengagement.ts requestAudienceReengagement on lib/kernel/ads.ts syncAudience (consent + identity match + budget + authority inside); lane B's arbiter calls it as one experience kind" },
+  "symbol-missing:reengage:reengagementApprovalGate": { owner: "ads_manager", route: "lane 146E (contract C2 + C5) — lib/ads/audience-reengagement.ts reengagementApprovalGate, named by lib/kernel/ads.ts syncAudience before a reengagement_parties audience uploads" },
+  "symbol-missing:portal:portalWelcomeVideoFor": { owner: "sphere_of_influence", route: "lane 146C (contract C3) — lib/portal/welcome-video.ts portalWelcomeVideoFor(svc, brokerageId, contactId) and the portal component; the customer-specific video stays lane C's" },
+  "symbol-missing:promise:recordPromisedDeliverable": { owner: "campaign_orchestrator", route: "lane 146F (contract C4) — lib/lead-magnets/promised-deliverables.ts recordPromisedDeliverable / deliverPromised / undeliveredPromisesFor; the signal lead_magnet_promise_undelivered is registered in lib/kernel/signal-registry.ts (lane D's file)" },
+  "symbol-missing:promise:deliverPromised": { owner: "campaign_orchestrator", route: "lane 146F (contract C4) — see recordPromisedDeliverable" },
+  "symbol-missing:promise:undeliveredPromisesFor": { owner: "campaign_orchestrator", route: "lane 146F (contract C4) — see recordPromisedDeliverable; lane B's arbiter treats an undelivered promise as a high-priority moment" },
+  "symbol-missing:approval:approverFor": { owner: "compliance_officer", route: "lane 146E (contract C5) — lib/kernel/approval-authority.ts approverFor({ brokerageId, assetKind, scope }) on approval_items + authority / policy; lane F's staging and lane H's screens call it" },
+  "symbol-missing:c360:customer360For": { owner: "data_steward", route: "lane 146D (contract C6) — lib/enrichment/customer-360.ts customer360For(svc, brokerageId, party), a view over the canonical graph with field provenance / consent / freshness" },
+  // Listed in advance on purpose (the symbol-chain blind spot: a step reached through a third module reads UNWIRED, so an
+  // UNWIRED key is triaged by hand before it fails a run). It cannot occur while customer360For is missing; it BURNS when
+  // the arbiter's own file names the C6 read.
+  "step-unwired:c360:customer360For>arbitrateAndRecordExperience": { owner: "ai_isa", route: "lane 146B (contract C6) — lib/ai-isa/followup-arbiter.ts reads the contact's context through customer360For (lane 146D). If B reads it through another module (engage-contact / lead-action-plan), re-point this step's file to that module rather than keep the key" },
+  "receive-undeclared:matrix": { owner: "campaign_orchestrator", route: "lane 146B (contract C7) — every CHANNEL_PROVIDER_TRUTH row declares receive: { supported, via: webhook | poll | none, events, route? }; lane E publishes the ads rows' receive facts under '## Matrix facts for lane B'. A declared webhook route that does not exist on disk is receive-route-missing:<channel> (a NEW key — a declared door that is not there is a lie, never ratcheted)" },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -540,6 +670,37 @@ function fileStringConsts(file: string, code: Map<string, string>): Map<string, 
   if (code === CODE) constCache.set(file, m)
   return m
 }
+/** Resolve a module specifier from `file` to a key of `code` ("@/x" → "x", "./x" / "../x" relative; .ts / .tsx / index). */
+function resolveModuleKey(file: string, spec: string, code: Map<string, string>): string | null {
+  let base: string
+  if (spec.startsWith("@/")) base = spec.slice(2)
+  else if (spec.startsWith("./") || spec.startsWith("../")) {
+    const parts = file.split("/").slice(0, -1)
+    for (const seg of spec.split("/")) { if (seg === "." || seg === "") continue; if (seg === "..") parts.pop(); else parts.push(seg) }
+    base = parts.join("/")
+  } else return null
+  for (const c of [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`]) if (code.has(c)) return c
+  return null
+}
+/** The string constants a file IMPORTS by name (local name → value), static and dynamic `await import()` forms. */
+export function importedStringConsts(file: string, code: Map<string, string>): Map<string, string> {
+  const s = code.get(file) ?? ""
+  const out = new Map<string, string>()
+  const bind = (names: string, spec: string) => {
+    const target = resolveModuleKey(file, spec, code)
+    if (!target) return
+    const consts = fileStringConsts(target, code)
+    for (const raw of names.split(",")) {
+      const m = raw.trim().replace(/^type\s+/, "").match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/)
+      if (!m) continue
+      const v = consts.get(m[1])
+      if (v !== undefined) out.set(m[2] ?? m[1], v)
+    }
+  }
+  for (const x of s.matchAll(/\bimport\s+(?:type\s+)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)) bind(x[1], x[2])
+  for (const x of s.matchAll(/\bconst\s*\{([^}]*)\}\s*=\s*await\s+import\(\s*["']([^"']+)["']\s*\)/g)) bind(x[1].replace(/:\s*/g, " as "), x[2])
+  return out
+}
 export function findReaders(table: string, column: string, other: string | null, index: Map<string, FromHit[]>, code: Map<string, string> = CODE): string[] {
   const hits = index.get(table) ?? []
   const filterRe = new RegExp(`\\.(eq|in|is|neq|match|contains|filter|not|or)\\(\\s*["'\`][^"'\`]*\\b${esc(column)}\\b`)
@@ -575,7 +736,10 @@ export function findPolymorphicWriters(p: { typeColumn: string; typeValue: strin
   const out: string[] = []
   for (const [f, s] of code) {
     if (valRe.test(s) || shapes.some((re) => re.test(s))) { out.push(f); continue }
-    const consts = [...fileStringConsts(f, code)].filter(([, v]) => v === p.typeValue).map(([k]) => k)
+    // wave 146 (lane 146I): an IMPORTED string constant resolves too (static `import { X as Y } from "…"` and the
+    // codebase's dynamic `const { X } = await import("…")`), so a writer whose type constant lives in a leaf module
+    // (the 145Z-1 / 145G-OL2 hand-off for lib/ads/ctv-campaign.ts) is still recognised.
+    const consts = [...fileStringConsts(f, code), ...importedStringConsts(f, code)].filter(([, v]) => v === p.typeValue).map(([k]) => k)
     if (consts.some((k) => new RegExp(`${keys}\\s*:\\s*${esc(k)}\\b`).test(s))) out.push(f)
   }
   return out
@@ -811,6 +975,34 @@ console.log("\n[positive controls — every finder flags the defect it exists fo
     check("CONTROL outcome loop: ledgered / claimed / reconciled channels are derived; a commented-out reconciler is not one",
       loop.ledgered.join() === "email,sms" && loop.claimed.join() === "sms" && loop.reconciled.join() === "sms")
   }
+  // ── wave 146 finders ──
+  {
+    const rx = receiveProblems({
+      email: { receive: { supported: true, via: "webhook", events: ["reply"], route: "/api/webhooks/here" } },
+      sms: { receive: { supported: true, via: "webhook", events: ["reply"], route: "/api/webhooks/gone" } },
+      in_app: { receive: { supported: false, via: "none", events: [] } },
+      ads: {},
+      phone: { receive: { supported: false, via: "webhook", events: [] } },
+    }, (r) => r === "/api/webhooks/here")
+    check("CONTROL receive truth: an undeclared row, a declared door missing on disk and a self-contradicting declaration (supported false via a webhook) are each caught; an honest 'none' and a present door are not",
+      rx.undeclared.join() === "ads" && rx.routeMissing.map((x) => x.channel).join() === "sms" && rx.malformed.join() === "phone")
+    check("CONTROL receive route: the app-router resolver finds a real webhook route and refuses an invented one",
+      appRouteExists("/api/webhooks/sendgrid-events") && !appRouteExists("/api/webhooks/__no_such_door__"))
+    const sxa = new Map<string, string>([["lib/s/a.ts", blankComments(`export function first() { return 1 }`)], ["lib/s/b.ts", blankComments(`export function second() { return 2 }`)]])
+    const pend = symbolChainProblems({ key: "k", label: "", steps: [{ node: "A", file: "lib/s/z.ts", symbol: "zed" }, { node: "B", file: "lib/s/b.ts", symbol: "second", after: "zed" }] }, sxa).map((p) => p.key)
+    check("CONTROL awaiting predecessor: a wire to a step that is still MISSING is not judged (only the missing symbol is the finding)",
+      pend.length === 1 && pend[0] === "symbol-missing:k:zed")
+    const ix = new Map<string, string>([
+      ["lib/leaf/types.ts", blankComments(`export const IDEA_TYPE = "idea"\nexport const OTHER_TYPE = "other"`)],
+      ["lib/x/static.ts", blankComments(`import { IDEA_TYPE as T } from "@/lib/leaf/types"\nawait db.from("q").insert({ item_type: T, item_id: t })`)],
+      ["lib/x/dynamic.ts", blankComments(`const { IDEA_TYPE } = await import("../leaf/types")\nawait db.from("q").insert({ item_type: IDEA_TYPE, item_id: t })`)],
+      ["lib/x/wrong.ts", blankComments(`import { OTHER_TYPE } from "@/lib/leaf/types"\nawait db.from("q").insert({ item_type: OTHER_TYPE, item_id: t })`)],
+      ["lib/x/comment.ts", blankComments(`// import { IDEA_TYPE } from "@/lib/leaf/types"\nawait db.from("q").insert({ item_type: IDEA_TYPE, item_id: t })`)],
+    ])
+    const iw = findPolymorphicWriters({ typeColumn: "item_type", typeValue: "idea" }, ix)
+    check("CONTROL imported constant: a writer whose type constant is IMPORTED (static `as` rename and dynamic await import) is found; another constant's value and a commented-out import are not",
+      iw.includes("lib/x/static.ts") && iw.includes("lib/x/dynamic.ts") && !iw.includes("lib/x/wrong.ts") && !iw.includes("lib/x/comment.ts"), iw.join(", "))
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -1006,7 +1198,8 @@ for (const chain of SYMBOL_CHAINS) {
   console.log(`  [${chain.key}] ${chain.label}`)
   for (const st of chain.steps) {
     const p = probs.find((x) => x.key.endsWith(`:${st.symbol}`) || x.key.endsWith(`>${st.symbol}`))
-    console.log(`      · ${st.node} — ${st.file}:${st.symbol}${st.after ? ` (after ${st.after})` : ""} ${p ? (p.key.startsWith("symbol-missing") ? "MISSING" : "UNWIRED") : "ok"}`)
+    const waits = !p && !!st.after && probs.some((x) => x.key === `symbol-missing:${chain.key}:${st.after}`)
+    console.log(`      · ${st.node} — ${st.file}:${st.symbol}${st.after ? ` (after ${st.after})` : ""} ${p ? (p.key.startsWith("symbol-missing") ? "MISSING" : "UNWIRED") : waits ? "AWAITING (its predecessor is missing — the wire is not judged yet)" : "ok"}`)
   }
   for (const p of probs) find(p.key, `symbol:${chain.key}`, p.detail)
 }
@@ -1037,6 +1230,19 @@ console.log("\n[outcome loop — every ledgered channel opens a claim, and every
   for (const c of loop.ledgered.filter((x) => !loop.claimed.includes(x))) find(`outcome-claim-missing:${c}`, "symbol:provider", `${c} is ledgered at send but no outcome claim is opened — "handed to the provider" stands in for "delivered" (lib/outcomes/reconciliation-ledger.ts recordOutcomeClaim)`)
 }
 
+// ── RECEIVE TRUTH (wave 146, contract C7): the provider chain's inbound half ───────────────────────────
+console.log("\n[receive truth — every channel declares what it can HEAR (webhook / poll / none), and a declared webhook door exists]")
+{
+  const rows = CHANNEL_PROVIDER_TRUTH as unknown as Record<string, { receive?: ReceiveDecl }>
+  const r = receiveProblems(rows, appRouteExists)
+  const total = Object.keys(rows).length
+  check(`the matrix is read (${total} channel rows — a broken import reads zero)`, total >= 9, String(total))
+  console.log(`    declared: ${total - r.undeclared.length}/${total}${r.undeclared.length ? ` · undeclared: ${r.undeclared.join(", ")}` : ""}${r.malformed.length ? ` · malformed: ${r.malformed.join(", ")}` : ""}`)
+  if (r.undeclared.length) find("receive-undeclared:matrix", "symbol:inbound", `${r.undeclared.length} of ${total} channel rows declare no receive half (${r.undeclared.join(", ")}) — a channel that cannot hear must SAY so (supported false, via "none")`)
+  for (const m of r.malformed) find(`receive-malformed:${m}`, "symbol:inbound", `${m}: receive must be { supported: boolean, via: webhook | poll | none, events: string[], route when via is webhook } and must not contradict itself`)
+  for (const m of r.routeMissing) find(`receive-route-missing:${m.channel}`, "symbol:inbound", `${m.channel} declares a webhook receive door at ${m.route} and no app/…/route.ts serves it`)
+}
+
 // ── LIVE ARM ─────────────────────────────────────────────────────────────────────────────────────
 console.log(`\n[live readings — measured ${LIVE_MEASURED_ON} through the Supabase MCP against hrvaqgvukzxfskkcrwbt]`)
 for (const r of LIVE_READINGS) {
@@ -1057,7 +1263,14 @@ console.log(creds
 console.log("\n[findings — keyed wire list]")
 const keys = [...new Set(findings.map((f) => f.key))].sort()
 const fresh = keys.filter((k) => !(k in KNOWN_FINDINGS))
-const burned = Object.keys(KNOWN_FINDINGS).filter((k) => !keys.includes(k))
+// A known WIRE key (step-unwired:<chain>:<after>><symbol>) cannot occur while its predecessor is itself MISSING —
+// that is "awaiting the predecessor", not "closed", so it is never printed as BURNED (wave 146, lane 146I).
+const awaiting = Object.keys(KNOWN_FINDINGS).filter((k) => {
+  const m = k.match(/^step-unwired:([^:]+):([^>]+)>/)
+  return !!m && keys.includes(`symbol-missing:${m[1]}:${m[2]}`)
+})
+const burned = Object.keys(KNOWN_FINDINGS).filter((k) => !keys.includes(k) && !awaiting.includes(k))
+if (awaiting.length) console.log(`    · awaiting a missing predecessor (not judged, not burned): ${awaiting.join(", ")}`)
 for (const f of findings) {
   const known = KNOWN_FINDINGS[f.key]
   console.log(`    ${known ? "known" : "NEW  "} ${f.key}\n          ${f.detail}${known ? `\n          owner ${known.owner} · ${known.route}` : ""}`)
@@ -1073,7 +1286,10 @@ console.log(`
   · symbol chains: "wired" is a NAME-level reference in the step's own file (strings blanked) — a step reached through a third module, a registry
     or a string-keyed dispatch reads as UNWIRED (the failure mode is a false accusation, so every UNWIRED key is triaged by hand before it is listed);
   · the outcome loop reads channel names written as literals at ledgerContextFor / recordOutcomeClaim / ingestProviderTruth; a channel passed in a
-    variable is invisible; voice / phone / voice drop never reach the gateway's ledger (lib/voice-engine) so they are outside this loop entirely;
+    variable is invisible; voice / phone never reach the gateway's ledger (lib/voice-engine) and the voice drop is ledgered by its own action
+    (comms.voice_drop.send, wave 146) but opens no outcome claim, so all three are outside this loop;
+  · receive truth reads the matrix's own rows: a channel that hears through a door the matrix does not declare is invisible here, and a declared
+    webhook route is checked for EXISTENCE only (its signature check is webhook-contract's);
   · the book entity check reads the LIVE relation cache: a books table written as a migration but not applied (or not regenerated) is not seen;
     likewise a materialized copy or a mirror nobody declared on an arrow is not checked (the derived checks verify what is declared exists);
   · writers: a payload assembled in another module and passed in, a dynamic table name, or an .rpc() is invisible; the

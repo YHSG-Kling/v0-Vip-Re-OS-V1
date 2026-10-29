@@ -356,6 +356,18 @@ async function main() {
     else outsideLane(`public Coming Soon creative door ${dd.door} — ${dd.file}`, wired, dd.owner, dd.change)
   }
 
+  // ONE PRECEDENCE FUNCTION (wave 146, lane 146I — closes 145B Outside-lane 16, §6): the listing rail and the contract rail
+  // both fold executions through lib/offers/governing-terms-rule.ts foldTermsByPrecedence; neither file keeps its own copy of
+  // the loop (stripped source). POSITIVE CONTROL: a resolver that still carries the inline loop is caught.
+  {
+    const ownLoop = (s: string) => /for \(const key of [A-Z_]+_KEYS\) \{\s*\n\s*if \(!Object\.prototype\.hasOwnProperty\.call\(v\.terms, key\)\) continue/.test(s)
+    const listing = code("lib/listings/listing-agreement-terms.ts"), rule = code("lib/offers/governing-terms-rule.ts")
+    const ruleOutsideFold = rule.slice(rule.indexOf("export function resolveGoverningTerms"))
+    check("ONE precedence fold: the listing rail and the contract rail both call foldTermsByPrecedence and neither keeps its own loop — POSITIVE CONTROL: the inline loop shape is recognised",
+      /foldTermsByPrecedence\(/.test(listing) && /foldTermsByPrecedence\(/.test(ruleOutsideFold) && !ownLoop(listing) && !ownLoop(ruleOutsideFold)
+      && ownLoop(`for (const key of LISTING_AGREEMENT_TERM_KEYS) {\n      if (!Object.prototype.hasOwnProperty.call(v.terms, key)) continue`))
+  }
+
   console.log(`\n RESULT: ${passed} passed, ${failed} failed, ${pending.length} pending outside lane`)
   if (pending.length) { console.log(" PENDING (outside lane):"); for (const p of pending) console.log(`   ◌ ${p}`) }
   if (failed) { console.log(" FAILURES:"); for (const f2 of failures) console.log(`   ✗ ${f2}`); console.log(" ❌ LISTING_COMING_SOON_LIVE_DATE_FAIL"); process.exit(1) }

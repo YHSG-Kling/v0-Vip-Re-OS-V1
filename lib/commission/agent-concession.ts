@@ -526,14 +526,54 @@ export async function listAgentConcessions(
 /**
  * PURE — the concessions promised on an offer chain that are NOT yet authorized (still 'requested'): an offer stating them is an
  * UNAUTHORIZED COMMITMENT if sent or signed now (owner ruling 4: "ask permission FIRST … block unauthorized commitment"). Read
- * here at promotion (below); the offer send / e-sign doors are other lanes' files — when they wire the pre-dispatch check (lane
- * 145C notes, Outside-lane) this becomes their export. The commission engine already holds a FINAL on a requested concession
- * (stage 03). Module-private until then: proved through anchorOfferConcessionsToTransaction's `unauthorized`.
+ * at promotion (anchorOfferConcessionsToTransaction, below) and BEFORE DISPATCH (unauthorizedConcessionsOnOfferChain, below —
+ * wave 146, lane 146I wired the send / e-sign / counter / response doors). The commission engine already holds a FINAL on a
+ * requested concession (stage 03).
  */
 function unauthorizedOfferConcessions(rows: ReadonlyArray<Record<string, unknown>>): Array<{ id: string; value: number; valueType: string; beneficiary: string | null }> {
   return rows
     .filter((r) => r.is_active !== false && r.applies_to === "gross" && r.direction === "credit" && String(r.approval_status ?? "not_required") === "requested")
     .map((r) => ({ id: String(r.id), value: Number(r.value ?? 0), valueType: String(r.value_type ?? "flat"), beneficiary: (r.recipient_type as string | null) ?? null }))
+}
+
+/**
+ * BEFORE DISPATCH (wave 146, lane 146I — closes lane 145C Outside-lane 6, carried by 145Z as "C item 6"; owner ruling 4, wave
+ * 144: "some brokers require the agent to ASK PERMISSION FIRST before offering any concession → request broker approval, block
+ * unauthorized commitment"). An offer / counter / acceptance that goes out — for signature, to the other side, or as the answer
+ * that makes the contract — while an agent concession promised on its chain still awaits the broker's decision commits the
+ * brokerage's money before the broker answered. Every such door asks this ONE question first:
+ *   · the chain is the ONE chain walk (lib/offers/governing-terms.ts loadOfferChainRows — root and every descendant), tenant-pinned;
+ *   · the rows are this module's own (commission_adjustments, gross-level credits, offer-anchored since m861 — applied live
+ *     2026-10-27), tenant-pinned, and judged by the pure rule above;
+ *   · a refused read REFUSES (fail closed: "nobody checked" is never "nothing pending"), named so the agent can act.
+ * A concession that is 'not_required', 'approved', 'denied' or 'withdrawn' never blocks: only an open request is a commitment
+ * nobody authorized. Read-only — it never decides a concession (a finance admin does, decideAgentConcession).
+ */
+export async function unauthorizedConcessionsOnOfferChain(
+  db: Db,
+  input: { brokerageId: string; offerId: string },
+): Promise<{ ok: true; unauthorized: ReturnType<typeof unauthorizedOfferConcessions>; chainOfferIds: string[] } | { ok: false; error: string }> {
+  if (!input.brokerageId) return { ok: false, error: "no_tenant: the agent concessions on this offer could not be checked" }
+  if (!input.offerId) return { ok: false, error: "offer_required: the agent concessions on this offer could not be checked" }
+  const { loadOfferChainRows } = await import("@/lib/offers/governing-terms")
+  const chain = await loadOfferChainRows(db as never, input.brokerageId, input.offerId)
+  if (!chain.ok) return { ok: false, error: `offer_chain_unreadable: the agent concessions on this offer could not be checked (${chain.reason})` }
+  const ids = [...new Set([input.offerId, ...chain.rows.map((r) => String((r as { id: string }).id))])]
+  const { data, error } = await db
+    .from("commission_adjustments")
+    .select("*")
+    .eq("brokerage_id", input.brokerageId)
+    .in("offer_id", ids)
+    .eq("applies_to", "gross")
+    .eq("direction", "credit")
+  if (error) return { ok: false, error: `concessions_read_refused: the agent concessions on this offer could not be checked (${error.message})` }
+  return { ok: true, unauthorized: unauthorizedOfferConcessions((data ?? []) as Array<Record<string, unknown>>), chainOfferIds: ids }
+}
+
+/** The sentence every refusing door returns (one wording, so the agent hears the same remedy from every door). */
+export function unauthorizedConcessionRefusal(unauthorized: ReadonlyArray<{ value: number; valueType: string; beneficiary: string | null }>, door: string): string {
+  const what = unauthorized.map((u) => `${u.valueType === "percent" ? `${u.value}%` : `$${u.value.toLocaleString("en-US")}`}${u.beneficiary ? ` to the ${u.beneficiary}` : ""}`).join(", ")
+  return `${door} is held: ${unauthorized.length} agent concession(s) promised on this offer (${what}) still await the broker's approval. Sending it now would commit the brokerage's money before the broker answered — ask the broker to decide the concession (or withdraw it), then send again.`
 }
 
 /**

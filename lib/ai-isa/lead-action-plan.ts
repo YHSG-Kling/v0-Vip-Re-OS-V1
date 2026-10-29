@@ -2347,7 +2347,12 @@ export async function recordAndExecuteExperience(
       const r = await delegate({
         brokerageId, missionId: args.missionId ?? null, requestingManager: requester, assignedManager: exec.manager, capability: exec.capability,
         objective: `Next best experience for contact ${contactId}: ${chosen.kind} — ${chosen.reasons[0] ?? ""}`,
-        inputEntities: { contact_id: contactId, experience: chosen.kind, reasons: chosen.reasons, due_at: chosen.dueAt?.toISOString() ?? null, ...(chosen.via ? { routed_via: chosen.via } : {}) },
+        // WAVE 146 (lane 146I — closes lane 144F Still open 7): the arbiter's CHANNEL and FORMAT travel with the hand-off, so
+        // the delegated manager executes the decision that was made (and ledgered) instead of re-deciding it blind.
+        inputEntities: {
+          contact_id: contactId, experience: chosen.kind, reasons: chosen.reasons, due_at: chosen.dueAt?.toISOString() ?? null, ...(chosen.via ? { routed_via: chosen.via } : {}),
+          ...(args.arbitration ? { channel: (args.arbitration.channel as string | null | undefined) ?? null, format: (args.arbitration.format as string | null | undefined) ?? null, stance: (args.arbitration.stance as string | null | undefined) ?? null } : {}),
+        },
         actor: { type: "manager", id: requester },
       }, svc)
       if (!r.ok) return { mode: "unexecuted", manager: exec.manager, reason: r.reason }

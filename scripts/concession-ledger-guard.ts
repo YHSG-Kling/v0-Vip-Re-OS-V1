@@ -388,8 +388,22 @@ async function main() {
   const MODEL_CALL = /\b(generateText|generateObject|streamText|generateTextRouted|generateObjectRouted|bookedGenerateObject|bookedGenerateText)\s*\(/
   const offenders = DOMAIN.filter((f) => MODEL_CALL.test(code(f)))
   check(`no file in this lane's money domain (${DOMAIN.length} files, stripped) calls a model — POSITIVE CONTROL: the finder sees a model call in a specimen`, offenders.length === 0 && MODEL_CALL.test(`const { text } = await generateTextRouted({`), offenders.join(", "))
-  const outsideAi = ["lib/offers/regional-closing-costs.ts", "app/actions/buyer-closing-costs.ts", "app/actions/financials.ts"].filter((f) => { try { return /applyAiRefinements|generateTextRouted|generateObjectRouted/.test(code(f)) } catch { return false } })
-  console.log(`  · REPORTED (outside this lane's domain, not asserted): model-adjusted money paths still live in ${outsideAi.join(", ")} — see the lane notes, Outside-lane`)
+  // RE-ASSERTED (wave 146, lane 146I — closes 144D Outside-lane 3 / 144X "D3"): this line used to REPORT the three paths by
+  // NAME (applyAiRefinements / a model call present), which keeps reading "model-adjusted money" after the fix landed — a
+  // name is not a behaviour. The RULE is asserted instead: the model's figures never reach the buyer's estimate (only its
+  // reason is attached), and the year-end GCI range is computed before the model is asked to narrate it.
+  {
+    const rc = await import("../lib/offers/regional-closing-costs")
+    const conv = { stateName: "Texas" } as never
+    const before = [{ label: "Title insurance", low: 1_000, high: 1_400, source: "regional_estimate", sourceLabel: "regional estimate — Texas" }] as never as Parameters<typeof rc.applyAiRefinements>[0]
+    const r = rc.applyAiRefinements(before, [{ label: "Title insurance", reason: "promulgated rates scale with price", low: 5, high: 99_999 }], conv)
+    const line = r.lines[0] as { low: number; high: number; note?: string }
+    check("the model's numbers never reach the buyer's estimate: low / high are the regional model's (1,000–1,400) after an adjustment that named 5–99,999; the reason is attached and the ignored figures are NAMED (POSITIVE CONTROL: the line did change — it gained the explanation)",
+      line.low === 1_000 && line.high === 1_400 && /promulgated rates/.test(line.note ?? "") && r.figuresIgnored.includes("Title insurance"), JSON.stringify(r))
+    const fin = code("app/actions/financials.ts")
+    check("the year-end GCI range is DETERMINISTIC (yearEndGciRange) and computed before the model narrates; the prompt forbids the model any other dollar figure",
+      /function yearEndGciRange\(/.test(fin) && fin.indexOf("yearEndGciRange(") < fin.indexOf("generateTextRouted(") && /do NOT compute, adjust or invent any other dollar figure/.test(fin))
+  }
 
   // ══ K · the closing orchestration honours the CDA setting ═══════════════════════════════════════
   console.log("\n[K · the closing-orchestration cron raises a CDA alarm ONLY for a CDA brokerage]")
@@ -408,6 +422,51 @@ async function main() {
   const oYes = orch(true); setSvc(oYes); await quiet(() => runClosingOrchestration())
   const cdaAlarm = (s: Svc) => rows(s, "transaction_pending_actions").filter((r) => r.action_type === "cda_missing").length
   check("a NO-CDA brokerage gets no 'CDA not delivered' alarm 3 days from close; a CDA brokerage does (POSITIVE CONTROL)", cdaAlarm(oNo) === 0 && cdaAlarm(oYes) === 1, `no-cda ${cdaAlarm(oNo)}, cda ${cdaAlarm(oYes)}`)
+
+  // ══ M · ask the broker FIRST — no door sends a pending concession (wave 146, lane 146I; 145C Outside-lane 6) ════════════
+  console.log("\n[M · before dispatch: an offer / counter / acceptance carrying a concession that still awaits the broker is HELD]")
+  {
+    const ac = await import("../lib/commission/agent-concession")
+    const { memSupabase } = await import("./in-memory-supabase")
+    const B1 = uuid(), B2 = uuid(), ROOT_O = uuid(), CTR = uuid(), LONE = uuid()
+    const offers = [
+      { id: ROOT_O, brokerage_id: B1, parent_offer_id: null, offer_type: "offer", current_round: 1, status: "countered", created_at: "2026-10-01T00:00:00Z" },
+      { id: CTR, brokerage_id: B1, parent_offer_id: ROOT_O, offer_type: "counter", current_round: 2, status: "pending", created_at: "2026-10-02T00:00:00Z" },
+      { id: LONE, brokerage_id: B1, parent_offer_id: null, offer_type: "offer", current_round: 1, status: "pending", created_at: "2026-10-03T00:00:00Z" },
+    ]
+    const adj = (offerId: string, status: string, brokerageId = B1) => ({ id: uuid(), brokerage_id: brokerageId, offer_id: offerId, transaction_id: null, applies_to: "gross", direction: "credit", value: 2_500, value_type: "flat", recipient_type: "buyer", approval_status: status, is_active: true })
+    // the concession is promised on the ROOT; the door asked about is the COUNTER — the chain walk must find it
+    const held = await ac.unauthorizedConcessionsOnOfferChain(memSupabase({ offers, commission_adjustments: [adj(ROOT_O, "requested")] }) as never, { brokerageId: B1, offerId: CTR })
+    const approved = await ac.unauthorizedConcessionsOnOfferChain(memSupabase({ offers, commission_adjustments: [adj(ROOT_O, "approved"), adj(CTR, "not_required"), adj(CTR, "denied"), adj(CTR, "withdrawn")] }) as never, { brokerageId: B1, offerId: CTR })
+    const otherChain = await ac.unauthorizedConcessionsOnOfferChain(memSupabase({ offers, commission_adjustments: [adj(ROOT_O, "requested")] }) as never, { brokerageId: B1, offerId: LONE })
+    const otherTenant = await ac.unauthorizedConcessionsOnOfferChain(memSupabase({ offers, commission_adjustments: [adj(ROOT_O, "requested", B2)] }) as never, { brokerageId: B1, offerId: CTR })
+    check("a 'requested' concession promised anywhere on the chain (root) holds a door asked about the counter; approved / not_required / denied / withdrawn never hold (POSITIVE CONTROL both ways)",
+      held.ok && held.unauthorized.length === 1 && held.chainOfferIds.includes(ROOT_O) && approved.ok && approved.unauthorized.length === 0, JSON.stringify({ held, approved }))
+    check("another chain's request does not hold this offer, and another brokerage's row is never read (tenant-pinned)",
+      otherChain.ok && otherChain.unauthorized.length === 0 && otherTenant.ok && otherTenant.unauthorized.length === 0)
+    const refusing: any = { from: (t: string) => t === "offers"
+      ? memSupabase({ offers }).from("offers")
+      : ({ select: () => ({ eq: () => ({ in: () => ({ eq: () => ({ eq: async () => ({ data: null, error: { message: "permission denied for table commission_adjustments" } }) }) }) }) }) }) }
+    const unread = await ac.unauthorizedConcessionsOnOfferChain(refusing, { brokerageId: B1, offerId: CTR })
+    const noTenant = await ac.unauthorizedConcessionsOnOfferChain(memSupabase({ offers }) as never, { brokerageId: "", offerId: CTR })
+    check("FAIL CLOSED: a refused concession read and a missing tenant are refusals BY NAME, never 'nothing pending'",
+      !unread.ok && /concessions_read_refused/.test(unread.error) && !noTenant.ok && /no_tenant/.test(noTenant.error), JSON.stringify({ unread, noTenant }))
+    check("one refusal sentence names the amount, the beneficiary and the remedy (ask the broker to decide or withdraw)",
+      held.ok && /\$2,500 to the buyer/.test(ac.unauthorizedConcessionRefusal(held.unauthorized, "This counter")) && /ask the broker to decide the concession \(or withdraw it\)/.test(ac.unauthorizedConcessionRefusal(held.unauthorized, "x")))
+    // every send / e-sign / counter / acceptance door asks it BEFORE it acts (stripped source — a tombstone naming it is not a call)
+    const DOORS: Array<[string, string, string]> = [
+      ["app/actions/buyer-offer/submit-for-signature.ts", "unauthorizedConcessionsOnOfferChain(", "dispatchEsignPacket("],
+      ["app/actions/buyer-offer/outside-offer-loop.ts", "unauthorizedConcessionsOnOfferChain(", "dispatchEmail("],
+      ["lib/kernel/offers.ts", "unauthorizedConcessionsOnOfferChain(", '.from("offers")\n    .insert('],
+      ["app/actions/buyer-offer/respond-to-counter.ts", "unauthorizedConcessionsOnOfferChain(", "COUNTER_RECEIVED"],
+    ]
+    const gateBefore = (src: string, gate: string, act: string) => { const g = src.indexOf(gate), a = src.indexOf(act, Math.max(0, g)); return g >= 0 && a > g }
+    const missing = DOORS.filter(([f, gate, act]) => !gateBefore(code(f), gate, act)).map(([f]) => f)
+    const kOffers = code("lib/kernel/offers.ts")
+    const acceptGated = gateBefore(kOffers.slice(kOffers.indexOf("export async function acceptOffer")), "unauthorizedConcessionsOnOfferChain(", "status: \"accepted\"")
+    check(`every door asks before it acts — e-sign, outside send, counter issue, counter response, offer acceptance (${DOORS.length + 1} doors; POSITIVE CONTROL: a door whose act precedes the gate is caught)`,
+      missing.length === 0 && acceptGated && !gateBefore(`await dispatchEmail(x)\nunauthorizedConcessionsOnOfferChain(y)`, "unauthorizedConcessionsOnOfferChain(", "dispatchEmail("), missing.join(", "))
+  }
 
   // ══ L · the migration ═══════════════════════════════════════════════════════════════════════════
   console.log("\n[L · the migration]")

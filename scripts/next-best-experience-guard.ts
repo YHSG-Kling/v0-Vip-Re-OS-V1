@@ -261,6 +261,15 @@ function recorders(delegateOk = true): { rec: Rec; deps: Parameters<typeof recor
   const out = await recordAndExecuteExperience({}, { brokerageId: "b1", contactId: "c1", plan, now: NOW, missionId: "m-9" }, deps)
   check("education → DELEGATED to campaign_orchestrator / education_assign through the 105A seam", out.execution.mode === "delegated" && rec.delegations[0]?.assignedManager === "campaign_orchestrator" && rec.delegations[0]?.capability === "education_assign" && rec.delegations[0]?.requestingManager === "ai_isa")
   check("…the delegation carries the mission and the contact", rec.delegations[0]?.missionId === "m-9" && rec.delegations[0]?.inputEntities?.contact_id === "c1" && rec.delegations[0]?.inputEntities?.experience === "education")
+  // wave 146 (lane 146I — closes 144F Still open 7): an ARBITRATED experience hands the arbiter's channel / format / stance to the
+  // delegated manager; an unarbitrated one invents none (POSITIVE CONTROL: the keys are absent without an arbitration).
+  {
+    const r2 = recorders()
+    await recordAndExecuteExperience({}, { brokerageId: "b1", contactId: "c1", plan, now: NOW, arbitration: { channel: "email", format: "video", stance: "notify_human" } }, r2.deps)
+    const ie = r2.rec.delegations[0]?.inputEntities ?? {}
+    check("…an ARBITRATED delegation carries the arbiter's channel, format and stance; an unarbitrated one carries none (no channel is invented)",
+      ie.channel === "email" && ie.format === "video" && ie.stance === "notify_human" && !("channel" in (rec.delegations[0]?.inputEntities ?? {})), JSON.stringify(ie))
+  }
   const l = rec.ledger[0]
   check("LEDGER: journey.experience.education, actor manager ai_isa, subject contact, policy ai_isa_settings", l?.action === "journey.experience.education" && l?.actor?.managerKey === "ai_isa" && l?.subject?.id === "c1" && l?.policyKey === "ai_isa_settings" && l?.brokerageId === "b1")
   check("LEDGER: detail.experience is the vocabulary word the outcome engine reads", l?.detail?.experience === "education" && Array.isArray(l?.detail?.ranked) && l?.detail?.mission_id === "m-9")

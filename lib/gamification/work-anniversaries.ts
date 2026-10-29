@@ -40,11 +40,18 @@ export function anniversaryYearsOn(startedAt: string | null | undefined, now: Da
   return null
 }
 
-/** PURE: the date an anniversary counts from — anniversary_date when stamped, else created_at.
- *  @proofSeam the proof asserts the preference and the fallback. */
-export function anniversaryStartDate(a: { created_at: string | null; anniversary_date?: string | null }): string | null {
-  return a.anniversary_date ?? a.created_at
+/** PURE: the date an anniversary counts from. WAVE 146 (lane 146I — closes lane 145C Outside-lane 7): agents.start_date FIRST —
+ *  the effective date of the agent's EXECUTED agreement (m858; its one writer is lib/agreements setAgentStartDateFromAgreement,
+ *  contract C6 of wave 145 — nobody else writes it, reading is encouraged); then the seat stamp anniversary_date; then
+ *  created_at for seats provisioned before the stamp. Nothing is inferred: an unsourced start date is simply absent.
+ *  @proofSeam the proof asserts the preference order and each fallback. */
+export function anniversaryStartDate(a: { created_at: string | null; anniversary_date?: string | null; start_date?: string | null }): string | null {
+  return a.start_date ?? a.anniversary_date ?? a.created_at
 }
+
+/** The roster columns anniversaryStartDate reads (one list, so the read and the rule cannot drift).
+ *  @proofSeam the gamification proof derives the columns the rule reads from this list and refuses a list missing one */
+export const ANNIVERSARY_ROSTER_COLUMNS = "id, created_at, anniversary_date, start_date"
 
 export interface WorkAnniversaryResult { brokerages: number; agents: number; emitted: number }
 
@@ -52,7 +59,7 @@ export interface WorkAnniversaryResult { brokerages: number; agents: number; emi
 async function runWorkAnniversaries(svc: Svc, params: { brokerageId: string; now?: Date }): Promise<Omit<WorkAnniversaryResult, "brokerages">> {
   const now = params.now ?? new Date()
   const out = { agents: 0, emitted: 0 }
-  const { data: agents, error } = await svc.from("agents").select("id, created_at, anniversary_date")
+  const { data: agents, error } = await svc.from("agents").select(ANNIVERSARY_ROSTER_COLUMNS)
     .eq("brokerage_id", params.brokerageId).eq("is_active", true).limit(5000)
   if (error) {
     console.error(`[work-anniversaries] agent roster read refused for ${params.brokerageId}: ${error.message}`)
@@ -60,7 +67,7 @@ async function runWorkAnniversaries(svc: Svc, params: { brokerageId: string; now
   }
   const { emitKernelEvent } = await import("@/lib/kernel/emit")
   const { KernelEvent } = await import("@/lib/kernel/events")
-  for (const a of (agents ?? []) as Array<{ id: string; created_at: string | null; anniversary_date: string | null }>) {
+  for (const a of (agents ?? []) as Array<{ id: string; created_at: string | null; anniversary_date: string | null; start_date: string | null }>) {
     out.agents++
     const startedAt = anniversaryStartDate(a)
     const years = anniversaryYearsOn(startedAt, now)

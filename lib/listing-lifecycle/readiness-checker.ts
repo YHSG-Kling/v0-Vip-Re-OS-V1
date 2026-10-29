@@ -764,17 +764,37 @@ async function checkComingSoonPolicy(
   } catch (err) {
     loaded = { ok: false, error: `the coming-soon policy could not be read: ${err instanceof Error ? err.message : String(err)}` }
   }
+  // THE MLS-SUBMISSION CLOCK (wave 146, lane 146I — closes lane 145B Outside-lane 15). Public marketing of a Coming Soon
+  // listing starts at activation (the COMING_SOON_ACTIVE door is where the creative is checked and published), so the
+  // business days since stage_entered_at are the days the MLS's "submit within N business days of public marketing" rule
+  // counts. On entry it is 0. Weekdays only (UTC); public holidays are NOT excluded — that over-counts, which can only
+  // block earlier, never later (the closed side). A listing that is not in the stage has no clock (null), as before.
+  const businessDaysSincePublicMarketing = Number.isFinite(enteredAt) ? weekdaysBetween(enteredAt, Date.now()) : null
   const verdict = evaluateComingSoonReadiness(loaded.ok ? loaded.policy : null, {
     mlsSlug: null,
     stateCode: (listing.state as string | null) ?? null,
     daysInComingSoon,
     showingsScheduled,
-    businessDaysSincePublicMarketing: null,
+    businessDaysSincePublicMarketing,
   })
   return {
     check: "coming_soon_policy",
     passed: verdict.ready,
     reason: verdict.ready ? undefined : [loaded.ok ? null : loaded.error, ...verdict.blockers].filter(Boolean).join("; "),
-    details: { status: verdict.status, blockers: verdict.blockers, source: verdict.source, showingsScheduled, daysInComingSoon },
+    details: { status: verdict.status, blockers: verdict.blockers, source: verdict.source, showingsScheduled, daysInComingSoon, businessDaysSincePublicMarketing },
   }
+}
+
+/** PURE — whole weekdays (Mon–Fri, UTC) elapsed after `fromMs` up to `toMs`; the start day is day 0. Module-private: the
+ *  adaptive-vocabulary proof drives it through the door (evaluateReadinessChecks → details.businessDaysSincePublicMarketing). */
+function weekdaysBetween(fromMs: number, toMs: number): number {
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) return 0
+  const DAY = 86_400_000
+  const start = Math.floor(fromMs / DAY), end = Math.floor(toMs / DAY)
+  let n = 0
+  for (let d = start + 1; d <= end; d++) {
+    const dow = new Date(d * DAY).getUTCDay()
+    if (dow !== 0 && dow !== 6) n++
+  }
+  return n
 }

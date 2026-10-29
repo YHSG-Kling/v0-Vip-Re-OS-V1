@@ -2094,6 +2094,17 @@ export async function activateMLS(params: {
     }
   }
 
+  // ── THE PLANNED MLS LIVE DATE (wave 146, lane 146I — closes lane 143A Still open 2) ──────────────────────────────
+  // The launch door (lib/kernel/listings.ts validateListingLaunchReadiness → launchListing) has refused, since wave 143,
+  // to mark a listing active before its seller-agreed MLS live date; this door — the other way to MLS_ACTIVE — never
+  // asked. The ONE rule (lib/listings/mls-live-date.ts plannedMlsLiveDateLaunchBlocker: a verified live date from a feed
+  // lifts it, the comparison is in the listing's own zone) now answers here too, so the two doors cannot disagree.
+  {
+    const { plannedMlsLiveDateLaunchBlocker } = await import("@/lib/listings/mls-live-date")
+    const plannedBlock = await plannedMlsLiveDateLaunchBlocker(supabase as any, listingId)
+    if (plannedBlock) return { success: false, error: plannedBlock }
+  }
+
   // Stage transition: MLS_READY → MLS_ACTIVE
   const transitionResult = await transitionLifecycle({
     entityType:  "listing_stage_machine",

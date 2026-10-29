@@ -281,21 +281,54 @@ export async function orchestrateVoicedropSend(
   // The exact param shape is provider-specific; we route via
   // callConnector so swapping providers is a config change, not a
   // code change.
-  const res = await callConnector<{ job_id?: string; success?: boolean; error?: string }>({
-    connector: "voicedrop",
-    baseUrl:   "https://www.mobile-sphere.com",
-    path:      "gateway/vmb.php",
-    method:    "POST",
-    auth:      { style: "none" },
-    bodyType:  "form",
-    body: {
-      c_uid:      apiKey,
-      c_url:      audioUrl,
-      c_callerID: fromPhone,
-      c_audio:    "mp3",
-      c_phone:    args.toPhone,
+  //
+  // EVIDENCE (wave 146, lane 146I — closes lane 145D Still open 5; LAW 5 "consequential actions leave evidence"): the drop
+  // is a regulated phone touch, and until now its only evidence was the vendor booking, an activities row and a kernel event
+  // — no agent_action_ledger row said who/why/which provider/what happened. The provider call is now claimed → run → settled
+  // through the ONE ledger wrapper (lib/kernel/action-ledger.ts withActionLedger), like every dispatch.ts send. No cycle is
+  // given, so nothing is deduplicated that was not before; a ledger that cannot claim refuses the drop by name (a non-acting
+  // claim is never "sent").
+  type DropResponse = Awaited<ReturnType<typeof callConnector<{ job_id?: string; success?: boolean; error?: string }>>>
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const res: DropResponse = await withActionLedger<DropResponse>(
+    {
+      brokerageId: args.brokerageId,
+      action: "comms.voice_drop.send",
+      actor: args.agentUserId ? { type: "user", userId: args.agentUserId } : { type: "system" },
+      subject: args.contactId ? { type: "contact", id: args.contactId } : args.leadId ? { type: "lead", id: args.leadId } : { type: "phone", ref: args.toPhone },
+      reasonCode: "UNSPECIFIED",
+      reasonDetail: `voice drop preset "${preset.name}" via ${args.systemSource ?? "voicedrop"}`,
+      channel: "voice_drop",
+      riskClass: "COMMUNICATION",
+      systemSource: args.systemSource ?? "voicedrop",
+      detail: { preset_id: preset.id, provider: providerKey, situational_script: !!args.scriptOverride?.trim(), tcpa_gate: "passed" },
     },
-  })
+    () => callConnector<{ job_id?: string; success?: boolean; error?: string }>({
+      connector: "voicedrop",
+      baseUrl:   "https://www.mobile-sphere.com",
+      path:      "gateway/vmb.php",
+      method:    "POST",
+      auth:      { style: "none" },
+      bodyType:  "form",
+      body: {
+        c_uid:      apiKey,
+        c_url:      audioUrl,
+        c_callerID: fromPhone,
+        c_audio:    "mp3",
+        c_phone:    args.toPhone,
+      },
+    }),
+    {
+      settle: (r) => r.ok && !!r.data?.success
+        ? { status: "executed", outcome: "accepted", provider: providerKey, providerRef: r.data?.job_id ?? null, costUsd: null }
+        : { status: r.status === null && /timeout|timed out|abort/i.test(String(r.error ?? "")) ? "unknown" : "failed", outcome: r.ok ? "provider_refused" : "provider_error", provider: providerKey, error: String(r.data?.error ?? r.error ?? `status ${r.status ?? "none"}`) },
+      replay: (claim) => ({
+        ok: false, status: null, headers: {}, drift: null,
+        data: { success: false, error: claim.kind === "refused" ? `action_ledger_refused: ${claim.error}` : `action_ledger_${claim.kind}: an identical drop was already claimed — not re-sent` },
+        error: `action_ledger_${claim.kind}`,
+      } as DropResponse),
+    },
+  )
 
   // THE SPEND (wave 139, 139C) — a delivered drop on the PLATFORM key was neither priced nor booked.
   // Slybroadcast's API price is UNKNOWN (no primary source — cost-normalizer VENDOR_PRICING.voicedrop),

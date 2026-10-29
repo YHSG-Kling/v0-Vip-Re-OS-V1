@@ -753,22 +753,49 @@ const notifyOpenFindings: ClosingNotifier = async (svc, tx, changed, trigger) =>
       if (u) users.add(u)
     }
     const lines = changed.slice(0, 8).map((c) => `• ${c.check_label}: ${(c.failure_reason ?? "").replace(/\s*\[sig:[^\]]*\]\s*$/, "")}`)
-    const sent = await notifyComplianceFlag(svc, {
-      brokerageId: tx.brokerage_id,
-      agentUserId: [...users][0] ?? null,
-      alsoNotifyUserIds: [...users].slice(1),
-      transactionId: tx.id,
-      flag: {
-        type: "compliance.closing_discrepancy",
-        severity: blocking.length > 0 ? "high" : "medium",
-        title: blocking.length > 0
-          ? `Closing compliance: ${blocking.length} item${blocking.length === 1 ? "" : "s"} must be corrected before the CDA`
-          : `Closing compliance: ${changed.length} item${changed.length === 1 ? "" : "s"} need review`,
-        body: `${lines.join("\n")}${changed.length > 8 ? `\n…and ${changed.length - 8} more` : ""}\nNothing on the signed contract was changed — correct the settlement statement, or upload the executed amendment, then it re-checks automatically. (${trigger})`,
-        entityType: "transaction",
-        entityId: tx.id,
+    // LAW 5 (wave 146, lane 146I — closes lane 143B Outside-lane 10): each closing notice is a ledger row — who was told, why
+    // (COMPLIANCE_NOTICE), what changed, which trigger. The checklist rows that answered carry their own policy versions
+    // (required_document:<rule_id>, wave 144); the notice itself runs under no tenant policy key, so none is claimed.
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    const sent = await withActionLedger<{ notified_count: number }>(
+      {
+        brokerageId: tx.brokerage_id,
+        action: "compliance.closing_notice.send",
+        actor: { type: "system" },
+        subject: { type: "transaction", id: tx.id },
+        reasonCode: "COMPLIANCE_NOTICE",
+        reasonDetail: `${changed.length} closing-compliance item(s) changed (${blocking.length} blocking) — ${trigger}`.slice(0, 500),
+        channel: "in_app",
+        riskClass: "COMMUNICATION",
+        systemSource: "closing_compliance",
+        detail: { trigger, changed: changed.map((c) => c.check_type).slice(0, 20), blocking: blocking.length, recipients: users.size },
       },
-    })
+      async () => notifyComplianceFlag(svc, {
+        brokerageId: tx.brokerage_id,
+        agentUserId: [...users][0] ?? null,
+        alsoNotifyUserIds: [...users].slice(1),
+        transactionId: tx.id,
+        flag: {
+          type: "compliance.closing_discrepancy",
+          severity: blocking.length > 0 ? "high" : "medium",
+          title: blocking.length > 0
+            ? `Closing compliance: ${blocking.length} item${blocking.length === 1 ? "" : "s"} must be corrected before the CDA`
+            : `Closing compliance: ${changed.length} item${changed.length === 1 ? "" : "s"} need review`,
+          body: `${lines.join("\n")}${changed.length > 8 ? `\n…and ${changed.length - 8} more` : ""}\nNothing on the signed contract was changed — correct the settlement statement, or upload the executed amendment, then it re-checks automatically. (${trigger})`,
+          entityType: "transaction",
+          entityId: tx.id,
+        },
+      }),
+      {
+        settle: (r) => r.notified_count > 0
+          ? { status: "executed", outcome: `notified:${r.notified_count}` }
+          : { status: "skipped", outcome: "no_recipient", error: "no agent on the deal resolved to a user to tell" },
+        // No cycle is given, so a replay cannot occur; a ledger that REFUSES the claim holds the notice (said, never silent) —
+        // the blocking compliance rows above still stand and the gate still refuses on them.
+        replay: (claim) => { console.error(`[closing-compliance] closing notice for ${tx.id} held — the action ledger did not claim it (${claim.kind}${claim.kind === "refused" ? `: ${claim.error}` : ""})`); return { notified_count: 0 } },
+      },
+      { client: svc as never },
+    )
     return sent.notified_count
   } catch (err) {
     console.error("[closing-compliance] notification failed (non-fatal):", (err as Error)?.message ?? err)

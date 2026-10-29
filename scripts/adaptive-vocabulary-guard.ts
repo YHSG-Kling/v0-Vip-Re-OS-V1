@@ -475,6 +475,22 @@ async function main() {
   check("an unreadable policy → REFUSED (fail closed), the read error named", !blindDoor.passed && /could not be read/.test(blindDoor.reason ?? ""), JSON.stringify(blindDoor))
   const unanchored = await runDoor(memSupabase({ listings: [{ id: LST, brokerage_id: null, state: "FL" }], showings: [] }) as any, csMem)
   check("a listing with no brokerage anchor → REFUSED", unanchored.passed === false)
+  // WAVE 146 (lane 146I — closes 145B Outside-lane 15): the public-marketing → MLS-submission clock is MEASURED at the door
+  // (business days since the listing entered COMING_SOON_ACTIVE — public marketing starts at activation), never passed as null.
+  {
+    const activeFor = (daysAgo: number) => memSupabase({
+      listings: [{ id: LST, brokerage_id: B, state: "FL", lifecycle_stage: "COMING_SOON_ACTIVE", stage_entered_at: new Date(Date.now() - daysAgo * 86_400_000).toISOString() }],
+      showings: [],
+    }) as any
+    const fresh = await runDoor(activeFor(0), csMem)
+    const late = await runDoor(activeFor(8), csMem)
+    const week = await runDoor(activeFor(7), csMem)
+    // 7 calendar days always contain exactly 5 weekdays, whatever day the run falls on — the weekday arithmetic, measured at the door
+    check("the clock counts WEEKDAYS: 7 calendar days since activation = exactly 5 business days (any run day); the activation day = 0",
+      Number((week.details as any)?.businessDaysSincePublicMarketing) === 5 && Number((fresh.details as any)?.businessDaysSincePublicMarketing) === 0, JSON.stringify({ week: week.details, fresh: fresh.details }))
+    check("a FL listing marketed publicly since activation 8 days ago (≥ 5 business days, past the attested submission window) → REFUSED citing the MLS submission rule; the same listing on its activation day PASSES (POSITIVE CONTROL)",
+      fresh.passed === true && late.passed === false && /submitted to the MLS within/.test(late.reason ?? "") && Number((late.details as any)?.businessDaysSincePublicMarketing) >= 5, JSON.stringify({ fresh, late }))
+  }
   const bodyOf = (s: string, fn: string) => { const i = s.indexOf(`export async function ${fn}(`); if (i < 0) return ""; const j = s.indexOf("\nexport async function ", i + 10); return s.slice(i, j < 0 ? undefined : j) }
   const readsBeforeMoving = (s: string) => { const b = bodyOf(s, "activateComingSoon"); const r = b.indexOf("evaluateReadinessChecks("), t = b.indexOf("transitionLifecycle("); return r >= 0 && t >= 0 && r < t && /getStageDefinition\("COMING_SOON_ACTIVE"\)/.test(b) }
   check("activateComingSoon (the coming-soon command card + voice door) evaluates the stage's DECLARED readiness before it moves the stage", readsBeforeMoving(codeWithStrings("app/actions/seller-listing/execution-engine.ts")))
