@@ -116,19 +116,21 @@ import { FormWizard } from "@/app/components/form-wizard/FormWizard"
 import { isLifetimeCustomerType } from "@/lib/contact-types"
 
 // Imported from the defining modules (wave 146, proxy-graph budget) — this page mounts ten panels.
-// TOMBSTONE (orphan doctrine §1, 2026-10-29): `./components/os/index.tsx`, the barrel, is DELETED — once this page
-// imported the defining modules it was imported by nothing. Of its three re-exports this page never mounted:
-//   · RelationshipRadar (./components/os/relationship-radar.tsx) and ReferralLikelihoodPanel
-//     (./components/os/referral-likelihood-panel.tsx) are DELETED — never mounted anywhere (git log -S"<RelationshipRadar"
-//     is empty); SURVIVOR: ContactPulsePanel (./components/os/contact-pulse-panel.tsx, mounted below as the "single
-//     consolidated relationship-health card"), whose header :6-7 records that it replaced both and whose props are
-//     the union of theirs (engagement, days since contact, message temperature, open threads, referral potential +
-//     the generate-ask action). Nothing was merged back because nothing was missing.
-//   · PropertyAlertsPanel stays — BuyerMatchPanel (./components/os/buyer-match-panel.tsx:32) mounts it.
-// The barrel also carried the ContactCommandStrip tombstone (lane R3-B 2026-09-03): ./components/os/contact-command-strip.tsx
-// was a superseded duplicate rendered by nobody; SURVIVOR ContactHeaderCard (./components/contact-header-card.tsx, header
-// :3-17 "Replaces ContactCommandStrip"), a strict superset — share-to-social, churn warning, suppression toggles,
-// persona/stage badges, Call/SMS/Portal/Note actions that log to activities.
+// TOMBSTONE (orphan doctrine §1, 2026-10-29): app/crm/components/os/index.tsx (the barrel) is DELETED — once this
+// page imported the defining modules it was imported by nothing. Of its three re-exports this page never mounted:
+//   · app/crm/components/os/relationship-radar.tsx (RelationshipRadar) DELETED and
+//     app/crm/components/os/referral-likelihood-panel.tsx (ReferralLikelihoodPanel) DELETED — never mounted anywhere
+//     (git log -S"<RelationshipRadar" is empty). SURVIVOR: app/crm/components/os/contact-pulse-panel.tsx
+//     (ContactPulsePanel, mounted below as the "single consolidated relationship-health card"), whose header :6-7
+//     records that it replaced both and whose props are the union of theirs (engagement, days since contact, message
+//     temperature, open threads, referral potential + the generate-ask action). Nothing was merged back because
+//     nothing was missing.
+//   · PropertyAlertsPanel stays — app/crm/components/os/buyer-match-panel.tsx:32 mounts it.
+// The barrel also carried the ContactCommandStrip tombstone (lane R3-B 2026-09-03):
+// app/crm/components/os/contact-command-strip.tsx DELETED — a superseded duplicate rendered by nobody.
+// SURVIVOR: app/crm/components/contact-header-card.tsx (ContactHeaderCard, header :3-17 "Replaces ContactCommandStrip"),
+// a strict superset — share-to-social, churn warning, suppression toggles, persona/stage badges, Call/SMS/Portal/Note
+// actions that log to activities.
 import { ContactPulsePanel } from "./components/os/contact-pulse-panel"
 import { CommunicationHealthPanel } from "./components/os/communication-health-panel"
 import { NextBestActionPanel } from "./components/os/next-best-action-panel"
