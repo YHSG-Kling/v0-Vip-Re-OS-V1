@@ -56,7 +56,7 @@ export function MarketingOpsPanel() {
           <p className="text-2xl font-bold">{counts.active}</p>
         </CardContent></Card>
         <Card><CardContent className="pt-4 pb-3">
-          <div className="flex items-center gap-2 mb-1"><Clock className="h-4 w-4 text-amber-500" /><span className="text-xs text-muted-foreground font-medium">Pending Approval</span></div>
+          <div className="flex items-center gap-2 mb-1"><Clock className="h-4 w-4 text-amber-600" /><span className="text-xs text-muted-foreground font-medium">Pending Approval</span></div>
           <p className="text-2xl font-bold">{counts.pendingApproval}</p>
         </CardContent></Card>
         <Card><CardContent className="pt-4 pb-3">
@@ -70,7 +70,7 @@ export function MarketingOpsPanel() {
             about the brokerage that a failed read does not support. */}
         <Card><CardContent className="pt-4 pb-3">
           <div className="flex items-center gap-2 mb-1">
-            {passRateError ? <AlertTriangle className="h-4 w-4 text-amber-500" /> : <CheckCircle2 className="h-4 w-4 text-indigo-600" />}
+            {passRateError ? <AlertTriangle className="h-4 w-4 text-amber-600" /> : <CheckCircle2 className="h-4 w-4 text-indigo-600" />}
             <span className="text-xs text-muted-foreground font-medium">Readiness Pass Rate</span>
           </div>
           <p className="text-2xl font-bold">{counts.passRate != null ? `${Math.round(counts.passRate)}%` : "—"}</p>
@@ -105,7 +105,7 @@ export function MarketingOpsPanel() {
 
           {pendingApproval.length > 0 && (
             <Card className="border-amber-200 bg-amber-50/40">
-              <CardHeader className="pb-2 pt-4"><CardTitle className="text-sm flex items-center gap-2"><Clock className="h-4 w-4 text-amber-500" /> Awaiting Approval ({pendingApproval.length})</CardTitle></CardHeader>
+              <CardHeader className="pb-2 pt-4"><CardTitle className="text-sm flex items-center gap-2"><Clock className="h-4 w-4 text-amber-600" /> Awaiting Approval ({pendingApproval.length})</CardTitle></CardHeader>
               <CardContent className="pb-3 space-y-1">
                 {pendingApproval.map((c) => (
                   <div key={c.id} className="flex items-center justify-between rounded px-2 py-1.5 bg-white border border-amber-100 text-sm">
@@ -119,7 +119,7 @@ export function MarketingOpsPanel() {
 
           {neverLaunched.length > 0 && (
             <Card className="border-gray-200">
-              <CardHeader className="pb-2 pt-4"><CardTitle className="text-sm flex items-center gap-2"><Clock className="h-4 w-4 text-gray-400" /> Stale Drafts — 7+ days, never launched ({neverLaunched.length})</CardTitle></CardHeader>
+              <CardHeader className="pb-2 pt-4"><CardTitle className="text-sm flex items-center gap-2"><Clock className="h-4 w-4 text-gray-500" /> Stale Drafts — 7+ days, never launched ({neverLaunched.length})</CardTitle></CardHeader>
               <CardContent className="pb-3 space-y-1">
                 {neverLaunched.map((c) => (
                   <div key={c.id} className="flex items-center justify-between rounded px-2 py-1.5 bg-white border border-gray-100 text-sm">

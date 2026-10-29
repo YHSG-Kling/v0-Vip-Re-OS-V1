@@ -61,7 +61,9 @@ export interface EmitEventParams {
   const STAFF_ROLES = new Set([
   "agent", "broker", "broker_admin", "broker_owner", "admin", "tc", "transaction_coordinator",
   "compliance_officer", "team_lead", "team_member", "lender", "vendor",
-  "title", "superadmin", "isa",
+  // 'title_agent', the canonical role (lib/security/types.ts maps the legacy 'title' onto it) — the bare 'title' this list
+  // carried matched no canonical role (wave 146, lane 146Z on lane 146H's Outside-lane 5; app-shell's STAFF_AI_ROLES moved too).
+  "title_agent", "superadmin", "isa",
   ])
 
 // ─── ROUTE → REQUIRED ROLE MAP ───────────────────────────────────────────────

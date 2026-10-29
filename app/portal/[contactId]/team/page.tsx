@@ -286,7 +286,7 @@ export default async function TeamPage({
         <Card>
           <CardHeader>
             <CardTitle className="flex flex-wrap items-center gap-2">
-              <Star className="h-5 w-5 text-amber-500" />
+              <Star className="h-5 w-5 text-amber-600" />
               What other clients say
               {agentReviews.metrics.totalReviews > 0 && (
                 <Badge variant="secondary">
@@ -308,7 +308,7 @@ export default async function TeamPage({
                     {[1, 2, 3, 4, 5].map((n) => (
                       <Star
                         key={n}
-                        className={`h-4 w-4 ${n <= (r.rating ?? 0) ? "fill-amber-400 text-amber-400" : "text-muted-foreground/30"}`}
+                        className={`h-4 w-4 ${n <= (r.rating ?? 0) ? "fill-amber-400 text-amber-600" : "text-muted-foreground/30"}`}
                       />
                     ))}
                     <span className="ml-2 text-xs text-muted-foreground">

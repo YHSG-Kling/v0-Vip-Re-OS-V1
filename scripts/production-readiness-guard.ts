@@ -1353,7 +1353,7 @@ const WAVE146_LANE_IDS = ["146A", "146B", "146C", "146D", "146E", "146F", "146G"
 /** NEW proof keys per wave-146 lane (null = the lane had not published its notes when lane 146I closed). */
 const WAVE146_CONTRACT_PROOFS: Readonly<Record<(typeof WAVE146_LANE_IDS)[number], readonly string[] | null>> = Object.freeze({
   "146A": [], "146B": ["test:inbound-communication"], "146C": [], "146D": ["test:customer-360"], "146E": ["test:ads-tv-connections"],
-  "146F": ["test:lead-magnet-promise"], "146G": ["test:manager-governance-change", "test:manager-duplicate-proofs"], "146H": ["test:ui-palette-contrast", "test:ui-capability-surface"], "146I": [], "146J": null,
+  "146F": ["test:lead-magnet-promise"], "146G": ["test:manager-governance-change", "test:manager-duplicate-proofs"], "146H": ["test:ui-palette-contrast", "test:ui-capability-surface"], "146I": [], "146J": ["test:wave146-canaries"],
 })
 const contract146 = (lane: (typeof WAVE146_LANE_IDS)[number]) => WAVE146_CONTRACT_PROOFS[lane] ?? []
 /** Every storage.objects policy migration of the two security lanes' ranges (145A m854–m855, 146A m874–m875). */
@@ -1361,7 +1361,15 @@ const STORAGE_POLICY_MIGRATIONS_146 = [854, 855, 874, 875].map(migrationNamed).f
   .filter((f) => /storage\.objects/i.test(read(`${MIG}/${f}`)))
 const storageApplied146 = STORAGE_POLICY_MIGRATIONS_146.length > 0 && STORAGE_POLICY_MIGRATIONS_146.every((f) => stampOf(f) === "applied")
 const STORAGE_EXTERNAL_146 = storageApplied146 ? undefined
-  : `ruling 20 (1) — the storage.objects policies (${STORAGE_POLICY_MIGRATIONS_146.filter((f) => stampOf(f) !== "applied").join(", ") || "none in the tree"}) are applied in the owner SQL editor and verified (docs/operations/OWNER-SQL.md §F) — release-blocking until each migration carries the applied stamp`
+  : `ruling 20 (1) — the storage.objects policies (${STORAGE_POLICY_MIGRATIONS_146.filter((f) => stampOf(f) !== "applied").join(", ") || "none in the tree"}) are applied in the owner SQL editor and verified (docs/operations/OWNER-SQL.md §F / §G; LIVE: public.storage_bucket_policy_readiness() — the go-live board's storage_policies probe reads 'ready' only when every private document bucket is owner_scoped / service_only) — release-blocking until each migration carries the applied stamp`
+// The LIVE read is wired into the go-live board (wave 146, 146Z on lane 146A's Outside-lane 1): a static guard cannot call the
+// database, so it holds the WIRING — the required probe calls the readiness rpc, never reads a migration stamp, and fails closed.
+const goLiveSrc = stripComments(read("lib/platform/go-live-readiness.ts"))
+const storageProbe = /d\("storage_policies",[^)]*,\s*false\)[\s\S]*?svc\.rpc\("storage_bucket_policy_readiness"\)[\s\S]*?owner_scoped[\s\S]*?service_only/.exec(goLiveSrc)?.[0] ?? ""
+check("G22 the go-live board carries a REQUIRED storage_policies probe that reads the LIVE policy state (rpc storage_bucket_policy_readiness), names no migration stamp, and reads an empty answer as broken (never ready)",
+  storageProbe.length > 0 && !/APPLIED|stampOf|claimOf|WRITTEN, NOT APPLIED/.test(storageProbe) && /rows\.length === 0\) return r\("broken"/.test(goLiveSrc))
+check("G22 POSITIVE CONTROL — the probe finder rejects a stamp-reading probe and an optional one",
+  !/d\("storage_policies",[^)]*,\s*false\)[\s\S]*?svc\.rpc\("storage_bucket_policy_readiness"\)/.test(`const r = d("storage_policies", "x", true); const ok = stampOf("m875") === "applied"`))
 interface Wave146Gate extends GateSpec { gate: string; rulings: string; lanes: Array<(typeof WAVE146_LANE_IDS)[number]> }
 const WAVE146_GATES: Wave146Gate[] = [
   { gate: "access control", rulings: "20 (1)", lanes: ["146A"], hookLanes: ["146A"], canaries: [], external: STORAGE_EXTERNAL_146,

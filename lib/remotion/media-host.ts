@@ -30,7 +30,7 @@
 // returning a URL that does not exist would be worse than raising.
 
 import { checkUpload } from "@/lib/storage/file-limits"
-import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+import { issueBucketObjectUrl, PERSONAL_VIDEO_BUCKET } from "@/lib/storage/document-buckets"
 import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 import { isVideoContentType, probePlayableOutput, describeUnplayable } from "@/lib/video/playable-output"
 
@@ -48,6 +48,37 @@ import { isVideoContentType, probePlayableOutput, describeUnplayable } from "@/l
  * scripts/public-bucket-egress-guard.ts section 9 holds that rule.
  */
 export const RENDER_MEDIA_BUCKET = "video-assets"
+
+/**
+ * PURE (wave 146, lane 146Z). The bucket a finished render of THIS video project is hosted in.
+ *
+ * A project addressed to ONE contact (`contact_id` set — the agent's personal welcome video, a
+ * client's CMA / equity / memory film) is never public marketing (lib/video/public-video.ts
+ * classifyPublicVideo: "addressed_to_a_contact"), so its bytes go to the PRIVATE
+ * PERSONAL_VIDEO_BUCKET and are served through a signed URL — the contact's portal mints a
+ * short-lived one on every read (lib/portal/welcome-video.ts). Every other render keeps the
+ * public bucket its caller names (default video-assets). Before wave 146 the welcome video sat in
+ * video-assets and its URL played for anyone holding it (lane 146C, Still open 4).
+ */
+export function renderHostBucketFor(
+  project: { contact_id?: string | null } | null | undefined,
+  publicBucket: string = RENDER_MEDIA_BUCKET,
+): string {
+  return project?.contact_id ? PERSONAL_VIDEO_BUCKET : publicBucket
+}
+
+/** The private bucket is not live until its first write; created PRIVATE by the one helper, once per process. */
+let personalBucketEnsured: Promise<void> | null = null
+async function ensurePersonalVideoBucket(): Promise<void> {
+  personalBucketEnsured ??= (async () => {
+    const { ensureBucket } = await import("@/lib/storage/buckets")
+    await ensureBucket(PERSONAL_VIDEO_BUCKET, { public: false })
+  })().catch((e) => {
+    personalBucketEnsured = null // a failed ensure is retried by the next write; the upload below says why it failed
+    console.error("[media-host] could not ensure the private personal-videos bucket:", e instanceof Error ? e.message : String(e))
+  })
+  return personalBucketEnsured
+}
 
 /**
  * Store finished render bytes and return the URL to persist.
@@ -106,6 +137,8 @@ export async function hostRenderedMedia(
   if (!gate.ok) {
     throw new Error(`[media-host] refusing to store ${bucket}/${path}: ${gate.reason}`)
   }
+
+  if (bucket === PERSONAL_VIDEO_BUCKET) await ensurePersonalVideoBucket()
 
   // supabase-js RESOLVES refusals (CLAUDE.md §3) — read the error rather than
   // assuming a settled promise means the object landed.

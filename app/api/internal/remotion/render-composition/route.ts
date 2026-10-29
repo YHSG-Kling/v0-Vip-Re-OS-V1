@@ -357,8 +357,17 @@ export async function POST(req: NextRequest) {
           const thumbBytes = await renderStillToBuffer(
             bundleLocation, thumbComposition, thumbProps, executablePath, `${row.id}-thumb`,
           )
-          const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
-          thumbnailUrl = await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}-thumb.png`, thumbBytes, "image/png")
+          const { hostRenderedMedia, renderHostBucketFor } = await import("@/lib/remotion/media-host")
+          // WAVE 146 (146Z): the card of a project addressed to ONE contact is hosted PRIVATE, like its video
+          // (lib/remotion/render-coordinator.ts). An unreadable project skips the card (caught below), never hosts it publicly.
+          let thumbProject: { contact_id?: string | null } | null = null
+          if (row.entity_type === "video_project" && row.entity_id) {
+            const { data: proj, error: projErr } = await svc.from("ai_video_projects")
+              .select("contact_id").eq("id", row.entity_id).eq("brokerage_id", row.brokerage_id).maybeSingle()
+            if (projErr) throw new Error(`card host bucket undecidable — project ${row.entity_id} unreadable: ${projErr.message}`)
+            thumbProject = proj as { contact_id?: string | null } | null
+          }
+          thumbnailUrl = await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}-thumb.png`, thumbBytes, "image/png", renderHostBucketFor(thumbProject))
           const { error: thumbWriteError } = await svc.from("remotion_composition_renders")
             .update({ thumbnail_url: thumbnailUrl })
             .eq("id", row.id)

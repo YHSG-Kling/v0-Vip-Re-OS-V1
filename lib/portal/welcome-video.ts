@@ -41,9 +41,12 @@
  * VISIBLE ONLY TO THAT CONTACT AND THE RELEVANT AGENT / TENANT: the reader is keyed by (brokerage, contact) and both come from
  * the session gate (requireContactAccess admits the contact themselves and same-brokerage contact-scope staff); the render is
  * the contact's CURRENT agent's (a reassigned contact never sees the previous agent's clip); a contact of another brokerage
- * reads `none`. BLIND SPOT, published: the rendered bytes live in the PUBLIC `video-assets` bucket (lib/remotion/media-host.ts —
- * an unguessable path, never listed), so the URL itself is a bearer link once handed to the page; making it private is a
- * storage change (lane 146A's domain — Outside-lane in this lane's notes).
+ * reads `none`. THE BYTES (wave 146, lane 146Z): a render addressed to one contact is hosted in the PRIVATE `personal-videos`
+ * bucket (lib/remotion/media-host.ts renderHostBucketFor), and this reader hands the page a SHORT-LIVED signed URL minted on
+ * every read AFTER the caller's session gate (servePortalVideoUrl — a failed mint serves nothing). BLIND SPOTS, published: a
+ * render stored before wave 146 sits in the public `video-assets` bucket and reads `bytes.kind = "public_bucket"` (0 live rows,
+ * 2026-10-29); the WRITE-time URL persisted on ai_video_projects is still a long-lived signed link (the documented bridge to
+ * sign-on-read — lib/storage/document-buckets.ts issueBucketObjectUrl), which staff surfaces read and the contact's page never does.
  */
 
 import { PENDING_WELCOME_STATUSES, WELCOME_VIDEO_WAIT_MS } from "@/lib/contact-promotion/conversion-welcome"
@@ -96,6 +99,14 @@ export type PortalWelcomeVideo =
       /** agent_intro_videos.id of the welcome render (null when none was ever commissioned). */
       introVideoId: string | null
       playback: PortalWelcomeVideoPlayback
+      /**
+       * Where the bytes live and how `videoUrl` reaches the page (wave 146, 146Z): `private_signed` = a PRIVATE bucket
+       * object, `videoUrl` minted ON THIS READ, valid `ttlSeconds` (lib/storage/document-buckets.ts
+       * PERSONAL_VIDEO_URL_TTL_SECONDS); `public_bucket` = a public-bucket object (a pre-146 render — its URL plays for
+       * anyone who holds it; stated, never hidden); `external` = not one of our storage URLs. `object` = bucket/path, the
+       * evidence spelling (a signed token is a credential and is never recorded).
+       */
+      bytes: PortalWelcomeVideoBytes
     }
   /** A render is genuinely in flight and inside its deadline. The CONTACT sees nothing (never a promise); staff see this. */
   | { state: "preparing"; reason: string; introVideoId: string | null }
@@ -105,6 +116,42 @@ export type PortalWelcomeVideo =
   | { state: "none"; reason: string; introVideoId: string | null }
   /** A read was REFUSED. Fail closed: never `ready`, never "nothing to see" — "nobody checked" is not "checked and fine". */
   | { state: "unavailable"; reason: string; introVideoId: string | null }
+
+interface PortalWelcomeVideoBytes {
+  kind: "private_signed" | "public_bucket" | "external"
+  object: string | null
+  ttlSeconds: number | null
+}
+
+/**
+ * SIGN ON READ (wave 146, lane 146Z — lane 146C Outside-lane 4 / Still open 4). The URL the contact's page receives for a
+ * stored render: a PRIVATE-bucket object (lib/remotion/media-host.ts renderHostBucketFor puts every render addressed to one
+ * contact there) gets a fresh SHORT-LIVED signed URL from THE one issuer (lib/storage/document-buckets.ts
+ * issueBucketObjectUrl) — the persisted write-time URL never reaches the page. A mint that fails is `ok: false`: the
+ * caller serves nothing rather than fall back to a long-lived link (fail closed). Runs only AFTER the caller's session gate.
+ */
+async function servePortalVideoUrl(
+  svc: Svc,
+  url: string | null | undefined,
+): Promise<{ ok: true; url: string; bytes: PortalWelcomeVideoBytes } | { ok: false; reason: string }> {
+  if (!url) return { ok: false, reason: "no stored URL" }
+  const { parseStorageObjectUrl } = await import("@/lib/storage/parse-object-url")
+  const { isDocumentClassBucket, issueBucketObjectUrl, PERSONAL_VIDEO_URL_TTL_SECONDS } = await import("@/lib/storage/document-buckets")
+  const obj = parseStorageObjectUrl(url)
+  if (!obj) return { ok: true, url, bytes: { kind: "external", object: null, ttlSeconds: null } }
+  const object = `${obj.bucket}/${obj.objectPath}`
+  if (!isDocumentClassBucket(obj.bucket)) return { ok: true, url, bytes: { kind: "public_bucket", object, ttlSeconds: null } }
+  const minted = await issueBucketObjectUrl(svc as never, { bucket: obj.bucket, objectPath: obj.objectPath, ttlSeconds: PERSONAL_VIDEO_URL_TTL_SECONDS })
+  if (!minted.ok) return { ok: false, reason: `a short-lived URL for ${object} could not be minted: ${minted.reason}` }
+  return { ok: true, url: minted.url, bytes: { kind: "private_signed", object, ttlSeconds: minted.ttlSeconds } }
+}
+
+/** PURE. The evidence spelling of a stored URL: bucket/path for our storage objects (a signed token is a credential), else the URL. */
+function portalVideoEvidence(url: string | null | undefined, parse: (u: string) => { bucket: string; objectPath: string } | null): string | null {
+  if (!url) return null
+  const o = parse(url)
+  return o ? `${o.bucket}/${o.objectPath}` : url
+}
 
 export interface WelcomeRenderRow {
   id: string
@@ -188,9 +235,16 @@ export async function portalWelcomeVideoFor(
       const s = (data as { script_content?: string | null } | null)?.script_content ?? null
       return s && s.trim() ? s.trim().slice(0, 6000) : null
     }
-    const ready = async (v: { videoUrl: string; posterUrl: string | null; videoProjectId: string; scope: "contact_personal" | "agent_personal" }): Promise<PortalWelcomeVideo> => ({
-      state: "ready", ...v, agentRecordId, transcript: await transcriptFor(v.videoProjectId), introVideoId: row?.id ?? null, playback: await playback(),
-    })
+    const ready = async (v: { videoUrl: string; posterUrl: string | null; videoProjectId: string; scope: "contact_personal" | "agent_personal" }): Promise<PortalWelcomeVideo> => {
+      // SIGN ON READ (wave 146): a private object reaches the page only as a short-lived URL; a failed mint serves nothing.
+      const served = await servePortalVideoUrl(svc, v.videoUrl)
+      if (!served.ok) return { state: "unavailable", reason: `the welcome video is stored privately and ${served.reason} — nothing is served rather than a long-lived link`, introVideoId: row?.id ?? null }
+      const poster = v.posterUrl ? await servePortalVideoUrl(svc, v.posterUrl) : null
+      return {
+        state: "ready", ...v, videoUrl: served.url, posterUrl: poster && poster.ok ? poster.url : null, bytes: served.bytes,
+        agentRecordId, transcript: await transcriptFor(v.videoProjectId), introVideoId: row?.id ?? null, playback: await playback(),
+      }
+    }
 
     // 1. THE RENDER MADE FOR THIS CONTACT — validated by THE one resolver.
     let personalReason: string | null = null
@@ -310,6 +364,8 @@ export async function placePortalWelcomeVideo(
       return { placed: false, readback: back.state, reason: `the portal readback did not show this render (${what}) — nothing stamped; the next tick re-reads` }
     }
     const nowIso = (p.now ?? new Date()).toISOString()
+    // An injected reader (a proof seam) may predate the `bytes` field — read it defensively.
+    const backBytes = (back as { bytes?: PortalWelcomeVideoBytes }).bytes ?? null
     const { withActionLedger } = await import("@/lib/kernel/action-ledger")
     const stamped = await withActionLedger(
       {
@@ -317,7 +373,8 @@ export async function placePortalWelcomeVideo(
         subject: { type: "contact", id: p.contactId }, reasonCode: "CONTACT_WELCOME", channel: "portal", systemSource: PORTAL_WELCOME_VIDEO_WORKFLOW,
         reasonDetail: "owner ruling 6 — the personal welcome video appears in the contact's portal the moment it is validated",
         cycle: `portal_welcome_video:${p.videoProjectId}`,
-        detail: { intro_video_id: p.introVideoId, video_project_id: p.videoProjectId, readback: { state: back.state, scope: back.scope, video_url: back.videoUrl }, expected_url: p.expectedUrl ?? null },
+        // Evidence never carries a signing token (a credential): a storage object is recorded as bucket/path (wave 146).
+        detail: { intro_video_id: p.introVideoId, video_project_id: p.videoProjectId, readback: { state: back.state, scope: back.scope, video_url: backBytes?.kind === "private_signed" ? null : back.videoUrl, video_object: backBytes?.object ?? null, bytes: backBytes?.kind ?? null }, expected_url: portalVideoEvidence(p.expectedUrl, (await import("@/lib/storage/parse-object-url")).parseStorageObjectUrl) },
       },
       async () => {
         const { data, error } = await svc.from("agent_intro_videos")

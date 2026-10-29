@@ -467,6 +467,26 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   //    SLA sweep; an unanswered open ticket stays open on the feed as the owner's item. Derived from
   //    SUPPORT_TRIAGE_CONSUMERS so the owner map and the inbox can never drift (§6). ──
   ...Object.fromEntries(SUPPORT_TRIAGE_CONSUMERS.map((m) => [`${m}:${SUPPORT_TRIAGE_SIGNAL_TYPE}`, (signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc }) => handleSupportTicketTriaged(signal, ctx)])),
+  // Wave 146 (146Z on lane 146D's Outside-lane 3) — campaign_orchestrator → AI ISA: a lead-magnet promise is undelivered.
+  // The ARBITER'S ANSWER runs where the promise is raised — the promised-deliverable sweep (lib/lead-magnets/promised-
+  // deliverables.ts sweepUndeliveredPromises → followup-arbiter respondToPromisedDeliverable, contract C4 passed in) — so this
+  // module never imports C4's delivery stack (manager-signals is page-reachable; lane 146B measured +10 modules → over the
+  // proxy-graph budget). This handler is the VERIFICATION step, as the support-triage handler is: it re-reads THE promise on
+  // its own tenant and records what the arbiter's answer left (delivered / a person's to deliver / still retrying). A refused
+  // read leaves the signal open (null) for the next pass — "nobody checked" is never recorded as handled.
+  "ai_isa:lead_magnet_promise_undelivered": async (signal, ctx) => {
+    const payload = (signal.payload ?? {}) as Record<string, unknown>
+    const promiseId = typeof payload.promise_id === "string" ? payload.promise_id : signal.entityType === "lead_magnet_promise" ? signal.entityId : null
+    if (!promiseId) return "no promise id on the signal — nothing to verify"
+    const { data, error } = await ctx.supabase.from("lead_magnet_promises")
+      .select("id, status, delivered_via, attempts, last_error, fulfilment").eq("id", promiseId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (error) { console.error(`[manager-signals] lead_magnet_promise_undelivered verification read refused: ${error.message}`); return null }
+    const p = data as { status?: string; delivered_via?: string | null; attempts?: number | null; last_error?: string | null; fulfilment?: string | null } | null
+    if (!p) return `promise ${promiseId} is not in this brokerage — nothing to verify`
+    if (p.status === "delivered") return `promise ${promiseId} delivered (${p.delivered_via ?? "unknown channel"}) — verified`
+    if (p.status === "awaiting_human" || p.status === "failed" || p.fulfilment === "human") return `promise ${promiseId} is a person's to deliver (${p.status}) — the arbiter's task is with the agent`
+    return `promise ${promiseId} still ${p.status} after ${p.attempts ?? 0} attempt(s) — the promised-deliverable sweep keeps retrying${p.last_error ? ` (${p.last_error.slice(0, 120)})` : ""}`
+  },
   // AI ISA → Shopping Agent: a qualified person asked for a later callback.
   "shopping_agent:qualification_call_requested": (signal, ctx) => proposeQualificationConfirmation(
     signal, ctx, "shopping_agent",

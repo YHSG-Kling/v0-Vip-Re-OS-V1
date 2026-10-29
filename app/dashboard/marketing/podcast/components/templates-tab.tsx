@@ -152,7 +152,7 @@ export function TemplatesTab({ templates, loading, onUpdate }: TemplatesTabProps
       {templates.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <div className="p-4 bg-gray-100 rounded-full mb-4">
-            <FileText className="h-8 w-8 text-gray-400" />
+            <FileText className="h-8 w-8 text-gray-500" />
           </div>
           <h3 className="text-lg font-semibold text-gray-900 mb-2">No templates yet</h3>
           <p className="text-sm text-gray-500 max-w-sm mb-4">

@@ -256,7 +256,10 @@ export async function GET(request: NextRequest) {
           //
           // WHAT ACTUALLY HAPPENS WHEN THE RE-HOST FAILS is decided below, at
           // finalVideoUrl — see the block there.
-          const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+          const { hostRenderedMedia, renderHostBucketFor } = await import("@/lib/remotion/media-host")
+          // WAVE 146 (146Z): a project addressed to ONE contact (the personal welcome video) is hosted
+          // PRIVATE — never in a public bucket whose URL plays for anyone (lib/remotion/media-host.ts).
+          const hostBucket = renderHostBucketFor(video)
           let persistedVideoUrl: string | null = null
           let persistedThumbnailUrl: string | null = null
           const agentFolder = video.agent_id ?? "shared"
@@ -276,7 +279,7 @@ export async function GET(request: NextRequest) {
               if (videoFetch.ok) {
                 const videoBuffer = Buffer.from(await videoFetch.arrayBuffer())
                 persistedVideoUrl = await hostRenderedMedia(
-                  supabase, `agent-videos/${agentFolder}/${video.id}.${resultExt}`, videoBuffer, `video/${resultExt}`,
+                  supabase, `agent-videos/${agentFolder}/${video.id}.${resultExt}`, videoBuffer, `video/${resultExt}`, hostBucket,
                 )
               } else {
                 console.error(`[poll-did-videos] D-ID result download failed: HTTP ${videoFetch.status}`)
@@ -294,7 +297,7 @@ export async function GET(request: NextRequest) {
               if (thumbFetch.ok) {
                 const thumbBuffer = Buffer.from(await thumbFetch.arrayBuffer())
                 persistedThumbnailUrl = await hostRenderedMedia(
-                  supabase, `agent-videos/${agentFolder}/${video.id}-thumb.jpg`, thumbBuffer, "image/jpeg",
+                  supabase, `agent-videos/${agentFolder}/${video.id}-thumb.jpg`, thumbBuffer, "image/jpeg", hostBucket,
                 )
               }
             } catch (thumbErr: any) {
@@ -441,7 +444,7 @@ export async function GET(request: NextRequest) {
                 // what it was before this change.
                 try {
                   brandedVideoUrl = await hostRenderedMedia(
-                    supabase, brandedPath, result.outputBuffer, "video/mp4", "listing-media",
+                    supabase, brandedPath, result.outputBuffer, "video/mp4", renderHostBucketFor(video, "listing-media"),
                   )
                   // Compliance truth: only the BRAND band satisfies the visual
                   // overlay requirement (b-roll-only composites don't).

@@ -290,7 +290,7 @@ export default async function ListingPlanPage({ params }: PageProps) {
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 px-4 py-12 dark:from-slate-950 dark:to-slate-900">
       <div className="mx-auto max-w-3xl">
         <header className="mb-8 text-center">
-          <p className="text-xs font-semibold uppercase tracking-widest text-amber-600 dark:text-amber-500">
+          <p className="text-xs font-semibold uppercase tracking-widest text-amber-700 dark:text-amber-500">
             Your listing plan
           </p>
           <h1 className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">

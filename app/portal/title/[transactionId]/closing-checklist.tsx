@@ -46,7 +46,7 @@ const DEFAULT_CHECKLIST_ITEMS = [
 const STATUS_CONFIG = {
   pending: { icon: Clock, color: "text-muted-foreground", bg: "bg-slate-100" },
   in_progress: { icon: Clock, color: "text-blue-600", bg: "bg-blue-100" },
-  completed: { icon: CheckCircle2, color: "text-green-600", bg: "bg-green-100" },
+  completed: { icon: CheckCircle2, color: "text-green-700", bg: "bg-green-100" },
 }
 
 export function ClosingChecklist({

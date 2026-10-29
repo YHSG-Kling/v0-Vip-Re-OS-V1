@@ -88,8 +88,9 @@ export async function POST(request: NextRequest) {
     if (opt.isOptOut && opt.confidence === "high") {
       const ack = "Understood — I've recorded that, and we won't call again. Sorry to have bothered you. Goodbye."
       try {
-        const { processOptOut } = await import("@/app/actions/ai-isa/process-opt-out")
-        await processOptOut({
+        // The secret-verified door's writer (wave 146) — not the "use server" action.
+        const { processOptOutFromVerifiedInbound } = await import("@/lib/ai-isa/opt-out-writer")
+        await processOptOutFromVerifiedInbound({
           // Leads are NOT contacts — the opt-out lands on the right entity class.
           entityType: (call as any).contact_id ? "contact" : "lead",
           entityId: (call as any).contact_id ?? (call as any).lead_id,

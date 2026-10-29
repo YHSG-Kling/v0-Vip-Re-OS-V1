@@ -437,6 +437,41 @@ The m874 functions can stay after a rollback (nothing calls them once the polici
 
 Then, in the repository (or ask the integrator): flip line 1 of m874 and m875 to `-- ── APPLIED LIVE <date> …`; lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts`. m874 / m875 add no table, column, CHECK or FK, so no cache regeneration is needed. `scripts/transfer-classification-guard.ts` (section C) holds this section verbatim to m875 and accepts either status line.
 
+## H. `personal-videos` — the private bucket for videos addressed to one contact (wave 146, lane 146Z — owner ruling 6; NOT applied)
+
+**Status (measured 2026-10-29, project `hrvaqgvukzxfskkcrwbt`, read-only): the bucket does not exist yet.** Lane 146C found that the agent's personal welcome video was hosted in the PUBLIC `video-assets` bucket, so its URL played for anyone who held it — against ruling 6 ("the asset is visible only to that contact and the relevant agent/tenant"). Since wave 146 every render addressed to one contact (`ai_video_projects.contact_id` set) is hosted in the PRIVATE `personal-videos` bucket (`lib/remotion/media-host.ts` `renderHostBucketFor`; the D-ID poller, the composition coordinator, the card pass and the D-ID re-host sweep), and the contact's portal receives a **one-hour signed URL minted on every read after its session gate** (`lib/portal/welcome-video.ts` `servePortalVideoUrl`). Live at measurement: 0 contact-addressed video projects, 0 welcome renders, 0 objects in `video-assets` — nothing to move.
+
+The bucket is **SERVICE-ONLY**: no `storage.objects` policy may admit `authenticated` or `anon` on it. The server reads and signs with the service role; a signed URL needs no policy. So there is **no policy to create** — this section exists so the bucket is born private on purpose and stays that way.
+
+The first personal render creates it private through the one helper (`lib/storage/buckets.ts` `ensureBucket`, `public: false`). Run step 1 yourself if you would rather it exist before the first render (it is a `storage.buckets` write, so it is owner SQL like §F/§G):
+
+```sql
+-- 1. (optional — the first render does the same) create the bucket PRIVATE; re-runnable
+INSERT INTO storage.buckets (id, name, public, file_size_limit)
+VALUES ('personal-videos', 'personal-videos', false, 52428800)
+ON CONFLICT (id) DO UPDATE SET public = false;
+```
+
+### Verify afterwards — every expected value must match
+
+```sql
+-- the bucket is private (expect exactly one row, public = false)
+SELECT id, public, file_size_limit FROM storage.buckets WHERE id = 'personal-videos';
+-- NO policy names it (expect 0 rows) — a bucket-wide "auth read personal-videos" would re-open what this section closes
+SELECT policyname, cmd, roles FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND (coalesce(qual, '') ~ 'personal-videos' OR coalesce(with_check, '') ~ 'personal-videos');
+-- and no policy is bucket-agnostic for authenticated (expect 0 rows: a policy with no bucket_id predicate admits every bucket, this one included)
+SELECT policyname, cmd FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND 'authenticated' = ANY (roles) AND coalesce(qual, '') !~ 'bucket_id' AND coalesce(with_check, '') !~ 'bucket_id';
+```
+
+### After it exists live
+
+1. Regenerate `lib/storage/bucket-limits.ts` from `storage.buckets` (the generator header carries the SQL) — it will gain `"personal-videos": { isPublic: false, … }`.
+2. Then `scripts/transfer-classification-guard.ts` section C3 will demand that `public.storage_bucket_policy_readiness()` (m874) covers it, because the read must cover EVERY live, private, document-class bucket: the integrator adds `('personal-videos'::text, NULL::text, ARRAY[]::text[])` to the function's expected list (service-only, like `documents` and `offer-documents`) in a public-schema migration it can apply.
+
+### Rollback
+
+None needed: deleting the bucket is the only undo, and it would delete every personal video in it. A wrong policy is undone with `DROP POLICY IF EXISTS "<name>" ON storage.objects;`.
+
 ## After you run anything on this page
 
 1. In the repository (or ask the integrator): flip the file's first-line status from `WRITTEN, NOT APPLIED` to `APPLIED <date>` and lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file applied.

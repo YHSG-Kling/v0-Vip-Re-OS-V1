@@ -162,11 +162,22 @@ export type RecordPromiseResult =
   | { ok: true; promised: false; reason: string }
   | { ok: false; error: string }
 
-const PROMISE_COLUMNS = "id, brokerage_id, form_id, submission_id, contact_id, person_id, magnet_type, asset_kind, asset_title, asset_ref, fulfilment, status, due_at, attempts, last_attempt_at, next_attempt_at, last_error, delivered_at, delivered_via, evidence, escalated_at, created_at"
+const PROMISE_COLUMNS = "id, brokerage_id, form_id, submission_id, contact_id, person_id, campaign_id, attribution, magnet_type, asset_kind, asset_title, asset_ref, fulfilment, status, due_at, attempts, last_attempt_at, next_attempt_at, last_error, delivered_at, delivered_via, evidence, escalated_at, created_at"
+
+/**
+ * THE SOURCE OF A PROMISE, carried onto its FINAL EVIDENCE (ruling 10: "Capture source campaign/form … final evidence").
+ * campaign_id + attribution are written once by recordPromisedDeliverable; this is their reader (wave 146, lane 146Z — the
+ * readerless-write census found both written and never read): the delivered row names the page and the campaign whose
+ * promise it kept, so the delivery record carries the same provenance the capture recorded.
+ */
+function promiseSource(row: Pick<PromiseRow, "form_id" | "submission_id" | "campaign_id" | "attribution">): Record<string, unknown> {
+  return { form_id: row.form_id, submission_id: row.submission_id, campaign_id: row.campaign_id ?? null, attribution: row.attribution ?? {} }
+}
 
 interface PromiseRow {
   id: string; brokerage_id: string; form_id: string | null; submission_id: string | null; contact_id: string | null
-  person_id: string | null; magnet_type: string; asset_kind: PromiseAssetKind; asset_title: string | null
+  person_id: string | null; campaign_id: string | null; attribution: Record<string, unknown> | null
+  magnet_type: string; asset_kind: PromiseAssetKind; asset_title: string | null
   asset_ref: Record<string, unknown> | null; fulfilment: "system" | "human"; status: PromiseStatus; due_at: string
   attempts: number; last_attempt_at: string | null; next_attempt_at: string | null; last_error: string | null
   delivered_at: string | null; delivered_via: string | null; evidence: Record<string, unknown> | null; escalated_at: string | null
@@ -459,7 +470,7 @@ export async function deliverPromised(svc: Db, input: { brokerageId: string; pro
     const channels: string[] = []
     const evidence: Record<string, unknown> = {
       asset_url: verdict.assetUrl, document_id: verdict.documentId, asset_kind: row.asset_kind, deliverable_kind: prepared.deliverableKind,
-      approval_basis: approvalBasis, approved_by: lifecycle?.approved_by ?? null, attempt: attempts,
+      approval_basis: approvalBasis, approved_by: lifecycle?.approved_by ?? null, attempt: attempts, source: promiseSource(row),
     }
     const errors: string[] = []
     if (c.email) {
@@ -585,7 +596,36 @@ export interface PromiseSweepResult { examined: number; delivered: number; still
  * Retry every due promise and escalate every overdue one, across tenants (the cron's caller verified CRON_SECRET); each promise
  * is read, claimed and delivered under its OWN brokerage_id. Bounded. Never throws.
  */
-export async function sweepUndeliveredPromises(svc: Db, opts: { now?: Date; limit?: number; deps?: PromiseDeps } = {}): Promise<PromiseSweepResult> {
+/**
+ * The arbiter's moment for ONE raised promise (lib/ai-isa/followup-arbiter.ts respondToPromisedDeliverable), with contract C4
+ * handed in as its seams — a `fulfilment: "system"` promise is retried through deliverPromised, an `awaiting_human` / out of
+ * attempts one becomes the agent's task. Returns null when answered, else the reason (published on the sweep's result).
+ */
+async function arbiterAnswersRaisedPromise(svc: Db, input: { brokerageId: string; promiseId: string; now: Date }, deps: PromiseDeps): Promise<string | null> {
+  try {
+    const read = await readPromise(svc, input.brokerageId, input.promiseId)
+    if (read.error) return `arbiter not asked — promise read refused: ${read.error}`
+    const contactId = read.row?.contact_id ?? null
+    if (!contactId) return "arbiter not asked — the promise names no contact"
+    const { respondToPromisedDeliverable } = await import("@/lib/ai-isa/followup-arbiter")
+    const r = await respondToPromisedDeliverable(svc as never, { brokerageId: input.brokerageId, party: { kind: "contact", id: contactId }, promiseId: input.promiseId, now: input.now }, {
+      undelivered: async (p) => {
+        const u = await undeliveredPromisesFor(svc, { brokerageId: p.brokerageId, contactId: p.contactId, now: p.now })
+        if (u.error) throw new Error(u.error)
+        return u.promises.map((x) => ({ id: x.promiseId, status: x.status, fulfilment: x.fulfilment }))
+      },
+      deliver: async (p) => {
+        const d = await deliverPromised(svc, p, { ...deps, now: input.now })
+        return { delivered: d.ok === true && d.status === "delivered", status: d.ok ? d.status : null, reason: d.ok ? ("reason" in d ? d.reason : null) : d.error }
+      },
+    })
+    return r.action === "refused" ? `the arbiter refused: ${r.reason}` : null
+  } catch (e) {
+    return `the arbiter's answer threw: ${e instanceof Error ? e.message : String(e)}`
+  }
+}
+
+export async function sweepUndeliveredPromises(svc: Db, opts: { now?: Date; limit?: number; deps?: PromiseDeps; answer?: typeof arbiterAnswersRaisedPromise } = {}): Promise<PromiseSweepResult> {
   const out: PromiseSweepResult = { examined: 0, delivered: 0, stillOpen: 0, escalated: 0, errors: [] }
   const now = opts.now ?? new Date()
   try {
@@ -608,11 +648,19 @@ export async function sweepUndeliveredPromises(svc: Db, opts: { now?: Date; limi
       if (r.status === "delivered") { if (!r.reused) out.delivered++ }
       else {
         out.stillOpen++
-        if (r.escalated) out.escalated++
+        let raisedNow = false
+        if (r.escalated) { out.escalated++; raisedNow = true }
         // An overdue promise the retry could not touch yet (back-off, in flight) still reaches the arbiter once.
         else if (!p.escalated_at && r.status !== "delivering") {
           const read = await readPromise(svc, p.brokerage_id, p.id)
-          if (read.row && !read.row.escalated_at && await escalate(svc, read.row, `overdue since ${read.row.due_at}: ${read.row.last_error ?? r.reason}`, now, opts.deps ?? {})) out.escalated++
+          if (read.row && !read.row.escalated_at && await escalate(svc, read.row, `overdue since ${read.row.due_at}: ${read.row.last_error ?? r.reason}`, now, opts.deps ?? {})) { out.escalated++; raisedNow = true }
+        }
+        // THE ARBITER ANSWERS THE PERSON WHO NEVER WRITES IN (owner ruling 10; wave 146, 146Z on lane 146B's Outside-lane 7):
+        // the moment a promise is raised, the cron runs the arbiter's promised-deliverable moment for that ONE contact, with
+        // contract C4 passed in (the arbiter never imports C4 — lib/ai-isa/followup-arbiter.ts stays C4-free). Once per raise.
+        if (raisedNow) {
+          const answer = await (opts.answer ?? arbiterAnswersRaisedPromise)(svc, { brokerageId: p.brokerage_id, promiseId: p.id, now }, opts.deps ?? {})
+          if (answer) out.errors.push(`${p.id}: ${answer}`)
         }
       }
     }
@@ -646,7 +694,7 @@ export async function attestPromiseDelivered(svc: Db, input: { brokerageId: stri
     if (!d) return { ok: false, error: "the document is not this brokerage's" }
     if (d.contact_id !== row.contact_id) return { ok: false, error: "the document was not made for this contact — it cannot be the promised asset" }
     if (!d.blob_url || !/^https:\/\/\S+$/.test(d.blob_url)) return { ok: false, error: "the document has no hosted file — nothing was delivered" }
-    const evidence = { asset_url: d.blob_url, document_id: d.id, document_type: d.document_type, attested_by: input.actorUserId, attested_at: now.toISOString(), asset_kind: row.asset_kind }
+    const evidence = { asset_url: d.blob_url, document_id: d.id, document_type: d.document_type, attested_by: input.actorUserId, attested_at: now.toISOString(), asset_kind: row.asset_kind, source: promiseSource(row) }
     const w = await updatePromise(svc, row, {
       status: "delivered", delivered_at: now.toISOString(), delivered_via: "human_attested", evidence, last_error: null, next_attempt_at: null,
       asset_ref: { ...(row.asset_ref ?? {}), table: "generated_documents", id: d.id, url: d.blob_url }, asset_version: d.id, updated_at: now.toISOString(),

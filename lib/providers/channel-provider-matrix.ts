@@ -314,11 +314,11 @@ export const CHANNEL_PROVIDER_TRUTH: Readonly<Record<ArbiterChannelName, Channel
     },
   },
   ads: {
-    capability: "a paid ad campaign on the tenant's own ad account (Meta, Google Ads, streaming TV via Vibe, ChatGPT ads via OpenAI Ads)",
-    providers: ["meta", "google_ads", "vibe", "openai_ads"],
+    capability: "a paid ad campaign on the tenant's own ad account (Meta, Google Ads, streaming TV via Vibe, GroundTruth or StackAdapt, ChatGPT ads via OpenAI Ads)",
+    providers: ["meta", "google_ads", "vibe", "openai_ads", "groundtruth", "stackadapt"],
     supporting: [],
-    credentials: ["platform_credentials facebook (Meta ads OAuth)", "platform_credentials google_ads (Google Ads OAuth) + GOOGLE_ADS_DEVELOPER_TOKEN", "Connection OS 'vibe' (client credentials)", "Connection OS 'openai_ads' (Ads API key)"],
-    configuredBy: "getBrokerageProviderReadiness rows meta / google_ads / vibe / openai_ads (tenant connections); the launch precheck is lib/ads/connection-status.ts isAdPlatformConnected",
+    credentials: ["platform_credentials facebook (Meta ads OAuth)", "platform_credentials google_ads (Google Ads OAuth) + GOOGLE_ADS_DEVELOPER_TOKEN", "Connection OS 'vibe' (client credentials)", "Connection OS 'openai_ads' (Ads API key)", "Connection OS 'groundtruth' (X-GT-API-KEY + X-GT-USER-ID + account id)", "Connection OS 'stackadapt' (GraphQL API token + advertiser id)"],
+    configuredBy: "getBrokerageProviderReadiness rows meta / google_ads / vibe / openai_ads / groundtruth / stackadapt (tenant connections); the launch precheck is lib/ads/connection-status.ts isAdPlatformConnected",
     ownership: "TENANT (their ad accounts; ad spend is the tenant's)",
     cost: "the tenant's own ad spend (ledger 'tenant_account'); an Ads Manager action is clamped by MAX_AD_DAILY_BUDGET_USD (lib/ads/ad-manager.ts)",
     authority: "human approval: Ads Manager proposals (ad_manager_actions), the creative approval queue (ad_creative_variations.approval_status), the fair-housing audience gates (lib/kernel/ads.ts), the TV broadcast gate (classifyPublicVideo + a READY TV master) and, for a topic spot, the APPROVED topic (lib/ads/ctv-campaign.ts)",
@@ -338,7 +338,11 @@ export const CHANNEL_PROVIDER_TRUTH: Readonly<Record<ArbiterChannelName, Channel
       route: "/api/webhooks/meta-leadgen",
       alsoRoutes: ["/api/webhooks/meta-dm", "/api/cron/ad-performance-sync"],
       record: "a lead-ad submission → the gated lead pipeline (lib/ads/ad-lead-intake.ts); an ad comment → messages on the social thread (C1) + the arbiter (1:1 ad follow-up through contract C2); performance → ad_campaigns metrics (ad-performance-ingest)",
-      gaps: ["Performance is a PULL on a cron, never real-time. Lane 146E publishes each ad platform's own receive facts (status / spend / conversion / response readback) — merged per its notes."],
+      gaps: [
+        "Performance is a PULL on a cron, never real-time. Lane 146E's per-platform receive facts are merged (wave 146, 146Z) into PROVIDER_RECEIVE_TRUTH.ad_performance and AD_PLATFORMS.<key>.evidence:",
+        "meta — webhook (lead-form submission, /api/webhooks/meta-leadgen) + poll (spend / impressions / clicks / leads / conversions); google_ads — poll only (no lead-form webhook route); vibe_tv / openai_ads — poll only, no responses (TV and ChatGPT ads carry no reply object);",
+        "groundtruth — poll (provider_status, spend, impressions, clicks, conversions; no webhook documented; leads / responses declared unsupported); stackadapt — poll (provider_status incl. review pending / rejected, spend, impressions, clicks, conversions, conversion_revenue); its documented webhooks are not built (payload + signature unreadable without an account).",
+      ],
     },
   },
   human_task: {
@@ -385,7 +389,9 @@ export const CHANNEL_PROVIDER_MATRIX: Readonly<Record<ArbiterChannelName, Channe
 // (live DB, 2026-10-27: integration_credentials / platform_credentials / agent_api_credentials all 0 rows), so every
 // platform's live proof is WAITING_EXTERNAL (lane notes).
 
-export type AdPlatformKey = "meta" | "google_ads" | "vibe_tv" | "openai_ads"
+// Wave 146 (lane 146Z, merging lane 146E's "Matrix facts for lane B" — owner ruling 8): GroundTruth and StackAdapt are two
+// more TV CONNECTIONS on the ONE TV gateway (lib/ads/ctv-campaign.ts launchTvCampaign), not a second TV subsystem.
+export type AdPlatformKey = "meta" | "google_ads" | "vibe_tv" | "openai_ads" | "groundtruth" | "stackadapt"
 
 export interface AdPlatformTruth {
   key: AdPlatformKey
@@ -450,6 +456,28 @@ export const AD_PLATFORMS: Readonly<Record<AdPlatformKey, AdPlatformTruth>> = Ob
     adapter: "lib/providers/openai-ads.ts dispatchChatgptCampaign / fetchOpenaiCampaignInsights (via lib/ads/connectors/chatgpt.ts and lib/ads/chatgpt-campaign.ts)",
     contract: "developers.openai.com/ads/api-quickstart — GET /ad_account, POST /upload {image_url}, POST /campaigns {budget.lifetime_spend_limit_micros} (read 2026-10-27; the code speaks the same chain)",
     evidence: "real capability: credential resolver (resolveOpenaiAdsCredential), gateway egress, approved-creative gate, activate-only-on-success, insights read-back; doors: app/actions/chatgpt-ads.ts, the Ads Manager, the ads page",
+  },
+  groundtruth: {
+    key: "groundtruth",
+    label: "Streaming TV (GroundTruth)",
+    verified: true,
+    readinessRow: "groundtruth",
+    campaignPlatforms: ["groundtruth"],
+    credential: "Connection OS provider 'groundtruth' (X-GT-API-KEY + X-GT-USER-ID + account id, tenant-issued on request; platform_credentials CHECK admits 'groundtruth' — m881 APPLIED LIVE)",
+    adapter: "lib/providers/groundtruth-ads.ts launchGroundtruthCampaign (GROUNDTRUTH_DECLARATION) via lib/ads/connectors/groundtruth.ts, launched through the ONE TV gateway lib/ads/ctv-campaign.ts launchTvCampaign",
+    contract: "api-docs.groundtruth.com (create campaign / adgroup / creative; reporting totals; mediatype ctv / ott — read 2026-10-29)",
+    evidence: "real capability: tenant credential resolver (resolveGroundtruthCredential), gateway egress (callConnector 'groundtruth'), the broadcast gate + a READY TV master (refuses creative_source !== tv_master before any provider call), geography-only targeting, status / spend / conversions polled by the ad-performance ingest. No live call has been made — credentials are WAITING_EXTERNAL; CTV inventory entitlement is account-level and UNKNOWN until one exists. Receive: poll only (no webhook documented; leads / responses declared unsupported).",
+  },
+  stackadapt: {
+    key: "stackadapt",
+    label: "Streaming TV (StackAdapt)",
+    verified: true,
+    readinessRow: "stackadapt",
+    campaignPlatforms: ["stackadapt"],
+    credential: "Connection OS provider 'stackadapt' (GraphQL API token + advertiser id, tenant-issued on request; platform_credentials CHECK admits 'stackadapt' — m881 APPLIED LIVE)",
+    adapter: "lib/providers/stackadapt-ads.ts launchStackadaptCampaign (STACKADAPT_DECLARATION) via lib/ads/connectors/stackadapt.ts, launched through the ONE TV gateway lib/ads/ctv-campaign.ts launchTvCampaign",
+    contract: "docs.stackadapt.com + the published @stackadapt/pa-typescript-sdk 0.73.0 GraphQL schema (the GraphQL reference is behind a login — read 2026-10-29)",
+    evidence: "real capability: tenant credential resolver (resolveStackadaptCredential), gateway egress (callConnector 'stackadapt'), the broadcast gate + a READY TV master, geography-only targeting, campaignDelivery polled by the ad-performance ingest (async Progress = pending). No live call has been made — credentials are WAITING_EXTERNAL. Receive: poll only — webhooks (CAMPAIGN_CREATION / CAMPAIGN_UPDATES / CREATIVE_CREATION) are documented but their payload and signature are not readable without an account, so no route is built.",
   },
 })
 
@@ -590,8 +618,8 @@ export const PROVIDER_RECEIVE_TRUTH: Readonly<Record<string, ProviderReceiveTrut
   },
   ad_performance: {
     channel: "ads", send: "built",
-    receive: { supported: true, via: "poll", events: ["impressions / spend / clicks / conversions per campaign"], route: "/api/cron/ad-performance-sync" },
-    documented: { via: "poll", events: ["each platform's insights / reporting API"], source: "lane 146E's notes (\"## Matrix facts for lane B\") own the per-platform contract" },
+    receive: { supported: true, via: "poll", events: ["impressions / spend / clicks / conversions per campaign (meta, google_ads, vibe_tv, openai_ads, groundtruth, stackadapt)", "provider_status (groundtruth ACTIVE / PAUSED; stackadapt incl. review pending / rejected)", "conversion_revenue (stackadapt)"], route: "/api/cron/ad-performance-sync" },
+    documented: { via: "poll", events: ["each platform's insights / reporting API"], source: "lane 146E's notes (\"## Matrix facts for lane B\") own the per-platform contract — merged by lane 146Z" },
   },
   portal: {
     channel: "in_app", send: "built",

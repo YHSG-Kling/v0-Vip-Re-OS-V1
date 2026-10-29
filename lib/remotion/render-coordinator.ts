@@ -400,9 +400,19 @@ export async function finalizeCoordinatedRender(
   // Vercel Blob stays as the fallback so a storage hiccup never loses a
   // finished render. ───
   try {
-    const { hostRenderedMedia } = await import("./media-host")
+    const { hostRenderedMedia, renderHostBucketFor, RENDER_MEDIA_BUCKET } = await import("./media-host")
     const path = `compositions/${intent.brokerageId}/${composition.composition_id}/${renderId}.${outputExtension(composition.duration_frames)}`
-    const uploaded = { url: await hostRenderedMedia(svc, path, working, outputContentType(composition.duration_frames)) }
+    // WAVE 146 (146Z): the composite of a project addressed to ONE contact (the personal welcome video's
+    // assembled cut) is hosted PRIVATE. The project is read tenant-pinned; an unreadable project FAILS the
+    // render through the one failure path below rather than hosting a possibly-personal cut publicly.
+    let hostBucket = RENDER_MEDIA_BUCKET
+    if (intent.entityType === "video_project" && intent.entityId) {
+      const { data: proj, error: projErr } = await svc.from("ai_video_projects")
+        .select("contact_id").eq("id", intent.entityId).eq("brokerage_id", intent.brokerageId).maybeSingle()
+      if (projErr) throw new Error(`the host bucket cannot be decided — video project ${intent.entityId} unreadable: ${projErr.message}`)
+      hostBucket = renderHostBucketFor(proj as { contact_id?: string | null } | null)
+    }
+    const uploaded = { url: await hostRenderedMedia(svc, path, working, outputContentType(composition.duration_frames), hostBucket) }
 
     // The finish identity, from what actually landed — the second half of the
     // cache key. Stamped only when the caller supplied a frame key; a caller

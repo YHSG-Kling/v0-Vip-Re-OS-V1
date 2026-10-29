@@ -476,7 +476,7 @@ function ShowingCard({
             {showFeedback && item.feedback && (
               <div className="mt-2 p-2 bg-muted rounded-lg">
                 <p className="text-sm font-medium flex items-center gap-1">
-                  <Star className="h-4 w-4 text-amber-500" />
+                  <Star className="h-4 w-4 text-amber-600" />
                   Your Feedback
                 </p>
                 <p className="text-sm text-muted-foreground mt-1">{item.feedback}</p>

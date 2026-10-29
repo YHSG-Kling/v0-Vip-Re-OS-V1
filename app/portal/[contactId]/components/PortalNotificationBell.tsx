@@ -107,7 +107,7 @@ export function PortalNotificationBell({ contactId, initialUnread }: Props) {
         <Button variant="ghost" size="icon" className="relative h-9 w-9" aria-label="Notifications">
           <Bell className="h-5 w-5" />
           {unread > 0 && (
-            <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white">
+            <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-600 text-[9px] font-bold text-white">
               {unread > 9 ? "9+" : unread}
             </span>
           )}

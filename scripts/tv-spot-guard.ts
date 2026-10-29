@@ -265,8 +265,16 @@ async function main() {
   {
     const db = adWorld({ video_metadata: {} })
     const r = await ensureCtvBroadcastReady({ campaignId: CAMP, brokerageId: B1, client: db as never })
+    const cfgBefore = JSON.stringify(db.tables.ad_campaigns[0].targeting_config ?? null)
     const l = await launchCtvCampaignOnVibe({ campaignId: CAMP, brokerageId: B1, actorUserId: U1, launchedVia: "vibe_api", client: db as never })
-    check("LAUNCH (the authoritative write) with no master is REFUSED — by the gate and through the launch door (dispatched false, 'not launched'), the row still draft and still pointing at nothing new", !r.ok && /no TV master/.test(r.reason) && !l.dispatched && /^not launched — no TV master/.test(l.reason ?? "") && db.tables.ad_campaigns[0].status === "draft" && db.writes.filter((w) => w.table === "ad_campaigns" && w.op === "update").length === 0)
+    // RE-ASSERTED (wave 146, lane 146Z): this pinned ZERO ad_campaigns updates. Claim-before-dispatch (lib/ads/ctv-campaign.ts
+    // claimTvLaunch — two simultaneous dispatches can no longer both reach the provider) now claims the row `draft → launching`
+    // and RELEASES it back on the gate's refusal. The rule is unchanged and asserted as such: the row ends draft, its targeting
+    // points at nothing new, and the only writes are that counted status claim + release (no Vibe id, no live flip).
+    const upd = db.writes.filter((w) => w.table === "ad_campaigns" && w.op === "update")
+    const statusOnly = upd.every((w) => Object.keys(w.payload).every((k) => k === "status" || k === "updated_at"))
+    check("LAUNCH (the authoritative write) with no master is REFUSED — by the gate and through the launch door (dispatched false, 'not launched'), the row still draft and still pointing at nothing new", !r.ok && /no TV master/.test(r.reason) && !l.dispatched && /^not launched — no TV master/.test(l.reason ?? "") && db.tables.ad_campaigns[0].status === "draft"
+      && JSON.stringify(db.tables.ad_campaigns[0].targeting_config ?? null) === cfgBefore && statusOnly && upd.map((w) => w.payload.status).join(">") === "launching>draft" && upd.every((w) => w.matched === 1), JSON.stringify(upd))
   }
   for (const [label, over, re] of [
     ["an approval REVOKED after staging", { approval_status: "rejected" }, /not approved/],

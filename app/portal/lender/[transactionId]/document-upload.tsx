@@ -187,7 +187,7 @@ export function LenderDocumentUpload({
           ) : success ? (
             <div className="space-y-2">
               <CheckCircle2 className="h-10 w-10 mx-auto text-green-600" />
-              <p className="text-sm font-medium text-green-600">Upload successful!</p>
+              <p className="text-sm font-medium text-green-700">Upload successful!</p>
             </div>
           ) : (
             <div className="space-y-2">

@@ -26,7 +26,7 @@ import { registry }            from "@/lib/workflow/channel-registry"
 import type { StepContext, StepResult } from "@/lib/workflow/channel-registry"
 import { buildVariableContext, resolveVariables } from "@/lib/workflow/variables"
 import { checkSequenceAuthority }  from "./compliance-gate"
-import { decideFirstTouch, FIRST_TOUCH_DEFER_MINUTES, FIRST_TOUCH_OUTREACH_CHANNELS } from "./first-touch-coordination"
+import { decideFirstTouch, FIRST_TOUCH_DEFER_MINUTES, FIRST_TOUCH_OUTREACH_CHANNELS, claimFirstTouch as claimFirstTouchLedger } from "./first-touch-coordination"
 import { recordSequenceTouchpoint } from "./touchpoint-bridge"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { isDeconflictDeferral, decideDeferral, MAX_DEFERS } from "./deferral-policy"
@@ -592,23 +592,17 @@ export async function executeSequenceStep(
   // The welcome drip beat (or replaced) the AI ISA speed-to-lead engine to the first hello.
   // Stamp the SAME shared ledger speed-to-lead reads; the `.is(null)` guard is idempotent and
   // race-safe — if the ISA stamped between our read and now, we never clobber its channel.
-  if (dispatchResult.status === "sent" && claimFirstTouch && contactId) {
-    await sentinelWrite(
-      supabase,
-      supabase
-        .from("contacts")
-        .update({ first_touched_at: now, first_touch_channel: step.channel })
-        .eq("id", contactId)
-        .is("first_touched_at", null),
-      {
-        table: "contacts",
-        flow: "campaign_sequence_first_touch_claim",
-        brokerageId,
-        reason:
-          "first-touch ledger claim, written AFTER dispatchResult.status === 'sent'; the `.is(null)` guard makes it race-safe and a lost claim only means speed-to-lead does not stand down, never an unconsented send (dispatch re-gates every touch)",
-      },
-    )
-
+  // ONE SPELLING OF THE CLAIM (wave 146, lane 146Z on lane 146C's Outside-lane 3): this used to be its own
+  // `.update({ first_touched_at, first_touch_channel }).is("first_touched_at", null)` — a second spelling of the claim with
+  // no brokerage pin and no row count. It is now the shared ledger's claimFirstTouch
+  // (lib/campaign-sequences/first-touch-coordination.ts) — the same conditional write the conversion welcome and
+  // speed-to-lead make, tenant-pinned and COUNTED; the stand-down signal is sent only when THIS send made the claim.
+  // A lost claim only means speed-to-lead does not stand down, never an unconsented send (dispatch re-gates every touch).
+  const firstTouch = dispatchResult.status === "sent" && claimFirstTouch && contactId
+    ? await claimFirstTouchLedger(supabase as never, "contacts", { id: contactId, brokerageId, at: new Date(now), channel: step.channel })
+    : null
+  if (firstTouch && !firstTouch.ok && firstTouch.error) console.error(`[step-executor] ${firstTouch.error} (contact ${contactId})`)
+  if (firstTouch?.ok && contactId) {
     void publishManagerSignal({
       brokerageId,
       fromManager: "campaign_orchestrator",

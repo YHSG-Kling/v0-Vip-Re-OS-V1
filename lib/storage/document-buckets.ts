@@ -103,6 +103,7 @@ export const DOCUMENT_CLASS_BUCKETS: Readonly<Record<string, string>> = {
   "cda-filled":             "FILLED commission disclosures — commission splits, a brokerage financial. Not yet created live.",
   "commission-agreements":  "Signed agent commission / independent-contractor agreements. Not yet created live.",
   "receipts":               "Expense receipts attached to the brokerage P&L. Not yet created live.",
+  "personal-videos":        "A video addressed to ONE contact — the agent's personal welcome video above all (owner ruling 6: 'visible only to that contact and the relevant agent/tenant'). Until wave 146 these rendered into the PUBLIC video-assets bucket, so the URL played for anyone. SERVICE-ONLY: no storage.objects policy admits a session; the portal reader mints a short-lived signed URL after its session gate (lib/portal/welcome-video.ts). Not created live yet — the first personal render creates it private (lib/storage/buckets.ts ensureBucket) or the owner runs docs/operations/OWNER-SQL.md §H.",
   "agent-documents":        "An agent's real-estate LICENSE document and E&O insurance certificate (app/dashboard/onboarding/license). The upload runs in the BROWSER, so lib/storage/buckets.ts#ensureBucket never sees it and cannot create it — it had to be created by migration, and lib/storage/bucket-limits.ts (2026-08-26) now records it existing with isPublic:false and a 10 MB limit.",
 }
 
@@ -132,6 +133,23 @@ export const DOCUMENT_CLASS_BUCKETS: Readonly<Record<string, string>> = {
  * and until then every client PDF would fail with "Bucket not found".
  */
 export const GENERATED_DOCUMENT_BUCKET = "documents"
+
+/**
+ * WHERE A VIDEO ADDRESSED TO ONE CONTACT LANDS (wave 146, lane 146Z — lane 146C's finding: the
+ * personal welcome video was hosted in the PUBLIC `video-assets` bucket, so its URL played for
+ * anyone who held it). The render hosts (app/api/cron/poll-did-videos, app/api/internal/remotion/
+ * render-composition, lib/did/result-url-rehost-sweep.ts) choose it through
+ * lib/remotion/media-host.ts renderHostBucketFor — the same contact_id rule
+ * lib/video/public-video.ts classifyPublicVideo uses ("addressed_to_a_contact" is never public).
+ */
+export const PERSONAL_VIDEO_BUCKET = "personal-videos"
+
+/**
+ * How long a personal video URL minted ON READ for the contact's portal stays valid. Short on
+ * purpose: the page is re-rendered per visit and mints a fresh one, so a link copied out of the
+ * page dies within the hour (the persisted write-time URL never reaches the contact's page).
+ */
+export const PERSONAL_VIDEO_URL_TTL_SECONDS = 60 * 60
 
 /**
  * PURE. Is this bucket document-class — i.e. must its URLs be signed?

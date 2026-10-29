@@ -99,14 +99,24 @@ export const MARKETING_TABLE_BY_KIND: Record<MarketingAssetKind, string> = {
  */
 export async function applyMarketingAssetApproval(
   kind: MarketingAssetKind, id: string,
+  /**
+   * WHO APPROVED (wave 146, lane 146Z on lane 146F's Outside-lane 1): the SESSION user of the door that decided. For a video
+   * it is written as approved_by / approved_at in the same update — without it a NON-LISTING video approved here stayed off
+   * every public channel (lib/video/video-staging.ts: "approved without a recorded approver"). The staging verdict still
+   * requires that user to be one the authority hierarchy ASSIGNED (C5), so recording the approver never widens who may
+   * publish. The approveStagedVideo cascade passes none (it already wrote its own approver).
+   */
+  actor?: { userId: string } | null,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const svc = createServiceClient()
   const table = MARKETING_TABLE_BY_KIND[kind]
 
   // Some marketing tables (newsletter_campaigns) don't carry updated_at;
   // keep the update minimal to the column we know exists everywhere.
+  const patch: Record<string, unknown> = { approval_status: "approved" }
+  if (kind === "video" && actor?.userId) { patch.approved_by = actor.userId; patch.approved_at = new Date().toISOString() }
   const { error } = await svc.from(table)
-    .update({ approval_status: "approved" })
+    .update(patch)
     .eq("id", id)
   if (error) return { ok: false, error: error.message }
 
@@ -841,7 +851,7 @@ async function cascade(
     const scope = await checkMarketingScope(kind, scopeKey)
     if (!scope.ok) return { success: false, error: scope.error }
     const res = outcome === "approved"
-      ? await applyMarketingAssetApproval(kind, targetId)
+      ? await applyMarketingAssetApproval(kind, targetId, ctx.reviewerUserId ? { userId: ctx.reviewerUserId } : null)
       : await applyMarketingAssetRejection(kind, targetId, ctx.notes?.trim() || "Rejected in approvals queue")
     if (!res.ok) return { success: false, error: res.error }
     return { success: true, type, targetId }

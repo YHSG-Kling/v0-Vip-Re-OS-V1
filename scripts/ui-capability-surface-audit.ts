@@ -138,8 +138,13 @@ export const KNOWN_GAPS: Record<string, { owner: string; why: string }> = {}
  * listings BOARD. An entry here can never outlive its block (P2).
  */
 export const KNOWN_PUBLIC_BLOCKS: Record<string, { owner: string; fix: string }> = {
-  "/listings/x": { owner: "Outside-lane (lane 146H notes) — app/constants/auth.ts is security config, not presentation", fix: "classifyProxyPath: answer 'public' for /listings/<uuid> (a UUID-shaped single segment, so /listings and /listings/new stay protected) before the PROTECTED check; the page already gates on the row (public status) and reads through the service client (lane 146H)" },
+  // "/listings/x" — CLOSED (wave 146, lane 146Z): app/constants/auth.ts classifyProxyPath answers 'public' for
+  // /listings/<uuid> (one uuid segment; /listings, /listings/new and every child stay protected).
 }
+
+/** The proxy's answer for a route pattern, each dynamic segment read as the uuid a real link carries. */
+const DYNAMIC_SEGMENT_SPECIMEN = "7b1f6a52-1c1e-4d4e-9f55-0a1b2c3d4e5f"
+const proxyOfRoute = (route: string) => classifyProxyPath(route.replace(/\[[^\]]+\]/g, DYNAMIC_SEGMENT_SPECIMEN))
 
 // ── route index ───────────────────────────────────────────────────────────────
 type Page = { file: string; segs: string[] }
@@ -461,11 +466,14 @@ async function main() {
   // ── P · a public journey never walks into the login wall ────────────────────
   console.log("\n[P · public pages never link into a page the proxy protects]")
   const blocked: string[] = []
+  // A dynamic segment is classified as the id a real link carries (uuid-shaped), not as a literal "x": the proxy
+  // answers per path SHAPE (wave 146, 146Z — /listings/<uuid> is public, /listings/new is not), and an "x" placeholder
+  // would read a fixed route as still blocked forever.
   for (const f of publicPages) for (const link of reachForPage(f).links) {
     const res = resolveHref(link)
     if (!res.page) continue
     const route = "/" + res.page.segs.join("/")
-    if (classifyProxyPath(route.replace(/\[[^\]]+\]/g, "x")) === "protected" && !/^\/(?:login|signup|dashboard|portal|vendor|lender|title)(?:\/|$)/.test(route)) blocked.push(`${f} → ${link} (${res.page.file})`)
+    if (proxyOfRoute(route) === "protected" && !/^\/(?:login|signup|dashboard|portal|vendor|lender|title)(?:\/|$)/.test(route)) blocked.push(`${f} → ${link} (${res.page.file})`)
   }
   const uniqueBlocked = [...new Set(blocked)]
   for (const b of uniqueBlocked) console.log(`    PUBLIC → PROTECTED ${b} — ${KNOWN_PUBLIC_BLOCKS[b.split(" → ")[1].split(" ")[0]] ? `routed: ${KNOWN_PUBLIC_BLOCKS[b.split(" → ")[1].split(" ")[0]].owner}` : "UNROUTED"}`)
@@ -473,8 +481,11 @@ async function main() {
   check("P1 every public page that links an anonymous visitor into a PROTECTED page is routed to its owner (a NEW one fails) — the visitor would meet /login", unroutedBlocks.length === 0, unroutedBlocks.join("; "))
   const staleBlocks = Object.keys(KNOWN_PUBLIC_BLOCKS).filter((k) => !uniqueBlocked.some((b) => b.split(" → ")[1].split(" ")[0] === k))
   check("P2 no KNOWN_PUBLIC_BLOCKS entry outlives its block", staleBlocks.length === 0, staleBlocks.join("; "))
-  const ctlBlocked = classifyProxyPath("/listings/x") === "protected" && resolveHref("/listings/x").page?.file === "app/listings/[listingId]/page.tsx"
-  check("P3 positive control — the finder sees the measured block (the public listing page sits under the protected /listings prefix)", ctlBlocked || !uniqueBlocked.length)
+  // RE-ASSERTED (wave 146, 146Z): the control used to require the MEASURED block itself ("/listings/x" protected) —
+  // a waypoint the fix retires. The rule it guarded is that the finder can SEE a public→protected link: a protected
+  // dynamic destination must still classify protected through the same placeholder, and the fixed page public.
+  const ctlBlocked = proxyOfRoute("/listings/[listingId]/edit") === "protected" && proxyOfRoute("/transactions/[id]") === "protected" && resolveHref("/listings/x").page?.file === "app/listings/[listingId]/page.tsx"
+  check("P3 positive control — the finder's route classifier still flags a PROTECTED dynamic destination (/listings/<id>/<child>, /transactions/<id>), and the public listing page /listings/<uuid> reads public", ctlBlocked && proxyOfRoute("/listings/[listingId]") === "public")
 
   // ── G · expected coverage (ruling 18) ───────────────────────────────────────
   console.log("\n[G · ruling-18 coverage — every level reaches every domain it should]")

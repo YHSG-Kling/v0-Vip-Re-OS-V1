@@ -101,7 +101,7 @@ function SourceTable({
         <tbody>
           {list.map((s) => (
             <tr key={s.id} className="border-t">
-              <td className="px-3 py-2">{s.label ?? <span className="text-gray-400">—</span>}</td>
+              <td className="px-3 py-2">{s.label ?? <span className="text-gray-500">—</span>}</td>
               <td className="px-3 py-2">
                 <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">
                   {s.source_type === "youtube_search" ? "exa_query" : s.source_type}

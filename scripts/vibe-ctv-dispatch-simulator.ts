@@ -13,6 +13,7 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -58,9 +59,17 @@ console.log("\n── dispatch is honest; the row flips only on a confirmed publ
   // Manager executor and the action share it. The action must DELEGATE.
   const lane = src("lib/ads/ctv-campaign.ts")
   const act = src("app/actions/ctv-ads.ts")
+  // RE-ASSERTED (wave 146, lane 146Z): this pinned the one-line literal `if (!(…)) return result`. Claim-before-dispatch
+  // (lib/ads/ctv-campaign.ts claimTvLaunch) now RELEASES the claim inside that branch before returning, so the rule is
+  // asserted instead, on stripped source inside launchCtvCampaignOnVibe: the not-dispatched branch returns `result` (alone or
+  // after the release) BEFORE the `status: "live"` write. Control: the same finder rejects a branch that does not return.
+  const vibeDoor = (() => { const s = stripComments(lane); const a = s.indexOf("export async function launchCtvCampaignOnVibe"); return a < 0 ? "" : s.slice(a, s.indexOf("\nexport ", a + 10) > 0 ? s.indexOf("\nexport ", a + 10) : undefined) })()
+  const NOT_DISPATCHED_RETURNS = /if \(!\(result\.dispatched && result\.vibeCampaignId\)\)\s*(?:return result\b|\{(?:[^{}]|\{[^{}]*\})*?\breturn result\b(?:[^{}]|\{[^{}]*\})*?\})/
+  const notDispatchedAt = vibeDoor.search(NOT_DISPATCHED_RETURNS)
   check("the survivor flips status→live + records Vibe ids ONLY when dispatched",
-    /if \(!\(result\.dispatched && result\.vibeCampaignId\)\) return result/.test(lane) &&
-    lane.includes('status: "live"') && lane.includes("vibe_campaign_id"))
+    notDispatchedAt > 0 && notDispatchedAt < vibeDoor.indexOf('status: "live"') && vibeDoor.includes("vibe_campaign_id"))
+  check("  CONTROL: a not-dispatched branch that falls through (no return) is not mistaken for the guard",
+    !NOT_DISPATCHED_RETURNS.test('if (!(result.dispatched && result.vibeCampaignId)) {\n  await releaseTvLaunch(svc, x)\n}'))
   check("it ledgers the launch with the caller's launched_via (vibe_api from the action)",
     lane.includes("ad_campaign_launched") && lane.includes("launched_via: input.launchedVia") && act.includes('launchedVia: "vibe_api"'))
   check("the action delegates to the survivor and spells no flip of its own",

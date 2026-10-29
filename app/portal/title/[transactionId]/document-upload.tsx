@@ -208,7 +208,7 @@ export function TitleDocumentUpload({
                   <span className="flex items-center gap-2">
                     {type.label}
                     {type.sensitive && (
-                      <AlertTriangle className="h-3 w-3 text-amber-500" />
+                      <AlertTriangle className="h-3 w-3 text-amber-600" />
                     )}
                   </span>
                 </SelectItem>
@@ -249,7 +249,7 @@ export function TitleDocumentUpload({
           ) : success ? (
             <div className="space-y-2">
               <CheckCircle2 className="h-10 w-10 mx-auto text-green-600" />
-              <p className="text-sm font-medium text-green-600">Upload successful!</p>
+              <p className="text-sm font-medium text-green-700">Upload successful!</p>
             </div>
           ) : (
             <div className="space-y-2">
@@ -279,7 +279,7 @@ export function TitleDocumentUpload({
                   <p className="text-xs text-muted-foreground uppercase tracking-wide flex items-center gap-2">
                     {type.label}
                     {type.sensitive && (
-                      <Badge variant="outline" className="text-amber-600 border-amber-300 text-xs">
+                      <Badge variant="outline" className="text-amber-700 border-amber-300 text-xs">
                         Sensitive
                       </Badge>
                     )}

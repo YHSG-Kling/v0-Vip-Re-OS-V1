@@ -79,6 +79,27 @@ export async function runGoLiveReadiness(svc: any): Promise<GoLiveReadiness> {
         return r("ready", `video-assets bucket reachable (${(data ?? []).length >= 0 ? "list ok" : ""})`)
       } catch (e: any) { return r("broken", e?.message ?? "storage unreachable") }
     },
+    // ── The private document buckets' LIVE storage policies (wave 146, lane 146Z on lane 146A's Outside-lane 1 —
+    //    ruling 20 priority 1). Read from pg_policies by m874's public.storage_bucket_policy_readiness(), never from a
+    //    migration stamp: 'ready' only when every private document bucket is owner-scoped or server-only. Required —
+    //    release-blocking until the owner runs docs/operations/OWNER-SQL.md §F (m855) and §G (m875).
+    async () => {
+      const r = d("storage_policies", "Private document buckets — live storage policies", false)
+      try {
+        const { data, error } = await svc.rpc("storage_bucket_policy_readiness")
+        if (error) {
+          return r("not_configured", /42883|PGRST202|Could not find the function/i.test(`${error.code ?? ""} ${error.message}`)
+            ? "m874 is not applied — the live policy read does not exist yet"
+            : `policy read refused: ${error.message}`)
+        }
+        const rows = (data ?? []) as Array<{ bucket_id: string; verdict: string }>
+        if (rows.length === 0) return r("broken", "the live policy read returned no bucket — nothing was checked, so nothing is reported ready")
+        const open = rows.filter((x) => x.verdict !== "owner_scoped" && x.verdict !== "service_only")
+        return open.length
+          ? r("broken", `owner SQL pending (docs/operations/OWNER-SQL.md §F / §G): ${open.map((x) => `${x.bucket_id}=${x.verdict}`).join(", ")}`)
+          : r("ready", `${rows.length} private document buckets owner-scoped or server-only (read from pg_policies)`)
+      } catch (e: any) { return r("broken", e?.message ?? "policy read threw") }
+    },
 
     // ── Telephony ───────────────────────────────────────────────────────────
     async () => {

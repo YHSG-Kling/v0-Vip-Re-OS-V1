@@ -104,8 +104,8 @@ const STATUS_COLORS: Record<string, string> = {
 
 function SeoScoreCircle({ score }: { score: number }) {
   const getColor = () => {
-    if (score >= 80) return "text-green-600 dark:text-green-400"
-    if (score >= 60) return "text-amber-600 dark:text-amber-400"
+    if (score >= 80) return "text-green-700 dark:text-green-400"
+    if (score >= 60) return "text-amber-700 dark:text-amber-400"
     return "text-red-600 dark:text-red-400"
   }
 
@@ -641,9 +641,9 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
           <TrendingUp className="h-4 w-4" />
           <span className={
             displayScore >= 80
-              ? "text-green-600 dark:text-green-400 font-medium"
+              ? "text-green-700 dark:text-green-400 font-medium"
               : displayScore >= 60
-                ? "text-amber-600 dark:text-amber-400 font-medium"
+                ? "text-amber-700 dark:text-amber-400 font-medium"
                 : "text-red-600 dark:text-red-400 font-medium"
           }>
             SEO {displayScore}/100{seoScore === null ? " (live preview)" : ""}
@@ -880,7 +880,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
               />
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>{wordCount} words</span>
-                <span className={wordCount >= 600 ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
+                <span className={wordCount >= 600 ? "text-green-700 dark:text-green-400" : "text-amber-700 dark:text-amber-400"}>
                   {wordCount >= 600 ? "Good length" : `${600 - wordCount} more words for optimal SEO`}
                 </span>
               </div>
@@ -976,7 +976,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
                             {delta !== null && delta !== 0 && (
                               <span
                                 className={
-                                  delta > 0 ? "text-green-600" : "text-red-600"
+                                  delta > 0 ? "text-green-700" : "text-red-600"
                                 }
                               >
                                 {delta > 0 ? `+${delta}` : delta}
@@ -1082,7 +1082,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
           {seoIssues.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
                   <AlertTriangle className="h-5 w-5" />
                   Issues ({seoIssues.length})
                 </CardTitle>
@@ -1091,7 +1091,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
                 <ul className="space-y-2">
                   {seoIssues.map((issue, index) => (
                     <li key={index} className="text-sm text-muted-foreground flex items-start gap-2">
-                      <span className="text-amber-600 dark:text-amber-400 mt-0.5">•</span>
+                      <span className="text-amber-700 dark:text-amber-400 mt-0.5">•</span>
                       {issue}
                     </li>
                   ))}
@@ -1133,7 +1133,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
             <CardContent>
               {wordpressPostId ? (
                 <div className="space-y-2">
-                  <p className="text-sm text-green-600 dark:text-green-400 font-medium flex items-center gap-1">
+                  <p className="text-sm text-green-700 dark:text-green-400 font-medium flex items-center gap-1">
                     <CheckCircle className="h-4 w-4" />
                     Published to WordPress
                   </p>

@@ -277,7 +277,7 @@ export default async function MarketUpdatesPage({
                       Sent {formatDate(tp.sent_at)}
                     </p>
                     {tp.opened_at && (
-                      <p className="text-xs text-green-600">
+                      <p className="text-xs text-green-700">
                         Opened {formatDate(tp.opened_at)}
                       </p>
                     )}

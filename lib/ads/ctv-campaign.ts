@@ -525,6 +525,31 @@ export interface LaunchCtvInput {
   client?: ReturnType<typeof createServiceClient>
 }
 
+// ─── CLAIM BEFORE DISPATCH (wave 146, lane 146Z — lane 146E's known risk, all three TV connections) ───────────────
+// Every TV launch read the row, refused a `live` / `launching` one, and then asked the provider — so two simultaneous
+// dispatches of the same staged spot (a double click, the action door racing the Ads Manager executor) could BOTH pass the
+// read and create TWO provider campaigns, each spending. The launch now CLAIMS the row first: a conditional
+// `<the status it read> → launching` flip, COUNTED to exactly one row (CLAUDE.md §3 — an UPDATE that matches nothing
+// resolves like one that worked); the loser is refused before any provider call. A refusal anywhere before the provider
+// accepts RELEASES the claim back to the status it was read in (counted, logged if it matches nothing). A provider that
+// accepted but whose live flip failed keeps the row `launching` — so it can never be dispatched a second time.
+// (launch-assembler's publishLaunchingCampaigns skips a TV row: it carries no assembled_ad structure.)
+/** @proofSeam scripts/ads-tv-connections-guard.ts section F drives two simultaneous claims on one row (exactly one wins). */
+export async function claimTvLaunch(svc: ReturnType<typeof createServiceClient>, input: { campaignId: string; brokerageId: string; fromStatus: string | null }): Promise<{ ok: true } | { ok: false; reason: string }> {
+  let q = svc.from("ad_campaigns").update({ status: "launching", updated_at: new Date().toISOString() })
+    .eq("id", input.campaignId).eq("brokerage_id", input.brokerageId)
+  q = input.fromStatus === null ? q.is("status", null) : q.eq("status", input.fromStatus)
+  const { data, error } = await q.select("id")
+  if (error) return { ok: false, reason: `the launch claim was refused (${error.message}) — nothing was sent` }
+  if (!data || data.length === 0) return { ok: false, reason: "another dispatch claimed this campaign first — it is already being launched (nothing was sent twice)" }
+  return { ok: true }
+}
+async function releaseTvLaunch(svc: ReturnType<typeof createServiceClient>, input: { campaignId: string; brokerageId: string; toStatus: string | null }): Promise<void> {
+  const { data, error } = await svc.from("ad_campaigns").update({ status: input.toStatus ?? "draft", updated_at: new Date().toISOString() })
+    .eq("id", input.campaignId).eq("brokerage_id", input.brokerageId).eq("status", "launching").select("id")
+  if (error || !data || data.length === 0) console.error(`[ctv-campaign] launch claim NOT released for ${input.campaignId}: ${error?.message ?? "no launching row matched"} — it reads 'launching' until a person resets it`)
+}
+
 export async function launchCtvCampaignOnVibe(input: LaunchCtvInput): Promise<CtvDispatchResult> {
   const svc = input.client ?? createServiceClient()
   const { data: campaign, error } = await svc
@@ -535,12 +560,21 @@ export async function launchCtvCampaignOnVibe(input: LaunchCtvInput): Promise<Ct
   if (["live", "launching"].includes(String(campaign.status))) {
     return { dispatched: false, reason: `campaign is already ${campaign.status}` }
   }
+  const readStatus = (campaign.status as string | null) ?? null
+  const claim = await claimTvLaunch(svc, { campaignId: input.campaignId, brokerageId: input.brokerageId, fromStatus: readStatus })
+  if (!claim.ok) return { dispatched: false, reason: claim.reason }
   // THE BROADCAST GATE AT THE AUTHORITATIVE WRITE: an approved public video with a READY TV master, or no launch.
   const broadcast = await ensureCtvBroadcastReady({ campaignId: input.campaignId, brokerageId: input.brokerageId, client: svc })
-  if (!broadcast.ok) return { dispatched: false, reason: `not launched — ${broadcast.reason}` }
+  if (!broadcast.ok) {
+    await releaseTvLaunch(svc, { campaignId: input.campaignId, brokerageId: input.brokerageId, toStatus: readStatus })
+    return { dispatched: false, reason: `not launched — ${broadcast.reason}` }
+  }
 
   const result = await dispatchCtvCampaign(input.campaignId)
-  if (!(result.dispatched && result.vibeCampaignId)) return result
+  if (!(result.dispatched && result.vibeCampaignId)) {
+    await releaseTvLaunch(svc, { campaignId: input.campaignId, brokerageId: input.brokerageId, toStatus: readStatus })
+    return result
+  }
 
   const nowIso = new Date().toISOString()
   // `external_campaign_id` is the ONE key every platform's ingest reads
@@ -664,8 +698,15 @@ export async function launchTvCampaign(input: Omit<LaunchCtvInput, "launchedVia"
   if (!connector) return { dispatched: false, reason: `no connector for '${row.platform}'`, platform: row.platform }
   const cred = await loadConnectorCredential(input.brokerageId, row.platform, svc)
   if (!cred) return { dispatched: false, reason: `${TV_PROVIDER_HOME[row.platform].label} is not connected — the spot stays staged; connect it in Settings → Connections`, platform: row.platform }
+  // CLAIM BEFORE DISPATCH (see claimTvLaunch): the loser of a race is refused before the provider is asked.
+  const readStatus = row.status ?? null
+  const claim = await claimTvLaunch(svc, { campaignId: input.campaignId, brokerageId: input.brokerageId, fromStatus: readStatus })
+  if (!claim.ok) return { dispatched: false, reason: claim.reason, platform: row.platform }
   const pub = await connector.publishCampaign({ structure: { campaign_id: input.campaignId }, cred })
-  if (!pub.ok || !pub.externalCampaignId) return { dispatched: false, reason: pub.error ?? "the provider returned no campaign id", platform: row.platform }
+  if (!pub.ok || !pub.externalCampaignId) {
+    await releaseTvLaunch(svc, { campaignId: input.campaignId, brokerageId: input.brokerageId, toStatus: readStatus })
+    return { dispatched: false, reason: pub.error ?? "the provider returned no campaign id", platform: row.platform }
+  }
 
   // Re-read the row: the gate may have pointed creative_video_url at the TV master (a counted update of its own).
   const { data: fresh, error: freshErr } = await svc.from("ad_campaigns").select("targeting_config").eq("id", input.campaignId).eq("brokerage_id", input.brokerageId).maybeSingle()

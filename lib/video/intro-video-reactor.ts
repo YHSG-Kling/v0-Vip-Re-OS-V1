@@ -342,6 +342,57 @@ export async function dispatchAssignmentIntroVideo(
   })
 }
 
+/**
+ * THE RETRY DOOR (wave 146, lane 146Z — lane 146C's Outside-lane 1b; contract by NAME: lib/portal/welcome-video.ts
+ * resolveRetryDoor binds `retryAssignmentIntroVideo`). ONE bounded re-render of a FAILED or SUPPRESSED portal welcome:
+ *   · the row is read tenant-pinned (brokerage + id) and must be the welcome trigger (contact_agent_assigned);
+ *   · it is RE-CLAIMED with a conditional UPDATE (failed | suppressed → queued), COUNTED — 0 rows means another tick already
+ *     claimed it, and nothing else happens (CLAUDE.md §3: an UPDATE that matches nothing resolves like one that worked);
+ *   · the spine re-runs from step 1 on THAT row (existingIntroVideoId replaces the step-4 insert — no second row, and the
+ *     per-trigger unique index stays the dedup), so every gate — opt-out, the voice/avatar profile, pre-flight compliance —
+ *     runs again; a gate that still fails writes its reason back onto the same row.
+ * The welcome manager calls it at most once per contact (lib/portal/welcome-video.ts recoverPortalWelcomeVideo, action-ledger
+ * cycle `portal_welcome_video_retry`). The language is re-resolved by THE one resolver (multilingual-reel), never guessed.
+ */
+export async function retryAssignmentIntroVideo(input: { introVideoId: string; brokerageId: string }): Promise<ReactorResult> {
+  if (!input.introVideoId || !input.brokerageId) return { ok: false, status: "skipped", reason: "no welcome render / brokerage to retry" }
+  const svc = createServiceClient()
+  const { data: row, error } = await svc.from("agent_intro_videos")
+    .select("id, contact_id, agent_id, trigger, status, delivery_channel")
+    .eq("id", input.introVideoId).eq("brokerage_id", input.brokerageId).maybeSingle()
+  if (error) return { ok: false, status: "failed", reason: `retry read refused: ${error.message}` }
+  const r = row as { id: string; contact_id: string | null; agent_id: string | null; trigger: string | null; status: string | null; delivery_channel: string | null } | null
+  if (!r) return { ok: false, status: "skipped", reason: "no such welcome render in this brokerage" }
+  if (r.trigger !== "contact_agent_assigned") return { ok: false, status: "skipped", reason: `only the portal welcome (contact_agent_assigned) is retried here — this row is '${r.trigger}'` }
+  if (!r.contact_id || !r.agent_id) return { ok: false, status: "skipped", reason: "the render row names no contact / agent" }
+  if (r.status !== "failed" && r.status !== "suppressed") return { ok: false, status: "skipped", reason: `the render is '${r.status}' — only a failed or suppressed welcome is retried` }
+
+  const { data: claimed, error: claimErr } = await svc.from("agent_intro_videos")
+    .update({ status: "queued", error_message: null })
+    .eq("id", r.id).eq("brokerage_id", input.brokerageId).in("status", ["failed", "suppressed"])
+    .select("id")
+  if (claimErr) return { ok: false, status: "failed", reason: `retry claim refused: ${claimErr.message}` }
+  if (!claimed || claimed.length === 0) return { ok: false, status: "skipped", reason: "another retry already claimed this render" }
+
+  let language: string | undefined
+  try {
+    const { resolveContactLanguageFromDb } = await import("@/lib/video/multilingual-reel")
+    language = await resolveContactLanguageFromDb(svc as never, r.contact_id)
+  } catch { language = undefined } // the reactor falls to the ruled default (DEFAULT_LANGUAGE), never a guess
+
+  const delivery = r.delivery_channel === "email" || r.delivery_channel === "both" || r.delivery_channel === "portal" ? r.delivery_channel : "portal"
+  return runReactor({
+    brokerageId: input.brokerageId,
+    contactId:   r.contact_id,
+    agentId:     r.agent_id,
+    delivery,
+    trigger:     "contact_agent_assigned",
+    triggerYear: null,
+    language,
+    existingIntroVideoId: r.id,
+  })
+}
+
 export async function dispatchAnniversaryVideo(
   input: AnniversaryVideoInput,
 ): Promise<ReactorResult> {
@@ -381,6 +432,8 @@ interface ReactorInput extends BaseInput {
   hasLoanData?: boolean
   /** Wave 106 (106B): the journey planner's request, when the reel is its chosen experience. */
   request?: import("@/lib/ai-isa/lead-action-plan").PlannerIssuedRequest | null
+  /** Wave 146 (146Z): the ledger row a RETRY re-claimed — it replaces the step-4 insert (retryAssignmentIntroVideo). */
+  existingIntroVideoId?: string | null
 }
 
 /**
@@ -492,17 +545,30 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   // blind spot the census already exempts in the other direction (a column
   // written only by a DB trigger reads as writerless); a column read only by an
   // index expression reads as readerless.
-  if (contact.video_opt_out) {
-    await sentinelWrite(svc, svc.from("agent_intro_videos").insert({
-      brokerage_id: input.brokerageId,
-      contact_id:   input.contactId,
-      agent_id:     agentRecordId,
-      trigger:      input.trigger,
-      trigger_year: input.triggerYear,
-      status:       "suppressed",
-      delivery_channel: delivery,
-      error_message: "contact has video_opt_out=true",
-    }), { table: "agent_intro_videos", flow: "intro_video_skip_ledger", reason: "skip ledger row for an opted-out contact; nothing is sent either way" })
+  // A skip/failure is written on THE ledger row: a retry (retryAssignmentIntroVideo) re-uses the row it re-claimed — an insert
+  // there would hit the per-trigger unique index — and a first attempt inserts it as before.
+  const recordSkip = (status: "suppressed" | "failed", errorMessage: string, flowReason: string) =>
+    sentinelWrite(svc, input.existingIntroVideoId
+      ? svc.from("agent_intro_videos").update({ status, error_message: errorMessage }).eq("id", input.existingIntroVideoId).eq("brokerage_id", input.brokerageId)
+      : svc.from("agent_intro_videos").insert({
+          brokerage_id: input.brokerageId,
+          contact_id:   input.contactId,
+          agent_id:     agentRecordId,
+          trigger:      input.trigger,
+          trigger_year: input.triggerYear,
+          status,
+          delivery_channel: delivery,
+          error_message: errorMessage,
+        }), { table: "agent_intro_videos", flow: "intro_video_skip_ledger", reason: flowReason })
+
+  // OWNER RULING 6 (2026-10-29): "Welcome video is automatically sent in the portal regardless of the contact's preferences."
+  // The PORTAL welcome video (contact_agent_assigned, delivery 'portal') is an in-app part of the contact's portal journey, not a
+  // channel message, so video_opt_out does not suppress it (accessibility preferences still shape its playback — C3). It still
+  // suppresses every OUTBOUND video: an emailed welcome, an anniversary clip, any 'email' / 'both' delivery (wave 146, 146Z on
+  // lane 146C's Outside-lane 1a).
+  const portalWelcome = input.trigger === "contact_agent_assigned" && delivery === "portal"
+  if (contact.video_opt_out && !portalWelcome) {
+    await recordSkip("suppressed", "contact has video_opt_out=true", "skip ledger row for an opted-out contact; nothing is sent either way")
     return { ok: true, status: "suppressed", reason: "video_opt_out" }
   }
 
@@ -514,40 +580,35 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     .eq("agent_id", agentRecordId)
     .maybeSingle()
   if (!profile?.elevenlabs_voice_id || (!profile.did_photo_url && !profile.did_video_url)) {
-    await sentinelWrite(svc, svc.from("agent_intro_videos").insert({
-      brokerage_id: input.brokerageId,
-      contact_id:   input.contactId,
-      agent_id:     agentRecordId,
-      trigger:      input.trigger,
-      trigger_year: input.triggerYear,
-      status:       "failed",
-      delivery_channel: delivery,
-      error_message: "agent has no voice/avatar profile — Settings → Voice & Avatar",
-    }), { table: "agent_intro_videos", flow: "intro_video_skip_ledger", reason: "skip ledger row for an agent with no voice/avatar; nothing is sent either way" })
+    await recordSkip("failed", "agent has no voice/avatar profile — Settings → Voice & Avatar", "skip ledger row for an agent with no voice/avatar; nothing is sent either way")
     return { ok: false, status: "failed", reason: "agent voice/avatar profile not configured" }
   }
 
-  // 4. Idempotency ledger
-  const ledger = await svc
-    .from("agent_intro_videos")
-    .insert({
-      brokerage_id:     input.brokerageId,
-      contact_id:       input.contactId,
-      agent_id:         agentRecordId,
-      trigger:          input.trigger,
-      trigger_year:     input.triggerYear,
-      status:           "queued",
-      delivery_channel: delivery,
-    })
-    .select("id")
-    .maybeSingle()
-  if (ledger.error) {
-    if ((ledger.error as { code?: string }).code === "23505") {
-      return { ok: true, status: "already_queued", reason: "duplicate trigger" }
+  // 4. Idempotency ledger. A RETRY already holds its row (re-claimed queued, counted, by retryAssignmentIntroVideo) — it
+  //    REPLACES this insert, so there is never a second row and the per-trigger unique index stays the dedup.
+  let introVideoId: string | undefined = input.existingIntroVideoId ?? undefined
+  if (!introVideoId) {
+    const ledger = await svc
+      .from("agent_intro_videos")
+      .insert({
+        brokerage_id:     input.brokerageId,
+        contact_id:       input.contactId,
+        agent_id:         agentRecordId,
+        trigger:          input.trigger,
+        trigger_year:     input.triggerYear,
+        status:           "queued",
+        delivery_channel: delivery,
+      })
+      .select("id")
+      .maybeSingle()
+    if (ledger.error) {
+      if ((ledger.error as { code?: string }).code === "23505") {
+        return { ok: true, status: "already_queued", reason: "duplicate trigger" }
+      }
+      return { ok: false, status: "failed", reason: `ledger insert: ${ledger.error.message}` }
     }
-    return { ok: false, status: "failed", reason: `ledger insert: ${ledger.error.message}` }
+    introVideoId = ledger.data?.id as string | undefined
   }
-  const introVideoId = ledger.data?.id as string | undefined
 
   // 5. THE WRITING CONTEXT, resolved BEFORE any model call.
   //

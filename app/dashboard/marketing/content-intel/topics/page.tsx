@@ -60,7 +60,7 @@ export default async function TopicBankPage() {
                 <span>TV {t.tvStatus ?? "—"}</span>
               </div>
               {t.tvClaims && <div className="text-xs text-gray-500">TV spot may claim: {t.tvClaims.length ? t.tvClaims.join("; ") : "no figure (no verified fact)"}</div>}
-              <div className="text-xs text-gray-400 break-all">id {t.id}</div>
+              <div className="text-xs text-gray-500 break-all">id {t.id}</div>
             </div>
           ))}
         </div>
@@ -82,7 +82,7 @@ export default async function TopicBankPage() {
                   <td className="px-3 py-2 max-w-md">
                     <div className="font-medium">{t.title}</div>
                     {t.angle && <div className="text-xs text-gray-500 mt-1">{t.angle}</div>}
-                    <div className="text-xs text-gray-400 mt-1">id {t.id}</div>
+                    <div className="text-xs text-gray-500 mt-1">id {t.id}</div>
                   </td>
                   <td className="px-3 py-2 text-xs text-gray-600">
                     <div><code className="bg-gray-100 px-1 rounded">{t.sourceClass}</code></div>

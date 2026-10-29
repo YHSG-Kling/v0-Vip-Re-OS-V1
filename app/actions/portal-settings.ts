@@ -127,6 +127,14 @@ export async function uploadProfilePhoto(
   file: File,
 ): Promise<{ success: boolean; url?: string; error?: string }> {
   try {
+    // THE GATE (wave 146, lane 146Z on lane 146A's Outside-lane 4). This "use server" export had none: any signed-in
+    // caller could store an image into the private client-documents bucket under any contact's name and point that
+    // contact's avatar at it. The contact themselves or staff of that contact's brokerage only — the same gate
+    // updateContactProfile uses above; m875 refuses a non-self write at storage once the owner applies it.
+    const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+    const access = await requireContactAccess(contactId)
+    if (!access.ok) return { success: false, error: access.error }
+
     const supabase = await createClient()
 
     // Upload to Supabase Storage
@@ -156,6 +164,7 @@ export async function uploadProfilePhoto(
       .from("contacts")
       .update({ avatar_url: avatarUrl })
       .eq("id", contactId)
+      .eq("brokerage_id", access.brokerageId)
 
     if (updateError) {
       // The photo is in the bucket and no row points at it. Compensate with the

@@ -80,7 +80,7 @@ function ReadinessBadge({ status }: { status: ReadinessStatus }) {
 
 function ScoreRing({ score }: { score: number }) {
   const color =
-    score >= 70 ? "text-green-600" : score >= 45 ? "text-yellow-600" : "text-red-600"
+    score >= 70 ? "text-green-700" : score >= 45 ? "text-yellow-700" : "text-red-600"
   const bg =
     score >= 70 ? "bg-green-50" : score >= 45 ? "bg-yellow-50" : "bg-red-50"
   return (
@@ -363,7 +363,7 @@ export function PrelaunchPredictionPanel({ agentId }: Props) {
         </Button>
 
         {error && (
-          <p className="text-sm text-red-600 bg-red-50 rounded-md p-2">{error}</p>
+          <p className="text-sm text-red-700 bg-red-50 rounded-md p-2">{error}</p>
         )}
 
         {/* Results */}

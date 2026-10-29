@@ -417,7 +417,7 @@ export async function approveContentSource(
   // already enforced above.
   if (MARKETING_ASSET_QUEUES.has(queue)) {
     const { applyMarketingAssetApproval } = await import("./approval-queue-aggregator")
-    const res = await applyMarketingAssetApproval(queue as any, id)
+    const res = await applyMarketingAssetApproval(queue as any, id, ctx.userId ? { userId: ctx.userId } : null)
     return res.ok ? { ok: true, status: "approved" } : { ok: false, error: res.error }
   }
 

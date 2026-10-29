@@ -349,7 +349,7 @@ export function DocumentsClient({
                 </div>
                 {sig.document_url ? (
                   <a href={sig.document_url} target="_blank" rel="noreferrer">
-                    <Button size="sm" className="text-xs bg-amber-600 hover:bg-amber-700 text-white">
+                    <Button size="sm" className="text-xs bg-amber-700 hover:bg-amber-800 text-white">
                       <Send className="h-3.5 w-3.5 mr-1.5" />
                       Sign Now
                     </Button>
@@ -377,7 +377,7 @@ export function DocumentsClient({
                   </div>
                   {d.storage_url ? (
                     <a href={d.storage_url} target="_blank" rel="noreferrer">
-                      <Button size="sm" className="text-xs bg-amber-600 hover:bg-amber-700 text-white">
+                      <Button size="sm" className="text-xs bg-amber-700 hover:bg-amber-800 text-white">
                         <Send className="h-3.5 w-3.5 mr-1.5" />
                         Open to Sign
                       </Button>
@@ -471,7 +471,7 @@ export function DocumentsClient({
                               </div>
                             )}
                             {expiryStatus === "expiring" && (
-                              <div className="flex items-center gap-1 text-amber-600 text-sm mt-1">
+                              <div className="flex items-center gap-1 text-amber-700 text-sm mt-1">
                                 <AlertTriangle className="h-3 w-3" />
                                 Expires {new Date(doc.expiration_date!).toLocaleDateString()}
                               </div>
@@ -893,9 +893,9 @@ export function DocumentsClient({
                               {status === "verified" ? (
                                 <CheckCircle2 className="h-4 w-4 text-green-600" />
                               ) : status === "uploaded" ? (
-                                <Clock className="h-4 w-4 text-yellow-600" />
+                                <Clock className="h-4 w-4 text-yellow-700" />
                               ) : (
-                                <AlertCircle className="h-4 w-4 text-gray-400" />
+                                <AlertCircle className="h-4 w-4 text-gray-500" />
                               )}
                               <span className="text-sm">{String(name).replace(/_/g, " ")}</span>
                             </div>
@@ -1056,7 +1056,7 @@ function EducationalOverlaySection({
                 <ul className="text-sm text-muted-foreground space-y-1">
                   {overlay.red_flags_to_watch.map((flag: string, idx: number) => (
                     <li key={idx} className="flex items-start gap-2">
-                      <span className="text-red-500">•</span>
+                      <span className="text-red-600">•</span>
                       {flag}
                     </li>
                   ))}
@@ -1067,14 +1067,14 @@ function EducationalOverlaySection({
             {/* Pro Tips */}
             {overlay.pro_tips?.length > 0 && (
               <div>
-                <h4 className="text-sm font-medium mb-2 flex items-center gap-2 text-green-600">
+                <h4 className="text-sm font-medium mb-2 flex items-center gap-2 text-green-700">
                   <Sparkles className="h-4 w-4" />
                   Pro Tips
                 </h4>
                 <ul className="text-sm text-muted-foreground space-y-1">
                   {overlay.pro_tips.map((tip: string, idx: number) => (
                     <li key={idx} className="flex items-start gap-2">
-                      <span className="text-green-500">•</span>
+                      <span className="text-green-700">•</span>
                       {tip}
                     </li>
                   ))}

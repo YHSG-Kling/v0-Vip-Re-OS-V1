@@ -110,7 +110,7 @@ export function AnalyticsTab() {
             </div>
             <div>
               <p className="text-2xl font-semibold">
-                {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-400" /> : totalPlays.toLocaleString()}
+                {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-500" /> : totalPlays.toLocaleString()}
               </p>
               <p className="text-xs text-gray-500">Total Plays</p>
             </div>
@@ -124,7 +124,7 @@ export function AnalyticsTab() {
             </div>
             <div>
               <p className="text-2xl font-semibold">
-                {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-400" /> : totalListenMinutes.toLocaleString()}
+                {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-500" /> : totalListenMinutes.toLocaleString()}
               </p>
               <p className="text-xs text-gray-500">Total Listen Minutes</p>
             </div>
@@ -139,9 +139,9 @@ export function AnalyticsTab() {
             <div>
               <p className="text-2xl font-semibold">
                 {loading ? (
-                  <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+                  <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
                 ) : avgCompletionRate == null ? (
-                  <span className="text-gray-400" title="Listen-completion is not captured on podcast events yet">—</span>
+                  <span className="text-gray-500" title="Listen-completion is not captured on podcast events yet">—</span>
                 ) : (
                   `${avgCompletionRate}%`
                 )}
@@ -159,7 +159,7 @@ export function AnalyticsTab() {
             <div>
               <p className="text-2xl font-semibold">
                 {loading ? (
-                  <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+                  <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
                 ) : (
                   subscribersLast30.toLocaleString()
                 )}
@@ -167,7 +167,7 @@ export function AnalyticsTab() {
               <p className="text-xs text-gray-500">
                 New Subscribers (30d)
                 {subscriberGrowthPct != null && (
-                  <span className={`ml-1 ${subscriberGrowthPct >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                  <span className={`ml-1 ${subscriberGrowthPct >= 0 ? "text-emerald-700" : "text-red-600"}`}>
                     {subscriberGrowthPct >= 0 ? "+" : ""}
                     {subscriberGrowthPct}%
                   </span>
@@ -202,7 +202,7 @@ export function AnalyticsTab() {
           {error && <p className="text-sm text-red-600">{error}</p>}
           {!error && loading && (
             <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+              <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
             </div>
           )}
           {!error && !loading && dailyTrend.length > 0 && (

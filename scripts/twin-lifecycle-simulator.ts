@@ -119,8 +119,11 @@ for (const f of SCANNED_FILES) {
     /rehostAvatarImage\(/.test(completion) && /avatar_url:\s*avatarUrl/.test(completion))
 
   const sweep = src("lib/did/result-url-rehost-sweep.ts")
+  // RE-ASSERTED (wave 146, lane 146Z): this pinned the import list to exactly `{ hostRenderedMedia }`. The sweep now also
+  // imports renderHostBucketFor from the SAME module (a contact's video re-hosts into the private personal-videos bucket), so
+  // the rule — hostRenderedMedia comes from lib/remotion/media-host — is asserted on the named-import list, not its length.
   check("the sweep reuses hostRenderedMedia (no second video download-and-store impl)",
-    /import\s*\{\s*hostRenderedMedia\s*\}\s*from\s*"@\/lib\/remotion\/media-host"/.test(sweep))
+    /import\s*\{[^}]*\bhostRenderedMedia\b[^}]*\}\s*from\s*"@\/lib\/remotion\/media-host"/.test(sweep))
   check("the sweep reuses rehostAvatarImage (no second avatar-image impl)",
     /import\s*\{\s*rehostAvatarImage\s*\}\s*from\s*"@\/lib\/did\/avatar-completion"/.test(sweep))
   check("the sweep matches on both documented D-ID URL markers",

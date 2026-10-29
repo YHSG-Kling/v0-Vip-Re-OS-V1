@@ -281,6 +281,25 @@ export async function uploadDocument(
     }
   }
 
+  // A PORTAL CONTACT files only into THEIR OWN folder / deal (wave 146, lane 146Z on lane 146A's Outside-lane 3).
+  // The brokerage checks above admit a contact seat too (contacts carry brokerage_id), so without this a contact
+  // could file into another contact's folder or deal of the same brokerage. m875 refuses it at storage once the
+  // owner applies it; the action refuses it now. Every read's error is READ (a refused read is a refusal, §3).
+  if (ctx.userType === "contact") {
+    if (!contactId) return { success: false, error: "Forbidden" }
+    const { data: own, error: ownErr } = await svc
+      .from("contacts").select("id").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).eq("contact_user_id", userId).maybeSingle()
+    if (ownErr || !own) return { success: false, error: "Forbidden" }
+    if (transactionId) {
+      const { data: deal, error: dealErr } = await svc
+        .from("transactions").select("contact_id, buyer_contact_id, seller_contact_id").eq("id", transactionId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      const d = deal as { contact_id?: string | null; buyer_contact_id?: string | null; seller_contact_id?: string | null } | null
+      if (dealErr || !d || ![d.contact_id, d.buyer_contact_id, d.seller_contact_id].includes(contactId)) {
+        return { success: false, error: "Forbidden" }
+      }
+    }
+  }
+
   const filePath = transactionId
     ? `transactions/${transactionId}/${Date.now()}_${file.name}`
     : `contacts/${contactId}/${Date.now()}_${file.name}`

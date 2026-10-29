@@ -339,7 +339,7 @@ export default async function ClientVendorsPage({
                         {[1, 2, 3, 4, 5].map((n) => (
                           <Star
                             key={n}
-                            className={`h-3 w-3 ${n <= (b.client_rating ?? 0) ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground"}`}
+                            className={`h-3 w-3 ${n <= (b.client_rating ?? 0) ? "fill-yellow-400 text-yellow-700" : "text-muted-foreground"}`}
                           />
                         ))}
                       </div>
@@ -393,7 +393,7 @@ export default async function ClientVendorsPage({
                           </h4>
                           {v.rating && (
                             <div className="flex items-center gap-1 text-xs mt-0.5">
-                              <Star className="h-3 w-3 fill-yellow-400 text-yellow-500" />
+                              <Star className="h-3 w-3 fill-yellow-400 text-yellow-700" />
                               <span className="font-medium">{Number(v.rating).toFixed(1)}</span>
                             </div>
                           )}

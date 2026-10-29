@@ -919,7 +919,10 @@ export async function completeTransactionMilestone(params: {
 }): Promise<KernelTxResult<void>> {
   try {
     const supabase = await createServiceClient()
-    const { error } = await supabase
+    // TENANT + DEAL PINNED AND COUNTED (wave 146, lane 146Z on lane 146G's Outside-lane 5): on the service client an id-only
+    // update completed ANY tenant's milestone and reported success for an id that matched nothing (CLAUDE.md §3). Pinned to
+    // the caller's brokerage and deal, a wrong-tenant or wrong-deal id now refuses instead of resolving as done.
+    const { data: completed, error } = await supabase
       .from("transaction_milestones")
       .update({
         status:       "completed",
@@ -928,8 +931,12 @@ export async function completeTransactionMilestone(params: {
         notes:        params.notes ?? null,
       })
       .eq("id", params.milestoneId)
+      .eq("brokerage_id", params.brokerageId)
+      .eq("transaction_id", params.transactionId)
+      .select("id")
 
     if (error) return { success: false, error: error.message }
+    if (!completed || completed.length === 0) return { success: false, error: "milestone not found on this deal in this brokerage" }
 
     await sentinelWrite(supabase, supabase.from("transaction_timeline").insert({
       transaction_id: params.transactionId,

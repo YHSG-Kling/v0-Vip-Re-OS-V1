@@ -253,6 +253,9 @@ export const PROTECTED_ROUTES = [
   // /api/providers/inbound  — webhook signature inside
 ];
 
+/** The anonymous listing page — one uuid segment under /listings, nothing deeper (see classifyProxyPath). */
+const PUBLIC_LISTING_DETAIL_PATH = /^\/listings\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/?$/i
+
 /** A PUBLIC entry matches its own path and its children — never a sibling
  *  that merely shares the spelling ('/v' ≠ '/vendor'). A trailing-slash or
  *  file-like entry ('/llms.txt') is matched the same way. */
@@ -270,6 +273,12 @@ export function publicRouteMatches(pathname: string, route: string): boolean {
  */
 export function classifyProxyPath(pathname: string): 'public' | 'protected' | 'open' {
   if (PUBLIC_ROUTES.some((route) => publicRouteMatches(pathname, route))) return 'public'
+  // THE PUBLIC LISTING PAGE (wave 146, lane 146Z on lane 146H's Outside-lane 1 — ruling 18): every QR "View the
+  // listing" / "Book a time" code (lib/marketing/qr-contract.ts listing_detail) and the public agent profile's cards
+  // land on /listings/<uuid>, which sat behind the login wall. The page self-gates on the ROW (the id + a public status,
+  // never an archived listing; every child read pinned to the row's id / brokerage — app/listings/[listingId]/page.tsx).
+  // EXACTLY one uuid segment: /listings, /listings/new and every /listings/<id>/<child> stay protected.
+  if (PUBLIC_LISTING_DETAIL_PATH.test(pathname)) return 'public'
   if (PROTECTED_ROUTES.some((route) => pathname.startsWith(route))) return 'protected'
   return 'open'
 }

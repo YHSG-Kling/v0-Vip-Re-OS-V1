@@ -62,13 +62,31 @@ export async function sendSocialDmReply(params: {
       .maybeSingle()
     if (!convo) return { success: false, error: "Conversation not found" }
     if (convo.brokerage_id !== brokerageId) return { success: false, error: "Forbidden" }
-    const convoType = String(convo.type ?? "")
+    let convoType = String(convo.type ?? "")
+    // The persisted reply's type: the thread's own social type, or the inbound DM's ('social_dm') on a contact's one thread.
+    const persistType = convoType.toLowerCase().startsWith("social") ? convoType : "social_dm"
+    let ctx = (convo.context_data ?? {}) as Record<string, any>
     if (!convoType.toLowerCase().startsWith("social")) {
-      return { success: false, error: "Not a social thread" }
+      // A KNOWN contact's DMs land on their ONE thread (contract C1 — lib/communications/inbound-record.ts records the
+      // DM on the contact's conversation, whatever its type), so the reply lane is read from the LATEST INBOUND social DM
+      // on this thread: its metadata.thread carries the receiving account + the sender (wave 146, lane 146Z on lane 146B's
+      // Outside-lane 3). No inbound DM on the thread → still not a social reply (refused, never guessed).
+      const { data: lastDm, error: lastDmErr } = await svc.from("messages")
+        .select("type, metadata").eq("conversation_id", convo.id).eq("brokerage_id", brokerageId)
+        .eq("direction", "inbound").eq("type", "social_dm")
+        .order("created_at", { ascending: false }).limit(1).maybeSingle()
+      if (lastDmErr) return { success: false, error: `thread read refused: ${lastDmErr.message}` }
+      const meta = ((lastDm as { metadata?: Record<string, any> } | null)?.metadata ?? null)
+      const thread = (meta?.thread ?? {}) as Record<string, string>
+      const surface = String(meta?.surface ?? "").toLowerCase()
+      if (!meta) return { success: false, error: "Not a social thread" }
+      if (thread.page_id && thread.sender_id) ctx = { page_id: thread.page_id, sender_id: thread.sender_id, platform: surface === "instagram" ? "instagram" : "facebook" }
+      else if (surface) ctx = { platform: surface }
+      else return { success: false, error: "Not a social thread" }
+      convoType = `social_dm_${String(ctx.platform)}`
     }
 
     // ── Resolve the send lane ────────────────────────────────────────────────
-    const ctx = (convo.context_data ?? {}) as Record<string, any>
     let platform: SocialDmPlatform | null = null
     let accountId: string | null = null
     let accessToken: string | null = null
@@ -151,7 +169,7 @@ export async function sendSocialDmReply(params: {
         contact_id: convo.contact_id ?? null,
         brokerage_id: brokerageId,
         agent_id: agentId ?? convo.agent_id ?? null,
-        type: convoType, // stay consistent with the thread's inbound rows
+        type: persistType, // stay consistent with the thread's inbound rows
         direction: "outbound",
         sender_type: "agent",
         body: text,

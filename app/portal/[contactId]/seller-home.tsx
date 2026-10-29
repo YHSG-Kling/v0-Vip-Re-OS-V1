@@ -390,14 +390,14 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
                   <p className="text-lg font-semibold text-green-700">
                     {sentimentBreakdown!.positive}
                   </p>
-                  <p className="text-xs text-green-600">Positive</p>
+                  <p className="text-xs text-green-700">Positive</p>
                 </div>
                 <div className="p-2 rounded-lg bg-amber-50 border border-amber-100">
                   <Minus className="h-4 w-4 text-amber-600 mx-auto mb-1" />
                   <p className="text-lg font-semibold text-amber-700">
                     {sentimentBreakdown!.neutral}
                   </p>
-                  <p className="text-xs text-amber-600">Neutral</p>
+                  <p className="text-xs text-amber-700">Neutral</p>
                 </div>
                 <div className="p-2 rounded-lg bg-red-50 border border-red-100">
                   <ThumbsDown className="h-4 w-4 text-red-600 mx-auto mb-1" />

@@ -87,7 +87,7 @@ Wave 143, lane 143J. Live census read-only on 2026-10-23 (project hrvaqgvukzxfsk
 | ai_campaign_automation | R19 | CERTIFIED | 0 |
 | ai_compliance_checking | R22 | CERTIFIED | 0 |
 | ai_conversation_analysis | R07 | CERTIFIED | 0 |
-| ai_isa | R07 | CERTIFIED | 99 |
+| ai_isa | R07 | CERTIFIED | 101 |
 | ai_lead_prediction | R07 | CERTIFIED | 0 |
 | ai_video_generation | R15 | NOT CONFIGURED | 1 |
 | agent_dashboard | R20 | CERTIFIED | 3 |
@@ -122,7 +122,7 @@ Wave 143, lane 143J. Live census read-only on 2026-10-23 (project hrvaqgvukzxfsk
 | ads_campaigns | R14 | NOT CONFIGURED | 1 |
 | competitor_monitor | R14 | NOT CONFIGURED | 1 |
 | content_performance_predictor | R14 | NOT CONFIGURED | 1 |
-| direct_mail | R12 | NOT CONFIGURED | 110 |
+| direct_mail | R12 | NOT CONFIGURED | 111 |
 | email_campaigns | R11 | NOT CONFIGURED | 12 |
 | listing_marketing_tiers | R01 | CERTIFIED | 2 |
 | marketing_studio | R19 | CERTIFIED | 1 |
@@ -138,7 +138,7 @@ Wave 143, lane 143J. Live census read-only on 2026-10-23 (project hrvaqgvukzxfsk
 | integration_setup | R24 | CERTIFIED | 0 |
 | training_library | R24 | CERTIFIED | 1 |
 | training_progress | R24 | CERTIFIED | 1 |
-| brokerage_settings | R23 | CERTIFIED | 57 |
+| brokerage_settings | R23 | CERTIFIED | 59 |
 | multi_location_settings | R23 | CERTIFIED | 0 |
 | provider_override | R23 | CERTIFIED | 0 |
 | team_management | R23 | CERTIFIED | 2 |

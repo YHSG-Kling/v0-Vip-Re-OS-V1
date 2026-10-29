@@ -370,8 +370,8 @@ export interface InboundIntent {
 }
 
 export interface InboundProcessDeps extends InboundRecordDeps {
-  /** opt-out writer (default: app/actions/ai-isa/process-opt-out.ts processOptOut — the SMS / email door's survivor). */
-  optOut?: (p: { entityType: "contact"; entityId: string; channel: "email" | "sms" | "phone" | "direct_mail" | "all"; source: "inbound_sms" | "inbound_email"; rawMessage: string; brokerageId: string }) => Promise<{ success: boolean; error?: string }>
+  /** opt-out writer (default: lib/ai-isa/opt-out-writer.ts processOptOutFromVerifiedInbound — the verified doors' sessionless writer; wave 146 moved it out of the "use server" action). */
+  optOut?: (p: { entityType: "contact"; entityId: string; channel: "email" | "sms" | "phone" | "direct_mail" | "all"; source: "inbound_sms" | "inbound_email" | "inbound_social"; rawMessage: string; brokerageId: string }) => Promise<{ success: boolean; error?: string }>
   /** response-driven stop (default: lib/campaign-sequences/enrollment-engine.ts stopSequencesOnResponse). */
   stopSequences?: (p: { brokerageId: string; contactId: string }) => Promise<{ unenrolled: number }>
   /** kernel emit (default: lib/kernel/emit.ts emitKernelEvent). */
@@ -465,10 +465,12 @@ export async function processInboundCommunication(
     const d = detectOptOutIntent(body)
     if (d.isOptOut && d.confidence === "high") {
       try {
-        const write = deps.optOut ?? (async (p) => (await import("@/app/actions/ai-isa/process-opt-out")).processOptOut(p))
-        // processOptOut's webhook provenance vocabulary is inbound_sms / inbound_email; a social DM is a messaging thread
-        // (stated in the lane notes — the vocabulary gap is Outside-lane, never papered over with a fake value).
-        const r = await write({ entityType: "contact", entityId: contactId, channel: d.channel, source: input.channel === "email" ? "inbound_email" : "inbound_sms", rawMessage: body.slice(0, 500), brokerageId })
+        const write = deps.optOut ?? (async (p) => (await import("@/lib/ai-isa/opt-out-writer")).processOptOutFromVerifiedInbound(p))
+        // Provenance (wave 146): a social / WhatsApp message thread is `inbound_social` — the value the writer's
+        // vocabulary lacked when lane 146B landed (its social STOPs were written as inbound_sms). A portal-channel
+        // inbound has no door feeding this record; it keeps the SMS label as before.
+        const source = input.channel === "email" ? "inbound_email" : input.channel === "social_dm" || input.channel === "whatsapp" ? "inbound_social" : "inbound_sms"
+        const r = await write({ entityType: "contact", entityId: contactId, channel: d.channel, source, rawMessage: body.slice(0, 500), brokerageId })
         optOut = { detected: true, applied: !!r.success, ...(r.error ? { error: r.error } : {}) }
       } catch (e) {
         optOut = { detected: true, applied: false, error: e instanceof Error ? e.message : String(e) }

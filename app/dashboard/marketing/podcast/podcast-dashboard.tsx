@@ -185,7 +185,7 @@ export function PodcastDashboard({
               </div>
               <div>
                 <p className="text-2xl font-semibold text-gray-900">
-                  {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-400" /> : totalEpisodes}
+                  {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-500" /> : totalEpisodes}
                 </p>
                 <p className="text-xs text-gray-500">Total Episodes</p>
               </div>
@@ -199,7 +199,7 @@ export function PodcastDashboard({
               </div>
               <div>
                 <p className="text-2xl font-semibold text-gray-900">
-                  {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-400" /> : publishedCount}
+                  {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-500" /> : publishedCount}
                 </p>
                 <p className="text-xs text-gray-500">Published</p>
               </div>

@@ -6,7 +6,7 @@ Owner ruling 18 (2026-10-29): *"All capabilities at all levels … Validate each
 
 **Verdicts.** BUILT — the screen reaches a data path. PARTIAL — it reaches one and says honestly that a part is not available / not configured. UNWIRED — interactive controls, no data path. STATIC — informational, no controls, no data (not a defect). REDIRECT — an alias that lands elsewhere. MISSING — no page serves the href. Dead CONTROLS inside a BUILT screen are `test:ui-wiring-census`'s (hard zero on every journey); page role gates are `test:page-role-gate-roster`'s; colour contrast is `test:ui-palette-contrast`'s.
 
-**Totals:** 806 role-surfaces — BUILT 718 · PARTIAL 71 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 2. Public pages: 37; contact-portal pages: 30. Expected-coverage gaps: 0.
+**Totals:** 811 role-surfaces — BUILT 723 · PARTIAL 71 · UNWIRED 0 · STATIC 14 · REDIRECT 1 · MISSING 2. Public pages: 37; contact-portal pages: 30. Expected-coverage gaps: 0.
 
 ## Role × domain (B = BUILT, P = PARTIAL, U = UNWIRED, S = STATIC, R = REDIRECT, M = MISSING; **GAP** = ruling 18 expects this level here and no surface exists; · = not expected, none)
 
@@ -25,7 +25,7 @@ Owner ruling 18 (2026-10-29): *"All capabilities at all levels … Validate each
 | **education** | B1 | · | B6 | B2 | B5 | B1 | B1 | B1 | B2 | · |
 | **agent referral · recruiting · agreements · gamification** | B2 | · | B6 P1 | B6 | B10 | · | · | · | B1 | · |
 | CRM · contacts · lifetime | B1 | · | B7 | B8 | B11 | B2 | B2 | B2 | · | · |
-| marketing · media · communications · AI | B2 | · | B39 P5 | B27 P6 S1 | B35 P6 S1 | B11 P1 | B9 P4 | B12 P4 | · | · |
+| marketing · media · communications · AI | B2 | · | B40 P5 | B28 P6 S1 | B36 P6 S1 | B11 P1 | B10 P4 | B13 P4 | · | · |
 | compliance · approvals | B1 | · | B11 P2 S1 | B7 S1 | B2 | · | B3 | B11 P1 S1 | · | · |
 | financials · billing | B7 P1 | · | B11 | B7 | B6 | · | · | · | B1 | B4 |
 | operations · managers · reports | B28 P2 R1 | · | B30 P7 | B5 P4 | B10 P4 | · | · | · | · | P1 |
@@ -231,7 +231,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | website · landing pages · lead magnets | /widget/[brokerageSlug] `/widget/[brokerageSlug]` | `app/widget/[brokerageSlug]/page.tsx` | fetch /api/widget/session · fetch /api/track/visitor | BUILT |
 | website · landing pages · lead magnets | /widget/chat `/widget/chat` | `app/widget/chat/page.tsx` | fetch /api/widget/session · fetch /api/widget/intake | BUILT |
 
-### tenant admins (218)
+### tenant admins (219)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -343,6 +343,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | marketing · media · communications · AI | Podcast Studio `/dashboard/marketing/podcast` | `app/dashboard/marketing/podcast/page.tsx` | app/actions/podcast-generation.ts (getPodcastEpisodes, getPodcastTemplates, getDistributionChannels, …) · lib/identity/get-agent-context.ts | PARTIAL |
 | marketing · media · communications · AI | Review Queue `/dashboard/marketing/review` | `app/dashboard/marketing/review/page.tsx` | app/dashboard/marketing/review/actions.ts (loadMarketingReview, dismissDraft, cancelSocialPost, …) · app/actions/listing-media.ts (approveListingMedia, rejectListingMedia) | BUILT |
 | marketing · media · communications · AI | Marketing Studio `/dashboard/marketing/studio` | `app/dashboard/marketing/studio/page.tsx` | app/actions/marketing-studio.ts (getCampaigns, createCampaign, updateCampaign, …) · app/actions/content-studio.ts (generateContentIdeas, getContentIdeas, researchKeywords, …) | BUILT |
+| marketing · media · communications · AI | ↳ from Video Pages `/dashboard/marketing/video-staging` | `app/dashboard/marketing/video-staging/page.tsx` | app/dashboard/marketing/video-staging/actions.ts (listStagedVideosAction, stageVideoAction, approveStagedVideoAction) | BUILT |
 | marketing · media · communications · AI | ↳ from Referrals `/dashboard/reputation` | `app/dashboard/reputation/page.tsx` (redirects → app/lifetime-customers/page.tsx) | app/actions/lifetime-customers.ts (getLifetimeCustomers, logTouchpoint, sendMarketUpdate, …) · app/actions/reputation-kernel.ts (loadReferralPipelineAction, loadReputationWorkspaceAction, sendThankYouNoteAction, …) | BUILT |
 | marketing · media · communications · AI | Social Dashboard `/dashboard/social` | `app/dashboard/social/page.tsx` | app/actions/social-media-automation.ts (approveSocialPost, rejectSocialPost, retryFailedPost, …) · app/actions/social/generate-social-post.ts (generateSocialPostContent, stampPostBrandCompliance, generateWeeklyContentPlan, …) | PARTIAL |
 | marketing · media · communications · AI | Video Analytics `/dashboard/videos/analytics` | `app/dashboard/videos/analytics/page.tsx` | app/actions/video-generation.ts (getVideoPerformanceStats, getVideoEngagementEvents) | BUILT |
@@ -454,7 +455,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | website · landing pages · lead magnets | ↳ from Settings `/settings/branding` | `app/settings/branding/page.tsx` | app/actions/custom-domains.ts (getCustomDomainsPanel, addCustomDomainAction, checkCustomDomainStatusAction, …) · app/actions/settings/business-registration.ts (getBusinessRegistrationAction, saveBusinessRegistrationAction, BusinessRegistrationView) | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### teams · team leads (119)
+### teams · team leads (120)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -522,6 +523,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | marketing · media · communications · AI | Podcast Studio `/dashboard/marketing/podcast` | `app/dashboard/marketing/podcast/page.tsx` | app/actions/podcast-generation.ts (getPodcastEpisodes, getPodcastTemplates, getDistributionChannels, …) · lib/identity/get-agent-context.ts | PARTIAL |
 | marketing · media · communications · AI | Review Queue `/dashboard/marketing/review` | `app/dashboard/marketing/review/page.tsx` | app/dashboard/marketing/review/actions.ts (loadMarketingReview, dismissDraft, cancelSocialPost, …) · app/actions/listing-media.ts (approveListingMedia, rejectListingMedia) | BUILT |
 | marketing · media · communications · AI | Marketing Studio `/dashboard/marketing/studio` | `app/dashboard/marketing/studio/page.tsx` | app/actions/marketing-studio.ts (getCampaigns, createCampaign, updateCampaign, …) · app/actions/content-studio.ts (generateContentIdeas, getContentIdeas, researchKeywords, …) | BUILT |
+| marketing · media · communications · AI | ↳ from Video Pages `/dashboard/marketing/video-staging` | `app/dashboard/marketing/video-staging/page.tsx` | app/dashboard/marketing/video-staging/actions.ts (listStagedVideosAction, stageVideoAction, approveStagedVideoAction) | BUILT |
 | marketing · media · communications · AI | ↳ from Referrals `/dashboard/reputation` | `app/dashboard/reputation/page.tsx` (redirects → app/lifetime-customers/page.tsx) | app/actions/lifetime-customers.ts (getLifetimeCustomers, logTouchpoint, sendMarketUpdate, …) · app/actions/reputation-kernel.ts (loadReferralPipelineAction, loadReputationWorkspaceAction, sendThankYouNoteAction, …) | BUILT |
 | marketing · media · communications · AI | Social Dashboard `/dashboard/social` | `app/dashboard/social/page.tsx` | app/actions/social-media-automation.ts (approveSocialPost, rejectSocialPost, retryFailedPost, …) · app/actions/social/generate-social-post.ts (generateSocialPostContent, stampPostBrandCompliance, generateWeeklyContentPlan, …) | PARTIAL |
 | marketing · media · communications · AI | ↳ from My Videos `/dashboard/videos/analytics` | `app/dashboard/videos/analytics/page.tsx` | app/actions/video-generation.ts (getVideoPerformanceStats, getVideoEngagementEvents) | BUILT |
@@ -578,7 +580,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | website · landing pages · lead magnets | ↳ from Ad Campaigns `/pricing` | `app/pricing/page.tsx` | lib/platform/public-tiers.ts · lib/platform/product-brand.ts | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### agents (174)
+### agents (175)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -674,6 +676,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | marketing · media · communications · AI | Review Queue `/dashboard/marketing/review` | `app/dashboard/marketing/review/page.tsx` | app/dashboard/marketing/review/actions.ts (loadMarketingReview, dismissDraft, cancelSocialPost, …) · app/actions/listing-media.ts (approveListingMedia, rejectListingMedia) | BUILT |
 | marketing · media · communications · AI | Marketing Studio `/dashboard/marketing/studio` | `app/dashboard/marketing/studio/page.tsx` | app/actions/marketing-studio.ts (getCampaigns, createCampaign, updateCampaign, …) · app/actions/content-studio.ts (generateContentIdeas, getContentIdeas, researchKeywords, …) | BUILT |
 | marketing · media · communications · AI | BrandVoice Profile `/dashboard/marketing/studio/brand-voice` | `app/dashboard/marketing/studio/brand-voice/page.tsx` | app/actions/brand-voice.ts (loadBrandVoiceProfileAction, saveBrandVoiceProfileAction, BrandVoiceProfile) | BUILT |
+| marketing · media · communications · AI | ↳ from Video Pages `/dashboard/marketing/video-staging` | `app/dashboard/marketing/video-staging/page.tsx` | app/dashboard/marketing/video-staging/actions.ts (listStagedVideosAction, stageVideoAction, approveStagedVideoAction) | BUILT |
 | marketing · media · communications · AI | ↳ from Referrals `/dashboard/reputation` | `app/dashboard/reputation/page.tsx` (redirects → app/lifetime-customers/page.tsx) | app/actions/lifetime-customers.ts (getLifetimeCustomers, logTouchpoint, sendMarketUpdate, …) · app/actions/reputation-kernel.ts (loadReferralPipelineAction, loadReputationWorkspaceAction, sendThankYouNoteAction, …) | BUILT |
 | marketing · media · communications · AI | Social Dashboard `/dashboard/social` | `app/dashboard/social/page.tsx` | app/actions/social-media-automation.ts (approveSocialPost, rejectSocialPost, retryFailedPost, …) · app/actions/social/generate-social-post.ts (generateSocialPostContent, stampPostBrandCompliance, generateWeeklyContentPlan, …) | PARTIAL |
 | marketing · media · communications · AI | ↳ from My Videos `/dashboard/videos/analytics` | `app/dashboard/videos/analytics/page.tsx` | app/actions/video-generation.ts (getVideoPerformanceStats, getVideoEngagementEvents) | BUILT |
@@ -793,7 +796,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | settings · people · support | Settings `/dashboard/settings/general` | `app/dashboard/settings/general/page.tsx` (redirects → app/settings/general/page.tsx) | app/actions/settings/brokerage-identity.ts (getBrokerageIdentity, BrokerageIdentity, updateBrokerageIdentity) · app/actions/settings/brokerage-affiliation.ts (getBrokerageAffiliationPanelAction, declareBrokerageAffiliationAction, AffiliationPanel) | BUILT |
 | settings · people · support | Twin Studio `/dashboard/settings/twin-studio` | `app/dashboard/settings/twin-studio/page.tsx` | app/actions/twin-studio.ts (listMyTwins, listPendingApprovals, setDefaultTwin, …) · app/actions/settings/brokerage-column-settings.ts (getLiveFaceProviderSettingAction, saveLiveFaceProviderOrderAction) | BUILT |
 
-### transaction coordinators (41)
+### transaction coordinators (42)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -814,6 +817,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | marketing · media · communications · AI | Podcast Studio `/dashboard/marketing/podcast` | `app/dashboard/marketing/podcast/page.tsx` | app/actions/podcast-generation.ts (getPodcastEpisodes, getPodcastTemplates, getDistributionChannels, …) · lib/identity/get-agent-context.ts | PARTIAL |
 | marketing · media · communications · AI | Review Queue `/dashboard/marketing/review` | `app/dashboard/marketing/review/page.tsx` | app/dashboard/marketing/review/actions.ts (loadMarketingReview, dismissDraft, cancelSocialPost, …) · app/actions/listing-media.ts (approveListingMedia, rejectListingMedia) | BUILT |
 | marketing · media · communications · AI | Marketing Studio `/dashboard/marketing/studio` | `app/dashboard/marketing/studio/page.tsx` | app/actions/marketing-studio.ts (getCampaigns, createCampaign, updateCampaign, …) · app/actions/content-studio.ts (generateContentIdeas, getContentIdeas, researchKeywords, …) | BUILT |
+| marketing · media · communications · AI | ↳ from Video Pages `/dashboard/marketing/video-staging` | `app/dashboard/marketing/video-staging/page.tsx` | app/dashboard/marketing/video-staging/actions.ts (listStagedVideosAction, stageVideoAction, approveStagedVideoAction) | BUILT |
 | marketing · media · communications · AI | Social Dashboard `/dashboard/social` | `app/dashboard/social/page.tsx` | app/actions/social-media-automation.ts (approveSocialPost, rejectSocialPost, retryFailedPost, …) · app/actions/social/generate-social-post.ts (generateSocialPostContent, stampPostBrandCompliance, generateWeeklyContentPlan, …) | PARTIAL |
 | marketing · media · communications · AI | Newsletter Templates `/newsletters` | `app/newsletters/page.tsx` | app/actions/ai-newsletter.ts (aiGenerateSubjectLines, aiOptimizeSendTime, aiWriteNewsletterContent, …) · app/actions/newsletter/fetch-local-news.ts (fetchLocalNews, setupLocalNewsSource, recordNewsletterLocalContent) | BUILT |
 | marketing · media · communications · AI | ↳ from Review Queue `/social-planner` | `app/social-planner/page.tsx` (redirects → app/dashboard/social/page.tsx) | app/actions/social-media-automation.ts (approveSocialPost, rejectSocialPost, retryFailedPost, …) · app/actions/social/generate-social-post.ts (generateSocialPostContent, stampPostBrandCompliance, generateWeeklyContentPlan, …) | PARTIAL |
@@ -839,7 +843,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | website · landing pages · lead magnets | ↳ from Marketing Studio `/legal` | `app/legal/page.tsx` | lib/platform/product-brand.ts | BUILT |
 | website · landing pages · lead magnets | ↳ from Video Pages `/v/x` | `app/v/[slug]/page.tsx` | app/actions/listing-video.ts (trackVideoView) · lib/kernel/agent-identity.ts | BUILT |
 
-### compliance officers (52)
+### compliance officers (53)
 
 | domain | surface | page | action behind it | verdict |
 |---|---|---|---|---|
@@ -873,6 +877,7 @@ None — every level the ruling names reaches every domain it should, on a real 
 | marketing · media · communications · AI | Podcast Studio `/dashboard/marketing/podcast` | `app/dashboard/marketing/podcast/page.tsx` | app/actions/podcast-generation.ts (getPodcastEpisodes, getPodcastTemplates, getDistributionChannels, …) · lib/identity/get-agent-context.ts | PARTIAL |
 | marketing · media · communications · AI | Review Queue `/dashboard/marketing/review` | `app/dashboard/marketing/review/page.tsx` | app/dashboard/marketing/review/actions.ts (loadMarketingReview, dismissDraft, cancelSocialPost, …) · app/actions/listing-media.ts (approveListingMedia, rejectListingMedia) | BUILT |
 | marketing · media · communications · AI | Marketing Studio `/dashboard/marketing/studio` | `app/dashboard/marketing/studio/page.tsx` | app/actions/marketing-studio.ts (getCampaigns, createCampaign, updateCampaign, …) · app/actions/content-studio.ts (generateContentIdeas, getContentIdeas, researchKeywords, …) | BUILT |
+| marketing · media · communications · AI | ↳ from Video Pages `/dashboard/marketing/video-staging` | `app/dashboard/marketing/video-staging/page.tsx` | app/dashboard/marketing/video-staging/actions.ts (listStagedVideosAction, stageVideoAction, approveStagedVideoAction) | BUILT |
 | marketing · media · communications · AI | Social Dashboard `/dashboard/social` | `app/dashboard/social/page.tsx` | app/actions/social-media-automation.ts (approveSocialPost, rejectSocialPost, retryFailedPost, …) · app/actions/social/generate-social-post.ts (generateSocialPostContent, stampPostBrandCompliance, generateWeeklyContentPlan, …) | PARTIAL |
 | marketing · media · communications · AI | Newsletter Templates `/newsletters` | `app/newsletters/page.tsx` | app/actions/ai-newsletter.ts (aiGenerateSubjectLines, aiOptimizeSendTime, aiWriteNewsletterContent, …) · app/actions/newsletter/fetch-local-news.ts (fetchLocalNews, setupLocalNewsSource, recordNewsletterLocalContent) | BUILT |
 | marketing · media · communications · AI | ↳ from Review Queue `/social-planner` | `app/social-planner/page.tsx` (redirects → app/dashboard/social/page.tsx) | app/actions/social-media-automation.ts (approveSocialPost, rejectSocialPost, retryFailedPost, …) · app/actions/social/generate-social-post.ts (generateSocialPostContent, stampPostBrandCompliance, generateWeeklyContentPlan, …) | PARTIAL |

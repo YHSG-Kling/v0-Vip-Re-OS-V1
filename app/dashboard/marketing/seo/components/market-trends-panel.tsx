@@ -93,7 +93,7 @@ export function MarketTrendsPanel({
                     <span className="font-medium text-sm">{k.keyword}</span>
                     {k.trendChangePct != null && (
                       <span
-                        className={`text-xs flex items-center gap-0.5 ${k.trendChangePct >= 0 ? "text-emerald-600" : "text-red-600"}`}
+                        className={`text-xs flex items-center gap-0.5 ${k.trendChangePct >= 0 ? "text-emerald-700" : "text-red-600"}`}
                       >
                         {k.trendChangePct >= 0 ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
                         {Math.abs(k.trendChangePct)}%

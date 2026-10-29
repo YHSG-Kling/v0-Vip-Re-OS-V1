@@ -333,7 +333,7 @@ export function CampaignLauncherPanel({ listings, agentId, brokerageId, onCampai
             </div>
 
             <div className="flex items-center gap-3">
-              <div className={`text-3xl font-bold ${prediction.predicted_score >= 70 ? "text-green-600" : prediction.predicted_score >= 45 ? "text-yellow-600" : "text-red-600"}`}>
+              <div className={`text-3xl font-bold ${prediction.predicted_score >= 70 ? "text-green-600" : prediction.predicted_score >= 45 ? "text-yellow-700" : "text-red-600"}`}>
                 {prediction.predicted_score}
                 <span className="text-sm text-muted-foreground font-normal">/100</span>
               </div>
@@ -350,7 +350,7 @@ export function CampaignLauncherPanel({ listings, agentId, brokerageId, onCampai
         )}
 
         {error && (
-          <p className="text-sm text-red-600 bg-red-50 rounded-md p-2">{error}</p>
+          <p className="text-sm text-red-700 bg-red-50 rounded-md p-2">{error}</p>
         )}
 
         {complianceBlockers.length > 0 && (

@@ -49,6 +49,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { processOptOut } from "@/app/actions/ai-isa/process-opt-out"
 
 type Channel = "email" | "direct_mail"
 
@@ -81,6 +82,24 @@ export function IsaOutreachCard({ contactId }: { contactId: string }) {
   const [channel, setChannel] = useState<Channel>("email")
   const [sending, setSending] = useState(false)
   const [outcome, setOutcome] = useState<{ ok: boolean; text: string } | null>(null)
+  const [dncSaving, setDncSaving] = useState(false)
+  const [dncOutcome, setDncOutcome] = useState<{ ok: boolean; text: string } | null>(null)
+
+  async function recordDoNotContact() {
+    if (!window.confirm("Record that this person asked not to be contacted? Email, text, calls and mail all stop.")) return
+    setDncSaving(true)
+    setDncOutcome(null)
+    try {
+      const r = await processOptOut({ entityType: "contact", entityId: contactId, channel: "all", source: "agent", rawMessage: "Do Not Contact recorded by staff from the CRM contact record" })
+      setDncOutcome(r.success
+        ? { ok: true, text: `Recorded — ${r.channelsSuppressed.join(", ") || "every channel"} suppressed${r.globalDNC ? " (Do Not Contact)" : ""}.` }
+        : { ok: false, text: `Not recorded — ${r.error ?? "the server refused"}` })
+    } catch (err: unknown) {
+      setDncOutcome({ ok: false, text: err instanceof Error ? err.message : "Not recorded." })
+    } finally {
+      setDncSaving(false)
+    }
+  }
 
   async function send() {
     setSending(true)
@@ -195,6 +214,20 @@ export function IsaOutreachCard({ contactId }: { contactId: string }) {
           <p className={outcome.ok ? "text-sm text-muted-foreground" : "text-sm text-destructive"}>
             {outcome.text}
           </p>
+        )}
+        {/* THE STAFF HALF OF THE OPT-OUT DOOR (wave 146, lane 146Z): a person who asks staff — by phone, in person — to stop
+            is recorded through the SESSION door (app/actions/ai-isa/process-opt-out.ts processOptOut, source 'agent'): the
+            tenant is the session's, the contact must be in it, and the ONE writer (lib/ai-isa/opt-out-writer.ts) suppresses
+            every channel with its audit row. Inbound STOPs keep riding the signature-verified doors. */}
+        <div className="flex items-center justify-between gap-3 border-t pt-3">
+          <p className="text-xs text-muted-foreground">They asked not to be contacted? Record it — every channel stops.</p>
+          <Button size="sm" variant="outline" onClick={recordDoNotContact} disabled={dncSaving}>
+            {dncSaving ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : null}
+            Record Do Not Contact
+          </Button>
+        </div>
+        {dncOutcome && (
+          <p className={dncOutcome.ok ? "text-sm text-muted-foreground" : "text-sm text-destructive"}>{dncOutcome.text}</p>
         )}
       </CardContent>
     </Card>

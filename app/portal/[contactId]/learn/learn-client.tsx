@@ -260,7 +260,7 @@ export default function LearnClient({ contactId, initialFeed, agentId, contactFi
       {filteredLessons.length === 0 && filter === "unread" && (
         <Card>
           <CardContent className="py-12 text-center">
-            <CheckCircle2 className="w-12 h-12 mx-auto text-green-500 mb-4" />
+            <CheckCircle2 className="w-12 h-12 mx-auto text-green-600 mb-4" />
             <h3 className="text-lg font-medium mb-2">All caught up!</h3>
             <p className="text-muted-foreground">
               Check back as your journey progresses for new lessons.

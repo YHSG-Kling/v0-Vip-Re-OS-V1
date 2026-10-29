@@ -257,7 +257,7 @@ export function LenderActions({
           <div className="p-4 rounded-lg bg-emerald-50 border border-emerald-200 text-center">
             <PartyPopper className="h-8 w-8 mx-auto text-emerald-600 mb-2" />
             <p className="font-medium text-emerald-800">Clear to Close Issued!</p>
-            <p className="text-sm text-emerald-600">Buyer and agent have been notified</p>
+            <p className="text-sm text-emerald-700">Buyer and agent have been notified</p>
           </div>
         )}
 

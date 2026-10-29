@@ -1137,6 +1137,43 @@ async function layer11_portalWelcomeVideo() {
     refused.state === "unavailable" && refusedLedger.state === "unavailable", `${refused.state} / ${refusedLedger.state}`)
   check("W146 C3 (control) an empty brokerage / contact is refused before any read", (await read("", "c1")).state === "unavailable" && (await read(B, "")).state === "unavailable")
 
+  // ── A2 · THE BYTES (wave 146, lane 146Z — 146C's Still open 4): a private object reaches the page ONLY as a short-lived URL
+  //    minted on THIS read; a failed mint serves nothing; a pre-146 public-bucket render is served but SAID to be public. ──
+  {
+    const ST = "https://proj.supabase.co/storage/v1/object"
+    const bytesWorld = () => memSupabase({
+      contacts: [{ id: "c11", brokerage_id: B, agent_id: "ag11", contact_type: "buyer", accessibility_preferences: {} }, { id: "c12", brokerage_id: B, agent_id: "ag12", contact_type: "buyer", accessibility_preferences: {} }],
+      agent_intro_videos: [intro("r11", "c11", "ag11", "rendering", { video_project_id: "vp11" }), intro("r12", "c12", "ag12", "rendering", { video_project_id: "vp12" })],
+      ai_video_projects: [
+        project("vp11", "ag11", { contact_id: "c11", video_url: `${ST}/sign/personal-videos/agent-videos/ag11/vp11.mp4?token=LONG-LIVED-WRITE-TIME`, thumbnail_url: `${ST}/sign/personal-videos/agent-videos/ag11/vp11-thumb.jpg?token=LONG-LIVED-WRITE-TIME` }),
+        project("vp12", "ag12", { contact_id: "c12", video_url: `${ST}/public/video-assets/agent-videos/ag12/vp12.mp4` }),
+      ],
+      agent_voice_profiles: [], agent_action_ledger: [],
+    }, { unique: { agent_action_ledger: [["idempotency_key"]] }, uuidIds: true })
+    const signed: Array<{ bucket: string; path: string; ttl: number }> = []
+    const withStorage = (db: ReturnType<typeof bytesWorld>, refuse = false) => ({
+      from: (t: string) => db.from(t),
+      storage: { from: (bucket: string) => ({ createSignedUrl: async (path: string, ttl: number) => { signed.push({ bucket, path, ttl }); return refuse ? { data: null, error: { message: "storage refused" } } : { data: { signedUrl: `${ST}/sign/${bucket}/${path}?token=SHORT-${ttl}` }, error: null } } }) },
+    })
+    const { PERSONAL_VIDEO_URL_TTL_SECONDS, PERSONAL_VIDEO_BUCKET } = await import("../lib/storage/document-buckets")
+    const { renderHostBucketFor, RENDER_MEDIA_BUCKET } = await import("../lib/remotion/media-host")
+    const p11 = await wv.portalWelcomeVideoFor(withStorage(bytesWorld()) as never, B, "c11", { now: NOW })
+    check("W146 BYTES a render stored PRIVATELY is served as a SHORT-LIVED URL minted on this read (never the persisted write-time link)",
+      p11.state === "ready" && p11.bytes.kind === "private_signed" && p11.bytes.ttlSeconds === PERSONAL_VIDEO_URL_TTL_SECONDS && /token=SHORT-3600$/.test(p11.videoUrl) && !/LONG-LIVED/.test(JSON.stringify(p11))
+      && p11.bytes.object === `${PERSONAL_VIDEO_BUCKET}/agent-videos/ag11/vp11.mp4` && signed.some((s) => s.bucket === PERSONAL_VIDEO_BUCKET && s.ttl === 3600), JSON.stringify(p11))
+    const p11x = await wv.portalWelcomeVideoFor(withStorage(bytesWorld(), true) as never, B, "c11", { now: NOW })
+    check("W146 BYTES FAIL CLOSED: a mint the storage refuses serves NOTHING (unavailable) — never the long-lived link as a fallback",
+      p11x.state === "unavailable" && !/LONG-LIVED/.test(JSON.stringify(p11x)), JSON.stringify(p11x))
+    const p12 = await wv.portalWelcomeVideoFor(withStorage(bytesWorld()) as never, B, "c12", { now: NOW })
+    check("W146 BYTES (control) a pre-146 PUBLIC-bucket render is still served — and SAID to be public (bytes.kind public_bucket), no mint attempted for it",
+      p12.state === "ready" && p12.bytes.kind === "public_bucket" && p12.videoUrl === `${ST}/public/video-assets/agent-videos/ag12/vp12.mp4` && !signed.some((s) => /vp12/.test(s.path)), JSON.stringify(p12))
+    check("W146 BYTES the HOST rule: a project addressed to a contact is hosted in the PRIVATE bucket; one addressed to nobody keeps the public render bucket (control)",
+      renderHostBucketFor({ contact_id: "c11" }) === PERSONAL_VIDEO_BUCKET && renderHostBucketFor({ contact_id: null }) === RENDER_MEDIA_BUCKET && renderHostBucketFor({ contact_id: "c11" }, "listing-media") === PERSONAL_VIDEO_BUCKET && renderHostBucketFor(null, "listing-media") === "listing-media")
+    const { isDocumentClassBucket } = await import("../lib/storage/document-buckets")
+    check("W146 BYTES the private bucket is DOCUMENT-CLASS (signed, never getPublicUrl) and every render host passes the rule (stripped source)",
+      isDocumentClassBucket(PERSONAL_VIDEO_BUCKET) && ["app/api/cron/poll-did-videos/route.ts", "lib/remotion/render-coordinator.ts", "lib/did/result-url-rehost-sweep.ts", "app/api/internal/remotion/render-composition/route.ts"].every((f) => /renderHostBucketFor\(/.test(stripComments(readFileSync(f, "utf8")))))
+  }
+
   // ── B · THE READBACK: recorded delivered only when the portal's own reader shows THIS render ──
   const p1 = await wv.placePortalWelcomeVideo(svc as never, { introVideoId: "r1", brokerageId: B, contactId: "c1", videoProjectId: "vp1", expectedUrl: "https://cdn.test/vp1.mp4", now: NOW })
   const r1 = (svc.tables.agent_intro_videos ?? []).find((r) => r.id === "r1")

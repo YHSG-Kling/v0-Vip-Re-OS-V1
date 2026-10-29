@@ -58,43 +58,47 @@ export async function recordInboundMessage(svc: any, input: {
   fromPhone: string | null
   toPhone: string | null
 }): Promise<{ recorded: boolean; messageId?: string; conversationId?: string; agentUserId?: string | null }> {
+  // A row written BEFORE wave 146 carries only metadata.message_sid (no provider / provider_ref) — the C1 record's own
+  // dedup cannot see it, so this legacy check stays in front of it (read errors are read: a refused check is not "new").
   if (input.messageSid) {
-    const { data: dup } = await svc.from("messages").select("id")
-      .eq("contact_id", input.contactId)
+    const { data: dup, error: dupErr } = await svc.from("messages").select("id")
+      .eq("contact_id", input.contactId).eq("brokerage_id", input.brokerageId)
       .contains("metadata", { message_sid: input.messageSid })
-      .maybeSingle()
-    if (dup) return { recorded: false }
+      .limit(1).maybeSingle()
+    if (dupErr) console.warn("[sms-inbound] legacy MessageSid check refused — the C1 record's (provider, provider_ref) dedup still holds:", dupErr.message)
+    else if (dup) return { recorded: false }
   }
 
   let agentRowId: string | null = null
   if (input.agentUserId) {
-    const { data: agent } = await svc.from("agents").select("id").eq("user_id", input.agentUserId).maybeSingle()
+    const { data: agent } = await svc.from("agents").select("id").eq("user_id", input.agentUserId).eq("brokerage_id", input.brokerageId).maybeSingle()
     agentRowId = (agent as any)?.id ?? null
   }
 
-  // messages.conversation_id is NOT NULL — resolve the thread first (keep-one).
-  const { ensureConversationForContact, touchConversation } = await import("@/lib/kernel/conversation-thread")
-  const conversationId = await ensureConversationForContact(svc, {
-    contactId: input.contactId, brokerageId: input.brokerageId, agentId: agentRowId,
-  })
-  if (!conversationId) return { recorded: false }
-
-  const { data: inserted, error } = await svc.from("messages").insert({
-    conversation_id: conversationId,
-    brokerage_id: input.brokerageId,
-    contact_id: input.contactId,
-    agent_id: agentRowId,
-    type: "sms", // the inbox's channel key; the surface (sms vs whatsapp) rides metadata
-    direction: "inbound",
-    body: input.body.slice(0, 4000),
-    status: "unread",
-    metadata: { surface: input.channel, message_sid: input.messageSid, from: input.fromPhone, to: input.toPhone },
-  }).select("id").single()
-  if (error) {
-    console.error("[sms-inbound] messages insert failed:", error.message)
+  // TOMBSTONE (orphan doctrine §1.1, wave 146 lane 146Z on lane 146B's Outside-lane 1) — REMOVED: this recorder's own
+  // `messages` insert (+ its thread resolution and conversation touch). It was a SECOND recorder on the same key as the ONE
+  // canonical inbound record, so a Twilio text could be written twice under two spellings. The insert now rides contract C1 —
+  // lib/communications/inbound-record.ts:177 recordInboundCommunication (tenant-pinned contact, the one thread resolver,
+  // idempotent on (provider 'twilio', provider_ref = MessageSid) backed by m876's unique index, and it still writes
+  // metadata.message_sid for back-compat). The SMS-only side effects below (the agent's bell, the draft owner) stay here.
+  const { recordInboundCommunication } = await import("@/lib/communications/inbound-record")
+  const rec = await recordInboundCommunication({
+    brokerageId: input.brokerageId,
+    channel: input.channel,
+    provider: "twilio",
+    providerRef: input.messageSid,
+    party: { kind: "contact", id: input.contactId },
+    agentId: agentRowId,
+    body: input.body,
+    surface: input.channel,
+    threadRef: { from: input.fromPhone, to: input.toPhone },
+  }, { client: svc })
+  if (!rec.recorded) {
+    if (rec.error) console.error("[sms-inbound] the inbound record refused:", rec.error)
     return { recorded: false }
   }
-  await touchConversation(svc, conversationId, { inbound: true })
+  const conversationId = rec.conversationId ?? undefined
+  const inserted = { id: rec.recordId }
 
   // Resolve WHO the draft belongs to when the number has no agent scope —
   // the contact's assigned agent works the thread.

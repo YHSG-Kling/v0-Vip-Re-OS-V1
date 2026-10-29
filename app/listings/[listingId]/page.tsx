@@ -62,6 +62,7 @@ export async function generateMetadata({ params }: ListingPageProps): Promise<Me
     .select("id, brokerage_id, status, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description:public_remarks")
     .eq("id", listingId)
     .in("status", PUBLIC_LISTING_STATUSES)
+    .is("deleted_at", null)
     .maybeSingle()
 
   if (!listing) {
@@ -102,11 +103,12 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
   // (pg_policies, read 2026-10-29) and `listing_media` only `authenticated` same-brokerage — so an
   // anonymous visitor got notFound() and a signed-in visitor from another brokerage did too.
   // The service client is safe HERE because the row itself is the gate: the id plus a PUBLIC status; every
-  // child read is pinned to that row's own id / brokerage. (`deleted_at` is deliberately NOT filtered: the
-  // listing-archive ruling holds this by-id page as a retention surface — scripts/listing-archive-
-  // simulator.ts section 3's negative control. Whether an ARCHIVED listing should still be PUBLIC is an
-  // owner question, recorded in lane 146H's notes, not decided here.) The proxy still protects /listings/** — the second half of
-  // the fix is Outside-lane (app/constants/auth.ts, lane 146H notes).
+  // child read is pinned to that row's own id / brokerage.
+  // ARCHIVED IS HIDDEN (wave 146, lane 146Z): once the proxy made this page PUBLIC (app/constants/auth.ts
+  // classifyProxyPath), it stopped being a staff retention surface — the staff record page is
+  // app/dashboard/listings/[id] and getListingById, which still read archived rows. Whether an ARCHIVED
+  // listing should stay PUBLIC at its link is an OWNER question (lane 146H notes, Still open 5); until the owner
+  // answers, an archived listing is not shown to an anonymous visitor (`deleted_at` filtered — fail closed).
   const service = createServiceClient()
 
   const { data: listing, error: listingError } = await service
@@ -116,6 +118,7 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
     )
     .eq("id", listingId)
     .in("status", PUBLIC_LISTING_STATUSES)
+    .is("deleted_at", null)
     .maybeSingle()
 
   if (listingError) console.error("[listings/public] listing read refused:", listingError.message)

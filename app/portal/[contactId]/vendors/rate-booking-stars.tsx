@@ -50,7 +50,7 @@ export function RateBookingStars({ contactId, bookingId }: Props) {
       <div className="flex items-center gap-1">
         {[1, 2, 3, 4, 5].map((n) => (
           <button key={n} type="button" aria-label={`${n} star${n === 1 ? "" : "s"}`} onClick={() => setValue(n)}>
-            <Star className={`h-4 w-4 ${n <= value ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground"}`} />
+            <Star className={`h-4 w-4 ${n <= value ? "fill-yellow-400 text-yellow-700" : "text-muted-foreground"}`} />
           </button>
         ))}
       </div>

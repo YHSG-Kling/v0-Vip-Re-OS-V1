@@ -44,7 +44,7 @@
 import "server-only"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { hostRenderedMedia } from "@/lib/remotion/media-host"
+import { hostRenderedMedia, renderHostBucketFor } from "@/lib/remotion/media-host"
 import { rehostAvatarImage } from "@/lib/did/avatar-completion"
 import { collectError } from "@/lib/errors/collect-error"
 
@@ -78,7 +78,7 @@ async function sweepVideoProjects(svc: Svc): Promise<RehostSweepResult> {
 
   const { data: rows, error } = await svc
     .from("ai_video_projects")
-    .select("id, agent_id, video_url, thumbnail_url")
+    .select("id, agent_id, contact_id, video_url, thumbnail_url")
     .eq("status", "completed")
     .or(
       DID_URL_MARKERS.map((m) => `video_url.ilike.%${m}%,thumbnail_url.ilike.%${m}%`).join(","),
@@ -95,9 +95,11 @@ async function sweepVideoProjects(svc: Svc): Promise<RehostSweepResult> {
     return result
   }
 
-  for (const row of (rows ?? []) as Array<{ id: string; agent_id: string | null; video_url: string | null; thumbnail_url: string | null }>) {
+  for (const row of (rows ?? []) as Array<{ id: string; agent_id: string | null; contact_id: string | null; video_url: string | null; thumbnail_url: string | null }>) {
     result.scanned++
     const agentFolder = row.agent_id ?? "shared"
+    // Wave 146 (146Z): a project addressed to ONE contact re-hosts PRIVATE, as poll-did-videos hosts it.
+    const hostBucket = renderHostBucketFor(row)
     const patch: Record<string, string> = {}
 
     try {
@@ -106,7 +108,7 @@ async function sweepVideoProjects(svc: Svc): Promise<RehostSweepResult> {
         if (!res.ok) throw new Error(`video fetch HTTP ${res.status}`)
         const bytes = Buffer.from(await res.arrayBuffer())
         patch.video_url = await hostRenderedMedia(
-          svc, `agent-videos/${agentFolder}/${row.id}.sweep-rehost.mp4`, bytes, "video/mp4",
+          svc, `agent-videos/${agentFolder}/${row.id}.sweep-rehost.mp4`, bytes, "video/mp4", hostBucket,
         )
       }
       if (isDidUrl(row.thumbnail_url)) {
@@ -114,7 +116,7 @@ async function sweepVideoProjects(svc: Svc): Promise<RehostSweepResult> {
         if (!res.ok) throw new Error(`thumbnail fetch HTTP ${res.status}`)
         const bytes = Buffer.from(await res.arrayBuffer())
         patch.thumbnail_url = await hostRenderedMedia(
-          svc, `agent-videos/${agentFolder}/${row.id}.sweep-rehost-thumb.jpg`, bytes, "image/jpeg",
+          svc, `agent-videos/${agentFolder}/${row.id}.sweep-rehost-thumb.jpg`, bytes, "image/jpeg", hostBucket,
         )
       }
       if (Object.keys(patch).length === 0) continue

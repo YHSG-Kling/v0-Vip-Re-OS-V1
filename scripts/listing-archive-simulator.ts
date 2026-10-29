@@ -604,9 +604,22 @@ function section3() {
   // surfaces are pinned as NOT filtering, exactly as hard as the working
   // surfaces are pinned as filtering.
   {
+    // RE-ASSERTED (wave 146, lane 146Z). This pin used to name app/listings/[listingId]/page.tsx — the by-id page
+    // WHEN it was a signed-in record page. Lane 146H made it the ANONYMOUS listing page (the QR / agent-profile
+    // target, service client, public statuses) and 146Z opened it at the proxy; a public page is not a retention
+    // surface, and whether an archived listing stays public is an OWNER question (hidden until answered). The
+    // RULE is unchanged — the STAFF by-id record must still read an archived listing — so the negative control now
+    // reads the staff record page (/dashboard/listings/[id] redirects to its lifecycle page), scoped to its
+    // `listings` query, and the public page is pinned the other way.
+    const staff = blankComments(read("app/dashboard/listings/[id]/lifecycle/page.tsx"))
+    const staffListingQuery = (/\.from\("listings"\)[\s\S]*?\.eq\("brokerage_id",\s*userRow\.brokerage_id\)/.exec(staff) ?? [""])[0]
+    check("NEGATIVE CONTROL the STAFF by-id record (dashboard listing lifecycle) does NOT filter deleted_at on its listing read (retention surface)",
+      staffListingQuery.length > 0 && !/\.is\(\s*["']deleted_at["']\s*,\s*null\s*\)/.test(staffListingQuery), staffListingQuery ? "" : "listing query not found")
     const detail = blankComments(read("app/listings/[listingId]/page.tsx"))
-    check("NEGATIVE CONTROL the by-id record page does NOT filter deleted_at (retention surface)",
-      !/\.is\(\s*["']deleted_at["']\s*,\s*null\s*\)/.test(detail))
+    const publicReads = detail.match(/\.in\("status",\s*PUBLIC_LISTING_STATUSES\)\s*\.is\(\s*["']deleted_at["']\s*,\s*null\s*\)/g) ?? []
+    check("the PUBLIC listing page hides an ARCHIVED listing on both of its reads (metadata + page) — pending the owner's answer",
+      publicReads.length === 2 && (detail.match(/\.in\("status",\s*PUBLIC_LISTING_STATUSES\)/g) ?? []).length === 2)
+    check("CONTROL the public-read pin FAILS the pre-146Z text", !/\.in\("status",\s*PUBLIC_LISTING_STATUSES\)\s*\.is\(\s*["']deleted_at["']\s*,\s*null\s*\)/.test(`.eq("id", listingId) .in("status", PUBLIC_LISTING_STATUSES) .maybeSingle()`))
 
     const byId = fnBody(read("app/actions/listings.ts"), "export async function getListingById")
     check("NEGATIVE CONTROL getListingById does NOT filter deleted_at — it is the resolver a " +

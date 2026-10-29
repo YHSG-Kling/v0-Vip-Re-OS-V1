@@ -74,7 +74,7 @@ export default async function InsightsPage({
             </div>
             <div
               className={`flex items-center text-xs ${
-                marketData.priceChange >= 0 ? "text-green-600" : "text-red-600"
+                marketData.priceChange >= 0 ? "text-green-700" : "text-red-600"
               }`}
             >
               {marketData.priceChange >= 0 ? (
@@ -97,7 +97,7 @@ export default async function InsightsPage({
             <div className="text-2xl font-bold">{marketData.daysOnMarket}</div>
             <div
               className={`flex items-center text-xs ${
-                marketData.domChange <= 0 ? "text-green-600" : "text-red-600"
+                marketData.domChange <= 0 ? "text-green-700" : "text-red-600"
               }`}
             >
               {marketData.domChange <= 0 ? (
@@ -121,7 +121,7 @@ export default async function InsightsPage({
             </div>
             <div
               className={`flex items-center text-xs ${
-                marketData.inventoryChange >= 0 ? "text-green-600" : "text-red-600"
+                marketData.inventoryChange >= 0 ? "text-green-700" : "text-red-600"
               }`}
             >
               {marketData.inventoryChange >= 0 ? (

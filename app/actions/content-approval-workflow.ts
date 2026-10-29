@@ -366,12 +366,19 @@ export async function getMyPendingApprovals(params: {
   error?: string
 }> {
   try {
-    const auth = await getSessionAgentId()
-    if (!auth.ok) return { success: false, error: auth.error }
+    // THE ROLE COMES FROM THE SESSION (wave 146, lane 146Z on lane 146H's Outside-lane 4 / 146E Outside-lane 7 — CLAUDE.md
+    // §4): this read took `approver_role` from the caller, so any signed-in seat could read the broker's (or compliance's)
+    // queue by asking for it. A requested role the session does not HOLD is refused (fail closed).
+    const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
 
     // Validate inputs
     if (!params.approver_role) {
       return { success: false, error: "Missing approver_role" }
+    }
+    if (!sessionApproverRoles(ctx.userType).includes(params.approver_role)) {
+      return { success: false, error: `you do not hold the ${params.approver_role} approval role` }
     }
 
     const pending = await getPendingApprovals(params)
@@ -382,6 +389,78 @@ export async function getMyPendingApprovals(params: {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
     }
+  }
+}
+
+/** The approval engine's four approver roles the SESSION's seat holds (lib/approval-workflow/approval-engine.ts ApproverRole). */
+function sessionApproverRoles(userType: string | null | undefined): ApproverRole[] {
+  const t = String(userType ?? "")
+  if (t === "broker" || t === "broker_owner" || t === "broker_admin" || t === "admin") return ["broker"]
+  if (t === "team_lead") return ["team_lead", "agent"]
+  if (t === "compliance_officer") return ["compliance_officer"]
+  if (t === "agent") return ["agent"]
+  return []
+}
+
+/**
+ * DECIDE A CONTENT APPROVAL — on the SERVER, with authority, evidence and a row count (wave 146, lane 146Z on lane 146H's
+ * Outside-lane 4; laws 4–5). The Content Approvals page used to write the decision from the BROWSER straight into
+ * `activities`. Here: the tenant is the session's; the item is read on the service client pinned to that tenant and to a
+ * still-PENDING approval_required row; the caller must hold one of the item's required approver roles (an `agent`
+ * approves only an item that is their own); the decision is written under withActionLedger and COUNTED (0 rows = someone
+ * decided it first, said so).
+ */
+export async function decideContentApproval(params: { activityId: string; decision: "approved" | "rejected" }): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!isValidUUID(params.activityId)) return { success: false, error: "Invalid approval id" }
+    if (params.decision !== "approved" && params.decision !== "rejected") return { success: false, error: "Invalid decision" }
+    const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) return { success: false, error: "Unauthorized" }
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+    const { data: item, error: readErr } = await svc.from("activities")
+      .select("id, agent_id, notes, status, activity_type")
+      .eq("id", params.activityId).eq("brokerage_id", ctx.brokerageId).eq("activity_type", "approval_required").eq("status", "pending")
+      .maybeSingle()
+    if (readErr) return { success: false, error: `approval read refused: ${readErr.message}` }
+    if (!item) return { success: false, error: "Not saved — this item is not pending in your brokerage (already decided, or not yours to decide)" }
+    const row = item as { id: string; agent_id: string | null; notes: unknown }
+    let notes: Record<string, unknown> = {}
+    try { notes = (typeof row.notes === "string" ? JSON.parse(row.notes) : (row.notes ?? {})) as Record<string, unknown> } catch { notes = {} }
+    const required = Array.isArray(notes.required_approvers) ? (notes.required_approvers as string[]) : []
+    const held = sessionApproverRoles(ctx.userType)
+    const asRole = held.find((r) => required.includes(r) && (r !== "agent" || (!!ctx.agentId && row.agent_id === ctx.agentId)))
+    if (!asRole) return { success: false, error: "Not saved — you are not one of this item's required approvers" }
+
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    const nowIso = new Date().toISOString()
+    const decided = await withActionLedger(
+      {
+        brokerageId: ctx.brokerageId, action: "content.approval.decide", actor: { type: "user", userId: ctx.userId },
+        subject: { type: "activity", id: row.id }, reasonCode: "HUMAN_REQUESTED", systemSource: "content_approvals_page",
+        reasonDetail: `content ${params.decision} as ${asRole} (owner ruling 9 — the tenant's authorized person approves its own assets)`,
+        cycle: `content_approval:${row.id}`,
+        detail: { decision: params.decision, as_role: asRole, required_approvers: required },
+      },
+      async () => {
+        const { data, error } = await svc.from("activities")
+          .update({ status: params.decision === "approved" ? "completed" : "rejected", completed_at: nowIso, notes: { ...notes, approval_status: params.decision, decided_by: ctx.userId, decided_as: asRole } })
+          .eq("id", row.id).eq("brokerage_id", ctx.brokerageId).eq("status", "pending")
+          .select("id")
+        if (error) return { n: 0, error: error.message as string }
+        return { n: (data ?? []).length, error: null as string | null }
+      },
+      {
+        settle: (r) => r.n === 1 ? { status: "executed", outcome: `content_${params.decision}` } : { status: "failed", outcome: "decision_matched_nothing", error: r.error ?? "0 rows matched" },
+        replay: () => ({ n: 0, error: "this decision was already recorded" }),
+      },
+      { client: svc },
+    )
+    if (decided.n !== 1) return { success: false, error: `Not saved — ${decided.error ?? "someone decided this item first"}` }
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" }
   }
 }
 

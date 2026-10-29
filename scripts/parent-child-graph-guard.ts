@@ -510,20 +510,18 @@ const KNOWN_FINDINGS: Record<string, { owner: ManagerKey; route: string }> = {
   "edge-never-read:journey.decision>evaluation": { owner: "data_steward", route: "NOT A DEFECT — agent_outcome_evaluations.ledger_action_id is the idempotency key (m700 UNIQUE (ledger_action_id, outcome_ref); lib/agents/outcomes.ts reads 23505 as duplicate) and the per-arm readers aggregate on experiment_arm; no product read traverses delivery → evaluation. A per-action outcome view on the AI audit page (app/actions/flight-recorder.ts) would be the first traversal — a product decision, not built to move a number" },
   // ── wave 146 (lane 146I) — the wave's cross-lane contracts, measured at bf67aa63 before any lane landed; each routed to the
   // lane that owns it in WAVE146_SPEC and BURNS when that lane's patch is merged under the contract name ──
-  "symbol-missing:inbound:recordInboundCommunication": { owner: "ai_isa", route: "lane 146B (contract C1) — lib/communications/inbound-record.ts recordInboundCommunication on the existing communication-history survivor, idempotent on (provider, providerRef); webhook doors, lane E's ad responses and lane D's first-party events call it by that name" },
-  "symbol-missing:reengage:requestAudienceReengagement": { owner: "ads_manager", route: "lane 146E (contract C2) — lib/ads/audience-reengagement.ts requestAudienceReengagement on lib/kernel/ads.ts syncAudience (consent + identity match + budget + authority inside); lane B's arbiter calls it as one experience kind" },
-  "symbol-missing:reengage:reengagementApprovalGate": { owner: "ads_manager", route: "lane 146E (contract C2 + C5) — lib/ads/audience-reengagement.ts reengagementApprovalGate, named by lib/kernel/ads.ts syncAudience before a reengagement_parties audience uploads" },
-  "symbol-missing:portal:portalWelcomeVideoFor": { owner: "sphere_of_influence", route: "lane 146C (contract C3) — lib/portal/welcome-video.ts portalWelcomeVideoFor(svc, brokerageId, contactId) and the portal component; the customer-specific video stays lane C's" },
-  "symbol-missing:promise:recordPromisedDeliverable": { owner: "campaign_orchestrator", route: "lane 146F (contract C4) — lib/lead-magnets/promised-deliverables.ts recordPromisedDeliverable / deliverPromised / undeliveredPromisesFor; the signal lead_magnet_promise_undelivered is registered in lib/kernel/signal-registry.ts (lane D's file)" },
-  "symbol-missing:promise:deliverPromised": { owner: "campaign_orchestrator", route: "lane 146F (contract C4) — see recordPromisedDeliverable" },
-  "symbol-missing:promise:undeliveredPromisesFor": { owner: "campaign_orchestrator", route: "lane 146F (contract C4) — see recordPromisedDeliverable; lane B's arbiter treats an undelivered promise as a high-priority moment" },
-  "symbol-missing:approval:approverFor": { owner: "compliance_officer", route: "lane 146E (contract C5) — lib/kernel/approval-authority.ts approverFor({ brokerageId, assetKind, scope }) on approval_items + authority / policy; lane F's staging and lane H's screens call it" },
-  "symbol-missing:c360:customer360For": { owner: "data_steward", route: "lane 146D (contract C6) — lib/enrichment/customer-360.ts customer360For(svc, brokerageId, party), a view over the canonical graph with field provenance / consent / freshness" },
+  // BURNED once every lane merged and removed (wave 146, lane 146Z — the run printed each as BURNED; the closing change named):
+  //   symbol-missing:inbound:recordInboundCommunication — lib/communications/inbound-record.ts (146B, contract C1);
+  //   symbol-missing:reengage:requestAudienceReengagement / :reengagementApprovalGate — lib/ads/audience-reengagement.ts (146E, C2);
+  //   symbol-missing:portal:portalWelcomeVideoFor — lib/portal/welcome-video.ts (146C, C3);
+  //   symbol-missing:promise:recordPromisedDeliverable / :deliverPromised / :undeliveredPromisesFor — lib/lead-magnets/promised-deliverables.ts (146F, C4);
+  //   symbol-missing:approval:approverFor — lib/kernel/approval-authority.ts (146E, C5);
+  //   symbol-missing:c360:customer360For — lib/enrichment/customer-360.ts (146D, C6);
+  //   receive-undeclared:matrix — every CHANNEL_PROVIDER_TRUTH row declares receive (146B, C7; lib/providers/channel-provider-matrix.ts).
   // Listed in advance on purpose (the symbol-chain blind spot: a step reached through a third module reads UNWIRED, so an
   // UNWIRED key is triaged by hand before it fails a run). It cannot occur while customer360For is missing; it BURNS when
   // the arbiter's own file names the C6 read.
   "step-unwired:c360:customer360For>arbitrateAndRecordExperience": { owner: "ai_isa", route: "lane 146B (contract C6) — lib/ai-isa/followup-arbiter.ts reads the contact's context through customer360For (lane 146D). If B reads it through another module (engage-contact / lead-action-plan), re-point this step's file to that module rather than keep the key" },
-  "receive-undeclared:matrix": { owner: "campaign_orchestrator", route: "lane 146B (contract C7) — every CHANNEL_PROVIDER_TRUTH row declares receive: { supported, via: webhook | poll | none, events, route? }; lane E publishes the ads rows' receive facts under '## Matrix facts for lane B'. A declared webhook route that does not exist on disk is receive-route-missing:<channel> (a NEW key — a declared door that is not there is a lie, never ratcheted)" },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════

@@ -112,6 +112,22 @@ export async function approveProposalAction(params: {
   const gate = await assertProvidersCapability({ requireWrite: true })
   if (!gate.ok) return { success: false, error: gate.error }
   const svc = createServiceClient()
+  // CHANGE CONTROL LANDS ON THE APPROVAL RECORD (wave 146, lane 146Z on lane 146G's Outside-lane 4 — ruling 14): a
+  // `change_request` is a CONSEQUENTIAL change (a production source edit the troubleshooter diagnosed), so approving it
+  // needs the change's evidence in the approval notes — the versioned change (a commit SHA or a PR ref) and the tests (the
+  // guard chain's GUARD_EXIT=0, CLAUDE.md §7: the only trustworthy signal). The kind is READ first; a refused read refuses.
+  const { data: kindRow, error: kindErr } = await svc.from("connector_healing_proposals")
+    .select("proposal_kind").eq("id", params.proposalId).maybeSingle()
+  if (kindErr) return { success: false, error: `proposal read refused: ${kindErr.message}` }
+  if (!kindRow) return { success: false, error: "Proposal not found" }
+  if ((kindRow as { proposal_kind?: string | null }).proposal_kind === "change_request") {
+    const notes = params.notes ?? ""
+    const hasVersionedChange = /\b[0-9a-f]{7,40}\b/i.test(notes) || /(?:#\d+|\/pull\/\d+)/.test(notes)
+    const hasGuardEvidence = /\bGUARD_EXIT\s*[=:]\s*0\b/.test(notes)
+    if (!hasVersionedChange || !hasGuardEvidence) {
+      return { success: false, error: `a change request is approved only with its change-control evidence in the notes: ${[!hasVersionedChange ? "the commit SHA or PR reference" : null, !hasGuardEvidence ? "the guard chain's result (GUARD_EXIT=0)" : null].filter(Boolean).join(" and ")}` }
+    }
+  }
   // Approval marks the proposal as 'applied' with the actor + timestamp. The actual change
   // implementation (endpoint path edit, key rotation, actor swap) is intentionally NOT in this
   // action — approving here is the human go-ahead; the change still lands via a code commit or

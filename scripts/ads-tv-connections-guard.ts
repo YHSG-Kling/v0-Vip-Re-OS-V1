@@ -436,6 +436,24 @@ async function main() {
     check("launchTvCampaign: Vibe keeps its own path; the other two publish through the registry BEFORE the row flips live (counted)", /launchCtvCampaignOnVibe\(/.test(router) && router.indexOf("publishCampaign(") > 0 && router.indexOf("publishCampaign(") < router.indexOf('status: "live"') && /\.select\("id"\)/.test(router))
     const gate = ctv.slice(ctv.indexOf("export async function ensureCtvBroadcastReady"), ctv.indexOf("export async function launchTvCampaign"))
     check("the ONE broadcast gate admits exactly the TV connections (not any platform)", /isCtvTvPlatform\(campaign\.platform\)/.test(gate))
+    // CLAIM BEFORE DISPATCH (wave 146, lane 146Z — this lane's own published risk): all three TV paths claim the row before the
+    // provider is asked, and release it on a refusal. Order read on stripped source; the claim itself driven in memory.
+    const vibeDoor = ctv.slice(ctv.indexOf("export async function launchCtvCampaignOnVibe"), ctv.indexOf("export async function ensureCtvBroadcastReady"))
+    check("CLAIM BEFORE DISPATCH — Vibe: claimTvLaunch precedes the broadcast gate and dispatchCtvCampaign, and every refusal after it releases the claim",
+      vibeDoor.indexOf("claimTvLaunch(") > 0 && vibeDoor.indexOf("claimTvLaunch(") < vibeDoor.indexOf("ensureCtvBroadcastReady(") && vibeDoor.indexOf("claimTvLaunch(") < vibeDoor.indexOf("dispatchCtvCampaign(") && (vibeDoor.match(/releaseTvLaunch\(/g) ?? []).length >= 2)
+    check("CLAIM BEFORE DISPATCH — GroundTruth / StackAdapt: claimTvLaunch precedes publishCampaign, and a provider refusal releases it",
+      router.indexOf("claimTvLaunch(") > 0 && router.indexOf("claimTvLaunch(") < router.indexOf("publishCampaign(") && router.indexOf("releaseTvLaunch(") > router.indexOf("publishCampaign("))
+    {
+      const { claimTvLaunch } = await import("../lib/ads/ctv-campaign")
+      const CAMP = "c7c7c7c7-0000-4000-8000-000000000001", BR = "b1b1b1b1-0000-4000-8000-000000000001"
+      const db = memSupabase({ ad_campaigns: [{ id: CAMP, brokerage_id: BR, platform: "groundtruth", status: "draft" }, { id: "c7c7c7c7-0000-4000-8000-000000000002", brokerage_id: BR, platform: "stackadapt", status: "live" }] })
+      const [a, b] = await Promise.all([claimTvLaunch(db as never, { campaignId: CAMP, brokerageId: BR, fromStatus: "draft" }), claimTvLaunch(db as never, { campaignId: CAMP, brokerageId: BR, fromStatus: "draft" })])
+      check("two SIMULTANEOUS dispatches of one staged spot: exactly ONE claim wins, the row reads 'launching' (one provider campaign, never two)",
+        [a, b].filter((r) => r.ok).length === 1 && db.tables.ad_campaigns.find((r) => r.id === CAMP)?.status === "launching", JSON.stringify([a, b]))
+      const other = await claimTvLaunch(db as never, { campaignId: CAMP, brokerageId: "b2b2b2b2-0000-4000-8000-000000000002", fromStatus: "launching" })
+      check("POSITIVE CONTROL: another tenant can never claim the row (tenant-pinned), and the loser's reason says nothing was sent twice",
+        !other.ok && [a, b].some((r) => !r.ok && /nothing was sent twice/.test(r.reason)))
+    }
     const mgr = code("lib/ads/ad-manager.ts")
     check("Ads Manager: proposes staged GroundTruth / StackAdapt drafts (connected, TV master present) and executes them through launchTvCampaign under the spend cap", /TV_CONNECTION_PLATFORMS\.has\(c\.platform\)/.test(mgr) && /launchTvCampaign\(\{ campaignId, brokerageId, actorUserId: null, launchedVia: "ads_manager"/.test(mgr) && /TV_CONNECTION_PLATFORMS[\s\S]{0,400}MAX_AD_DAILY_BUDGET_USD/.test(mgr.slice(mgr.indexOf("case \"launch_ad_campaign\""))))
     const ing = code("lib/ads/ad-performance-ingest.ts")

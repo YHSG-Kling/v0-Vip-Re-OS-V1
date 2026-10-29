@@ -469,7 +469,7 @@ export function CreateEpisodeDialog({
                       ? "bg-primary text-primary-foreground"
                       : isCompleted
                         ? "bg-gray-100 text-gray-900 hover:bg-gray-200"
-                        : "text-gray-400"
+                        : "text-gray-500"
                   }`}
                 >
                   <Icon className="h-4 w-4" />
@@ -595,7 +595,7 @@ export function CreateEpisodeDialog({
                     <Label className="text-xs">Pick a video project</Label>
                     {loadingProjects ? (
                       <div className="flex items-center justify-center py-6">
-                        <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+                        <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
                       </div>
                     ) : videoProjects.length === 0 ? (
                       <p className="text-sm text-gray-500 text-center py-4">No video projects found.</p>
@@ -629,7 +629,7 @@ export function CreateEpisodeDialog({
                     <Label className="text-xs">…or pick a saved script</Label>
                     {loadingProjects ? (
                       <div className="flex items-center justify-center py-4">
-                        <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+                        <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
                       </div>
                     ) : libraryScripts.length === 0 ? (
                       <p className="text-sm text-gray-500 text-center py-4">No saved scripts in your library.</p>

@@ -945,9 +945,15 @@ async function execute(svc: Svc, i: HealthIncident, d: RecoveryDecision, deps: E
   // its owner closes it); a routed decision whose route itself was refused also bells a human.
   const isRecovery = !!ledgerAction[d.action]
   const outcomeRow = !isRecovery ? "escalated" : result.ok && d.action !== "backoff" ? "healed" : "failed"
+  // THE ACCOUNTABLE OWNER on the supervisor's own rows (wave 146, lane 146Z on lane 146G's Outside-lane 3 — ruling 14's
+  // DETECT → DIAGNOSE → OWNER): the troubleshooter's and the playbook's rows already name it; the supervisor's escalation rows
+  // did not. ONE resolver (lib/kernel/self-healing.ts incidentOwner — the recovery policy's routed manager, else the
+  // detector's TABLE_MANAGER steward); a dynamic import, because self-healing imports this module (no static cycle).
+  let owner: string | null = null
+  try { owner = (await import("@/lib/kernel/self-healing")).incidentOwner(i) } catch (e) { console.error(`[os-health] incident owner unresolved for ${subject}:`, e instanceof Error ? e.message : String(e)) }
   const { error: rowErr } = await svc.from("self_heal_events").insert({
     brokerage_id: i.brokerageId, domain: "data_flow", subject, action: ledgerAction[d.action] ?? "none", outcome: outcomeRow,
-    detail: { flow: `os_health_${i.detector}`, class: i.class, recovery: d.action, routed_to: d.routedTo, reason: result.ok ? d.reason : `${d.reason} — ${result.outcome}`, outcome: result.outcome, summary: i.summary, attempt: d.attempt },
+    detail: { flow: `os_health_${i.detector}`, class: i.class, recovery: d.action, routed_to: d.routedTo, owner, reason: result.ok ? d.reason : `${d.reason} — ${result.outcome}`, outcome: result.outcome, summary: i.summary, attempt: d.attempt },
   })
   if (rowErr) console.error(`[os-health] incident row refused for ${subject}: ${rowErr.message}`)
   if (!isRecovery && !result.ok && d.action !== "escalate_human") await (deps.notifyHuman ?? defaultNotify)(svc, i, `${d.reason} — but the route was refused: ${result.outcome}`)

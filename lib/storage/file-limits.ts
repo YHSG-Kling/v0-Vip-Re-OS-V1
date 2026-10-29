@@ -350,8 +350,11 @@ export const CLASS_BUCKETS = {
     "twin-avatars",
     "agent-documents",
   ],
-  video: ["listing-media", "video-assets", "media", "twin-avatars"],
+  video: ["listing-media", "video-assets", "media", "twin-avatars", "personal-videos"],
   document: [
+    // Wave 146 (146Z): private by CLASS though it holds video — a render addressed to ONE contact
+    // (document-buckets.ts PERSONAL_VIDEO_BUCKET). Not live until its first write / OWNER-SQL §H.
+    "personal-videos",
     "client-documents",
     "offer-documents",
     "transaction-documents",

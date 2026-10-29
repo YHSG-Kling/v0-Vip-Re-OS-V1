@@ -231,7 +231,9 @@ export async function approveMarketingAssetAction(
   if (!row) return { ok: false, error: "Not found" }
   if (row.brokerage_id !== auth.brokerageId) return { ok: false, error: "Forbidden" }
 
-  const res = await applyMarketingAssetApproval(kind, id)
+  // The SESSION user is the approver of record (wave 146, 146Z) — a video's approved_by, which the staging verdict requires
+  // to be an approver the authority hierarchy assigned (lib/video/video-staging.ts); never a caller-supplied id.
+  const res = await applyMarketingAssetApproval(kind, id, { userId: auth.userId })
   if (!res.ok) return res
 
   revalidatePath("/dashboard/admin/marketing-approvals")

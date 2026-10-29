@@ -47,7 +47,10 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { normalizeInbound } from "@/lib/providers/inbound-router"
 import { KernelEvent } from "@/lib/kernel/events"
-import { processOptOut } from "@/app/actions/ai-isa/process-opt-out"
+// The sessionless opt-out door (wave 146): this route verified the provider signature
+// in normalizeInbound, so it calls the lib writer — never the "use server" action,
+// which now refuses inbound provenance from an unauthenticated caller.
+import { processOptOutFromVerifiedInbound } from "@/lib/ai-isa/opt-out-writer"
 import { detectOptOutIntent } from "@/lib/ai-isa/opt-out-utils"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
@@ -427,7 +430,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const optOutCheck = detectOptOutIntent(messageText)
 
     if (optOutCheck.isOptOut && optOutCheck.confidence === "high") {
-      await processOptOut({
+      await processOptOutFromVerifiedInbound({
         entityType,
         entityId,
         channel: optOutCheck.channel,
@@ -435,7 +438,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         rawMessage: messageText,
         brokerageId: inbound.brokerageId,
       }).catch((err) => {
-        console.error("[InboundRouter] processOptOut failed (non-blocking):", err)
+        console.error("[InboundRouter] processOptOutFromVerifiedInbound failed (non-blocking):", err)
       })
     } else if (optOutCheck.isOptOut && optOutCheck.confidence === "medium") {
       // A MEDIUM-confidence opt-out needs a human to confirm + suppress — failing to action it means

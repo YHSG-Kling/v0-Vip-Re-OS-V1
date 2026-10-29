@@ -306,7 +306,7 @@ export default function DocumentViewerPage() {
                       <ul className="mt-2 space-y-1 pl-5">
                         {educationalOverlay.red_flags_to_watch.map((flag: string, idx: number) => (
                           <li key={idx} className="text-sm text-muted-foreground flex items-start gap-2">
-                            <span className="text-red-500">•</span>
+                            <span className="text-red-600">•</span>
                             {flag}
                           </li>
                         ))}
@@ -320,7 +320,7 @@ export default function DocumentViewerPage() {
                   <div>
                     <button
                       onClick={() => toggleSection("proTips")}
-                      className="flex items-center justify-between w-full text-sm text-green-600 hover:text-green-700 font-medium"
+                      className="flex items-center justify-between w-full text-sm text-green-700 hover:text-green-700 font-medium"
                     >
                       <span className="flex items-center gap-1">
                         <Sparkles className="h-4 w-4" />
@@ -334,7 +334,7 @@ export default function DocumentViewerPage() {
                       <ul className="mt-2 space-y-1 pl-5">
                         {educationalOverlay.pro_tips.map((tip: string, idx: number) => (
                           <li key={idx} className="text-sm text-muted-foreground flex items-start gap-2">
-                            <span className="text-green-500">•</span>
+                            <span className="text-green-700">•</span>
                             {tip}
                           </li>
                         ))}

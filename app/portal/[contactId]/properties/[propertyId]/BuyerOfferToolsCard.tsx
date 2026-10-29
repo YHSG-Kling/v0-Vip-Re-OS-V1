@@ -199,7 +199,7 @@ export function BuyerOfferToolsCard({
           <Button variant="outline" className="flex-1" onClick={letAgentKnow} disabled={pending}>
             {pending ? "Notifying…" : "Let my agent know I'm interested"}
           </Button>
-          <Button className="flex-1 bg-teal-600 hover:bg-teal-700 text-white" onClick={helpMakeOffer} disabled={offerPending}>
+          <Button className="flex-1 bg-teal-700 hover:bg-teal-800 text-white" onClick={helpMakeOffer} disabled={offerPending}>
             <HandCoins className="h-4 w-4 mr-1" />{offerPending ? "Sending…" : "Help me make an offer"}
           </Button>
         </div>

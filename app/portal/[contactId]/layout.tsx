@@ -302,11 +302,28 @@ export default async function PortalLayout({
   // Log access with resolved view for tracing
   logPortalAccess(supabase, contactId, "layout", `view:${view}`, agentData?.id).catch(() => {})
 
+  // THE TENANT'S BRAND on its contact portal (wave 146, lane 146Z on lane 146H's Outside-lane 9 — ruling 16 "consistent
+  // portal branding"): THE one brand cascade (lib/branding/resolve-brand-context.ts resolveBrandContext — brokerage name +
+  // logo the brand wizard wrote), read only AFTER the access gate above, for the contact's OWN brokerage. A brand read that
+  // fails renders the portal unbranded (the palette defaults), never another tenant's mark.
+  const brand = contact.brokerage_id
+    ? await (await import("@/lib/branding/resolve-brand-context")).resolveBrandContext({ brokerageId: contact.brokerage_id as string }).catch(() => null)
+    : null
+
   return (
     <div className={`min-h-screen bg-background ${display.className}`.trim()} style={display.style}>
       <header className="border-b">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex flex-col gap-1">
+            {brand ? (
+              <div className="flex items-center gap-2">
+                {brand.visual.logoUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- a tenant-supplied logo URL from the brand cascade
+                  <img src={brand.visual.logoUrl} alt={`${brand.displayName} logo`} className="h-8 w-auto max-w-[160px] object-contain" />
+                ) : null}
+                <span className="text-sm font-medium text-muted-foreground">{brand.displayName}</span>
+              </div>
+            ) : null}
             <div className="flex items-center gap-3">
               <h1 className="text-2xl font-bold text-foreground">
                 Welcome, {contactName}

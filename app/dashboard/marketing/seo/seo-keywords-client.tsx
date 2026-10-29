@@ -96,8 +96,8 @@ function DifficultyBadge({ score }: { score: number | null }) {
   if (score === null) return <span className="text-muted-foreground">--</span>
 
   const color =
-    score <= 30 ? "text-green-600 dark:text-green-400"
-    : score <= 60 ? "text-amber-600 dark:text-amber-400"
+    score <= 30 ? "text-green-700 dark:text-green-400"
+    : score <= 60 ? "text-amber-700 dark:text-amber-400"
     : "text-red-600 dark:text-red-400"
 
   const label = score <= 30 ? "Easy" : score <= 60 ? "Medium" : "Hard"
@@ -128,7 +128,7 @@ function PopularityBar({ pct, isCompetitor }: { pct: number; isCompetitor: boole
       <span className="text-xs font-semibold tabular-nums w-9 text-right">{pct}%</span>
       {isCompetitor && (
         <span title="Competitor is ranking for this keyword">
-          <AlertCircle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+          <AlertCircle className="h-3.5 w-3.5 text-amber-600 shrink-0" />
         </span>
       )}
     </div>
@@ -554,7 +554,7 @@ export function SeoKeywordsDashboardClient({
                     {/* Legend */}
                     <div className="flex items-center gap-4 text-xs text-muted-foreground pb-1">
                       <span className="flex items-center gap-1">
-                        <AlertCircle className="h-3 w-3 text-amber-500" />
+                        <AlertCircle className="h-3 w-3 text-amber-600" />
                         Competitor targets this keyword
                       </span>
                     </div>

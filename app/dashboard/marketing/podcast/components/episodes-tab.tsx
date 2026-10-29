@@ -311,7 +311,7 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels, initialEpi
       {episodes.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <div className="p-4 bg-gray-100 rounded-full mb-4">
-            <Radio className="h-8 w-8 text-gray-400" />
+            <Radio className="h-8 w-8 text-gray-500" />
           </div>
           <h3 className="text-lg font-semibold text-gray-900 mb-2">No episodes yet</h3>
           <p className="text-sm text-gray-500 max-w-sm">
@@ -508,7 +508,7 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels, initialEpi
           </SheetHeader>
           {detailsLoading && (
             <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+              <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
             </div>
           )}
           {!detailsLoading && detailsEpisode && (

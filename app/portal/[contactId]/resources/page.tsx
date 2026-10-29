@@ -166,7 +166,7 @@ export default async function ResourcesPage({
                               <div className="flex items-center gap-2">
                                 <p className="font-medium">{v.name}</p>
                                 {v.preferred && (
-                                  <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+                                  <Star className="h-4 w-4 text-yellow-700 fill-yellow-500" />
                                 )}
                               </div>
                               <p className="text-sm text-muted-foreground">
@@ -175,7 +175,7 @@ export default async function ResourcesPage({
                             </div>
                             {v.rating && (
                               <Badge variant="secondary" className="text-xs">
-                                <Star className="h-3 w-3 mr-1 text-yellow-500 fill-yellow-500" />
+                                <Star className="h-3 w-3 mr-1 text-yellow-700 fill-yellow-500" />
                                 {Number(v.rating).toFixed(1)}
                               </Badge>
                             )}

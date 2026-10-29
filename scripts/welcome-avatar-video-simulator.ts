@@ -829,8 +829,13 @@ function firstDraftCallSite(src: string): number {
  * which is a mutation that mutates nothing.
  */
 function hoistDraftAboveLedger(src: string): string {
-  const led    = src.indexOf("  const ledger = await svc")
-  const ledEnd = src.indexOf("  const introVideoId = ledger.data?.id")
+  // RE-ANCHORED (wave 146, lane 146Z): the step-4 insert now sits inside `if (!introVideoId) { … }` (a RETRY re-uses the
+  // row retryAssignmentIntroVideo re-claimed), so the block is anchored on its `let introVideoId` declaration (code — the
+  // source here is comment-stripped) through the close of that `if`. Still the WHOLE ledger block, still the real hoist —
+  // 6.9a fails loudly if these anchors drift again.
+  const led    = src.indexOf("  let introVideoId: string | undefined = input.existingIntroVideoId")
+  const assign = src.indexOf("    introVideoId = ledger.data?.id")
+  const ledEnd = assign < 0 ? -1 : src.indexOf("\n  }\n", assign) + "\n  }\n".length
   // The whole compliance loop — which now OWNS the first draft — is the block
   // that gets hoisted. Anchored on its opening `let script: string` declaration
   // through the end of its gate closure.

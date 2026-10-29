@@ -156,7 +156,15 @@ async function main() {
   // ═════════════════════════════════════════════════════════════════════════════════════════════
   section("G · ads — AD_PLATFORMS on real rows; `verified` never outruns the code")
   {
-    check("AD_PLATFORMS keys are meta / google_ads / vibe_tv / openai_ads", same(Object.keys(AD_PLATFORMS), ["meta", "google_ads", "vibe_tv", "openai_ads"]))
+    // RE-ASSERTED (wave 146, lane 146Z — lane 146E Outside-lane 2): the pin was the four keys of wave 145 (a waypoint). Ruling 8
+    // adds two TV CONNECTIONS; the rule is "the four wave-145 platforms stay, and every other row is a TV connection that rides
+    // the ONE TV gateway (lib/ads/ctv-campaign.ts launchTvCampaign) and is a registered ad connector" — derived, not listed.
+    const baseAdKeys = ["meta", "google_ads", "vibe_tv", "openai_ads"]
+    const extraAdKeys = Object.keys(AD_PLATFORMS).filter((k) => !baseAdKeys.includes(k))
+    const ctvGateway = code("lib/ads/ctv-campaign.ts"), adRegistry = code("lib/ads/connectors/registry.ts")
+    check(`AD_PLATFORMS keeps meta / google_ads / vibe_tv / openai_ads, and every other row (${extraAdKeys.join(", ") || "none"}) is a TV connection on the ONE gateway and a registered connector`,
+      baseAdKeys.every((k) => k in AD_PLATFORMS) && extraAdKeys.every((k) => /export async function launchTvCampaign/.test(ctvGateway) && new RegExp(`\\b${k}\\b`).test(ctvGateway) && new RegExp(`\\b${k}\\b`).test(adRegistry) && AD_PLATFORMS[k as keyof typeof AD_PLATFORMS].campaignPlatforms.includes(k)))
+    check("POSITIVE CONTROL: an extra row whose platform the TV gateway never names is caught", !new RegExp(`\\bmade_up_tv\\b`).test(ctvGateway))
     check("the ads rule == the AD_PLATFORMS readiness rows", same(CHANNEL_PROVIDER_MATRIX.ads.providers ?? [], Object.values(AD_PLATFORMS).map((a) => a.readinessRow)))
     const campaignVocab = CHECK_VOCABULARIES.ad_campaigns?.platform ?? []
     for (const a of Object.values(AD_PLATFORMS)) {
@@ -177,6 +185,9 @@ async function main() {
       google_ads: { reader: adCredentialPlatform("google"), writer: writerFor("google_ads"), egress: /connector:\s*"google_ads"/.test(code("lib/ads/connectors/google.ts")) },
       vibe_tv: { reader: "vibe", writer: "vibe", egress: /callConnector/.test(code("lib/providers/vibe.ts")) },
       openai_ads: { reader: "openai_ads", writer: "openai_ads", egress: /connector:\s*"openai_ads"/.test(code("lib/providers/openai-ads.ts")) && /\/ad_account/.test(code("lib/providers/openai-ads.ts")) },
+      // Wave 146 (146Z): the two TV connections are Connection OS tenant slots — the slot key IS the stored name (writer).
+      groundtruth: { reader: "groundtruth", writer: /key:\s*"groundtruth"/.test(code("lib/settings/tenant-connection-slots.ts")) ? "groundtruth" : null, egress: /connector:\s*"groundtruth"/.test(code("lib/providers/groundtruth-ads.ts")) },
+      stackadapt: { reader: "stackadapt", writer: /key:\s*"stackadapt"/.test(code("lib/settings/tenant-connection-slots.ts")) ? "stackadapt" : null, egress: /connector:\s*"stackadapt"/.test(code("lib/providers/stackadapt-ads.ts")) },
     }
     for (const a of Object.values(AD_PLATFORMS)) {
       const c = credName[a.key]
@@ -188,7 +199,15 @@ async function main() {
     check("the Google Ads reader asks for 'google_ads' (adCredentialPlatform), instagram still rides facebook", adCredentialPlatform("google") === "google_ads" && adCredentialPlatform("instagram") === "facebook" && adCredentialPlatform("facebook") === "facebook")
     const mig = readdirSync("supabase/migrations").filter((f) => /^m862-/.test(f))
     const m862 = mig.length ? raw(`supabase/migrations/${mig[0]}`) : ""
-    check("m862 admits 'google_ads' and KEEPS every live value (no value dropped)", /'google_ads'/.test(m862) && liveCred.every((v) => m862.includes(`'${v}'`)), liveCred.filter((v) => !m862.includes(`'${v}'`)).join(","))
+    // RE-ASSERTED (wave 146, lane 146Z): "every live value is in m862" was true only until a LATER migration widened the same
+    // CHECK (m881 added groundtruth / stackadapt) — a waypoint. The rule is "m862 dropped no value": every live value is in
+    // m862 OR is added by a later migration that rewrites platform_credentials_platform_check.
+    const laterCredMigrations = readdirSync("supabase/migrations").filter((f) => /^m(\d+)-/.test(f) && Number(/^m(\d+)-/.exec(f)![1]) > 862)
+      .map((f) => raw(`supabase/migrations/${f}`)).filter((s) => /platform_credentials_platform_check/.test(s))
+    const notInM862 = liveCred.filter((v) => !m862.includes(`'${v}'`))
+    const unexplained = notInM862.filter((v) => !laterCredMigrations.some((s) => s.includes(`'${v}'`)))
+    check("m862 admits 'google_ads' and DROPPED no live value (a value absent from m862 is added by a later migration of the same CHECK)", /'google_ads'/.test(m862) && unexplained.length === 0, `not in m862: ${notInM862.join(",") || "none"}; unexplained: ${unexplained.join(",") || "none"}`)
+    check("POSITIVE CONTROL: a live value no migration names would be unexplained", !laterCredMigrations.some((s) => s.includes("'made_up_provider'")) && !m862.includes("'made_up_provider'"))
     check("m862 line 1 is the lane stamp or the APPLIED LIVE stamp (the rule, not the waypoint)", /^-- (WRITTEN, NOT APPLIED \(wave 145, lane 145D\)|── APPLIED LIVE )/.test(m862))
   }
 

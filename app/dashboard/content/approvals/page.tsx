@@ -11,8 +11,8 @@ import {
   getMyPendingApprovals,
   getApprovalHistory,
   getApprovalStatistics,
+  decideContentApproval,
 } from "@/app/actions/content-approval-workflow"
-import { createClient } from "@/lib/supabase/client"
 import { useAuth } from "@/lib/auth/client"
 import type { ApproverRole } from "@/lib/approval-workflow/approval-engine"
 import { ApprovalToolsPanel } from "./approval-tools-panel"
@@ -106,33 +106,15 @@ export default function ContentApprovalsPage() {
 
   const handleDecision = (itemId: string, decision: "approved" | "rejected") => {
     startTransition(async () => {
-      const supabase = createClient()
-      const item = pending.find(p => p.id === itemId)
-      let existingNotes = item?.notes ?? {}
-      if (typeof item?.notes === "string") {
-        try {
-          existingNotes = JSON.parse(item.notes)
-        } catch {
-          existingNotes = {}
-        }
-      }
-      // An UPDATE that matches nothing RESOLVES with no error (CLAUDE.md §3) — RLS refusing this seat, or an item
-      // another approver already decided, read as success and the item vanished from the queue undecided.
-      // Count what came back; zero rows is "not saved", said so (wave 146, lane 146H — no misleading statuses).
-      const { data: decided, error } = await supabase
-        .from("activities")
-        .update({
-          status: decision === "approved" ? "completed" : "rejected",
-          completed_at: new Date().toISOString(),
-          notes: { ...existingNotes, approval_status: decision },
-        })
-        .eq("id", itemId)
-        .select("id")
-      if (!error && (decided?.length ?? 0) > 0) {
+      // THE DECISION IS THE SERVER'S (wave 146, lane 146Z on lane 146H's Outside-lane 4 — laws 4–5): this used to write
+      // `activities` from the browser. decideContentApproval checks the session's approver role against the item's
+      // required approvers, writes under the action ledger and counts the row; a refusal is said, never shown as saved.
+      const res = await decideContentApproval({ activityId: itemId, decision })
+      if (res.success) {
         setPending(prev => prev.filter(p => p.id !== itemId))
         toast.success(decision === "approved" ? "Content approved" : "Revisions requested")
       } else {
-        toast.error(error ? `Not saved — ${error.message}` : "Not saved — this item could not be updated from your seat (already decided, or not yours to decide)")
+        toast.error(res.error ?? "Not saved — this item could not be decided from your seat")
       }
     })
   }

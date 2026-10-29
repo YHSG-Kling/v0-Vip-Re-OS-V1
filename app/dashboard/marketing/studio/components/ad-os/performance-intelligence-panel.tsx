@@ -45,7 +45,7 @@ interface Props {
 
 function scoreColor(score: number) {
   if (score >= 75) return "text-emerald-700"
-  if (score >= 50) return "text-amber-600"
+  if (score >= 50) return "text-amber-700"
   return "text-destructive"
 }
 

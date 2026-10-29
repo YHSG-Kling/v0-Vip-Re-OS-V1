@@ -40,7 +40,7 @@ const STAFF_AI_ROLES = new Set([
   'team_member',
   'lender',
   'vendor',
-  'title',
+  'title_agent', // canonical role (lib/security/types.ts) — the bare 'title' matched none (wave 146, 146Z)
   'isa',
 ])
 

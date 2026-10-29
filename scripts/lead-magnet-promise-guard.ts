@@ -171,11 +171,23 @@ async function main() {
   section("C · delivered only with the asset, through a permitted channel, verified")
   {
     const mem = seed()
-    const rec = await recordPromisedDeliverable(mem, { brokerageId: B1, formId: FORM, submissionId: SUB, contactId: C1, magnetType: "buyer_guide", now: NOW })
+    const rec = await recordPromisedDeliverable(mem, { brokerageId: B1, formId: FORM, submissionId: SUB, contactId: C1, campaignId: "camp-c", attribution: { utmSource: "ig" }, magnetType: "buyer_guide", now: NOW })
     const id = (rec as { promiseId: string }).promiseId
     const h = harness()
     const d1 = await deliverPromised(mem, { brokerageId: B1, promiseId: id }, h.deps)
     const row = mem.tables.lead_magnet_promises[0]
+    // wave 146 (146Z): campaign_id + attribution were written and never read (readerless-write census) — the FINAL EVIDENCE now
+    // carries the promise's source (ruling 10). Control: a promise recorded without a campaign says null, never a borrowed one.
+    check("the FINAL EVIDENCE names the promise's source — form, submission, campaign and attribution as the capture recorded them (ruling 10)",
+      (row.evidence?.source as { form_id?: string; submission_id?: string; campaign_id?: string | null; attribution?: { utmSource?: string } } | undefined)?.campaign_id === "camp-c"
+      && row.evidence?.source?.attribution?.utmSource === "ig" && row.evidence?.source?.form_id === FORM && row.evidence?.source?.submission_id === SUB, JSON.stringify(row.evidence?.source ?? null))
+    {
+      const memN = seed()
+      const recN = await recordPromisedDeliverable(memN, { brokerageId: B1, formId: FORM, submissionId: SUB, contactId: C1, magnetType: "buyer_guide", now: NOW })
+      await deliverPromised(memN, { brokerageId: B1, promiseId: (recN as { promiseId: string }).promiseId }, harness().deps)
+      const rowN = memN.tables.lead_magnet_promises[0]
+      check("  CONTROL: with no campaign recorded the evidence's campaign is null (the reader never invents provenance)", rowN.status === "delivered" && rowN.evidence?.source?.campaign_id === null, JSON.stringify(rowN.evidence?.source ?? null))
+    }
     check("the guide goes out by the GOVERNED email (transactional reply to their request; ledger cycle per promise) and the row is DELIVERED with evidence", d1.ok && d1.status === "delivered" && h.calls.emails.length === 1
       && h.calls.emails[0].ledger.cycle === `lead_magnet_promise:${id}` && h.calls.emails[0].ledger.reasonCode === "CONVERSATION_RESPONSE" && h.calls.emails[0].channelPurpose === "transactional"
       && h.calls.emails[0].contactId === C1 && h.calls.emails[0].userId === U1 && h.calls.emails[0].agentId === AG && h.calls.emails[0].html.includes(PDF)

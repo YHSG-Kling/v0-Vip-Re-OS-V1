@@ -420,7 +420,11 @@ async function main() {
     const stripped = stripComments(src)
     const darkFile = hasDarkSection(stripped)
     const filledFile = hasFilledSection(stripped)
-    const mayFix = FIX && !lane && !darkFile
+    // `--fix --only <other-lane dir>` is how the OWNING lane fixes its directory (the OUTSIDE-LANE line below says so) —
+    // it was inert: the other-lane exclusion also held under --only (wave 146, lane 146Z). It now fixes that directory when
+    // it is the one explicitly targeted; a plain --fix still never touches another lane's directory.
+    const ownerTargeted = !!lane && !!ONLY && (ONLY === lane || ONLY.startsWith(lane + "/"))
+    const mayFix = FIX && (!lane || ownerTargeted) && !darkFile
     const { findings, out, edits } = scanModule(src, mayFix, { holdPale: filledFile })
     if (mayFix && edits > 0 && out !== src) { writeFileSync(abs, out); edited += edits; editedModules++ }
     // After a fix, re-read what is now on disk — the check judges the tree, not the intent.

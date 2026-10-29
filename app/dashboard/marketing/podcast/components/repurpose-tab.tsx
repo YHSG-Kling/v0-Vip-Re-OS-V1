@@ -232,7 +232,7 @@ export function RepurposeTab({ episodes }: Props) {
 
           {loading && (
             <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-5 w-5 animate-spin text-gray-400 mr-2" />
+              <Loader2 className="h-5 w-5 animate-spin text-gray-500 mr-2" />
               <span className="text-sm text-muted-foreground flex items-center gap-1">
                 <Sparkles className="h-3.5 w-3.5" />
                 Generating with AI…

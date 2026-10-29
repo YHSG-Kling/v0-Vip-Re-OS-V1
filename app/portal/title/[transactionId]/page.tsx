@@ -41,7 +41,7 @@ const EMD_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
 }
 
 const MILESTONE_STATUS_CONFIG: Record<string, { icon: any; color: string }> = {
-  completed: { icon: CheckCircle2, color: "text-green-600" },
+  completed: { icon: CheckCircle2, color: "text-green-700" },
   in_progress: { icon: Clock, color: "text-blue-600" },
   pending: { icon: Clock, color: "text-muted-foreground" },
   overdue: { icon: AlertCircle, color: "text-red-600" },

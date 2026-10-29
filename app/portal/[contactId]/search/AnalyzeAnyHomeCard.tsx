@@ -90,7 +90,7 @@ export function AnalyzeAnyHomeCard({
             onChange={(e) => setAddress(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && analyze()}
           />
-          <Button onClick={analyze} disabled={analyzing || address.trim().length < 5} className="bg-teal-600 hover:bg-teal-700 text-white shrink-0">
+          <Button onClick={analyze} disabled={analyzing || address.trim().length < 5} className="bg-teal-700 hover:bg-teal-800 text-white shrink-0">
             <Search className="h-4 w-4 mr-1" />{analyzing ? "Checking…" : "Check"}
           </Button>
         </div>
@@ -122,7 +122,7 @@ export function AnalyzeAnyHomeCard({
               </Button>
               {/* Vendor marketplace: route a buyer who's getting serious to the agent's preferred lender. */}
               <Link href={`/portal/${contactId}/vendors`} className="flex-1">
-                <Button className="w-full bg-teal-600 hover:bg-teal-700 text-white">
+                <Button className="w-full bg-teal-700 hover:bg-teal-800 text-white">
                   <Landmark className="h-4 w-4 mr-1" />Get pre-approved
                 </Button>
               </Link>

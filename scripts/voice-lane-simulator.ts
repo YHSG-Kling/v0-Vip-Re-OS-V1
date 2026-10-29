@@ -7,6 +7,7 @@
 
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments as stripSms } from "./strip-comments"
 import {
   buildReceptionPrompt, buildOutboundPrompt, parseTurnPlan, transcriptToMessages, appendTranscript,
   twimlGatherTurn, twimlTransfer, twimlHangup, TURN_INSTRUCTIONS, PLATFORM_TURN_INSTRUCTIONS,
@@ -369,8 +370,15 @@ console.log("\n── SOURCE: wiring ──")
 
   // ── INBOUND SMS → unified inbox wiring ──
   const smsLib = src("lib/voice/sms-inbound.ts")
-  check("SMS: lands in the UNIFIED INBOX messages row (unread) + agent heads-up; idempotent by MessageSid",
-    smsLib.includes('from("messages")') && smsLib.includes('status: "unread"') && smsLib.includes("message_sid"))
+  // RE-ASSERTED (wave 146, lane 146Z — lane 146B Outside-lane 1): the SMS recorder no longer spells its own `messages` insert;
+  // it rides the ONE canonical inbound record (contract C1). The pin moved from "this file writes the unread row" (a shape) to the
+  // rule: the text is recorded through recordInboundCommunication keyed on (twilio, MessageSid), and THAT record writes the
+  // unread messages row and keeps message_sid; the agent's heads-up stays here. Code tokens read on stripped source.
+  const smsCode = stripSms(smsLib), c1Code = stripSms(src("lib/communications/inbound-record.ts"))
+  check("SMS: lands in the UNIFIED INBOX messages row (unread) + agent heads-up; idempotent by MessageSid — through the ONE inbound record (C1)",
+    /recordInboundCommunication\(/.test(smsCode) && /provider:\s*"twilio"/.test(smsCode) && /providerRef:\s*input\.messageSid/.test(smsCode) && smsCode.includes('"inbound_text_received"')
+    && /from\("messages"\)\.insert\(/.test(c1Code.replace(/\s+/g, "")) && c1Code.includes('status: "unread"') && c1Code.includes("message_sid"))
+  check("SMS: the recorder writes NO messages row of its own (one recorder per key — the C1 record is the writer)", !/from\("messages"\)\s*\.insert\(/.test(smsCode))
   check("SMS: unknown texter → consented contact assigned to the number's agent (texting in IS consent)",
     smsLib.includes("captureContact") && smsLib.includes('"inbound_sms"'))
   const routerLib = src("lib/providers/inbound-router.ts")
@@ -381,7 +389,8 @@ console.log("\n── SOURCE: wiring ──")
     inboundProviders.includes("resolveTenantByOwnNumber") && inboundProviders.includes("recordInboundMessage") && inboundProviders.includes("captureTextingContact"))
   check("binding registers SmsUrl → the existing provider ingress + StatusCallback", bind.includes("/api/providers/inbound") && bind.includes("/api/voice/twilio/status"))
   check("KEEP-ONE: every messages writer resolves the NOT-NULL conversation thread via the canonical helper (latent silent-fail fixed in inbox reply, compliance override, open-house greeting)",
-    ["lib/kernel/communications.ts", "app/actions/inbox.ts", "app/actions/workflows.ts", "lib/open-house/instant-greeting.ts", "lib/voice/sms-inbound.ts"]
+    // wave 146: the SMS text's messages writer is now the C1 record (lib/communications/inbound-record.ts), not sms-inbound.ts
+    ["lib/kernel/communications.ts", "app/actions/inbox.ts", "app/actions/workflows.ts", "lib/open-house/instant-greeting.ts", "lib/communications/inbound-record.ts"]
       .every((f) => src(f).includes("ensureConversationForContact")))
 
   // ── Approved build 1: proactive reply drafts ──

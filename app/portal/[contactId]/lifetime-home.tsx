@@ -352,12 +352,12 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
                     <div className="flex items-center gap-1.5">
                       {v.rating && (
                         <div className="flex items-center gap-1">
-                          <Star className="h-3.5 w-3.5 fill-yellow-400 text-yellow-400" />
+                          <Star className="h-3.5 w-3.5 fill-yellow-400 text-yellow-700" />
                           <span className="text-xs">{v.rating}</span>
                         </div>
                       )}
                       {v.preferred && !v.rating && (
-                        <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+                        <Star className="h-4 w-4 text-yellow-700 fill-yellow-500" />
                       )}
                     </div>
                   </div>

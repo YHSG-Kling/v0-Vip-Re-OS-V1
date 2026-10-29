@@ -164,18 +164,20 @@ async function main() {
   // ═══════════════════════════════════════════════════════════════════════════════════════
   section("B · the chain — record → opt-out → sequence stop → event → intent → arbiter, ONCE per new record")
   {
-    const calls = { optOut: 0, stop: 0, emit: [] as string[], classify: 0, respond: [] as Array<Record<string, unknown>>, lead: 0, promise: [] as Array<Record<string, unknown>>, order: [] as string[] }
+    const calls = { optOut: 0, optOutSources: [] as string[], stop: 0, emit: [] as string[], classify: 0, respond: [] as Array<Record<string, unknown>>, lead: 0, promise: [] as Array<Record<string, unknown>>, order: [] as string[] }
     const deps = (db: unknown) => ({
       client: db as never,
-      optOut: async () => { calls.optOut++; return { success: true } },
+      optOut: async (p: { source: string }) => { calls.optOut++; calls.optOutSources.push(p.source); return { success: true } },
       stopSequences: async () => { calls.stop++; return { unenrolled: 2 } },
       emit: async (e: Record<string, unknown>) => { calls.emit.push(String(e.event)) },
       classify: async () => { calls.classify++; return { primary: "schedule_showing", confidence: 88, urgency: "medium" } },
-      respond: async (p: Record<string, unknown>) => { calls.order.push("respond"); calls.respond.push(p); return { action: "reply_proposed", reason: "ok" } },
+      // seams typed `any` on the parameter: the chain hands the responder / promise seam its own request interfaces (no index
+      // signature), which a Record<string, unknown> parameter refuses at the type level (wave 146, 146Z — tsc only).
+      respond: async (p: any) => { calls.order.push("respond"); calls.respond.push(p as Record<string, unknown>); return { action: "reply_proposed", reason: "ok" } },
       leadDoor: async () => { calls.lead++; return { outcome: "nurtured" } },
-      promise: async (p: Record<string, unknown>) => { calls.order.push("promise"); calls.promise.push(p); return { action: "delivered", reason: "the guide went out" } },
+      promise: async (p: any) => { calls.order.push("promise"); calls.promise.push(p as Record<string, unknown>); return { action: "delivered", reason: "the guide went out" } },
     })
-    const reset = () => { calls.optOut = 0; calls.stop = 0; calls.emit.length = 0; calls.classify = 0; calls.respond.length = 0; calls.lead = 0; calls.promise.length = 0; calls.order.length = 0 }
+    const reset = () => { calls.optOut = 0; calls.optOutSources.length = 0; calls.stop = 0; calls.emit.length = 0; calls.classify = 0; calls.respond.length = 0; calls.lead = 0; calls.promise.length = 0; calls.order.length = 0 }
     const db = world()
     const dm = { brokerageId: B1, channel: "social_dm" as const, provider: "meta", providerRef: "mid.1", party: { kind: "contact" as const, id: C1 }, body: "Can I see it Saturday?", surface: "facebook", threadRef: { page_id: "page-1", sender_id: "psid-1" } }
     const p1 = await rec.processInboundCommunication(dm, deps(db))
@@ -189,6 +191,8 @@ async function main() {
     reset()
     const stop = await rec.processInboundCommunication({ ...dm, providerRef: "mid.stop", body: "STOP" }, deps(db))
     check("a high-confidence STOP is honoured first (processOptOut's webhook provenance) and NOTHING answers it — not even an owed delivery", calls.optOut === 1 && calls.respond.length === 0 && calls.promise.length === 0 && stop.response?.action === "no_response")
+    // Wave 146 (146Z): a social DM's STOP carries its own provenance, never an SMS label.
+    check("a social DM's STOP is written with 'inbound_social' provenance (lib/ai-isa/opt-out-writer.ts — not 'inbound_sms')", calls.optOutSources.join(",") === "inbound_social", calls.optOutSources.join(","))
     reset()
     const refusedOpt = await rec.processInboundCommunication({ ...dm, providerRef: "mid.stop2", body: "STOP" }, { ...deps(db), optOut: async () => ({ success: false, error: "refused" }) })
     check("FAIL CLOSED: an opt-out that could not be written is still not answered — and the blind spot says so", refusedOpt.response?.action === "no_response" && refusedOpt.blindSpots.some((b) => /NOT applied/.test(b)) && calls.respond.length === 0)
@@ -417,7 +421,7 @@ async function main() {
     {
       const db = world({ social_media_accounts: accounts })
       const r = await social.ingestInboundSocialEvents(db, [ev(), ev({ authorId: "stranger-1", providerRef: "c-2" }), ev({ authorId: "stranger-1", providerRef: "c-3" }), ev({ providerRef: "c-4", adId: "AD-9" })], { process: process as never })
-      check("a known author (the DM door's facebook_psid already on the contact) is the CONTACT, riding their one thread (no door thread)", seen[0]?.party && (seen[0].party as { id: string }).id === C1 && seen[0].conversationId === null && seen[0].brokerageId === B1 && seen[0].channel === "social_comment")
+      check("a known author (the DM door's facebook_psid already on the contact) is the CONTACT, riding their one thread (no door thread)", !!seen[0]?.party && (seen[0].party as { id: string }).id === C1 && seen[0].conversationId === null && seen[0].brokerageId === B1 && seen[0].channel === "social_comment")
       check("an UNKNOWN commenter gets the account's public thread (created ONCE per post + author) — and no contact or lead is created",
         seen[1]?.party === null && !!seen[1]?.conversationId && seen[2]?.conversationId === seen[1]?.conversationId && db.tables.conversations.filter((c) => c.type === "social_comment").length === 1 && db.tables.contacts.length === 3 && db.tables.leads.length === 2)
       check("a comment on an AD is the campaign interaction (channel ad_interaction, the ad id on the thread ref)", seen[3]?.channel === "ad_interaction" && (seen[3]?.threadRef as Record<string, unknown>)?.ad_id === "AD-9")
@@ -466,13 +470,40 @@ async function main() {
     check("no CONDITIONAL tenant predicate in the new modules (`if (x) q = q.eq(\"brokerage_id\", …)`)", newFiles.every((f) => !/if\s*\([^)]*\)\s*\w+\s*=\s*\w+\.eq\("brokerage_id"/.test(code(f))))
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════════════
+  section("I · the opt-out door — no sessionless suppression through a public endpoint (wave 146, 146Z; ruling 20 priority 1)")
+  {
+    const { hasUseServerDirective } = await import("./session-tokens")
+    const action = code("app/actions/ai-isa/process-opt-out.ts")
+    check("the sessionless writer lib/ai-isa/opt-out-writer.ts carries NO \"use server\" directive (it is not an HTTP endpoint)", raw("lib/ai-isa/opt-out-writer.ts").length > 0 && !hasUseServerDirective(code("lib/ai-isa/opt-out-writer.ts")))
+    check("POSITIVE CONTROL: the directive finder sees the action's own \"use server\"", hasUseServerDirective(action))
+    const iRefuse = action.indexOf("VERIFIED_INBOUND_OPT_OUT_SOURCES.has("), iSession = action.indexOf("getAgentContext()"), iWrite = action.indexOf("writeOptOut(")
+    check("the \"use server\" action refuses inbound provenance FIRST, then requires the session, and only then writes", iRefuse > 0 && iRefuse < iSession && iSession < iWrite && !/WEBHOOK_SOURCES|isWebhookSource/.test(action))
+    const doors = ["app/api/providers/inbound/route.ts", "app/api/voice/twilio/turn/route.ts", "app/api/voice/relay/plan/route.ts", "lib/communications/inbound-record.ts"]
+    check("every verified inbound door calls the lib writer, none imports the \"use server\" action", doors.every((f) => /processOptOutFromVerifiedInbound\(/.test(code(f)) && !/app\/actions\/ai-isa\/process-opt-out/.test(code(f))), doors.filter((f) => !/processOptOutFromVerifiedInbound\(/.test(code(f))).join(","))
+    const { processOptOut } = await import("../app/actions/ai-isa/process-opt-out")
+    const forgedAction = await processOptOut({ entityType: "contact", entityId: C1, channel: "all", source: "inbound_sms" as never, rawMessage: "STOP" })
+    check("BEHAVIOUR: posting the action with source 'inbound_sms' and no session is REFUSED (the pre-146 hole)", forgedAction.success === false && /inbound provenance/.test(forgedAction.error ?? ""), JSON.stringify(forgedAction))
+    const w = await import("../lib/ai-isa/opt-out-writer")
+    const emitted: string[] = []
+    const emit = (async (p: { event: string }) => { emitted.push(String(p.event)) }) as never
+    const db = world()
+    const forged = await w.processOptOutFromVerifiedInbound({ entityType: "contact", entityId: C1, channel: "sms", source: "inbound_sms", rawMessage: "STOP", brokerageId: B2 }, { client: db as never, emit })
+    check("a caller brokerage that disagrees with the entity's row is REFUSED and nothing is written", forged.success === false && forged.error === "Forbidden" && !db.tables.contacts.find((r) => r.id === C1)?.sms_opt_out && emitted.length === 0, JSON.stringify(forged))
+    const ok = await w.processOptOutFromVerifiedInbound({ entityType: "contact", entityId: C1, channel: "sms", source: "inbound_social", rawMessage: "stop texting", brokerageId: B1 }, { client: db as never, emit })
+    const c1 = db.tables.contacts.find((r) => r.id === C1)
+    check("POSITIVE CONTROL: the verified door with the entity's own tenant writes the suppression with its provenance and emits once", ok.success === true && c1?.sms_opt_out === true && c1?.opt_out_source === "inbound_social" && emitted.length === 1, JSON.stringify({ ok, emitted, src: c1?.opt_out_source }))
+    const ghost = await w.processOptOutFromVerifiedInbound({ entityType: "contact", entityId: "00000000-0000-4000-8000-00000000dead", channel: "sms", source: "inbound_sms" }, { client: db as never, emit })
+    check("an unknown entity is refused (a suppression is never reported for a row that was not written)", ghost.success === false && emitted.length === 1, JSON.stringify(ghost))
+  }
+
   console.log(`\n${"═".repeat(72)}`)
   console.log(`BLIND SPOTS (published beside the number):
-  · in-memory database: the m876 / m488 unique indexes are MODELLED (scripts/in-memory-supabase.ts unique keys); m876 is WRITTEN, NOT APPLIED — until it is, the duplicate READ is the only guard against a concurrent double delivery.
+  · in-memory database: the m876 / m488 unique indexes are MODELLED (scripts/in-memory-supabase.ts unique keys); the live index is m876's (its line 1 says whether it ran) — this run does not read the live database.
   · the model, the composer, the deliverer (contract C4), the re-engagement door (contract C2), Customer 360 (contract C6) and the DM sender are injected seams here; their own lanes prove their insides.
   · provider consoles (Meta page subscriptions to feed / mention / comments, the LinkedIn organization subscription, the X Account Activity subscription) are not provable from code — WAITING_EXTERNAL.
   · a LEAD's social DM or comment cannot reach the lead door (the social doors match CONTACT identities only); a lead's email / text reply does, through app/api/providers/inbound.
-  · processOptOut's webhook provenance vocabulary has no social value: a social DM's STOP is written as 'inbound_sms' provenance (stated, Outside-lane).`)
+  · the opt-out writer is a seam here: lib/ai-isa/opt-out-writer.ts (the sessionless door the verified routes call; wave 146 moved it out of the "use server" action) is proven by its own provenance and tenant checks, not by this chain.`)
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail) { console.log("\nFAILURES:"); for (const f of failures) console.log(`  · ${f}`); console.log(" ❌ INBOUND_COMMUNICATION_FAIL"); process.exit(1) }
   console.log(" ✅ INBOUND_COMMUNICATION_PASS — every inbound lands once on the one history, the arbiter answers within authority, promises are delivered, the platform funnel is arbitrated")

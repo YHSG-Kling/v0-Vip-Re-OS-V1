@@ -129,6 +129,10 @@ export const TRANSFER_DATA_FAMILIES: readonly { table: string; what: string }[] 
   { table: "lead_capture_forms", what: "the website's landing pages / lead magnets (slug, copy and URL unchanged)" },
   { table: "form_submissions", what: "the capture history of those landing pages (form_id stays in ONE tenant)" },
   { table: "ai_search_landing_citation_observations", what: "AI-search citation history of those landing pages (form_id stays in ONE tenant)" },
+  // wave 146 (m883, lane 146F; placed by 146Z): what one of those landing pages PROMISED a submitter and the evidence it was
+  // delivered (ruling 10). Every parent it names moves — form_id → lead_capture_forms, submission_id → form_submissions,
+  // contact_id → contacts, campaign_id → marketing_campaigns — so it follows the page (the landing-page zero-exception rule).
+  { table: "lead_magnet_promises", what: "the promises those landing pages made each submitter, with their delivery evidence (form_id / submission_id stay in ONE tenant)" },
   // A BOOK DISTRIBUTED THROUGH ONE OF THOSE PAGES follows the page (wave 145, lane 145Z — owner ruling 19 + the landing-page
   // zero-exception rule, scripts/brokerage-identity-guard.ts): book_projects.distribution_form_id → lead_capture_forms (m867).
   // The subscriber's OWN book (its manuscript, chapters, publishing state) moves with its workspace; a PLATFORM-owned book has
@@ -206,6 +210,7 @@ const CHILD_CLASS_GROUPS: ReadonlyArray<{ cls: ChildTransferClass; rule: string;
     "direct_mail_responses", "mail_response_tracking", "marketing_campaign_touchpoints", "sequence_step_executions", "lifetime_customer_touchpoints", "review_requests",
     "showing_feedback_requests", "open_house_invitations", "open_house_rsvp_tracking", "seller_share_feed", "seller_updates", "seller_weekly_reports",
     "client_friendly_updates", "timeline_transparency", "transparency_updates", "closing_notifications", "thank_you_notes", "client_gifts", "closing_gifts", "notifications"] },
+    // lead_magnet_promises (m883) is NOT classified here: it is a moved FAMILY (TRANSFER_DATA_FAMILIES — it follows its landing page).
   { cls: "historical_immutable", rule: "OBSERVED EVENTS AND ANALYTICS — behaviour, views, clicks, scans and signals observed by the source", tables: [
     "blog_post_share_clicks", "blog_post_views", "behavioral_signals", "buyer_behavior_log", "client_portal_activity", "external_behavior", "lead_behavioral_data",
     "lead_external_behavior", "lead_idx_property_interactions", "lead_property_searches", "lead_score_history", "podcast_analytics_events", "portal_access_logs",

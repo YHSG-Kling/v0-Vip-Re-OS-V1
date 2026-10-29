@@ -109,6 +109,8 @@
  *   (1) `videoOverride` — the cron knew the assembled composite's URL a tick
  *       before render-composition stamps it onto ai_video_projects.video_url.
  *       That knowledge had no home here, so it was added rather than dropped.
+ *       (RETIRED wave 146 with its only caller — owner ruling 6 sends the welcome
+ *       now; see the tombstone above EnsureClientWelcomeOptions.)
  *   (2) THEM-FIRST SITUATIONAL COPY — lib/contact-promotion/welcome-situation.ts
  *       (compliance-first: a HIGH-severity fair-housing phrase in the CRM row is
  *       DROPPED before the prompt, medium/low rides through as a warning, a named
@@ -613,23 +615,14 @@ type ResolvedWelcomeVideo =
   | { state: "in_progress"; reason: string }
   | { state: "none"; reason: string }
 
-/**
- * A finished video the CALLER already resolved. The sweeper reads the assembled
- * composite's URL off the Remotion render row a tick before render-composition
- * stamps it onto `ai_video_projects.video_url`; without this the welcome would
- * either mail the un-assembled avatar track or wait an extra tick for a stamp it
- * can already see. Supplying it SKIPS the local lookup entirely.
- */
-export interface WelcomeVideoOverride {
-  videoUrl: string
-  thumbnailUrl: string | null
-  /** Provenance, carried verbatim into the ledger evidence line. */
-  scope: string
-  videoProjectId: string
-}
+// TOMBSTONE (orphan doctrine §1.3, wave 146 lane 146Z on lane 146C's Outside-lane 2a) — REMOVED: `WelcomeVideoOverride` and
+// `EnsureClientWelcomeOptions.videoOverride`. Their only caller was the wave-145 sweeper RELEASING a held welcome with the
+// composite URL it could already see; owner ruling 6 (2026-10-29) sends the welcome NOW and puts the video in the portal, so
+// the sweeper no longer releases welcomes and the option had no caller. Where the functionality went: the sweeper's knowledge
+// of the finished render is now the portal READBACK — lib/portal/welcome-video.ts:354 placePortalWelcomeVideo (its
+// `expectedUrl` carries the composite the cron sees, recorded as evidence).
 
 export interface EnsureClientWelcomeOptions {
-  videoOverride?: WelcomeVideoOverride | null
   /**
    * Set when this contact was captured/resolved at an open house (owner ruling
    * 2026-09-10, wave 51: "same welcome email but mentions the open house").
@@ -783,13 +776,9 @@ export async function ensureClientWelcome(svc: Svc, contact: {
 
   // ── (b) PORTAL ACCESS + (c) THE PERSONAL VIDEO ────────────────────────────
   const portalAccess = await ensurePortalAccess(contact.id, agentUserId)
-  // A caller-supplied finished video SHORT-CIRCUITS the lookup — see
-  // WelcomeVideoOverride for why the sweeper knows the assembled URL first.
-  const video: ResolvedWelcomeVideo = opts.videoOverride
-    ? { state: "ready", ...opts.videoOverride }
-    : agentRecordId
-      ? await resolveVideo(svc, { brokerageId: contact.brokerageId, contactId: contact.id, agentRecordId })
-      : { state: "none", reason: "no assigned agent — there is nobody for the video to be from" }
+  const video: ResolvedWelcomeVideo = agentRecordId
+    ? await resolveVideo(svc, { brokerageId: contact.brokerageId, contactId: contact.id, agentRecordId })
+    : { state: "none", reason: "no assigned agent — there is nobody for the video to be from" }
   const videoReady = video.state === "ready" ? video : null
 
   // ── THE GOVERNED LEDGER ROW ───────────────────────────────────────────────
@@ -1164,8 +1153,10 @@ async function writePortalWelcomeCard(svc: Svc, args: {
       audience: "client",
       channel: "portal",
       agent_client_message_id: args.messageId,
-      welcome_video_url: args.video?.videoUrl ?? null,
-      welcome_video_thumbnail_url: args.video?.thumbnailUrl ?? null,
+      // welcome_video_url / welcome_video_thumbnail_url are no longer written (wave 146, 146Z on lane 146C's Outside-lane
+      // 2b): their reader — the feed's CARD_VIDEO_KEYS slot — is retired onto app/portal/[contactId]/components/
+      // PortalWelcomeVideo.tsx (C3), which mints a short-lived URL on read; a URL persisted here would be an unread copy of
+      // a link that outlives revocation. The id + scope stay as the evidence of what rode the email.
       welcome_video_scope: args.video?.scope ?? null,
       welcome_video_project_id: args.video?.videoProjectId ?? null,
     },
