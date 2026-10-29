@@ -40,6 +40,29 @@ The cache does not cover two kinds of children:
 | `not_transferable` | Money, billing and usage, the supervising broker's compliance file, ad-account property, bearer tokens. | Never moved, and never crosses tenants. |
 | `derived_readonly` | Computed from the parent: scores, predictions, health, insights, matches, AI drafts and plans, provider enrichment and scrapes, queues. | Never moved. Recomputed, re-enriched or re-planned in the target from the moved parent. |
 
+## The owner's transfer vocabulary, with its domain evidence (wave 146, lane 146A)
+
+Wave 146 named the rulings in six words: **owned / shared / historical evidence / nontransferable / membership-dependent / authorized copies**. Four are the classes above under their owner names. Two are not row classes at all: *membership-dependent* is about **access** (who may read a record while it stays where it is), and *authorized copies* is about **how** something reaches the target without moving (a copy, with the original kept). Each word below names its class or mechanism, the code that enforces it, and the business rule it rests on. The rules were checked against `.claude/skills/real-estate-expert` (Standards: RESPA, NAR Code of Ethics, transaction and document management) and CLAUDE.md §4–§5; no state-specific rule was invented — where state law varies (record retention periods, trust-account rules), the procedure names who decides and leaves the law to them.
+
+| Owner's word | Class / mechanism | Enforced by | Domain evidence |
+|---|---|---|---|
+| **owned** | `follows_parent` | `TRANSFER_AUTHORIZED_FOLLOWING_CHILDREN` (moves only on authorization); verification `child_classification` | The deal, listing and client files are the parent's own record (milestones, the client's stated preferences, the agent's work product). They belong to whoever owns the parent, but ruling 24 still requires the owner's authorization before they move live. |
+| **shared** | `shared_remains` | never named for moving; verification refuses it | A vendor bench, a title company's users, an outside agent and a referral partner contracted with the SOURCE brokerage. The counter-party never agreed to the adopting brokerage; the target re-establishes its own relationship. |
+| **historical evidence** | `historical_immutable` | never moved, never edited; readable by platform staff | Communications carry the sender identity and consent basis they were sent under (TCPA / CAN-SPAM evidence); audits and ledgers are LAW 5 evidence. Rewriting their tenant would falsify who did what. |
+| **nontransferable** | `not_transferable` | verification refuses it, even through the proof seam | Money (commission, trust / earnest money — RESPA and state trust-account rules bind the brokerage that holds it), billing and usage, the supervising broker's compliance file (record retention binds the brokerage that supervised), ad-account property, bearer tokens. |
+| **membership-dependent** | ACCESS, read at query time | `supabase/migrations/m874-…sql` path rules (storage) and m854 (forms); the rail's team-packet step | Access that belongs to a person's CURRENT role, not to a row: an agent's licence and E&O certificate (`agent-documents/{user}/…`) are read by the oversight class of the agent's current brokerage, because the employing broker supervises the licensee; a vendor's access to a deal ends when its assignment is cancelled; a team's form packets follow the team. Leaving a brokerage, a team or a deal revokes at once — no stored grant is left to forget. |
+| **authorized copies** | a COPY, the original kept | restriction copies in the rail's data step (`closure.restrictions_copied`); the per-transfer procedure E below | (a) **Restrictions travel automatically, as copies.** An opt-out (`contact_suppression_list`) is the person's own instruction not to be contacted; the rail copies every row into the adopting brokerage, keeps the original with the archived source as evidence, and records the count. A copy can only stop sending, so it can never make the target more permissive than the source — the safety argument. (b) **Everything else copies only on evidence**: a deal file, the client's financial data or a consent reaches the target only through procedure E (a release, the client's authorization, re-obtained consent). Consent is never copied silently: the target treats the person as unconsented until then — the safe direction. |
+
+### Documents in storage (wave 146, lane 146A)
+
+The bucket objects behind the document rows follow the same rules, through the m874 path rules (`public.document_bucket_path_access`):
+
+- **`client-documents`** objects sit under `contacts/{contact}/…` and `transactions/{deal}/…`, and their rows (`client_documents`, a family) move with the contact or deal. The path rule reads the parent's CURRENT brokerage, so access moves with the authorized move of the row and never on its own.
+- **`transaction-documents`** objects are the deal file, and their rows (`transaction_documents`) are `explicit_transfer`: they stay in the archived source while the transaction moves. The path rule therefore **holds** a deal's folder: while any `transaction_documents` row of the deal sits in a brokerage other than the transaction's, no session reads, writes or deletes that folder. The hold clears only when procedure E moves or copies the rows. Without it, the adopting brokerage would have gained the source's deal file through storage — a silent ownership change.
+- **`agent-documents`** is membership-dependent (above).
+- **`offer-documents`** is server-only; an offer PDF is reached through its offer row, which moves with the `offers` family.
+- **A signed URL already handed out stays valid until it expires.** RLS cannot revoke a bearer token. The rows still persist 10-year links (`lib/storage/signed-doc-url.ts` `DOC_URL_TTL_SECONDS`), so the end state is sign-on-read, as `lib/kernel/document-custody.ts` already does for `client_documents`.
+
 ### How the rail enforces this
 
 **Verification** gains a `child_classification` check, and it fails closed. A family classified as anything other than `follows_parent` refuses the run. So does any table named for moving that is not `follows_parent`, and so does an unclassified table. This holds even when the name arrives through the proof seam `deps.authorizedFollowingChildren`.
@@ -53,11 +76,12 @@ The guard runs the real rail in memory and proves the refusal for four cases. In
 **The data step** does the following, in order:
 1. Moves the families.
 2. Moves the owner-authorized children. There are none in wave 145.
-3. Writes a **closure report** to the migration record (`migration.closure`):
+3. **Copies the restrictions** (wave 146): every row of a safety-critical restriction table that is not authorized to move (`contact_suppression_list`) is copied into the target with every column but its id and tenant, idempotently (a restriction the target already holds is not inserted twice), paged so a long list is never truncated. A refused read or insert STALLS the data step — an opt-out that did not arrive never reads as done.
+4. Writes a **closure report** to the migration record (`migration.closure`):
    - rows held in the source per `explicit_transfer` table;
-   - rows held per safety-critical child;
+   - rows held per safety-critical child, and the restriction rows copied (`restrictions_copied`);
    - every table it could not read, listed as unread and never as 0.
-4. If anything is pending, the Data Steward (`TRANSFER_HUMAN_ROUTES.explicit_transfer_pending`) is notified once, through the registered manager route.
+5. If anything is pending, the Data Steward (`TRANSFER_HUMAN_ROUTES.explicit_transfer_pending`) is notified once, through the registered manager route. A copied safety table is named as copied, not as unsafe.
 
 ## Findings this classification surfaced
 
@@ -65,7 +89,7 @@ The guard runs the real rail in memory and proves the refusal for four cases. In
    - `lib/lead-intent/lead-opt-out.ts` (`.eq("brokerage_id", …)`);
    - `lib/direct-mail/address-suppression.ts`.
 
-   So after an adoption the target cannot see a contact's opt-out, and could message that person again. The rail now counts these rows on every transfer and routes them as a **SAFETY** item. Moving them is item 0 of the plan below.
+   So after an adoption the target could not see a contact's opt-out, and could message that person again. Wave 145 counted these rows on every transfer and routed them as a **SAFETY** item. **Wave 146 (lane 146A) closes it in code:** the rail COPIES every restriction row into the target (the original stays with the source as evidence), so the opt-out holds in the target from the moment the data step completes. Moving the originals is still item 0 of the plan below, and still the owner's decision.
 
    Consent is the safe direction. `contact_consent_events` is left behind as `explicit_transfer`, the target sees no consent, and it sends nothing.
 2. **Some children also point at a parent that stays.** For example, vendor links point at `vendors`. Moving such a row would leave it pointing at another tenant. The guard publishes every `follows_parent` child that has a staying tenant parent, and refuses to let one be authorized blind.
@@ -77,8 +101,8 @@ Live moves happen only with explicit authorization. Each step below is one owner
 
 ### 0 — Safety first (recommended now)
 
-`contact_suppression_list`. Authorize it so an opt-out moves with the contact.
-- **Evidence:** the closure report's `safety_critical` count on any transfer.
+`contact_suppression_list`. Authorize it so an opt-out moves with the contact. Since wave 146 the rail already COPIES every row into the target, so the opt-out is honoured there either way; authorizing the move only decides where the ORIGINAL evidence lives.
+- **Evidence:** the closure report's `safety_critical` and `restrictions_copied` counts on any transfer.
 - **Verify:** after the move, the target's opt-out readers find the row under the target `brokerage_id`.
 - **Rollback:** move the counted ids back.
 

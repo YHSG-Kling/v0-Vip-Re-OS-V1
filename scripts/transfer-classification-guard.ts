@@ -27,6 +27,25 @@
  *      B4 behaviour on the in-memory client — the session → actor door (resolvePacketActor) refuses a contact, a vendor, a suspended / removed
  *         account, a deactivated agent and a deleted team; the ONE minting door issues "use" vs "manage" links correctly.
  *
+ *      A6 (wave 146, lane 146A) RESTRICTIONS ARE COPIED, NEVER MOVED — on the real rail: an adopted person's opt-out
+ *         (contact_suppression_list) lands in the target as a copy while the original stays as evidence; idempotent; a refused copy
+ *         stalls the data step; consent is never copied; an owner-authorized move makes no copy.
+ *
+ *   C. THE FOUR PRIVATE DOCUMENT BUCKETS + THE OFFER ROW (wave 146, lane 146A — owner ruling 20 priority 1).
+ *      C1 m874 (public functions) — the per-party path rules: tenant staff on the deal / contact (the ONE active-seat predicate),
+ *         a contact party, a vendor / lender / title party on the deal (their own sub-folder only), an agent's own licence; current
+ *         membership read at query time; a transferred deal file HELD; '..' segments refused; delete only for the deal team or an
+ *         external party's own fresh upload;
+ *      C2 m875 (owner-held storage.objects policies) — drops the 15 bucket-wide rules, creates exactly seven owner-scoped ones (none
+ *         for offer-documents), refuses to run without m874; docs/operations/OWNER-SQL.md §G carries it verbatim;
+ *      C3 the DOOR CENSUS — every storage operation on the four buckets (direct or through putAndSign / removeOrRecordOrphan /
+ *         issueBucketObjectUrl) is declared with its client (session vs service) and its root; every SESSION root is an arm of the
+ *         rule and every arm has a session door (least privilege both ways); the readiness list = every live private document bucket;
+ *      C4 the offer row — never the bare brokerage match, never a NULL-brokerage row; staff = oversight / TC / team lead (the offer's
+ *         own agents keep agent_manage_offers); contacts = the buyer of the offer and the seller of its listing, read only;
+ *      C5 the LIVE readiness read (public.storage_bucket_policy_readiness) — reads pg_policies, never a header; its owner sets are
+ *         derived from m855 / m875.
+ *
  * Every absence assertion has a POSITIVE CONTROL. Scans read STRIPPED source (scripts/strip-comments.ts). Migrations are found
  * by NAME and accept either status line (the lane stamp or "-- ── APPLIED LIVE") — the rule, not the waypoint.
  *
@@ -58,6 +77,9 @@ import { checkFormPathsInScope } from "../lib/forms/form-path-scope"
 import { DOC_URL_TTL_SECONDS } from "../lib/storage/signed-doc-url"
 import { PROTECTED_RESEARCH_TRANSFER_CLASS } from "../lib/enrichment/protected-research-store"
 import { TENANT_ADMIN_USER_TYPES } from "../lib/auth/resolve-user-role"
+import { DOCUMENT_CLASS_BUCKETS, isDocumentClassBucket } from "../lib/storage/document-buckets"
+import { LIVE_BUCKET_CONFIG } from "../lib/storage/bucket-limits"
+import { LENDER_BENCH_CATEGORIES } from "../lib/kernel/lender-linkage"
 
 const ROOT = process.cwd()
 const WRITE = process.argv.includes("--write")
@@ -139,7 +161,7 @@ console.log(`    (published) census from scripts/schema-fk-map.ts: ${census.all.
 console.log("\n[A3 · the rail never moves a protected class; what stays is counted for a human]")
 {
   const NOW = new Date("2026-10-27T15:00:00Z")
-  const runRail = async (authorized: readonly string[] | undefined) => {
+  const runRail = async (authorized: readonly string[] | undefined, opts?: { seed?: (seed: Record<string, Row[]>, ids: { T: string; S: string; D: string }) => void; refuseInsertInto?: string }) => {
     const T = randomUUID(), S = randomUUID(), D = randomUUID(), A = randomUUID(), O = randomUUID(), REQ = randomUUID()
     const seed: Record<string, Row[]> = {
       brokerages: [
@@ -163,7 +185,17 @@ console.log("\n[A3 · the rail never moves a protected class; what stays is coun
     // one row per class in the source, and a decoy tenant's row that must never be touched
     const CHILDREN = ["agent_commissions", "listing_agreements", "contact_consent_events", "contact_suppression_list", "transaction_milestones", "communications", "lead_scores", "contact_vendors"]
     for (const t of CHILDREN) seed[t] = [{ id: `${t}-s`, brokerage_id: S, contact_id: "contacts-s", transaction_id: "transactions-s" }, { id: `${t}-d`, brokerage_id: D }]
-    const svc = memSupabase(seed, { uuidIds: true })
+    // the opt-out carries the columns the live table has (scripts/schema-snapshot.ts) — the copy must keep every one but id / tenant
+    seed.contact_suppression_list = [
+      { id: "contact_suppression_list-s", brokerage_id: S, contact_id: "contacts-s", channel: "sms", email: null, phone: "+15550100", mailing_address_key: null, suppression_reason: "STOP reply", source: "inbound_sms", created_at: "2026-09-01T10:00:00Z" },
+      { id: "contact_suppression_list-d", brokerage_id: D, contact_id: null, channel: "email", email: "decoy@x.test", phone: null, mailing_address_key: null, suppression_reason: "decoy", source: "decoy", created_at: "2026-09-01T10:00:00Z" },
+    ]
+    opts?.seed?.(seed, { T, S, D })
+    const mem = memSupabase(seed, { uuidIds: true })
+    // a refusing table (A6): every INSERT into it resolves with an error, as PostgREST does on an RLS / constraint refusal
+    const svc: typeof mem = opts?.refuseInsertInto
+      ? (Object.assign(Object.create(Object.getPrototypeOf(mem)), mem, { from: (t: string) => { const b: any = mem.from(t); if (t === opts.refuseInsertInto) b.insert = () => ({ select: async () => ({ data: null, error: { message: "refused by the fixture", code: "42501" } }) }); return b } }) as typeof mem)
+      : mem
     const humans: Array<Record<string, unknown>> = []
     const deps: BrokerageTransferDeps = {
       now: () => NOW,
@@ -218,6 +250,39 @@ console.log("\n[A3 · the rail never moves a protected class; what stays is coun
       !x.r.ok && (x.r as { stalledAt: string | null }).stalledAt === "verification" && vchecks.some((c) => c.key === "child_classification" && !c.ok) && x.where("contacts", "contacts-s") === x.S && x.where(list[0], `${list[0]}-s`) !== x.T)
   }
   control("the classes the refusals rest on: agent_commissions not_transferable, listing_agreements explicit_transfer, transaction_milestones follows_parent", childTransferClass("agent_commissions") === "not_transferable" && childTransferClass("listing_agreements") === "explicit_transfer" && childTransferClass("transaction_milestones") === "follows_parent")
+
+  // ── A6 · RESTRICTIONS ARE COPIED, NEVER MOVED (wave 146, lane 146A — "opt-outs and consent restrictions preserved; no silent
+  // ownership change"; the owner's "authorized copies"). Proven on the REAL rail: the copy is module-private by design.
+  console.log("\n[A6 · an opt-out holds in the adopting brokerage — COPIED, the original kept as evidence; consent is never copied]")
+  const supp = (x: Awaited<ReturnType<typeof runRail>>, b: string) => (x.svc.tables.contact_suppression_list ?? []).filter((r) => r.brokerage_id === b)
+  const oneCopies = supp(one, one.T)
+  const original = supp(one, one.S)
+  check("A6 after a consented adoption the TARGET holds the opt-out — same person, channel, phone, reason, source and timestamp — while the ORIGINAL stays in the source (evidence, never moved)",
+    oneCopies.length === 1 && original.length === 1 && original[0].id === "contact_suppression_list-s"
+    && ["contact_id", "channel", "email", "phone", "mailing_address_key", "suppression_reason", "source", "created_at"].every((c) => oneCopies[0][c] === original[0][c]) && oneCopies[0].id !== original[0].id,
+    JSON.stringify(oneCopies))
+  control("the copy finder reads the source tenant as holding the original only (it does not count the source row as a copy)", supp(one, one.S).every((r) => r.id === "contact_suppression_list-s"))
+  const oneClosure = (one.req.migration as { closure?: { restrictions_copied?: Record<string, number> }; counts?: Record<string, number> } | null)
+  check("A6 the copy is COUNTED on the migration record (closure.restrictions_copied + counts) and NAMED to the Data Steward as copied — never silent",
+    oneClosure?.closure?.restrictions_copied?.contact_suppression_list === 1 && oneClosure?.counts?.contact_suppression_list_copied === 1
+    && one.humans.some((h) => h.type === "brokerage_transfer_explicit_transfer_pending" && /COPIED into the adopting brokerage/.test(String(h.body))))
+  check("A6 the decoy tenant's restriction is neither copied nor touched, and CONSENT is never copied (contact_consent_events: the target sees no consent — the safe direction)",
+    supp(one, one.D).length === 1 && supp(one, one.T).every((r) => r.email !== "decoy@x.test") && !(one.svc.tables.contact_consent_events ?? []).some((r) => r.brokerage_id === one.T))
+  const pre = await runRail(undefined, { seed: (seed, ids) => { seed.contact_suppression_list.push({ id: "already-in-target", brokerage_id: ids.T, contact_id: "contacts-s", channel: "sms", email: null, phone: "+15550100", mailing_address_key: null, suppression_reason: "the target's own", source: "inbound_sms", created_at: "2026-08-01T00:00:00Z" }) } })
+  check("A6 IDEMPOTENT: a restriction the target already holds (same person + channel + phone) is not inserted again",
+    pre.r.ok && supp(pre, pre.T).length === 1 && (pre.req.migration as any)?.closure?.restrictions_copied?.contact_suppression_list === 0)
+  const household = await runRail(undefined, { seed: (seed, ids) => { seed.contact_suppression_list.push({ id: "household-s", brokerage_id: ids.S, contact_id: null, channel: "mail", email: null, phone: null, mailing_address_key: "123 main st|02101", suppression_reason: "do not mail", source: "mail_return", created_at: "2026-09-02T00:00:00Z" }, { id: "household-t", brokerage_id: ids.T, contact_id: null, channel: "mail", email: null, phone: null, mailing_address_key: "123 main st|02101", suppression_reason: "the target's own", source: "mail_return", created_at: "2026-08-02T00:00:00Z" }) } })
+  check("A6 a HOUSEHOLD (mailing-address) restriction is keyed like the live per-tenant UNIQUE index — the target's own row satisfies it, the person-keyed opt-out is still copied",
+    household.r.ok && supp(household, household.T).filter((r) => r.mailing_address_key === "123 main st|02101").length === 1 && (household.req.migration as any)?.closure?.restrictions_copied?.contact_suppression_list === 1)
+  const refused = await runRail(undefined, { refuseInsertInto: "contact_suppression_list" })
+  check("A6 a REFUSED copy STALLS the data step (an opt-out that did not arrive never reads as done): not ok, stalled at data, the source NOT archived",
+    !refused.r.ok && (refused.r as { stalledAt: string | null }).stalledAt === "data" && refused.svc.tables.brokerages.find((b) => b.id === refused.S)?.status === "active" && supp(refused, refused.T).length === 0)
+  check("A6 once the owner AUTHORIZES the table to move, the original moves and NO copy is made (one row, in the target)",
+    two.r.ok && supp(two, two.T).length === 1 && supp(two, two.T)[0].id === "contact_suppression_list-s" && (two.req.migration as any)?.closure?.restrictions_copied?.contact_suppression_list === undefined)
+  const railSrc = stripComments(raw("lib/kernel/brokerage-transfer.ts"))
+  check("A6 the copy is restricted to SAFETY-CRITICAL follows_parent restriction tables (never consent, never an explicit_transfer table) and never copies the id or the tenant",
+    /TRANSFER_RESTRICTION_COPY_CHILDREN: readonly string\[\] = \["contact_suppression_list"\]/.test(railSrc) && /FK_CHILD_TRANSFER_CLASSIFICATION\[table\]\?\.cls !== "follows_parent" \|\| !TRANSFER_SAFETY_CRITICAL_CHILDREN\.includes\(table\)/.test(railSrc)
+    && /const \{ id: _id, brokerage_id: _b, \.\.\.rest \} = row/.test(railSrc) && !/TRANSFER_RESTRICTION_COPY_CHILDREN[^\n]*contact_consent_events/.test(railSrc))
 }
 
 // A4 — authorized / safety-critical lists; mixed parents
@@ -517,6 +582,227 @@ console.log("\n[B4 · behaviour: the session → actor door and the ONE minting 
   check("B4 a refused signer is a refusal with its reason — never a public fallback", !refusedSign.ok && /bucket refused/.test(refusedSign.reason))
 }
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// C. THE FOUR PRIVATE DOCUMENT BUCKETS + THE OFFER ROW (wave 146, lane 146A — owner ruling 20 priority 1)
+// ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+const statusLine146 = (first: string) =>
+  first === "-- WRITTEN, NOT APPLIED (wave 146, lane 146A) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL-editor"
+  || first === "-- WRITTEN, NOT APPLIED (wave 146, lane 146A) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN are owner SQL-editor"
+  || /^-- ── APPLIED LIVE /.test(first)
+const m874 = migByName(/^m\d+-document-bucket-path-rules-and-offer-party-reads\.sql$/)
+const m875 = migByName(/^m\d+-document-bucket-storage-policies-owner\.sql$/)
+const s874 = m874 ? raw(`supabase/migrations/${m874}`) : "", s875 = m875 ? raw(`supabase/migrations/${m875}`) : ""
+const c874 = sqlCode(s874), c875 = sqlCode(s875)
+const DOC_BUCKETS = ["client-documents", "offer-documents", "transaction-documents", "agent-documents"] as const
+type DocBucket = (typeof DOC_BUCKETS)[number]
+/** the body of one bucket's branch inside document_bucket_path_access (from its WHEN to the next bucket's WHEN / the ELSE) */
+const accessBody = fnBody(c874, "document_bucket_path_access")
+const bucketBranch = (body: string, b: string) => { const at = body.indexOf(`WHEN '${b}' THEN (`); if (at < 0) return ""; const nexts = DOC_BUCKETS.filter((x) => x !== b).map((x) => body.indexOf(`WHEN '${x}' THEN (`, at + 1)).filter((i) => i > at); const end = Math.min(...nexts, body.indexOf("\n      ELSE false\n    END", at) > at ? body.indexOf("\n      ELSE false\n    END", at) : body.length); return body.slice(at, end) }
+const rootArms = (branch: string) => [...branch.matchAll(/WHEN '([a-z-]+)' THEN\s*\n/g)].map((m) => m[1])
+
+console.log("\n[C1 · m874 — the path rules of the four private document buckets (public schema, the integrator's)]")
+{
+  check(`C1 m874 exists and states its status on line 1 (lane stamp or APPLIED LIVE) — ${m874 ?? "MISSING"}`, !!m874 && statusLine146(s874.split("\n")[0]))
+  const FNS = ["document_account_active()", "document_staff_on_transaction(p_transaction_id uuid)", "document_staff_on_contact(p_contact_id uuid)", "document_contact_self(p_contact_id uuid)",
+    "document_contact_party_on_transaction(p_transaction_id uuid)", "document_external_party_on_transaction(p_transaction_id uuid, p_kind text)", "document_transaction_file_held(p_transaction_id uuid)",
+    "document_bucket_path_access(p_bucket text, p_name text, p_op text)", "document_bucket_path_readable(p_bucket text, p_name text)", "document_bucket_path_writable(p_bucket text, p_name text)",
+    "document_bucket_object_deletable(p_bucket text, p_name text, p_owner_id text, p_created_at timestamptz)", "offer_staff_visible(p_offer_id uuid)", "offer_contact_party_visible(p_offer_id uuid)"]
+  const definer = (sig: string) => new RegExp(`FUNCTION public\\.${sig.replace(/[()]/g, (c) => `\\${c}`)}\\s+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path TO 'public', 'pg_temp' AS \\$\\$`).test(c874)
+  check("C1 every m874 predicate is SECURITY DEFINER, STABLE, with a pinned search_path (the m854 pattern)", FNS.every(definer), FNS.filter((f) => !definer(f)).join(", "))
+  control("the definer finder refuses a function without a pinned search_path", !new RegExp(`FUNCTION public\\.x\\(\\)\\s+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path TO 'public', 'pg_temp' AS \\$\\$`).test("CREATE OR REPLACE FUNCTION public.x() RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $$ SELECT true $$;"))
+  const staffTx = fnBody(c874, "document_staff_on_transaction"), staffContact = fnBody(c874, "document_staff_on_contact")
+  check("C1 TENANT STAFF = the ONE active-seat predicate (brokerage_forms_seat_active — revoked on suspension / removal / deactivation) of the row's CURRENT brokerage, and only the oversight class (roster minus team_lead), the TC, the row's own agent(s) or their team's lead",
+    [staffTx, staffContact].every((b) => /public\.brokerage_forms_seat_active\(\)/.test(b) && /brokerage_id = public\.current_user_brokerage_id\(\)/.test(b) && /public\.is_brokerage_admin\(\) AND coalesce\(public\.current_user_type\(\), ''\) <> 'team_lead'/.test(b) && /public\.is_tc_role\(\)/.test(b) && /public\.current_user_led_team_id\(\)/.test(b))
+    && /public\.current_user_agent_id\(\) IN \(t\.agent_id, t\.buyer_agent_id, t\.seller_agent_id\)/.test(staffTx) && /c\.agent_id = public\.current_user_agent_id\(\)/.test(staffContact))
+  control("the staff finder would flag a brokerage-wide 'any users row' rule (m853's shape)", !/public\.brokerage_forms_seat_active\(\)/.test("SELECT t.brokerage_id = public.current_user_brokerage_id() FROM public.transactions t"))
+  const noStoredGrant = !/storage_grants|document_grants|path_acl/i.test(c874)
+  check("C1 every rule reads CURRENT membership at query time (auth.uid(), current_user_brokerage_id, agents / teams / vendor_assignments) — no stored grant to forget, so leaving revokes at once", noStoredGrant && /auth\.uid\(\)/.test(c874))
+  const self = fnBody(c874, "document_contact_self"), party = fnBody(c874, "document_contact_party_on_transaction"), ext = fnBody(c874, "document_external_party_on_transaction")
+  check("C1 a PORTAL CONTACT reaches only their own record / their own deal (contact_user_id = auth.uid(), an ACTIVE account)",
+    [self, party].every((b) => /c\.contact_user_id = auth\.uid\(\)/.test(b) && /public\.document_account_active\(\)/.test(b)) && /c\.id IN \(t\.contact_id, t\.buyer_contact_id, t\.seller_contact_id\)/.test(party))
+  const sqlLender = (/p_kind = 'lender' AND v\.category IN \(([^)]*)\)/.exec(ext)?.[1] ?? "").split(",").map((x) => x.trim().replace(/'/g, "")).filter(Boolean)
+  check("C1 a VENDOR / LENDER / TITLE party is the vendor ASSIGNED to this deal (not cancelled; vendor not archived / inactive; the deal's brokerage); the lender categories EQUAL lib/kernel/lender-linkage.ts LENDER_BENCH_CATEGORIES (CLAUDE.md §4: a lender is a vendor category)",
+    /JOIN public\.vendor_assignments va ON va\.transaction_id = t\.id AND va\.brokerage_id = t\.brokerage_id/.test(ext) && /ura\.user_id = auth\.uid\(\)/.test(ext) && /va\.status IS DISTINCT FROM 'cancelled'/.test(ext)
+    && /coalesce\(v\.status, 'active'\) NOT IN \('archived', 'inactive'\)/.test(ext) && [...sqlLender].sort().join(",") === [...LENDER_BENCH_CATEGORIES].sort().join(",") && /public\.document_account_active\(\)/.test(ext), `sql lender ${sqlLender.join(",")}`)
+  const vendorCats = (CHECK_VOCABULARIES as unknown as Record<string, Record<string, string[]>>).vendors?.category ?? [], vaStatus = (CHECK_VOCABULARIES as unknown as Record<string, Record<string, string[]>>).vendor_assignments?.status ?? []
+  check("C1 every vocabulary value the rule names is storable (vendors.category 'title' / lender; vendor_assignments.status 'cancelled'; vendors.status archived / inactive — inside the live CHECKs)",
+    ["title", ...sqlLender].every((c) => vendorCats.includes(c)) && vaStatus.includes("cancelled") && ["archived", "inactive"].every((s) => ((CHECK_VOCABULARIES as any).vendors?.status ?? []).includes(s)))
+  // the arms per bucket — derived and compared to the door census in C3
+  const tx = bucketBranch(accessBody, "transaction-documents"), cd = bucketBranch(accessBody, "client-documents"), ad = bucketBranch(accessBody, "agent-documents")
+  check("C1 transaction-documents: the deal file (transactions/{tx}/…, vendor-jobs/{b}/{tx}/…) — the deal team; title ONLY in title/, lender ONLY in lender/, a vendor ONLY through its assignment, and the path's brokerage must be the deal's",
+    rootArms(tx).sort().join(",") === "transactions,vendor-jobs" && /seg\.s3 = 'title'\s+AND public\.document_external_party_on_transaction\(public\.document_path_uuid\(seg\.s2\), 'title'\)/.test(tx) && /seg\.s3 = 'lender' AND public\.document_external_party_on_transaction\(public\.document_path_uuid\(seg\.s2\), 'lender'\)/.test(tx)
+    && /t\.brokerage_id = public\.document_path_uuid\(seg\.s2\)/.test(tx) && (tx.match(/document_external_party_on_transaction/g) ?? []).length === 3, rootArms(tx).join(","))
+  const holdCount = (b: string) => (b.match(/NOT public\.document_transaction_file_held\(/g) ?? []).length
+  const del = fnBody(c874, "document_bucket_object_deletable")
+  check("C1 a TRANSFERRED deal file is HELD in every transaction-documents arm, read / write / delete (ruling 24 — transaction_documents is explicit_transfer and stays in the source; the folder is nobody's until the explicit transfer)",
+    holdCount(tx) === 2 && holdCount(del) === 2 && /td\.brokerage_id IS NOT NULL\s+AND td\.brokerage_id <> t\.brokerage_id/.test(fnBody(c874, "document_transaction_file_held")) && childTransferClass("transaction_documents") === "explicit_transfer")
+  control("the hold finder flags an arm with no hold", holdCount("WHEN 'transactions' THEN seg.s4 <> '' AND public.document_staff_on_transaction(x)") === 0)
+  check("C1 client-documents: contacts/{contact} · transactions/{tx} · avatars/{contact}-… · vendors/{vendor}/… — staff on the contact / deal, the contact themselves or a contact party; a vendor's own folder (books readers may READ a W-9); the server-only roots ({brokerage}/…, buyer-intake/…) have NO arm",
+    rootArms(cd).sort().join(",") === "avatars,contacts,transactions,vendors" && /public\.document_contact_self\(public\.document_path_uuid\(left\(seg\.s2, 36\)\)\)/.test(cd) && /p_op = 'read' AND public\.brokerage_forms_seat_active\(\) AND public\.can_read_brokerage_books\(\)/.test(cd) && !/buyer-intake/.test(cd), rootArms(cd).join(","))
+  const agentFolders = (/seg\.s2 IN \(([^)]*)\)/.exec(ad)?.[1] ?? "").split(",").map((x) => x.trim().replace(/'/g, "")).filter(Boolean)
+  check("C1 agent-documents: the agent writes ONLY their own {uid}/license|eo-insurance/ folder; the oversight class of the agent's CURRENT brokerage READS it (the employing broker supervises the licensee); nobody else",
+    agentFolders.sort().join(",") === "eo-insurance,license" && /seg\.s1 = auth\.uid\(\)::text AND public\.brokerage_forms_seat_active\(\)/.test(ad) && /p_op = 'read' AND public\.brokerage_forms_seat_active\(\)\s+AND public\.is_brokerage_admin\(\) AND coalesce\(public\.current_user_type\(\), ''\) <> 'team_lead'/.test(ad) && /m\.brokerage_id = public\.current_user_brokerage_id\(\)/.test(ad))
+  check("C1 offer-documents has NO session arm (every reader and writer is the server); an unknown bucket is refused", !accessBody.includes("WHEN 'offer-documents'") && /\n      ELSE false\n    END/.test(accessBody))
+  check("C1 a '..' path SEGMENT is refused in the access and delete rules (a file merely named 'a..b.pdf' is not)", [accessBody, del].every((b) => b.includes("p_name !~ '(^|/)\\.\\.(/|$)'")))
+  control("the segment rule refuses 'transactions/x/../y' and admits 'Smith..v2.pdf'", /(^|\/)\.\.(\/|$)/.test("transactions/x/../y") && !/(^|\/)\.\.(\/|$)/.test("contacts/x/Smith..v2.pdf"))
+  check("C1 DELETE: the deal team; an external party ONLY its own upload (owner_id = auth.uid()) inside the 15-minute compensating-delete window; client-documents / agent-documents have no delete rule",
+    /p_bucket = 'transaction-documents'/.test(del) && (del.match(/p_owner_id = auth\.uid\(\)::text AND p_created_at > now\(\) - interval '15 minutes'/g) ?? []).length === 2 && !/client-documents|agent-documents/.test(del))
+  check("C1 m874 creates no table / column / CHECK / FK and touches no storage.objects policy (that is m875, the owner's)", !/CREATE TABLE|ADD COLUMN|ADD CONSTRAINT|REFERENCES/i.test(c874) && !/ON storage\.objects/.test(c874))
+}
+
+console.log("\n[C2 · m875 — the owner-held storage.objects policies, and OWNER-SQL §G]")
+{
+  check(`C2 m875 exists and states its status on line 1 — ${m875 ?? "MISSING"}`, !!m875 && statusLine146(s875.split("\n")[0]))
+  const need = ["document_bucket_path_access(text, text, text)", "document_bucket_path_readable(text, text)", "document_bucket_path_writable(text, text)", "document_bucket_object_deletable(text, text, text, timestamp with time zone)"]
+  check("C2 refuses to run without m874 (DO block on to_regprocedure of the four path functions), as ONE transaction", /BEGIN;/.test(c875) && /COMMIT;/.test(c875) && need.every((f) => c875.includes(`to_regprocedure('public.${f}') IS NULL`)) && /RAISE EXCEPTION/.test(c875))
+  const LIVE_BUCKET_WIDE = [...["client-documents", "offer-documents", "transaction-documents"].flatMap((b) => ["read", "upload", "update", "delete"].map((op) => `auth ${op} ${b}`)), "auth read agent-documents", "auth upload agent-documents", "auth update agent-documents"]
+  check(`C2 drops the ${LIVE_BUCKET_WIDE.length} BUCKET-WIDE policies measured live 2026-10-29 (and its own names, so it re-runs)`, LIVE_BUCKET_WIDE.every((n) => c875.includes(`DROP POLICY IF EXISTS "${n}"`)) && LIVE_BUCKET_WIDE.length === 15)
+  const creates = [...c875.matchAll(/CREATE POLICY "([^"]+)" ON storage\.objects\s+FOR (\w+) TO authenticated\s+([\s\S]*?);/g)].map((m) => ({ name: m[1], op: m[2], body: m[3].trim() }))
+  const want: Record<string, { op: string; body: string }> = {
+    "client-documents owner read": { op: "SELECT", body: "USING (bucket_id = 'client-documents' AND public.document_bucket_path_readable('client-documents', name))" },
+    "client-documents owner upload": { op: "INSERT", body: "WITH CHECK (bucket_id = 'client-documents' AND public.document_bucket_path_writable('client-documents', name))" },
+    "transaction-documents owner read": { op: "SELECT", body: "USING (bucket_id = 'transaction-documents' AND public.document_bucket_path_readable('transaction-documents', name))" },
+    "transaction-documents owner upload": { op: "INSERT", body: "WITH CHECK (bucket_id = 'transaction-documents' AND public.document_bucket_path_writable('transaction-documents', name))" },
+    "transaction-documents owner delete": { op: "DELETE", body: "USING (bucket_id = 'transaction-documents' AND public.document_bucket_object_deletable('transaction-documents', name, owner_id, created_at))" },
+    "agent-documents owner read": { op: "SELECT", body: "USING (bucket_id = 'agent-documents' AND public.document_bucket_path_readable('agent-documents', name))" },
+    "agent-documents owner upload": { op: "INSERT", body: "WITH CHECK (bucket_id = 'agent-documents' AND public.document_bucket_path_writable('agent-documents', name))" },
+  }
+  check("C2 creates EXACTLY seven owner-scoped policies — each through the path rule for its own bucket; no UPDATE policy anywhere (no session door upserts or moves); no policy at all for offer-documents",
+    creates.length === 7 && creates.every((c) => want[c.name] && want[c.name].op === c.op && norm(want[c.name].body) === norm(c.body)) && !creates.some((c) => c.op === "UPDATE" || c.name.startsWith("offer-documents")), creates.map((c) => `${c.name}:${c.op}`).join(","))
+  const bucketWide = (sql: string) => DOC_BUCKETS.some((b) => new RegExp(`CREATE POLICY[\\s\\S]{0,120}ON storage\\.objects[\\s\\S]{0,80}(USING|WITH CHECK) \\(bucket_id = '${b}'\\)`).test(sql))
+  check("C2 no policy it creates is bucket-wide", !bucketWide(c875))
+  control("the bucket-wide finder flags the live shape", bucketWide(`CREATE POLICY "auth read client-documents" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'client-documents');`))
+  check("C2 m875 touches no other bucket (brokerage-forms is m855's)", !/brokerage-forms/.test(c875))
+  const owner = has("docs/operations/OWNER-SQL.md") ? raw("docs/operations/OWNER-SQL.md") : ""
+  const secG = owner.slice(owner.indexOf("## G."), owner.indexOf("## After you run anything"))
+  const stmts = c875.split(/;\s*\n/).map((x) => x.trim()).filter((x) => x.length > 0)
+  const missing = stmts.filter((x) => !norm(secG).includes(norm(x)))
+  check(`C2 OWNER-SQL §G carries every m875 statement verbatim (${stmts.length - missing.length}/${stmts.length})`, owner.indexOf("## G.") > 0 && stmts.length >= 30 && missing.length === 0, missing.map((x) => x.slice(0, 60)).join(" | "))
+  control("a tampered statement is not found verbatim", !norm(secG).includes(norm(`CREATE POLICY "client-documents owner read" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'client-documents');`)))
+  check("C2 §G gives the preconditions, the Storage → Policies route, the live readiness read, party verification queries (contact / vendor refused, the deal's agent and TC admitted, the offer row through real RLS) and a ROLLBACK that says it re-opens the exposure",
+    /to_regprocedure/.test(secG) && /pg_has_role\(current_user, 'supabase_storage_admin', 'member'\)/.test(secG) && /Storage → Policies/.test(secG) && /storage_bucket_policy_readiness\(\)/.test(secG)
+    && /contact_writes_deal_file/.test(secG) && /vendor_reads_client_docs/.test(secG) && /agent_writes/.test(secG) && /tc_reads/.test(secG) && /SET LOCAL ROLE authenticated/.test(secG) && /### Rollback \(re-opens the exposure/.test(secG))
+}
+
+console.log("\n[C3 · the DOOR CENSUS — every storage operation on the four buckets, its client, its root, and the rule that admits it]")
+const DOC_BUCKET_REF = String.raw`(?:"(?:client|offer|transaction|agent)-documents"|'(?:client|offer|transaction|agent)-documents'|DOCUMENT_BUCKET|OFFER_DOCUMENTS_BUCKET|W9_BUCKET)`
+const BUCKET_CONST: Record<string, DocBucket> = { DOCUMENT_BUCKET: "client-documents", OFFER_DOCUMENTS_BUCKET: "offer-documents", W9_BUCKET: "client-documents" }
+const bucketOf = (ref: string): DocBucket | null => (BUCKET_CONST[ref] ?? (DOC_BUCKETS as readonly string[]).find((b) => ref.replace(/['"]/g, "") === b) ?? null) as DocBucket | null
+type DocOp = { file: string; bucket: DocBucket; via: string; client: "session" | "service" | "unknown" }
+/** the client an identifier names in its file: `const x = createServiceClient()` / `const x = client ?? createServiceClient()` = service; `const x = (await )?createClient()` = session. */
+const clientKind = (src: string, receiver: string): DocOp["client"] => {
+  const id = receiver.replace(/(\s+as\s+\w+)+$/, "").trim()
+  if (/createServiceClient\(\)/.test(id)) return "service"
+  const decl = new RegExp(`(?:const|let)\\s+(?:\\{[^}]*\\}\\s*=\\s*\\{[^}]*\\}\\s*|)${id.replace(/[.$]/g, "\\$&")}\\s*=\\s*([^\\n]+)`).exec(src)?.[1] ?? ""
+  if (/createServiceClient\(\)/.test(decl)) return "service"
+  if (/(?:await\s+)?createClient\(\)/.test(decl)) return "session"
+  return "unknown"
+}
+const findDocOps = (file: string, src: string): DocOp[] => {
+  const out: DocOp[] = []
+  for (const m of src.matchAll(new RegExp(String.raw`(\(\s*\w+(?:\s+as\s+\w+)+\s*\)|[\w.]+)\s*\.storage\s*\.from\(\s*(${DOC_BUCKET_REF})(?!\w)\s*\)\s*\.(\w+)\(`, "g"))) { const b = bucketOf(m[2]); if (b) out.push({ file, bucket: b, via: `storage.${m[3]}`, client: clientKind(src, m[1].replace(/^\(\s*(\w+)(?:\s+as\s+\w+)+\s*\)$/, "$1")) }) }
+  for (const m of src.matchAll(new RegExp(String.raw`\b(putAndSign|removeOrRecordOrphan)\(\s*([\w.()]+(?:\s+as\s+\w+)*)\s*,\s*\{[\s\S]{0,240}?bucket:\s*(${DOC_BUCKET_REF})(?!\w)`, "g"))) { const b = bucketOf(m[3]); if (b) out.push({ file, bucket: b, via: m[1], client: clientKind(src, m[2]) }) }
+  for (const m of src.matchAll(new RegExp(String.raw`\bissueBucketObjectUrl\(\s*([\w.()]+(?:\s+as\s+\w+)*)\s*,\s*\{\s*bucket:\s*(${DOC_BUCKET_REF})(?!\w)`, "g"))) { const b = bucketOf(m[2]); if (b) out.push({ file, bucket: b, via: "issueBucketObjectUrl", client: clientKind(src, m[1]) }) }
+  return out
+}
+/** THE DECLARED DOORS. session = RLS applies, so the root must be an arm of the m874 rule; service = gated in code, bypasses RLS. */
+const DOC_DOORS: Array<{ file: string; bucket: DocBucket; ops: Partial<Record<DocOp["client"], number>>; roots: Array<{ re: RegExp; arm: string | null }>; why: string }> = [
+  { file: "app/transactions/[transactionId]/page.tsx", bucket: "transaction-documents", ops: { session: 2 }, roots: [{ re: /`transactions\/\$\{transactionId\}\/documents\//, arm: "transactions" }], why: "the deal page upload + its compensation (browser) — the deal team" },
+  { file: "app/dashboard/transactions/[id]/cda/cda-workflow-client.tsx", bucket: "transaction-documents", ops: { session: 6 }, roots: [{ re: /`transactions\/\$\{transaction\.id\}\/\$\{kind\}\//, arm: "transactions" }, { re: /`transactions\/\$\{transaction\.id\}\/cda-signed-external\//, arm: "transactions" }, { re: /`transactions\/\$\{transaction\.id\}\/preliminary-cd\//, arm: "transactions" }], why: "CDA artifacts / the externally signed CDA / the preliminary CD (browser) — the deal team" },
+  { file: "app/portal/title/[transactionId]/document-upload.tsx", bucket: "transaction-documents", ops: { session: 2 }, roots: [{ re: /`transactions\/\$\{transactionId\}\/title\//, arm: "title" }], why: "the title portal upload + its compensating delete (browser) — the title party, title/ only" },
+  { file: "app/portal/lender/[transactionId]/document-upload.tsx", bucket: "transaction-documents", ops: { session: 2 }, roots: [{ re: /`transactions\/\$\{transactionId\}\/lender\//, arm: "lender" }], why: "the lender portal upload + its compensating delete (browser) — the lender party, lender/ only" },
+  { file: "app/actions/vendor-portal.ts", bucket: "transaction-documents", ops: { session: 1, service: 1 }, roots: [{ re: /`vendor-jobs\/\$\{gate\.brokerageId\}\/\$\{data\.transactionId\}\//, arm: "vendor-jobs" }], why: "the vendor job upload (vendor session, after gateVendor + the job↔deal check); compensation on the service role" },
+  { file: "app/actions/documents.ts", bucket: "client-documents", ops: { session: 1, service: 1 }, roots: [{ re: /`transactions\/\$\{transactionId\}\/\$\{Date\.now\(\)\}_/, arm: "transactions" }, { re: /`contacts\/\$\{contactId\}\/\$\{Date\.now\(\)\}_/, arm: "contacts" }], why: "uploadDocument (staff or portal contact session, after the tenant checks); compensation on the service role" },
+  { file: "app/actions/portal-settings.ts", bucket: "client-documents", ops: { session: 1, service: 1 }, roots: [{ re: /`avatars\/\$\{fileName\}`/, arm: "avatars" }], why: "the portal profile photo (contact session) — avatars/{contact}-{stamp}.{ext}; compensation on the service role" },
+  { file: "app/actions/vendor-w9.ts", bucket: "client-documents", ops: { session: 1, service: 1 }, roots: [{ re: /`vendors\/\$\{actor\.vendorId\}\/w9\//, arm: "vendors" }], why: "the vendor's W-9 (vendor session, after requireVendorActor); compensation on the service role" },
+  { file: "app/actions/buyer-financial.ts", bucket: "client-documents", ops: { service: 3 }, roots: [{ re: /`\$\{access\.brokerageId\}\/buyer-financial\//, arm: null }], why: "buyer financial verification — server only after the access gate" },
+  { file: "app/api/workflow/buyer-intake/upload/route.ts", bucket: "client-documents", ops: { service: 3 }, roots: [{ re: /`buyer-intake\/\$\{tokenRow\.contact_id\}\//, arm: null }], why: "the intake-token upload — server only (no session at all)" },
+  { file: "lib/kernel/document-custody.ts", bucket: "client-documents", ops: { service: 1 }, roots: [], why: "the governed read (time-limited signed URL + document_access_log) — server only" },
+  { file: "app/api/offers/upload/route.ts", bucket: "offer-documents", ops: { service: 2 }, roots: [], why: "the offer PDF upload — server only after the tenant check" },
+  { file: "lib/inbound-mail/offer-intake.ts", bucket: "offer-documents", ops: { service: 4 }, roots: [], why: "inbound-email offer attachments — server only" },
+  { file: "app/dashboard/onboarding/license/license-intake-client.tsx", bucket: "agent-documents", ops: { session: 4 }, roots: [{ re: /`\$\{userId\}\/license\//, arm: "license" }, { re: /`\$\{userId\}\/eo-insurance\//, arm: "eo-insurance" }], why: "the agent's licence and E&O certificate (browser) — own {uid}/ folder" },
+]
+{
+  const files = [...walk("app"), ...walk("lib")].filter((f) => !f.startsWith("lib/storage/") && /(?:client|offer|transaction|agent)-documents|DOCUMENT_BUCKET|OFFER_DOCUMENTS_BUCKET|W9_BUCKET/.test(raw(f)))
+  const ops = files.flatMap((f) => findDocOps(f, blankComments(raw(f))))
+  const byDoor = (file: string, bucket: DocBucket) => ops.filter((o) => o.file === file && o.bucket === bucket)
+  console.log(`    (published) ${ops.length} storage operations on the four buckets in ${new Set(ops.map((o) => o.file)).size} files (of ${files.length} that name them; lib/storage/** is the helper layer itself) — session ${ops.filter((o) => o.client === "session").length}, service ${ops.filter((o) => o.client === "service").length}, unknown ${ops.filter((o) => o.client === "unknown").length}`)
+  const undeclared = ops.filter((o) => !DOC_DOORS.some((d) => d.file === o.file && d.bucket === o.bucket))
+  check("C3 EVERY storage operation on the four buckets is a DECLARED door (a new reader / writer / signer must be declared with its client and root)", undeclared.length === 0, undeclared.map((o) => `${o.file}:${o.bucket}:${o.via}:${o.client}`).join(", "))
+  const unknown = ops.filter((o) => o.client === "unknown")
+  check("C3 every operation's CLIENT is known (session = RLS applies; service = gated in code) — an unresolvable receiver is a finding, never assumed safe", unknown.length === 0, unknown.map((o) => `${o.file}:${o.via}`).join(", "))
+  const mismatch = DOC_DOORS.filter((d) => (["session", "service"] as const).some((k) => byDoor(d.file, d.bucket).filter((o) => o.client === k).length !== (d.ops[k] ?? 0)))
+  check("C3 each door runs exactly its declared operations per client (a door that vanished, doubled, or switched to a session client is a finding)", mismatch.length === 0, mismatch.map((d) => `${d.file} found ${JSON.stringify(Object.fromEntries((["session", "service"] as const).map((k) => [k, byDoor(d.file, d.bucket).filter((o) => o.client === k).length])))} declared ${JSON.stringify(d.ops)}`).join(" | "))
+  const rootMissing = DOC_DOORS.flatMap((d) => d.roots.filter((r) => !r.re.test(blankComments(raw(d.file)))).map((r) => `${d.file}:${r.re.source}`))
+  check("C3 every declared ROOT is the path the door actually builds (read from its stripped source)", rootMissing.length === 0, rootMissing.join(" | "))
+  // every SESSION door's root is an arm of its bucket's rule; every arm of the rule has a session door (least privilege, both ways)
+  const sqlArmsOf = (b: DocBucket): string[] => {
+    const branch = bucketBranch(accessBody, b)
+    if (b === "agent-documents") return (/seg\.s2 IN \(([^)]*)\)/.exec(branch)?.[1] ?? "").split(",").map((x) => x.trim().replace(/'/g, "")).filter(Boolean)
+    if (b === "transaction-documents") return [...rootArms(branch), ...(/seg\.s3 = 'title'/.test(branch) ? ["title"] : []), ...(/seg\.s3 = 'lender'/.test(branch) ? ["lender"] : [])]
+    return rootArms(branch)
+  }
+  const sessionArms = (b: DocBucket) => [...new Set(DOC_DOORS.filter((d) => d.bucket === b && (d.ops.session ?? 0) > 0).flatMap((d) => d.roots.map((r) => r.arm)).filter((a): a is string => !!a))]
+  const unarmed = DOC_BUCKETS.flatMap((b) => sessionArms(b).filter((a) => !sqlArmsOf(b).includes(a)).map((a) => `${b}:${a}`))
+  check("C3 every SESSION door's root is admitted by its bucket's m874 rule (so m875 refuses nobody the code legitimately sends there)", unarmed.length === 0, unarmed.join(","))
+  const spare = DOC_BUCKETS.flatMap((b) => sqlArmsOf(b).filter((a) => !sessionArms(b).includes(a)).map((a) => `${b}:${a}`))
+  check("C3 every arm of the rule has a session door that needs it (no speculative grant) — and the server-only roots (buyer-financial, buyer-intake, offer-documents) have none", spare.length === 0 && sessionArms("offer-documents").length === 0 && !sqlArmsOf("client-documents").includes("buyer-intake"), spare.join(","))
+  control("the arm comparison flags a session door into a root the rule does not have", !sqlArmsOf("client-documents").includes("leads"))
+  control("the census finds a session putAndSign into a document bucket and reads its client", (() => { const s = `const supabase = await createClient()\nconst r = await putAndSign(supabase, { bucket: "client-documents", path: p, body: b })`; const o = findDocOps("lib/x.ts", s); return o.length === 1 && o[0].client === "session" && o[0].bucket === "client-documents" })())
+  control("…and a service client through `client ?? createServiceClient()`, and an inline createServiceClient()", (() => { const s = `const svc = client ?? createServiceClient()\nawait removeOrRecordOrphan(svc, { bucket: OFFER_DOCUMENTS_BUCKET, objectPath: p })\nawait removeOrRecordOrphan(createServiceClient(), { bucket: "transaction-documents", objectPath: p })`; const o = findDocOps("lib/x.ts", s); return o.length === 2 && o.every((x) => x.client === "service") })())
+  // the one DYNAMIC-bucket session door: deleteDocument removes whatever object its transaction_documents row names
+  const docs = stripComments(raw("app/actions/documents.ts"))
+  check("C3 the one dynamic-bucket session door (deleteDocument removes the object its transaction_documents row names) is gated by the session tenant BEFORE the remove — m875's transaction-documents delete policy admits only the deal team",
+    /export async function deleteDocument[\s\S]*?getAgentContext\(\)[\s\S]*?brokerage_id[\s\S]*?!== ctx\.brokerageId[\s\S]*?\.storage\s*\.from\(target\.bucket\)\s*\.remove\(/.test(docs))
+  // the agent-documents folders the code writes ⊆ the rule's folder list
+  const lic = blankComments(raw("app/dashboard/onboarding/license/license-intake-client.tsx"))
+  const codeFolders = [...lic.matchAll(/`\$\{userId\}\/([a-z-]+)\//g)].map((m) => m[1])
+  check("C3 agent-documents: the folders the licence page writes ARE the rule's folder list (derived — a new folder must be added to both)", codeFolders.length >= 2 && [...new Set(codeFolders)].sort().join(",") === sqlArmsOf("agent-documents").sort().join(","), codeFolders.join(","))
+  // the bucket rosters agree: the four (and brokerage-forms, documents) are document-class and private live
+  const readinessList = [...fnBody(c874, "storage_bucket_policy_readiness").matchAll(/\('([a-z-]+)'::text,/g)].map((m) => m[1])
+  const livePrivateDocBuckets = Object.keys(DOCUMENT_CLASS_BUCKETS).filter((b) => LIVE_BUCKET_CONFIG[b] && LIVE_BUCKET_CONFIG[b].isPublic === false)
+  check("C3 the readiness read covers EXACTLY every live, private, document-class bucket (lib/storage/document-buckets.ts ∩ lib/storage/bucket-limits.ts) — derived, so a new private bucket must be added to it",
+    readinessList.length > 0 && [...readinessList].sort().join(",") === [...livePrivateDocBuckets].sort().join(",") && DOC_BUCKETS.every((b) => isDocumentClassBucket(b)), `readiness ${readinessList.join(",")} · live private document-class ${livePrivateDocBuckets.join(",")}`)
+}
+
+console.log("\n[C4 · the offer row (offers_tenant_select / _update / _delete)]")
+{
+  const sel = /ALTER POLICY offers_tenant_select ON public\.offers\s+USING \(([\s\S]*?)\);/.exec(c874)?.[1] ?? ""
+  const upd = /ALTER POLICY offers_tenant_update ON public\.offers\s+USING \(([\s\S]*?)\)\s+WITH CHECK \(([\s\S]*?)\);/.exec(c874)
+  const delP = /ALTER POLICY offers_tenant_delete ON public\.offers\s+USING \(([\s\S]*?)\);/.exec(c874)?.[1] ?? ""
+  const nullArm = (s: string) => /brokerage_id IS NULL\)?\s+OR/i.test(s)
+  check("C4 SELECT admits the staff who may see the offer OR a contact who is a party to it — never the bare brokerage match (contacts / vendors of the brokerage) and never a NULL-brokerage row",
+    norm(sel) === "public.offer_staff_visible(id) OR public.offer_contact_party_visible(id)" && !nullArm(sel))
+  control("the NULL-arm finder flags the live shape", nullArm("(brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())"))
+  check("C4 UPDATE / DELETE: staff who may see it only (a contact / vendor never changes an offer through the API); the new row stays in the session's brokerage, by an active seat",
+    !!upd && norm(upd[1]) === "public.offer_staff_visible(id)" && /brokerage_id IS NOT NULL AND brokerage_id = public\.current_user_brokerage_id\(\) AND public\.brokerage_forms_seat_active\(\)/.test(upd[2]) && norm(delP) === "public.offer_staff_visible(id)")
+  const staff = fnBody(c874, "offer_staff_visible"), cp = fnBody(c874, "offer_contact_party_visible")
+  check("C4 the staff arm is the oversight class, the TC and the lead of a team whose agent is on the offer / listing / deal — NOT every agent of the brokerage (an in-house agent for a competing buyer never reads another buyer's terms; the offer's own agents keep agent_manage_offers)",
+    /public\.brokerage_forms_seat_active\(\)/.test(staff) && /o\.brokerage_id IS NOT NULL\s+AND o\.brokerage_id = public\.current_user_brokerage_id\(\)/.test(staff) && /public\.is_brokerage_admin\(\) AND coalesce\(public\.current_user_type\(\), ''\) <> 'team_lead'/.test(staff) && /public\.is_tc_role\(\)/.test(staff)
+    && /public\.agent_team_id\(o\.agent_id\), public\.agent_team_id\(l\.agent_id\)/.test(staff) && !/current_user_agent_id/.test(staff))
+  check("C4 the contact arm is the BUYER contact of the offer or the SELLER contact of its listing, through contact_user_id = auth.uid(), same brokerage, an active account",
+    /c\.id = o\.contact_id AND c\.contact_user_id = auth\.uid\(\) AND c\.brokerage_id = o\.brokerage_id/.test(cp) && /c\.id = l\.seller_contact_id/.test(cp) && /l\.brokerage_id = o\.brokerage_id AND c\.contact_user_id = auth\.uid\(\)/.test(cp) && /public\.document_account_active\(\)/.test(cp))
+  const portalReaders = ["app/portal/[contactId]/offers/page.tsx", "app/portal/[contactId]/my-offer/page.tsx", "app/portal/[contactId]/buyer-home.tsx", "app/portal/[contactId]/properties/page.tsx"].filter(has)
+  check(`C4 the portal's own session readers ask for exactly what the contact arm admits — the buyer's offers by contact_id, the seller's by their listing (${portalReaders.length} pages + lib/portal/resolve-seller-context.ts)`,
+    portalReaders.length === 4 && portalReaders.every((f) => /\.from\("offers"\)[\s\S]{0,400}\.eq\("contact_id", contactId\)/.test(stripComments(raw(f)))) && /\.from\("offers"\)[\s\S]{0,300}\.eq\("listing_id", listingId\)/.test(stripComments(raw("lib/portal/resolve-seller-context.ts"))))
+}
+
+console.log("\n[C5 · the LIVE readiness read — never 'applied' until pg_policies says so]")
+{
+  const rd = fnBody(c874, "storage_bucket_policy_readiness")
+  check("C5 the readiness read reads pg_policies + storage.buckets (the database), never a migration header", /FROM pg_catalog\.pg_policies p/.test(rd) && /LEFT JOIN storage\.buckets b/.test(rd) && !/migration|APPLIED/i.test(rd))
+  check("C5 'owner_scoped' only when the live set EQUALS the owner set AND none is unscoped; a bucket-wide rule (or a rule naming no bucket at all) reads 'open'; a public bucket reads 'open_public_bucket'",
+    /WHEN cardinality\(per\.unscoped\) > 0 THEN 'open'/.test(rd) && /WHEN NOT \(per\.names <@ per\.live AND per\.live <@ per\.names\) THEN 'incomplete'/.test(rd) && /WHEN b\.public THEN 'open_public_bucket'/.test(rd)
+    && rd.indexOf("'open'") < rd.indexOf("'owner_scoped'") && /position\('bucket_id' in pol\.expr\) = 0/.test(rd) && /p\.roles && ARRAY\['authenticated', 'anon', 'public'\]::name\[\]/.test(rd))
+  const expectedOf = (b: string) => (new RegExp(`\\('${b}'::text,\\s*(?:'[a-z_]+'::text|NULL::text),\\s*ARRAY\\[([^\\]]*)\\]`).exec(rd)?.[1] ?? "").split(",").map((x) => x.trim().replace(/'/g, "")).filter(Boolean).sort()
+  const createdIn = (sql: string, b: string) => [...sql.matchAll(/CREATE POLICY "([^"]+)" ON storage\.objects/g)].map((m) => m[1]).filter((n) => n.startsWith(`${b} owner`)).sort()
+  const agree = (["client-documents", "transaction-documents", "agent-documents", "offer-documents"] as const).every((b) => expectedOf(b).join(",") === createdIn(c875, b).join(",")) && expectedOf("brokerage-forms").join(",") === createdIn(c855, "brokerage-forms").join(",") && expectedOf("documents").length === 0
+  check("C5 the owner set it expects per bucket IS the set m875 (and m855 for brokerage-forms) creates — derived from the migration text, so a renamed policy can never read 'owner_scoped'", agree && expectedOf("brokerage-forms").length === 4 && expectedOf("transaction-documents").length === 3)
+  check("C5 service role only (it reads policy text): REVOKE from PUBLIC / anon / authenticated, GRANT to service_role", /REVOKE ALL ON FUNCTION public\.storage_bucket_policy_readiness\(\) FROM PUBLIC;/.test(c874) && /REVOKE ALL ON FUNCTION public\.storage_bucket_policy_readiness\(\) FROM anon, authenticated;/.test(c874) && /GRANT EXECUTE ON FUNCTION public\.storage_bucket_policy_readiness\(\) TO service_role;/.test(c874))
+  console.log("    (published) BLIND SPOTS of section C: the path rules are asserted from the migration TEXT (no database here) — their behaviour was measured live by running the predicate bodies inline under real JWT claims (lane 146A notes) and is re-checked by the owner's §G queries; the census sees a bucket only as one of the four literals or the three known constants (a bucket chosen at runtime — lib/kernel/document-autofile.ts's mover, app/actions/documents.ts deleteDocument's parsed URL — is declared by hand above); a client is resolved by its declaration in the same file (a client passed in from a caller reads 'unknown' and fails); a signed URL minted before m875 stays valid until it expires (RLS cannot revoke a bearer token); a portal contact is matched through contacts.contact_user_id only (the portal invite writes it — 0 of 4 live contact seats carry it today, all seed rows)")
+  console.log("    (published) measured LIVE 2026-10-29 by running this function's body inline (read-only MCP): agent-documents · brokerage-forms · client-documents · offer-documents · transaction-documents = open (15 + 4 bucket-wide policies), documents = service_only; positive control: the same classifier over the post-m855/m875 policy text reads owner_scoped ×4 and service_only for offer-documents")
+}
+
 console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
 if (failed) { console.log("\nFAILURES:"); for (const f of failures) console.log(`  - ${f}`); console.log("\n❌ TRANSFER_CLASSIFICATION_FAIL"); process.exit(1) }
-console.log("✅ TRANSFER_CLASSIFICATION_PASS — every FK child onto a moved family has a class and no protected class is ever moved by the rail; the brokerage-forms bucket admits only active staff seats through declared, gated doors")
+console.log("✅ TRANSFER_CLASSIFICATION_PASS — every FK child onto a moved family has a class and no protected class is ever moved by the rail (an opt-out travels as a copy); the brokerage-forms bucket admits only active staff seats through declared, gated doors; the four private document buckets and the offer row admit each party only its own folder / deal")

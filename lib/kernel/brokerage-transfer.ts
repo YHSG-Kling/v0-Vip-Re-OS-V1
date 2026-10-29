@@ -283,6 +283,22 @@ export const TRANSFER_AUTHORIZED_FOLLOWING_CHILDREN: readonly string[] = []
  */
 export const TRANSFER_SAFETY_CRITICAL_CHILDREN: readonly string[] = ["contact_suppression_list"]
 
+// ── RESTRICTIONS ARE COPIED, NEVER MOVED (wave 146, lane 146A — owner, 2026-10-29: "opt-outs and consent restrictions preserved;
+// no silent ownership change"; the owner's transfer vocabulary "authorized copies") ──────────────────────────────────────────────
+// A safety-critical child whose rows are RESTRICTIONS — an opt-out / do-not-contact entry keyed on the person, their email, their
+// phone or their household's mailing address — is COPIED into the adopting brokerage in the data step, row for row, while the
+// original stays with the archived source as the evidence of when and how the person asked (TCPA / CAN-SPAM). A copy moves no
+// ownership: the source record is untouched, and a restriction can only STOP sending — so the target is never more permissive than
+// the source was, which is the whole of the safety argument. It is not the owner's Step-0 authorization to MOVE the table (that
+// stays TRANSFER_AUTHORIZED_FOLLOWING_CHILDREN; when it is given, the rows move and no copy is made). Every copy is counted on the
+// migration record (closure.restrictions_copied) and named in the Data Steward's closure note — never silent. The re-opt-in door
+// (lib/lead-intent/lead-opt-out.ts) finds a copy exactly as it finds a native row, because the copy keeps every column but the id
+// and the tenant. Consent itself is NOT copied (contact_consent_events is explicit_transfer): a consent given to the source is never
+// assumed by the target, which then treats the person as unconsented — the safe direction.
+const TRANSFER_RESTRICTION_COPY_CHILDREN: readonly string[] = ["contact_suppression_list"]
+/** Page size of the restriction copy's source read (PostgREST caps an unbounded read at 1000 rows — a silent truncation). */
+const RESTRICTION_COPY_PAGE = 500
+
 /** PURE: why the rail must refuse to run — a moved family or a child named for moving that is not follows_parent (module-private:
  *  the guard proves it through the REAL rail, scripts/transfer-classification-guard.ts A3). */
 function transferClassificationProblems(families: readonly string[], movingChildren: readonly string[]): string[] {
@@ -296,6 +312,54 @@ function transferClassificationProblems(families: readonly string[], movingChild
     if (c !== "follows_parent") out.push(`${t} is ${c ?? "UNCLASSIFIED"} — only an owner-authorized follows_parent child may move`)
   }
   return out
+}
+
+/** A restriction row's identity for the copy's de-duplication: a household (channel + mailing-address key — the table's live
+ *  UNIQUE index per tenant), or a person (channel + contact + email + phone). */
+function restrictionKey(r: Record<string, unknown>): string {
+  const s = (v: unknown) => (v === null || v === undefined ? "" : String(v))
+  return r.mailing_address_key
+    ? `household|${s(r.channel)}|${s(r.mailing_address_key)}`
+    : `person|${s(r.channel)}|${s(r.contact_id)}|${s(r.email).toLowerCase()}|${s(r.phone)}`
+}
+
+/**
+ * COPY a restriction table's source rows into the target (module-private; proven through the REAL rail by
+ * scripts/transfer-classification-guard.ts A6). Every column but the id and the tenant is kept — the original reason, source and
+ * timestamp are the evidence. Idempotent: a restriction the target already holds (same key) is not inserted again, and a 23505 from
+ * the household index reads as "already there". Paged, so a large list is never silently truncated. Any refused read or insert
+ * is an ERROR (the data step stalls for a human) — an opt-out that did not reach the target must never read as done.
+ */
+async function copyRestrictionsToTarget(svc: any, table: string, sourceId: string, targetId: string): Promise<{ ok: true; copied: number; already: number } | { ok: false; error: string }> {
+  const readAll = async (brokerageId: string): Promise<{ rows: Array<Record<string, unknown>>; error?: string }> => {
+    const out: Array<Record<string, unknown>> = []
+    for (let from = 0; ; from += RESTRICTION_COPY_PAGE) {
+      const { data, error } = await svc.from(table).select("*").eq("brokerage_id", brokerageId).order("id", { ascending: true }).range(from, from + RESTRICTION_COPY_PAGE - 1)
+      if (error) return { rows: out, error: error.message }
+      const page = (data ?? []) as Array<Record<string, unknown>>
+      out.push(...page)
+      if (page.length < RESTRICTION_COPY_PAGE) return { rows: out }
+    }
+  }
+  const src = await readAll(sourceId)
+  if (src.error) return { ok: false, error: `the source's ${table} could not be read: ${src.error}` }
+  if (src.rows.length === 0) return { ok: true, copied: 0, already: 0 }
+  const tgt = await readAll(targetId)
+  if (tgt.error) return { ok: false, error: `the target's ${table} could not be read: ${tgt.error}` }
+  const held = new Set(tgt.rows.map(restrictionKey))
+  let copied = 0, already = 0
+  for (const row of src.rows) {
+    const key = restrictionKey(row)
+    if (held.has(key)) { already += 1; continue }
+    const { id: _id, brokerage_id: _b, ...rest } = row
+    const { data, error } = await svc.from(table).insert({ ...rest, brokerage_id: targetId }).select("id")
+    if (error && String((error as { code?: string }).code ?? "") === "23505") { already += 1; held.add(key); continue }
+    if (error) return { ok: false, error: `a ${table} restriction could not be copied to the target: ${error.message}` }
+    if (!(data ?? []).length) return { ok: false, error: `a ${table} restriction copy returned no row` }
+    copied += 1
+    held.add(key)
+  }
+  return { ok: true, copied, already }
 }
 
 /** Rows a closure count stops at (a count, not a census — the human sees "N+" beyond it). */
@@ -340,7 +404,10 @@ export interface TransferMigrationRecord {
   last_error?: string | null
   /** wave 145 (ruling 24): what the classification kept in the archived source for a human — rows held per explicit_transfer /
    *  safety-critical table (a count stops at CLOSURE_COUNT_CAP), the tables that could not be read (never "0"), and when. */
-  closure?: { at: string; explicit_transfer: Record<string, number>; safety_critical: Record<string, number>; unread: string[]; authorized_moved: Record<string, number> }
+  closure?: { at: string; explicit_transfer: Record<string, number>; safety_critical: Record<string, number>; unread: string[]; authorized_moved: Record<string, number>
+    /** wave 146 (lane 146A): restriction rows COPIED into the target (never moved — the source keeps its evidence); per table, the
+     *  rows this run inserted. A table absent here was not copied (authorized to move instead, or the copy is not on). */
+    restrictions_copied?: Record<string, number> }
 }
 
 export interface TransferConsentEvidence {
@@ -900,10 +967,21 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
         if (leftErr) errors.push(`${table} post-condition read: ${leftErr.message}`)
         else if ((left ?? []).length) errors.push(`${table}: rows remain in the source after the move`)
       }
+      // RESTRICTIONS ARE COPIED, NEVER MOVED (wave 146, lane 146A): every safety-critical restriction table the owner has NOT
+      // authorized to move is copied into the target so the adopted people's opt-outs hold there; the originals stay as evidence.
+      // A refused copy STALLS the step (an opt-out that did not arrive must never read as done); a retry copies only what is missing.
+      const restrictions_copied: Record<string, number> = {}
+      for (const table of TRANSFER_RESTRICTION_COPY_CHILDREN) {
+        if (authorizedChildren.includes(table) || FK_CHILD_TRANSFER_CLASSIFICATION[table]?.cls !== "follows_parent" || !TRANSFER_SAFETY_CRITICAL_CHILDREN.includes(table)) continue
+        const copy = await copyRestrictionsToTarget(svc, table, sourceId, targetId)
+        if (!copy.ok) { errors.push(copy.error); continue }
+        restrictions_copied[table] = copy.copied
+        record.counts[`${table}_copied`] = (record.counts[`${table}_copied`] ?? 0) + copy.copied
+      }
       if (errors.length) return { error: `data families refused: ${errors.join("; ")}` }
       // THE CLOSURE REPORT — what the classification KEEPS in the source that a human must decide: every explicit_transfer table and
       // every safety-critical child not authorized. Read only, never moved. A refused read is listed as unread, never as 0.
-      const closure: NonNullable<TransferMigrationRecord["closure"]> = { at: nowIso(deps), explicit_transfer: {}, safety_critical: {}, unread: [], authorized_moved }
+      const closure: NonNullable<TransferMigrationRecord["closure"]> = { at: nowIso(deps), explicit_transfer: {}, safety_critical: {}, unread: [], authorized_moved, restrictions_copied }
       const held = async (table: string): Promise<number | null> => {
         const { data, error } = await svc.from(table).select("id").eq("brokerage_id", sourceId).limit(CLOSURE_COUNT_CAP)
         return error ? null : (data ?? []).length
@@ -927,7 +1005,13 @@ export async function runBrokerageTransferMigration(svc: any, input: RunTransfer
     // A human decides what the classification kept behind (never moved here). Routed once — a retry finds the data step done.
     const closure = record.closure
     const pending = closure ? [
-      ...Object.entries(closure.safety_critical).map(([t, n]) => `${t}: ${n >= CLOSURE_COUNT_CAP ? `${CLOSURE_COUNT_CAP}+` : n} row(s) — SAFETY: the target cannot see these opt-outs`),
+      ...Object.entries(closure.safety_critical).map(([t, n]) => {
+        const count = n >= CLOSURE_COUNT_CAP ? `${CLOSURE_COUNT_CAP}+` : String(n)
+        const copied = closure.restrictions_copied?.[t]
+        return copied === undefined
+          ? `${t}: ${count} row(s) — SAFETY: the target cannot see these opt-outs`
+          : `${t}: ${count} row(s) — SAFETY, HANDLED BY COPY: the originals stay with the archived workspace as evidence and each restriction was COPIED into the adopting brokerage (${copied} inserted by this run; the rest it already held), so these opt-outs hold there; moving the originals still needs the owner's authorization`
+      }),
       ...Object.entries(closure.explicit_transfer).map(([t, n]) => `${t}: ${n >= CLOSURE_COUNT_CAP ? `${CLOSURE_COUNT_CAP}+` : n} row(s)`),
       ...closure.unread.map((t) => `${t}: could not be read`),
     ] : []
